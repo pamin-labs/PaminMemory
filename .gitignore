@@ -1,0 +1,52 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p8
+
+# Rust build output
+/target/
+
+# Rust local/editor outputs
+**/*.rs.bk
+
+# Local databases and runtime storage
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+data/
+storage/
+tmp/
+temp/
+
+# Logs and diagnostics
+*.log
+logs/
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Local archives and OS metadata
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+!fixtures/**/*.zip
+!testdata/**/*.zip
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
