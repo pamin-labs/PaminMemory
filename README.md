@@ -1,6 +1,6 @@
-# PaminMemory
+# Påmin Memory
 
-PaminMemory is universal memory for AI agents, coding assistants, research tools, and knowledge-heavy applications.
+Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistants, research tools, and knowledge-heavy applications.
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
