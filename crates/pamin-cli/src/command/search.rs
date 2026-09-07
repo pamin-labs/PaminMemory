@@ -6,7 +6,7 @@ use pamin_index::Profile;
 use pamin_store::Workspace;
 use serde::Serialize;
 
-use crate::engine::Engine;
+use crate::engine::{Depths, Engine};
 use crate::output::Format;
 
 #[derive(clap::Args)]
@@ -17,6 +17,17 @@ pub struct Args {
     /// How many results to return.
     #[arg(long, default_value_t = 5)]
     pub limit: u32,
+
+    /// How many candidates each channel contributes before fusion.
+    ///
+    /// Provisional, like every retrieval constant here. Exposed so the
+    /// evaluation harness can sweep it without a rebuild.
+    #[arg(long, env = "PAMIN_CHANNEL_DEPTH", default_value_t = Depths::default().channel)]
+    pub channel_depth: u32,
+
+    /// How many edges the graph channel walks out from its seeds.
+    #[arg(long, env = "PAMIN_GRAPH_DEPTH", default_value_t = Depths::default().graph)]
+    pub graph_depth: u8,
 }
 
 #[derive(Serialize)]
@@ -50,7 +61,11 @@ pub async fn run(
     args: Args,
 ) -> Result<()> {
     let mut engine = Engine::open(workspace, project, profile).await?;
-    let hits = engine.search(&args.query, args.limit).await?;
+    let depths = Depths {
+        channel: args.channel_depth,
+        graph: args.graph_depth,
+    };
+    let hits = engine.search(&args.query, args.limit, depths).await?;
 
     let results = Results {
         query: args.query,

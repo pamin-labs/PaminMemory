@@ -5,7 +5,7 @@
 //! from the first release so the guarantee is executable rather than stated.
 
 use anyhow::Result;
-use pamin_index::{Profile, ProjectionIndex};
+use pamin_index::Profile;
 use pamin_store::Workspace;
 use serde::Serialize;
 
@@ -27,12 +27,9 @@ pub async fn run(
     format: Format,
     _args: Args,
 ) -> Result<()> {
-    // Discard before rebuilding rather than overwriting in place. An overwrite
-    // leaves behind anything the ledger no longer has, which is exactly the
-    // drift a rebuild is supposed to eliminate.
-    ProjectionIndex::discard(&workspace.index_dir())?;
-
-    let mut engine = Engine::open(workspace, project, profile).await?;
+    // Rebuilding discards this project's index first, and clears the shared
+    // pre-split layout if the workspace still has one.
+    let mut engine = Engine::rebuilding(workspace, project, profile).await?;
     let indexed = engine.reindex().await?;
 
     let result = Reindexed { indexed };

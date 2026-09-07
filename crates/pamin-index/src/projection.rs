@@ -47,7 +47,15 @@ impl ProjectionIndex {
     /// embedding spaces in one index produces distances that mean nothing, and
     /// nothing about the resulting rankings would look wrong, so this is
     /// enforced rather than documented. Changing profile requires a reindex.
-    pub fn open(dir: &Path, profile: Profile) -> Result<Self> {
+    pub fn open(dir: &Path, legacy_dir: &Path, profile: Profile) -> Result<Self> {
+        // A workspace built before projects had their own directory holds one
+        // shared collection. Opening this project's empty directory beside it
+        // would return nothing and look like an empty workspace, so it is
+        // reported instead.
+        if std::fs::exists(legacy_dir)? {
+            return Err(IndexError::LegacyLayout);
+        }
+
         std::fs::create_dir_all(dir)?;
         let marker = dir.join("profile");
         match std::fs::read_to_string(&marker) {

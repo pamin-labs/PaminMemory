@@ -23,6 +23,11 @@ Changing `--profile` changes the vector space. The index records the profile it
 was built with and refuses to open under a different one, naming `reindex` in
 the error rather than silently mixing two spaces.
 
+Projects are namespaces, not tags. Each has its own index directory, so nothing
+crosses between them and a rebuild of one leaves the others alone. That also
+means each project carries its own embedding profile: changing `--profile` for
+one is a rebuild of that one.
+
 Every command exits non-zero on failure with the reason on stderr:
 
 ```console
@@ -130,6 +135,12 @@ guessing at the depth first.
 ## `pamin search`
 
 Retrieves across every recall channel and explains the result.
+
+`--channel-depth` sets how many candidates each channel contributes before
+fusion (default 50) and `--graph-depth` how many edges the graph walks out
+(default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`. They are
+exposed because they are provisional: the numbers are the architecture's, and
+settling them is a measurement rather than an argument.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
@@ -418,7 +429,12 @@ retrieval engine replaceable and makes a breaking engine upgrade a rebuild
 rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
-Run it after changing `--profile`, or after deleting the index directory.
+Run it after changing `--profile`, or after deleting the index directory. It
+rebuilds one project — the one named by `--project` — and leaves the rest alone.
+
+A workspace created before projects had separate indexes holds a single shared
+one. Opening it would search another project's memories, and ignoring it would
+search nothing, so commands report it and `pamin reindex` migrates it.
 
 ## `pamin stop`
 

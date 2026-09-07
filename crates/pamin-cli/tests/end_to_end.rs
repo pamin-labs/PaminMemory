@@ -992,3 +992,80 @@ fn grep_reaches_evidence_that_search_cannot() {
         "the superseded version is still in evidence"
     );
 }
+
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn one_project_cannot_crowd_another_out_of_its_own_index() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    // Results were always filtered to the calling project, so leakage was
+    // never the symptom. Depth was: with one shared collection, every channel
+    // spent its candidate budget across every project, and whatever belonged
+    // to another one was fetched and then thrown away. A busy neighbour could
+    // therefore consume a project's entire budget and leave it with nothing.
+    //
+    // Asking for a depth of one makes that measurable instead of statistical.
+    for (index, note) in [
+        "the release checklist covers the release checklist steps",
+        "the release checklist is reviewed before every release",
+        "a release checklist entry blocks the release",
+        "release checklist ownership rotates with the release",
+        "the release checklist lives beside the release notes",
+    ]
+    .iter()
+    .enumerate()
+    {
+        cli.run(&[
+            "--project",
+            "crowded",
+            "write",
+            "--topic",
+            &format!("crowded_{index}"),
+            note,
+        ]);
+    }
+
+    cli.run(&[
+        "--project",
+        "quiet",
+        "write",
+        "--topic",
+        "quiet_topic",
+        "the release checklist is short here",
+    ]);
+
+    let hits = cli.json(&[
+        "--project",
+        "quiet",
+        "search",
+        "release checklist",
+        "--limit",
+        "8",
+        "--channel-depth",
+        "1",
+    ]);
+    let found = contents(&hits);
+    assert_eq!(
+        found.len(),
+        1,
+        "one candidate per channel must be this project's own, got {found:?}"
+    );
+    assert!(found[0].contains("short here"));
+
+    // Rebuilding one project leaves the other alone, which holds because they
+    // are separate directories rather than one index filtered after the fact.
+    cli.run(&["--project", "quiet", "reindex"]);
+    let crowded = contents(&cli.json(&[
+        "--project",
+        "crowded",
+        "search",
+        "release checklist",
+        "--limit",
+        "8",
+    ]));
+    assert!(
+        crowded.len() >= 5,
+        "rebuilding one project does not disturb another: {crowded:?}"
+    );
+}

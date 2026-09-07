@@ -13,20 +13,35 @@ use pamin_index::{Embedder, Profile, ProjectionIndex};
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Database, Workspace, graph, repository};
 
-/// How many candidates each channel contributes before fusion.
+/// How deep each channel reaches before fusion.
 ///
-/// Deep enough for rank fusion to find agreement between channels, shallow
-/// enough that reranking stays cheap. A default to be settled by measurement,
-/// not by argument.
-const CHANNEL_DEPTH: u32 = 50;
+/// These are inputs rather than constants because they are provisional: the
+/// evaluation harness exists to settle them, and it cannot sweep a value that
+/// is compiled in. The defaults are the ones the architecture specifies, so
+/// nothing changes for a caller that does not ask.
+#[derive(Clone, Copy, Debug)]
+pub struct Depths {
+    /// Candidates each channel contributes.
+    ///
+    /// Deep enough for rank fusion to find agreement between channels, shallow
+    /// enough that reranking stays cheap.
+    pub channel: u32,
+    /// Edges the graph channel walks out from its seeds.
+    ///
+    /// Two hops reaches a topic's neighbours and their neighbours, which is
+    /// where "related to something related to this" stops being informative
+    /// and starts being most of the project.
+    pub graph: u8,
+}
 
-/// How far the graph channel walks out from the seeds.
-///
-/// Two hops reaches a topic's neighbours and their neighbours, which is where
-/// "related to something related to this" stops being informative and starts
-/// being most of the project. Provisional, and one of the numbers the
-/// evaluation harness exists to settle.
-const GRAPH_DEPTH: u8 = 2;
+impl Default for Depths {
+    fn default() -> Self {
+        Self {
+            channel: 50,
+            graph: 2,
+        }
+    }
+}
 
 /// How much weight a derived mention carries against an asserted edge.
 ///
@@ -46,9 +61,43 @@ pub struct Engine {
 impl Engine {
     /// Opens everything a search or a write needs.
     pub async fn open(workspace: &Workspace, project: &str, profile: Profile) -> Result<Self> {
+        Self::open_index(workspace, project, profile, false).await
+    }
+
+    /// Opens with the projection discarded first, for a rebuild.
+    ///
+    /// Discarding before opening rather than overwriting in place is what
+    /// makes a rebuild a rebuild: an overwrite leaves behind anything the
+    /// ledger no longer has, which is the drift the rebuild exists to remove.
+    pub async fn rebuilding(
+        workspace: &Workspace,
+        project: &str,
+        profile: Profile,
+    ) -> Result<Self> {
+        Self::open_index(workspace, project, profile, true).await
+    }
+
+    async fn open_index(
+        workspace: &Workspace,
+        project: &str,
+        profile: Profile,
+        discard: bool,
+    ) -> Result<Self> {
         let database = Database::open(workspace).await?;
         let project = repository::ensure_project(database.client(), project).await?;
-        let index = ProjectionIndex::open(&workspace.index_dir(), profile)?;
+
+        // The index is per project, so the identity has to be resolved before
+        // the index can be located at all.
+        let dir = workspace.index_dir(project.id);
+        let legacy = workspace.legacy_index_dir();
+        if discard {
+            ProjectionIndex::discard(&dir)?;
+            // A rebuild is also the migration off the shared layout, which is
+            // what the error about it tells the caller to run.
+            ProjectionIndex::discard(&legacy)?;
+        }
+
+        let index = ProjectionIndex::open(&dir, &legacy, profile)?;
         let embedder = Embedder::load(profile, &workspace.root().join("models"))?;
 
         Ok(Self {
@@ -168,21 +217,26 @@ impl Engine {
     /// path is deliberately not taken: fusing there would produce a list that
     /// then had to be fused again with anything PostgreSQL contributes, and the
     /// per-channel ranks each result reports would already be lost.
-    pub async fn search(&mut self, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
+    pub async fn search(
+        &mut self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+    ) -> Result<Vec<SearchHit>> {
         let embedding = self.embedder.embed_query(query)?;
 
         let lists = vec![
             ChannelResults::new(
                 Channel::LexicalSegmented,
-                self.index.recall_segmented(query, CHANNEL_DEPTH)?,
+                self.index.recall_segmented(query, depths.channel)?,
             ),
             ChannelResults::new(
                 Channel::LexicalNgram,
-                self.index.recall_ngram(query, CHANNEL_DEPTH)?,
+                self.index.recall_ngram(query, depths.channel)?,
             ),
             ChannelResults::new(
                 Channel::Vector,
-                self.index.recall_vector(&embedding, CHANNEL_DEPTH)?,
+                self.index.recall_vector(&embedding, depths.channel)?,
             ),
         ];
 
@@ -193,7 +247,7 @@ impl Engine {
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
-        let (graph_list, paths) = self.recall_graph(query, &lists, &live).await?;
+        let (graph_list, paths) = self.recall_graph(query, &lists, &live, depths).await?;
         let mut lists = lists;
         lists.push(graph_list);
 
@@ -244,6 +298,7 @@ impl Engine {
         query: &str,
         lists: &[ChannelResults],
         live: &LiveStates,
+        depths: Depths,
     ) -> Result<(ChannelResults, std::collections::HashMap<TopicStateId, Why>)> {
         let seeds: Vec<TopicId> = {
             let segmenter = self.index.segmenter();
@@ -278,7 +333,7 @@ impl Engine {
             self.database.client(),
             self.project,
             &seeds,
-            &Expansion::to_depth(GRAPH_DEPTH),
+            &Expansion::to_depth(depths.graph),
         )
         .await?;
 
@@ -304,7 +359,7 @@ impl Engine {
             );
         }
 
-        candidates.truncate(CHANNEL_DEPTH as usize);
+        candidates.truncate(depths.channel as usize);
         Ok((ChannelResults::new(Channel::Graph, candidates), paths))
     }
 

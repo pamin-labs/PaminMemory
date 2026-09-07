@@ -12,6 +12,12 @@ pub enum IndexError {
     )]
     ProfileMismatch { indexed: String, requested: String },
 
+    #[error(
+        "this workspace has an index from before projects were separated; \
+         run `pamin reindex` to rebuild it per project"
+    )]
+    LegacyLayout,
+
     #[error("index io: {0}")]
     Io(#[from] std::io::Error),
 }

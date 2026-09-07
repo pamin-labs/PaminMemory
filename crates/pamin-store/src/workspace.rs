@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use pamin_core::ProjectId;
 use serde::{Deserialize, Serialize};
 
 /// Where PaminMemory keeps its database, indexes, and models.
@@ -51,10 +52,33 @@ impl Workspace {
         self.root.join("postgres").join("pgpass")
     }
 
-    /// Where the projection index lives. Derived data: safe to delete, and
-    /// rebuilt from PostgreSQL by `pamin reindex`.
-    pub fn index_dir(&self) -> PathBuf {
-        self.root.join("index")
+    /// Where one project's projection index lives. Derived data: safe to
+    /// delete, and rebuilt from PostgreSQL by `pamin reindex`.
+    ///
+    /// A directory per project rather than one index filtered by project.
+    /// A project is a namespace, not an attribute: no query spans two of them,
+    /// so the boundary is structural and belongs in the layout. Expressing it
+    /// as a filter would make each channel's candidate depth depend on how
+    /// completely the engine pushes that filter down, which its documentation
+    /// promises only "whenever possible" — and a boundary that holds only
+    /// sometimes is not one. Keeping them apart also gives each project its own
+    /// embedding profile marker, so changing profile for one stops forcing a
+    /// rebuild of the rest.
+    ///
+    /// Named by identifier rather than by the name a caller typed: a project
+    /// name is arbitrary text that can contain path separators, and renaming
+    /// one should not strand its index.
+    pub fn index_dir(&self, project: ProjectId) -> PathBuf {
+        self.root.join("index").join(project.to_string())
+    }
+
+    /// The single shared index directory used before projects were separated.
+    ///
+    /// Its existence is a workspace that predates the split. Opening it would
+    /// silently search another project's memories, and ignoring it would
+    /// silently search nothing, so callers report it and ask for a rebuild.
+    pub fn legacy_index_dir(&self) -> PathBuf {
+        self.root.join("index").join("memories")
     }
 
     fn connection_file(&self) -> PathBuf {
