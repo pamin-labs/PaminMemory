@@ -7,10 +7,10 @@
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FusedResult, Fusion, Modifiers, ProjectId, Topic, TopicId,
-    TopicState, TopicStateId,
+    TopicState, TopicStateId, Why,
 };
 use pamin_index::{Embedder, Profile, ProjectionIndex};
-use pamin_store::graph::EdgeClaim;
+use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Database, Workspace, graph, repository};
 
 /// How many candidates each channel contributes before fusion.
@@ -19,6 +19,14 @@ use pamin_store::{Database, Workspace, graph, repository};
 /// enough that reranking stays cheap. A default to be settled by measurement,
 /// not by argument.
 const CHANNEL_DEPTH: u32 = 50;
+
+/// How far the graph channel walks out from the seeds.
+///
+/// Two hops reaches a topic's neighbours and their neighbours, which is where
+/// "related to something related to this" stops being informative and starts
+/// being most of the project. Provisional, and one of the numbers the
+/// evaluation harness exists to settle.
+const GRAPH_DEPTH: u8 = 2;
 
 /// How much weight a derived mention carries against an asserted edge.
 ///
@@ -183,6 +191,12 @@ impl Engine {
         // states still exist at all.
         let live = LiveStates::load(&self.database, self.project).await?;
 
+        // The graph is the one channel the index cannot see, which is the
+        // entire reason fusion happens here rather than inside the engine.
+        let (graph_list, paths) = self.recall_graph(&lists, &live).await?;
+        let mut lists = lists;
+        lists.push(graph_list);
+
         let mut fused = Fusion::default().fuse(&lists);
 
         // A state the index still knows about but the ledger has soft deleted
@@ -192,6 +206,9 @@ impl Engine {
         let modifiers = Modifiers::default();
         for result in &mut fused {
             let state = live.state(result.topic_state).expect("retained above");
+            if let Some(path) = paths.get(&result.topic_state) {
+                result.why.push(path.clone());
+            }
             modifiers.apply(result, &state.signals, live.is_current(state));
         }
         pamin_core::sort_results(&mut fused);
@@ -208,6 +225,66 @@ impl Engine {
                 }
             })
             .collect())
+    }
+
+    /// Expands the graph around what the other channels found.
+    ///
+    /// Seeds come from the lexical and vector lists, so a seed handed back as a
+    /// graph result would be one piece of evidence counted twice under two
+    /// names — the exact double weighting that owning fusion is supposed to
+    /// prevent. The expansion therefore returns only topics reached across at
+    /// least one edge, and a seed appears among them only when something else
+    /// in the graph reaches it.
+    ///
+    /// Returns the ranked list and the path evidence for each result, keyed by
+    /// state, so the trace can say why the graph could see it.
+    async fn recall_graph(
+        &self,
+        lists: &[ChannelResults],
+        live: &LiveStates,
+    ) -> Result<(ChannelResults, std::collections::HashMap<TopicStateId, Why>)> {
+        let seeds: Vec<TopicId> = {
+            let mut seen = std::collections::HashSet::new();
+            lists
+                .iter()
+                .flat_map(|list| list.candidates.iter())
+                .filter_map(|candidate| live.state(*candidate))
+                .map(|state| state.topic_id)
+                .filter(|topic| seen.insert(*topic))
+                .collect()
+        };
+
+        let neighbors = graph::expand(
+            self.database.client(),
+            self.project,
+            &seeds,
+            &Expansion::to_depth(GRAPH_DEPTH),
+        )
+        .await?;
+
+        let mut candidates = Vec::new();
+        let mut paths = std::collections::HashMap::new();
+        for neighbor in neighbors {
+            // A topic identity is not a retrieval result; its current state is.
+            // A topic whose every state has been soft deleted resolves to
+            // nothing and drops out here.
+            let Some(state) = live.current_state_of(neighbor.topic) else {
+                continue;
+            };
+            candidates.push(state);
+            paths.insert(
+                state,
+                Why::Path {
+                    via: neighbor.via,
+                    hops: neighbor.hops,
+                    edge: neighbor.kind,
+                    derivation: neighbor.derivation,
+                },
+            );
+        }
+
+        candidates.truncate(CHANNEL_DEPTH as usize);
+        Ok((ChannelResults::new(Channel::Graph, candidates), paths))
     }
 
     /// Rebuilds the projection index from the authority store.
@@ -245,6 +322,9 @@ struct LiveStates {
     /// The newest surviving version of each topic. Current is computed rather
     /// than stored, so it is derived here rather than read from a column.
     current: std::collections::HashMap<TopicId, u32>,
+    /// The state each topic currently resolves to, which is what the graph
+    /// channel needs: it walks topic identities and has to return states.
+    current_state: std::collections::HashMap<TopicId, TopicStateId>,
 }
 
 impl LiveStates {
@@ -257,9 +337,16 @@ impl LiveStates {
             *entry = (*entry).max(state.version);
         }
 
+        let current_state = states
+            .iter()
+            .filter(|state| current.get(&state.topic_id) == Some(&state.version))
+            .map(|state| (state.topic_id, state.id))
+            .collect();
+
         Ok(Self {
             by_id: states.into_iter().map(|state| (state.id, state)).collect(),
             current,
+            current_state,
         })
     }
 
@@ -273,6 +360,15 @@ impl LiveStates {
 
     fn is_current(&self, state: &TopicState) -> bool {
         self.current.get(&state.topic_id) == Some(&state.version)
+    }
+
+    /// The state that represents a topic right now.
+    ///
+    /// The graph connects topic identities, but only a state can be returned
+    /// from a search, so every neighbour resolves through here. A topic whose
+    /// versions have all been soft deleted resolves to nothing.
+    fn current_state_of(&self, topic: TopicId) -> Option<TopicStateId> {
+        self.current_state.get(&topic).copied()
     }
 }
 
