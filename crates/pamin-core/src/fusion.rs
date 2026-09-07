@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::channel::{Channel, ChannelResults};
 use crate::graph::{Derivation, EdgeKind};
-use crate::id::{TopicId, TopicStateId};
+use crate::id::TopicStateId;
 use crate::ledger::RetrievalSignals;
 
 /// The standard reciprocal rank fusion constant.
@@ -45,8 +45,12 @@ pub enum Why {
     /// the engine derived, so a surprising connection can be traced to whoever
     /// or whatever claimed it.
     Path {
-        /// The topic on the other end of the final edge.
-        via: TopicId,
+        /// The name of the topic on the other end of the final edge.
+        ///
+        /// A name rather than an identifier because this entry exists to be
+        /// checked by whoever reads it, and topics are addressed by name
+        /// everywhere else a caller touches them.
+        via: String,
         /// Edges traversed from the seed. Never zero.
         hops: u8,
         /// Named `edge` rather than `kind`, which serde already uses to tag
@@ -370,7 +374,7 @@ mod tests {
             .remove(0);
 
         fused.why.push(Why::Path {
-            via: TopicId(uuid::Uuid::from_bytes([7; 16])),
+            via: "release_process".to_string(),
             hops: 2,
             edge: EdgeKind::DependsOn,
             derivation: Derivation::Deterministic,
