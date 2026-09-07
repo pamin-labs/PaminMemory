@@ -52,7 +52,7 @@ pub(crate) use sql_enum;
 #[cfg(test)]
 mod tests {
     use super::SqlLabel;
-    use pamin_core::FilterDecision;
+    use pamin_core::{Derivation, EdgeKind, FilterDecision, TombstoneReason};
 
     /// Enums whose column is constrained to their label set.
     ///
@@ -60,7 +60,12 @@ mod tests {
     /// ingest path that does not exist yet, so its column stays open until one
     /// does.
     fn constrained() -> Vec<&'static [&'static str]> {
-        vec![FilterDecision::labels()]
+        vec![
+            FilterDecision::labels(),
+            EdgeKind::labels(),
+            Derivation::labels(),
+            TombstoneReason::labels(),
+        ]
     }
 
     fn migrations() -> String {

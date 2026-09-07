@@ -4,8 +4,9 @@
 //! delete, which sets `deleted_at` and leaves the content intact.
 
 use pamin_core::{
-    FilterDecision, Project, ProjectId, RetrievalSignals, SourceId, SourceKind, SourceSpan,
-    SourceSpanId, SourceVersion, SourceVersionId, Topic, TopicId, TopicState, TopicStateId,
+    Derivation, EdgeKind, FilterDecision, Project, ProjectId, RetrievalSignals, SourceId,
+    SourceKind, SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic,
+    TopicId, TopicState, TopicStateId,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row};
@@ -34,6 +35,31 @@ sql_enum!(SourceKind {
     File => "file",
     Directory => "directory",
     ChatLog => "chat_log",
+});
+
+sql_enum!(EdgeKind {
+    Mentions => "mentions",
+    Supports => "supports",
+    Contradicts => "contradicts",
+    Supersedes => "supersedes",
+    RelatedTo => "related_to",
+    PartOf => "part_of",
+    DerivedFrom => "derived_from",
+    SameAs => "same_as",
+    DependsOn => "depends_on",
+});
+
+sql_enum!(Derivation {
+    Explicit => "explicit",
+    Deterministic => "deterministic",
+    Model => "model",
+    Imported => "imported",
+});
+
+sql_enum!(TombstoneReason {
+    Closed => "closed",
+    Superseded => "superseded",
+    Deleted => "deleted",
 });
 
 /// Returns the project with this name, creating it if it does not exist.
