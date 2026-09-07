@@ -328,3 +328,163 @@ pub async fn find_relationship(
         created_at: row.get("created_at"),
     }))
 }
+
+/// One topic reached from a seed, and the edge that reached it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Neighbor {
+    pub topic: TopicId,
+    /// Edges traversed to get here. Never zero: a seed is not its own
+    /// neighbour.
+    pub hops: u8,
+    /// The topic on the other end of the final edge, which is what makes the
+    /// connection explainable rather than merely asserted.
+    pub via: TopicId,
+    pub kind: EdgeKind,
+    pub derivation: Derivation,
+    pub confidence: f32,
+}
+
+/// How the neighbourhood query is bounded.
+#[derive(Clone, Debug)]
+pub struct Expansion<'a> {
+    /// Maximum edges to traverse.
+    pub depth: u8,
+    /// Restricts traversal to these edge kinds. `None` traverses all of them.
+    pub kinds: Option<&'a [EdgeKind]>,
+    /// Keeps only edges asserted to hold at this instant. `None` ignores truth
+    /// validity and considers every edge we still stand behind.
+    pub at: Option<OffsetDateTime>,
+}
+
+impl Expansion<'_> {
+    pub fn to_depth(depth: u8) -> Self {
+        Self {
+            depth,
+            kinds: None,
+            at: None,
+        }
+    }
+}
+
+/// Walks outward from `seeds` through live edges.
+///
+/// Seeds themselves are returned only when something else reaches them, which
+/// is the whole discipline of this channel. Seeds arrive from the lexical and
+/// vector channels; handing them back as graph results would make this channel
+/// a restatement of those, counting one piece of evidence twice under two
+/// names. A seed that is genuinely reached from elsewhere in the graph carries
+/// evidence the other channels did not supply, and only then does it belong
+/// here.
+///
+/// The walk therefore never steps back along the edge it just took. Because
+/// direction is ignored, every edge is walkable both ways, so without that rule
+/// each seed would reach itself at two hops through its own first edge — the
+/// double counting this channel exists to avoid, arriving through the back
+/// door. Genuine cycles of three or more are still traversed.
+///
+/// Traversal ignores edge direction. Both ends of a `depends_on` are relevant
+/// to recall, and which way the arrow points is a fact about the relationship
+/// rather than about who may find whom. The direction taken is reported in
+/// `via` so the path stays explainable.
+///
+/// One round trip. A query per hop would multiply latency by the depth for a
+/// traversal the database can do in a single recursive pass.
+pub async fn expand(
+    client: &Client,
+    project: ProjectId,
+    seeds: &[TopicId],
+    options: &Expansion<'_>,
+) -> Result<Vec<Neighbor>> {
+    if seeds.is_empty() || options.depth == 0 {
+        return Ok(Vec::new());
+    }
+
+    let seed_ids: Vec<uuid::Uuid> = seeds.iter().map(|topic| topic.0).collect();
+    let kind_labels: Option<Vec<&str>> = options
+        .kinds
+        .map(|kinds| kinds.iter().map(|kind| kind.label()).collect());
+
+    // The CTE walks edges in both directions, tracking which end it arrived
+    // from. `depth < $3` bounds the recursion; without it a cycle never
+    // terminates. Ordering by hops then confidence before DISTINCT ON keeps the
+    // shortest, most confident path to each topic and discards the rest.
+    let rows = client
+        .query(
+            "WITH RECURSIVE live_edges AS (
+                 SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
+                 FROM relationships r
+                 JOIN relationship_versions v ON v.relationship_id = r.id
+                 WHERE r.project_id = $1
+                   AND v.invalidated_at IS NULL
+                   AND ($4::TEXT[] IS NULL OR r.kind = ANY ($4))
+                   AND ($5::TIMESTAMPTZ IS NULL
+                        OR ((v.valid_from IS NULL OR v.valid_from <= $5)
+                            AND (v.valid_to IS NULL OR $5 < v.valid_to)))
+             ),
+             undirected AS (
+                 SELECT from_topic AS source, to_topic AS target, kind, confidence, derivation
+                 FROM live_edges
+                 UNION ALL
+                 SELECT to_topic AS source, from_topic AS target, kind, confidence, derivation
+                 FROM live_edges
+             ),
+             walk AS (
+                 SELECT e.target AS topic, 1 AS hops, e.source AS via,
+                        e.kind, e.confidence, e.derivation
+                 FROM undirected e
+                 WHERE e.source = ANY ($2)
+                 UNION ALL
+                 SELECT e.target, w.hops + 1, e.source,
+                        e.kind, e.confidence, e.derivation
+                 FROM walk w
+                 JOIN undirected e ON e.source = w.topic
+                 -- Never step back along the edge just taken. Since traversal
+                 -- ignores direction, every edge is otherwise walkable both
+                 -- ways, so each seed would reach itself at two hops through
+                 -- its own first edge and collect a graph rank for evidence
+                 -- the seeding channels already supplied.
+                 WHERE w.hops < $3 AND e.target <> w.via
+             )
+             SELECT DISTINCT ON (topic) topic, hops, via, kind, confidence, derivation
+             FROM walk
+             ORDER BY topic, hops ASC, confidence DESC",
+            &[
+                &project.0,
+                &seed_ids,
+                &(options.depth as i32),
+                &kind_labels,
+                &options.at,
+            ],
+        )
+        .await?;
+
+    let mut neighbors: Vec<Neighbor> = rows
+        .iter()
+        .map(|row| Neighbor {
+            topic: row.get::<_, uuid::Uuid>("topic").into(),
+            hops: row.get::<_, i32>("hops") as u8,
+            via: row.get::<_, uuid::Uuid>("via").into(),
+            kind: EdgeKind::from_label(row.get("kind")).unwrap_or(EdgeKind::RelatedTo),
+            derivation: Derivation::from_label(row.get("derivation"))
+                .unwrap_or(Derivation::Imported),
+            confidence: row.get("confidence"),
+        })
+        .collect();
+
+    // DISTINCT ON orders by topic, so the ranking has to be reimposed. The
+    // identifier tie-break keeps the order stable across identical inputs,
+    // which is what lets an assembled context be reused rather than rebuilt.
+    neighbors.sort_by(|left, right| {
+        left.hops
+            .cmp(&right.hops)
+            .then_with(|| {
+                right
+                    .confidence
+                    .partial_cmp(&left.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.topic.0.cmp(&right.topic.0))
+    });
+
+    Ok(neighbors)
+}

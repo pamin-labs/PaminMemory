@@ -8,8 +8,11 @@
 //! stopped. Splitting it across tests would install PostgreSQL once per
 //! temporary workspace.
 
-use pamin_core::{FilterDecision, SourceKind, VersionOffset, resolve};
-use pamin_store::{Database, Workspace, repository};
+use pamin_core::{
+    Derivation, EdgeKind, FilterDecision, SourceKind, TombstoneReason, VersionOffset, resolve,
+};
+use pamin_store::graph::{EdgeClaim, Expansion};
+use pamin_store::{Database, Workspace, graph, repository};
 use time::OffsetDateTime;
 
 #[tokio::test]
@@ -25,6 +28,8 @@ async fn the_ledger_holds_its_promises() {
     appending_versions_builds_a_supersession_chain(&mut database).await;
     soft_deleting_the_current_version_promotes_its_predecessor(&mut database).await;
     filtered_evidence_is_still_stored(&mut database).await;
+    edges_are_versioned_rather_than_overwritten(&mut database).await;
+    expansion_is_bounded_undirected_and_time_filtered(&mut database).await;
 
     drop(database);
     pamin_store::database::stop(&workspace)
@@ -41,6 +46,8 @@ async fn migrations_create_every_table(database: &Database) {
         "topics",
         "topic_states",
         "index_jobs",
+        "relationships",
+        "relationship_versions",
     ] {
         let row = database
             .client()
@@ -218,4 +225,280 @@ async fn filtered_evidence_is_still_stored(database: &mut Database) {
         stored.content, "ok",
         "filtering gates promotion, never persistence"
     );
+}
+
+/// A project with three topics wired into a chain, for the graph checks.
+async fn graph_fixture(
+    database: &mut Database,
+) -> (
+    pamin_core::ProjectId,
+    pamin_core::TopicId,
+    pamin_core::TopicId,
+    pamin_core::TopicId,
+) {
+    let project = repository::ensure_project(database.client(), "graph")
+        .await
+        .expect("ensure project");
+
+    let mut topics = Vec::new();
+    for name in ["service", "database", "backup_job"] {
+        let topic = repository::ensure_topic(database.client(), project.id, name)
+            .await
+            .expect("ensure topic");
+        write_state(
+            database,
+            project.id,
+            topic.id,
+            &format!("graph-{name}"),
+            &format!("a durable claim about {name}"),
+        )
+        .await;
+        topics.push(topic.id);
+    }
+
+    (project.id, topics[0], topics[1], topics[2])
+}
+
+async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
+    let (project, service, db, _) = graph_fixture(database).await;
+
+    let first = graph::assert_edge(
+        database.client_mut(),
+        project,
+        service,
+        db,
+        &EdgeClaim::explicit(EdgeKind::DependsOn),
+    )
+    .await
+    .expect("assert edge");
+    assert!(first.is_new());
+    assert_eq!(first.version().version, 1);
+    assert_eq!(first.version().derivation, Derivation::Explicit);
+
+    // Asserting the same claim again must not stack a version, or every
+    // rewrite of unchanged content would grow the ledger without limit.
+    let again = graph::assert_edge(
+        database.client_mut(),
+        project,
+        service,
+        db,
+        &EdgeClaim::explicit(EdgeKind::DependsOn),
+    )
+    .await
+    .expect("assert edge again");
+    assert!(!again.is_new(), "an unchanged claim appends nothing");
+    assert_eq!(again.version().id, first.version().id);
+
+    // A changed claim closes the live version and appends a successor.
+    let mut narrowed = EdgeClaim::explicit(EdgeKind::DependsOn);
+    narrowed.valid_from = Some(OffsetDateTime::UNIX_EPOCH);
+    let second = graph::assert_edge(database.client_mut(), project, service, db, &narrowed)
+        .await
+        .expect("assert changed edge");
+    assert!(second.is_new());
+    assert_eq!(second.version().version, 2);
+    assert_eq!(second.version().supersedes, Some(first.version().id));
+
+    let relationship =
+        graph::find_relationship(database.client(), project, service, db, EdgeKind::DependsOn)
+            .await
+            .expect("find relationship")
+            .expect("relationship exists");
+
+    let history = graph::edge_history(database.client(), relationship.id)
+        .await
+        .expect("history");
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history[0].tombstone_reason,
+        Some(TombstoneReason::Superseded),
+        "a replaced version records why it was closed"
+    );
+
+    // Closing retracts the claim and leaves every row where it was.
+    let closed = graph::close_edge(
+        database.client(),
+        project,
+        service,
+        db,
+        EdgeKind::DependsOn,
+        TombstoneReason::Deleted,
+    )
+    .await
+    .expect("close edge");
+    assert!(closed);
+    assert!(
+        graph::live_version(database.client(), relationship.id)
+            .await
+            .expect("live version")
+            .is_none(),
+        "nothing is believed after a retraction"
+    );
+    assert_eq!(
+        graph::edge_history(database.client(), relationship.id)
+            .await
+            .expect("history")
+            .len(),
+        2,
+        "retraction removes no rows"
+    );
+
+    assert!(
+        !graph::close_edge(
+            database.client(),
+            project,
+            service,
+            db,
+            EdgeKind::DependsOn,
+            TombstoneReason::Deleted,
+        )
+        .await
+        .expect("close again"),
+        "closing an already closed edge reports that nothing was open"
+    );
+}
+
+async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Database) {
+    let (project, service, db, backup) = graph_fixture(database).await;
+
+    // service -> database -> backup_job, so backup_job is two hops from
+    // service and is only reachable by following the second edge backwards.
+    let service_state = current_state(database, service).await;
+    graph::assert_edge(
+        database.client_mut(),
+        project,
+        service,
+        db,
+        &EdgeClaim::derived(EdgeKind::Mentions, service_state, 0.5),
+    )
+    .await
+    .expect("service -> database");
+    graph::assert_edge(
+        database.client_mut(),
+        project,
+        backup,
+        db,
+        &EdgeClaim::explicit(EdgeKind::DependsOn),
+    )
+    .await
+    .expect("backup_job -> database");
+
+    let one_hop = graph::expand(
+        database.client(),
+        project,
+        &[service],
+        &Expansion::to_depth(1),
+    )
+    .await
+    .expect("expand one hop");
+    let reached: Vec<_> = one_hop.iter().map(|n| n.topic).collect();
+    assert_eq!(
+        reached,
+        vec![db],
+        "one hop reaches only the direct neighbour"
+    );
+    assert_eq!(one_hop[0].hops, 1);
+    assert_eq!(one_hop[0].via, service);
+    assert_eq!(one_hop[0].derivation, Derivation::Deterministic);
+
+    let two_hops = graph::expand(
+        database.client(),
+        project,
+        &[service],
+        &Expansion::to_depth(2),
+    )
+    .await
+    .expect("expand two hops");
+    let backup_hit = two_hops
+        .iter()
+        .find(|n| n.topic == backup)
+        .expect("two hops reaches backup_job");
+    assert_eq!(backup_hit.hops, 2);
+    assert_eq!(
+        backup_hit.via, db,
+        "the path names the topic it came through"
+    );
+    // The second edge points backup_job -> database, so reaching backup_job
+    // from service means the walk crossed it against its direction.
+    assert!(
+        two_hops.iter().map(|n| n.topic).all(|t| t != service),
+        "a seed with no independent path back to itself is not a neighbour"
+    );
+
+    // Restricting the edge kind removes the path that used the other kind.
+    let mentions_only = graph::expand(
+        database.client(),
+        project,
+        &[service],
+        &Expansion {
+            depth: 2,
+            kinds: Some(&[EdgeKind::Mentions]),
+            at: None,
+        },
+    )
+    .await
+    .expect("expand mentions only");
+    assert_eq!(
+        mentions_only.iter().map(|n| n.topic).collect::<Vec<_>>(),
+        vec![db],
+        "backup_job is only reachable through a depends_on edge"
+    );
+
+    // An edge bounded to the past is invisible to a query about now.
+    let mut expired = EdgeClaim::explicit(EdgeKind::DependsOn);
+    expired.valid_from = Some(OffsetDateTime::UNIX_EPOCH);
+    expired.valid_to = Some(OffsetDateTime::UNIX_EPOCH + time::Duration::days(1));
+    graph::assert_edge(database.client_mut(), project, backup, db, &expired)
+        .await
+        .expect("bound the edge to the past");
+
+    let now = graph::expand(
+        database.client(),
+        project,
+        &[service],
+        &Expansion {
+            depth: 2,
+            kinds: None,
+            at: Some(OffsetDateTime::now_utc()),
+        },
+    )
+    .await
+    .expect("expand at now");
+    assert!(
+        now.iter().all(|n| n.topic != backup),
+        "an edge asserted only for a past interval does not hold now"
+    );
+
+    let back_then = graph::expand(
+        database.client(),
+        project,
+        &[service],
+        &Expansion {
+            depth: 2,
+            kinds: None,
+            at: Some(OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1)),
+        },
+    )
+    .await
+    .expect("expand inside the interval");
+    assert!(
+        back_then.iter().any(|n| n.topic == backup),
+        "the same edge holds inside its own interval"
+    );
+}
+
+/// The current state of a topic, for edges that cite what caused them.
+async fn current_state(
+    database: &Database,
+    topic: pamin_core::TopicId,
+) -> pamin_core::TopicStateId {
+    let versions = repository::topic_versions(database.client(), topic)
+        .await
+        .expect("versions");
+    let latest = resolve(&versions, VersionOffset::LATEST).expect("latest");
+    repository::topic_state(database.client(), topic, latest.version)
+        .await
+        .expect("load state")
+        .expect("state exists")
+        .id
 }
