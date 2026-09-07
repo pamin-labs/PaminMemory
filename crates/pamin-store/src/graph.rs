@@ -456,12 +456,17 @@ pub async fn expand(
                         e.kind, e.confidence, e.derivation
                  FROM walk w
                  JOIN undirected e ON e.source = w.topic
-                 -- Never step back along the edge just taken. Since traversal
-                 -- ignores direction, every edge is otherwise walkable both
-                 -- ways, so each seed would reach itself at two hops through
-                 -- its own first edge and collect a graph rank for evidence
-                 -- the seeding channels already supplied.
-                 WHERE w.hops < $3 AND e.target <> w.via
+                 -- Never arrive back at the seed this walk started from.
+                 -- Seeds come from the other channels, so a seed handed back
+                 -- as its own graph result is one piece of evidence counted
+                 -- twice under two names. Excluding the topic just left is
+                 -- not enough: it happens to be the seed at two hops and
+                 -- stops being it at three, where a ring walks straight back
+                 -- to the start. Another seed reaching this one is still
+                 -- allowed, which is the case that carries real evidence.
+                 WHERE w.hops < $3
+                   AND e.target <> w.origin
+                   AND e.target <> w.via
              )
              SELECT DISTINCT ON (topic) topic, origin, hops, via, kind, confidence, derivation
              FROM walk
