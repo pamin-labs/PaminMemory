@@ -1,3 +1,5 @@
+<img src="assets/icon.png" alt="Påmin Memory" width="96">
+
 # Påmin Memory
 
 Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistants, research tools, and knowledge-heavy applications.
