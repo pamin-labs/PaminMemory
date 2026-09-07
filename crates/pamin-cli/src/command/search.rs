@@ -100,6 +100,7 @@ fn describe(why: &[Why]) -> String {
         .map(|entry| match entry {
             Why::Channel { channel, rank, .. } => format!("{}#{rank}", channel.as_str()),
             Why::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
+            Why::Path { hops, edge, .. } => format!("via {}@{hops}hop", edge.as_str()),
         })
         .collect::<Vec<_>>()
         .join(" ")

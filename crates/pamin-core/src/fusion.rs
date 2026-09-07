@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::channel::{Channel, ChannelResults};
-use crate::id::TopicStateId;
+use crate::graph::{Derivation, EdgeKind};
+use crate::id::{TopicId, TopicStateId};
 use crate::ledger::RetrievalSignals;
 
 /// The standard reciprocal rank fusion constant.
@@ -34,6 +35,25 @@ pub enum Why {
     },
     /// A post-fusion modifier adjusted the score.
     Modifier { modifier: Modifier, factor: f32 },
+    /// The graph reached this result from somewhere else, along this edge.
+    ///
+    /// Carried separately from the channel entry because it answers a
+    /// different question. The channel entry says how highly the graph ranked
+    /// this result; this says why the graph could see it at all, which is the
+    /// only part a reader can check against their own understanding of how two
+    /// topics relate. It also distinguishes an edge somebody asserted from one
+    /// the engine derived, so a surprising connection can be traced to whoever
+    /// or whatever claimed it.
+    Path {
+        /// The topic on the other end of the final edge.
+        via: TopicId,
+        /// Edges traversed from the seed. Never zero.
+        hops: u8,
+        /// Named `edge` rather than `kind`, which serde already uses to tag
+        /// the variant itself.
+        edge: EdgeKind,
+        derivation: Derivation,
+    },
 }
 
 /// A post-fusion adjustment.
@@ -246,7 +266,7 @@ mod tests {
             .iter()
             .filter_map(|why| match why {
                 Why::Channel { channel, rank, .. } => Some((*channel, *rank)),
-                Why::Modifier { .. } => None,
+                Why::Modifier { .. } | Why::Path { .. } => None,
             })
             .collect();
 
@@ -297,7 +317,7 @@ mod tests {
             .iter()
             .filter_map(|why| match why {
                 Why::Modifier { modifier, .. } => Some(*modifier),
-                Why::Channel { .. } => None,
+                Why::Channel { .. } | Why::Path { .. } => None,
             })
             .collect();
         let before = applied.len();
@@ -336,6 +356,40 @@ mod tests {
         Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
 
         assert!((fused.score - original).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn path_evidence_is_neither_a_channel_nor_a_modifier() {
+        // The channel entry says how highly the graph ranked this result; the
+        // path says why the graph could see it at all. Counting a path as
+        // either of the others would inflate a rank tally or trip the
+        // applied-once check on modifiers.
+        let target = id(1);
+        let mut fused = Fusion::default()
+            .fuse(&[ChannelResults::new(Channel::Graph, vec![target])])
+            .remove(0);
+
+        fused.why.push(Why::Path {
+            via: TopicId(uuid::Uuid::from_bytes([7; 16])),
+            hops: 2,
+            edge: EdgeKind::DependsOn,
+            derivation: Derivation::Deterministic,
+        });
+
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+
+        let channels = fused
+            .why
+            .iter()
+            .filter(|why| matches!(why, Why::Channel { .. }))
+            .count();
+        let paths = fused
+            .why
+            .iter()
+            .filter(|why| matches!(why, Why::Path { .. }))
+            .count();
+        assert_eq!(channels, 1, "one graph rank, not two");
+        assert_eq!(paths, 1);
     }
 
     #[test]
