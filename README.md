@@ -43,6 +43,8 @@ pamin search "deployment" --json
 
 `pamin stop` shuts the local database down. It is deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
+Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
+
 ## Any Language
 
 Evidence is stored exactly as it arrives and is never translated. Translation would put a model on the write path, and it would break exact matching: after translation your own words no longer find your own memory.
