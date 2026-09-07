@@ -20,8 +20,10 @@ pub struct Args {
 
     /// How many candidates each channel contributes before fusion.
     ///
-    /// Provisional, like every retrieval constant here. Exposed so the
-    /// evaluation harness can sweep it without a rebuild.
+    /// For the evaluation harness, which the architecture names as the thing
+    /// that tunes this. An agent wanting control over retrieval should reach
+    /// for the primitives — `grep`, `read`, `neighbors` — rather than adjust
+    /// ranking internals it has no way to evaluate.
     #[arg(long, env = "PAMIN_CHANNEL_DEPTH", default_value_t = Depths::default().channel)]
     pub channel_depth: u32,
 

@@ -138,9 +138,13 @@ Retrieves across every recall channel and explains the result.
 
 `--channel-depth` sets how many candidates each channel contributes before
 fusion (default 50) and `--graph-depth` how many edges the graph walks out
-(default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`. They are
-exposed because they are provisional: the numbers are the architecture's, and
-settling them is a measurement rather than an argument.
+(default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`.
+
+These exist for the evaluation harness, which is what settles them. They are
+not a tuning surface for ordinary use: raising the depth costs latency for
+recall you cannot measure from outside, and an agent that wants control over
+retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
+ranking internals it has no way to evaluate.
 
 ```console
 $ pamin search "how do we deploy" --limit 3

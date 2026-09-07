@@ -1069,3 +1069,45 @@ fn one_project_cannot_crowd_another_out_of_its_own_index() {
         "rebuilding one project does not disturb another: {crowded:?}"
     );
 }
+
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_pre_split_workspace_is_migrated_by_reindexing() {
+    // Every workspace that existed before projects had their own directory
+    // takes this path exactly once, so it is worth more than a unit test on
+    // the guard: what matters is that the whole route works, from the refusal
+    // through the instruction it gives to the state it leaves behind.
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "kept_memory",
+        "a durable claim that has to survive the migration",
+    ]);
+
+    // The shape a workspace had before the split: one shared collection
+    // directly under the index directory.
+    std::fs::create_dir_all(cli.home().join("index").join("memories"))
+        .expect("simulate the old layout");
+
+    let error = cli.fails(&["search", "durable claim"]);
+    assert!(
+        error.contains("reindex"),
+        "refusing is only useful if it says what to run, got {error:?}"
+    );
+
+    cli.run(&["reindex"]);
+    assert!(
+        !cli.home().join("index").join("memories").exists(),
+        "reindexing is the migration, so it clears the old layout"
+    );
+
+    let found = contents(&cli.json(&["search", "durable claim", "--limit", "1"]));
+    assert!(
+        found
+            .iter()
+            .any(|content| content.contains("has to survive")),
+        "and the memories are all still there: {found:?}"
+    );
+}
