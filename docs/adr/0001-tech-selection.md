@@ -127,12 +127,14 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 
 "INT8" names two operations whose costs differ by an order of magnitude, and conflating them is easy:
 
-| | What it is | Measured cost | Default |
+| | What it is | Measured cost | State |
 | --- | --- | --- | --- |
-| Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On** |
-| Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off** |
+| Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **Unavailable** |
+| Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off, permanently** |
 
-Stored vectors are not quantized by default. Accuracy would lose several percent for little gain: a single workspace holds thousands to low millions of vectors, where float32 storage is inexpensive, and the deterministic reranker has no cross-encoder to recover the loss. Quantization is enabled when the evaluation harness measures actual memory pressure, and switching is a reindex.
+Weight quantization is a trade worth taking and we do not get to take it. The model registry we load from publishes quantized variants for several embedding families, but none for multilingual E5, so both default profiles run full-precision weights. An earlier draft of this decision recorded it as on by default, which was never true of the shipped models.
+
+Stored vectors are float32 and stay that way. This is a decision rather than a default awaiting evidence: a single workspace holds thousands to low millions of vectors, where float32 storage is inexpensive, so the compression buys little, while the deterministic reranker has no cross-encoder to recover the several percent of accuracy it costs. The variant that would be worth taking is float8, which reaches the same 4x compression under 0.3% loss, and `zvec` offers RaBitQ and PQ-INT8 rather than float8. If that changes, the decision is worth revisiting; memory pressure alone is not a reason to trade accuracy we cannot recover.
 
 The embedding model is a profile, not a constant:
 

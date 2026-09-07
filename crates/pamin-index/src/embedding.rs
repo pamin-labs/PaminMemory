@@ -4,14 +4,17 @@
 //! needs no API key and makes no network call at query time, which is what
 //! keeps memory free to use and keeps evidence off third-party infrastructure.
 //!
-//! Model weights are quantized; the vectors they produce are not. Those are two
-//! different operations that are easy to conflate: weight quantization buys a
-//! large CPU speedup for well under a percent of quality, while storing output
+//! Two different operations are easy to conflate here. Quantizing model weights
+//! buys a large CPU speedup for well under a percent of quality; storing output
 //! vectors as int8 costs one and a half to three and a half percent and needs a
-//! calibration set. The first is worth taking by default and the second is not,
+//! calibration set. The first is worth taking and the second is not,
 //! particularly since the default reranker has no cross-encoder to recover the
-//! loss. Quantized storage becomes worthwhile under measured memory pressure,
-//! and turning it on is a reindex.
+//! loss.
+//!
+//! Neither is in force today. Stored vectors are float32 and will stay that
+//! way. Weight quantization is unavailable rather than declined: the model
+//! registry publishes quantized variants for several families but none for
+//! multilingual E5, so both default profiles run full-precision weights.
 
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use serde::{Deserialize, Serialize};
@@ -55,6 +58,20 @@ impl Profile {
         }
     }
 
+    /// The prefixes this model expects on queries and on stored passages.
+    ///
+    /// E5 is an asymmetric retrieval family: it was trained with `query: ` and
+    /// `passage: ` in front of the text, and omitting them degrades recall
+    /// without failing. The embedding library does not add them, so we do.
+    /// BGE-M3 uses none, which is why this belongs to the profile rather than
+    /// to the embedder.
+    fn prefixes(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
+            Self::Accuracy => None,
+        }
+    }
+
     /// The vector width this profile produces.
     ///
     /// The index is built for one width. Mixing embedding spaces yields
@@ -71,8 +88,12 @@ impl Profile {
     /// can tell which space a vector belongs to.
     pub fn model_id(self) -> &'static str {
         match self {
-            Self::Speed => "intfloat/multilingual-e5-small",
-            Self::Balanced => "intfloat/multilingual-e5-base",
+            // The suffix is an encoding revision, not part of the model name.
+            // Vectors written before the E5 prefixes existed are in a different
+            // space, and nothing about the resulting rankings would look wrong,
+            // so the recorded identity has to change with the encoding.
+            Self::Speed => "intfloat/multilingual-e5-small+p1",
+            Self::Balanced => "intfloat/multilingual-e5-base+p1",
             Self::Accuracy => "BAAI/bge-m3",
         }
     }
@@ -119,12 +140,21 @@ impl Embedder {
 
     /// Embeds one passage for storage.
     pub fn embed_passage(&mut self, text: &str) -> Result<Vec<f32>> {
-        self.embed_one(text)
+        match self.profile.prefixes() {
+            Some((_, passage)) => self.embed_one(&format!("{passage}{text}")),
+            None => self.embed_one(text),
+        }
     }
 
     /// Embeds one query.
+    ///
+    /// Queries and passages take different prefixes, so this is not the same
+    /// call as `embed_passage` even though both end in one forward pass.
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        self.embed_one(text)
+        match self.profile.prefixes() {
+            Some((query, _)) => self.embed_one(&format!("{query}{text}")),
+            None => self.embed_one(text),
+        }
     }
 
     fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
