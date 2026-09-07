@@ -1,0 +1,22 @@
+[package]
+name = "pamin-index"
+description = "Projection index: multilingual segmentation, lexical and vector recall channels."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pamin-core = { workspace = true }
+fastembed = { workspace = true }
+icu_segmenter = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+whatlang = { workspace = true }
+zvec-rust = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

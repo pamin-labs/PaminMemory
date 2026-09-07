@@ -1,0 +1,30 @@
+[package]
+name = "pamin-cli"
+description = "The pamin command line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pamin"
+path = "src/main.rs"
+
+[dependencies]
+pamin-core = { workspace = true }
+pamin-index = { workspace = true }
+pamin-store = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

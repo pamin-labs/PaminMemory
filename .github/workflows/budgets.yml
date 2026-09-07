@@ -1,0 +1,32 @@
+name: Budgets
+
+# Only on pull requests. The job measures a cold build on purpose, so it cannot
+# use a cache, and running it again after merge would re-measure what the pull
+# request already checked.
+on:
+  pull_request:
+
+concurrency:
+  group: budgets-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  budgets:
+    name: build time, target size, binary size
+    # Standard GitHub-hosted runner: free and unmetered for public repositories.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # rustup reads rust-toolchain.toml, so the pin lives in one file.
+      - name: Show toolchain
+        run: rustup show active-toolchain
+
+      # No dependency cache here on purpose: this job measures the cold build.
+      - name: Measure budgets
+        run: python3 ci/budget.py "$GITHUB_STEP_SUMMARY"

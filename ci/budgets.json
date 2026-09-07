@@ -1,0 +1,29 @@
+{
+  "comment": [
+    "Engineering budgets, enforced the way retrieval quality gates are.",
+    "Exceeding one is a trade to record in the pull request, not drift to accept.",
+    "",
+    "Only deterministic metrics are gated. Build times are reported, not gated:",
+    "shared CI runners vary too much for wall-clock timing to be a reliable",
+    "failure signal, and a flaky gate teaches people to ignore gates.",
+    "",
+    "Baseline measured 2026-09-07 on the full dependency set:",
+    "  binary 39.6 MB, 434 dependencies, cold build 111 s, target/ 2.0 GB.",
+    "Gated limits carry roughly 20% headroom over that, which is enough for",
+    "ordinary growth and tight enough that a new heavyweight dependency shows up.",
+    "",
+    "The cold build and target size are the real costs of this stack, and they",
+    "are one-time rather than per-edit: editing any workspace crate rechecks the",
+    "whole workspace in under a second, because the heavy dependencies live",
+    "behind a crate boundary and do not rebuild."
+  ],
+  "gated": {
+    "binary_bytes": 48000000,
+    "total_dependencies": 470
+  },
+  "reported": [
+    "cold_build_seconds",
+    "incremental_check_seconds",
+    "target_bytes"
+  ]
+}

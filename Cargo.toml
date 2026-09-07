@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pamin-core",
+    "crates/pamin-store",
+    "crates/pamin-index",
+    "crates/pamin-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98.1"
+license = "Apache-2.0"
+repository = "https://github.com/Pamin-Labs/PaminMemory"
+
+[workspace.dependencies]
+pamin-core = { path = "crates/pamin-core" }
+pamin-index = { path = "crates/pamin-index" }
+pamin-store = { path = "crates/pamin-store" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["serde-well-known"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-time-0_3", "with-serde_json-1"] }
+refinery = { version = "0.8", features = ["tokio-postgres"] }
+# image-models is on by default and pulls a full image codec stack, including
+# an AVIF encoder, for models we do not use.
+fastembed = { version = "6", default-features = false, features = [
+    "ort-download-binaries-native-tls",
+    "hf-hub-native-tls",
+] }
+icu_segmenter = { version = "2", features = ["compiled_data", "auto"] }
+postgresql_embedded = "0.19"
+whatlang = "0.16"
+zvec-rust = "0.7"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Release profile aims at the binary-size budget gate in CI.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

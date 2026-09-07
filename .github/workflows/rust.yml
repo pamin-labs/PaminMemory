@@ -1,0 +1,47 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    # Standard GitHub-hosted runner: free and unmetered for public repositories.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No toolchain action. The runner image ships rustup, which installs the
+      # version and components named in rust-toolchain.toml on the first cargo
+      # invocation, so the pin stays in exactly one file.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
+          rustc --version
+
+      - name: Cache dependency builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
+
+      # Tests that need a real PostgreSQL or model weights are marked ignored
+      # and excluded here; they are run locally and reported in the pull request.
+      - name: Test
+        run: cargo test --workspace

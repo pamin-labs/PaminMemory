@@ -1,0 +1,16 @@
+[package]
+name = "pamin-core"
+description = "Domain model, version ledger semantics, and retrieval fusion for PaminMemory."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# pamin-core stays free of heavy dependencies on purpose: it is the crate that is
+# edited most often, so its rebuild cost sets the daily development loop.
+[dependencies]
+serde = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

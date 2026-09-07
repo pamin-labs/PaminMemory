@@ -1,0 +1,5 @@
+[toolchain]
+# 1.98.0 miscompiles trait object vtables; 1.98.1 is the fix.
+# https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
