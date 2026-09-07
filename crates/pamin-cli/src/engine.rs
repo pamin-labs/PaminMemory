@@ -6,7 +6,8 @@
 
 use anyhow::Result;
 use pamin_core::{
-    Channel, ChannelResults, FusedResult, Fusion, Modifiers, ProjectId, TopicState, TopicStateId,
+    Channel, ChannelResults, FusedResult, Fusion, Modifiers, ProjectId, TopicId, TopicState,
+    TopicStateId,
 };
 use pamin_index::{Embedder, Profile, ProjectionIndex};
 use pamin_store::{Database, Workspace, repository};
@@ -74,16 +75,21 @@ impl Engine {
             ),
         ];
 
+        // The ledger is read once and shared. The index knows ranks; only the
+        // ledger knows whether a state is current, what it is worth, and which
+        // states still exist at all.
+        let live = LiveStates::load(&self.database, self.project).await?;
+
         let mut fused = Fusion::default().fuse(&lists);
 
-        // The index knows ranks; only the ledger knows whether a state is
-        // current and what it is worth, so modifiers are applied after loading.
-        let states = self.load_states(&fused).await?;
+        // A state the index still knows about but the ledger has soft deleted
+        // is dropped rather than ranked.
+        fused.retain(|result| live.contains(result.topic_state));
+
         let modifiers = Modifiers::default();
-        fused.retain(|result| states.contains_key(&result.topic_state));
         for result in &mut fused {
-            let (state, is_current) = &states[&result.topic_state];
-            modifiers.apply(result, &state.signals, *is_current);
+            let state = live.state(result.topic_state).expect("retained above");
+            modifiers.apply(result, &state.signals, live.is_current(state));
         }
         pamin_core::sort_results(&mut fused);
 
@@ -91,39 +97,12 @@ impl Engine {
             .into_iter()
             .take(limit as usize)
             .map(|result| {
-                let (state, is_current) = states[&result.topic_state].clone();
+                let state = live.state(result.topic_state).expect("retained above");
                 SearchHit {
-                    state,
-                    is_current,
+                    is_current: live.is_current(state),
+                    state: state.clone(),
                     result,
                 }
-            })
-            .collect())
-    }
-
-    /// Loads the states behind a result set, dropping any the index still knows
-    /// about but the ledger has since soft deleted.
-    async fn load_states(
-        &self,
-        results: &[FusedResult],
-    ) -> Result<std::collections::HashMap<TopicStateId, (TopicState, bool)>> {
-        let live = repository::all_live_topic_states(self.database.client(), self.project).await?;
-
-        let mut current: std::collections::HashMap<_, u32> = std::collections::HashMap::new();
-        for state in &live {
-            let entry = current.entry(state.topic_id).or_insert(state.version);
-            *entry = (*entry).max(state.version);
-        }
-
-        let wanted: std::collections::HashSet<_> =
-            results.iter().map(|result| result.topic_state).collect();
-
-        Ok(live
-            .into_iter()
-            .filter(|state| wanted.contains(&state.id))
-            .map(|state| {
-                let is_current = current.get(&state.topic_id) == Some(&state.version);
-                (state.id, (state, is_current))
             })
             .collect())
     }
@@ -144,6 +123,53 @@ impl Engine {
         self.index.flush()?;
 
         Ok(states.len())
+    }
+}
+
+/// Every live topic state in the project, indexed the ways a search needs it.
+///
+/// Loaded once per search and shared. Two parts of the search path need the
+/// same rows for different reasons — the modifier pass needs each result's
+/// signals and whether it is current, and the graph channel needs to resolve a
+/// topic to its current state — and loading them twice would mean scanning the
+/// project twice for one query.
+///
+/// ponytail: whole-project scan per query. Fine while a workspace holds
+/// thousands of states; when it does not, this becomes a lookup restricted to
+/// the candidate set plus a per-topic current-state index.
+struct LiveStates {
+    by_id: std::collections::HashMap<TopicStateId, TopicState>,
+    /// The newest surviving version of each topic. Current is computed rather
+    /// than stored, so it is derived here rather than read from a column.
+    current: std::collections::HashMap<TopicId, u32>,
+}
+
+impl LiveStates {
+    async fn load(database: &Database, project: ProjectId) -> Result<Self> {
+        let states = repository::all_live_topic_states(database.client(), project).await?;
+
+        let mut current: std::collections::HashMap<TopicId, u32> = std::collections::HashMap::new();
+        for state in &states {
+            let entry = current.entry(state.topic_id).or_insert(state.version);
+            *entry = (*entry).max(state.version);
+        }
+
+        Ok(Self {
+            by_id: states.into_iter().map(|state| (state.id, state)).collect(),
+            current,
+        })
+    }
+
+    fn contains(&self, id: TopicStateId) -> bool {
+        self.by_id.contains_key(&id)
+    }
+
+    fn state(&self, id: TopicStateId) -> Option<&TopicState> {
+        self.by_id.get(&id)
+    }
+
+    fn is_current(&self, state: &TopicState) -> bool {
+        self.current.get(&state.topic_id) == Some(&state.version)
     }
 }
 
