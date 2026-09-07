@@ -291,6 +291,70 @@ to recall. `--kind` restricts it, repeatably. `--at <rfc3339>` follows only edge
 asserted to hold at that instant, which is how a question about the past avoids
 relationships that were only claimed later.
 
+## `pamin grep`
+
+Finds an exact string in the evidence. No pattern matching, no tokenizer, no
+ranking model anywhere in the path.
+
+```console
+$ pamin write --topic incident_log "the checkout service returned E5521 during the tuesday outage"
+Wrote incident_log v1
+$ pamin write --topic incident_log "E5521"
+Held in evidence only: content was too short to carry a durable claim
+Stored as incident_log source version 2
+```
+
+```console
+$ pamin grep E5521
+manual:incident_log v2 (filtered)
+        E5521
+manual:incident_log v1 (promoted)
+        the checkout service returned E5521 during the tuesday outage
+```
+
+The second write never became a memory, so `pamin search` cannot see it — which
+is the filter working correctly. It is still evidence, and this is the route to
+it:
+
+```console
+$ pamin grep E5521 --json
+{
+  "literal": "E5521",
+  "matches": [
+    {
+      "source": "manual:incident_log",
+      "source_version": "54cf4923-c45b-4cfe-a788-6588fb7eae6d",
+      "version": 2,
+      "filter_decision": "filtered",
+      "filter_reason": "content was too short to carry a durable claim",
+      "excerpt": "E5521"
+    },
+    {
+      "source": "manual:incident_log",
+      "source_version": "7f4b4500-9472-436e-b537-2d1cab87f268",
+      "version": 1,
+      "filter_decision": "promoted",
+      "filter_reason": "promoted to the retrieval surface",
+      "excerpt": "the checkout service returned E5521 during the tuesday outage"
+    }
+  ]
+}
+```
+
+Every match reports whether it reached the retrieval surface and why. A
+mandatory filter is only safe if its mistakes can be found, and this is how they
+are found.
+
+`-i` folds case; matching is case sensitive otherwise. `--limit` bounds the
+result count.
+
+It reaches superseded versions too, so it answers "what did that memory say
+before it was rewritten" without walking the version list. Nothing tokenizes, so
+it works on any language, on partial identifiers, and on strings a segmenter
+would split.
+
+Use `search` when you want relevance, and `grep` when you want certainty.
+
 ## `pamin reindex`
 
 Discards the projection index and rebuilds it from PostgreSQL.
@@ -323,8 +387,9 @@ is an agent issuing many commands in a row and paying startup once.
   goes to stderr.
 - Failures exit non-zero with the reason on stderr.
 - `search` gives ranked context; `neighbors` gives structure; `read` gives a
-  specific version. Reach for the last two when the ranking is what you doubt.
+  specific version; `grep` gives the verbatim evidence including what the filter
+  held. Reach for the last three when the ranking is what you doubt.
 - Results are stable for stable inputs. Ties break on identifier, so an
   assembled context can be reused rather than rebuilt.
 - Evidence is never translated and never rewritten. Anything a memory lost in
-  summarizing is still in the source it came from.
+  summarizing is still in the source it came from, and `pamin grep` reaches it.

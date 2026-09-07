@@ -43,6 +43,8 @@ pamin search "deployment" --json
 
 `pamin stop` shuts the local database down. It is deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
+`pamin grep` searches the evidence itself — verbatim, unranked, and including content the filter held and no index ever saw.
+
 Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
 
 ## Any Language
