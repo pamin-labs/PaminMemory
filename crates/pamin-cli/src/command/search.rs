@@ -21,6 +21,8 @@ pub struct Args {
 
 #[derive(Serialize)]
 struct Hit {
+    /// What to pass to `pamin read` to see this topic's other versions.
+    topic: String,
     topic_state: String,
     version: u32,
     is_current: bool,
@@ -55,6 +57,7 @@ pub async fn run(
         hits: hits
             .into_iter()
             .map(|hit| Hit {
+                topic: hit.topic,
                 topic_state: hit.state.id.to_string(),
                 version: hit.state.version,
                 is_current: hit.is_current,
@@ -80,8 +83,9 @@ pub async fn run(
                     "historical"
                 };
                 format!(
-                    "{:.4}  v{} ({marker})  {}\n        {}",
+                    "{:.4}  {} v{} ({marker})  {}\n        {}",
                     hit.score,
+                    hit.topic,
                     hit.version,
                     hit.content,
                     describe(&hit.why)
@@ -100,6 +104,7 @@ fn describe(why: &[Why]) -> String {
         .map(|entry| match entry {
             Why::Channel { channel, rank, .. } => format!("{}#{rank}", channel.as_str()),
             Why::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
+            Why::Path { hops, edge, .. } => format!("via {}@{hops}hop", edge.as_str()),
         })
         .collect::<Vec<_>>()
         .join(" ")

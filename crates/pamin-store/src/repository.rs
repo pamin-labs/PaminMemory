@@ -4,13 +4,15 @@
 //! delete, which sets `deleted_at` and leaves the content intact.
 
 use pamin_core::{
-    FilterDecision, Project, ProjectId, RetrievalSignals, SourceId, SourceKind, SourceSpan,
-    SourceSpanId, SourceVersion, SourceVersionId, Topic, TopicId, TopicState, TopicStateId,
+    Derivation, EdgeKind, FilterDecision, Project, ProjectId, RetrievalSignals, SourceId,
+    SourceKind, SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic,
+    TopicId, TopicState, TopicStateId,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row};
 
 use crate::error::Result;
+use crate::sql::{SqlLabel, sql_enum};
 
 /// Version counters are `INTEGER`, which bounds a topic at two billion versions.
 /// Converting through `i32` is therefore lossless in practice, and the cast is
@@ -23,29 +25,42 @@ fn from_sql_version(version: i32) -> u32 {
     version as u32
 }
 
-fn filter_decision_label(decision: FilterDecision) -> &'static str {
-    match decision {
-        FilterDecision::Promoted => "promoted",
-        FilterDecision::Filtered => "filtered",
-    }
-}
+sql_enum!(FilterDecision {
+    Promoted => "promoted",
+    Filtered => "filtered",
+});
 
-fn parse_filter_decision(label: &str) -> FilterDecision {
-    match label {
-        "filtered" => FilterDecision::Filtered,
-        // The column has a CHECK constraint, so anything else cannot be stored.
-        _ => FilterDecision::Promoted,
-    }
-}
+sql_enum!(SourceKind {
+    Manual => "manual",
+    File => "file",
+    Directory => "directory",
+    ChatLog => "chat_log",
+});
 
-fn source_kind_label(kind: SourceKind) -> &'static str {
-    match kind {
-        SourceKind::Manual => "manual",
-        SourceKind::File => "file",
-        SourceKind::Directory => "directory",
-        SourceKind::ChatLog => "chat_log",
-    }
-}
+sql_enum!(EdgeKind {
+    Mentions => "mentions",
+    Supports => "supports",
+    Contradicts => "contradicts",
+    Supersedes => "supersedes",
+    RelatedTo => "related_to",
+    PartOf => "part_of",
+    DerivedFrom => "derived_from",
+    SameAs => "same_as",
+    DependsOn => "depends_on",
+});
+
+sql_enum!(Derivation {
+    Explicit => "explicit",
+    Deterministic => "deterministic",
+    Model => "model",
+    Imported => "imported",
+});
+
+sql_enum!(TombstoneReason {
+    Closed => "closed",
+    Superseded => "superseded",
+    Deleted => "deleted",
+});
 
 /// Returns the project with this name, creating it if it does not exist.
 pub async fn ensure_project(client: &Client, name: &str) -> Result<Project> {
@@ -86,7 +101,7 @@ pub async fn ensure_source(
             &[
                 &SourceId::new().0,
                 &project.0,
-                &source_kind_label(kind),
+                &kind.label(),
                 &locator,
                 &OffsetDateTime::now_utc(),
             ],
@@ -124,7 +139,7 @@ pub async fn append_source_version(
                 &source.0,
                 &content,
                 &content_hash,
-                &filter_decision_label(decision),
+                &decision.label(),
                 &reason,
                 &OffsetDateTime::now_utc(),
             ],
@@ -413,10 +428,39 @@ pub async fn latest_source_version(
         version: from_sql_version(row.get("version")),
         content: row.get("content"),
         content_hash: row.get("content_hash"),
-        filter_decision: parse_filter_decision(row.get("filter_decision")),
+        filter_decision: FilterDecision::from_label(row.get("filter_decision"))
+            // The column's CHECK constraint admits nothing else, so this
+            // fallback stands only so a corrupted row degrades to the
+            // conservative reading rather than aborting the command.
+            .unwrap_or(FilterDecision::Promoted),
         filter_reason: row.get("filter_reason"),
         recorded_at: row.get("recorded_at"),
     }))
+}
+
+/// Lists every topic in a project.
+///
+/// Used to derive relationships from one topic's content naming another, which
+/// needs the whole set rather than a candidate list: any topic may be named.
+pub async fn all_topics(client: &Client, project: ProjectId) -> Result<Vec<Topic>> {
+    let rows = client
+        .query(
+            "SELECT id, name, path, created_at FROM topics
+             WHERE project_id = $1 ORDER BY name ASC",
+            &[&project.0],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Topic {
+            id: row.get::<_, uuid::Uuid>("id").into(),
+            project_id: project,
+            name: row.get("name"),
+            path: row.get("path"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
 }
 
 /// Looks up a topic by name within a project.

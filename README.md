@@ -43,6 +43,8 @@ pamin search "deployment" --json
 
 `pamin stop` shuts the local database down. It is deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
+Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
+
 ## Any Language
 
 Evidence is stored exactly as it arrives and is never translated. Translation would put a model on the write path, and it would break exact matching: after translation your own words no longer find your own memory.
@@ -69,24 +71,45 @@ PostgreSQL is bundled rather than something you install. The projection index ho
 
 Embeddings run locally through ONNX Runtime. The default install makes no network call at query time and needs no API key.
 
-Retrieval draws on three channels — segmented lexical, n-gram lexical, and vector — and fuses them here rather than inside the index, so every result can report the rank it held in each channel:
+Retrieval draws on four channels — segmented lexical, n-gram lexical, vector, and the relationship graph — and fuses them here rather than inside the index, so every result can report the rank it held in each channel:
 
 ```bash
 $ pamin search "deployment pipeline" --json | jq '.hits[0].why'
-[ { "kind": "channel", "channel": "lexical_segmented", "rank": 1, ... },
-  { "kind": "channel", "channel": "vector",            "rank": 1, ... },
-  { "kind": "modifier", "modifier": "importance",      "factor": 1.0 } ]
+[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1, ... },
+  { "kind": "channel", "channel": "vector",        "rank": 2, ... },
+  { "kind": "channel", "channel": "graph",         "rank": 1, ... },
+  { "kind": "path", "via": "oncall_rota", "hops": 1, "edge": "depends_on", ... },
+  { "kind": "modifier", "modifier": "importance",  "factor": 1.0 } ]
 ```
 
+The graph is why fusion has to happen here. It lives in PostgreSQL, where the index cannot see it, so letting the index pre-fuse its own three channels would produce a list that had to be fused again — weighting its members twice and losing the per-channel ranks.
+
 Design decisions and their trade-offs are recorded in [docs/adr/](docs/adr/).
+
+## Relationships
+
+Memories are connected as well as ranked. Writing a memory that names another topic derives an edge to it, with no model in the path and nothing to configure:
+
+```bash
+pamin write --topic rollback_plan "a rollback reverts the deployment pipeline to the previous tag"
+pamin neighbors rollback_plan          # finds deployment_pipeline
+```
+
+Derivation only finds relationships the text states, so anything else is asserted directly:
+
+```bash
+pamin link oncall_rota deployment_pipeline --kind depends_on
+```
+
+Edges are versioned the way memories are. Changing one closes the old version and appends a new one, `unlink` retracts a claim without erasing that it was made, and every edge carries its own validity interval — so "what did we think depended on this, back then" has an answer.
 
 ## Status
 
 This is an early foundation, not a finished product.
 
-**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; both lexical channels plus the vector channel with reciprocal rank fusion and explainable results; rebuilding the index from PostgreSQL.
+**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; the relationship graph, derived and asserted, with bi-temporal edge versions; rebuilding the index from PostgreSQL.
 
-**Not built yet:** the relationship graph and its recall channel; the cascade worker and outbox consumption; source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the REST and MCP surfaces; the evaluation harness that will settle the defaults this version guesses at.
+**Not built yet:** the cascade worker and outbox consumption; source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface; the evaluation harness that will settle the defaults this version guesses at.
 
 ## Development
 

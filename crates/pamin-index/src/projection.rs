@@ -116,6 +116,16 @@ impl ProjectionIndex {
         })
     }
 
+    /// The segmenter this index tokenizes with.
+    ///
+    /// Shared rather than duplicated so that anything comparing text against
+    /// indexed content splits it the same way this index did. A second
+    /// segmenter would be the same code today and a divergence the first time
+    /// either side changed.
+    pub fn segmenter(&self) -> &Segmenter {
+        &self.segmenter
+    }
+
     /// Adds or replaces one topic state.
     ///
     /// The embedding is required rather than optional. The engine enforces it,
