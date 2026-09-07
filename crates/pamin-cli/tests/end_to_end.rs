@@ -647,3 +647,102 @@ fn an_unknown_profile_is_rejected_before_anything_is_provisioned() {
     let error = cli.fails(&["--profile", "enormous", "init"]);
     assert!(error.contains("enormous"), "got {error:?}");
 }
+
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn grep_reaches_evidence_that_search_cannot() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    cli.run(&[
+        "write",
+        "--topic",
+        "incident_log",
+        "the checkout service returned E5521 during the tuesday outage",
+    ]);
+
+    // Held by the filter: too short to carry a durable claim. It never became
+    // a topic state and never entered the index.
+    let held = cli.json(&["write", "--topic", "incident_log", "E5521"]);
+    assert_eq!(held["promoted"], false);
+
+    // Search cannot see it. That is correct behaviour, and it is also why grep
+    // has to exist: a filtering mistake is only recoverable if the content is
+    // reachable by some route.
+    let searched = cli.json(&["search", "E5521", "--limit", "5"]);
+    assert!(
+        !contents(&searched)
+            .iter()
+            .any(|content| content.trim() == "E5521"),
+        "filtered content stays off the retrieval surface: {:?}",
+        contents(&searched)
+    );
+
+    let grepped = cli.json(&["grep", "E5521"]);
+    let matches = grepped["matches"].as_array().expect("matches");
+    assert!(
+        matches
+            .iter()
+            .any(|hit| hit["filter_decision"] == "filtered"),
+        "grep reaches what the filter held: {matches:?}"
+    );
+    assert!(
+        matches
+            .iter()
+            .any(|hit| hit["filter_decision"] == "promoted"),
+        "and what it promoted"
+    );
+    for hit in matches {
+        assert!(
+            !hit["filter_reason"].as_str().unwrap_or_default().is_empty(),
+            "every match says why it was or was not promoted"
+        );
+    }
+
+    // Any language, because nothing tokenizes here.
+    cli.run(&[
+        "write",
+        "--topic",
+        "deploy_zh",
+        "部署流水线运行在持续集成上面",
+    ]);
+    assert!(
+        !cli.json(&["grep", "持续集成"])["matches"]
+            .as_array()
+            .expect("matches")
+            .is_empty(),
+        "a literal search needs no tokenizer"
+    );
+
+    // Case sensitivity is the caller's choice.
+    assert!(
+        cli.json(&["grep", "e5521"])["matches"]
+            .as_array()
+            .expect("matches")
+            .is_empty(),
+        "matching is case sensitive by default"
+    );
+    assert!(
+        !cli.json(&["grep", "e5521", "-i"])["matches"]
+            .as_array()
+            .expect("matches")
+            .is_empty(),
+        "-i folds case"
+    );
+
+    // Superseded content stays reachable, which is what makes this an audit
+    // route rather than a second view of the current state.
+    cli.run(&[
+        "write",
+        "--topic",
+        "incident_log",
+        "the checkout service was fixed on wednesday",
+    ]);
+    assert!(
+        !cli.json(&["grep", "tuesday outage"])["matches"]
+            .as_array()
+            .expect("matches")
+            .is_empty(),
+        "the superseded version is still in evidence"
+    );
+}

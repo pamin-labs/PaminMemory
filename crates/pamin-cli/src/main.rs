@@ -58,6 +58,9 @@ enum Command {
     /// Search memories across every recall channel.
     Search(command::search::Args),
 
+    /// Find an exact string in the evidence, with nothing ranking.
+    Grep(command::grep::Args),
+
     /// Assert a relationship between two topics.
     Link(command::link::Args),
 
@@ -102,6 +105,7 @@ async fn main() -> Result<()> {
         Command::Search(args) => {
             command::search::run(&workspace, &cli.project, profile, format, args).await
         }
+        Command::Grep(args) => command::grep::run(&workspace, &cli.project, format, args).await,
         Command::Link(args) => command::link::run(&workspace, &cli.project, format, args).await,
         Command::Unlink(args) => command::unlink::run(&workspace, &cli.project, format, args).await,
         Command::Neighbors(args) => {
