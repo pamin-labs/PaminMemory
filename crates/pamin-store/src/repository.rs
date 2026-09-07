@@ -438,6 +438,80 @@ pub async fn latest_source_version(
     }))
 }
 
+/// One piece of evidence matching a literal search, with where it came from.
+#[derive(Clone, Debug)]
+pub struct EvidenceMatch {
+    pub source_version: SourceVersion,
+    pub locator: String,
+    /// Byte offset of the first occurrence, for rendering context around it.
+    pub offset: usize,
+}
+
+/// Finds evidence containing `needle`, verbatim.
+///
+/// Searches `source_versions`, which is the authority: it holds every version
+/// ever written, in the language it arrived in, **including content the sensory
+/// filter held**. That content never enters the projection index, so this is
+/// the only way to reach it — and reaching it is the point. A filter mistake
+/// has to stay recoverable, and a recovery route nobody can take is not one.
+///
+/// `position` rather than a regular expression or a similarity operator.
+/// PostgreSQL's regex operators are outside the portable subset, and a literal
+/// match is what an exact-string question actually asks for. Nothing here
+/// ranks: this is the primitive an agent reaches for when it does not want a
+/// ranking model in the path.
+pub async fn grep_evidence(
+    client: &Client,
+    project: ProjectId,
+    needle: &str,
+    case_sensitive: bool,
+    limit: u32,
+) -> Result<Vec<EvidenceMatch>> {
+    // Folding case in SQL keeps the match and the offset consistent: computing
+    // one here and the other in Rust would drift on any multi-byte casing rule.
+    let matched = if case_sensitive {
+        "position($2 IN v.content)"
+    } else {
+        "position(lower($2) IN lower(v.content))"
+    };
+
+    let sql = format!(
+        "SELECT v.id, v.project_id, v.source_id, v.version, v.content, v.content_hash,
+                v.filter_decision, v.filter_reason, v.recorded_at,
+                s.locator, {matched} AS match_position
+         FROM source_versions v
+         JOIN sources s ON s.id = v.source_id
+         WHERE v.project_id = $1 AND {matched} > 0
+         ORDER BY v.recorded_at DESC, v.id
+         LIMIT $3"
+    );
+
+    let rows = client
+        .query(&sql, &[&project.0, &needle, &(limit as i64)])
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| EvidenceMatch {
+            source_version: SourceVersion {
+                id: row.get::<_, uuid::Uuid>("id").into(),
+                project_id: row.get::<_, uuid::Uuid>("project_id").into(),
+                source_id: row.get::<_, uuid::Uuid>("source_id").into(),
+                version: from_sql_version(row.get("version")),
+                content: row.get("content"),
+                content_hash: row.get("content_hash"),
+                filter_decision: FilterDecision::from_label(row.get("filter_decision"))
+                    .unwrap_or(FilterDecision::Promoted),
+                filter_reason: row.get("filter_reason"),
+                recorded_at: row.get("recorded_at"),
+            },
+            locator: row.get("locator"),
+            // SQL positions are one-based; byte offsets are not.
+            offset: (row.get::<_, i32>("match_position") as usize).saturating_sub(1),
+        })
+        .collect())
+}
+
 /// Lists every topic in a project.
 ///
 /// Used to derive relationships from one topic's content naming another, which

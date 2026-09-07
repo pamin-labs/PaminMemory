@@ -30,6 +30,7 @@ async fn the_ledger_holds_its_promises() {
     filtered_evidence_is_still_stored(&mut database).await;
     edges_are_versioned_rather_than_overwritten(&mut database).await;
     expansion_is_bounded_undirected_and_time_filtered(&mut database).await;
+    grep_reaches_evidence_the_index_never_saw(&mut database).await;
 
     drop(database);
     pamin_store::database::stop(&workspace)
@@ -501,4 +502,82 @@ async fn current_state(
         .expect("load state")
         .expect("state exists")
         .id
+}
+
+async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
+    let project = repository::ensure_project(database.client(), "ledger")
+        .await
+        .expect("ensure project");
+    let source = repository::ensure_source(
+        database.client(),
+        project.id,
+        SourceKind::Manual,
+        "grep-source",
+    )
+    .await
+    .expect("ensure source");
+
+    // Held by the filter, so it never became a topic state and never entered
+    // the projection index. Reaching it is the entire reason this exists.
+    repository::append_source_version(
+        database.client(),
+        project.id,
+        source,
+        "the KILN reaches cone ten",
+        "hash",
+        FilterDecision::Filtered,
+        "no durable claim",
+    )
+    .await
+    .expect("append filtered evidence");
+
+    let hits = repository::grep_evidence(database.client(), project.id, "cone ten", true, 10)
+        .await
+        .expect("grep");
+    let found = hits
+        .iter()
+        .find(|hit| hit.source_version.content.contains("cone ten"))
+        .expect("filtered evidence is still reachable");
+    assert_eq!(
+        found.source_version.filter_decision,
+        FilterDecision::Filtered,
+        "the result says why it never reached the retrieval surface"
+    );
+    assert_eq!(found.locator, "grep-source");
+    assert_eq!(
+        &found.source_version.content[found.offset..found.offset + 8],
+        "cone ten",
+        "the offset points at the match"
+    );
+
+    // Case sensitivity is a choice the caller makes, not one made for them.
+    assert!(
+        repository::grep_evidence(database.client(), project.id, "kiln", true, 10)
+            .await
+            .expect("grep")
+            .is_empty(),
+        "a case-sensitive search does not fold case"
+    );
+    assert!(
+        !repository::grep_evidence(database.client(), project.id, "kiln", false, 10)
+            .await
+            .expect("grep")
+            .is_empty(),
+        "a case-insensitive search does"
+    );
+
+    // Superseded versions stay reachable, which is what makes this an audit
+    // route rather than a second view of current state.
+    let topic = repository::find_topic(database.client(), project.id, "deployment_pipeline")
+        .await
+        .expect("find topic")
+        .expect("topic exists");
+    assert!(topic.name == "deployment_pipeline");
+    assert!(
+        !repository::grep_evidence(database.client(), project.id, "deploys via make", true, 10)
+            .await
+            .expect("grep")
+            .is_empty(),
+        "the first version of a rewritten memory is still in evidence"
+    );
 }
