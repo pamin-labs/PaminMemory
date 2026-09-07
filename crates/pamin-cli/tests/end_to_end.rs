@@ -133,6 +133,327 @@ fn a_workspace_serves_memories_in_any_language() {
     a_profile_change_is_refused_rather_than_silently_wrong(&cli);
 }
 
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn the_graph_channel_reaches_what_nothing_else_can() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    // Deliberately disjoint: no shared vocabulary, no semantic proximity.
+    // Anything that finds the second from a query about the first came
+    // through the graph.
+    cli.run(&[
+        "write",
+        "--topic",
+        "release_process",
+        "the release process cuts a tag and publishes artifacts",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "office_plants",
+        "the ficus by the window needs watering on thursdays",
+    ]);
+
+    edges_are_derived_from_names_without_being_asked(&cli);
+    a_new_topic_is_linked_to_memories_that_already_named_it(&cli);
+    derivation_works_in_languages_written_without_spaces(&cli);
+    an_explicit_link_makes_the_unreachable_reachable(&cli);
+    the_graph_credits_nothing_the_other_channels_already_found(&cli);
+    a_result_is_never_its_own_explanation(&cli);
+    retracting_a_link_keeps_the_record_and_drops_the_result(&cli);
+    edges_survive_the_projection_being_destroyed(&cli);
+}
+
+fn neighbor_topics(results: &Value) -> Vec<String> {
+    results["neighbors"]
+        .as_array()
+        .expect("neighbors array")
+        .iter()
+        .map(|neighbor| neighbor["topic"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn edges_are_derived_from_names_without_being_asked(cli: &Cli) {
+    // No link command is run anywhere in this function. The edge exists
+    // because the content names the topic, which is the whole claim.
+    cli.run(&[
+        "write",
+        "--topic",
+        "hotfix_process",
+        "a hotfix skips the release process and ships straight from main",
+    ]);
+
+    let neighbors = cli.json(&["neighbors", "hotfix_process", "--depth", "1"]);
+    let found = neighbor_topics(&neighbors);
+    assert!(
+        found.contains(&"release_process".to_string()),
+        "naming a topic should derive an edge to it, got {found:?}"
+    );
+
+    let derived = neighbors["neighbors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|neighbor| neighbor["topic"] == "release_process")
+        .expect("the derived edge");
+    assert_eq!(derived["derivation"], "deterministic");
+    assert_eq!(derived["edge"], "mentions");
+
+    // Rewriting unchanged content must not stack a second edge version.
+    let before = neighbor_topics(&cli.json(&["neighbors", "hotfix_process", "--depth", "1"]));
+    cli.run(&[
+        "write",
+        "--topic",
+        "hotfix_process",
+        "a hotfix skips the release process and ships straight from main today",
+    ]);
+    let after = neighbor_topics(&cli.json(&["neighbors", "hotfix_process", "--depth", "1"]));
+    assert_eq!(before, after, "re-deriving the same edge changes nothing");
+}
+
+fn a_new_topic_is_linked_to_memories_that_already_named_it(cli: &Cli) {
+    // Written before any topic of that name exists. Without a backfill the
+    // edge would appear only if this memory happened to be rewritten later.
+    cli.run(&[
+        "write",
+        "--topic",
+        "deploy_notes",
+        "everything goes out through argo_cd now",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "argo_cd",
+        "argo cd runs in the tools cluster",
+    ]);
+
+    let found = neighbor_topics(&cli.json(&["neighbors", "argo_cd", "--depth", "1"]));
+    assert!(
+        found.contains(&"deploy_notes".to_string()),
+        "creating a topic should link memories that already named it, got {found:?}"
+    );
+}
+
+fn derivation_works_in_languages_written_without_spaces(cli: &Cli) {
+    // Nothing here is space-delimited, so a match is only possible because
+    // both the name and the content pass through the same segmenter.
+    cli.run(&["write", "--topic", "流水线", "流水线运行在持续集成上面"]);
+    cli.run(&["write", "--topic", "回滚", "回滚会绕过流水线直接发布"]);
+
+    let found = neighbor_topics(&cli.json(&["neighbors", "回滚", "--depth", "1"]));
+    assert!(
+        found.contains(&"流水线".to_string()),
+        "name derivation must not depend on spaces, got {found:?}"
+    );
+}
+
+/// The hit whose content contains `needle`, if the search returned one.
+fn hit_containing<'a>(results: &'a Value, needle: &str) -> Option<&'a Value> {
+    results["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["content"].as_str().unwrap_or_default().contains(needle))
+}
+
+/// The channels credited for one hit.
+fn credited_channels(hit: &Value) -> Vec<String> {
+    hit["why"]
+        .as_array()
+        .expect("why")
+        .iter()
+        .filter(|entry| entry["kind"] == "channel")
+        .filter_map(|entry| entry["channel"].as_str())
+        .map(str::to_string)
+        .collect()
+}
+
+fn an_explicit_link_makes_the_unreachable_reachable(cli: &Cli) {
+    let query = "how do we ship a release";
+
+    // A workspace this small lets the vector channel dredge up everything, so
+    // the claim under test is not "it appears" but "the graph is why it
+    // appears". That is also the claim that stays true at any corpus size.
+    let before = cli.json(&["search", query, "--limit", "8"]);
+    if let Some(hit) = hit_containing(&before, "ficus") {
+        assert!(
+            !credited_channels(hit).contains(&"graph".to_string()),
+            "nothing connects the plant memory yet"
+        );
+    }
+
+    cli.run(&[
+        "link",
+        "release_process",
+        "office_plants",
+        "--kind",
+        "related_to",
+    ]);
+
+    let after = cli.json(&["search", query, "--limit", "8"]);
+    let hit = hit_containing(&after, "ficus")
+        .unwrap_or_else(|| panic!("the graph should reach it: {:?}", contents(&after)));
+    assert!(
+        credited_channels(hit).contains(&"graph".to_string()),
+        "the graph channel must be credited, got {:?}",
+        credited_channels(hit)
+    );
+
+    let path = hit["why"]
+        .as_array()
+        .expect("why")
+        .iter()
+        .find(|entry| entry["kind"] == "path")
+        .expect("a graph hit explains the edge it came through");
+    assert_eq!(path["via"], "release_process");
+    assert_eq!(path["hops"], 1);
+    assert_eq!(path["edge"], "related_to");
+    assert_eq!(path["derivation"], "explicit");
+}
+
+fn the_graph_credits_nothing_the_other_channels_already_found(cli: &Cli) {
+    let results = cli.json(&["search", "the release process cuts a tag", "--limit", "8"]);
+
+    for hit in results["hits"].as_array().expect("hits") {
+        let why = hit["why"].as_array().expect("why");
+
+        let graph_entries = why
+            .iter()
+            .filter(|entry| entry["kind"] == "channel" && entry["channel"] == "graph")
+            .count();
+        assert!(
+            graph_entries <= 1,
+            "one graph rank per result at most, got {graph_entries}"
+        );
+
+        let paths = why.iter().filter(|entry| entry["kind"] == "path").count();
+        assert_eq!(
+            paths, graph_entries,
+            "a graph rank comes with its path and nothing else does"
+        );
+    }
+}
+
+fn a_result_is_never_its_own_explanation(cli: &Cli) {
+    // Two topics that share no vocabulary with each other, linked. Both are
+    // seeds of this query in a workspace this small, so each is genuinely
+    // reachable from the other and both may be credited to the graph — that
+    // is agreement between candidates, not double counting.
+    //
+    // What must never happen is a result being reached from itself. Traversal
+    // ignores direction, so without the no-backtracking rule every seed would
+    // arrive back at itself two hops along the edge it just took, and the
+    // explanation would name the result it is explaining.
+    cli.run(&[
+        "write",
+        "--topic",
+        "zither_tuning",
+        "the zither is tuned in fourths before every recital",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "kiln_firing",
+        "the kiln reaches cone ten overnight",
+    ]);
+    cli.run(&[
+        "link",
+        "zither_tuning",
+        "kiln_firing",
+        "--kind",
+        "related_to",
+    ]);
+
+    let results = cli.json(&[
+        "search",
+        "tuned in fourths before a recital",
+        "--limit",
+        "8",
+    ]);
+
+    let reached = hit_containing(&results, "kiln").expect("the neighbour is reachable");
+    assert!(
+        credited_channels(reached).contains(&"graph".to_string()),
+        "a topic on the far side of an edge is a genuine graph result"
+    );
+
+    for hit in results["hits"].as_array().expect("hits") {
+        let topic = hit["topic"].as_str().expect("every hit names its topic");
+        for path in hit["why"]
+            .as_array()
+            .expect("why")
+            .iter()
+            .filter(|entry| entry["kind"] == "path")
+        {
+            assert_ne!(
+                path["via"], topic,
+                "a result reached from itself explains nothing"
+            );
+            assert!(
+                path["hops"].as_u64().unwrap_or(0) >= 1,
+                "a path always crosses at least one edge"
+            );
+        }
+    }
+}
+
+fn retracting_a_link_keeps_the_record_and_drops_the_result(cli: &Cli) {
+    let retracted = cli.json(&[
+        "unlink",
+        "release_process",
+        "office_plants",
+        "--kind",
+        "related_to",
+    ]);
+    assert_eq!(retracted["closed"], true);
+
+    let after = cli.json(&["search", "how do we ship a release", "--limit", "8"]);
+    if let Some(hit) = hit_containing(&after, "ficus") {
+        assert!(
+            !credited_channels(hit).contains(&"graph".to_string()),
+            "a retracted edge stops feeding recall"
+        );
+    }
+    assert!(
+        neighbor_topics(&cli.json(&["neighbors", "release_process", "--depth", "2"]))
+            .iter()
+            .all(|topic| topic != "office_plants"),
+        "a retracted edge is not traversed"
+    );
+
+    // Retracting again reports that nothing was open, rather than pretending.
+    let again = cli.json(&[
+        "unlink",
+        "release_process",
+        "office_plants",
+        "--kind",
+        "related_to",
+    ]);
+    assert_eq!(again["closed"], false);
+}
+
+fn edges_survive_the_projection_being_destroyed(cli: &Cli) {
+    cli.run(&[
+        "link",
+        "release_process",
+        "office_plants",
+        "--kind",
+        "related_to",
+    ]);
+
+    std::fs::remove_dir_all(cli.home().join("index")).expect("delete the index");
+    cli.run(&["reindex"]);
+
+    let after = cli.json(&["search", "how do we ship a release", "--limit", "8"]);
+    let hit = hit_containing(&after, "ficus")
+        .unwrap_or_else(|| panic!("still reachable: {:?}", contents(&after)));
+    assert!(
+        credited_channels(hit).contains(&"graph".to_string()),
+        "the graph lives in postgres, so a rebuilt projection changes nothing"
+    );
+}
+
 fn contents(results: &Value) -> Vec<String> {
     results["hits"]
         .as_array()
