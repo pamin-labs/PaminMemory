@@ -219,6 +219,7 @@ impl Engine {
             .map(|result| {
                 let state = live.state(result.topic_state).expect("retained above");
                 SearchHit {
+                    topic: live.topic_name(state.topic_id),
                     is_current: live.is_current(state),
                     state: state.clone(),
                     result,
@@ -275,7 +276,7 @@ impl Engine {
             paths.insert(
                 state,
                 Why::Path {
-                    via: neighbor.via,
+                    via: live.topic_name(neighbor.via),
                     hops: neighbor.hops,
                     edge: neighbor.kind,
                     derivation: neighbor.derivation,
@@ -325,6 +326,8 @@ struct LiveStates {
     /// The state each topic currently resolves to, which is what the graph
     /// channel needs: it walks topic identities and has to return states.
     current_state: std::collections::HashMap<TopicId, TopicStateId>,
+    /// Topic names, so a path can explain itself in the terms a caller uses.
+    names: std::collections::HashMap<TopicId, String>,
 }
 
 impl LiveStates {
@@ -343,10 +346,17 @@ impl LiveStates {
             .map(|state| (state.topic_id, state.id))
             .collect();
 
+        let names = repository::all_topics(database.client(), project)
+            .await?
+            .into_iter()
+            .map(|topic| (topic.id, topic.name))
+            .collect();
+
         Ok(Self {
             by_id: states.into_iter().map(|state| (state.id, state)).collect(),
             current,
             current_state,
+            names,
         })
     }
 
@@ -370,10 +380,19 @@ impl LiveStates {
     fn current_state_of(&self, topic: TopicId) -> Option<TopicStateId> {
         self.current_state.get(&topic).copied()
     }
+
+    fn topic_name(&self, topic: TopicId) -> String {
+        self.names
+            .get(&topic)
+            .cloned()
+            .unwrap_or_else(|| topic.to_string())
+    }
 }
 
 /// One search result: the state, its position, and why it is there.
 pub struct SearchHit {
+    /// The topic this state belongs to, by the name a caller addresses it with.
+    pub topic: String,
     pub state: TopicState,
     pub is_current: bool,
     pub result: FusedResult,
