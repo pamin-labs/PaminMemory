@@ -18,7 +18,8 @@ fn id(byte: u8) -> TopicStateId {
 #[test]
 fn lexical_recall_works_across_languages_and_on_exact_strings() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let index = ProjectionIndex::open(dir.path(), PROFILE).expect("open index");
+    let index =
+        ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE).expect("open index");
 
     let english = id(1);
     let chinese = id(2);
@@ -86,7 +87,8 @@ fn lexical_recall_works_across_languages_and_on_exact_strings() {
 fn discarding_the_directory_leaves_an_empty_index() {
     let dir = tempfile::tempdir().expect("temp dir");
 
-    let index = ProjectionIndex::open(dir.path(), PROFILE).expect("open index");
+    let index =
+        ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE).expect("open index");
     index
         .upsert(id(1), "the deployment pipeline", &stub())
         .expect("upsert");
@@ -96,12 +98,33 @@ fn discarding_the_directory_leaves_an_empty_index() {
 
     ProjectionIndex::discard(dir.path()).expect("discard");
 
-    let rebuilt = ProjectionIndex::open(dir.path(), PROFILE).expect("reopen index");
+    let rebuilt = ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE)
+        .expect("reopen index");
     assert!(
         rebuilt
             .recall_segmented("deployment", 10)
             .unwrap()
             .is_empty(),
         "a discarded index must come back empty, ready to rebuild from postgres"
+    );
+}
+
+#[test]
+fn a_pre_split_workspace_is_reported_rather_than_searched() {
+    // Before projects had their own directory there was one shared collection.
+    // Opening a project's empty directory beside it would return nothing and
+    // look like an empty workspace, which is the worst of the three outcomes:
+    // wrong, silent, and indistinguishable from correct.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let legacy = dir.path().join("legacy");
+    std::fs::create_dir_all(&legacy).expect("legacy layout");
+
+    let opened = ProjectionIndex::open(&dir.path().join("project"), &legacy, PROFILE);
+    let Err(error) = opened else {
+        panic!("a shared layout must not be opened silently");
+    };
+    assert!(
+        error.to_string().contains("reindex"),
+        "the error has to say how to fix it, got {error}"
     );
 }

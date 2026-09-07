@@ -20,7 +20,12 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
     let profile = Profile::Speed;
     let mut embedder = Embedder::load(profile, &dir.path().join("models")).expect("load model");
 
-    let index = ProjectionIndex::open(&dir.path().join("index"), profile).expect("open index");
+    let index = ProjectionIndex::open(
+        &dir.path().join("index"),
+        &dir.path().join("legacy"),
+        profile,
+    )
+    .expect("open index");
 
     let chinese = id(1);
     let unrelated = id(2);

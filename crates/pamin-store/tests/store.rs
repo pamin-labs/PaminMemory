@@ -33,6 +33,7 @@ async fn the_ledger_holds_its_promises() {
     expansion_is_bounded_undirected_and_time_filtered(&mut database).await;
     grep_reaches_evidence_the_index_never_saw(&mut database).await;
     a_retraction_reason_decides_what_history_keeps(&mut database).await;
+    a_seed_never_reaches_itself_however_deep_the_walk(&mut database).await;
 
     drop(database);
     pamin_store::database::stop(&workspace)
@@ -621,7 +622,12 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
         .expect("assert edge");
     }
 
-    let before_retraction = OffsetDateTime::now_utc();
+    // A second earlier, not "just now". PostgreSQL stores microseconds while
+    // OffsetDateTime carries nanoseconds, so two calls close together can land
+    // in the same stored microsecond and make a strict comparison false. The
+    // question being asked is about an earlier instant, so it costs nothing to
+    // pick one that is unambiguously earlier.
+    let before_retraction = OffsetDateTime::now_utc() - time::Duration::seconds(1);
 
     // One relationship ended; the other was never true.
     graph::close_edge(
@@ -686,4 +692,60 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
     // arrived through, and past that is not.
     assert_eq!(earlier[0].origin, root);
     assert_eq!(earlier[0].via, root);
+}
+
+async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &mut Database) {
+    let project = repository::ensure_project(database.client(), "cycles")
+        .await
+        .expect("ensure project");
+
+    let mut topics = Vec::new();
+    for name in ["ring_a", "ring_b", "ring_c"] {
+        let topic = repository::ensure_topic(database.client(), project.id, name)
+            .await
+            .expect("ensure topic");
+        write_state(
+            database,
+            project.id,
+            topic.id,
+            &format!("cycle-{name}"),
+            &format!("an isolated durable claim {name}"),
+        )
+        .await;
+        topics.push(topic.id);
+    }
+    let (a, b, c) = (topics[0], topics[1], topics[2]);
+
+    // A ring, which is the shape that makes depth matter: every node is
+    // reachable from every other, and from itself.
+    for (from, to) in [(a, b), (b, c), (c, a)] {
+        graph::assert_edge(
+            database.client_mut(),
+            project.id,
+            from,
+            to,
+            &EdgeClaim::explicit(EdgeKind::RelatedTo),
+        )
+        .await
+        .expect("assert ring edge");
+    }
+
+    for depth in 1..=4 {
+        let reached: Vec<_> = graph::expand(
+            database.client(),
+            project.id,
+            &[a],
+            &Expansion::to_depth(depth),
+        )
+        .await
+        .expect("expand")
+        .into_iter()
+        .map(|neighbor| neighbor.topic)
+        .collect();
+
+        assert!(
+            !reached.contains(&a),
+            "at depth {depth} the seed came back as its own neighbour: {reached:?}"
+        );
+    }
 }
