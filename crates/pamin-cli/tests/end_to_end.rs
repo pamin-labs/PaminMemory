@@ -161,6 +161,7 @@ fn the_graph_channel_reaches_what_nothing_else_can() {
     an_explicit_link_makes_the_unreachable_reachable(&cli);
     the_graph_credits_nothing_the_other_channels_already_found(&cli);
     a_result_is_never_its_own_explanation(&cli);
+    an_edge_can_be_bounded_in_time(&cli);
     retracting_a_link_keeps_the_record_and_drops_the_result(&cli);
     edges_survive_the_projection_being_destroyed(&cli);
 }
@@ -396,6 +397,97 @@ fn a_result_is_never_its_own_explanation(cli: &Cli) {
             );
         }
     }
+}
+
+fn an_edge_can_be_bounded_in_time(cli: &Cli) {
+    // Truth validity travels through the CLI as RFC 3339 on both sides, so a
+    // timestamp the CLI prints can be handed straight back to it. The store
+    // covers the filtering itself; what is checked here is the plumbing that
+    // carries a bound from an argument into the query, which is where a
+    // regression would be silent.
+    // Neither memory names the other topic. If one did, derivation would add
+    // an unbounded `mentions` edge alongside the bounded one and the temporal
+    // filter would have nothing to prove.
+    cli.run(&[
+        "write",
+        "--topic",
+        "ledger_migration",
+        "the rewrite ran against every account in one pass",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "old_schema",
+        "balances used to live in a single wide table",
+    ]);
+    cli.run(&[
+        "link",
+        "ledger_migration",
+        "old_schema",
+        "--kind",
+        "depends_on",
+        "--valid-from",
+        "2020-01-01T00:00:00Z",
+        "--valid-to",
+        "2021-01-01T00:00:00Z",
+    ]);
+
+    let inside = cli.json(&[
+        "neighbors",
+        "ledger_migration",
+        "--depth",
+        "1",
+        "--at",
+        "2020-06-01T00:00:00Z",
+    ]);
+    assert!(
+        neighbor_topics(&inside).contains(&"old_schema".to_string()),
+        "the edge holds inside its own interval: {:?}",
+        neighbor_topics(&inside)
+    );
+
+    let outside = cli.json(&[
+        "neighbors",
+        "ledger_migration",
+        "--depth",
+        "1",
+        "--at",
+        "2026-06-01T00:00:00Z",
+    ]);
+    assert!(
+        outside["neighbors"]
+            .as_array()
+            .expect("neighbors")
+            .is_empty(),
+        "a dependency asserted only for 2020 does not hold now: {:?}",
+        neighbor_topics(&outside)
+    );
+
+    // Without --at the question is "what do we still stand behind", which the
+    // edge answers regardless of when it is asserted to hold.
+    assert!(
+        neighbor_topics(&cli.json(&["neighbors", "ledger_migration", "--depth", "1"]))
+            .contains(&"old_schema".to_string()),
+        "an unretracted edge is live whatever its truth interval says"
+    );
+
+    // Malformed and impossible bounds are refused rather than silently
+    // reinterpreted, which is the only way a caller learns it got them wrong.
+    let error = cli.fails(&["neighbors", "ledger_migration", "--at", "yesterday"]);
+    assert!(error.contains("RFC 3339"), "got {error:?}");
+
+    let error = cli.fails(&[
+        "link",
+        "old_schema",
+        "ledger_migration",
+        "--kind",
+        "depends_on",
+        "--valid-from",
+        "2021-01-01T00:00:00Z",
+        "--valid-to",
+        "2020-01-01T00:00:00Z",
+    ]);
+    assert!(error.contains("--valid-to must be after"), "got {error:?}");
 }
 
 fn retracting_a_link_keeps_the_record_and_drops_the_result(cli: &Cli) {
