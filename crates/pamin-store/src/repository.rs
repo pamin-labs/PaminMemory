@@ -438,6 +438,31 @@ pub async fn latest_source_version(
     }))
 }
 
+/// Lists every topic in a project.
+///
+/// Used to derive relationships from one topic's content naming another, which
+/// needs the whole set rather than a candidate list: any topic may be named.
+pub async fn all_topics(client: &Client, project: ProjectId) -> Result<Vec<Topic>> {
+    let rows = client
+        .query(
+            "SELECT id, name, path, created_at FROM topics
+             WHERE project_id = $1 ORDER BY name ASC",
+            &[&project.0],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Topic {
+            id: row.get::<_, uuid::Uuid>("id").into(),
+            project_id: project,
+            name: row.get("name"),
+            path: row.get("path"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
 /// Looks up a topic by name within a project.
 pub async fn find_topic(client: &Client, project: ProjectId, name: &str) -> Result<Option<Topic>> {
     let row = client

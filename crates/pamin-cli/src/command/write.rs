@@ -58,7 +58,7 @@ pub async fn run(
     )
     .await?;
 
-    let topic = repository::ensure_topic(engine.database.client(), project, &args.topic).await?;
+    let topic = engine.ensure_topic(&args.topic).await?;
     let current = current_content(&engine.database, topic.id).await?;
 
     let verdict = SensoryFilter::default().judge(&content, current.as_deref());
@@ -109,6 +109,11 @@ pub async fn run(
         // layer, reachable and replayable, but off the retrieval surface, which
         // is the whole point of filtering after persistence rather than before.
         engine.index_state(&state)?;
+
+        // Derived writes run here rather than in a worker because there is no
+        // worker yet. Both this and the index update move into the cascade
+        // pipeline together, which is where derived writes belong.
+        engine.derive_mentions(&state).await?;
         Some(state)
     } else {
         None

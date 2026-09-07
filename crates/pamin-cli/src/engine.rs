@@ -6,11 +6,12 @@
 
 use anyhow::Result;
 use pamin_core::{
-    Channel, ChannelResults, FusedResult, Fusion, Modifiers, ProjectId, TopicId, TopicState,
-    TopicStateId,
+    Channel, ChannelResults, EdgeKind, FusedResult, Fusion, Modifiers, ProjectId, Topic, TopicId,
+    TopicState, TopicStateId,
 };
 use pamin_index::{Embedder, Profile, ProjectionIndex};
-use pamin_store::{Database, Workspace, repository};
+use pamin_store::graph::EdgeClaim;
+use pamin_store::{Database, Workspace, graph, repository};
 
 /// How many candidates each channel contributes before fusion.
 ///
@@ -18,6 +19,13 @@ use pamin_store::{Database, Workspace, repository};
 /// enough that reranking stays cheap. A default to be settled by measurement,
 /// not by argument.
 const CHANNEL_DEPTH: u32 = 50;
+
+/// How much weight a derived mention carries against an asserted edge.
+///
+/// A rule matching a name is weaker evidence than somebody saying two things
+/// are related, and the gap has to be expressed somewhere or the two become
+/// interchangeable. Provisional, like every other retrieval constant here.
+const MENTION_CONFIDENCE: f32 = 0.5;
 
 /// The store, the index, and the embedder, wired together.
 pub struct Engine {
@@ -49,6 +57,101 @@ impl Engine {
         self.index.upsert(state.id, &state.content, &embedding)?;
         self.index.flush()?;
         Ok(())
+    }
+
+    /// Returns the topic with this name, creating it if it does not exist.
+    ///
+    /// A topic created here is also linked backwards: memories written before
+    /// it existed may already name it, and without this pass an edge would
+    /// appear only when one of those memories happened to be rewritten. The
+    /// scan runs once in a topic's life, when it is first created.
+    pub async fn ensure_topic(&mut self, name: &str) -> Result<Topic> {
+        let existed = repository::find_topic(self.database.client(), self.project, name)
+            .await?
+            .is_some();
+        let topic = repository::ensure_topic(self.database.client(), self.project, name).await?;
+
+        if !existed {
+            self.backfill_mentions(&topic).await?;
+        }
+        Ok(topic)
+    }
+
+    /// Derives edges from the topics this state's content names.
+    ///
+    /// In a topic-centred graph the topics are the entities, so a memory naming
+    /// another topic is entity linking with no model in the path. Returns how
+    /// many edges this call actually added, which is zero when the content is
+    /// unchanged: asserting an edge is idempotent, so rewriting a memory does
+    /// not grow the ledger.
+    pub async fn derive_mentions(&mut self, state: &TopicState) -> Result<usize> {
+        let topics = repository::all_topics(self.database.client(), self.project).await?;
+
+        let named: Vec<TopicId> = {
+            let segmenter = self.index.segmenter();
+            topics
+                .iter()
+                // A topic naming itself is not a relationship, and the schema
+                // rejects the edge anyway.
+                .filter(|topic| topic.id != state.topic_id)
+                .filter(|topic| segmenter.names(&state.content, &topic.name))
+                .map(|topic| topic.id)
+                .collect()
+        };
+
+        let mut added = 0;
+        for target in named {
+            let claim = EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE);
+            let assertion = graph::assert_edge(
+                self.database.client_mut(),
+                self.project,
+                state.topic_id,
+                target,
+                &claim,
+            )
+            .await?;
+            if assertion.is_new() {
+                added += 1;
+            }
+        }
+        Ok(added)
+    }
+
+    /// Links a newly created topic to memories that already named it.
+    ///
+    /// ponytail: segments every live state in the project. It runs once per
+    /// topic ever created, which is rare enough to pay for; when the cascade
+    /// worker exists this moves there and becomes a queued job.
+    async fn backfill_mentions(&mut self, topic: &Topic) -> Result<usize> {
+        let states =
+            repository::all_live_topic_states(self.database.client(), self.project).await?;
+
+        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
+            let segmenter = self.index.segmenter();
+            states
+                .iter()
+                .filter(|state| state.topic_id != topic.id)
+                .filter(|state| segmenter.names(&state.content, &topic.name))
+                .map(|state| (state.topic_id, state.id))
+                .collect()
+        };
+
+        let mut added = 0;
+        for (from, caused_by) in naming {
+            let claim = EdgeClaim::derived(EdgeKind::Mentions, caused_by, MENTION_CONFIDENCE);
+            let assertion = graph::assert_edge(
+                self.database.client_mut(),
+                self.project,
+                from,
+                topic.id,
+                &claim,
+            )
+            .await?;
+            if assertion.is_new() {
+                added += 1;
+            }
+        }
+        Ok(added)
     }
 
     /// Recalls candidates from every channel and fuses them here.
