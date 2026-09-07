@@ -77,3 +77,11 @@ typed_id!(
     /// A durable cascade work item in the outbox.
     IndexJobId
 );
+typed_id!(
+    /// A stable identity for one edge between two topics.
+    RelationshipId
+);
+typed_id!(
+    /// One immutable fact about an edge.
+    RelationshipVersionId
+);
