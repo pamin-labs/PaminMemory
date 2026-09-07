@@ -17,6 +17,9 @@
 use icu_segmenter::WordSegmenter;
 use icu_segmenter::options::WordBreakInvariantOptions;
 
+/// Characters that join words inside an identifier but separate them in prose.
+const SEPARATORS: &str = "_-./:";
+
 /// Splits text into word-like tokens in whatever language it is written in.
 ///
 /// Holds the compiled segmentation data, so construct once and reuse.
@@ -62,6 +65,52 @@ impl Segmenter {
         tokens
     }
 
+    /// Whether `text` names `needle`, comparing token sequences.
+    ///
+    /// This is the cheapest form of entity linking available: in a
+    /// topic-centred graph the topics are the entities, so a topic naming
+    /// another topic is a relationship the engine can derive with no model in
+    /// the path and no separate entity table.
+    ///
+    /// Matching runs on tokens rather than on raw substrings for two reasons.
+    /// Substring matching would find `db` inside `debt`, and in a language
+    /// written without spaces there are no substring boundaries to anchor to at
+    /// all. Both fall out of comparing the sequences the segmenter produced,
+    /// which is the same sequence the lexical index was built from.
+    ///
+    /// Case is folded, so a topic named `argo_cd` is found in prose that
+    /// capitalises it. An empty needle names nothing.
+    pub fn names(&self, text: &str, needle: &str) -> bool {
+        let needle = self.name_tokens(needle);
+        if needle.is_empty() {
+            return false;
+        }
+
+        self.name_tokens(text)
+            .windows(needle.len())
+            .any(|window| window == needle.as_slice())
+    }
+
+    /// Tokenizes for name comparison, which is not how the index tokenizes.
+    ///
+    /// UAX#29 treats `_` as a word joiner, so `deployment_pipeline` is one
+    /// token while the prose that refers to it says "deployment pipeline" as
+    /// two. The lexical index wants the identifier kept whole and leaves
+    /// substrings to the n-gram field; name matching wants the opposite, so
+    /// separators are opened up first. Both sides of the comparison go through
+    /// this, which is what makes them comparable at all.
+    fn name_tokens(&self, text: &str) -> Vec<String> {
+        let opened: String = text
+            .chars()
+            .map(|c| if SEPARATORS.contains(c) { ' ' } else { c })
+            .collect();
+
+        self.tokens(&opened)
+            .iter()
+            .map(|token| token.to_lowercase())
+            .collect()
+    }
+
     /// Renders `text` as space-separated tokens for the lexical index.
     ///
     /// Queries pass through the same function, so a query tokenizes exactly the
@@ -84,6 +133,61 @@ pub fn detect_language(text: &str) -> Option<(String, f32)> {
         return None;
     }
     Some((info.lang().code().to_string(), info.confidence() as f32))
+}
+
+#[cfg(test)]
+mod naming {
+    use super::Segmenter;
+
+    #[test]
+    fn a_topic_name_is_found_in_prose_that_uses_it() {
+        let segmenter = Segmenter::new();
+        assert!(segmenter.names("the deployment pipeline runs on ci", "deployment_pipeline"));
+        assert!(segmenter.names("we moved off Argo CD last week", "argo_cd"));
+    }
+
+    #[test]
+    fn a_name_must_appear_as_whole_adjacent_words() {
+        let segmenter = Segmenter::new();
+        // Substring matching would find "db" inside "debt" and link two
+        // unrelated topics, which is the failure mode this avoids.
+        assert!(!segmenter.names("the technical debt is mounting", "db"));
+        assert!(segmenter.names("the db is mounting", "db"));
+        // The words have to be adjacent and in order.
+        assert!(!segmenter.names("the pipeline handles deployment", "deployment_pipeline"));
+    }
+
+    #[test]
+    fn names_are_found_in_languages_written_without_spaces() {
+        let segmenter = Segmenter::new();
+        // Nothing here is space-delimited, so this works only because both
+        // sides pass through the same segmenter.
+        assert!(segmenter.names("部署流水线运行在持续集成上面", "流水线"));
+        assert!(segmenter.names("デプロイパイプラインは東京で動いています", "東京"));
+    }
+
+    #[test]
+    fn an_identifier_and_the_prose_for_it_are_the_same_name() {
+        // UAX#29 joins on `_`, so without opening separators first a topic
+        // named deployment_pipeline would never match the prose that describes
+        // it, which is most of the prose there is.
+        let segmenter = Segmenter::new();
+        assert!(segmenter.names("call deploy_service now", "deploy_service"));
+        assert!(segmenter.names("call the deploy service now", "deploy_service"));
+        assert!(segmenter.names(
+            "see crates/pamin-store/src/database.rs for it",
+            "database.rs"
+        ));
+    }
+
+    #[test]
+    fn an_empty_name_matches_nothing() {
+        let segmenter = Segmenter::new();
+        // A topic whose name segments to nothing would otherwise be linked to
+        // every memory in the project.
+        assert!(!segmenter.names("any content at all", "   "));
+        assert!(!segmenter.names("any content at all", "!!!"));
+    }
 }
 
 #[cfg(test)]
