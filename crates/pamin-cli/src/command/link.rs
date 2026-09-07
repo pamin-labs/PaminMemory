@@ -6,7 +6,7 @@ use pamin_store::graph::EdgeClaim;
 use pamin_store::{Database, Workspace, graph, repository};
 use serde::Serialize;
 
-use crate::command::timestamp;
+use crate::command::validity;
 use crate::output::Format;
 
 #[derive(clap::Args)]
@@ -22,13 +22,8 @@ pub struct Args {
     #[arg(long, default_value = "related_to")]
     pub kind: String,
 
-    /// When the relationship starts holding, as RFC 3339. Open by default.
-    #[arg(long)]
-    pub valid_from: Option<String>,
-
-    /// When it stops holding, as RFC 3339. Open by default.
-    #[arg(long)]
-    pub valid_to: Option<String>,
+    #[command(flatten)]
+    pub validity: validity::Flags,
 }
 
 #[derive(Serialize)]
@@ -59,13 +54,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
     }
 
     let mut claim = EdgeClaim::explicit(kind);
-    claim.valid_from = timestamp::parse(args.valid_from.as_deref(), "--valid-from")?;
-    claim.valid_to = timestamp::parse(args.valid_to.as_deref(), "--valid-to")?;
-    if let (Some(start), Some(end)) = (claim.valid_from, claim.valid_to)
-        && end <= start
-    {
-        bail!("--valid-to must be after --valid-from");
-    }
+    claim.validity = args.validity.parse()?;
 
     let assertion = graph::assert_edge(database.client_mut(), project.id, from, to, &claim).await?;
 
@@ -75,8 +64,8 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         kind: kind.as_str().to_string(),
         version: assertion.version().version,
         appended: assertion.is_new(),
-        valid_from: claim.valid_from.map(timestamp::render),
-        valid_to: claim.valid_to.map(timestamp::render),
+        valid_from: claim.validity.from.map(validity::render),
+        valid_to: claim.validity.to.map(validity::render),
     };
 
     format.emit(&result, || {

@@ -193,7 +193,7 @@ impl Engine {
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
-        let (graph_list, paths) = self.recall_graph(&lists, &live).await?;
+        let (graph_list, paths) = self.recall_graph(query, &lists, &live).await?;
         let mut lists = lists;
         lists.push(graph_list);
 
@@ -241,17 +241,36 @@ impl Engine {
     /// state, so the trace can say why the graph could see it.
     async fn recall_graph(
         &self,
+        query: &str,
         lists: &[ChannelResults],
         live: &LiveStates,
     ) -> Result<(ChannelResults, std::collections::HashMap<TopicStateId, Why>)> {
         let seeds: Vec<TopicId> = {
+            let segmenter = self.index.segmenter();
             let mut seen = std::collections::HashSet::new();
-            lists
-                .iter()
-                .flat_map(|list| list.candidates.iter())
-                .filter_map(|candidate| live.state(*candidate))
-                .map(|state| state.topic_id)
+
+            // Topics the query names directly. Without these, a question about
+            // a topic whose own content happens not to match lexically never
+            // walks out from it, and "what depends on X" cannot be answered by
+            // naming X. Resolving query entities against known topics is the
+            // retrieval half of entity linking; the write path does the other.
+            let named: Vec<TopicId> = live
+                .topic_names()
+                .filter(|(_, name)| segmenter.names(query, name))
+                .map(|(topic, _)| topic)
                 .filter(|topic| seen.insert(*topic))
+                .collect();
+
+            named
+                .into_iter()
+                .chain(
+                    lists
+                        .iter()
+                        .flat_map(|list| list.candidates.iter())
+                        .filter_map(|candidate| live.state(*candidate))
+                        .map(|state| state.topic_id)
+                        .filter(|topic| seen.insert(*topic)),
+                )
                 .collect()
         };
 
@@ -276,6 +295,7 @@ impl Engine {
             paths.insert(
                 state,
                 Why::Path {
+                    from: live.topic_name(neighbor.origin),
                     via: live.topic_name(neighbor.via),
                     hops: neighbor.hops,
                     edge: neighbor.kind,
@@ -379,6 +399,13 @@ impl LiveStates {
     /// versions have all been soft deleted resolves to nothing.
     fn current_state_of(&self, topic: TopicId) -> Option<TopicStateId> {
         self.current_state.get(&topic).copied()
+    }
+
+    /// Every topic and its name, for matching query text against them.
+    fn topic_names(&self) -> impl Iterator<Item = (TopicId, &str)> {
+        self.names
+            .iter()
+            .map(|(topic, name)| (*topic, name.as_str()))
     }
 
     fn topic_name(&self, topic: TopicId) -> String {

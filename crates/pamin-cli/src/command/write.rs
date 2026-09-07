@@ -8,6 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
+use crate::command::validity;
 use crate::engine::Engine;
 use crate::output::Format;
 
@@ -19,6 +20,9 @@ pub struct Args {
 
     /// The memory content. Reads standard input when omitted.
     pub content: Option<String>,
+
+    #[command(flatten)]
+    pub validity: validity::Flags,
 }
 
 #[derive(Serialize)]
@@ -31,6 +35,9 @@ struct Written {
     reason: String,
     /// Always set: evidence is recorded whatever the filter decides.
     source_version: u32,
+    /// The truth interval this state was asserted for, if one was given.
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 }
 
 pub async fn run(
@@ -40,6 +47,10 @@ pub async fn run(
     format: Format,
     args: Args,
 ) -> Result<()> {
+    // Parsed before anything is provisioned, so a malformed interval fails
+    // without having started a database.
+    let validity = args.validity.parse()?;
+
     let content = match args.content {
         Some(content) => content,
         None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
@@ -102,6 +113,7 @@ pub async fn run(
             &content,
             span.id,
             OffsetDateTime::now_utc(),
+            validity,
         )
         .await?;
 
@@ -125,6 +137,8 @@ pub async fn run(
         promoted: verdict.is_promoted(),
         reason: verdict.reason().to_string(),
         source_version: source_version.version,
+        valid_from: validity.from.map(validity::render),
+        valid_to: validity.to.map(validity::render),
     };
 
     format.emit(&result, || match result.version {

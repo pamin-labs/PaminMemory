@@ -6,7 +6,7 @@
 use pamin_core::{
     Derivation, EdgeKind, FilterDecision, Project, ProjectId, RetrievalSignals, SourceId,
     SourceKind, SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic,
-    TopicId, TopicState, TopicStateId,
+    TopicId, TopicState, TopicStateId, Validity,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, Row};
@@ -239,6 +239,7 @@ pub async fn append_topic_state(
     content: &str,
     source_span: SourceSpanId,
     observed_at: OffsetDateTime,
+    validity: Validity,
 ) -> Result<TopicState> {
     let transaction = client.transaction().await?;
 
@@ -263,9 +264,9 @@ pub async fn append_topic_state(
         .query_one(
             "INSERT INTO topic_states (
                  id, project_id, topic_id, version, content, source_span_id,
-                 observed_at, recorded_at, supersedes
+                 observed_at, recorded_at, supersedes, valid_from, valid_to
              )
-             SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8
+             SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10
              FROM topic_states WHERE topic_id = $3
              RETURNING id, version, recorded_at",
             &[
@@ -277,6 +278,8 @@ pub async fn append_topic_state(
                 &observed_at,
                 &OffsetDateTime::now_utc(),
                 &previous.map(|id| id.0),
+                &validity.from,
+                &validity.to,
             ],
         )
         .await?;
@@ -290,8 +293,7 @@ pub async fn append_topic_state(
         source_span_id: source_span,
         observed_at,
         recorded_at: row.get("recorded_at"),
-        valid_from: None,
-        valid_to: None,
+        validity,
         supersedes: previous,
         deleted_at: None,
         signals: RetrievalSignals::default(),
@@ -311,8 +313,7 @@ fn row_to_topic_state(row: &Row) -> TopicState {
         source_span_id: row.get::<_, uuid::Uuid>("source_span_id").into(),
         observed_at: row.get("observed_at"),
         recorded_at: row.get("recorded_at"),
-        valid_from: row.get("valid_from"),
-        valid_to: row.get("valid_to"),
+        validity: Validity::new(row.get("valid_from"), row.get("valid_to")),
         supersedes: row
             .get::<_, Option<uuid::Uuid>>("supersedes")
             .map(Into::into),

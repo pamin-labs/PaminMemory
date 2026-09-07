@@ -10,7 +10,7 @@
 
 use pamin_core::{
     Derivation, EdgeKind, ProjectId, Relationship, RelationshipId, RelationshipVersion,
-    RelationshipVersionId, TombstoneReason, TopicId, TopicStateId,
+    RelationshipVersionId, TombstoneReason, TopicId, TopicStateId, Validity,
 };
 use time::OffsetDateTime;
 use tokio_postgres::{Client, GenericClient, Row};
@@ -28,8 +28,8 @@ pub struct EdgeClaim {
     pub derivation: Derivation,
     /// Orders neighbours at equal graph distance.
     pub confidence: f32,
-    pub valid_from: Option<OffsetDateTime>,
-    pub valid_to: Option<OffsetDateTime>,
+    /// When the relationship is asserted to hold.
+    pub validity: Validity,
     /// The topic state that caused the claim. Absent when a caller asserted it
     /// directly, since no state produced it.
     pub caused_by_topic_state: Option<TopicStateId>,
@@ -42,8 +42,7 @@ impl EdgeClaim {
             kind,
             derivation: Derivation::Explicit,
             confidence: 1.0,
-            valid_from: None,
-            valid_to: None,
+            validity: Validity::ALWAYS,
             caused_by_topic_state: None,
         }
     }
@@ -58,8 +57,9 @@ impl EdgeClaim {
             kind,
             derivation: Derivation::Deterministic,
             confidence,
-            valid_from: None,
-            valid_to: None,
+            // A rule that matched a name learns that a relationship exists, not
+            // when it holds, so a derived edge asserts no interval.
+            validity: Validity::ALWAYS,
             caused_by_topic_state: Some(caused_by),
         }
     }
@@ -68,8 +68,7 @@ impl EdgeClaim {
     fn matches(&self, version: &RelationshipVersion) -> bool {
         version.derivation == self.derivation
             && version.confidence == self.confidence
-            && version.valid_from == self.valid_from
-            && version.valid_to == self.valid_to
+            && version.validity == self.validity
     }
 }
 
@@ -106,8 +105,7 @@ fn row_to_version(row: &Row) -> RelationshipVersion {
         id: row.get::<_, uuid::Uuid>("id").into(),
         relationship_id: row.get::<_, uuid::Uuid>("relationship_id").into(),
         version: row.get::<_, i32>("version") as u32,
-        valid_from: row.get("valid_from"),
-        valid_to: row.get("valid_to"),
+        validity: Validity::new(row.get("valid_from"), row.get("valid_to")),
         created_at: row.get("created_at"),
         invalidated_at: row.get("invalidated_at"),
         supersedes: row
@@ -252,8 +250,8 @@ pub async fn assert_edge(
                 &RelationshipVersionId::new().0,
                 &project.0,
                 &relationship.id.0,
-                &claim.valid_from,
-                &claim.valid_to,
+                &claim.validity.from,
+                &claim.validity.to,
                 &now,
                 &live.as_ref().map(|version| version.id.0),
                 &claim.caused_by_topic_state.map(|id| id.0),
@@ -333,6 +331,12 @@ pub async fn find_relationship(
 #[derive(Clone, Debug, PartialEq)]
 pub struct Neighbor {
     pub topic: TopicId,
+    /// The seed this walk started from.
+    ///
+    /// At one hop this is also `via`. Past that they diverge, and without it a
+    /// two-hop result names the topic it arrived through but not where the
+    /// walk began, which is half an explanation.
+    pub origin: TopicId,
     /// Edges traversed to get here. Never zero: a seed is not its own
     /// neighbour.
     pub hops: u8,
@@ -404,37 +408,51 @@ pub async fn expand(
         .kinds
         .map(|kinds| kinds.iter().map(|kind| kind.label()).collect());
 
-    // The CTE walks edges in both directions, tracking which end it arrived
-    // from. `depth < $3` bounds the recursion; without it a cycle never
-    // terminates. Ordering by hops then confidence before DISTINCT ON keeps the
-    // shortest, most confident path to each topic and discards the rest.
+    // The CTE walks edges in both directions, tracking the seed it started from
+    // and the end it arrived through. `depth < $3` bounds the recursion;
+    // without it a cycle never terminates. Ordering by hops then confidence
+    // before DISTINCT ON keeps the shortest, most confident path to each topic.
+    //
+    // Which edges are visible depends on whether a moment was asked about.
+    // Without `--at` the question is what we still stand behind, so only
+    // uninvalidated versions count. With `--at` the question is what held then,
+    // which a later retraction does not answer on its own: an edge closed
+    // because the relationship ended still held before it was closed, while one
+    // deleted because the claim was wrong never held at all, and a superseded
+    // one is answered by its successor. That distinction is exactly what
+    // tombstone_reason records, and ignoring it made every retraction erase its
+    // own history.
     let rows = client
         .query(
-            "WITH RECURSIVE live_edges AS (
+            "WITH RECURSIVE visible_edges AS (
                  SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
                  FROM relationships r
                  JOIN relationship_versions v ON v.relationship_id = r.id
                  WHERE r.project_id = $1
-                   AND v.invalidated_at IS NULL
                    AND ($4::TEXT[] IS NULL OR r.kind = ANY ($4))
-                   AND ($5::TIMESTAMPTZ IS NULL
-                        OR ((v.valid_from IS NULL OR v.valid_from <= $5)
-                            AND (v.valid_to IS NULL OR $5 < v.valid_to)))
+                   AND CASE WHEN $5::TIMESTAMPTZ IS NULL
+                       THEN v.invalidated_at IS NULL
+                       ELSE (v.valid_from IS NULL OR v.valid_from <= $5)
+                            AND (v.valid_to IS NULL OR $5 < v.valid_to)
+                            AND (v.invalidated_at IS NULL
+                                 OR (v.tombstone_reason = 'closed'
+                                     AND $5 < v.invalidated_at))
+                       END
              ),
              undirected AS (
                  SELECT from_topic AS source, to_topic AS target, kind, confidence, derivation
-                 FROM live_edges
+                 FROM visible_edges
                  UNION ALL
                  SELECT to_topic AS source, from_topic AS target, kind, confidence, derivation
-                 FROM live_edges
+                 FROM visible_edges
              ),
              walk AS (
-                 SELECT e.target AS topic, 1 AS hops, e.source AS via,
+                 SELECT e.source AS origin, e.target AS topic, 1 AS hops, e.source AS via,
                         e.kind, e.confidence, e.derivation
                  FROM undirected e
                  WHERE e.source = ANY ($2)
                  UNION ALL
-                 SELECT e.target, w.hops + 1, e.source,
+                 SELECT w.origin, e.target, w.hops + 1, e.source,
                         e.kind, e.confidence, e.derivation
                  FROM walk w
                  JOIN undirected e ON e.source = w.topic
@@ -445,7 +463,7 @@ pub async fn expand(
                  -- the seeding channels already supplied.
                  WHERE w.hops < $3 AND e.target <> w.via
              )
-             SELECT DISTINCT ON (topic) topic, hops, via, kind, confidence, derivation
+             SELECT DISTINCT ON (topic) topic, origin, hops, via, kind, confidence, derivation
              FROM walk
              ORDER BY topic, hops ASC, confidence DESC",
             &[
@@ -462,6 +480,7 @@ pub async fn expand(
         .iter()
         .map(|row| Neighbor {
             topic: row.get::<_, uuid::Uuid>("topic").into(),
+            origin: row.get::<_, uuid::Uuid>("origin").into(),
             hops: row.get::<_, i32>("hops") as u8,
             via: row.get::<_, uuid::Uuid>("via").into(),
             kind: EdgeKind::from_label(row.get("kind")).unwrap_or(EdgeKind::RelatedTo),

@@ -23,6 +23,6 @@ pub use id::{
 };
 pub use ledger::{
     FilterDecision, Project, RetrievalSignals, Source, SourceKind, SourceSpan, SourceVersion,
-    Topic, TopicState,
+    Topic, TopicState, Validity,
 };
 pub use version::{ResolvedVersion, VersionOffset, resolve};

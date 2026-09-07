@@ -10,7 +10,7 @@ use pamin_store::graph::Expansion;
 use pamin_store::{Database, Workspace, graph, repository};
 use serde::Serialize;
 
-use crate::command::timestamp;
+use crate::command::validity;
 use crate::output::Format;
 
 #[derive(clap::Args)]
@@ -68,7 +68,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         bail!("no topic named {}", args.topic);
     };
 
-    let at = timestamp::parse(args.at.as_deref(), "--at")?;
+    let at = validity::parse(args.at.as_deref(), "--at")?;
     let neighbors = graph::expand(
         database.client(),
         project.id,

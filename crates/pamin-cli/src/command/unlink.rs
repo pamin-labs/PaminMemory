@@ -18,6 +18,14 @@ pub struct Args {
     /// Which relationship to retract.
     #[arg(long, default_value = "related_to")]
     pub kind: String,
+
+    /// Why it is being retracted, which decides what history keeps.
+    ///
+    /// `closed` means the relationship ended: it held until now, and queries
+    /// about earlier instants still find it. `deleted` means the claim was
+    /// wrong: it never held, and no query finds it at any instant.
+    #[arg(long, default_value = "closed", value_parser = ["closed", "deleted"])]
+    pub reason: String,
 }
 
 #[derive(Serialize)]
@@ -25,6 +33,7 @@ struct Unlinked {
     from: String,
     to: String,
     kind: String,
+    reason: String,
     /// False when nothing was open to retract.
     closed: bool,
 }
@@ -45,31 +54,35 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         bail!("no topic named {}", args.to);
     };
 
-    // Retracts the claim. The rows stay, so what was believed and when stays
-    // answerable, and the truth interval is untouched: this says we no longer
-    // assert the relationship, not that it ended at this instant.
-    let closed = graph::close_edge(
-        database.client(),
-        project.id,
-        from.id,
-        to.id,
-        kind,
-        TombstoneReason::Deleted,
-    )
-    .await?;
+    // The reason is not bookkeeping. It decides whether a question about an
+    // earlier instant still finds this edge: a relationship that ended did
+    // hold before it ended, and one that was never true never held at all.
+    // Recording both as the same retraction erases the difference and, with
+    // it, the history.
+    let reason = match args.reason.as_str() {
+        "deleted" => TombstoneReason::Deleted,
+        // The value parser admits nothing else.
+        _ => TombstoneReason::Closed,
+    };
+
+    // The rows stay either way, so what was believed and when stays
+    // answerable, and the truth interval is untouched.
+    let closed =
+        graph::close_edge(database.client(), project.id, from.id, to.id, kind, reason).await?;
 
     let result = Unlinked {
         from: args.from,
         to: args.to,
         kind: kind.as_str().to_string(),
+        reason: args.reason,
         closed,
     };
 
     format.emit(&result, || {
         if result.closed {
             format!(
-                "Retracted {} --{}--> {}",
-                result.from, result.kind, result.to
+                "Retracted {} --{}--> {} ({})",
+                result.from, result.kind, result.to, result.reason
             )
         } else {
             format!(

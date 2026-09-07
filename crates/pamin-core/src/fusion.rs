@@ -45,6 +45,9 @@ pub enum Why {
     /// the engine derived, so a surprising connection can be traced to whoever
     /// or whatever claimed it.
     Path {
+        /// The name of the topic the walk started from, which is one of the
+        /// results the other channels found.
+        from: String,
         /// The name of the topic on the other end of the final edge.
         ///
         /// A name rather than an identifier because this entry exists to be
@@ -374,6 +377,7 @@ mod tests {
             .remove(0);
 
         fused.why.push(Why::Path {
+            from: "oncall_rota".to_string(),
             via: "release_process".to_string(),
             hops: 2,
             edge: EdgeKind::DependsOn,
