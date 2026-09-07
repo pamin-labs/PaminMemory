@@ -129,6 +129,7 @@ fn a_workspace_serves_memories_in_any_language() {
     results_explain_where_they_came_from(&cli);
     an_english_query_reaches_memories_written_elsewhere(&cli);
     the_ledger_keeps_history_and_the_filter_keeps_evidence(&cli);
+    a_write_can_state_when_its_claim_holds(&cli);
     the_index_rebuilds_from_postgres(&cli);
     a_profile_change_is_refused_rather_than_silently_wrong(&cli);
 }
@@ -162,6 +163,8 @@ fn the_graph_channel_reaches_what_nothing_else_can() {
     the_graph_credits_nothing_the_other_channels_already_found(&cli);
     a_result_is_never_its_own_explanation(&cli);
     an_edge_can_be_bounded_in_time(&cli);
+    a_query_naming_a_topic_walks_out_from_it(&cli);
+    a_retraction_says_whether_the_claim_ended_or_was_wrong(&cli);
     retracting_a_link_keeps_the_record_and_drops_the_result(&cli);
     edges_survive_the_projection_being_destroyed(&cli);
 }
@@ -490,6 +493,126 @@ fn an_edge_can_be_bounded_in_time(cli: &Cli) {
     assert!(error.contains("--valid-to must be after"), "got {error:?}");
 }
 
+fn a_query_naming_a_topic_walks_out_from_it(cli: &Cli) {
+    // The seeded topic's own content shares nothing with the query, so the
+    // lexical and vector channels cannot reach it. Only matching the query
+    // text against known topic names can, which is the retrieval half of
+    // entity linking. Without it, asking about a topic by name never walks
+    // out from that topic.
+    cli.run(&[
+        "write",
+        "--topic",
+        "sourdough_starter",
+        "feed it twice a day and keep it warm",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "rye_flour",
+        "coarse ground, from the mill on the north road",
+    ]);
+    cli.run(&[
+        "link",
+        "sourdough_starter",
+        "rye_flour",
+        "--kind",
+        "depends_on",
+    ]);
+
+    let results = cli.json(&["search", "what does sourdough_starter need", "--limit", "8"]);
+    let reached = hit_containing(&results, "coarse ground").unwrap_or_else(|| {
+        panic!(
+            "naming a topic should walk out from it: {:?}",
+            contents(&results)
+        )
+    });
+    assert!(
+        credited_channels(reached).contains(&"graph".to_string()),
+        "and the graph is what reached it, got {:?}",
+        credited_channels(reached)
+    );
+
+    let path = reached["why"]
+        .as_array()
+        .expect("why")
+        .iter()
+        .find(|entry| entry["kind"] == "path")
+        .expect("a graph hit explains itself");
+    assert_eq!(
+        path["from"], "sourdough_starter",
+        "the trace names the topic the walk began from"
+    );
+}
+
+fn a_retraction_says_whether_the_claim_ended_or_was_wrong(cli: &Cli) {
+    cli.run(&[
+        "write",
+        "--topic",
+        "tram_line",
+        "the tram runs every eleven minutes",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "bus_line",
+        "the bus runs every twenty minutes",
+    ]);
+    cli.run(&["link", "tram_line", "bus_line", "--kind", "related_to"]);
+
+    let held = cli.json(&["neighbors", "tram_line", "--depth", "1"]);
+    assert!(neighbor_topics(&held).contains(&"bus_line".to_string()));
+
+    // Default is `closed`: the relationship ended. It stops being asserted now
+    // and stays answerable for the time it did hold.
+    let retracted = cli.json(&["unlink", "tram_line", "bus_line", "--kind", "related_to"]);
+    assert_eq!(retracted["closed"], true);
+    assert_eq!(retracted["reason"], "closed");
+
+    assert!(
+        neighbor_topics(&cli.json(&["neighbors", "tram_line", "--depth", "1"])).is_empty(),
+        "a retracted relationship is not asserted now"
+    );
+    assert!(
+        neighbor_topics(&cli.json(&[
+            "neighbors",
+            "tram_line",
+            "--depth",
+            "1",
+            "--at",
+            "2020-01-01T00:00:00Z",
+        ]))
+        .contains(&"bus_line".to_string()),
+        "but it did hold before it ended, and that question has an answer"
+    );
+
+    // `deleted` says the claim was wrong, so no instant finds it.
+    cli.run(&["link", "tram_line", "bus_line", "--kind", "same_as"]);
+    cli.run(&[
+        "unlink",
+        "tram_line",
+        "bus_line",
+        "--kind",
+        "same_as",
+        "--reason",
+        "deleted",
+    ]);
+    let historical = cli.json(&[
+        "neighbors",
+        "tram_line",
+        "--depth",
+        "1",
+        "--kind",
+        "same_as",
+        "--at",
+        "2020-01-01T00:00:00Z",
+    ]);
+    assert!(
+        neighbor_topics(&historical).is_empty(),
+        "a claim retracted as wrong never held: {:?}",
+        neighbor_topics(&historical)
+    );
+}
+
 fn retracting_a_link_keeps_the_record_and_drops_the_result(cli: &Cli) {
     let retracted = cli.json(&[
         "unlink",
@@ -700,6 +823,37 @@ fn the_ledger_keeps_history_and_the_filter_keeps_evidence(cli: &Cli) {
         2,
         "a held write must not advance the topic"
     );
+}
+
+fn a_write_can_state_when_its_claim_holds(cli: &Cli) {
+    // The columns existed from the first migration and nothing could write
+    // them, so the bi-temporal ledger was half a ledger: relationships could
+    // say when they hold and the facts they connect could not.
+    let written = cli.json(&[
+        "write",
+        "--topic",
+        "winter_timetable",
+        "the winter timetable adds two evening departures",
+        "--valid-from",
+        "2025-11-01T00:00:00Z",
+        "--valid-to",
+        "2026-03-01T00:00:00Z",
+    ]);
+    assert_eq!(written["promoted"], true);
+    assert_eq!(written["valid_from"], "2025-11-01T00:00:00Z");
+    assert_eq!(written["valid_to"], "2026-03-01T00:00:00Z");
+
+    let error = cli.fails(&[
+        "write",
+        "--topic",
+        "winter_timetable",
+        "an interval that runs backwards",
+        "--valid-from",
+        "2026-03-01T00:00:00Z",
+        "--valid-to",
+        "2025-11-01T00:00:00Z",
+    ]);
+    assert!(error.contains("--valid-to must be after"), "got {error:?}");
 }
 
 fn the_index_rebuilds_from_postgres(cli: &Cli) {

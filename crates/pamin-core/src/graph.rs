@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::id::{ProjectId, RelationshipId, RelationshipVersionId, TopicId, TopicStateId};
+use crate::ledger::Validity;
 
 /// What one topic asserts about another.
 ///
@@ -116,9 +117,9 @@ pub struct RelationshipVersion {
     pub relationship_id: RelationshipId,
     pub version: u32,
     /// When the relationship is asserted to hold. Independent of when we
-    /// learned about it, and independent of the endpoints' own validity.
-    pub valid_from: Option<OffsetDateTime>,
-    pub valid_to: Option<OffsetDateTime>,
+    /// learned about it, and independent of the endpoints' own validity: a
+    /// relationship can predate or outlive the topic versions it connects.
+    pub validity: Validity,
     /// When we recorded the claim.
     pub created_at: OffsetDateTime,
     /// When we stopped standing behind it. `None` means this is the live one.
@@ -139,12 +140,8 @@ impl RelationshipVersion {
     }
 
     /// Whether the relationship is asserted to hold at `at`.
-    ///
-    /// An open bound means the assertion extends indefinitely in that
-    /// direction, which is the common case: most relationships are stated
-    /// without an end date rather than as a closed interval.
     pub fn holds_at(&self, at: OffsetDateTime) -> bool {
-        self.valid_from.is_none_or(|from| from <= at) && self.valid_to.is_none_or(|to| at < to)
+        self.validity.holds_at(at)
     }
 }
 
@@ -156,12 +153,12 @@ mod tests {
         valid_from: Option<OffsetDateTime>,
         valid_to: Option<OffsetDateTime>,
     ) -> RelationshipVersion {
+        let validity = Validity::new(valid_from, valid_to);
         RelationshipVersion {
             id: RelationshipVersionId::new(),
             relationship_id: RelationshipId::new(),
             version: 1,
-            valid_from,
-            valid_to,
+            validity,
             created_at: OffsetDateTime::UNIX_EPOCH,
             invalidated_at: None,
             supersedes: None,

@@ -103,6 +103,65 @@ pub struct Topic {
     pub created_at: OffsetDateTime,
 }
 
+/// When something is asserted to be true, independent of when we learned it.
+///
+/// Both bounds are optional and open by default, which is how most claims are
+/// actually stated: a fact is asserted to hold, not asserted to hold between
+/// two dates. Treating an absent bound as a closed one would hide the majority
+/// of the ledger from every temporal query.
+///
+/// The same type covers topic states and relationship versions, because it is
+/// the same question in both places. Writing it twice is how the two would
+/// come to disagree about whether an interval includes its end.
+///
+/// Two cases that look like they need a third end state, and do not:
+///
+/// *Still holds, and we do not know when it will stop.* That is what an open
+/// upper bound already means, and it describes almost every claim ever made.
+/// A variant for it would answer `holds_at` identically to an open bound at
+/// every instant, which is a distinction that changes no answer. What such a
+/// claim really carries is that it is known to be temporary, and that is a
+/// decay signal rather than a truth interval: it says nothing about whether
+/// the claim holds now, only that it is likelier to be stale later. It belongs
+/// with the forgetting model, once measurement says it earns its place.
+///
+/// *It has stopped holding, and we do not know when.* Recording that as an
+/// open bound asserts the opposite of what is meant. It is a statement about
+/// what we still stand behind rather than about when the claim was true, so it
+/// belongs on the system axis: close the version and record why. `Validity`
+/// stays a statement about the world, and every question about our own belief
+/// is asked of `invalidated_at` and `tombstone_reason`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Validity {
+    pub from: Option<OffsetDateTime>,
+    pub to: Option<OffsetDateTime>,
+}
+
+impl Validity {
+    /// Open in both directions: asserted to hold, with no stated interval.
+    pub const ALWAYS: Self = Self {
+        from: None,
+        to: None,
+    };
+
+    pub fn new(from: Option<OffsetDateTime>, to: Option<OffsetDateTime>) -> Self {
+        Self { from, to }
+    }
+
+    /// Whether the claim is asserted to hold at `at`.
+    ///
+    /// Half-open, so consecutive intervals do not both contain the instant
+    /// where one ends and the next begins.
+    pub fn holds_at(&self, at: OffsetDateTime) -> bool {
+        self.from.is_none_or(|from| from <= at) && self.to.is_none_or(|to| at < to)
+    }
+
+    /// Whether the interval is stated backwards, which cannot mean anything.
+    pub fn is_inverted(&self) -> bool {
+        matches!((self.from, self.to), (Some(from), Some(to)) if to <= from)
+    }
+}
+
 /// One immutable version of a topic's content.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TopicState {
@@ -120,9 +179,8 @@ pub struct TopicState {
     pub observed_at: OffsetDateTime,
     /// When PaminMemory recorded it.
     pub recorded_at: OffsetDateTime,
-    /// Optional truth interval, independent of when we learned about it.
-    pub valid_from: Option<OffsetDateTime>,
-    pub valid_to: Option<OffsetDateTime>,
+    /// The truth interval, independent of when we learned about it.
+    pub validity: Validity,
     /// The state this one replaced, forming the update chain.
     pub supersedes: Option<TopicStateId>,
     /// Set when soft deleted. Deleted states leave the default retrieval

@@ -9,7 +9,8 @@
 //! temporary workspace.
 
 use pamin_core::{
-    Derivation, EdgeKind, FilterDecision, SourceKind, TombstoneReason, VersionOffset, resolve,
+    Derivation, EdgeKind, FilterDecision, SourceKind, TombstoneReason, Validity, VersionOffset,
+    resolve,
 };
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Database, Workspace, graph, repository};
@@ -31,6 +32,7 @@ async fn the_ledger_holds_its_promises() {
     edges_are_versioned_rather_than_overwritten(&mut database).await;
     expansion_is_bounded_undirected_and_time_filtered(&mut database).await;
     grep_reaches_evidence_the_index_never_saw(&mut database).await;
+    a_retraction_reason_decides_what_history_keeps(&mut database).await;
 
     drop(database);
     pamin_store::database::stop(&workspace)
@@ -107,6 +109,7 @@ async fn write_state(
         content,
         span.id,
         OffsetDateTime::now_utc(),
+        Validity::ALWAYS,
     )
     .await
     .expect("append topic state")
@@ -292,7 +295,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
 
     // A changed claim closes the live version and appends a successor.
     let mut narrowed = EdgeClaim::explicit(EdgeKind::DependsOn);
-    narrowed.valid_from = Some(OffsetDateTime::UNIX_EPOCH);
+    narrowed.validity = Validity::new(Some(OffsetDateTime::UNIX_EPOCH), None);
     let second = graph::assert_edge(database.client_mut(), project, service, db, &narrowed)
         .await
         .expect("assert changed edge");
@@ -447,8 +450,10 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
 
     // An edge bounded to the past is invisible to a query about now.
     let mut expired = EdgeClaim::explicit(EdgeKind::DependsOn);
-    expired.valid_from = Some(OffsetDateTime::UNIX_EPOCH);
-    expired.valid_to = Some(OffsetDateTime::UNIX_EPOCH + time::Duration::days(1));
+    expired.validity = Validity::new(
+        Some(OffsetDateTime::UNIX_EPOCH),
+        Some(OffsetDateTime::UNIX_EPOCH + time::Duration::days(1)),
+    );
     graph::assert_edge(database.client_mut(), project, backup, db, &expired)
         .await
         .expect("bound the edge to the past");
@@ -580,4 +585,105 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
             .is_empty(),
         "the first version of a rewritten memory is still in evidence"
     );
+}
+
+async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database) {
+    let project = repository::ensure_project(database.client(), "history")
+        .await
+        .expect("ensure project");
+
+    let mut topics = Vec::new();
+    for name in ["tenant_a", "tenant_b", "tenant_c"] {
+        let topic = repository::ensure_topic(database.client(), project.id, name)
+            .await
+            .expect("ensure topic");
+        write_state(
+            database,
+            project.id,
+            topic.id,
+            &format!("history-{name}"),
+            &format!("a durable claim with no cross reference {name}"),
+        )
+        .await;
+        topics.push(topic.id);
+    }
+    let (root, ended, wrong) = (topics[0], topics[1], topics[2]);
+
+    for target in [ended, wrong] {
+        graph::assert_edge(
+            database.client_mut(),
+            project.id,
+            root,
+            target,
+            &EdgeClaim::explicit(EdgeKind::DependsOn),
+        )
+        .await
+        .expect("assert edge");
+    }
+
+    let before_retraction = OffsetDateTime::now_utc();
+
+    // One relationship ended; the other was never true.
+    graph::close_edge(
+        database.client(),
+        project.id,
+        root,
+        ended,
+        EdgeKind::DependsOn,
+        TombstoneReason::Closed,
+    )
+    .await
+    .expect("close ended");
+    graph::close_edge(
+        database.client(),
+        project.id,
+        root,
+        wrong,
+        EdgeKind::DependsOn,
+        TombstoneReason::Deleted,
+    )
+    .await
+    .expect("close wrong");
+
+    // Neither is believed now, so neither is traversed now.
+    let now = graph::expand(
+        database.client(),
+        project.id,
+        &[root],
+        &Expansion::to_depth(1),
+    )
+    .await
+    .expect("expand now");
+    assert!(now.is_empty(), "nothing retracted is still asserted");
+
+    // But a question about an earlier instant is a different question. A
+    // relationship that ended did hold before it ended; one that was never
+    // true never held. Treating both retractions alike erased that, which
+    // meant retracting an edge deleted its history too.
+    let earlier = graph::expand(
+        database.client(),
+        project.id,
+        &[root],
+        &Expansion {
+            depth: 1,
+            kinds: None,
+            at: Some(before_retraction),
+        },
+    )
+    .await
+    .expect("expand earlier");
+    let reached: Vec<_> = earlier.iter().map(|n| n.topic).collect();
+    assert!(
+        reached.contains(&ended),
+        "a relationship that ended still held before it ended: {reached:?}"
+    );
+    assert!(
+        !reached.contains(&wrong),
+        "a claim retracted as wrong never held at any instant: {reached:?}"
+    );
+
+    // The walk reports where it began, which at one hop is also the topic it
+    // arrived through, and past that is not.
+    assert_eq!(earlier[0].origin, root);
+    assert_eq!(earlier[0].via, root);
 }

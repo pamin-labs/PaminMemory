@@ -84,6 +84,17 @@ $ pamin write --topic oncall_rota "ok" --json
 A `null` version means the filter held it. `source_version` is always set: the
 filter decides what reaches the retrieval surface, never what is kept.
 
+`--valid-from` and `--valid-to` state when the claim is asserted to hold, as
+RFC 3339. Both are open by default:
+
+```console
+$ pamin write --topic winter_timetable "adds two evening departures" \
+    --valid-from 2025-11-01T00:00:00Z --valid-to 2026-03-01T00:00:00Z
+```
+
+This is separate from when the memory was written. See
+[Two kinds of time](#two-kinds-of-time).
+
 Writing also derives relationships. See [Relationships](#relationships).
 
 ## `pamin read`
@@ -148,7 +159,7 @@ $ pamin search "how do we deploy" --limit 1 --json
         { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
         { "kind": "channel", "channel": "vector", "rank": 2, "weight": 1.0, "contribution": 0.016129032 },
         { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
-        { "kind": "path", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" },
+        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" },
         { "kind": "modifier", "modifier": "importance", "factor": 1.0 },
         { "kind": "modifier", "modifier": "worth", "factor": 1.0 }
       ],
@@ -183,9 +194,11 @@ again and its members counted twice, and the per-channel ranks would already be
 gone.
 
 **`path`** — accompanies a `graph` entry and says how the graph reached this
-result: the topic on the other end of the final edge, how many edges were
-crossed, which relationship, and whether it was asserted by a caller
-(`explicit`) or derived by the engine (`deterministic`). Nobody can verify a
+result: the topic the walk started `from`, the topic on the other end of the
+final edge (`via`), how many edges were crossed, which relationship, and whether
+it was asserted by a caller (`explicit`) or derived by the engine
+(`deterministic`). At one hop `from` and `via` are the same topic; past that
+they are not, and both are needed to follow the route. Nobody can verify a
 reciprocal rank; anyone can verify that two topics are related the way the path
 claims.
 
@@ -242,23 +255,33 @@ stated. This is separate from when we recorded the claim.
 
 ### `pamin unlink`
 
-Retracts a claim. Every row stays and the truth interval is untouched: this says
-we no longer assert the relationship, not that it ended at this instant.
+Retracts a claim. Every row stays, and `--reason` says what the retraction means:
+
+| `--reason` | Meaning | What history keeps |
+| --- | --- | --- |
+| `closed` (default) | The relationship ended | Queries about earlier instants still find it |
+| `deleted` | The claim was wrong | No instant finds it; it never held |
 
 ```console
 $ pamin unlink oncall_rota deployment_pipeline --kind depends_on
-Retracted oncall_rota --depends_on--> deployment_pipeline
+Retracted oncall_rota --depends_on--> deployment_pipeline (closed)
 $ pamin unlink oncall_rota deployment_pipeline --kind depends_on --json
 {
   "from": "oncall_rota",
   "to": "deployment_pipeline",
   "kind": "depends_on",
+  "reason": "closed",
   "closed": false
 }
 ```
 
-`closed: false` means nothing was open to retract, which is different from having
-retracted something.
+`closed: false` in the output means nothing was open to retract, which is
+different from having retracted something.
+
+Retracting is how you say "this stopped being true and I do not know when". An
+open `--valid-to` means the claim still holds, so using it to mean "it ended at
+some unknown point" asserts the opposite. See
+[Two kinds of time](#two-kinds-of-time).
 
 ### `pamin neighbors`
 
@@ -354,6 +377,32 @@ it works on any language, on partial identifiers, and on strings a segmenter
 would split.
 
 Use `search` when you want relevance, and `grep` when you want certainty.
+
+## Two kinds of time
+
+Every claim carries two independent timelines, and confusing them is the usual
+way a versioned store starts lying.
+
+**When it is true** — `--valid-from` and `--valid-to` on `pamin write` and
+`pamin link`. This is about the world. Both bounds are open by default, which is
+how most claims are actually stated: a fact is asserted to hold, not asserted to
+hold between two dates.
+
+**When we believed it** — recorded automatically, and changed by `pamin unlink`
+or by writing a new version. This is about us.
+
+`neighbors --at <rfc3339>` asks the first question; `neighbors` with no `--at`
+asks the second.
+
+Two cases look like they need a third kind of end date, and do not:
+
+- *It still holds, and nobody knows when it will stop.* That is what an open
+  `--valid-to` already means, and it describes almost every claim ever made. A
+  separate way to say it would give the same answer at every instant.
+- *It has stopped, and nobody knows when.* Recording that as an open
+  `--valid-to` asserts the opposite. It is a statement about what we still stand
+  behind, so it belongs on the other timeline: `pamin unlink`, which by default
+  means the relationship ended rather than that the claim was wrong.
 
 ## `pamin reindex`
 
