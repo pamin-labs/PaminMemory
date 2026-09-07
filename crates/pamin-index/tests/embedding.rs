@@ -75,3 +75,36 @@ fn embeddings_have_the_width_their_profile_declares() {
         "the index is built for this width, so a mismatch would be silent corruption"
     );
 }
+
+#[test]
+#[ignore = "downloads embedding model weights"]
+fn e5_encodes_a_query_and_a_passage_differently() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut embedder = Embedder::load(Profile::Speed, dir.path()).expect("load model");
+
+    let text = "the deployment pipeline runs on continuous integration";
+    let as_query = embedder.embed_query(text).expect("embed query");
+    let as_passage = embedder.embed_passage(text).expect("embed passage");
+
+    // E5 was trained with `query: ` and `passage: ` in front of the text.
+    // Feeding it the bare string produces vectors that are merely worse, never
+    // wrong, so nothing else in the pipeline would report this.
+    assert_ne!(
+        as_query, as_passage,
+        "an asymmetric model must see its query and passage prefixes"
+    );
+}
+
+#[test]
+#[ignore = "downloads embedding model weights"]
+fn a_symmetric_model_is_left_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut embedder = Embedder::load(Profile::Accuracy, dir.path()).expect("load model");
+
+    let text = "the deployment pipeline runs on continuous integration";
+    assert_eq!(
+        embedder.embed_query(text).expect("embed query"),
+        embedder.embed_passage(text).expect("embed passage"),
+        "BGE-M3 takes no prefixes; adding them would be a different kind of bug"
+    );
+}
