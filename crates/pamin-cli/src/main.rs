@@ -58,6 +58,15 @@ enum Command {
     /// Search memories across every recall channel.
     Search(command::search::Args),
 
+    /// Assert a relationship between two topics.
+    Link(command::link::Args),
+
+    /// Retract a relationship, leaving the record that it was claimed.
+    Unlink(command::unlink::Args),
+
+    /// List the topics connected to one, without ranking them.
+    Neighbors(command::neighbors::Args),
+
     /// Rebuild the projection index from PostgreSQL.
     Reindex(command::reindex::Args),
 
@@ -92,6 +101,11 @@ async fn main() -> Result<()> {
         Command::Read(args) => command::read::run(&workspace, &cli.project, format, args).await,
         Command::Search(args) => {
             command::search::run(&workspace, &cli.project, profile, format, args).await
+        }
+        Command::Link(args) => command::link::run(&workspace, &cli.project, format, args).await,
+        Command::Unlink(args) => command::unlink::run(&workspace, &cli.project, format, args).await,
+        Command::Neighbors(args) => {
+            command::neighbors::run(&workspace, &cli.project, format, args).await
         }
         Command::Reindex(args) => {
             command::reindex::run(&workspace, &cli.project, profile, format, args).await
