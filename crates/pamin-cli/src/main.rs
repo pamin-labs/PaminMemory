@@ -5,7 +5,6 @@
 //! library to adopt and no service to stand up.
 
 mod command;
-mod engine;
 mod output;
 
 use anyhow::Result;

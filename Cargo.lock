@@ -1926,6 +1926,7 @@ dependencies = [
  "anyhow",
  "clap",
  "pamin-core",
+ "pamin-engine",
  "pamin-index",
  "pamin-store",
  "serde",
@@ -1946,6 +1947,16 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "pamin-engine"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "pamin-core",
+ "pamin-index",
+ "pamin-store",
 ]
 
 [[package]]

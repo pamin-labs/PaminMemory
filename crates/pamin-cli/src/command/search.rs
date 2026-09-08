@@ -6,8 +6,8 @@ use pamin_index::Profile;
 use pamin_store::Workspace;
 use serde::Serialize;
 
-use crate::engine::{Depths, Engine};
 use crate::output::Format;
+use pamin_engine::{Depths, Engine};
 
 #[derive(clap::Args)]
 pub struct Args {

@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::command::validity;
-use crate::engine::Engine;
 use crate::output::Format;
+use pamin_engine::Engine;
 
 #[derive(clap::Args)]
 pub struct Args {
