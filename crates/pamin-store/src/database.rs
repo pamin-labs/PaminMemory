@@ -12,17 +12,15 @@ use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
-use crate::error::{Result, StoreError};
+use crate::error::Result;
 use crate::workspace::{LocalServer, Workspace};
 
 /// The database name created inside the embedded cluster.
 const DATABASE: &str = "pamin";
 
-/// A connected client, plus the background task driving its connection.
+/// A connection pool against this workspace's cluster.
 pub struct Database {
     pool: PgPool,
-    client: tokio_postgres::Client,
-    connection: tokio::task::JoinHandle<()>,
 }
 
 impl Database {
@@ -43,38 +41,19 @@ impl Database {
 
     /// Connects to an already running server without touching its lifecycle.
     pub async fn connect(server: &LocalServer) -> Result<Self> {
-        let (client, driver) = tokio_postgres::connect(&server.url(), tokio_postgres::NoTls)
-            .await
-            .map_err(StoreError::Database)?;
-
-        // tokio-postgres splits the client from the connection: the returned
-        // future must be polled for the client to make progress.
-        let connection = tokio::spawn(async move {
-            if let Err(error) = driver.await {
-                tracing::error!(%error, "database connection ended");
-            }
-        });
-
-        let pool = pool(&server.url()).await?;
-
         Ok(Self {
-            pool,
-            client,
-            connection,
+            pool: pool(&server.url()).await?,
         })
     }
 
     /// The connection pool. Every query goes through this.
+    ///
+    /// Handed out rather than wrapped. A pool is already the right thing to
+    /// hand a query -- it lends a connection per statement and takes it back --
+    /// whereas the single client this replaced was one connection that every
+    /// query in the process queued behind, however many were ready to run.
     pub fn pool(&self) -> &PgPool {
         &self.pool
-    }
-
-    pub fn client(&self) -> &tokio_postgres::Client {
-        &self.client
-    }
-
-    pub fn client_mut(&mut self) -> &mut tokio_postgres::Client {
-        &mut self.client
     }
 }
 
@@ -108,21 +87,18 @@ async fn pool(url: &str) -> Result<PgPool> {
     Ok(pool)
 }
 
-impl Drop for Database {
-    fn drop(&mut self) {
-        // Drops the client's half of the connection; the server keeps running.
-        self.connection.abort();
-    }
-}
-
 /// Returns true when a server is already listening with these credentials.
+///
+/// The pool is closed again rather than kept: this answers whether to start a
+/// cluster, and the caller opens its own once it knows.
 async fn can_connect(server: &LocalServer) -> bool {
-    let Ok((_client, driver)) = tokio_postgres::connect(&server.url(), tokio_postgres::NoTls).await
-    else {
-        return false;
-    };
-    tokio::spawn(driver);
-    true
+    match PgPool::connect(&server.url()).await {
+        Ok(pool) => {
+            pool.close().await;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Installs if needed, starts the server, and leaves it running.

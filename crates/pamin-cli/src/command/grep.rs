@@ -51,10 +51,10 @@ struct Matches {
 
 pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
     let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+    let project = repository::ensure_project(database.pool(), project).await?;
 
     let hits = repository::grep_evidence(
-        database.client(),
+        database.pool(),
         project.id,
         &args.literal,
         !args.ignore_case,

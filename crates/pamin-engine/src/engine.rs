@@ -129,7 +129,7 @@ impl Engine {
         discard: bool,
     ) -> Result<Self> {
         let database = Database::open(workspace).await?;
-        let project = repository::ensure_project(database.client(), project).await?;
+        let project = repository::ensure_project(database.pool(), project).await?;
 
         // The index is per project, so the identity has to be resolved before
         // the index can be located at all.
@@ -176,10 +176,10 @@ impl Engine {
     /// appear only when one of those memories happened to be rewritten. The
     /// scan runs once in a topic's life, when it is first created.
     pub async fn ensure_topic(&mut self, name: &str) -> Result<Topic> {
-        let existed = repository::find_topic(self.database.client(), self.project, name)
+        let existed = repository::find_topic(self.database.pool(), self.project, name)
             .await?
             .is_some();
-        let topic = repository::ensure_topic(self.database.client(), self.project, name).await?;
+        let topic = repository::ensure_topic(self.database.pool(), self.project, name).await?;
 
         if !existed {
             self.backfill_mentions(&topic).await?;
@@ -195,7 +195,7 @@ impl Engine {
     /// unchanged: asserting an edge is idempotent, so rewriting a memory does
     /// not grow the ledger.
     pub async fn derive_mentions(&mut self, state: &TopicState) -> Result<usize> {
-        let topics = repository::all_topics(self.database.client(), self.project).await?;
+        let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
         let named: Vec<TopicId> = {
             let segmenter = self.index.segmenter();
@@ -232,8 +232,7 @@ impl Engine {
         // One transaction: the edges a memory derives are one statement about
         // what it says, and asserting them separately both cost a commit each
         // and let a crash tell half of it.
-        let asserted =
-            graph::assert_edges(self.database.client_mut(), self.project, &edges).await?;
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
 
         Ok(asserted
             .iter()
@@ -247,8 +246,7 @@ impl Engine {
     /// topic ever created, which is rare enough to pay for; when the cascade
     /// worker exists this moves there and becomes a queued job.
     async fn backfill_mentions(&mut self, topic: &Topic) -> Result<usize> {
-        let states =
-            repository::all_live_topic_states(self.database.client(), self.project).await?;
+        let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
 
         let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
             let segmenter = self.index.segmenter();
@@ -278,8 +276,7 @@ impl Engine {
             })
             .collect();
 
-        let asserted =
-            graph::assert_edges(self.database.client_mut(), self.project, &edges).await?;
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
 
         Ok(asserted
             .iter()
@@ -415,7 +412,7 @@ impl Engine {
         };
 
         let neighbors = graph::expand(
-            self.database.client(),
+            self.database.pool(),
             self.project,
             &seeds,
             &Expansion::to_depth(depths.graph),
@@ -454,8 +451,7 @@ impl Engine {
     /// directory first, which is what makes this a genuine rebuild rather than
     /// an overwrite that could leave orphans behind.
     pub async fn reindex(&mut self) -> Result<usize> {
-        let states =
-            repository::all_live_topic_states(self.database.client(), self.project).await?;
+        let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
 
         let (index, embedder) = (&self.index, &mut self.embedder);
         off_the_runtime(|| {
@@ -512,7 +508,7 @@ struct LiveStates {
 
 impl LiveStates {
     async fn load(database: &Database, project: ProjectId) -> Result<Self> {
-        let states = repository::all_live_topic_states(database.client(), project).await?;
+        let states = repository::all_live_topic_states(database.pool(), project).await?;
 
         let mut current: std::collections::HashMap<TopicId, u32> = std::collections::HashMap::new();
         for state in &states {
@@ -526,7 +522,7 @@ impl LiveStates {
             .map(|state| (state.topic_id, state.id))
             .collect();
 
-        let names = repository::all_topics(database.client(), project)
+        let names = repository::all_topics(database.pool(), project)
             .await?
             .into_iter()
             .map(|topic| (topic.id, topic.name))

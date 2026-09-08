@@ -16,7 +16,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format) -> Result
     // Provisioning, starting, and migrating all happen here, so the quickstart
     // is one command with no database to install and no configuration to write.
     let database = Database::open(workspace).await?;
-    repository::ensure_project(database.client(), project).await?;
+    repository::ensure_project(database.pool(), project).await?;
 
     let result = Initialized {
         project: project.to_string(),

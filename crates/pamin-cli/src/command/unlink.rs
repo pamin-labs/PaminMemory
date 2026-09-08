@@ -44,13 +44,12 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
     };
 
     let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+    let project = repository::ensure_project(database.pool(), project).await?;
 
-    let Some(from) = repository::find_topic(database.client(), project.id, &args.from).await?
-    else {
+    let Some(from) = repository::find_topic(database.pool(), project.id, &args.from).await? else {
         bail!("no topic named {}", args.from);
     };
-    let Some(to) = repository::find_topic(database.client(), project.id, &args.to).await? else {
+    let Some(to) = repository::find_topic(database.pool(), project.id, &args.to).await? else {
         bail!("no topic named {}", args.to);
     };
 
@@ -68,7 +67,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
     // The rows stay either way, so what was believed and when stays
     // answerable, and the truth interval is untouched.
     let closed =
-        graph::close_edge(database.client(), project.id, from.id, to.id, kind, reason).await?;
+        graph::close_edge(database.pool(), project.id, from.id, to.id, kind, reason).await?;
 
     let result = Unlinked {
         from: args.from,

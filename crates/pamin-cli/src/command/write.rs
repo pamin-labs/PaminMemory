@@ -62,7 +62,7 @@ pub async fn run(
     // Manual writes to one topic share a source, so their evidence forms a
     // single chain rather than a new source per write.
     let source = repository::ensure_source(
-        engine.database.client(),
+        engine.database.pool(),
         project,
         SourceKind::Manual,
         &format!("manual:{}", args.topic),
@@ -72,7 +72,7 @@ pub async fn run(
     // Looked up rather than created: a write the filter holds should leave no
     // trace on the retrieval surface, and an empty topic is a trace. Promotion
     // is what creates one, further down.
-    let existing = repository::find_topic(engine.database.client(), project, &args.topic).await?;
+    let existing = repository::find_topic(engine.database.pool(), project, &args.topic).await?;
     let current = match &existing {
         Some(topic) => current_content(&engine.database, topic.id).await?,
         None => None,
@@ -83,7 +83,7 @@ pub async fn run(
     // Evidence first, always, and before the filter's verdict is acted on. That
     // ordering is what makes a rejection recoverable instead of a loss.
     let source_version = repository::append_source_version(
-        engine.database.client_mut(),
+        engine.database.pool(),
         project,
         source,
         &content,
@@ -101,7 +101,7 @@ pub async fn run(
     };
 
     let span = repository::append_source_span(
-        engine.database.client(),
+        engine.database.pool(),
         project,
         source_version.id,
         0,
@@ -120,7 +120,7 @@ pub async fn run(
             None => engine.ensure_topic(&args.topic).await?,
         };
         let state = repository::append_topic_state(
-            engine.database.client_mut(),
+            engine.database.pool(),
             project,
             topic.id,
             &content,
@@ -168,12 +168,12 @@ async fn current_content(
     database: &pamin_store::Database,
     topic: pamin_core::TopicId,
 ) -> Result<Option<String>> {
-    let versions = repository::topic_versions(database.client(), topic).await?;
+    let versions = repository::topic_versions(database.pool(), topic).await?;
     let Some(resolved) = pamin_core::resolve(&versions, pamin_core::VersionOffset::LATEST) else {
         return Ok(None);
     };
     Ok(
-        repository::topic_state(database.client(), topic, resolved.version)
+        repository::topic_state(database.pool(), topic, resolved.version)
             .await?
             .map(|state| state.content),
     )
