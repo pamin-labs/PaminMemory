@@ -89,6 +89,11 @@ $ pamin write --topic oncall_rota "ok" --json
 A `null` version means the filter held it. `source_version` is always set: the
 filter decides what reaches the retrieval surface, never what is kept.
 
+A held write does not create the topic either. Writing to a name that does not
+exist yet, and having the content held, leaves the evidence and no topic: the
+name stays unknown to `read`, `neighbors`, and the graph channel until something
+is promoted under it.
+
 `--valid-from` and `--valid-to` state when the claim is asserted to hold, as
 RFC 3339. Both are open by default:
 

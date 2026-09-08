@@ -69,8 +69,14 @@ pub async fn run(
     )
     .await?;
 
-    let topic = engine.ensure_topic(&args.topic).await?;
-    let current = current_content(&engine.database, topic.id).await?;
+    // Looked up rather than created: a write the filter holds should leave no
+    // trace on the retrieval surface, and an empty topic is a trace. Promotion
+    // is what creates one, further down.
+    let existing = repository::find_topic(engine.database.client(), project, &args.topic).await?;
+    let current = match &existing {
+        Some(topic) => current_content(&engine.database, topic.id).await?,
+        None => None,
+    };
 
     let verdict = SensoryFilter::default().judge(&content, current.as_deref());
 
@@ -106,6 +112,13 @@ pub async fn run(
     .await?;
 
     let state = if verdict.is_promoted() {
+        // Creating it here also backfills the edges memories written before it
+        // already carry, which is why promotion goes through the engine rather
+        // than straight to the repository.
+        let topic = match existing {
+            Some(topic) => topic,
+            None => engine.ensure_topic(&args.topic).await?,
+        };
         let state = repository::append_topic_state(
             engine.database.client_mut(),
             project,
