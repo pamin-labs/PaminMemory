@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::Why;
-use pamin_index::Profile;
+use pamin_index::{Access, Profile};
 use pamin_store::Workspace;
 use serde::Serialize;
 
@@ -67,7 +67,8 @@ pub async fn run(
     format: Format,
     args: Args,
 ) -> Result<()> {
-    let mut engine = Engine::open(workspace, project, profile).await?;
+    // Read-only, so several agents can search one project at once.
+    let mut engine = Engine::open(workspace, project, profile, Access::ReadOnly).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,

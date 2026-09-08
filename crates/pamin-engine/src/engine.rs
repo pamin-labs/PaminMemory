@@ -9,7 +9,7 @@ use pamin_core::{
     Channel, ChannelResults, EdgeKind, FusedResult, Fusion, Modifiers, ProjectId, Topic, TopicId,
     TopicState, TopicStateId, Why,
 };
-use pamin_index::{Embedder, Profile, ProjectionIndex};
+use pamin_index::{Access, Embedder, Profile, ProjectionIndex};
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Database, Workspace, graph, repository};
 
@@ -58,6 +58,14 @@ const MENTION_CONFIDENCE: f32 = 0.5;
 /// quantity anything holds down.
 const MAX_SEEDS: usize = 64;
 
+/// How many states a rebuild embeds and writes at a time.
+///
+/// Bounded so the peak memory of a rebuild follows the batch rather than the
+/// project: at a thousand states the embeddings alone are already megabytes,
+/// and the whole point of the batch is that it does not have to be the whole
+/// project.
+const REINDEX_BATCH: usize = 256;
+
 /// Runs synchronous index and embedder work off the async path.
 ///
 /// The projection engine and ONNX Runtime are both synchronous C libraries. A
@@ -84,8 +92,18 @@ pub struct Engine {
 
 impl Engine {
     /// Opens everything a search or a write needs.
-    pub async fn open(workspace: &Workspace, project: &str, profile: Profile) -> Result<Self> {
-        Self::open_index(workspace, project, profile, false).await
+    ///
+    /// The access mode is the caller's to state. A read-write handle excludes
+    /// every other one, readers included, so a command that only queries and
+    /// asks for one turns two simultaneous searches into one search and one
+    /// wait.
+    pub async fn open(
+        workspace: &Workspace,
+        project: &str,
+        profile: Profile,
+        access: Access,
+    ) -> Result<Self> {
+        Self::open_index(workspace, project, profile, access, false).await
     }
 
     /// Opens with the projection discarded first, for a rebuild.
@@ -98,13 +116,14 @@ impl Engine {
         project: &str,
         profile: Profile,
     ) -> Result<Self> {
-        Self::open_index(workspace, project, profile, true).await
+        Self::open_index(workspace, project, profile, Access::ReadWrite, true).await
     }
 
     async fn open_index(
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        access: Access,
         discard: bool,
     ) -> Result<Self> {
         let database = Database::open(workspace).await?;
@@ -124,7 +143,7 @@ impl Engine {
                 ProjectionIndex::discard(&legacy)?;
             }
 
-            let index = ProjectionIndex::open(&dir, &legacy, profile)?;
+            let index = ProjectionIndex::open(&dir, &legacy, profile, access)?;
             let embedder = Embedder::load(profile, &models)?;
             Ok::<_, pamin_index::IndexError>((index, embedder))
         })?;
@@ -438,9 +457,21 @@ impl Engine {
 
         let (index, embedder) = (&self.index, &mut self.embedder);
         off_the_runtime(|| {
-            for state in &states {
-                let embedding = embedder.embed_passage(&state.content)?;
-                index.upsert(state.id, &state.content, &embedding)?;
+            for batch in states.chunks(REINDEX_BATCH) {
+                let embeddings = batch
+                    .iter()
+                    .map(|state| embedder.embed_passage(&state.content))
+                    .collect::<pamin_index::Result<Vec<_>>>()?;
+
+                let documents: Vec<_> = batch
+                    .iter()
+                    .zip(&embeddings)
+                    .map(|(state, embedding)| {
+                        (state.id, state.content.as_str(), embedding.as_slice())
+                    })
+                    .collect();
+
+                index.upsert_batch(&documents)?;
             }
             index.flush()?;
             // A rebuild is the one point where building the vector graph is

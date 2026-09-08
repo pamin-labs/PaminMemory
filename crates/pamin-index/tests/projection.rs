@@ -1,7 +1,7 @@
 //! Drives the projection index against the real engine.
 
 use pamin_core::TopicStateId;
-use pamin_index::{Profile, ProjectionIndex};
+use pamin_index::{Access, Profile, ProjectionIndex};
 
 const PROFILE: Profile = Profile::Speed;
 
@@ -23,8 +23,13 @@ fn numbered(n: u128) -> TopicStateId {
 #[test]
 fn lexical_recall_works_across_languages_and_on_exact_strings() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let index =
-        ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE).expect("open index");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+    )
+    .expect("open index");
 
     let english = id(1);
     let chinese = id(2);
@@ -92,8 +97,13 @@ fn lexical_recall_works_across_languages_and_on_exact_strings() {
 fn discarding_the_directory_leaves_an_empty_index() {
     let dir = tempfile::tempdir().expect("temp dir");
 
-    let index =
-        ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE).expect("open index");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+    )
+    .expect("open index");
     index
         .upsert(id(1), "the deployment pipeline", &stub())
         .expect("upsert");
@@ -103,8 +113,13 @@ fn discarding_the_directory_leaves_an_empty_index() {
 
     ProjectionIndex::discard(dir.path()).expect("discard");
 
-    let rebuilt = ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE)
-        .expect("reopen index");
+    let rebuilt = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+    )
+    .expect("reopen index");
     assert!(
         rebuilt
             .recall_segmented("deployment", 10)
@@ -124,7 +139,12 @@ fn a_pre_split_workspace_is_reported_rather_than_searched() {
     let legacy = dir.path().join("legacy");
     std::fs::create_dir_all(&legacy).expect("legacy layout");
 
-    let opened = ProjectionIndex::open(&dir.path().join("project"), &legacy, PROFILE);
+    let opened = ProjectionIndex::open(
+        &dir.path().join("project"),
+        &legacy,
+        PROFILE,
+        Access::ReadWrite,
+    );
     let Err(error) = opened else {
         panic!("a shared layout must not be opened silently");
     };
@@ -132,6 +152,34 @@ fn a_pre_split_workspace_is_reported_rather_than_searched() {
         error.to_string().contains("reindex"),
         "the error has to say how to fix it, got {error}"
     );
+}
+
+/// Two searches can hold the index at the same time.
+///
+/// Every open used to be read-write, so the engine took the directory lock
+/// exclusively and two agents searching one project at the same time meant one
+/// search and one wait -- for a pair of commands that write nothing. A shared
+/// lock is what the read path actually needs.
+#[test]
+fn two_readers_hold_the_index_at_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let legacy = dir.path().join("legacy");
+
+    let first = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadOnly)
+        .expect("first reader");
+    let second = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadOnly)
+        .expect("a second reader should not have to wait for the first");
+
+    // Both are usable, not merely open.
+    for reader in [&first, &second] {
+        assert!(
+            reader
+                .recall_segmented("anything", 1)
+                .expect("recall")
+                .is_empty(),
+            "an empty index should return nothing rather than fail"
+        );
+    }
 }
 
 /// A second command waits for the index instead of being turned away.
@@ -149,14 +197,15 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let legacy = dir.path().join("legacy");
-    let held = ProjectionIndex::open(dir.path(), &legacy, PROFILE).expect("open index");
+    let held =
+        ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite).expect("open index");
 
     let waiting = {
         let dir = dir.path().to_path_buf();
         let legacy = legacy.clone();
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
-            let opened = ProjectionIndex::open(&dir, &legacy, PROFILE).is_ok();
+            let opened = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite).is_ok();
             (opened, started.elapsed())
         })
     };
@@ -196,8 +245,13 @@ fn building_the_vector_index_loses_nothing() {
     const ROUNDS: usize = 5;
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let index =
-        ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE).expect("open index");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+    )
+    .expect("open index");
 
     let mut live: Vec<u128> = Vec::new();
     let mut written = 0u128;

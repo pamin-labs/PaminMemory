@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use pamin_core::{SensoryFilter, SourceKind};
-use pamin_index::Profile;
+use pamin_index::{Access, Profile};
 use pamin_store::{Workspace, repository};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -56,7 +56,7 @@ pub async fn run(
         None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
     };
 
-    let mut engine = Engine::open(workspace, project, profile).await?;
+    let mut engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
     let project = engine.project;
 
     // Manual writes to one topic share a source, so their evidence forms a
