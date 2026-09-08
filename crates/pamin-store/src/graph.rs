@@ -135,23 +135,47 @@ pub async fn ensure_relationship<C: GenericClient>(
     to: TopicId,
     kind: EdgeKind,
 ) -> Result<Relationship> {
-    let row = client
-        .query_one(
-            "INSERT INTO relationships (id, project_id, from_topic, to_topic, kind, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (project_id, from_topic, to_topic, kind)
-                 DO UPDATE SET kind = EXCLUDED.kind
-             RETURNING id, created_at",
-            &[
-                &RelationshipId::new().0,
-                &project.0,
-                &from.0,
-                &to.0,
-                &kind.label(),
-                &OffsetDateTime::now_utc(),
-            ],
-        )
-        .await?;
+    const FIND: &str = "SELECT id, created_at FROM relationships
+                        WHERE project_id = $1 AND from_topic = $2
+                          AND to_topic = $3 AND kind = $4";
+    let find = &[
+        &project.0 as &(dyn tokio_postgres::types::ToSql + Sync),
+        &from.0,
+        &to.0,
+        &kind.label(),
+    ];
+
+    // Read first: an edge is created once and re-asserted on every rewrite of
+    // the memory that derives it, so the insert is the rare path. See
+    // `repository::ensure_project` for why the conflict clause does not update.
+    let row = match client.query_opt(FIND, find).await? {
+        Some(row) => row,
+        None => {
+            let inserted = client
+                .query_opt(
+                    "INSERT INTO relationships
+                         (id, project_id, from_topic, to_topic, kind, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT (project_id, from_topic, to_topic, kind) DO NOTHING
+                     RETURNING id, created_at",
+                    &[
+                        &RelationshipId::new().0,
+                        &project.0,
+                        &from.0,
+                        &to.0,
+                        &kind.label(),
+                        &OffsetDateTime::now_utc(),
+                    ],
+                )
+                .await?;
+
+            match inserted {
+                Some(row) => row,
+                // Another writer created it in between.
+                None => client.query_one(FIND, find).await?,
+            }
+        }
+    };
 
     Ok(Relationship {
         id: row.get::<_, uuid::Uuid>("id").into(),
