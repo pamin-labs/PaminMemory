@@ -19,7 +19,11 @@ pub struct Args {
     pub topic: String,
 
     /// How many edges to traverse.
-    #[arg(long, default_value_t = 2)]
+    #[arg(
+        long,
+        default_value_t = 2,
+        value_parser = clap::value_parser!(u8).range(0..=graph::MAX_DEPTH as i64)
+    )]
     pub depth: u8,
 
     /// Restrict traversal to one relationship kind. Repeatable.

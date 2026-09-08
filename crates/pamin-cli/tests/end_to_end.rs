@@ -886,6 +886,48 @@ fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
     );
 }
 
+/// A walk deeper than the graph channel goes is refused, not quietly reduced.
+///
+/// `--depth` was a bare `u8`, so 255 parsed. A topic's neighbourhood grows
+/// multiplicatively per hop and hub topics reach five figures of degree, so
+/// what that accepted was a request no project could answer. Refusing it at the
+/// boundary is what tells the operator their number was not honoured; clamping
+/// silently leaves them wondering why the walk stopped at four.
+///
+/// Not ignored, and it needs no workspace: the argument is rejected during
+/// parsing, before the command reaches anything it would have to provision.
+#[test]
+fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    for args in [
+        ["neighbors", "deploy", "--depth", "255"],
+        ["search", "deploy", "--graph-depth", "255"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+            .args(args)
+            .env("PAMIN_HOME", home.path())
+            .output()
+            .expect("running pamin");
+
+        assert!(!output.status.success(), "{args:?} should be refused");
+
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("255"),
+            "{args:?} refused without saying what was wrong: {error:?}"
+        );
+    }
+
+    assert!(
+        std::fs::read_dir(home.path())
+            .expect("temp home")
+            .next()
+            .is_none(),
+        "a refused argument should not have provisioned a workspace"
+    );
+}
+
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn an_unknown_profile_is_rejected_before_anything_is_provisioned() {

@@ -28,7 +28,12 @@ pub struct Args {
     pub channel_depth: u32,
 
     /// How many edges the graph channel walks out from its seeds.
-    #[arg(long, env = "PAMIN_GRAPH_DEPTH", default_value_t = Depths::default().graph)]
+    #[arg(
+        long,
+        env = "PAMIN_GRAPH_DEPTH",
+        default_value_t = Depths::default().graph,
+        value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
+    )]
     pub graph_depth: u8,
 }
 

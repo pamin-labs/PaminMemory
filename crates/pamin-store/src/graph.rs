@@ -372,6 +372,14 @@ pub struct Neighbor {
     pub confidence: f32,
 }
 
+/// The deepest walk this channel will make.
+///
+/// Not a preference. A topic's neighbourhood grows multiplicatively with each
+/// hop, and hub topics in a real project reach five figures of degree, so one
+/// hop further is not a slower query but a differently sized one. A caller who
+/// wants to reach further wants a different question.
+pub const MAX_DEPTH: u8 = 4;
+
 /// How the neighbourhood query is bounded.
 #[derive(Clone, Debug)]
 pub struct Expansion<'a> {
@@ -385,9 +393,15 @@ pub struct Expansion<'a> {
 }
 
 impl Expansion<'_> {
+    /// Bounds a walk at `depth`, or at [`MAX_DEPTH`] when that is smaller.
+    ///
+    /// The clamp is a floor under the library rather than the interface a
+    /// caller sees: the CLI rejects an out-of-range depth so the operator
+    /// learns their number was ignored rather than wondering why the walk
+    /// stopped early.
     pub fn to_depth(depth: u8) -> Self {
         Self {
-            depth,
+            depth: depth.min(MAX_DEPTH),
             kinds: None,
             at: None,
         }
