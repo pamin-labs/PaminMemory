@@ -18,6 +18,12 @@ pub enum IndexError {
     )]
     LegacyLayout,
 
+    #[error(
+        "another pamin command is holding this project's index and did not \
+         release it in time ({0}); retry, or run one command at a time"
+    )]
+    Busy(String),
+
     #[error("index io: {0}")]
     Io(#[from] std::io::Error),
 }
