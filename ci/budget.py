@@ -67,6 +67,29 @@ def directory_bytes(path: pathlib.Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
+# Extensions of a native library that ships beside the binary rather than
+# inside it.
+SIDECAR_SUFFIXES = (".so", ".dylib", ".dll")
+
+
+def sidecar_bytes() -> int:
+    """Return the bytes of the native libraries shipped beside the binary.
+
+    The retrieval engine is a dynamic library. The linker records it by name,
+    the build script copies it next to the binary, and an `$ORIGIN` rpath is
+    what lets the pair be moved together -- so what a user downloads is both
+    files, and `binary_bytes` alone has never been the shipped size. Measuring
+    only the executable made every size comparison, including any comparison
+    against a different retrieval engine, wrong by the larger of the two.
+    """
+    profile = BINARY.parent
+    return sum(
+        f.stat().st_size
+        for f in profile.iterdir()
+        if f.is_file() and f.suffix in SIDECAR_SUFFIXES
+    )
+
+
 def measure() -> dict[str, float]:
     target = ROOT / "target"
     if target.exists():
@@ -86,8 +109,10 @@ def measure() -> dict[str, float]:
     run("cargo", "check", "--workspace")
     incremental_check_seconds = time.monotonic() - start
 
+    binary_bytes = BINARY.stat().st_size
     return {
-        "binary_bytes": BINARY.stat().st_size,
+        "binary_bytes": binary_bytes,
+        "distribution_bytes": binary_bytes + sidecar_bytes(),
         "total_dependencies": dependency_count(),
         "cold_build_seconds": round(cold_build_seconds, 1),
         "incremental_check_seconds": round(incremental_check_seconds, 1),

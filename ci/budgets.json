@@ -9,6 +9,13 @@
     "",
     "Baseline measured 2026-09-07 on the full dependency set:",
     "  binary 39.6 MB, 434 dependencies, cold build 111 s, target/ 2.0 GB.",
+    "",
+    "binary_bytes is the executable alone. distribution_bytes adds the native",
+    "libraries that ship beside it -- today the retrieval engine, 36.9 MB, which",
+    "is linked dynamically and copied next to the binary. That is what a user",
+    "actually downloads, so it is what any comparison against a different engine",
+    "has to be made against; the executable on its own understates it by more",
+    "than its own size.",
     "Gated limits carry roughly 20% headroom over that, which is enough for",
     "ordinary growth and tight enough that a new heavyweight dependency shows up.",
     "",
@@ -19,7 +26,8 @@
   ],
   "gated": {
     "binary_bytes": 48000000,
-    "total_dependencies": 470
+    "total_dependencies": 470,
+    "distribution_bytes": 92000000
   },
   "reported": [
     "cold_build_seconds",
