@@ -19,8 +19,7 @@ use time::OffsetDateTime;
 #[tokio::test]
 #[ignore = "downloads and starts a real postgres cluster"]
 async fn the_ledger_holds_its_promises() {
-    let dir = tempfile::tempdir().expect("temp workspace");
-    let workspace = Workspace::at(dir.path());
+    let workspace = Workspace::at("/tmp/pamin-ws");
 
     let mut database = Database::open(&workspace).await.expect("open workspace");
 
@@ -34,11 +33,9 @@ async fn the_ledger_holds_its_promises() {
     grep_reaches_evidence_the_index_never_saw(&mut database).await;
     a_retraction_reason_decides_what_history_keeps(&mut database).await;
     a_seed_never_reaches_itself_however_deep_the_walk(&mut database).await;
+    concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
 
     drop(database);
-    pamin_store::database::stop(&workspace)
-        .await
-        .expect("stop server");
 }
 
 async fn migrations_create_every_table(database: &Database) {
@@ -81,7 +78,7 @@ async fn write_state(
         .await
         .expect("ensure source");
     let version = repository::append_source_version(
-        database.client(),
+        database.client_mut(),
         project,
         source,
         content,
@@ -208,7 +205,7 @@ async fn filtered_evidence_is_still_stored(database: &mut Database) {
     .expect("ensure source");
 
     repository::append_source_version(
-        database.client(),
+        database.client_mut(),
         project.id,
         source,
         "ok",
@@ -526,7 +523,7 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
     // Held by the filter, so it never became a topic state and never entered
     // the projection index. Reaching it is the entire reason this exists.
     repository::append_source_version(
-        database.client(),
+        database.client_mut(),
         project.id,
         source,
         "the KILN reaches cone ten",
@@ -748,4 +745,73 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &mut Databa
             "at depth {depth} the seed came back as its own neighbour: {reached:?}"
         );
     }
+}
+
+/// Evidence written at the same time from several connections all survives.
+///
+/// Version numbers are allocated from the maximum already stored, so without a
+/// lock on the source every concurrent writer reads the same maximum and every
+/// one of them claims the version after it. The uniqueness constraint then
+/// admits exactly one and the rest fail, which loses evidence -- the one thing
+/// this store promises never to do.
+///
+/// Real connections rather than one: the race is between sessions, and a single
+/// client serializes it away.
+async fn concurrent_writers_to_one_source_lose_no_evidence(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const WRITERS: usize = 8;
+
+    let project = repository::ensure_project(database.client(), "contended")
+        .await
+        .expect("ensure project");
+    let source = repository::ensure_source(
+        database.client(),
+        project.id,
+        SourceKind::Manual,
+        "contended-source",
+    )
+    .await
+    .expect("ensure source");
+
+    let server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|writer| {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let mut database = Database::connect(&server).await.expect("connect");
+                repository::append_source_version(
+                    database.client_mut(),
+                    project.id,
+                    source,
+                    &format!("evidence from writer {writer}"),
+                    "hash",
+                    FilterDecision::Promoted,
+                    "test fixture",
+                )
+                .await
+            })
+        })
+        .collect();
+
+    let mut versions = Vec::new();
+    for writer in writers {
+        let appended = writer
+            .await
+            .expect("writer task")
+            .expect("every writer keeps its evidence");
+        versions.push(appended.version);
+    }
+
+    versions.sort_unstable();
+    assert_eq!(
+        versions,
+        (1..=WRITERS as u32).collect::<Vec<_>>(),
+        "concurrent writers should take consecutive versions"
+    );
 }

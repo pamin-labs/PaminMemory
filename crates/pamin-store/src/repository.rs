@@ -115,8 +115,15 @@ pub async fn ensure_source(
 ///
 /// The verdict rides on a row that exists either way: the filter decides
 /// whether content reaches the retrieval surface, never whether it is kept.
+///
+/// The version number is read and written under a lock on the source row, for
+/// the same reason `append_topic_state` locks the topic. Two agents writing to
+/// one source otherwise both read the same maximum and both claim the version
+/// after it, and only one of the two rows survives the uniqueness constraint.
+/// Losing the other is losing evidence, which is the one thing this store
+/// promises never to do.
 pub async fn append_source_version(
-    client: &Client,
+    client: &mut Client,
     project: ProjectId,
     source: SourceId,
     content: &str,
@@ -124,7 +131,16 @@ pub async fn append_source_version(
     decision: FilterDecision,
     reason: &str,
 ) -> Result<SourceVersion> {
-    let row = client
+    let transaction = client.transaction().await?;
+
+    transaction
+        .execute(
+            "SELECT id FROM sources WHERE id = $1 FOR UPDATE",
+            &[&source.0],
+        )
+        .await?;
+
+    let row = transaction
         .query_one(
             "INSERT INTO source_versions (
                  id, project_id, source_id, version, content, content_hash,
@@ -145,6 +161,8 @@ pub async fn append_source_version(
             ],
         )
         .await?;
+
+    transaction.commit().await?;
 
     Ok(SourceVersion {
         id: row.get::<_, uuid::Uuid>("id").into(),
