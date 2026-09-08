@@ -4,10 +4,13 @@
 //! be a zero-integration path for any agent with a shell, and that promise does
 //! not survive a prerequisite that starts with installing a database.
 
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::time::Duration;
 
 use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::error::{Result, StoreError};
 use crate::workspace::{LocalServer, Workspace};
@@ -17,6 +20,7 @@ const DATABASE: &str = "pamin";
 
 /// A connected client, plus the background task driving its connection.
 pub struct Database {
+    pool: PgPool,
     client: tokio_postgres::Client,
     connection: tokio::task::JoinHandle<()>,
 }
@@ -32,8 +36,8 @@ impl Database {
             _ => start_server(workspace).await?,
         };
 
-        let mut database = Self::connect(&server).await?;
-        crate::migrate::run(&mut database.client).await?;
+        let database = Self::connect(&server).await?;
+        crate::migrate::run(&database.pool).await?;
         Ok(database)
     }
 
@@ -51,7 +55,18 @@ impl Database {
             }
         });
 
-        Ok(Self { client, connection })
+        let pool = pool(&server.url()).await?;
+
+        Ok(Self {
+            pool,
+            client,
+            connection,
+        })
+    }
+
+    /// The connection pool. Every query goes through this.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 
     pub fn client(&self) -> &tokio_postgres::Client {
@@ -61,6 +76,36 @@ impl Database {
     pub fn client_mut(&mut self) -> &mut tokio_postgres::Client {
         &mut self.client
     }
+}
+
+/// Opens a pool sized for one short-lived command.
+///
+/// Every `pamin` invocation is its own process with its own pool, all pointing
+/// at one cluster, so the pool's size is multiplied by however many agents are
+/// running. The default of ten connections each means thirty agents ask for
+/// three hundred, against a server that allows a hundred, and what they get is
+/// `too many clients` after a thirty-second wait. Four is enough for the three
+/// recall channels to run at once and small enough to multiply.
+///
+/// `test_before_acquire` is off. It costs a full round trip on every acquire to
+/// detect connections dropped by a proxy or an idle timer, and there is neither
+/// between here and a cluster on this machine that this process just started.
+async fn pool(url: &str) -> Result<PgPool> {
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .min_connections(1)
+        .test_before_acquire(false)
+        // A command outlives neither, so recycling connections underneath it
+        // only adds reconnects.
+        .idle_timeout(None)
+        .max_lifetime(None)
+        // Long enough to outlast a busy moment, short enough that a caller
+        // learns the server is unreachable rather than appearing to hang.
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(url)
+        .await?;
+
+    Ok(pool)
 }
 
 impl Drop for Database {
@@ -97,6 +142,14 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
         // exceeds routinely -- and the failure lands on whoever is setting the
         // project up for the first time, which is the worst audience for it.
         timeout: Some(Duration::from_secs(60)),
+        // PostgreSQL allows a hundred clients by default, and every `pamin`
+        // command is a process with its own pool pointing at this one cluster.
+        // A few dozen agents working at once exhaust that, and what they see is
+        // a connection timeout rather than anything naming the limit.
+        //
+        // Passed to the server as it starts, so an already-initialised
+        // workspace keeps whatever it was started with until `pamin stop`.
+        configuration: HashMap::from([("max_connections".to_string(), "300".to_string())]),
         ..Settings::default()
     };
 

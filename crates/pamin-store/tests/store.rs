@@ -36,6 +36,7 @@ async fn the_ledger_holds_its_promises() {
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
     ensuring_a_row_that_exists_does_not_rewrite_it(&mut database).await;
     derived_edges_are_asserted_together_or_not_at_all(&mut database).await;
+    a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
 
     drop(database);
 }
@@ -997,4 +998,103 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &mut Databa
         0,
         "re-asserting an unchanged batch should append nothing"
     );
+}
+
+/// A database the previous migration runner had migrated is adopted, not redone.
+///
+/// `refinery` and `sqlx` keep unrelated books: different table, different
+/// checksum function, different columns. Pointed at a database `refinery` had
+/// already migrated, `sqlx` finds nothing applied and tries to apply
+/// everything -- against a schema that already has every table.
+///
+/// This is the one code path in the change that only existing workspaces reach.
+/// Anyone who deletes their workspace and starts over never runs it, which is
+/// most of the ways it would be tried by hand, so it is built here instead: a
+/// scratch database is migrated, its books are rewritten as the old runner kept
+/// them, and the runner is pointed at it again. Without adoption the second run
+/// fails trying to create `projects` a second time.
+async fn a_workspace_the_previous_runner_migrated_is_adopted(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    sqlx::query("DROP DATABASE IF EXISTS pamin_adoption_check")
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
+    sqlx::query("CREATE DATABASE pamin_adoption_check")
+        .execute(database.pool())
+        .await
+        .expect("create scratch database");
+
+    let mut server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+    server.database = "pamin_adoption_check".to_string();
+
+    let scratch = sqlx::PgPool::connect(&server.url())
+        .await
+        .expect("connect to scratch database");
+
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("migrate the scratch database");
+
+    // Rewrite the books the way the previous runner kept them, leaving the
+    // schema it produced in place.
+    sqlx::query("DROP TABLE _sqlx_migrations")
+        .execute(&scratch)
+        .await
+        .expect("drop the new bookkeeping");
+    sqlx::query(
+        "CREATE TABLE refinery_schema_history (
+             version    INTEGER PRIMARY KEY,
+             name       VARCHAR(255),
+             applied_on VARCHAR(255),
+             checksum   VARCHAR(255)
+         )",
+    )
+    .execute(&scratch)
+    .await
+    .expect("create the old bookkeeping");
+
+    for (version, name) in [
+        (1, "initial"),
+        (2, "relationships"),
+        (3, "shard_key_and_indexes"),
+    ] {
+        sqlx::query(
+            "INSERT INTO refinery_schema_history (version, name, applied_on, checksum)
+             VALUES ($1, $2, '2026-01-01T00:00:00Z', '1234567890')",
+        )
+        .bind(version)
+        .bind(name)
+        .execute(&scratch)
+        .await
+        .expect("record an applied migration");
+    }
+
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("a database the previous runner migrated should be adopted");
+
+    let (adopted,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
+        .fetch_one(&scratch)
+        .await
+        .expect("count adopted migrations");
+    assert_eq!(
+        adopted, 3,
+        "every applied migration should have been adopted"
+    );
+
+    // And adoption is not a one-time trick that breaks the next start.
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("an adopted database still starts");
+
+    scratch.close().await;
+    sqlx::query("DROP DATABASE pamin_adoption_check")
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
 }

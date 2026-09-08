@@ -9,6 +9,12 @@ pub enum StoreError {
     #[error("migration failed: {0}")]
     Migration(#[from] refinery::Error),
 
+    #[error("database error: {0}")]
+    Pool(#[from] sqlx::Error),
+
+    #[error("migration failed: {0}")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+
     #[error("embedded postgres: {0}")]
     EmbeddedPostgres(#[from] postgresql_embedded::Error),
 
