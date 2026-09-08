@@ -207,6 +207,46 @@ impl ProjectionIndex {
         Ok(())
     }
 
+    /// Builds the vector index over everything written since the last call.
+    ///
+    /// Documents land in a flat buffer that vector search scans exhaustively,
+    /// and only this moves them into the graph. Nothing in this project had
+    /// ever called it, so the vector channel had been running a brute-force
+    /// scan of the whole project on every query while the HNSW parameters it
+    /// was configured with described a structure that was never built. Recall
+    /// was right, which is why it went unnoticed.
+    ///
+    /// It is not free and does not belong on the write path: it runs over
+    /// everything unindexed, so a write that happened to trigger it would pay
+    /// for every write before it. `reindex` calls it because a rebuild is
+    /// already the expensive operation; incremental writes wait for the
+    /// cascade worker, which is where a threshold on
+    /// [`vector_index_completeness`](Self::vector_index_completeness) belongs.
+    pub fn optimize(&self) -> Result<()> {
+        self.collection.optimize()?;
+        Ok(())
+    }
+
+    /// How much of the collection the vector index covers, from 0.0 to 1.0.
+    ///
+    /// The share of documents [`optimize`](Self::optimize) has taken in. Below
+    /// 1.0 the remainder is still answered by the flat buffer -- correctly, and
+    /// at a cost that grows with the project.
+    pub fn vector_index_completeness(&self) -> Result<f32> {
+        Ok(self
+            .collection
+            .stats()?
+            .indexes
+            .iter()
+            .find(|index| index.name == FIELD_VECTOR)
+            .map_or(0.0, |index| index.completeness))
+    }
+
+    /// How many documents the index holds.
+    pub fn document_count(&self) -> Result<u64> {
+        Ok(self.collection.stats()?.doc_count)
+    }
+
     /// Deletes the index directory so the next open starts empty.
     ///
     /// Rebuilding is the intended way to clear it. The projection carries no

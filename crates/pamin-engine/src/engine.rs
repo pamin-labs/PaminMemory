@@ -442,7 +442,12 @@ impl Engine {
                 let embedding = embedder.embed_passage(&state.content)?;
                 index.upsert(state.id, &state.content, &embedding)?;
             }
-            index.flush()
+            index.flush()?;
+            // A rebuild is the one point where building the vector graph is
+            // clearly worth its cost: everything has just been written, and
+            // without this the graph the index was configured for does not
+            // exist and every vector query scans the buffer instead.
+            index.optimize()
         })?;
 
         Ok(states.len())

@@ -15,6 +15,11 @@ fn id(byte: u8) -> TopicStateId {
     TopicStateId(uuid::Uuid::from_bytes([byte; 16]))
 }
 
+/// A distinct identifier per number, for the tests that write many documents.
+fn numbered(n: u128) -> TopicStateId {
+    TopicStateId(uuid::Uuid::from_u128(n))
+}
+
 #[test]
 fn lexical_recall_works_across_languages_and_on_exact_strings() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -170,4 +175,100 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
         waited >= HELD_FOR,
         "the second open returned before the first released the lock"
     );
+}
+
+/// Everything written is still recallable after the vector index is built.
+///
+/// Building the graph rewrites the vector storage, and zvec has an open report
+/// -- alibaba/zvec#724, against 0.6 and 0.7 -- of that step dropping the last
+/// documents of a collection. What makes it worth a standing test rather than a
+/// note is how it fails: the dropped documents keep appearing in the document
+/// count and in scalar reads, so only a vector query can tell, and re-running
+/// the build does not bring them back.
+///
+/// It does not reproduce here, across five rounds of write-delete-build in the
+/// shape the cascade produces. That is a reason to call `optimize`, not a
+/// reason to stop checking: this is the gate that says so on every run and on
+/// every version of the engine we upgrade to.
+#[test]
+fn building_the_vector_index_loses_nothing() {
+    const BATCH: usize = 400;
+    const ROUNDS: usize = 5;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index =
+        ProjectionIndex::open(dir.path(), &dir.path().join("legacy"), PROFILE).expect("open index");
+
+    let mut live: Vec<u128> = Vec::new();
+    let mut written = 0u128;
+
+    for round in 0..ROUNDS {
+        for _ in 0..BATCH {
+            written += 1;
+            index
+                .upsert(
+                    numbered(written),
+                    &format!("memory number {written}"),
+                    &separated(written),
+                )
+                .expect("upsert");
+            live.push(written);
+        }
+        index.flush().expect("flush");
+        index.optimize().expect("build the vector index");
+
+        assert_eq!(
+            index.vector_index_completeness().expect("completeness"),
+            1.0,
+            "round {round} left part of the collection outside the vector index"
+        );
+
+        // Checked by vector rather than by count: the failure this guards
+        // against leaves the count right and the vector index wrong.
+        let unreachable: Vec<u128> = live
+            .iter()
+            .copied()
+            .filter(|written| {
+                !index
+                    // Three rather than one: search is approximate, and this
+                    // is asking whether the document is there at all, not
+                    // whether it ranks first.
+                    .recall_vector(&separated(*written), 3)
+                    .expect("recall")
+                    .contains(&numbered(*written))
+            })
+            .collect();
+
+        assert!(
+            unreachable.is_empty(),
+            "round {round}: {} of {} documents survived the build in name only, \
+             starting at {:?}",
+            unreachable.len(),
+            live.len(),
+            unreachable.first()
+        );
+    }
+}
+
+/// A deterministic unit vector far from every other one this function makes.
+///
+/// Nearest-neighbour search is approximate, so vectors that sit close together
+/// go missing from a result for ordinary reasons and would make the check above
+/// mean nothing. These are drawn symmetrically about zero and normalised, so
+/// any two of them are nearly orthogonal and a document that does not answer
+/// its own vector is a document that is not there.
+fn separated(seed: u128) -> Vec<f32> {
+    let mut state = (seed as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(1);
+    let mut vector = Vec::with_capacity(PROFILE.dimensions() as usize);
+    for _ in 0..PROFILE.dimensions() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        vector.push((state >> 40) as f32 / 16_777_216.0 - 0.5);
+    }
+
+    let length: f32 = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    vector.iter().map(|value| value / length).collect()
 }
