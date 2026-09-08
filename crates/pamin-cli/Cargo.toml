@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 pamin-core = { workspace = true }
+pamin-engine = { workspace = true }
 pamin-index = { workspace = true }
 pamin-store = { workspace = true }
 anyhow = { workspace = true }
