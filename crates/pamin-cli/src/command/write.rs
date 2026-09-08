@@ -77,7 +77,7 @@ pub async fn run(
     // Evidence first, always, and before the filter's verdict is acted on. That
     // ordering is what makes a rejection recoverable instead of a loss.
     let source_version = repository::append_source_version(
-        engine.database.client(),
+        engine.database.client_mut(),
         project,
         source,
         &content,
