@@ -10,5 +10,5 @@ pub mod segmentation;
 
 pub use embedding::{Embedder, Profile};
 pub use error::{IndexError, Result};
-pub use projection::ProjectionIndex;
+pub use projection::{Access, ProjectionIndex};
 pub use segmentation::{Segmenter, detect_language};

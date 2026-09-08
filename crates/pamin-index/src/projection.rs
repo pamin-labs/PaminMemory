@@ -18,8 +18,8 @@ use pamin_core::TopicStateId;
 
 use crate::embedding::Profile;
 use zvec_rust::{
-    Collection, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams, MetricType,
-    SearchQuery,
+    Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams,
+    MetricType, SearchQuery,
 };
 
 use crate::error::{IndexError, Result};
@@ -35,6 +35,26 @@ const FIELD_VECTOR: &str = "embedding";
 
 static INITIALIZE: Once = Once::new();
 
+/// How many documents the engine accepts in one write.
+///
+/// Its own limit, not a tuning choice: a larger batch is refused outright.
+const WRITE_BATCH: usize = 1024;
+
+/// What a handle on the index is allowed to do with it.
+///
+/// The engine locks the collection's directory, and which lock it takes follows
+/// from this. Several read-only handles coexist; a read-write handle excludes
+/// every other handle, readers included. Commands therefore have to say which
+/// they need, because asking for more than they use is what turns two
+/// simultaneous searches into one search and one failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// Queries. Shared with other readers.
+    ReadOnly,
+    /// Writes and rebuilds. Exclusive.
+    ReadWrite,
+}
+
 /// A lexical or vector index over topic states.
 pub struct ProjectionIndex {
     collection: Collection,
@@ -48,7 +68,7 @@ impl ProjectionIndex {
     /// embedding spaces in one index produces distances that mean nothing, and
     /// nothing about the resulting rankings would look wrong, so this is
     /// enforced rather than documented. Changing profile requires a reindex.
-    pub fn open(dir: &Path, legacy_dir: &Path, profile: Profile) -> Result<Self> {
+    pub fn open(dir: &Path, legacy_dir: &Path, profile: Profile, access: Access) -> Result<Self> {
         // A workspace built before projects had their own directory holds one
         // shared collection. Opening this project's empty directory beside it
         // would return nothing and look like an empty workspace, so it is
@@ -73,10 +93,10 @@ impl ProjectionIndex {
             Err(error) => return Err(error.into()),
         }
 
-        Self::open_with_dimensions(dir, profile.dimensions())
+        Self::open_with_dimensions(dir, profile.dimensions(), access)
     }
 
-    fn open_with_dimensions(dir: &Path, dimensions: u32) -> Result<Self> {
+    fn open_with_dimensions(dir: &Path, dimensions: u32, access: Access) -> Result<Self> {
         INITIALIZE.call_once(|| {
             let _ = zvec_rust::initialize(None);
         });
@@ -112,13 +132,18 @@ impl ProjectionIndex {
         // The engine refuses to create over an existing path, so reopen when
         // the collection is already there. Every command after the first opens
         // rather than creates.
+        //
+        // Creating is a write however the caller means to use the result, so a
+        // read-only open of a workspace nothing has been written to yet still
+        // creates first and reopens. That is one extra open, once in a
+        // workspace's life, and the alternative is `pamin search` failing on a
+        // workspace that is merely empty.
         let path = path.to_string_lossy().to_string();
         let collection = open_contended(|| {
-            if std::fs::exists(&path)? {
-                Ok(Collection::open(&path, None)?)
-            } else {
-                Ok(Collection::create_and_open(&path, &schema, None)?)
+            if !std::fs::exists(&path)? {
+                Collection::create_and_open(&path, &schema, None)?;
             }
+            Ok(Collection::open(&path, options(access)?.as_ref())?)
         })?;
 
         Ok(Self {
@@ -137,6 +162,42 @@ impl ProjectionIndex {
         &self.segmenter
     }
 
+    /// Adds or replaces many topic states.
+    ///
+    /// Chunked because the engine refuses a write of more than [`WRITE_BATCH`]
+    /// documents. Rebuilding used to write one document per call, which pays
+    /// the per-call cost once per document; here it is once per batch.
+    ///
+    /// No flush: a caller writing in batches decides when the result becomes
+    /// visible, and flushing between batches would make that decision for them
+    /// once per batch.
+    pub fn upsert_batch(&self, documents: &[(TopicStateId, &str, &[f32])]) -> Result<()> {
+        for chunk in documents.chunks(WRITE_BATCH) {
+            let docs = chunk
+                .iter()
+                .map(|(topic_state, content, embedding)| {
+                    self.document(*topic_state, content, embedding)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let refs: Vec<&Doc> = docs.iter().collect();
+            self.collection.upsert(&refs)?;
+        }
+
+        Ok(())
+    }
+
+    fn document(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<Doc> {
+        let mut doc = Doc::new()?;
+        let key = topic_state.to_string();
+        doc.set_pk(&key);
+        doc.add_string("id", &key)?;
+        doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
+        doc.add_string(FIELD_NGRAM, content)?;
+        doc.add_vector_f32(FIELD_VECTOR, embedding)?;
+        Ok(doc)
+    }
+
     /// Adds or replaces one topic state.
     ///
     /// The embedding is required rather than optional. The engine enforces it,
@@ -149,14 +210,7 @@ impl ProjectionIndex {
         content: &str,
         embedding: &[f32],
     ) -> Result<()> {
-        let mut doc = Doc::new()?;
-        let key = topic_state.to_string();
-        doc.set_pk(&key);
-        doc.add_string("id", &key)?;
-        doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
-        doc.add_string(FIELD_NGRAM, content)?;
-        doc.add_vector_f32(FIELD_VECTOR, embedding)?;
-
+        let doc = self.document(topic_state, content, embedding)?;
         self.collection.upsert(&[&doc])?;
         Ok(())
     }
@@ -258,6 +312,21 @@ impl ProjectionIndex {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+/// The engine's open options for this access mode.
+///
+/// `None` for read-write, which is what the engine defaults to, so the common
+/// path allocates nothing.
+fn options(access: Access) -> Result<Option<CollectionOptions>> {
+    match access {
+        Access::ReadWrite => Ok(None),
+        Access::ReadOnly => {
+            let mut options = CollectionOptions::new()?;
+            options.set_read_only(true)?;
+            Ok(Some(options))
         }
     }
 }
