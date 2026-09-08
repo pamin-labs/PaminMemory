@@ -63,16 +63,37 @@ sql_enum!(TombstoneReason {
 });
 
 /// Returns the project with this name, creating it if it does not exist.
+///
+/// Reads before it writes. Every command opens with this call, and a project is
+/// created once and then found forever after, so the write is the rare case.
+/// Reaching it through `ON CONFLICT DO UPDATE` -- which is what a conflict
+/// clause has to do to return the existing row -- made every command take a row
+/// lock on the one row all of them share, and leave a dead tuple behind for
+/// autovacuum. `DO NOTHING` returns nothing on conflict, so the losing side of
+/// the race reads the winner's row instead.
 pub async fn ensure_project(client: &Client, name: &str) -> Result<Project> {
-    let row = client
-        .query_one(
-            "INSERT INTO projects (id, name, created_at)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-             RETURNING id, name, created_at",
-            &[&ProjectId::new().0, &name, &OffsetDateTime::now_utc()],
-        )
-        .await?;
+    const FIND: &str = "SELECT id, name, created_at FROM projects WHERE name = $1";
+
+    let row = match client.query_opt(FIND, &[&name]).await? {
+        Some(row) => row,
+        None => {
+            let inserted = client
+                .query_opt(
+                    "INSERT INTO projects (id, name, created_at)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (name) DO NOTHING
+                     RETURNING id, name, created_at",
+                    &[&ProjectId::new().0, &name, &OffsetDateTime::now_utc()],
+                )
+                .await?;
+
+            match inserted {
+                Some(row) => row,
+                // Another writer created it in between.
+                None => client.query_one(FIND, &[&name]).await?,
+            }
+        }
+    };
 
     Ok(Project {
         id: row.get::<_, uuid::Uuid>("id").into(),
@@ -92,11 +113,17 @@ pub async fn ensure_source(
     kind: SourceKind,
     locator: &str,
 ) -> Result<SourceId> {
-    let row = client
-        .query_one(
+    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2";
+
+    if let Some(row) = client.query_opt(FIND, &[&project.0, &locator]).await? {
+        return Ok(row.get::<_, uuid::Uuid>("id").into());
+    }
+
+    let inserted = client
+        .query_opt(
             "INSERT INTO sources (id, project_id, kind, locator, created_at)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (project_id, locator) DO UPDATE SET locator = EXCLUDED.locator
+             ON CONFLICT (project_id, locator) DO NOTHING
              RETURNING id",
             &[
                 &SourceId::new().0,
@@ -107,6 +134,11 @@ pub async fn ensure_source(
             ],
         )
         .await?;
+
+    let row = match inserted {
+        Some(row) => row,
+        None => client.query_one(FIND, &[&project.0, &locator]).await?,
+    };
 
     Ok(row.get::<_, uuid::Uuid>("id").into())
 }
@@ -218,12 +250,20 @@ pub async fn append_source_span(
 }
 
 /// Returns the topic with this name, creating it if it does not exist.
+///
+/// Finds before it inserts, for the reason given on `ensure_project`: a topic
+/// is created once and named on every write afterwards, and rewriting the row
+/// to read it back is a lock and a dead tuple bought for nothing.
 pub async fn ensure_topic(client: &Client, project: ProjectId, name: &str) -> Result<Topic> {
-    let row = client
-        .query_one(
+    if let Some(topic) = find_topic(client, project, name).await? {
+        return Ok(topic);
+    }
+
+    let inserted = client
+        .query_opt(
             "INSERT INTO topics (id, project_id, name, created_at)
              VALUES ($1, $2, $3, $4)
-             ON CONFLICT (project_id, name) DO UPDATE SET name = EXCLUDED.name
+             ON CONFLICT (project_id, name) DO NOTHING
              RETURNING id, name, path, created_at",
             &[
                 &TopicId::new().0,
@@ -233,6 +273,20 @@ pub async fn ensure_topic(client: &Client, project: ProjectId, name: &str) -> Re
             ],
         )
         .await?;
+
+    let row = match inserted {
+        Some(row) => row,
+        // Another writer created it in between.
+        None => {
+            client
+                .query_one(
+                    "SELECT id, name, path, created_at FROM topics
+                     WHERE project_id = $1 AND name = $2",
+                    &[&project.0, &name],
+                )
+                .await?
+        }
+    };
 
     Ok(Topic {
         id: row.get::<_, uuid::Uuid>("id").into(),

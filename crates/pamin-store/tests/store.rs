@@ -34,6 +34,7 @@ async fn the_ledger_holds_its_promises() {
     a_retraction_reason_decides_what_history_keeps(&mut database).await;
     a_seed_never_reaches_itself_however_deep_the_walk(&mut database).await;
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
+    ensuring_a_row_that_exists_does_not_rewrite_it(&mut database).await;
 
     drop(database);
 }
@@ -814,4 +815,100 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
         (1..=WRITERS as u32).collect::<Vec<_>>(),
         "concurrent writers should take consecutive versions"
     );
+}
+
+/// Re-ensuring a project, source, topic or relationship leaves the row alone.
+///
+/// Returning the existing row from a conflict clause requires `DO UPDATE`, and
+/// with a uniqueness constraint as the target the only assignment available is
+/// the key to itself. That reads as a no-op and is not one: PostgreSQL takes a
+/// row lock and writes a new tuple version anyway. Every command begins by
+/// ensuring the project, so the cost landed on the one row all of them share.
+///
+/// `ctid` locates a row's current tuple version, so it moves exactly when the
+/// row is rewritten. That is the difference this test is for; counting rows
+/// would pass either way.
+async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &mut Database) {
+    let project = repository::ensure_project(database.client(), "idempotent")
+        .await
+        .expect("ensure project");
+    let source = repository::ensure_source(
+        database.client(),
+        project.id,
+        SourceKind::Manual,
+        "idempotent-source",
+    )
+    .await
+    .expect("ensure source");
+    let from = repository::ensure_topic(database.client(), project.id, "from")
+        .await
+        .expect("ensure topic");
+    let to = repository::ensure_topic(database.client(), project.id, "to")
+        .await
+        .expect("ensure topic");
+    graph::assert_edge(
+        database.client_mut(),
+        project.id,
+        from.id,
+        to.id,
+        &EdgeClaim::explicit(EdgeKind::RelatedTo),
+    )
+    .await
+    .expect("assert edge");
+
+    let rows = [
+        ("projects", "id", project.id.0),
+        ("sources", "id", source.0),
+        ("topics", "id", from.id.0),
+        ("relationships", "from_topic", from.id.0),
+    ];
+
+    let before = tuple_versions(database, &rows).await;
+
+    repository::ensure_project(database.client(), "idempotent")
+        .await
+        .expect("re-ensure project");
+    repository::ensure_source(
+        database.client(),
+        project.id,
+        SourceKind::Manual,
+        "idempotent-source",
+    )
+    .await
+    .expect("re-ensure source");
+    repository::ensure_topic(database.client(), project.id, "from")
+        .await
+        .expect("re-ensure topic");
+    graph::assert_edge(
+        database.client_mut(),
+        project.id,
+        from.id,
+        to.id,
+        &EdgeClaim::explicit(EdgeKind::RelatedTo),
+    )
+    .await
+    .expect("re-assert edge");
+
+    assert_eq!(
+        before,
+        tuple_versions(database, &rows).await,
+        "ensuring an existing row rewrote it"
+    );
+}
+
+/// Where each named row's current tuple version sits.
+async fn tuple_versions(database: &Database, rows: &[(&str, &str, uuid::Uuid)]) -> Vec<String> {
+    let mut versions = Vec::new();
+    for (table, column, id) in rows {
+        let row = database
+            .client()
+            .query_one(
+                &format!("SELECT ctid::TEXT FROM {table} WHERE {column} = $1"),
+                &[id],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("reading {table}: {error}"));
+        versions.push(row.get::<_, String>(0));
+    }
+    versions
 }
