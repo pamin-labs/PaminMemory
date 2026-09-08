@@ -823,6 +823,19 @@ fn the_ledger_keeps_history_and_the_filter_keeps_evidence(cli: &Cli) {
         2,
         "a held write must not advance the topic"
     );
+
+    // Nor may it bring a topic into existence. The topic used to be created
+    // before the filter ran, so a held write to a name nobody had used left an
+    // empty topic behind: a name `neighbors` and the graph channel could reach
+    // and that resolved to no content at all.
+    let invented = cli.json(&["write", "--topic", "never_promoted", "ok"]);
+    assert_eq!(invented["promoted"], false);
+
+    let missing = cli.fails(&["read", "never_promoted"]);
+    assert!(
+        missing.contains("never_promoted"),
+        "a topic only ever written to under the filter should not exist: {missing:?}"
+    );
 }
 
 fn a_write_can_state_when_its_claim_holds(cli: &Cli) {
