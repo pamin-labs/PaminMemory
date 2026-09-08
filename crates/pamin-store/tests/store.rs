@@ -14,6 +14,9 @@ use pamin_core::{
 };
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Database, Workspace, graph, repository};
+// The table name is a literal from the list above, not caller input; the
+// assertion is what lets it be interpolated at all.
+use sqlx::AssertSqlSafe;
 use time::OffsetDateTime;
 
 #[tokio::test]
@@ -21,23 +24,23 @@ use time::OffsetDateTime;
 async fn the_ledger_holds_its_promises() {
     let workspace = Workspace::at("/tmp/pamin-ws");
 
-    let mut database = Database::open(&workspace).await.expect("open workspace");
+    let database = Database::open(&workspace).await.expect("open workspace");
 
     migrations_create_every_table(&database).await;
     reopening_reuses_the_running_server(&workspace).await;
-    appending_versions_builds_a_supersession_chain(&mut database).await;
-    soft_deleting_the_current_version_promotes_its_predecessor(&mut database).await;
-    filtered_evidence_is_still_stored(&mut database).await;
-    edges_are_versioned_rather_than_overwritten(&mut database).await;
-    expansion_is_bounded_undirected_and_time_filtered(&mut database).await;
-    grep_reaches_evidence_the_index_never_saw(&mut database).await;
-    a_retraction_reason_decides_what_history_keeps(&mut database).await;
-    a_seed_never_reaches_itself_however_deep_the_walk(&mut database).await;
+    appending_versions_builds_a_supersession_chain(&database).await;
+    soft_deleting_the_current_version_promotes_its_predecessor(&database).await;
+    filtered_evidence_is_still_stored(&database).await;
+    edges_are_versioned_rather_than_overwritten(&database).await;
+    expansion_is_bounded_undirected_and_time_filtered(&database).await;
+    grep_reaches_evidence_the_index_never_saw(&database).await;
+    a_retraction_reason_decides_what_history_keeps(&database).await;
+    a_seed_never_reaches_itself_however_deep_the_walk(&database).await;
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
-    ensuring_a_row_that_exists_does_not_rewrite_it(&mut database).await;
-    derived_edges_are_asserted_together_or_not_at_all(&mut database).await;
+    ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
+    derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
-    every_column_holds_what_was_written_to_it(&mut database).await;
+    every_column_holds_what_was_written_to_it(&database).await;
 
     drop(database);
 }
@@ -54,12 +57,11 @@ async fn migrations_create_every_table(database: &Database) {
         "relationships",
         "relationship_versions",
     ] {
-        let row = database
-            .client()
-            .query_one(&format!("SELECT count(*) FROM {table}"), &[])
-            .await
-            .unwrap_or_else(|error| panic!("querying {table}: {error}"));
-        let count: i64 = row.get(0);
+        let (count,): (i64,) =
+            sqlx::query_as(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(database.pool())
+                .await
+                .unwrap_or_else(|error| panic!("querying {table}: {error}"));
         assert_eq!(count, 0, "{table} should start empty");
     }
 }
@@ -72,17 +74,17 @@ async fn reopening_reuses_the_running_server(workspace: &Workspace) {
 
 /// Writes evidence, a span over it, and a topic state derived from that span.
 async fn write_state(
-    database: &mut Database,
+    database: &Database,
     project: pamin_core::ProjectId,
     topic: pamin_core::TopicId,
     locator: &str,
     content: &str,
 ) -> pamin_core::TopicState {
-    let source = repository::ensure_source(database.client(), project, SourceKind::Manual, locator)
+    let source = repository::ensure_source(database.pool(), project, SourceKind::Manual, locator)
         .await
         .expect("ensure source");
     let version = repository::append_source_version(
-        database.client_mut(),
+        database.pool(),
         project,
         source,
         content,
@@ -93,7 +95,7 @@ async fn write_state(
     .await
     .expect("append source version");
     let span = repository::append_source_span(
-        database.client(),
+        database.pool(),
         project,
         version.id,
         0,
@@ -105,7 +107,7 @@ async fn write_state(
     .expect("append span");
 
     repository::append_topic_state(
-        database.client_mut(),
+        database.pool(),
         project,
         topic,
         content,
@@ -117,11 +119,11 @@ async fn write_state(
     .expect("append topic state")
 }
 
-async fn appending_versions_builds_a_supersession_chain(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "ledger")
+async fn appending_versions_builds_a_supersession_chain(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
-    let topic = repository::ensure_topic(database.client(), project.id, "deployment_pipeline")
+    let topic = repository::ensure_topic(database.pool(), project.id, "deployment_pipeline")
         .await
         .expect("ensure topic");
 
@@ -136,7 +138,7 @@ async fn appending_versions_builds_a_supersession_chain(database: &mut Database)
         "a new version links back to the one it replaced"
     );
 
-    let versions = repository::topic_versions(database.client(), topic.id)
+    let versions = repository::topic_versions(database.pool(), topic.id)
         .await
         .expect("versions");
     let latest = resolve(&versions, VersionOffset::LATEST).expect("latest");
@@ -152,28 +154,28 @@ async fn appending_versions_builds_a_supersession_chain(database: &mut Database)
     assert_eq!(clamped.version, 1);
     assert_eq!(clamped.actual_offset, VersionOffset(1));
 
-    let loaded = repository::topic_state(database.client(), topic.id, 1)
+    let loaded = repository::topic_state(database.pool(), topic.id, 1)
         .await
         .expect("load state")
         .expect("state exists");
     assert_eq!(loaded.content, "deploys via make");
 }
 
-async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "ledger")
+async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
-    let topic = repository::find_topic(database.client(), project.id, "deployment_pipeline")
+    let topic = repository::find_topic(database.pool(), project.id, "deployment_pipeline")
         .await
         .expect("find topic")
         .expect("topic exists");
 
-    let deleted = repository::soft_delete_topic_state(database.client(), topic.id, 2)
+    let deleted = repository::soft_delete_topic_state(database.pool(), topic.id, 2)
         .await
         .expect("soft delete");
     assert!(deleted);
 
-    let versions = repository::topic_versions(database.client(), topic.id)
+    let versions = repository::topic_versions(database.pool(), topic.id)
         .await
         .expect("versions");
     assert_eq!(versions, vec![1], "deleted versions leave the live set");
@@ -183,7 +185,7 @@ async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &m
     assert!(latest.is_current, "the predecessor becomes current");
 
     // The row itself survives, so history and audit still reach it.
-    let still_there = repository::topic_state(database.client(), topic.id, 2)
+    let still_there = repository::topic_state(database.pool(), topic.id, 2)
         .await
         .expect("load deleted state")
         .expect("deleted state is still stored");
@@ -195,12 +197,12 @@ async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &m
     assert_eq!(next.version, 3, "version numbers are never reused");
 }
 
-async fn filtered_evidence_is_still_stored(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "ledger")
+async fn filtered_evidence_is_still_stored(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
     let source = repository::ensure_source(
-        database.client(),
+        database.pool(),
         project.id,
         SourceKind::Manual,
         "noise-source",
@@ -209,7 +211,7 @@ async fn filtered_evidence_is_still_stored(database: &mut Database) {
     .expect("ensure source");
 
     repository::append_source_version(
-        database.client_mut(),
+        database.pool(),
         project.id,
         source,
         "ok",
@@ -220,7 +222,7 @@ async fn filtered_evidence_is_still_stored(database: &mut Database) {
     .await
     .expect("append filtered evidence");
 
-    let stored = repository::latest_source_version(database.client(), source)
+    let stored = repository::latest_source_version(database.pool(), source)
         .await
         .expect("read back")
         .expect("evidence exists despite being filtered");
@@ -235,20 +237,20 @@ async fn filtered_evidence_is_still_stored(database: &mut Database) {
 
 /// A project with three topics wired into a chain, for the graph checks.
 async fn graph_fixture(
-    database: &mut Database,
+    database: &Database,
 ) -> (
     pamin_core::ProjectId,
     pamin_core::TopicId,
     pamin_core::TopicId,
     pamin_core::TopicId,
 ) {
-    let project = repository::ensure_project(database.client(), "graph")
+    let project = repository::ensure_project(database.pool(), "graph")
         .await
         .expect("ensure project");
 
     let mut topics = Vec::new();
     for name in ["service", "database", "backup_job"] {
-        let topic = repository::ensure_topic(database.client(), project.id, name)
+        let topic = repository::ensure_topic(database.pool(), project.id, name)
             .await
             .expect("ensure topic");
         write_state(
@@ -265,11 +267,11 @@ async fn graph_fixture(
     (project.id, topics[0], topics[1], topics[2])
 }
 
-async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
+async fn edges_are_versioned_rather_than_overwritten(database: &Database) {
     let (project, service, db, _) = graph_fixture(database).await;
 
     let first = graph::assert_edge(
-        database.client_mut(),
+        database.pool(),
         project,
         service,
         db,
@@ -284,7 +286,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
     // Asserting the same claim again must not stack a version, or every
     // rewrite of unchanged content would grow the ledger without limit.
     let again = graph::assert_edge(
-        database.client_mut(),
+        database.pool(),
         project,
         service,
         db,
@@ -298,7 +300,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
     // A changed claim closes the live version and appends a successor.
     let mut narrowed = EdgeClaim::explicit(EdgeKind::DependsOn);
     narrowed.validity = Validity::new(Some(OffsetDateTime::UNIX_EPOCH), None);
-    let second = graph::assert_edge(database.client_mut(), project, service, db, &narrowed)
+    let second = graph::assert_edge(database.pool(), project, service, db, &narrowed)
         .await
         .expect("assert changed edge");
     assert!(second.is_new());
@@ -306,12 +308,12 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
     assert_eq!(second.version().supersedes, Some(first.version().id));
 
     let relationship =
-        graph::find_relationship(database.client(), project, service, db, EdgeKind::DependsOn)
+        graph::find_relationship(database.pool(), project, service, db, EdgeKind::DependsOn)
             .await
             .expect("find relationship")
             .expect("relationship exists");
 
-    let history = graph::edge_history(database.client(), relationship.id)
+    let history = graph::edge_history(database.pool(), relationship.id)
         .await
         .expect("history");
     assert_eq!(history.len(), 2);
@@ -323,7 +325,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
 
     // Closing retracts the claim and leaves every row where it was.
     let closed = graph::close_edge(
-        database.client(),
+        database.pool(),
         project,
         service,
         db,
@@ -334,14 +336,14 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
     .expect("close edge");
     assert!(closed);
     assert!(
-        graph::live_version(database.client(), relationship.id)
+        graph::live_version(database.pool(), relationship.id)
             .await
             .expect("live version")
             .is_none(),
         "nothing is believed after a retraction"
     );
     assert_eq!(
-        graph::edge_history(database.client(), relationship.id)
+        graph::edge_history(database.pool(), relationship.id)
             .await
             .expect("history")
             .len(),
@@ -351,7 +353,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
 
     assert!(
         !graph::close_edge(
-            database.client(),
+            database.pool(),
             project,
             service,
             db,
@@ -364,14 +366,14 @@ async fn edges_are_versioned_rather_than_overwritten(database: &mut Database) {
     );
 }
 
-async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Database) {
+async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) {
     let (project, service, db, backup) = graph_fixture(database).await;
 
     // service -> database -> backup_job, so backup_job is two hops from
     // service and is only reachable by following the second edge backwards.
     let service_state = current_state(database, service).await;
     graph::assert_edge(
-        database.client_mut(),
+        database.pool(),
         project,
         service,
         db,
@@ -380,7 +382,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
     .await
     .expect("service -> database");
     graph::assert_edge(
-        database.client_mut(),
+        database.pool(),
         project,
         backup,
         db,
@@ -390,7 +392,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
     .expect("backup_job -> database");
 
     let one_hop = graph::expand(
-        database.client(),
+        database.pool(),
         project,
         &[service],
         &Expansion::to_depth(1),
@@ -408,7 +410,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
     assert_eq!(one_hop[0].derivation, Derivation::Deterministic);
 
     let two_hops = graph::expand(
-        database.client(),
+        database.pool(),
         project,
         &[service],
         &Expansion::to_depth(2),
@@ -433,7 +435,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
 
     // Restricting the edge kind removes the path that used the other kind.
     let mentions_only = graph::expand(
-        database.client(),
+        database.pool(),
         project,
         &[service],
         &Expansion {
@@ -456,12 +458,12 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
         Some(OffsetDateTime::UNIX_EPOCH),
         Some(OffsetDateTime::UNIX_EPOCH + time::Duration::days(1)),
     );
-    graph::assert_edge(database.client_mut(), project, backup, db, &expired)
+    graph::assert_edge(database.pool(), project, backup, db, &expired)
         .await
         .expect("bound the edge to the past");
 
     let now = graph::expand(
-        database.client(),
+        database.pool(),
         project,
         &[service],
         &Expansion {
@@ -478,7 +480,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &mut Databa
     );
 
     let back_then = graph::expand(
-        database.client(),
+        database.pool(),
         project,
         &[service],
         &Expansion {
@@ -500,23 +502,23 @@ async fn current_state(
     database: &Database,
     topic: pamin_core::TopicId,
 ) -> pamin_core::TopicStateId {
-    let versions = repository::topic_versions(database.client(), topic)
+    let versions = repository::topic_versions(database.pool(), topic)
         .await
         .expect("versions");
     let latest = resolve(&versions, VersionOffset::LATEST).expect("latest");
-    repository::topic_state(database.client(), topic, latest.version)
+    repository::topic_state(database.pool(), topic, latest.version)
         .await
         .expect("load state")
         .expect("state exists")
         .id
 }
 
-async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "ledger")
+async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
     let source = repository::ensure_source(
-        database.client(),
+        database.pool(),
         project.id,
         SourceKind::Manual,
         "grep-source",
@@ -527,7 +529,7 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
     // Held by the filter, so it never became a topic state and never entered
     // the projection index. Reaching it is the entire reason this exists.
     repository::append_source_version(
-        database.client_mut(),
+        database.pool(),
         project.id,
         source,
         "the KILN reaches cone ten",
@@ -538,7 +540,7 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
     .await
     .expect("append filtered evidence");
 
-    let hits = repository::grep_evidence(database.client(), project.id, "cone ten", true, 10)
+    let hits = repository::grep_evidence(database.pool(), project.id, "cone ten", true, 10)
         .await
         .expect("grep");
     let found = hits
@@ -559,14 +561,14 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
 
     // Case sensitivity is a choice the caller makes, not one made for them.
     assert!(
-        repository::grep_evidence(database.client(), project.id, "kiln", true, 10)
+        repository::grep_evidence(database.pool(), project.id, "kiln", true, 10)
             .await
             .expect("grep")
             .is_empty(),
         "a case-sensitive search does not fold case"
     );
     assert!(
-        !repository::grep_evidence(database.client(), project.id, "kiln", false, 10)
+        !repository::grep_evidence(database.pool(), project.id, "kiln", false, 10)
             .await
             .expect("grep")
             .is_empty(),
@@ -575,13 +577,13 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
 
     // Superseded versions stay reachable, which is what makes this an audit
     // route rather than a second view of current state.
-    let topic = repository::find_topic(database.client(), project.id, "deployment_pipeline")
+    let topic = repository::find_topic(database.pool(), project.id, "deployment_pipeline")
         .await
         .expect("find topic")
         .expect("topic exists");
     assert!(topic.name == "deployment_pipeline");
     assert!(
-        !repository::grep_evidence(database.client(), project.id, "deploys via make", true, 10)
+        !repository::grep_evidence(database.pool(), project.id, "deploys via make", true, 10)
             .await
             .expect("grep")
             .is_empty(),
@@ -589,14 +591,14 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &mut Database) {
     );
 }
 
-async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "history")
+async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "history")
         .await
         .expect("ensure project");
 
     let mut topics = Vec::new();
     for name in ["tenant_a", "tenant_b", "tenant_c"] {
-        let topic = repository::ensure_topic(database.client(), project.id, name)
+        let topic = repository::ensure_topic(database.pool(), project.id, name)
             .await
             .expect("ensure topic");
         write_state(
@@ -613,7 +615,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
 
     for target in [ended, wrong] {
         graph::assert_edge(
-            database.client_mut(),
+            database.pool(),
             project.id,
             root,
             target,
@@ -632,7 +634,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
 
     // One relationship ended; the other was never true.
     graph::close_edge(
-        database.client(),
+        database.pool(),
         project.id,
         root,
         ended,
@@ -642,7 +644,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
     .await
     .expect("close ended");
     graph::close_edge(
-        database.client(),
+        database.pool(),
         project.id,
         root,
         wrong,
@@ -654,7 +656,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
 
     // Neither is believed now, so neither is traversed now.
     let now = graph::expand(
-        database.client(),
+        database.pool(),
         project.id,
         &[root],
         &Expansion::to_depth(1),
@@ -668,7 +670,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
     // true never held. Treating both retractions alike erased that, which
     // meant retracting an edge deleted its history too.
     let earlier = graph::expand(
-        database.client(),
+        database.pool(),
         project.id,
         &[root],
         &Expansion {
@@ -695,14 +697,14 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &mut Database)
     assert_eq!(earlier[0].via, root);
 }
 
-async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "cycles")
+async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "cycles")
         .await
         .expect("ensure project");
 
     let mut topics = Vec::new();
     for name in ["ring_a", "ring_b", "ring_c"] {
-        let topic = repository::ensure_topic(database.client(), project.id, name)
+        let topic = repository::ensure_topic(database.pool(), project.id, name)
             .await
             .expect("ensure topic");
         write_state(
@@ -721,7 +723,7 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &mut Databa
     // reachable from every other, and from itself.
     for (from, to) in [(a, b), (b, c), (c, a)] {
         graph::assert_edge(
-            database.client_mut(),
+            database.pool(),
             project.id,
             from,
             to,
@@ -733,7 +735,7 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &mut Databa
 
     for depth in 1..=4 {
         let reached: Vec<_> = graph::expand(
-            database.client(),
+            database.pool(),
             project.id,
             &[a],
             &Expansion::to_depth(depth),
@@ -767,11 +769,11 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
 ) {
     const WRITERS: usize = 8;
 
-    let project = repository::ensure_project(database.client(), "contended")
+    let project = repository::ensure_project(database.pool(), "contended")
         .await
         .expect("ensure project");
     let source = repository::ensure_source(
-        database.client(),
+        database.pool(),
         project.id,
         SourceKind::Manual,
         "contended-source",
@@ -788,9 +790,9 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
         .map(|writer| {
             let server = server.clone();
             tokio::spawn(async move {
-                let mut database = Database::connect(&server).await.expect("connect");
+                let database = Database::connect(&server).await.expect("connect");
                 repository::append_source_version(
-                    database.client_mut(),
+                    database.pool(),
                     project.id,
                     source,
                     &format!("evidence from writer {writer}"),
@@ -831,26 +833,26 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
 /// `ctid` locates a row's current tuple version, so it moves exactly when the
 /// row is rewritten. That is the difference this test is for; counting rows
 /// would pass either way.
-async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "idempotent")
+async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "idempotent")
         .await
         .expect("ensure project");
     let source = repository::ensure_source(
-        database.client(),
+        database.pool(),
         project.id,
         SourceKind::Manual,
         "idempotent-source",
     )
     .await
     .expect("ensure source");
-    let from = repository::ensure_topic(database.client(), project.id, "from")
+    let from = repository::ensure_topic(database.pool(), project.id, "from")
         .await
         .expect("ensure topic");
-    let to = repository::ensure_topic(database.client(), project.id, "to")
+    let to = repository::ensure_topic(database.pool(), project.id, "to")
         .await
         .expect("ensure topic");
     graph::assert_edge(
-        database.client_mut(),
+        database.pool(),
         project.id,
         from.id,
         to.id,
@@ -868,22 +870,22 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &mut Database)
 
     let before = tuple_versions(database, &rows).await;
 
-    repository::ensure_project(database.client(), "idempotent")
+    repository::ensure_project(database.pool(), "idempotent")
         .await
         .expect("re-ensure project");
     repository::ensure_source(
-        database.client(),
+        database.pool(),
         project.id,
         SourceKind::Manual,
         "idempotent-source",
     )
     .await
     .expect("re-ensure source");
-    repository::ensure_topic(database.client(), project.id, "from")
+    repository::ensure_topic(database.pool(), project.id, "from")
         .await
         .expect("re-ensure topic");
     graph::assert_edge(
-        database.client_mut(),
+        database.pool(),
         project.id,
         from.id,
         to.id,
@@ -903,15 +905,14 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &mut Database)
 async fn tuple_versions(database: &Database, rows: &[(&str, &str, uuid::Uuid)]) -> Vec<String> {
     let mut versions = Vec::new();
     for (table, column, id) in rows {
-        let row = database
-            .client()
-            .query_one(
-                &format!("SELECT ctid::TEXT FROM {table} WHERE {column} = $1"),
-                &[id],
-            )
-            .await
-            .unwrap_or_else(|error| panic!("reading {table}: {error}"));
-        versions.push(row.get::<_, String>(0));
+        let (placement,): (String,) = sqlx::query_as(AssertSqlSafe(format!(
+            "SELECT ctid::TEXT FROM {table} WHERE {column} = $1"
+        )))
+        .bind(id)
+        .fetch_one(database.pool())
+        .await
+        .unwrap_or_else(|error| panic!("reading {table}: {error}"));
+        versions.push(placement);
     }
     versions
 }
@@ -924,15 +925,15 @@ async fn tuple_versions(database: &Database, rows: &[(&str, &str, uuid::Uuid)]) 
 /// does and no record that anything went wrong. The schema rejects an edge from
 /// a topic to itself, so one at the end of a batch is a failure the database
 /// supplies rather than one the test has to fake.
-async fn derived_edges_are_asserted_together_or_not_at_all(database: &mut Database) {
-    let project = repository::ensure_project(database.client(), "atomic")
+async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "atomic")
         .await
         .expect("ensure project");
 
     let mut topics = Vec::new();
     for name in ["first", "second", "third"] {
         topics.push(
-            repository::ensure_topic(database.client(), project.id, name)
+            repository::ensure_topic(database.pool(), project.id, name)
                 .await
                 .expect("ensure topic")
                 .id,
@@ -958,22 +959,16 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &mut Databa
         ),
     ];
 
-    graph::assert_edges(database.client_mut(), project.id, &doomed)
+    graph::assert_edges(database.pool(), project.id, &doomed)
         .await
         .expect_err("a self edge should be refused");
 
     for (from, to, _) in &doomed[..2] {
         assert!(
-            graph::find_relationship(
-                database.client(),
-                project.id,
-                *from,
-                *to,
-                EdgeKind::RelatedTo
-            )
-            .await
-            .expect("look up edge")
-            .is_none(),
+            graph::find_relationship(database.pool(), project.id, *from, *to, EdgeKind::RelatedTo)
+                .await
+                .expect("look up edge")
+                .is_none(),
             "an edge from a batch that failed was left behind"
         );
     }
@@ -982,7 +977,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &mut Databa
     // asserting it a second time writes none: a batch is as idempotent as the
     // single assertion it is built from.
     let sound = &doomed[..2];
-    let appended = graph::assert_edges(database.client_mut(), project.id, sound)
+    let appended = graph::assert_edges(database.pool(), project.id, sound)
         .await
         .expect("assert edges");
     assert_eq!(
@@ -991,7 +986,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &mut Databa
         "every edge in a batch should be appended"
     );
 
-    let again = graph::assert_edges(database.client_mut(), project.id, sound)
+    let again = graph::assert_edges(database.pool(), project.id, sound)
         .await
         .expect("re-assert edges");
     assert_eq!(
@@ -1114,7 +1109,7 @@ async fn a_workspace_the_previous_runner_migrated_is_adopted(
 /// the mapping rather than on the plumbing, which is what it is for: the
 /// mapping is being rewritten onto a different driver, one whose arguments are
 /// positional and whose ordering the compiler cannot check.
-async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
+async fn every_column_holds_what_was_written_to_it(database: &Database) {
     // Distinct, ordered, and none of them equal to now.
     let observed = OffsetDateTime::from_unix_timestamp(1_000_000_000).expect("observed");
     let valid_from = OffsetDateTime::from_unix_timestamp(1_100_000_000).expect("valid from");
@@ -1122,11 +1117,11 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     let edge_from = OffsetDateTime::from_unix_timestamp(1_300_000_000).expect("edge from");
     let edge_to = OffsetDateTime::from_unix_timestamp(1_400_000_000).expect("edge to");
 
-    let project = repository::ensure_project(database.client(), "columns")
+    let project = repository::ensure_project(database.pool(), "columns")
         .await
         .expect("ensure project");
     let source = repository::ensure_source(
-        database.client(),
+        database.pool(),
         project.id,
         SourceKind::Manual,
         "columns-locator",
@@ -1135,7 +1130,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     .expect("ensure source");
 
     let evidence = repository::append_source_version(
-        database.client_mut(),
+        database.pool(),
         project.id,
         source,
         "the content",
@@ -1146,7 +1141,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     .await
     .expect("append source version");
 
-    let read_back = repository::latest_source_version(database.client(), source)
+    let read_back = repository::latest_source_version(database.pool(), source)
         .await
         .expect("latest source version")
         .expect("a version was written");
@@ -1158,7 +1153,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     assert_eq!(read_back.project_id, project.id);
 
     let span = repository::append_source_span(
-        database.client(),
+        database.pool(),
         project.id,
         evidence.id,
         3,
@@ -1172,11 +1167,11 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     assert_eq!(span.byte_end, 11);
     assert_eq!(span.detected_language.as_deref(), Some("eng"));
 
-    let topic = repository::ensure_topic(database.client(), project.id, "columns_topic")
+    let topic = repository::ensure_topic(database.pool(), project.id, "columns_topic")
         .await
         .expect("ensure topic");
     let state = repository::append_topic_state(
-        database.client_mut(),
+        database.pool(),
         project.id,
         topic.id,
         "the state content",
@@ -1190,7 +1185,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     .await
     .expect("append topic state");
 
-    let stored = repository::topic_state(database.client(), topic.id, state.version)
+    let stored = repository::topic_state(database.pool(), topic.id, state.version)
         .await
         .expect("read topic state")
         .expect("the state was written");
@@ -1207,7 +1202,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     assert_eq!(stored.deleted_at, None);
 
     // An edge carrying every field that could be transposed with another.
-    let other = repository::ensure_topic(database.client(), project.id, "columns_other")
+    let other = repository::ensure_topic(database.pool(), project.id, "columns_other")
         .await
         .expect("ensure topic");
     let claim = EdgeClaim {
@@ -1220,18 +1215,12 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
         },
         caused_by_topic_state: Some(state.id),
     };
-    graph::assert_edge(
-        database.client_mut(),
-        project.id,
-        topic.id,
-        other.id,
-        &claim,
-    )
-    .await
-    .expect("assert edge");
+    graph::assert_edge(database.pool(), project.id, topic.id, other.id, &claim)
+        .await
+        .expect("assert edge");
 
     let relationship = graph::find_relationship(
-        database.client(),
+        database.pool(),
         project.id,
         topic.id,
         other.id,
@@ -1243,7 +1232,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     assert_eq!(relationship.from_topic, topic.id);
     assert_eq!(relationship.to_topic, other.id);
 
-    let version = graph::live_version(database.client(), relationship.id)
+    let version = graph::live_version(database.pool(), relationship.id)
         .await
         .expect("live version")
         .expect("the edge is live");
@@ -1257,7 +1246,7 @@ async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
     assert_eq!(version.supersedes, None);
 
     // `needle` and `limit` are the other pair that would compile transposed.
-    let matches = repository::grep_evidence(database.client(), project.id, "content", false, 1)
+    let matches = repository::grep_evidence(database.pool(), project.id, "content", false, 1)
         .await
         .expect("grep evidence");
     assert_eq!(matches.len(), 1, "the limit is the limit, not the needle");

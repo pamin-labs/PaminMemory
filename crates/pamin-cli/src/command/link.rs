@@ -44,8 +44,8 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         bail!("unknown relationship kind {:?}", args.kind);
     };
 
-    let mut database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+    let database = Database::open(workspace).await?;
+    let project = repository::ensure_project(database.pool(), project).await?;
 
     let from = require_topic(&database, project.id, &args.from).await?;
     let to = require_topic(&database, project.id, &args.to).await?;
@@ -56,7 +56,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
     let mut claim = EdgeClaim::explicit(kind);
     claim.validity = args.validity.parse()?;
 
-    let assertion = graph::assert_edge(database.client_mut(), project.id, from, to, &claim).await?;
+    let assertion = graph::assert_edge(database.pool(), project.id, from, to, &claim).await?;
 
     let result = Linked {
         from: args.from,
@@ -94,7 +94,7 @@ async fn require_topic(
     project: pamin_core::ProjectId,
     name: &str,
 ) -> Result<pamin_core::TopicId> {
-    match repository::find_topic(database.client(), project, name).await? {
+    match repository::find_topic(database.pool(), project, name).await? {
         Some(topic) => Ok(topic.id),
         None => bail!("no topic named {name}"),
     }

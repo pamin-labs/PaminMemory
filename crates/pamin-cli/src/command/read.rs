@@ -34,20 +34,19 @@ struct Read {
 
 pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
     let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+    let project = repository::ensure_project(database.pool(), project).await?;
 
-    let Some(topic) = repository::find_topic(database.client(), project.id, &args.topic).await?
+    let Some(topic) = repository::find_topic(database.pool(), project.id, &args.topic).await?
     else {
         bail!("no topic named {}", args.topic);
     };
 
-    let versions = repository::topic_versions(database.client(), topic.id).await?;
+    let versions = repository::topic_versions(database.pool(), topic.id).await?;
     let Some(resolved) = pamin_core::resolve(&versions, VersionOffset(args.version_offset)) else {
         bail!("topic {} has no live versions", args.topic);
     };
 
-    let Some(state) =
-        repository::topic_state(database.client(), topic.id, resolved.version).await?
+    let Some(state) = repository::topic_state(database.pool(), topic.id, resolved.version).await?
     else {
         bail!("version {} of {} is missing", resolved.version, args.topic);
     };
