@@ -35,6 +35,7 @@ async fn the_ledger_holds_its_promises() {
     a_seed_never_reaches_itself_however_deep_the_walk(&mut database).await;
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
     ensuring_a_row_that_exists_does_not_rewrite_it(&mut database).await;
+    derived_edges_are_asserted_together_or_not_at_all(&mut database).await;
 
     drop(database);
 }
@@ -911,4 +912,89 @@ async fn tuple_versions(database: &Database, rows: &[(&str, &str, uuid::Uuid)]) 
         versions.push(row.get::<_, String>(0));
     }
     versions
+}
+
+/// The edges one memory derives land together or not at all.
+///
+/// They are a single statement about what that memory says, and they used to be
+/// asserted a transaction each: a failure partway through committed the earlier
+/// ones and dropped the rest, leaving a memory that names fewer topics than it
+/// does and no record that anything went wrong. The schema rejects an edge from
+/// a topic to itself, so one at the end of a batch is a failure the database
+/// supplies rather than one the test has to fake.
+async fn derived_edges_are_asserted_together_or_not_at_all(database: &mut Database) {
+    let project = repository::ensure_project(database.client(), "atomic")
+        .await
+        .expect("ensure project");
+
+    let mut topics = Vec::new();
+    for name in ["first", "second", "third"] {
+        topics.push(
+            repository::ensure_topic(database.client(), project.id, name)
+                .await
+                .expect("ensure topic")
+                .id,
+        );
+    }
+
+    let doomed = vec![
+        (
+            topics[0],
+            topics[1],
+            EdgeClaim::explicit(EdgeKind::RelatedTo),
+        ),
+        (
+            topics[1],
+            topics[2],
+            EdgeClaim::explicit(EdgeKind::RelatedTo),
+        ),
+        // Refused by `relationships_no_self_edge`.
+        (
+            topics[2],
+            topics[2],
+            EdgeClaim::explicit(EdgeKind::RelatedTo),
+        ),
+    ];
+
+    graph::assert_edges(database.client_mut(), project.id, &doomed)
+        .await
+        .expect_err("a self edge should be refused");
+
+    for (from, to, _) in &doomed[..2] {
+        assert!(
+            graph::find_relationship(
+                database.client(),
+                project.id,
+                *from,
+                *to,
+                EdgeKind::RelatedTo
+            )
+            .await
+            .expect("look up edge")
+            .is_none(),
+            "an edge from a batch that failed was left behind"
+        );
+    }
+
+    // The same batch without the refused edge writes every one of them, and
+    // asserting it a second time writes none: a batch is as idempotent as the
+    // single assertion it is built from.
+    let sound = &doomed[..2];
+    let appended = graph::assert_edges(database.client_mut(), project.id, sound)
+        .await
+        .expect("assert edges");
+    assert_eq!(
+        appended.iter().filter(|edge| edge.is_new()).count(),
+        sound.len(),
+        "every edge in a batch should be appended"
+    );
+
+    let again = graph::assert_edges(database.client_mut(), project.id, sound)
+        .await
+        .expect("re-assert edges");
+    assert_eq!(
+        again.iter().filter(|edge| edge.is_new()).count(),
+        0,
+        "re-asserting an unchanged batch should append nothing"
+    );
 }

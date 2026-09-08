@@ -124,6 +124,10 @@ fn row_to_version(row: &Row) -> RelationshipVersion {
     }
 }
 
+const FIND_RELATIONSHIP: &str = "SELECT id, created_at FROM relationships
+                                 WHERE project_id = $1 AND from_topic = $2
+                                   AND to_topic = $3 AND kind = $4";
+
 /// Returns the edge identity for this pair and kind, creating it if absent.
 ///
 /// One identity per (pair, kind): two topics can be related several ways at
@@ -135,45 +139,41 @@ pub async fn ensure_relationship<C: GenericClient>(
     to: TopicId,
     kind: EdgeKind,
 ) -> Result<Relationship> {
-    const FIND: &str = "SELECT id, created_at FROM relationships
-                        WHERE project_id = $1 AND from_topic = $2
-                          AND to_topic = $3 AND kind = $4";
-    let find = &[
-        &project.0 as &(dyn tokio_postgres::types::ToSql + Sync),
-        &from.0,
-        &to.0,
-        &kind.label(),
-    ];
-
     // Read first: an edge is created once and re-asserted on every rewrite of
     // the memory that derives it, so the insert is the rare path. See
     // `repository::ensure_project` for why the conflict clause does not update.
-    let row = match client.query_opt(FIND, find).await? {
-        Some(row) => row,
-        None => {
-            let inserted = client
-                .query_opt(
-                    "INSERT INTO relationships
-                         (id, project_id, from_topic, to_topic, kind, created_at)
-                     VALUES ($1, $2, $3, $4, $5, $6)
-                     ON CONFLICT (project_id, from_topic, to_topic, kind) DO NOTHING
-                     RETURNING id, created_at",
-                    &[
-                        &RelationshipId::new().0,
-                        &project.0,
-                        &from.0,
-                        &to.0,
-                        &kind.label(),
-                        &OffsetDateTime::now_utc(),
-                    ],
-                )
-                .await?;
+    if let Some(relationship) = find_relationship(client, project, from, to, kind).await? {
+        return Ok(relationship);
+    }
 
-            match inserted {
-                Some(row) => row,
-                // Another writer created it in between.
-                None => client.query_one(FIND, find).await?,
-            }
+    let inserted = client
+        .query_opt(
+            "INSERT INTO relationships
+                 (id, project_id, from_topic, to_topic, kind, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (project_id, from_topic, to_topic, kind) DO NOTHING
+             RETURNING id, created_at",
+            &[
+                &RelationshipId::new().0,
+                &project.0,
+                &from.0,
+                &to.0,
+                &kind.label(),
+                &OffsetDateTime::now_utc(),
+            ],
+        )
+        .await?;
+
+    let row = match inserted {
+        Some(row) => row,
+        // Another writer created it in between.
+        None => {
+            client
+                .query_one(
+                    FIND_RELATIONSHIP,
+                    &[&project.0, &from.0, &to.0, &kind.label()],
+                )
+                .await?
         }
     };
 
@@ -227,28 +227,106 @@ pub async fn assert_edge(
     to: TopicId,
     claim: &EdgeClaim,
 ) -> Result<Assertion> {
-    let transaction = client.transaction().await?;
-    let relationship = ensure_relationship(&transaction, project, from, to, claim.kind).await?;
+    if let Some(unchanged) = already_asserted(client, project, from, to, claim).await? {
+        return Ok(Assertion::Unchanged(unchanged));
+    }
 
-    transaction
+    let transaction = client.transaction().await?;
+    let asserted = assert_within(&transaction, project, from, to, claim).await?;
+    transaction.commit().await?;
+    Ok(asserted)
+}
+
+/// Asserts several edges in one transaction.
+///
+/// Deriving the edges of one memory means asserting every topic it names, and
+/// a transaction each meant four to six round trips per edge plus a commit.
+/// Here they share one, so the cost of a write grows with the number of names
+/// in it rather than with that number times the depth of the protocol.
+///
+/// Atomic as well as cheaper, which is the more important half: a memory's
+/// derived edges are one statement about what it says, and a crash partway
+/// through used to leave that statement half told.
+pub async fn assert_edges(
+    client: &mut Client,
+    project: ProjectId,
+    edges: &[(TopicId, TopicId, EdgeClaim)],
+) -> Result<Vec<Assertion>> {
+    // Answered outside the transaction, and for the common case that is the
+    // whole call: rewriting a memory re-derives the edges it already had, and
+    // an unchanged claim writes nothing, so no lock is needed to decide it.
+    let mut asserted: Vec<Option<Assertion>> = Vec::with_capacity(edges.len());
+    let mut pending = Vec::new();
+    for (index, (from, to, claim)) in edges.iter().enumerate() {
+        let unchanged = already_asserted(client, project, *from, *to, claim).await?;
+        if unchanged.is_none() {
+            pending.push(index);
+        }
+        asserted.push(unchanged.map(Assertion::Unchanged));
+    }
+
+    if !pending.is_empty() {
+        let transaction = client.transaction().await?;
+        for index in pending {
+            let (from, to, claim) = &edges[index];
+            asserted[index] = Some(assert_within(&transaction, project, *from, *to, claim).await?);
+        }
+        transaction.commit().await?;
+    }
+
+    Ok(asserted
+        .into_iter()
+        .map(|assertion| assertion.expect("every edge was either read or written"))
+        .collect())
+}
+
+/// The live version of this edge when the claim would not change it.
+///
+/// A read, so it can run before any lock is taken. Racing it is harmless: the
+/// answer is that nothing needs writing, which is as true a moment later as it
+/// is a moment after a commit.
+async fn already_asserted<C: GenericClient>(
+    client: &C,
+    project: ProjectId,
+    from: TopicId,
+    to: TopicId,
+    claim: &EdgeClaim,
+) -> Result<Option<RelationshipVersion>> {
+    let Some(relationship) = find_relationship(client, project, from, to, claim.kind).await? else {
+        return Ok(None);
+    };
+
+    Ok(live_version(client, relationship.id)
+        .await?
+        .filter(|version| claim.matches(version)))
+}
+
+async fn assert_within<C: GenericClient>(
+    client: &C,
+    project: ProjectId,
+    from: TopicId,
+    to: TopicId,
+    claim: &EdgeClaim,
+) -> Result<Assertion> {
+    let relationship = ensure_relationship(client, project, from, to, claim.kind).await?;
+
+    client
         .execute(
             "SELECT id FROM relationships WHERE id = $1 FOR UPDATE",
             &[&relationship.id.0],
         )
         .await?;
 
-    let live = live_version(&transaction, relationship.id).await?;
+    let live = live_version(client, relationship.id).await?;
     if let Some(existing) = live.as_ref().filter(|version| claim.matches(version)) {
         // Re-deriving the same edge from unchanged content must not stack
         // versions, or every rewrite of a memory would grow the ledger.
-        let unchanged = existing.clone();
-        transaction.commit().await?;
-        return Ok(Assertion::Unchanged(unchanged));
+        return Ok(Assertion::Unchanged(existing.clone()));
     }
 
     let now = OffsetDateTime::now_utc();
     if let Some(previous) = live.as_ref() {
-        transaction
+        client
             .execute(
                 "UPDATE relationship_versions
                  SET invalidated_at = $2, tombstone_reason = $3
@@ -267,7 +345,7 @@ pub async fn assert_edge(
          FROM relationship_versions WHERE relationship_id = $3
          RETURNING {VERSION_COLUMNS}"
     );
-    let row = transaction
+    let row = client
         .query_one(
             &sql,
             &[
@@ -285,9 +363,7 @@ pub async fn assert_edge(
         )
         .await?;
 
-    let appended = row_to_version(&row);
-    transaction.commit().await?;
-    Ok(Assertion::Appended(appended))
+    Ok(Assertion::Appended(row_to_version(&row)))
 }
 
 /// Closes the live version of an edge, leaving every row in place.
@@ -326,8 +402,8 @@ pub async fn close_edge(
 }
 
 /// Looks up an edge identity without creating one.
-pub async fn find_relationship(
-    client: &Client,
+pub async fn find_relationship<C: GenericClient>(
+    client: &C,
     project: ProjectId,
     from: TopicId,
     to: TopicId,
@@ -335,8 +411,7 @@ pub async fn find_relationship(
 ) -> Result<Option<Relationship>> {
     let row = client
         .query_opt(
-            "SELECT id, created_at FROM relationships
-             WHERE project_id = $1 AND from_topic = $2 AND to_topic = $3 AND kind = $4",
+            FIND_RELATIONSHIP,
             &[&project.0, &from.0, &to.0, &kind.label()],
         )
         .await?;

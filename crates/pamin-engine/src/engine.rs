@@ -173,22 +173,27 @@ impl Engine {
                 .collect()
         };
 
-        let mut added = 0;
-        for target in named {
-            let claim = EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE);
-            let assertion = graph::assert_edge(
-                self.database.client_mut(),
-                self.project,
-                state.topic_id,
-                target,
-                &claim,
-            )
-            .await?;
-            if assertion.is_new() {
-                added += 1;
-            }
-        }
-        Ok(added)
+        let edges: Vec<_> = named
+            .into_iter()
+            .map(|target| {
+                (
+                    state.topic_id,
+                    target,
+                    EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE),
+                )
+            })
+            .collect();
+
+        // One transaction: the edges a memory derives are one statement about
+        // what it says, and asserting them separately both cost a commit each
+        // and let a crash tell half of it.
+        let asserted =
+            graph::assert_edges(self.database.client_mut(), self.project, &edges).await?;
+
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
     }
 
     /// Links a newly created topic to memories that already named it.
@@ -217,22 +222,24 @@ impl Engine {
                 .collect()
         };
 
-        let mut added = 0;
-        for (from, caused_by) in naming {
-            let claim = EdgeClaim::derived(EdgeKind::Mentions, caused_by, MENTION_CONFIDENCE);
-            let assertion = graph::assert_edge(
-                self.database.client_mut(),
-                self.project,
-                from,
-                topic.id,
-                &claim,
-            )
-            .await?;
-            if assertion.is_new() {
-                added += 1;
-            }
-        }
-        Ok(added)
+        let edges: Vec<_> = naming
+            .into_iter()
+            .map(|(from, caused_by)| {
+                (
+                    from,
+                    topic.id,
+                    EdgeClaim::derived(EdgeKind::Mentions, caused_by, MENTION_CONFIDENCE),
+                )
+            })
+            .collect();
+
+        let asserted =
+            graph::assert_edges(self.database.client_mut(), self.project, &edges).await?;
+
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
     }
 
     /// Recalls candidates from every channel and fuses them here.
