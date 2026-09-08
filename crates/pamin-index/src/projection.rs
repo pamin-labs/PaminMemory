@@ -55,6 +55,56 @@ pub enum Access {
     ReadWrite,
 }
 
+/// What the layer above needs a projection to do.
+///
+/// The architecture decision that chose this engine mitigated its pre-1.0 risk
+/// by keeping it behind a boundary, and named this trait as the boundary. It
+/// was never written, so what actually stood between the composition layer and
+/// a specific engine was one concrete type. Every method here is one the layer
+/// above calls; nothing is here for a caller that does not exist.
+///
+/// Everything a projection holds is derived, so replacing one is a rebuild
+/// rather than a migration. That is what makes an engine swap an addition:
+/// a second implementation of this can be built and measured against the first
+/// on the same corpus, which is what the evaluation harness needs and what
+/// deciding to swap would require evidence from.
+pub trait Projection {
+    /// The segmenter this projection tokenizes with.
+    ///
+    /// On the trait because anything comparing text against indexed content has
+    /// to split it the way the index did. A projection that tokenizes one way
+    /// and hands out a segmenter that tokenizes another is an index nothing
+    /// matches against.
+    fn segmenter(&self) -> &Segmenter;
+
+    /// Adds or replaces one topic state.
+    fn upsert(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<()>;
+
+    /// Adds or replaces many.
+    fn upsert_batch(&self, documents: &[(TopicStateId, &str, &[f32])]) -> Result<()>;
+
+    /// Word-level lexical recall, best first.
+    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>>;
+
+    /// Substring lexical recall over raw text, best first.
+    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>>;
+
+    /// Semantic recall over dense embeddings, nearest first.
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>>;
+
+    /// Makes buffered writes visible to later queries.
+    fn flush(&self) -> Result<()>;
+
+    /// Builds whatever structure makes recall faster than a scan.
+    fn optimize(&self) -> Result<()>;
+
+    /// How much of the collection that structure covers, from 0.0 to 1.0.
+    fn vector_index_completeness(&self) -> Result<f32>;
+
+    /// How many documents the projection holds.
+    fn document_count(&self) -> Result<u64>;
+}
+
 /// A lexical or vector index over topic states.
 pub struct ProjectionIndex {
     collection: Collection,
@@ -152,41 +202,6 @@ impl ProjectionIndex {
         })
     }
 
-    /// The segmenter this index tokenizes with.
-    ///
-    /// Shared rather than duplicated so that anything comparing text against
-    /// indexed content splits it the same way this index did. A second
-    /// segmenter would be the same code today and a divergence the first time
-    /// either side changed.
-    pub fn segmenter(&self) -> &Segmenter {
-        &self.segmenter
-    }
-
-    /// Adds or replaces many topic states.
-    ///
-    /// Chunked because the engine refuses a write of more than [`WRITE_BATCH`]
-    /// documents. Rebuilding used to write one document per call, which pays
-    /// the per-call cost once per document; here it is once per batch.
-    ///
-    /// No flush: a caller writing in batches decides when the result becomes
-    /// visible, and flushing between batches would make that decision for them
-    /// once per batch.
-    pub fn upsert_batch(&self, documents: &[(TopicStateId, &str, &[f32])]) -> Result<()> {
-        for chunk in documents.chunks(WRITE_BATCH) {
-            let docs = chunk
-                .iter()
-                .map(|(topic_state, content, embedding)| {
-                    self.document(*topic_state, content, embedding)
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            let refs: Vec<&Doc> = docs.iter().collect();
-            self.collection.upsert(&refs)?;
-        }
-
-        Ok(())
-    }
-
     fn document(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<Doc> {
         let mut doc = Doc::new()?;
         let key = topic_state.to_string();
@@ -196,38 +211,6 @@ impl ProjectionIndex {
         doc.add_string(FIELD_NGRAM, content)?;
         doc.add_vector_f32(FIELD_VECTOR, embedding)?;
         Ok(doc)
-    }
-
-    /// Adds or replaces one topic state.
-    ///
-    /// The embedding is required rather than optional. The engine enforces it,
-    /// and it is the right constraint: a document indexed without one is
-    /// invisible to the vector channel, which would show up as unexplained
-    /// recall gaps rather than as an error.
-    pub fn upsert(
-        &self,
-        topic_state: TopicStateId,
-        content: &str,
-        embedding: &[f32],
-    ) -> Result<()> {
-        let doc = self.document(topic_state, content, embedding)?;
-        self.collection.upsert(&[&doc])?;
-        Ok(())
-    }
-
-    /// Word-level lexical recall, ranked by BM25.
-    ///
-    /// The query is segmented by the same function that segmented the documents.
-    /// Tokenizing the two differently is the standard way to build an index that
-    /// never matches.
-    pub fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
-        let segmented = self.segmenter.segment_for_index(query);
-        self.recall_text(FIELD_SEGMENTED, &segmented, limit)
-    }
-
-    /// Substring lexical recall over raw text, ranked by BM25.
-    pub fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
-        self.recall_text(FIELD_NGRAM, query, limit)
     }
 
     fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
@@ -245,18 +228,96 @@ impl ProjectionIndex {
         Ok(collect_ids(self.collection.query(&search)?))
     }
 
+    /// Deletes the index directory so the next open starts empty.
+    ///
+    /// Rebuilding is the intended way to clear it. The projection carries no
+    /// state PostgreSQL cannot reproduce, so discarding the directory is both
+    /// the simplest reset and a standing demonstration that the index is
+    /// disposable.
+    pub fn discard(dir: &Path) -> Result<()> {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Projection for ProjectionIndex {
+    /// The segmenter this index tokenizes with.
+    ///
+    /// Shared rather than duplicated so that anything comparing text against
+    /// indexed content splits it the same way this index did. A second
+    /// segmenter would be the same code today and a divergence the first time
+    /// either side changed.
+    fn segmenter(&self) -> &Segmenter {
+        &self.segmenter
+    }
+
+    /// Adds or replaces many topic states.
+    ///
+    /// Chunked because the engine refuses a write of more than [`WRITE_BATCH`]
+    /// documents. Rebuilding used to write one document per call, which pays
+    /// the per-call cost once per document; here it is once per batch.
+    ///
+    /// No flush: a caller writing in batches decides when the result becomes
+    /// visible, and flushing between batches would make that decision for them
+    /// once per batch.
+    fn upsert_batch(&self, documents: &[(TopicStateId, &str, &[f32])]) -> Result<()> {
+        for chunk in documents.chunks(WRITE_BATCH) {
+            let docs = chunk
+                .iter()
+                .map(|(topic_state, content, embedding)| {
+                    self.document(*topic_state, content, embedding)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let refs: Vec<&Doc> = docs.iter().collect();
+            self.collection.upsert(&refs)?;
+        }
+
+        Ok(())
+    }
+
+    /// Adds or replaces one topic state.
+    ///
+    /// The embedding is required rather than optional. The engine enforces it,
+    /// and it is the right constraint: a document indexed without one is
+    /// invisible to the vector channel, which would show up as unexplained
+    /// recall gaps rather than as an error.
+    fn upsert(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<()> {
+        let doc = self.document(topic_state, content, embedding)?;
+        self.collection.upsert(&[&doc])?;
+        Ok(())
+    }
+
+    /// Word-level lexical recall, ranked by BM25.
+    ///
+    /// The query is segmented by the same function that segmented the documents.
+    /// Tokenizing the two differently is the standard way to build an index that
+    /// never matches.
+    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+        let segmented = self.segmenter.segment_for_index(query);
+        self.recall_text(FIELD_SEGMENTED, &segmented, limit)
+    }
+
+    /// Substring lexical recall over raw text, ranked by BM25.
+    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+        self.recall_text(FIELD_NGRAM, query, limit)
+    }
+
     /// Semantic recall over dense embeddings.
     ///
     /// Returns ranks only, like the lexical channels. A cosine distance and a
     /// BM25 score are different quantities, and keeping both as ranks is what
     /// lets one fusion step combine them.
-    pub fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>> {
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>> {
         let search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
         Ok(collect_ids(self.collection.query(&search)?))
     }
 
     /// Flushes buffered writes so a later query sees them.
-    pub fn flush(&self) -> Result<()> {
+    fn flush(&self) -> Result<()> {
         self.collection.flush()?;
         Ok(())
     }
@@ -276,7 +337,7 @@ impl ProjectionIndex {
     /// already the expensive operation; incremental writes wait for the
     /// cascade worker, which is where a threshold on
     /// [`vector_index_completeness`](Self::vector_index_completeness) belongs.
-    pub fn optimize(&self) -> Result<()> {
+    fn optimize(&self) -> Result<()> {
         self.collection.optimize()?;
         Ok(())
     }
@@ -286,7 +347,7 @@ impl ProjectionIndex {
     /// The share of documents [`optimize`](Self::optimize) has taken in. Below
     /// 1.0 the remainder is still answered by the flat buffer -- correctly, and
     /// at a cost that grows with the project.
-    pub fn vector_index_completeness(&self) -> Result<f32> {
+    fn vector_index_completeness(&self) -> Result<f32> {
         Ok(self
             .collection
             .stats()?
@@ -297,22 +358,8 @@ impl ProjectionIndex {
     }
 
     /// How many documents the index holds.
-    pub fn document_count(&self) -> Result<u64> {
+    fn document_count(&self) -> Result<u64> {
         Ok(self.collection.stats()?.doc_count)
-    }
-
-    /// Deletes the index directory so the next open starts empty.
-    ///
-    /// Rebuilding is the intended way to clear it. The projection carries no
-    /// state PostgreSQL cannot reproduce, so discarding the directory is both
-    /// the simplest reset and a standing demonstration that the index is
-    /// disposable.
-    pub fn discard(dir: &Path) -> Result<()> {
-        match std::fs::remove_dir_all(dir) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
     }
 }
 

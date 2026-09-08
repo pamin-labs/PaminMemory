@@ -71,7 +71,7 @@ PostgreSQL is bundled rather than brought by the user. `pamin init` provisions a
 
 `zvec` is pre-1.0 and has made breaking changes between minor versions. Two mitigations make that acceptable, and both are executable rather than declared:
 
-- It appears only in `pamin-index`, behind the projection trait; `zvec` types must not reach `pamin-core`.
+- It appears only in `pamin-index`, behind the `Projection` trait; `zvec` types must not reach `pamin-core`. Both halves are checked rather than reviewed: the trait is what `pamin-engine` holds, and `ci/budget.py` fails the build if the engine becomes reachable from a crate outside `pamin-index`, `pamin-engine`, and `pamin-cli`.
 - The index is fully rebuildable from PostgreSQL, and `pamin reindex` is delivered and tested alongside it. A breaking upgrade is therefore a reindex, not a migration.
 
 LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer coverage available, but its Rust crate is pre-1.0 and pulls roughly sixty direct dependencies including Arrow and DataFusion, which is exactly the build cost this project is trying to avoid. Qdrant Edge runs in-process with on-device BM25, but its API is documented as beta.

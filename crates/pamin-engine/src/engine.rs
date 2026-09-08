@@ -9,7 +9,7 @@ use pamin_core::{
     Channel, ChannelResults, EdgeKind, FusedResult, Fusion, Modifiers, ProjectId, Topic, TopicId,
     TopicState, TopicStateId, Why,
 };
-use pamin_index::{Access, Embedder, Profile, ProjectionIndex};
+use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Database, Workspace, graph, repository};
 
@@ -85,7 +85,9 @@ fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
 /// The store, the index, and the embedder, wired together.
 pub struct Engine {
     pub database: Database,
-    pub index: ProjectionIndex,
+    /// Behind the trait rather than the concrete type, so the composition layer
+    /// names what it needs from a projection and not which engine provides it.
+    pub index: Box<dyn Projection>,
     pub embedder: Embedder,
     pub project: ProjectId,
 }
@@ -145,7 +147,7 @@ impl Engine {
 
             let index = ProjectionIndex::open(&dir, &legacy, profile, access)?;
             let embedder = Embedder::load(profile, &models)?;
-            Ok::<_, pamin_index::IndexError>((index, embedder))
+            Ok::<_, pamin_index::IndexError>((Box::new(index) as Box<dyn Projection>, embedder))
         })?;
 
         Ok(Self {

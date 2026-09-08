@@ -1,7 +1,7 @@
 //! Drives the projection index against the real engine.
 
 use pamin_core::TopicStateId;
-use pamin_index::{Access, Profile, ProjectionIndex};
+use pamin_index::{Access, Profile, Projection, ProjectionIndex};
 
 const PROFILE: Profile = Profile::Speed;
 
