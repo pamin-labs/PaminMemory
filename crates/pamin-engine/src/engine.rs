@@ -58,6 +58,22 @@ const MENTION_CONFIDENCE: f32 = 0.5;
 /// quantity anything holds down.
 const MAX_SEEDS: usize = 64;
 
+/// Runs synchronous index and embedder work off the async path.
+///
+/// The projection engine and ONNX Runtime are both synchronous C libraries. A
+/// call into either can take tens of milliseconds -- a forward pass, a lexical
+/// scan, taking the index's file lock -- and calling one directly from an
+/// async function runs it on a runtime thread, where it stalls every other task
+/// that thread was driving. Today that is one command's own work. Once a server
+/// holds the runtime it is every caller's.
+///
+/// `block_in_place` rather than `spawn_blocking` because the work borrows the
+/// index and the embedder, and neither is `'static`. It requires the
+/// multi-threaded runtime, which is what `pamin` runs on.
+fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(work)
+}
+
 /// The store, the index, and the embedder, wired together.
 pub struct Engine {
     pub database: Database,
@@ -98,15 +114,20 @@ impl Engine {
         // the index can be located at all.
         let dir = workspace.index_dir(project.id);
         let legacy = workspace.legacy_index_dir();
-        if discard {
-            ProjectionIndex::discard(&dir)?;
-            // A rebuild is also the migration off the shared layout, which is
-            // what the error about it tells the caller to run.
-            ProjectionIndex::discard(&legacy)?;
-        }
+        let models = workspace.root().join("models");
 
-        let index = ProjectionIndex::open(&dir, &legacy, profile)?;
-        let embedder = Embedder::load(profile, &workspace.root().join("models"))?;
+        let (index, embedder) = off_the_runtime(|| {
+            if discard {
+                ProjectionIndex::discard(&dir)?;
+                // A rebuild is also the migration off the shared layout, which
+                // is what the error about it tells the caller to run.
+                ProjectionIndex::discard(&legacy)?;
+            }
+
+            let index = ProjectionIndex::open(&dir, &legacy, profile)?;
+            let embedder = Embedder::load(profile, &models)?;
+            Ok::<_, pamin_index::IndexError>((index, embedder))
+        })?;
 
         Ok(Self {
             database,
@@ -117,10 +138,13 @@ impl Engine {
     }
 
     /// Adds one topic state to the projection index.
-    pub fn index_state(&mut self, state: &TopicState) -> Result<()> {
-        let embedding = self.embedder.embed_passage(&state.content)?;
-        self.index.upsert(state.id, &state.content, &embedding)?;
-        self.index.flush()?;
+    pub async fn index_state(&mut self, state: &TopicState) -> Result<()> {
+        let (index, embedder) = (&self.index, &mut self.embedder);
+        off_the_runtime(|| {
+            let embedding = embedder.embed_passage(&state.content)?;
+            index.upsert(state.id, &state.content, &embedding)?;
+            index.flush()
+        })?;
         Ok(())
     }
 
@@ -254,22 +278,24 @@ impl Engine {
         limit: u32,
         depths: Depths,
     ) -> Result<Vec<SearchHit>> {
-        let embedding = self.embedder.embed_query(query)?;
-
-        let lists = vec![
-            ChannelResults::new(
-                Channel::LexicalSegmented,
-                self.index.recall_segmented(query, depths.channel)?,
-            ),
-            ChannelResults::new(
-                Channel::LexicalNgram,
-                self.index.recall_ngram(query, depths.channel)?,
-            ),
-            ChannelResults::new(
-                Channel::Vector,
-                self.index.recall_vector(&embedding, depths.channel)?,
-            ),
-        ];
+        let (index, embedder) = (&self.index, &mut self.embedder);
+        let lists = off_the_runtime(|| {
+            let embedding = embedder.embed_query(query)?;
+            Ok::<_, pamin_index::IndexError>(vec![
+                ChannelResults::new(
+                    Channel::LexicalSegmented,
+                    index.recall_segmented(query, depths.channel)?,
+                ),
+                ChannelResults::new(
+                    Channel::LexicalNgram,
+                    index.recall_ngram(query, depths.channel)?,
+                ),
+                ChannelResults::new(
+                    Channel::Vector,
+                    index.recall_vector(&embedding, depths.channel)?,
+                ),
+            ])
+        })?;
 
         // The ledger is read once and shared. The index knows ranks; only the
         // ledger knows whether a state is current, what it is worth, and which
@@ -410,11 +436,14 @@ impl Engine {
         let states =
             repository::all_live_topic_states(self.database.client(), self.project).await?;
 
-        for state in &states {
-            let embedding = self.embedder.embed_passage(&state.content)?;
-            self.index.upsert(state.id, &state.content, &embedding)?;
-        }
-        self.index.flush()?;
+        let (index, embedder) = (&self.index, &mut self.embedder);
+        off_the_runtime(|| {
+            for state in &states {
+                let embedding = embedder.embed_passage(&state.content)?;
+                index.upsert(state.id, &state.content, &embedding)?;
+            }
+            index.flush()
+        })?;
 
         Ok(states.len())
     }

@@ -1957,6 +1957,7 @@ dependencies = [
  "pamin-core",
  "pamin-index",
  "pamin-store",
+ "tokio",
 ]
 
 [[package]]
