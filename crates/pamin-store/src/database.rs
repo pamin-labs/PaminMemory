@@ -5,6 +5,7 @@
 //! not survive a prerequisite that starts with installing a database.
 
 use std::mem::ManuallyDrop;
+use std::time::Duration;
 
 use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
 
@@ -91,6 +92,11 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
         // Not temporary: the cluster outlives the process that created it, so a
         // workspace survives between commands.
         temporary: false,
+        // A hard limit on `initdb` and `pg_ctl start`, not a poll interval. The
+        // default is five seconds, which a first `initdb` on a cold filesystem
+        // exceeds routinely -- and the failure lands on whoever is setting the
+        // project up for the first time, which is the worst audience for it.
+        timeout: Some(Duration::from_secs(60)),
         ..Settings::default()
     };
 
@@ -145,6 +151,9 @@ pub async fn stop(workspace: &Workspace) -> Result<()> {
         password: server.password,
         port: server.port,
         temporary: false,
+        // Same reason as starting: this is a hard limit on `pg_ctl stop`, and
+        // a shutdown that waits for a long checkpoint is not a hung one.
+        timeout: Some(Duration::from_secs(60)),
         ..Settings::default()
     };
 
