@@ -4,7 +4,7 @@
 //! `cargo test -p pamin-index -- --ignored`.
 
 use pamin_core::TopicStateId;
-use pamin_index::{Access, Embedder, Profile, ProjectionIndex};
+use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
 
 fn id(byte: u8) -> TopicStateId {
     TopicStateId(uuid::Uuid::from_bytes([byte; 16]))
