@@ -37,6 +37,32 @@ def dependency_count() -> int:
     return len([p for p in packages if p["id"] not in workspace])
 
 
+def projection_containment() -> list[str]:
+    """Return the crates that reach `zvec`, so the boundary stays a rule.
+
+    The architecture decision that picked `zvec` mitigates its pre-1.0 risk by
+    confining it: the engine appears only behind the projection boundary, and
+    its types must not reach the domain layer. That was written as prose and
+    was never enforced, so this checks it the way the SQL drift test checks
+    the enum labels — mechanically, on every run.
+    """
+    out = subprocess.run(
+        ("cargo", "tree", "--workspace", "--invert", "zvec-rust", "--prefix", "none"),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    workspace = set()
+    for line in out.stdout.splitlines():
+        name = line.split(" ", 1)[0]
+        if name.startswith("pamin-"):
+            workspace.add(name)
+    return sorted(workspace)
+
+
+ALLOWED_TO_REACH_ZVEC = {"pamin-index", "pamin-engine", "pamin-cli"}
+
 def directory_bytes(path: pathlib.Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
@@ -87,6 +113,15 @@ def main() -> int:
 
     for name in budgets["reported"]:
         print(f"  {name:<26} {measured[name]:>12,}  (reported)")
+
+    reaches_zvec = set(projection_containment())
+    leaked = sorted(reaches_zvec - ALLOWED_TO_REACH_ZVEC)
+    print(f"\n  zvec is reachable from: {', '.join(sorted(reaches_zvec)) or 'nothing'}")
+    if leaked:
+        failures.append(
+            "zvec escaped the projection boundary and is now reachable from "
+            + ", ".join(leaked)
+        )
 
     summary = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
     if summary is not None:
