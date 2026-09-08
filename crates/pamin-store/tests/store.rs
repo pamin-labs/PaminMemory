@@ -37,6 +37,7 @@ async fn the_ledger_holds_its_promises() {
     ensuring_a_row_that_exists_does_not_rewrite_it(&mut database).await;
     derived_edges_are_asserted_together_or_not_at_all(&mut database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
+    every_column_holds_what_was_written_to_it(&mut database).await;
 
     drop(database);
 }
@@ -1097,4 +1098,173 @@ async fn a_workspace_the_previous_runner_migrated_is_adopted(
         .execute(database.pool())
         .await
         .expect("drop scratch database");
+}
+
+/// Every value written comes back from the column it was written to.
+///
+/// Most of these functions bind several arguments of one type in a row: three
+/// timestamps on a topic state, two optional identifiers and two intervals on
+/// an edge, three strings on a piece of evidence. Two of those swapped compiles,
+/// runs, and returns a row -- so a test that asserts a row came back, or that a
+/// count went up, passes just as happily with the values in each other's
+/// columns.
+///
+/// So every value here is distinguishable from every other value of its type,
+/// and every one is read back on its own. That is what makes this a check on
+/// the mapping rather than on the plumbing, which is what it is for: the
+/// mapping is being rewritten onto a different driver, one whose arguments are
+/// positional and whose ordering the compiler cannot check.
+async fn every_column_holds_what_was_written_to_it(database: &mut Database) {
+    // Distinct, ordered, and none of them equal to now.
+    let observed = OffsetDateTime::from_unix_timestamp(1_000_000_000).expect("observed");
+    let valid_from = OffsetDateTime::from_unix_timestamp(1_100_000_000).expect("valid from");
+    let valid_to = OffsetDateTime::from_unix_timestamp(1_200_000_000).expect("valid to");
+    let edge_from = OffsetDateTime::from_unix_timestamp(1_300_000_000).expect("edge from");
+    let edge_to = OffsetDateTime::from_unix_timestamp(1_400_000_000).expect("edge to");
+
+    let project = repository::ensure_project(database.client(), "columns")
+        .await
+        .expect("ensure project");
+    let source = repository::ensure_source(
+        database.client(),
+        project.id,
+        SourceKind::Manual,
+        "columns-locator",
+    )
+    .await
+    .expect("ensure source");
+
+    let evidence = repository::append_source_version(
+        database.client_mut(),
+        project.id,
+        source,
+        "the content",
+        "the-hash",
+        FilterDecision::Filtered,
+        "the reason",
+    )
+    .await
+    .expect("append source version");
+
+    let read_back = repository::latest_source_version(database.client(), source)
+        .await
+        .expect("latest source version")
+        .expect("a version was written");
+    assert_eq!(read_back.content, "the content");
+    assert_eq!(read_back.content_hash, "the-hash");
+    assert_eq!(read_back.filter_reason, "the reason");
+    assert_eq!(read_back.filter_decision, FilterDecision::Filtered);
+    assert_eq!(read_back.source_id, source);
+    assert_eq!(read_back.project_id, project.id);
+
+    let span = repository::append_source_span(
+        database.client(),
+        project.id,
+        evidence.id,
+        3,
+        11,
+        Some("eng"),
+        Some(0.75),
+    )
+    .await
+    .expect("append source span");
+    assert_eq!(span.byte_start, 3);
+    assert_eq!(span.byte_end, 11);
+    assert_eq!(span.detected_language.as_deref(), Some("eng"));
+
+    let topic = repository::ensure_topic(database.client(), project.id, "columns_topic")
+        .await
+        .expect("ensure topic");
+    let state = repository::append_topic_state(
+        database.client_mut(),
+        project.id,
+        topic.id,
+        "the state content",
+        span.id,
+        observed,
+        Validity {
+            from: Some(valid_from),
+            to: Some(valid_to),
+        },
+    )
+    .await
+    .expect("append topic state");
+
+    let stored = repository::topic_state(database.client(), topic.id, state.version)
+        .await
+        .expect("read topic state")
+        .expect("the state was written");
+    assert_eq!(stored.content, "the state content");
+    assert_eq!(stored.source_span_id, span.id);
+    assert_eq!(stored.observed_at, observed);
+    assert_eq!(stored.validity.from, Some(valid_from));
+    assert_eq!(stored.validity.to, Some(valid_to));
+    assert!(
+        stored.recorded_at > valid_to,
+        "recorded_at should be now, not one of the stated instants"
+    );
+    assert_eq!(stored.supersedes, None);
+    assert_eq!(stored.deleted_at, None);
+
+    // An edge carrying every field that could be transposed with another.
+    let other = repository::ensure_topic(database.client(), project.id, "columns_other")
+        .await
+        .expect("ensure topic");
+    let claim = EdgeClaim {
+        kind: EdgeKind::DependsOn,
+        derivation: Derivation::Model,
+        confidence: 0.625,
+        validity: Validity {
+            from: Some(edge_from),
+            to: Some(edge_to),
+        },
+        caused_by_topic_state: Some(state.id),
+    };
+    graph::assert_edge(
+        database.client_mut(),
+        project.id,
+        topic.id,
+        other.id,
+        &claim,
+    )
+    .await
+    .expect("assert edge");
+
+    let relationship = graph::find_relationship(
+        database.client(),
+        project.id,
+        topic.id,
+        other.id,
+        EdgeKind::DependsOn,
+    )
+    .await
+    .expect("find relationship")
+    .expect("the edge was asserted");
+    assert_eq!(relationship.from_topic, topic.id);
+    assert_eq!(relationship.to_topic, other.id);
+
+    let version = graph::live_version(database.client(), relationship.id)
+        .await
+        .expect("live version")
+        .expect("the edge is live");
+    assert_eq!(version.derivation, Derivation::Model);
+    assert_eq!(version.confidence, 0.625);
+    assert_eq!(version.validity.from, Some(edge_from));
+    assert_eq!(version.validity.to, Some(edge_to));
+    assert_eq!(version.caused_by_topic_state, Some(state.id));
+    assert_eq!(version.invalidated_at, None);
+    assert_eq!(version.tombstone_reason, None);
+    assert_eq!(version.supersedes, None);
+
+    // `needle` and `limit` are the other pair that would compile transposed.
+    let matches = repository::grep_evidence(database.client(), project.id, "content", false, 1)
+        .await
+        .expect("grep evidence");
+    assert_eq!(matches.len(), 1, "the limit is the limit, not the needle");
+    assert_eq!(matches[0].source_version.content, "the content");
+    assert_eq!(matches[0].locator, "columns-locator");
+    assert_eq!(
+        matches[0].offset, 4,
+        "the offset is a zero-based byte offset of the needle, not SQL's one-based position"
+    );
 }
