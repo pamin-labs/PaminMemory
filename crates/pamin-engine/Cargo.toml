@@ -12,3 +12,4 @@ pamin-core = { workspace = true }
 pamin-index = { workspace = true }
 pamin-store = { workspace = true }
 anyhow = { workspace = true }
+tokio = { workspace = true }

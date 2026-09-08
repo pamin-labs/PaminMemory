@@ -133,7 +133,7 @@ pub async fn run(
         // Index only what was promoted. Filtered content stays in the evidence
         // layer, reachable and replayable, but off the retrieval surface, which
         // is the whole point of filtering after persistence rather than before.
-        engine.index_state(&state)?;
+        engine.index_state(&state).await?;
 
         // Derived writes run here rather than in a worker because there is no
         // worker yet. Both this and the index update move into the cascade
