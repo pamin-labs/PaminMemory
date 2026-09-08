@@ -38,7 +38,7 @@ fastembed = { version = "6", default-features = false, features = [
     "hf-hub-native-tls",
 ] }
 icu_segmenter = { version = "2", features = ["compiled_data", "auto"] }
-postgresql_embedded = "0.19"
+postgresql_embedded = { version = "0.21", features = ["tokio"] }
 whatlang = "0.16"
 zvec-rust = "0.7"
 tempfile = "3"
