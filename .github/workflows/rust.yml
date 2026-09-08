@@ -45,3 +45,27 @@ jobs:
       # and excluded here; they are run locally and reported in the pull request.
       - name: Test
         run: cargo test --workspace
+
+  install:
+    name: installed binary starts
+    # Separate from the checks above because it builds in release and installs,
+    # which is slower than everything else put together and answers a different
+    # question: not whether the code is right, but whether what a user installs
+    # runs at all. The retrieval engine is a dynamic library that Cargo does not
+    # install beside the binary, and every other test runs the copy inside
+    # `target/` with the build tree still around it -- so without this, the one
+    # arrangement users get is the one arrangement never exercised.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache dependency builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install and run
+        run: cargo test -p pamin-cli --test install -- --ignored
