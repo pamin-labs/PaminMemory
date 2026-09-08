@@ -50,6 +50,14 @@ impl Default for Depths {
 /// interchangeable. Provisional, like every other retrieval constant here.
 const MENTION_CONFIDENCE: f32 = 0.5;
 
+/// How many topics the graph channel is willing to walk out from.
+///
+/// Every seed is a separate expansion, and each one costs a neighbourhood that
+/// grows with the depth. Without a bound the cost of the graph channel is set
+/// by how many topics the other channels happened to surface, which is not a
+/// quantity anything holds down.
+const MAX_SEEDS: usize = 64;
+
 /// The store, the index, and the embedder, wired together.
 pub struct Engine {
     pub database: Database,
@@ -345,6 +353,10 @@ impl Engine {
                         .map(|state| state.topic_id)
                         .filter(|topic| seen.insert(*topic)),
                 )
+                // Topics the query named come first, so a walk that has to
+                // give something up gives up the weakest lexical and vector
+                // candidates rather than the seed the caller asked about.
+                .take(MAX_SEEDS)
                 .collect()
         };
 

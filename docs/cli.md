@@ -146,6 +146,12 @@ recall you cannot measure from outside, and an agent that wants control over
 retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
 ranking internals it has no way to evaluate.
 
+`--graph-depth` accepts 0 to 4 and refuses anything larger. A topic's
+neighbourhood grows multiplicatively with each hop and hub topics reach five
+figures of degree, so a fifth hop is not a slower query but a differently sized
+one. The walk also starts from at most 64 seeds, keeping the topics the query
+named by name ahead of the ones the lexical and vector channels supplied.
+
 ```console
 $ pamin search "how do we deploy" --limit 3
 0.0489  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
@@ -327,7 +333,8 @@ to see a derived edge that never placed high enough to surface in a search.
 Traversal ignores edge direction, since both ends of a `depends_on` are relevant
 to recall. `--kind` restricts it, repeatably. `--at <rfc3339>` follows only edges
 asserted to hold at that instant, which is how a question about the past avoids
-relationships that were only claimed later.
+relationships that were only claimed later. `--depth` accepts 0 to 4, for the
+reason given under [`pamin search`](#pamin-search).
 
 ## `pamin grep`
 
