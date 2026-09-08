@@ -146,12 +146,21 @@ impl Engine {
 
         let named: Vec<TopicId> = {
             let segmenter = self.index.segmenter();
+            // Segmented once rather than once per topic: this is the same
+            // question asked of every topic in the project, and only the name
+            // changes between askings.
+            let content = segmenter.name_sequence(&state.content);
             topics
                 .iter()
                 // A topic naming itself is not a relationship, and the schema
                 // rejects the edge anyway.
                 .filter(|topic| topic.id != state.topic_id)
-                .filter(|topic| segmenter.names(&state.content, &topic.name))
+                .filter(|topic| {
+                    pamin_index::segmentation::names(
+                        &content,
+                        &segmenter.name_sequence(&topic.name),
+                    )
+                })
                 .map(|topic| topic.id)
                 .collect()
         };
@@ -185,10 +194,17 @@ impl Engine {
 
         let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
             let segmenter = self.index.segmenter();
+            // The fixed side here is the name, so that is the side prepared.
+            let name = segmenter.name_sequence(&topic.name);
             states
                 .iter()
                 .filter(|state| state.topic_id != topic.id)
-                .filter(|state| segmenter.names(&state.content, &topic.name))
+                .filter(|state| {
+                    pamin_index::segmentation::names(
+                        &segmenter.name_sequence(&state.content),
+                        &name,
+                    )
+                })
                 .map(|state| (state.topic_id, state.id))
                 .collect()
         };
@@ -309,9 +325,12 @@ impl Engine {
             // walks out from it, and "what depends on X" cannot be answered by
             // naming X. Resolving query entities against known topics is the
             // retrieval half of entity linking; the write path does the other.
+            let prepared = segmenter.name_sequence(query);
             let named: Vec<TopicId> = live
                 .topic_names()
-                .filter(|(_, name)| segmenter.names(query, name))
+                .filter(|(_, name)| {
+                    pamin_index::segmentation::names(&prepared, &segmenter.name_sequence(name))
+                })
                 .map(|(topic, _)| topic)
                 .filter(|topic| seen.insert(*topic))
                 .collect();
