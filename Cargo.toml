@@ -39,6 +39,20 @@ fastembed = { version = "6", default-features = false, features = [
 ] }
 icu_segmenter = { version = "2", features = ["compiled_data", "auto"] }
 postgresql_embedded = { version = "0.21", features = ["tokio"] }
+# No `macros`: `sqlx::migrate!()` needs it and pulls the offline-data machinery
+# and a `.env` scan with it, while `Migrator::with_migrations` plus `include_str!`
+# gives the same embedded migrations with none of that. TLS has to match what
+# `postgresql_embedded` chose, or two TLS stacks end up in one binary.
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-native-tls",
+    "postgres",
+    "migrate",
+    "derive",
+    "uuid",
+    "time",
+    "json",
+] }
 whatlang = "0.16"
 zvec-rust = "0.7"
 tempfile = "3"
