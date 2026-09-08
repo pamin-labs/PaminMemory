@@ -128,3 +128,46 @@ fn a_pre_split_workspace_is_reported_rather_than_searched() {
         "the error has to say how to fix it, got {error}"
     );
 }
+
+/// A second command waits for the index instead of being turned away.
+///
+/// The engine takes the collection's file lock exclusively and non-blocking, so
+/// a second opener is refused rather than queued. Agents run this CLI
+/// concurrently by design, and a refusal turns an ordinary overlap into a
+/// failed command.
+///
+/// The waiting side runs on the spawned thread because an open collection is
+/// not `Send`, so the one being held has to stay where it was opened.
+#[test]
+fn a_second_opener_waits_for_the_index_rather_than_failing() {
+    const HELD_FOR: std::time::Duration = std::time::Duration::from_millis(150);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let legacy = dir.path().join("legacy");
+    let held = ProjectionIndex::open(dir.path(), &legacy, PROFILE).expect("open index");
+
+    let waiting = {
+        let dir = dir.path().to_path_buf();
+        let legacy = legacy.clone();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let opened = ProjectionIndex::open(&dir, &legacy, PROFILE).is_ok();
+            (opened, started.elapsed())
+        })
+    };
+
+    // Released while the second opener is still retrying, which is what makes
+    // this a test of waiting rather than of the deadline.
+    std::thread::sleep(HELD_FOR);
+    drop(held);
+
+    let (opened, waited) = waiting.join().expect("waiting opener");
+    assert!(
+        opened,
+        "a second opener should wait for the lock, not be refused"
+    );
+    assert!(
+        waited >= HELD_FOR,
+        "the second open returned before the first released the lock"
+    );
+}
