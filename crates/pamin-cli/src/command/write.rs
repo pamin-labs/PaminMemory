@@ -21,6 +21,14 @@ pub struct Args {
     /// The memory content. Reads standard input when omitted.
     pub content: Option<String>,
 
+    /// Record the memory without waiting for the index to catch up.
+    ///
+    /// The work is queued rather than skipped, and `pamin cascade drain` runs
+    /// it. Importing in bulk is what this is for: one rebuild of the vector
+    /// graph at the end instead of the queue being drained after every write.
+    #[arg(long)]
+    pub defer: bool,
+
     #[command(flatten)]
     pub validity: validity::Flags,
 }
@@ -91,7 +99,15 @@ pub async fn run(
     // keeps `write` then `search` working the way it reads, without the write
     // transaction having depended on the index at all: if the index is
     // unreachable the memory is still recorded and the work is still owed.
-    let cascade = engine.drain_cascade().await?;
+    //
+    // `--defer` is that separation made visible. The memory is committed either
+    // way; what changes is whether this process is the one that pays for the
+    // index.
+    let applied = if args.defer {
+        false
+    } else {
+        engine.drain_cascade().await?.pending == 0
+    };
 
     let result = Written {
         topic: args.topic,
@@ -99,11 +115,7 @@ pub async fn run(
         promoted: verdict.is_promoted(),
         reason: verdict.reason().to_string(),
         source_version: recorded.source_version,
-        cascade: if cascade.pending == 0 {
-            "applied"
-        } else {
-            "queued"
-        },
+        cascade: if applied { "applied" } else { "queued" },
         valid_from: validity.from.map(validity::render),
         valid_to: validity.to.map(validity::render),
     };

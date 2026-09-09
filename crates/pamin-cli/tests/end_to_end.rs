@@ -1166,3 +1166,84 @@ fn a_pre_split_workspace_is_migrated_by_reindexing() {
         "and the memories are all still there: {found:?}"
     );
 }
+
+/// A memory outlives the process that was supposed to index it.
+///
+/// This is the property the outbox exists for, and it is the one that is
+/// invisible from a passing test: draining after the write and never queueing
+/// at all look identical once both have finished. What tells them apart is a
+/// process ending between the two, and `--defer` is the only way to reach that
+/// moment on purpose -- the ordinary write path always drains before it
+/// returns, so the gap does not exist to observe.
+///
+/// Every step is a separate `pamin` process. The one that recorded the memory
+/// is gone before the one that indexes it starts, which is exactly the crash
+/// this is about: nothing in memory survives, and the queue is what carries
+/// the work across.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn work_a_write_left_behind_outlives_the_process_that_left_it() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    let written = cli.json(&[
+        "write",
+        "--defer",
+        "--topic",
+        "deferred_memory",
+        "a claim recorded by a process that never indexed it",
+    ]);
+    assert_eq!(
+        written["cascade"], "queued",
+        "a deferred write should say the work is still owed: {written}"
+    );
+    assert_eq!(
+        written["promoted"], true,
+        "deferring changes when the index catches up, not what is recorded: {written}"
+    );
+
+    // The ledger has it -- `read` never goes through the index -- and the
+    // retrieval surface does not yet.
+    let stored = cli.json(&["read", "deferred_memory"]);
+    assert!(
+        stored["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("never indexed it"),
+        "the memory is committed whatever the index knows: {stored}"
+    );
+    let found = contents(&cli.json(&["search", "recorded by a process", "--limit", "5"]));
+    assert!(
+        !found
+            .iter()
+            .any(|content| content.contains("never indexed")),
+        "a deferred write should not be searchable before the cascade runs: {found:?}"
+    );
+
+    // Owed, not lost and not failed. Without this the test would also pass if
+    // the write had silently dropped the work.
+    let owed = cli.json(&["cascade", "failed"]);
+    assert_eq!(
+        owed["failed"].as_array().expect("failed array").len(),
+        0,
+        "nothing should have failed, only waited: {owed}"
+    );
+
+    let drained = cli.json(&["cascade", "drain"]);
+    assert!(
+        drained["completed"].as_u64().unwrap_or_default() > 0,
+        "a drain should find the work the write left: {drained}"
+    );
+    assert_eq!(
+        drained["pending"], 0,
+        "and should leave nothing owed: {drained}"
+    );
+
+    let found = contents(&cli.json(&["search", "recorded by a process", "--limit", "5"]));
+    assert!(
+        found
+            .iter()
+            .any(|content| content.contains("never indexed")),
+        "after the drain the memory is on the retrieval surface: {found:?}"
+    );
+}
