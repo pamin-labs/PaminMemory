@@ -5,6 +5,8 @@
 //! where the two can drift out of step. It sits above `pamin-core` rather than
 //! beside it, which is what keeps `zvec` types from reaching the domain layer.
 
+mod cascade;
 mod engine;
 
-pub use engine::{Depths, Engine, Rebuilt, SearchHit};
+pub use cascade::Drained;
+pub use engine::{Depths, Engine, Rebuilt, Recorded, SearchHit, Write};

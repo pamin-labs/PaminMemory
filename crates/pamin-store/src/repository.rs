@@ -119,7 +119,7 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
 /// rather than forking a second one, which is what keeps a file's history in a
 /// single chain.
 pub async fn ensure_source(
-    pool: &PgPool,
+    connection: &mut sqlx::PgConnection,
     project: ProjectId,
     kind: SourceKind,
     locator: &str,
@@ -129,7 +129,7 @@ pub async fn ensure_source(
     let found = sqlx::query(FIND)
         .bind(project.0)
         .bind(locator)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *connection)
         .await?;
     if let Some(row) = found {
         return Ok(row.get::<uuid::Uuid, _>("id").into());
@@ -146,7 +146,7 @@ pub async fn ensure_source(
     .bind(kind.label())
     .bind(locator)
     .bind(OffsetDateTime::now_utc())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?;
 
     let row = match inserted {
@@ -155,7 +155,7 @@ pub async fn ensure_source(
             sqlx::query(FIND)
                 .bind(project.0)
                 .bind(locator)
-                .fetch_one(pool)
+                .fetch_one(&mut *connection)
                 .await?
         }
     };
@@ -175,7 +175,7 @@ pub async fn ensure_source(
 /// Losing the other is losing evidence, which is the one thing this store
 /// promises never to do.
 pub async fn append_source_version(
-    pool: &PgPool,
+    connection: &mut sqlx::PgConnection,
     project: ProjectId,
     source: SourceId,
     content: &str,
@@ -183,11 +183,9 @@ pub async fn append_source_version(
     decision: FilterDecision,
     reason: &str,
 ) -> Result<SourceVersion> {
-    let mut transaction = pool.begin().await?;
-
     sqlx::query("SELECT id FROM sources WHERE id = $1 FOR UPDATE")
         .bind(source.0)
-        .execute(&mut *transaction)
+        .execute(&mut *connection)
         .await?;
 
     let row = sqlx::query(
@@ -207,10 +205,8 @@ pub async fn append_source_version(
     .bind(decision.label())
     .bind(reason)
     .bind(OffsetDateTime::now_utc())
-    .fetch_one(&mut *transaction)
+    .fetch_one(connection)
     .await?;
-
-    transaction.commit().await?;
 
     Ok(SourceVersion {
         id: row.get::<uuid::Uuid, _>("id").into(),
@@ -227,7 +223,7 @@ pub async fn append_source_version(
 
 /// Records a byte range into a source version, with any language detected for it.
 pub async fn append_source_span(
-    pool: &PgPool,
+    executor: impl PgExecutor<'_>,
     project: ProjectId,
     source_version: SourceVersionId,
     byte_start: u32,
@@ -249,7 +245,7 @@ pub async fn append_source_span(
     .bind(byte_end as i32)
     .bind(detected_language)
     .bind(language_confidence)
-    .execute(pool)
+    .execute(executor)
     .await?;
 
     Ok(SourceSpan {
@@ -268,8 +264,12 @@ pub async fn append_source_span(
 /// Finds before it inserts, for the reason given on `ensure_project`: a topic
 /// is created once and named on every write afterwards, and rewriting the row
 /// to read it back is a lock and a dead tuple bought for nothing.
-pub async fn ensure_topic(pool: &PgPool, project: ProjectId, name: &str) -> Result<Topic> {
-    if let Some(topic) = find_topic(pool, project, name).await? {
+pub async fn ensure_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+) -> Result<Topic> {
+    if let Some(topic) = find_topic(&mut *connection, project, name).await? {
         return Ok(topic);
     }
 
@@ -283,7 +283,7 @@ pub async fn ensure_topic(pool: &PgPool, project: ProjectId, name: &str) -> Resu
     .bind(project.0)
     .bind(name)
     .bind(OffsetDateTime::now_utc())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?;
 
     let row = match inserted {
@@ -293,7 +293,7 @@ pub async fn ensure_topic(pool: &PgPool, project: ProjectId, name: &str) -> Resu
             sqlx::query(FIND_TOPIC)
                 .bind(project.0)
                 .bind(name)
-                .fetch_one(pool)
+                .fetch_one(&mut *connection)
                 .await?
         }
     };
@@ -315,7 +315,7 @@ pub async fn ensure_topic(pool: &PgPool, project: ProjectId, name: &str) -> Resu
 /// rather than queued behind the winner. Locking the topic serializes appends
 /// per topic while leaving different topics free to proceed in parallel.
 pub async fn append_topic_state(
-    pool: &PgPool,
+    connection: &mut sqlx::PgConnection,
     project: ProjectId,
     topic: TopicId,
     content: &str,
@@ -323,11 +323,9 @@ pub async fn append_topic_state(
     observed_at: OffsetDateTime,
     validity: Validity,
 ) -> Result<TopicState> {
-    let mut transaction = pool.begin().await?;
-
     sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
         .bind(topic.0)
-        .execute(&mut *transaction)
+        .execute(&mut *connection)
         .await?;
 
     let previous = sqlx::query(
@@ -336,7 +334,7 @@ pub async fn append_topic_state(
          ORDER BY version DESC LIMIT 1",
     )
     .bind(topic.0)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut *connection)
     .await?
     .map(|row| TopicStateId::from(row.get::<uuid::Uuid, _>("id")));
 
@@ -359,7 +357,7 @@ pub async fn append_topic_state(
     .bind(previous.map(|id| id.0))
     .bind(validity.from)
     .bind(validity.to)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut *connection)
     .await?;
 
     let state = TopicState {
@@ -381,9 +379,8 @@ pub async fn append_topic_state(
     // pointer moves here rather than being recomputed. Same transaction, same
     // lock: there is no window where the topic points at the state before this
     // one.
-    point_at(&mut transaction, topic, Some(&state)).await?;
+    point_at(connection, topic, Some(&state)).await?;
 
-    transaction.commit().await?;
     Ok(state)
 }
 
@@ -441,8 +438,8 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
 ///
 /// Takes the table's alias, because a statement that joins `topics` has two
 /// `id` and two `project_id` columns in scope and an unqualified list is
-/// ambiguous there -- an error PostgreSQL raises when the statement runs, so
-/// only a query that actually runs finds it.
+/// ambiguous there -- an error PostgreSQL raises at execution, so only a query
+/// that actually runs finds it.
 macro_rules! state_columns {
     () => {
         state_columns!("")
@@ -660,12 +657,14 @@ pub async fn topics_by_id(
 /// the previous surviving version becomes current -- and since that is now a
 /// stored pointer rather than a computed one, moving it is part of the same
 /// transaction, under the same lock the append path takes.
-pub async fn soft_delete_topic_state(pool: &PgPool, topic: TopicId, version: u32) -> Result<bool> {
-    let mut transaction = pool.begin().await?;
-
+pub async fn soft_delete_topic_state(
+    connection: &mut sqlx::PgConnection,
+    topic: TopicId,
+    version: u32,
+) -> Result<bool> {
     sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
         .bind(topic.0)
-        .execute(&mut *transaction)
+        .execute(&mut *connection)
         .await?;
 
     let affected = sqlx::query(
@@ -675,7 +674,7 @@ pub async fn soft_delete_topic_state(pool: &PgPool, topic: TopicId, version: u32
     .bind(topic.0)
     .bind(to_sql_version(version))
     .bind(OffsetDateTime::now_utc())
-    .execute(&mut *transaction)
+    .execute(&mut *connection)
     .await?;
 
     if affected.rows_affected() == 0 {
@@ -694,14 +693,13 @@ pub async fn soft_delete_topic_state(pool: &PgPool, topic: TopicId, version: u32
           ORDER BY version DESC LIMIT 1"
     ))
     .bind(topic.0)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut *connection)
     .await?
     .as_ref()
     .map(row_to_topic_state);
 
-    point_at(&mut transaction, topic, surviving.as_ref()).await?;
+    point_at(connection, topic, surviving.as_ref()).await?;
 
-    transaction.commit().await?;
     Ok(true)
 }
 
