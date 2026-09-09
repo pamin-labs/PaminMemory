@@ -23,6 +23,16 @@ use crate::engine::Engine;
 /// took but has not reached yet is work nothing else will do in the meantime.
 const BATCH: i32 = 8;
 
+/// How many unindexed documents are worth a rebuild of the vector graph.
+///
+/// Written documents land in a flat buffer and only join the graph when the
+/// index is optimized, so until then every vector query scans them. Optimizing
+/// after each write would rebuild the graph for one document; never optimizing
+/// leaves the graph the index was configured for unbuilt, which is what was
+/// happening -- completeness sat at zero and the vector channel had been
+/// brute-forcing since the index was created.
+const UNINDEXED_BEFORE_OPTIMIZE: f32 = 100_000.0;
+
 /// What a drain did.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Drained {
@@ -43,10 +53,31 @@ impl Engine {
     /// something different each time it was called.
     pub async fn drain_cascade(&mut self) -> Result<Drained> {
         let mut drained = Drained::default();
+        // Considered once, at the end, and never again in this drain. Queueing
+        // a rebuild after running one would spin here if the rebuild ever
+        // failed to reduce what is unindexed.
+        let mut weighed_a_rebuild = false;
 
         loop {
             let claimed = jobs::claim(self.database.pool(), &self.worker, BATCH).await?;
             if claimed.is_empty() {
+                // Queued at the end rather than by whoever wrote the hundred
+                // thousandth document: a rebuild is per-project work, and the
+                // outbox is what makes one worker run it rather than every
+                // worker racing to. The next round claims it.
+                if drained.completed > 0 && !weighed_a_rebuild {
+                    weighed_a_rebuild = true;
+                    if self.needs_optimizing()? {
+                        jobs::enqueue(
+                            self.database.pool(),
+                            self.project,
+                            JobKind::OptimizeIndex,
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
                 break;
             }
 
@@ -80,6 +111,16 @@ impl Engine {
 
         drained.pending = jobs::pending(self.database.pool(), self.project).await?;
         Ok(drained)
+    }
+
+    /// Whether enough has been written to be worth rebuilding the vector graph.
+    fn needs_optimizing(&self) -> Result<bool> {
+        let index = &self.index;
+        let (documents, complete) = crate::engine::off_the_runtime(|| {
+            Ok::<_, anyhow::Error>((index.document_count()?, index.vector_index_completeness()?))
+        })?;
+
+        Ok(documents as f32 * (1.0 - complete) >= UNINDEXED_BEFORE_OPTIMIZE)
     }
 
     /// Runs one job.
