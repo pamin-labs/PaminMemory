@@ -438,11 +438,52 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
 /// static or explicitly asserted safe, which is a deliberate obstacle in front
 /// of building SQL with `format!`; this keeps the column list in one place
 /// without stepping over it.
+///
+/// Takes the table's alias, because a statement that joins `topics` has two
+/// `id` and two `project_id` columns in scope and an unqualified list is
+/// ambiguous there -- an error PostgreSQL raises when the statement runs, so
+/// only a query that actually runs finds it.
 macro_rules! state_columns {
     () => {
-        "id, project_id, topic_id, version, content, source_span_id, \
-         observed_at, recorded_at, valid_from, valid_to, supersedes, deleted_at, \
-         importance, worth_positive, worth_negative, access_count, last_accessed_at"
+        state_columns!("")
+    };
+    ($alias:literal) => {
+        concat!(
+            $alias,
+            "id, ",
+            $alias,
+            "project_id, ",
+            $alias,
+            "topic_id, ",
+            $alias,
+            "version, ",
+            $alias,
+            "content, ",
+            $alias,
+            "source_span_id, ",
+            $alias,
+            "observed_at, ",
+            $alias,
+            "recorded_at, ",
+            $alias,
+            "valid_from, ",
+            $alias,
+            "valid_to, ",
+            $alias,
+            "supersedes, ",
+            $alias,
+            "deleted_at, ",
+            $alias,
+            "importance, ",
+            $alias,
+            "worth_positive, ",
+            $alias,
+            "worth_negative, ",
+            $alias,
+            "access_count, ",
+            $alias,
+            "last_accessed_at"
+        )
     };
 }
 
@@ -562,7 +603,7 @@ pub async fn current_states_of(
     let ids: Vec<uuid::Uuid> = topics.iter().map(|topic| topic.0).collect();
     let rows = sqlx::query(concat!(
         "SELECT ",
-        state_columns!(),
+        state_columns!("ts."),
         " FROM topic_states ts
           JOIN topics t ON t.current_state_id = ts.id
           WHERE t.project_id = $1 AND t.id = ANY($2)"

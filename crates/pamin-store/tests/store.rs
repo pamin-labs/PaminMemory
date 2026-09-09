@@ -1309,16 +1309,16 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
         .expect("ensure topic");
 
     // A topic with no states yet points nowhere.
-    assert_pointer_matches_the_ledger(database, topic.id, None).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, None).await;
 
     let first = write_state(database, project.id, topic.id, "pointer-1", "first").await;
-    assert_pointer_matches_the_ledger(database, topic.id, Some(first.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(first.version)).await;
 
     let second = write_state(database, project.id, topic.id, "pointer-2", "second").await;
-    assert_pointer_matches_the_ledger(database, topic.id, Some(second.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(second.version)).await;
 
     let third = write_state(database, project.id, topic.id, "pointer-3", "third").await;
-    assert_pointer_matches_the_ledger(database, topic.id, Some(third.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(third.version)).await;
 
     // Deleting the current one falls back to the newest survivor.
     assert!(
@@ -1326,7 +1326,7 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
             .await
             .expect("soft delete the current state")
     );
-    assert_pointer_matches_the_ledger(database, topic.id, Some(second.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(second.version)).await;
 
     // Deleting one that is not current leaves the pointer alone -- which the
     // naive fix of "step back to the predecessor" would get wrong.
@@ -1335,7 +1335,7 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
             .await
             .expect("soft delete a state that is not current")
     );
-    assert_pointer_matches_the_ledger(database, topic.id, Some(second.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(second.version)).await;
 
     // Deleting the last survivor leaves the topic resolving to nothing.
     assert!(
@@ -1343,11 +1343,11 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
             .await
             .expect("soft delete the last survivor")
     );
-    assert_pointer_matches_the_ledger(database, topic.id, None).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, None).await;
 
     // And an append brings it back.
     let fourth = write_state(database, project.id, topic.id, "pointer-4", "fourth").await;
-    assert_pointer_matches_the_ledger(database, topic.id, Some(fourth.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(fourth.version)).await;
 
     // Deleting a version that is already deleted changes nothing.
     assert!(
@@ -1355,7 +1355,7 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
             .await
             .expect("soft delete an already deleted state")
     );
-    assert_pointer_matches_the_ledger(database, topic.id, Some(fourth.version)).await;
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(fourth.version)).await;
 
     // Nothing above should have left work for the repair path.
     let repaired = repository::repair_current_state_pointers(database.pool(), project.id)
@@ -1370,6 +1370,7 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
 /// Reads the stored pointer and checks it against the version it should hold.
 async fn assert_pointer_matches_the_ledger(
     database: &Database,
+    project: pamin_core::ProjectId,
     topic: pamin_core::TopicId,
     expected: Option<u32>,
 ) {
@@ -1381,6 +1382,20 @@ async fn assert_pointer_matches_the_ledger(
             .expect("read the current-state pointer");
 
     let (pointed_at, version) = stored;
+
+    // Through the reader the search path uses, not only the column. The graph
+    // channel resolves every neighbour it finds through `current_states_of`,
+    // and that statement joins `topics`, where an unqualified column list is
+    // ambiguous -- an error PostgreSQL raises when the statement runs, so
+    // nothing short of running it says so.
+    let resolved = repository::current_states_of(database.pool(), project, &[topic])
+        .await
+        .expect("resolve the topic to its current state");
+    assert_eq!(
+        resolved.first().map(|state| state.id.0),
+        pointed_at,
+        "the topic resolves to a different state than its pointer names"
+    );
     assert_eq!(
         version.map(|version| version as u32),
         expected,
