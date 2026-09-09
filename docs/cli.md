@@ -117,6 +117,19 @@ the index is brought up to date afterwards. `applied` means that happened here.
 `queued` means some of it is still owed and `pamin cascade` will run it — the
 memory is recorded either way. See [`pamin cascade`](#pamin-cascade).
 
+`--defer` records the memory and leaves the index to catch up later, so the
+command returns without embedding anything:
+
+```console
+$ pamin write --defer --topic release_notes "cut 1.4.0 from main"
+Wrote release_notes v1
+```
+
+The memory is committed exactly as it would be otherwise — `pamin read` and
+`pamin grep` see it immediately — and only `search` waits for the queue. Use it
+when importing in bulk and run `pamin cascade drain` once at the end: one
+rebuild of the vector graph instead of one after every write.
+
 ## `pamin read`
 
 Reads a topic at a version. `--version-offset` counts back from the current one.
@@ -475,8 +488,9 @@ rather than lost.
 
 `pamin write` runs the queue before it returns, so ordinarily there is nothing
 here to do. These commands are for when there is: a queue left behind by a
-process that was killed, work deferred because something it needed was
-unavailable, and jobs that failed often enough to be set aside.
+process that was killed, writes made with [`--defer`](#pamin-write), work
+deferred because something it needed was unavailable, and jobs that failed
+often enough to be set aside.
 
 ```console
 $ pamin cascade drain
