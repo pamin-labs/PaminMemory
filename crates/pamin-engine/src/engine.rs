@@ -67,6 +67,14 @@ const MAX_SEEDS: usize = 64;
 /// project.
 const REINDEX_BATCH: usize = 256;
 
+/// How many candidates the index proposes when a new topic is backfilled.
+///
+/// Every one costs a row read and an exact comparison, and the probe is a
+/// conjunction of the name's own words, so a real match that does not make this
+/// list is a memory outranked by hundreds of others carrying the same full
+/// name. Generous rather than tuned: this runs once in a topic's life.
+const BACKFILL_CANDIDATES: u32 = 500;
+
 /// Runs synchronous index and embedder work off the async path.
 ///
 /// The projection engine and ONNX Runtime are both synchronous C libraries. A
@@ -374,12 +382,37 @@ impl Engine {
     /// happened to be rewritten, so a topic would know less about the past the
     /// longer that past was.
     ///
-    /// Segments every live state in the project, which is why it is a job
-    /// rather than something the write that created the topic pays for. It
-    /// still runs once per topic ever created; 6.2 replaces the scan with a
-    /// lexical probe.
+    /// The name is asked of the index rather than compared against every memory
+    /// in the project. A scan is exact, and at the size this store is built for
+    /// it is also the one operation whose cost is the whole project -- creating
+    /// a topic would segment millions of states to find the handful that name
+    /// it. So the index proposes candidates and [`segmentation::names`]
+    /// disposes: the answer is still the exact one for everything the probe
+    /// returns, and what it can miss is a memory ranked below
+    /// [`BACKFILL_CANDIDATES`] on a conjunction of the name's own words.
+    ///
+    /// Only current states are considered. A mentions edge says what a topic
+    /// says now -- that is what `derive_mentions` restates and what makes the
+    /// edge retractable -- and an edge derived from a superseded version would
+    /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&mut self, topic: TopicId, name: &str) -> Result<usize> {
-        let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
+        let candidates = {
+            let index = &self.index;
+            off_the_runtime(|| index.recall_naming(name, BACKFILL_CANDIDATES))?
+        };
+
+        let states =
+            repository::topic_states_by_id(self.database.pool(), self.project, &candidates).await?;
+
+        // The probe returns states; the edge is about topics, and only the
+        // state a topic stands for now can support one.
+        let topics: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
+        let current: std::collections::HashSet<pamin_core::TopicStateId> =
+            repository::topics_by_id(self.database.pool(), self.project, &topics)
+                .await?
+                .into_iter()
+                .filter_map(|(_, _, current)| current)
+                .collect();
 
         let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
             let segmenter = self.index.segmenter();
@@ -388,6 +421,7 @@ impl Engine {
             states
                 .iter()
                 .filter(|state| state.topic_id != topic)
+                .filter(|state| current.contains(&state.id))
                 .filter(|state| {
                     pamin_index::segmentation::names(
                         &segmenter.name_sequence(&state.content),

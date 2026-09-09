@@ -18,8 +18,8 @@ use pamin_core::TopicStateId;
 
 use crate::embedding::Profile;
 use zvec_rust::{
-    Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams,
-    MetricType, SearchQuery,
+    Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts,
+    FtsQueryParams, IndexParams, MetricType, SearchQuery,
 };
 
 use crate::error::{IndexError, Result};
@@ -88,6 +88,16 @@ pub trait Projection {
 
     /// Substring lexical recall over raw text, best first.
     fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>>;
+
+    /// Lexical recall for documents containing every word of a name.
+    ///
+    /// A conjunction rather than [`Projection::recall_segmented`]'s ranking of
+    /// anything that matches at all. The question behind it is not "what is
+    /// most relevant to this name" but "which memories name this thing", and a
+    /// two-word name answered by either word alone fills the candidates with
+    /// documents carrying only the common half -- so a real match falls off the
+    /// end of a bounded list. The caller still confirms each candidate exactly.
+    fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicStateId>>;
 
     /// Semantic recall over dense embeddings, nearest first.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>>;
@@ -222,13 +232,27 @@ impl ProjectionIndex {
     }
 
     fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+        self.recall_fts(field, query, limit, false)
+    }
+
+    /// Lexical recall, either ranking whatever matches or requiring every term.
+    fn recall_fts(
+        &self,
+        field: &str,
+        query: &str,
+        limit: u32,
+        every_term: bool,
+    ) -> Result<Vec<TopicStateId>> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
 
         let mut fts = Fts::new()?;
         fts.set_match_string(query)?;
-        let search = SearchQuery::fts(field, &fts, limit as i32)?;
+        let mut search = SearchQuery::fts(field, &fts, limit as i32)?;
+        if every_term {
+            search.set_fts_params(FtsQueryParams::new(Some("AND"))?)?;
+        }
 
         // Only ranks leave this function. The engine's BM25 scores are not
         // comparable with vector distances, and rank fusion is what lets the
@@ -323,6 +347,12 @@ impl Projection for ProjectionIndex {
     /// Substring lexical recall over raw text, ranked by BM25.
     fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
         self.recall_text(FIELD_NGRAM, query, limit)
+    }
+
+    /// Word-level recall requiring every word of the name.
+    fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+        let segmented = self.segmenter.segment_for_index(name);
+        self.recall_fts(FIELD_SEGMENTED, &segmented, limit, true)
     }
 
     /// Semantic recall over dense embeddings.
