@@ -7,4 +7,4 @@
 
 mod engine;
 
-pub use engine::{Depths, Engine, SearchHit};
+pub use engine::{Depths, Engine, Rebuilt, SearchHit};

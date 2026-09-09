@@ -40,6 +40,7 @@ async fn the_ledger_holds_its_promises() {
     ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
+    the_current_state_pointer_follows_every_write(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
 
     drop(database);
@@ -1032,16 +1033,28 @@ async fn a_workspace_the_previous_runner_migrated_is_adopted(
         .await
         .expect("connect to scratch database");
 
-    pamin_store::migrate::run(&scratch)
-        .await
-        .expect("migrate the scratch database");
+    // Built to the schema the old runner left, which is the three migrations
+    // that existed while it was in use -- not to today's schema. Applying the
+    // files directly is what makes this a database `refinery` could have
+    // produced, rather than one this runner produced and then relabelled.
+    for file in [
+        "V1__initial.sql",
+        "V2__relationships.sql",
+        "V3__shard_key_and_indexes.sql",
+    ] {
+        let sql = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("migrations")
+                .join(file),
+        )
+        .unwrap_or_else(|error| panic!("reading {file}: {error}"));
 
-    // Rewrite the books the way the previous runner kept them, leaving the
-    // schema it produced in place.
-    sqlx::query("DROP TABLE _sqlx_migrations")
-        .execute(&scratch)
-        .await
-        .expect("drop the new bookkeeping");
+        sqlx::raw_sql(AssertSqlSafe(sql))
+            .execute(&scratch)
+            .await
+            .unwrap_or_else(|error| panic!("applying {file}: {error}"));
+    }
+
     sqlx::query(
         "CREATE TABLE refinery_schema_history (
              version    INTEGER PRIMARY KEY,
@@ -1074,13 +1087,25 @@ async fn a_workspace_the_previous_runner_migrated_is_adopted(
         .await
         .expect("a database the previous runner migrated should be adopted");
 
-    let (adopted,): (i64,) = sqlx::query_as("SELECT count(*) FROM _sqlx_migrations")
-        .fetch_one(&scratch)
-        .await
-        .expect("count adopted migrations");
+    let adopted: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT version, execution_time FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&scratch)
+            .await
+            .expect("read adopted migrations");
+
     assert_eq!(
-        adopted, 3,
-        "every applied migration should have been adopted"
+        adopted
+            .iter()
+            .filter(|(_, execution_time)| *execution_time < 0)
+            .map(|(version, _)| *version)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "exactly the migrations the old runner applied should carry the \
+         placeholder execution time that marks an adopted row"
+    );
+    assert!(
+        adopted.len() > 3,
+        "migrations added after the old runner should still have been applied"
     );
 
     // And adoption is not a one-time trick that breaks the next start.
@@ -1256,4 +1281,129 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         matches[0].offset, 4,
         "the offset is a zero-based byte offset of the needle, not SQL's one-based position"
     );
+}
+
+/// The stored current-state pointer agrees with the ledger after every write.
+///
+/// V1 argued against storing which state is current, and against a flag on
+/// `topic_states` it was right: every write path has to clear the old row and
+/// set the new one, and one that forgets leaves two rows both claiming to be
+/// current. Moving the pointer to the parent removes the contradiction -- one
+/// column on one row cannot disagree with itself -- but not the obligation.
+/// Two write paths maintain it, and a third that forgot would show up as a
+/// search returning content the topic no longer has, with nothing to say so.
+///
+/// So this walks every transition and compares the pointer against the answer
+/// computed from the ledger each time: append, append again, delete the
+/// current one, delete a middle one, delete the last surviving one, append
+/// after that. Reading the column back is the point -- a helper that recomputed
+/// it would agree with itself and prove nothing.
+async fn the_current_state_pointer_follows_every_write(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "pointer")
+        .await
+        .expect("ensure project");
+    let topic = repository::ensure_topic(database.pool(), project.id, "pointer_topic")
+        .await
+        .expect("ensure topic");
+
+    // A topic with no states yet points nowhere.
+    assert_pointer_matches_the_ledger(database, topic.id, None).await;
+
+    let first = write_state(database, project.id, topic.id, "pointer-1", "first").await;
+    assert_pointer_matches_the_ledger(database, topic.id, Some(first.version)).await;
+
+    let second = write_state(database, project.id, topic.id, "pointer-2", "second").await;
+    assert_pointer_matches_the_ledger(database, topic.id, Some(second.version)).await;
+
+    let third = write_state(database, project.id, topic.id, "pointer-3", "third").await;
+    assert_pointer_matches_the_ledger(database, topic.id, Some(third.version)).await;
+
+    // Deleting the current one falls back to the newest survivor.
+    assert!(
+        repository::soft_delete_topic_state(database.pool(), topic.id, third.version)
+            .await
+            .expect("soft delete the current state")
+    );
+    assert_pointer_matches_the_ledger(database, topic.id, Some(second.version)).await;
+
+    // Deleting one that is not current leaves the pointer alone -- which the
+    // naive fix of "step back to the predecessor" would get wrong.
+    assert!(
+        repository::soft_delete_topic_state(database.pool(), topic.id, first.version)
+            .await
+            .expect("soft delete a state that is not current")
+    );
+    assert_pointer_matches_the_ledger(database, topic.id, Some(second.version)).await;
+
+    // Deleting the last survivor leaves the topic resolving to nothing.
+    assert!(
+        repository::soft_delete_topic_state(database.pool(), topic.id, second.version)
+            .await
+            .expect("soft delete the last survivor")
+    );
+    assert_pointer_matches_the_ledger(database, topic.id, None).await;
+
+    // And an append brings it back.
+    let fourth = write_state(database, project.id, topic.id, "pointer-4", "fourth").await;
+    assert_pointer_matches_the_ledger(database, topic.id, Some(fourth.version)).await;
+
+    // Deleting a version that is already deleted changes nothing.
+    assert!(
+        !repository::soft_delete_topic_state(database.pool(), topic.id, first.version)
+            .await
+            .expect("soft delete an already deleted state")
+    );
+    assert_pointer_matches_the_ledger(database, topic.id, Some(fourth.version)).await;
+
+    // Nothing above should have left work for the repair path.
+    let repaired = repository::repair_current_state_pointers(database.pool(), project.id)
+        .await
+        .expect("repair pointers");
+    assert_eq!(
+        repaired, 0,
+        "the write paths left {repaired} topics pointing at the wrong state"
+    );
+}
+
+/// Reads the stored pointer and checks it against the version it should hold.
+async fn assert_pointer_matches_the_ledger(
+    database: &Database,
+    topic: pamin_core::TopicId,
+    expected: Option<u32>,
+) {
+    let stored: (Option<uuid::Uuid>, Option<i32>) =
+        sqlx::query_as("SELECT current_state_id, current_version FROM topics WHERE id = $1")
+            .bind(topic.0)
+            .fetch_one(database.pool())
+            .await
+            .expect("read the current-state pointer");
+
+    let (pointed_at, version) = stored;
+    assert_eq!(
+        version.map(|version| version as u32),
+        expected,
+        "the topic points at version {version:?}, expected {expected:?}"
+    );
+
+    match expected {
+        None => assert!(
+            pointed_at.is_none(),
+            "a topic resolving to nothing still points at a state"
+        ),
+        Some(expected) => {
+            let state = repository::topic_state(database.pool(), topic, expected)
+                .await
+                .expect("load the expected state")
+                .expect("the expected state exists");
+            assert_eq!(
+                pointed_at,
+                Some(state.id.0),
+                "the pointer names a different state than its version does"
+            );
+            assert!(
+                state.deleted_at.is_none(),
+                "a topic points at a state that has been deleted"
+            );
+        }
+    }
 }
