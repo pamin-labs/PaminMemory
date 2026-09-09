@@ -42,6 +42,11 @@ fn migrations() -> Vec<Migration> {
             "current_state_pointer",
             include_str!("../migrations/V4__current_state_pointer.sql"),
         ),
+        migration(
+            5,
+            "cascade_outbox",
+            include_str!("../migrations/V5__cascade_outbox.sql"),
+        ),
     ]
 }
 

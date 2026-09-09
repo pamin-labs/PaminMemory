@@ -5,6 +5,7 @@
 //! it is the crate edited most often, so its rebuild cost sets the development
 //! loop.
 
+pub mod cascade;
 pub mod channel;
 pub mod filter;
 pub mod fusion;
@@ -13,6 +14,7 @@ pub mod id;
 pub mod ledger;
 pub mod version;
 
+pub use cascade::{JobKind, MAX_ATTEMPTS};
 pub use channel::{Channel, ChannelResults};
 pub use filter::{Rejection, SensoryFilter, Verdict};
 pub use fusion::{DEFAULT_K, FusedResult, Fusion, Modifier, Modifiers, Why, sort_results};
