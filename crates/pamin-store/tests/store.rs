@@ -41,6 +41,7 @@ async fn the_ledger_holds_its_promises() {
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
     the_current_state_pointer_follows_every_write(&database).await;
+    two_adjacent_hubs_do_not_multiply(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
 
     drop(database);
@@ -1406,4 +1407,92 @@ async fn assert_pointer_matches_the_ledger(
             );
         }
     }
+}
+
+/// A walk through two adjacent hubs returns each topic once, at its distance.
+///
+/// This guards the rewrite, not the reason for it. Moving the walk out of a
+/// recursive query and into a hop-at-a-time loop introduced a visited set and a
+/// per-hop merge, which is where a rewrite like this goes wrong: a topic
+/// reachable by several routes coming back several times, or coming back at the
+/// distance of the route that happened to be found first rather than the
+/// shortest. Neither shows up in the fixtures the other expansion tests use,
+/// because they are too small for a topic to have two routes.
+///
+/// What it does not show is the cost the rewrite is for. The recursive form
+/// materialised every edge in the project, twice, before the walk began, and
+/// had nowhere to put a bound on the frontier -- but its output was deduplicated
+/// at the end, so at any size a test can build it answers the same thing. That
+/// difference is real and is not visible from here.
+async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
+    const SPOKES: usize = 120;
+
+    let project = repository::ensure_project(database.pool(), "hubs")
+        .await
+        .expect("ensure project");
+
+    let topic = |name: String| async move {
+        repository::ensure_topic(database.pool(), project.id, &name)
+            .await
+            .expect("ensure topic")
+            .id
+    };
+
+    let left = topic("hub_left".to_string()).await;
+    let right = topic("hub_right".to_string()).await;
+
+    let mut edges = vec![(left, right, EdgeClaim::explicit(EdgeKind::RelatedTo))];
+    for spoke in 0..SPOKES {
+        let on_left = topic(format!("left_spoke_{spoke}")).await;
+        let on_right = topic(format!("right_spoke_{spoke}")).await;
+        edges.push((left, on_left, EdgeClaim::explicit(EdgeKind::RelatedTo)));
+        edges.push((right, on_right, EdgeClaim::explicit(EdgeKind::RelatedTo)));
+    }
+
+    graph::assert_edges(database.pool(), project.id, &edges)
+        .await
+        .expect("build the hubs");
+
+    let walked = graph::expand(
+        database.pool(),
+        project.id,
+        &[left],
+        &Expansion::to_depth(2),
+    )
+    .await
+    .expect("walk two hops from a hub");
+
+    // Every topic once, at its shortest distance: the far hub and this hub's
+    // own spokes at one, the far hub's spokes at two. The near hub itself is
+    // the seed and nothing reaches it independently, so it is absent.
+    assert_eq!(
+        walked.len(),
+        1 + SPOKES * 2,
+        "the walk returned {} entries for {} reachable topics",
+        walked.len(),
+        1 + SPOKES * 2
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for neighbor in &walked {
+        assert!(
+            seen.insert(neighbor.topic),
+            "a topic came back more than once, so paths were enumerated rather than nodes"
+        );
+        assert!(
+            neighbor.topic != left,
+            "the seed came back as its own neighbour"
+        );
+    }
+
+    assert_eq!(
+        walked.iter().filter(|n| n.hops == 1).count(),
+        1 + SPOKES,
+        "one hop reaches the far hub and this hub's own spokes"
+    );
+    assert_eq!(
+        walked.iter().filter(|n| n.hops == 2).count(),
+        SPOKES,
+        "two hops reaches the far hub's spokes and nothing further"
+    );
 }

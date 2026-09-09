@@ -12,6 +12,8 @@ use pamin_core::{
     Derivation, EdgeKind, ProjectId, Relationship, RelationshipId, RelationshipVersion,
     RelationshipVersionId, TombstoneReason, TopicId, TopicStateId, Validity,
 };
+use std::collections::{HashMap, HashSet};
+
 use sqlx::postgres::PgRow;
 use sqlx::{PgExecutor, PgPool, Row};
 use time::OffsetDateTime;
@@ -468,6 +470,31 @@ pub struct Neighbor {
     pub confidence: f32,
 }
 
+/// How many positions the walk carries into the next hop.
+///
+/// A hub topic can carry tens of thousands of edges, so without a cap the cost
+/// of a hop is set by the shape of the graph rather than by the question. The
+/// recursive form this replaced had no way to say this at all.
+const MAX_FRONTIER: usize = 2_000;
+
+/// One walk's position: where it is, where it started, what it came through.
+#[derive(Clone, Copy)]
+struct Step {
+    topic: TopicId,
+    /// The seed this walk began at. A walk never returns to its own.
+    origin: TopicId,
+    /// The topic this position was reached through.
+    via: TopicId,
+}
+
+/// What an edge contributes to an arrival, once its direction is discarded.
+#[derive(Clone, Copy)]
+struct Crossing {
+    kind: EdgeKind,
+    derivation: Derivation,
+    confidence: f32,
+}
+
 /// The deepest walk this channel will make.
 ///
 /// Not a preference. A topic's neighbourhood grows multiplicatively with each
@@ -525,10 +552,22 @@ impl Expansion<'_> {
 /// rather than about who may find whom. The direction taken is reported in
 /// `via` so the path stays explainable.
 ///
-/// One round trip. A query per hop would multiply latency by the depth for a
-/// traversal the database can do in a single recursive pass.
+/// A query per hop rather than one recursive pass.
+///
+/// The recursive form read well and did not scale. Its two intermediate views
+/// were each referenced twice, so PostgreSQL materialised every edge in the
+/// project and then every edge again in both directions, before the walk began.
+/// The recursion itself carried no visited set, so it enumerated paths rather
+/// than nodes: two adjacent topics with twenty thousand edges each are four
+/// hundred million rows at two hops. And the two indexes on `relationships`
+/// that exist for exactly this traversal were never touched.
+///
+/// A hop at a time uses them, reads only the edges of the current frontier, and
+/// puts the walk where a bound can be stated: the frontier is capped, which the
+/// recursive form had no way to express. The extra round trips buy that, and
+/// there are at most [`MAX_DEPTH`] of them.
 pub async fn expand(
-    executor: impl PgExecutor<'_>,
+    executor: impl PgExecutor<'_> + Copy,
     project: ProjectId,
     seeds: &[TopicId],
     options: &Expansion<'_>,
@@ -537,97 +576,161 @@ pub async fn expand(
         return Ok(Vec::new());
     }
 
-    let seed_ids: Vec<uuid::Uuid> = seeds.iter().map(|topic| topic.0).collect();
     let kind_labels: Option<Vec<String>> = options
         .kinds
         .map(|kinds| kinds.iter().map(|kind| kind.label().to_string()).collect());
 
-    // The CTE walks edges in both directions, tracking the seed it started from
-    // and the end it arrived through. `depth < $3` bounds the recursion;
-    // without it a cycle never terminates. Ordering by hops then confidence
-    // before DISTINCT ON keeps the shortest, most confident path to each topic.
-    //
-    // Which edges are visible depends on whether a moment was asked about.
-    // Without `--at` the question is what we still stand behind, so only
-    // uninvalidated versions count. With `--at` the question is what held then,
-    // which a later retraction does not answer on its own: an edge closed
-    // because the relationship ended still held before it was closed, while one
-    // deleted because the claim was wrong never held at all, and a superseded
-    // one is answered by its successor. That distinction is exactly what
-    // tombstone_reason records, and ignoring it made every retraction erase its
-    // own history.
-    let rows = sqlx::query(
-        "WITH RECURSIVE visible_edges AS (
-             SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
-             FROM relationships r
-             JOIN relationship_versions v ON v.relationship_id = r.id
-             WHERE r.project_id = $1
-               AND ($4::TEXT[] IS NULL OR r.kind = ANY ($4))
-               AND CASE WHEN $5::TIMESTAMPTZ IS NULL
-                   THEN v.invalidated_at IS NULL
-                   ELSE (v.valid_from IS NULL OR v.valid_from <= $5)
-                        AND (v.valid_to IS NULL OR $5 < v.valid_to)
-                        AND (v.invalidated_at IS NULL
-                             OR (v.tombstone_reason = 'closed'
-                                 AND $5 < v.invalidated_at))
-                   END
-         ),
-         undirected AS (
-             SELECT from_topic AS source, to_topic AS target, kind, confidence, derivation
-             FROM visible_edges
-             UNION ALL
-             SELECT to_topic AS source, from_topic AS target, kind, confidence, derivation
-             FROM visible_edges
-         ),
-         walk AS (
-             SELECT e.source AS origin, e.target AS topic, 1 AS hops, e.source AS via,
-                    e.kind, e.confidence, e.derivation
-             FROM undirected e
-             WHERE e.source = ANY ($2)
-             UNION ALL
-             SELECT w.origin, e.target, w.hops + 1, e.source,
-                    e.kind, e.confidence, e.derivation
-             FROM walk w
-             JOIN undirected e ON e.source = w.topic
-             -- Never arrive back at the seed this walk started from.
-             -- Seeds come from the other channels, so a seed handed back
-             -- as its own graph result is one piece of evidence counted
-             -- twice under two names. Excluding the topic just left is
-             -- not enough: it happens to be the seed at two hops and
-             -- stops being it at three, where a ring walks straight back
-             -- to the start. Another seed reaching this one is still
-             -- allowed, which is the case that carries real evidence.
-             WHERE w.hops < $3
-               AND e.target <> w.origin
-               AND e.target <> w.via
-         )
-         SELECT DISTINCT ON (topic) topic, origin, hops, via, kind, confidence, derivation
-         FROM walk
-         ORDER BY topic, hops ASC, confidence DESC",
-    )
-    .bind(project.0)
-    .bind(&seed_ids)
-    .bind(i32::from(options.depth))
-    .bind(kind_labels.as_deref())
-    .bind(options.at)
-    .fetch_all(executor)
-    .await?;
+    // Keyed by the seed the walk began at, not by topic alone. Two seeds are
+    // two walks: one may legitimately reach the other, and each is barred only
+    // from returning to its own start. Merging them into one visited set would
+    // silently drop the case that carries the most evidence.
+    let mut seen: HashSet<(TopicId, TopicId)> = HashSet::new();
+    let mut reached: HashMap<TopicId, Neighbor> = HashMap::new();
 
-    let mut neighbors: Vec<Neighbor> = rows
+    // Each entry is one walk's position: where it is, where it started, and
+    // what it came through.
+    let mut frontier: Vec<Step> = seeds
         .iter()
-        .map(|row| Neighbor {
-            topic: row.get::<uuid::Uuid, _>("topic").into(),
-            origin: row.get::<uuid::Uuid, _>("origin").into(),
-            hops: row.get::<i32, _>("hops") as u8,
-            via: row.get::<uuid::Uuid, _>("via").into(),
-            kind: EdgeKind::from_label(row.get("kind")).unwrap_or(EdgeKind::RelatedTo),
-            derivation: Derivation::from_label(row.get("derivation"))
-                .unwrap_or(Derivation::Imported),
-            confidence: row.get("confidence"),
+        .map(|seed| Step {
+            topic: *seed,
+            origin: *seed,
+            via: *seed,
         })
         .collect();
 
-    // DISTINCT ON orders by topic, so the ranking has to be reimposed. The
+    for hop in 1..=options.depth {
+        let positions: Vec<uuid::Uuid> = {
+            let mut positions: Vec<uuid::Uuid> = frontier.iter().map(|step| step.topic.0).collect();
+            positions.sort_unstable();
+            positions.dedup();
+            positions
+        };
+
+        let edges = sqlx::query(
+            "SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
+             FROM relationships r
+             JOIN relationship_versions v ON v.relationship_id = r.id
+             WHERE r.project_id = $1
+               AND (r.from_topic = ANY($2) OR r.to_topic = ANY($2))
+               AND ($3::TEXT[] IS NULL OR r.kind = ANY ($3))
+               -- Which edges are visible depends on whether a moment was asked
+               -- about. Without `--at` the question is what we still stand
+               -- behind, so only uninvalidated versions count. With `--at` the
+               -- question is what held then, which a later retraction does not
+               -- answer on its own: an edge closed because the relationship
+               -- ended still held before it was closed, one deleted because the
+               -- claim was wrong never held at all, and a superseded one is
+               -- answered by its successor. That distinction is what
+               -- tombstone_reason records, and ignoring it made every
+               -- retraction erase its own history.
+               AND CASE WHEN $4::TIMESTAMPTZ IS NULL
+                   THEN v.invalidated_at IS NULL
+                   ELSE (v.valid_from IS NULL OR v.valid_from <= $4)
+                        AND (v.valid_to IS NULL OR $4 < v.valid_to)
+                        AND (v.invalidated_at IS NULL
+                             OR (v.tombstone_reason = 'closed'
+                                 AND $4 < v.invalidated_at))
+                   END",
+        )
+        .bind(project.0)
+        .bind(&positions)
+        .bind(kind_labels.as_deref())
+        .bind(options.at)
+        .fetch_all(executor)
+        .await?;
+
+        // Undirected: both ends of a `depends_on` are relevant to recall, and
+        // which way the arrow points is a fact about the relationship rather
+        // than about who may find whom, so each edge is entered from both ends.
+        let mut neighbours: HashMap<TopicId, Vec<(TopicId, Crossing)>> = HashMap::new();
+        for row in &edges {
+            let from = TopicId::from(row.get::<uuid::Uuid, _>("from_topic"));
+            let to = TopicId::from(row.get::<uuid::Uuid, _>("to_topic"));
+            let crossing = Crossing {
+                kind: EdgeKind::from_label(row.get("kind")).unwrap_or(EdgeKind::RelatedTo),
+                derivation: Derivation::from_label(row.get("derivation"))
+                    .unwrap_or(Derivation::Imported),
+                confidence: row.get("confidence"),
+            };
+
+            neighbours.entry(from).or_default().push((to, crossing));
+            neighbours.entry(to).or_default().push((from, crossing));
+        }
+
+        let mut next: Vec<(Step, f32)> = Vec::new();
+        for step in &frontier {
+            let Some(crossings) = neighbours.get(&step.topic) else {
+                continue;
+            };
+
+            for (neighbour, crossing) in crossings {
+                // Never back to where this walk started, and never straight
+                // back along the edge just taken. Both would return a topic
+                // already reached at a shorter distance; the first is the seed
+                // itself, which this channel must not hand back.
+                if hop > 1 && (*neighbour == step.origin || *neighbour == step.via) {
+                    continue;
+                }
+
+                if !seen.insert((*neighbour, step.origin)) {
+                    continue;
+                }
+
+                let arrival = Neighbor {
+                    topic: *neighbour,
+                    origin: step.origin,
+                    hops: hop,
+                    via: step.topic,
+                    kind: crossing.kind,
+                    derivation: crossing.derivation,
+                    confidence: crossing.confidence,
+                };
+
+                // Breadth first, so the first arrival is the shortest. Among
+                // arrivals at the same distance the most confident one wins,
+                // which is the order the ranking below expects.
+                reached
+                    .entry(*neighbour)
+                    .and_modify(|held| {
+                        if held.hops == hop && crossing.confidence > held.confidence {
+                            *held = arrival.clone();
+                        }
+                    })
+                    .or_insert_with(|| arrival.clone());
+
+                next.push((
+                    Step {
+                        topic: *neighbour,
+                        origin: step.origin,
+                        via: step.topic,
+                    },
+                    crossing.confidence,
+                ));
+            }
+        }
+
+        if next.is_empty() {
+            break;
+        }
+
+        // The bound the recursive form could not state. A hub topic can carry
+        // tens of thousands of edges, so without this the next hop's query
+        // grows with the graph rather than with the question; the walk keeps
+        // the arrivals it is most confident in.
+        next.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        next.truncate(MAX_FRONTIER);
+
+        frontier = next.into_iter().map(|(step, _)| step).collect();
+    }
+
+    let mut neighbors: Vec<Neighbor> = reached.into_values().collect();
+
+    // Collected by topic, so the ranking has to be imposed here. The
     // identifier tie-break keeps the order stable across identical inputs,
     // which is what lets an assembled context be reused rather than rebuilt.
     neighbors.sort_by(|left, right| {
