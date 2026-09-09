@@ -82,7 +82,10 @@ $ pamin write --topic oncall_rota "ok" --json
   "version": null,
   "promoted": false,
   "reason": "content was too short to carry a durable claim",
-  "source_version": 3
+  "source_version": 3,
+  "cascade": "applied",
+  "valid_from": null,
+  "valid_to": null
 }
 ```
 
@@ -106,6 +109,13 @@ This is separate from when the memory was written. See
 [Two kinds of time](#two-kinds-of-time).
 
 Writing also derives relationships. See [Relationships](#relationships).
+
+`cascade` says whether the projection caught up before the command returned.
+The write itself commits the evidence, the span, the state and a record of what
+the projection is owed, all in one transaction that touches only PostgreSQL;
+the index is brought up to date afterwards. `applied` means that happened here.
+`queued` means some of it is still owed and `pamin cascade` will run it — the
+memory is recorded either way. See [`pamin cascade`](#pamin-cascade).
 
 ## `pamin read`
 
@@ -451,6 +461,62 @@ rebuilds one project — the one named by `--project` — and leaves the rest al
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
 search nothing, so commands report it and `pamin reindex` migrates it.
+
+## `pamin cascade`
+
+Runs the work a write left for the projection.
+
+A write records the memory and, in the same transaction, a record of what the
+index still owes it: the embedding, the vector and lexical entries, and the
+relationships the content implies. Nothing derived happens inside that
+transaction, so a memory is never recorded without its follow-up work also
+being recorded — and a process that dies between the two leaves the work owed
+rather than lost.
+
+`pamin write` runs the queue before it returns, so ordinarily there is nothing
+here to do. These commands are for when there is: a queue left behind by a
+process that was killed, work deferred because something it needed was
+unavailable, and jobs that failed often enough to be set aside.
+
+```console
+$ pamin cascade drain
+Ran 3 jobs, 0 failed, 0 still owed
+```
+
+`drain` runs everything that is due and stops. `run` keeps going, waiting for
+new work until it is interrupted; it holds the index open for writing the whole
+time, so no other command that writes can run alongside it.
+
+Jobs name a subject rather than an event — "bring this topic up to date", not
+"this topic changed" — so running one twice leaves the same result as running
+it once, and fourteen edits to one topic leave one job rather than fourteen.
+
+A job that fails is tried again an hour later, up to eight times. After that it
+is set aside with the error that stopped it, rather than retried forever:
+
+```console
+$ pamin cascade failed
+Nothing has failed
+```
+
+```console
+$ pamin cascade failed --json
+{
+  "failed": []
+}
+```
+
+`pamin cascade replay` makes those jobs due again, for when whatever broke them
+is fixed. `pamin cascade discard` abandons them. Both report how many they
+moved:
+
+```console
+$ pamin cascade replay
+Queued 0 failed jobs to run again
+```
+
+Nothing here can lose a memory. The queue drives the index, and the index holds
+nothing PostgreSQL cannot reproduce — `pamin reindex` rebuilds it outright.
 
 ## `pamin stop`
 

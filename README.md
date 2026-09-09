@@ -109,9 +109,9 @@ Edges are versioned the way memories are. Changing one closes the old version an
 
 This is an early foundation, not a finished product.
 
-**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; the relationship graph, derived and asserted, with bi-temporal edge versions; rebuilding the index from PostgreSQL.
+**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; the relationship graph, derived and asserted, with bi-temporal edge versions; the outbox, so a write records what the index owes it in the same transaction, and the cascade that pays it; rebuilding the index from PostgreSQL.
 
-**Not built yet:** the cascade worker and outbox consumption; source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface; the evaluation harness that will settle the defaults this version guesses at.
+**Not built yet:** the resident server, so the cascade still runs in whichever process wrote; source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface; the evaluation harness that will settle the defaults this version guesses at.
 
 ## Development
 
