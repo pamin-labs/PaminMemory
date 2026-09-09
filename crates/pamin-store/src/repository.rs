@@ -764,19 +764,21 @@ pub async fn grep_evidence(
     // driver takes a statement that is `'static` or explicitly asserted safe,
     // which is a deliberate obstacle in front of building SQL with `format!`,
     // and the way past it that keeps the guarantee is to write both out.
+    // The match is computed once, in a lateral, and both selected and filtered
+    // from there. Written twice it read as one expression and was two, on the
+    // column holding every byte ever written.
     macro_rules! grep {
         ($matched:literal) => {
             concat!(
                 "SELECT v.id, v.project_id, v.source_id, v.version, v.content, v.content_hash,
                         v.filter_decision, v.filter_reason, v.recorded_at,
-                        s.locator, ",
-                $matched,
-                " AS match_position
+                        s.locator, m.match_position
                  FROM source_versions v
                  JOIN sources s ON s.id = v.source_id
-                 WHERE v.project_id = $1 AND ",
+                 CROSS JOIN LATERAL (SELECT ",
                 $matched,
-                " > 0
+                " AS match_position) m
+                 WHERE v.project_id = $1 AND m.match_position > 0
                  ORDER BY v.recorded_at DESC, v.id
                  LIMIT $3"
             )
