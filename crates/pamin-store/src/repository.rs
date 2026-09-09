@@ -369,8 +369,33 @@ pub async fn append_topic_state(
         signals: RetrievalSignals::default(),
     };
 
+    // The appended state is the newest surviving one by construction, so the
+    // pointer moves here rather than being recomputed. Same transaction, same
+    // lock: there is no window where the topic points at the state before this
+    // one.
+    point_at(&mut transaction, topic, Some(&state)).await?;
+
     transaction.commit().await?;
     Ok(state)
+}
+
+/// Sets the topic's current state, or clears it when nothing survives.
+///
+/// Both callers already hold the topic row locked, which is what keeps this a
+/// write rather than a read-modify-write.
+async fn point_at(
+    connection: &mut sqlx::PgConnection,
+    topic: TopicId,
+    state: Option<&TopicState>,
+) -> Result<()> {
+    sqlx::query("UPDATE topics SET current_state_id = $2, current_version = $3 WHERE id = $1")
+        .bind(topic.0)
+        .bind(state.map(|state| state.id.0))
+        .bind(state.map(|state| to_sql_version(state.version)))
+        .execute(connection)
+        .await?;
+
+    Ok(())
 }
 
 fn row_to_topic_state(row: &PgRow) -> TopicState {
@@ -477,13 +502,17 @@ pub async fn all_live_topic_states(
 ///
 /// The row and its content stay: deletion removes a state from the default
 /// retrieval surface, not from the ledger. If the deleted state was current,
-/// the previous surviving version becomes current, which falls out of computing
-/// latest rather than needing a flag to be moved.
-pub async fn soft_delete_topic_state(
-    executor: impl PgExecutor<'_>,
-    topic: TopicId,
-    version: u32,
-) -> Result<bool> {
+/// the previous surviving version becomes current -- and since that is now a
+/// stored pointer rather than a computed one, moving it is part of the same
+/// transaction, under the same lock the append path takes.
+pub async fn soft_delete_topic_state(pool: &PgPool, topic: TopicId, version: u32) -> Result<bool> {
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
+        .bind(topic.0)
+        .execute(&mut *transaction)
+        .await?;
+
     let affected = sqlx::query(
         "UPDATE topic_states SET deleted_at = $3
          WHERE topic_id = $1 AND version = $2 AND deleted_at IS NULL",
@@ -491,10 +520,71 @@ pub async fn soft_delete_topic_state(
     .bind(topic.0)
     .bind(to_sql_version(version))
     .bind(OffsetDateTime::now_utc())
-    .execute(executor)
+    .execute(&mut *transaction)
     .await?;
 
-    Ok(affected.rows_affected() > 0)
+    if affected.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    // Recomputed rather than stepped back to the predecessor: the deleted state
+    // need not have been the current one, and the version before it need not
+    // have survived either. This asks the ledger the same question the pointer
+    // is an answer to.
+    let surviving = sqlx::query(concat!(
+        "SELECT ",
+        state_columns!(),
+        " FROM topic_states
+          WHERE topic_id = $1 AND deleted_at IS NULL
+          ORDER BY version DESC LIMIT 1"
+    ))
+    .bind(topic.0)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .as_ref()
+    .map(row_to_topic_state);
+
+    point_at(&mut transaction, topic, surviving.as_ref()).await?;
+
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Recomputes every topic's current-state pointer from the ledger.
+///
+/// Returns how many topics were pointing somewhere else. Nothing should be, and
+/// the two writers that move the pointer both do it under the topic's lock in
+/// the transaction that changed the ledger. But a stored pointer is derived
+/// data, and derived data needs a route back: without one, a third write path
+/// that forgets shows up as a search returning content the topic no longer has,
+/// with nothing to say so.
+///
+/// This is that route, and `reindex` is where it belongs -- the command whose
+/// whole promise is that everything outside the ledger can be rebuilt from it.
+pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) -> Result<u64> {
+    let repaired = sqlx::query(
+        "UPDATE topics t
+            SET current_state_id = latest.id,
+                current_version  = latest.version
+           FROM (
+               SELECT topics.id AS topic_id, live.id, live.version
+               FROM topics
+               LEFT JOIN LATERAL (
+                   SELECT id, version FROM topic_states
+                   WHERE topic_id = topics.id AND deleted_at IS NULL
+                   ORDER BY version DESC LIMIT 1
+               ) AS live ON TRUE
+               WHERE topics.project_id = $1
+           ) AS latest
+          WHERE latest.topic_id = t.id
+            AND (t.current_state_id, t.current_version)
+                IS DISTINCT FROM (latest.id, latest.version)",
+    )
+    .bind(project.0)
+    .execute(pool)
+    .await?;
+
+    Ok(repaired.rows_affected())
 }
 
 /// Loads the newest evidence version for a source.

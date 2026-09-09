@@ -450,7 +450,13 @@ impl Engine {
     /// Returns how many states were indexed. The caller discards the index
     /// directory first, which is what makes this a genuine rebuild rather than
     /// an overwrite that could leave orphans behind.
-    pub async fn reindex(&mut self) -> Result<usize> {
+    pub async fn reindex(&mut self) -> Result<Rebuilt> {
+        // Before the states are read: the pointer decides which state a topic
+        // resolves to, so a rebuild that trusted a stale one would index the
+        // wrong content and look like it had worked.
+        let repaired_pointers =
+            repository::repair_current_state_pointers(self.database.pool(), self.project).await?;
+
         let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
 
         let (index, embedder) = (&self.index, &mut self.embedder);
@@ -479,8 +485,25 @@ impl Engine {
             index.optimize()
         })?;
 
-        Ok(states.len())
+        Ok(Rebuilt {
+            indexed: states.len(),
+            repaired_pointers,
+        })
     }
+}
+
+/// What a rebuild did.
+#[derive(Clone, Copy, Debug)]
+pub struct Rebuilt {
+    /// States written to the projection.
+    pub indexed: usize,
+    /// Topics whose current-state pointer disagreed with the ledger.
+    ///
+    /// Expected to be zero: both writers move it under the topic's lock in the
+    /// transaction that changed the ledger. Reported rather than swallowed
+    /// because a number that is not zero is the only outward sign that some
+    /// write path stopped maintaining it.
+    pub repaired_pointers: u64,
 }
 
 /// Every live topic state in the project, indexed the ways a search needs it.

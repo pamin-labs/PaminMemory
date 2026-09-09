@@ -37,6 +37,11 @@ fn migrations() -> Vec<Migration> {
             "shard_key_and_indexes",
             include_str!("../migrations/V3__shard_key_and_indexes.sql"),
         ),
+        migration(
+            4,
+            "current_state_pointer",
+            include_str!("../migrations/V4__current_state_pointer.sql"),
+        ),
     ]
 }
 
