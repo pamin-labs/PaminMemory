@@ -389,6 +389,55 @@ async fn assert_within(
     Ok(Assertion::Appended(row_to_version(&row)))
 }
 
+/// Closes the derived edges of one kind out of a topic that are no longer
+/// claimed, and returns how many.
+///
+/// Deriving edges only ever asserted them, so a memory rewritten from "uses
+/// argo_cd" to "uses flux" kept the edge to `argo_cd` for ever, and `why[]`
+/// reported a path the content it cites does not support. The graph's average
+/// degree could only grow, which is also the mechanism that turns a traversal
+/// from affordable into unfinishable.
+///
+/// `keep` is what the content says now, so this closes the difference. Derived
+/// edges only: an edge somebody asserted with `pamin link` is a claim of theirs
+/// and is not answered by what a memory happens to say.
+///
+/// Closing rather than deleting, and `closed` rather than `deleted`: the claim
+/// is retracted from here on, not declared never to have held. What the memory
+/// said before is still true of before, which is what `--at` reads.
+pub async fn retract_derived(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    from: TopicId,
+    kind: EdgeKind,
+    keep: &[TopicId],
+) -> Result<u64> {
+    let kept: Vec<uuid::Uuid> = keep.iter().map(|topic| topic.0).collect();
+
+    let closed = sqlx::query(
+        "UPDATE relationship_versions
+            SET invalidated_at = $1, tombstone_reason = $2
+          WHERE invalidated_at IS NULL
+            AND derivation = $3
+            AND relationship_id IN (
+                SELECT id FROM relationships
+                 WHERE project_id = $4 AND from_topic = $5 AND kind = $6
+                   AND NOT (to_topic = ANY($7))
+            )",
+    )
+    .bind(OffsetDateTime::now_utc())
+    .bind(TombstoneReason::Closed.label())
+    .bind(Derivation::Deterministic.label())
+    .bind(project.0)
+    .bind(from.0)
+    .bind(kind.label())
+    .bind(&kept)
+    .execute(executor)
+    .await?;
+
+    Ok(closed.rows_affected())
+}
+
 /// Closes the live version of an edge, leaving every row in place.
 ///
 /// Returns whether anything was open to close. Closing is a retraction of the

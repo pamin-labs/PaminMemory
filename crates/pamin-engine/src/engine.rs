@@ -298,13 +298,21 @@ impl Engine {
         Ok(topic)
     }
 
-    /// Derives edges from the topics this state's content names.
+    /// Restates the edges a topic's current content implies.
     ///
     /// In a topic-centred graph the topics are the entities, so a memory naming
     /// another topic is entity linking with no model in the path. Returns how
     /// many edges this call actually added, which is zero when the content is
     /// unchanged: asserting an edge is idempotent, so rewriting a memory does
     /// not grow the ledger.
+    ///
+    /// Restates rather than adds: what the content no longer names is closed.
+    /// The two are separate statements, and a crash between them leaves edges
+    /// this content does not claim -- which the next run of the job removes,
+    /// because the job asks what the topic says now rather than what changed.
+    /// Asserting first is what keeps it cheap: a name still present is found
+    /// unchanged and written nowhere, and only then is the rest closed, so
+    /// re-deriving an unaltered memory still touches no row.
     pub async fn derive_mentions(&mut self, state: &TopicState) -> Result<usize> {
         let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
@@ -330,11 +338,11 @@ impl Engine {
         };
 
         let edges: Vec<_> = named
-            .into_iter()
+            .iter()
             .map(|target| {
                 (
                     state.topic_id,
-                    target,
+                    *target,
                     EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE),
                 )
             })
@@ -344,6 +352,15 @@ impl Engine {
         // what it says, and asserting them separately both cost a commit each
         // and let a crash tell half of it.
         let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
+
+        graph::retract_derived(
+            self.database.pool(),
+            self.project,
+            state.topic_id,
+            EdgeKind::Mentions,
+            &named,
+        )
+        .await?;
 
         Ok(asserted
             .iter()

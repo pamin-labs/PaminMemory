@@ -60,6 +60,7 @@ async fn the_ledger_holds_its_promises() {
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
+    a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
 
     drop(database);
@@ -1777,5 +1778,144 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
             .await
             .expect("count pending"),
         0
+    );
+}
+
+/// What a memory no longer says stops being claimed, and nothing else moves.
+///
+/// Deriving edges only ever asserted them. Rewriting a memory from "uses
+/// argo_cd" to "uses flux" therefore kept the edge to `argo_cd` for ever, and
+/// `why[]` cited a path the content it quotes does not support. Nothing in the
+/// suite could see it, because every existing assertion is about an edge being
+/// added.
+///
+/// Three things have to hold at once, and each is a way the obvious fix goes
+/// wrong: the name that went away is closed, the name that stayed is not
+/// touched -- closing and re-asserting it would churn the ledger on every
+/// write -- and an edge somebody asserted by hand survives, because it is their
+/// claim and not this memory's.
+async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "retraction")
+        .await
+        .expect("ensure project");
+
+    let mut topics = Vec::new();
+    for name in ["deploy", "argo_cd", "flux", "runbook"] {
+        topics.push(
+            committed!(database, repository::ensure_topic, project.id, name)
+                .expect("ensure topic")
+                .id,
+        );
+    }
+    let (deploy, argo, flux, runbook) = (topics[0], topics[1], topics[2], topics[3]);
+
+    let state = write_state(
+        database,
+        project.id,
+        deploy,
+        "retraction-1",
+        "goes out through argo",
+    )
+    .await;
+    let derived = |to| {
+        (
+            deploy,
+            to,
+            EdgeClaim::derived(EdgeKind::Mentions, state.id, 0.5),
+        )
+    };
+
+    graph::assert_edges(database.pool(), project.id, &[derived(argo), derived(flux)])
+        .await
+        .expect("assert the derived edges");
+    // Somebody's own claim, of the same kind and out of the same topic.
+    graph::assert_edge(
+        database.pool(),
+        project.id,
+        deploy,
+        runbook,
+        &EdgeClaim::explicit(EdgeKind::Mentions),
+    )
+    .await
+    .expect("assert the explicit edge");
+
+    let live = |to| async move {
+        let relationship =
+            graph::find_relationship(database.pool(), project.id, deploy, to, EdgeKind::Mentions)
+                .await
+                .expect("find relationship")
+                .expect("the edge was asserted");
+        graph::live_version(database.pool(), relationship.id)
+            .await
+            .expect("live version")
+    };
+
+    let kept_before = live(flux).await.expect("the kept edge is live");
+
+    // The memory now names only `flux`.
+    let closed = graph::retract_derived(
+        database.pool(),
+        project.id,
+        deploy,
+        EdgeKind::Mentions,
+        &[flux],
+    )
+    .await
+    .expect("retract what the content no longer says");
+    assert_eq!(closed, 1, "exactly the edge that went away should close");
+
+    assert!(
+        live(argo).await.is_none(),
+        "an edge the content stopped making is still claimed"
+    );
+    assert!(
+        live(runbook).await.is_some(),
+        "retracting derived edges closed one somebody asserted by hand"
+    );
+
+    let kept_after = live(flux).await.expect("the kept edge is still live");
+    assert_eq!(
+        kept_after.id, kept_before.id,
+        "a name that is still there should not be closed and re-asserted"
+    );
+
+    // Closed, not deleted: the claim is retracted from here on rather than
+    // declared never to have held, so a walk asked about a moment before the
+    // retraction still reaches it.
+    let relationship = graph::find_relationship(
+        database.pool(),
+        project.id,
+        deploy,
+        argo,
+        EdgeKind::Mentions,
+    )
+    .await
+    .expect("find relationship")
+    .expect("the edge was asserted");
+    let history = graph::edge_history(database.pool(), relationship.id)
+        .await
+        .expect("edge history");
+    let retracted = history.last().expect("the edge has a version");
+    assert_eq!(retracted.tombstone_reason, Some(TombstoneReason::Closed));
+
+    let before = retracted
+        .invalidated_at
+        .expect("a closed version records when")
+        - time::Duration::seconds(1);
+    let reached = graph::expand(
+        database.pool(),
+        project.id,
+        &[deploy],
+        &Expansion {
+            depth: 1,
+            at: Some(before),
+            kinds: None,
+        },
+    )
+    .await
+    .expect("expand at a moment before the retraction");
+    assert!(
+        reached.iter().any(|neighbor| neighbor.topic == argo),
+        "what the memory said before is still true of before: {reached:?}"
     );
 }
