@@ -9,11 +9,11 @@
 //! temporary workspace.
 
 use pamin_core::{
-    Derivation, EdgeKind, FilterDecision, SourceKind, TombstoneReason, Validity, VersionOffset,
-    resolve,
+    Derivation, EdgeKind, FilterDecision, JobKind, SourceKind, TombstoneReason, Validity,
+    VersionOffset, resolve,
 };
 use pamin_store::graph::{EdgeClaim, Expansion};
-use pamin_store::{Database, Workspace, graph, repository};
+use pamin_store::{Database, Workspace, graph, jobs, repository};
 // The table name is a literal from the list above, not caller input; the
 // assertion is what lets it be interpolated at all.
 use sqlx::AssertSqlSafe;
@@ -42,6 +42,7 @@ async fn the_ledger_holds_its_promises() {
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
+    the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
 
     drop(database);
@@ -1494,5 +1495,224 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         walked.iter().filter(|n| n.hops == 2).count(),
         SPOKES,
         "two hops reaches the far hub's spokes and nothing further"
+    );
+}
+
+/// What the outbox has to get right for the projection to stay correct.
+///
+/// Four properties, each of which fails silently if it is wrong -- the queue
+/// keeps working and the projection quietly stops matching the ledger:
+///
+///   * repeated requests for one subject coalesce, or fourteen edits to one
+///     topic cost fourteen embeddings;
+///   * a request made *while* a job is running is not swallowed by that job's
+///     completion, or the last write before a completion is never indexed;
+///   * a claim expires, or a worker that dies holding a job takes the work with
+///     it;
+///   * attempts run out, or one poisoned job becomes a worker that never does
+///     anything else.
+async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "outbox")
+        .await
+        .expect("ensure project");
+    let topic = repository::ensure_topic(database.pool(), project.id, "outbox_topic")
+        .await
+        .expect("ensure topic")
+        .id;
+
+    // Coalescing: three requests for the same subject are one row.
+    for _ in 0..3 {
+        jobs::enqueue(
+            database.pool(),
+            project.id,
+            JobKind::SyncTopicIndex,
+            Some(topic.0),
+        )
+        .await
+        .expect("enqueue");
+    }
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        1,
+        "requests for one subject should coalesce onto one row"
+    );
+
+    // A different kind for the same subject is different work.
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::DeriveMentions,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue a second kind");
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        2
+    );
+
+    // Priority decides what a worker sees first: syncing the index for a memory
+    // just written comes before deriving its edges.
+    let claimed = jobs::claim(database.pool(), "worker-a", 1)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].kind, JobKind::SyncTopicIndex);
+    assert_eq!(claimed[0].subject, Some(topic.0));
+    assert_eq!(
+        claimed[0].attempts, 1,
+        "attempts count at claim, not at failure"
+    );
+
+    // A claimed job is not handed to anyone else.
+    let contended = jobs::claim(database.pool(), "worker-b", 10)
+        .await
+        .expect("claim again");
+    assert!(
+        contended.iter().all(|job| job.id != claimed[0].id),
+        "a claimed job was handed to a second worker"
+    );
+
+    // The second worker finishes what it did get, so the rest of this is about
+    // one job rather than two.
+    for job in &contended {
+        assert!(
+            jobs::complete(database.pool(), job, "worker-b")
+                .await
+                .expect("complete")
+        );
+    }
+
+    // A request arriving while the job runs is not swallowed by its completion.
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::SyncTopicIndex,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue during processing");
+
+    assert!(
+        !jobs::complete(database.pool(), &claimed[0], "worker-a")
+            .await
+            .expect("complete"),
+        "a job requested again mid-flight must not be completed by the attempt \
+         that was already running"
+    );
+
+    // So it is still there, and claimable.
+    let requeued = jobs::claim(database.pool(), "worker-a", 1)
+        .await
+        .expect("claim the re-requested job");
+    assert_eq!(requeued.len(), 1);
+    assert_eq!(requeued[0].id, claimed[0].id);
+    assert_eq!(
+        requeued[0].attempts, 1,
+        "reviving a job resets its attempts"
+    );
+
+    assert!(
+        jobs::complete(database.pool(), &requeued[0], "worker-a")
+            .await
+            .expect("complete"),
+        "a job nobody re-requested completes"
+    );
+
+    // Completing does not delete, and a later request revives the same row.
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::SyncTopicIndex,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue after completion");
+    let revived = jobs::claim(database.pool(), "worker-a", 1)
+        .await
+        .expect("claim revived");
+    assert_eq!(
+        revived[0].id, claimed[0].id,
+        "a completed row should be revived rather than left to swallow the request"
+    );
+
+    // Attempts run out, and the job is then left pending with its error rather
+    // than coming round again. Every round here is a real claim and a real
+    // failure; the update in between stands for the retry delay elapsing, which
+    // is an hour and not something to wait for.
+    let mut failing = revived;
+    for round in 1..=pamin_core::MAX_ATTEMPTS {
+        assert_eq!(
+            failing.len(),
+            1,
+            "round {round}: a job below its attempt limit should still be claimable"
+        );
+        jobs::fail(
+            database.pool(),
+            &failing[0],
+            "worker-a",
+            "the index was unreachable",
+        )
+        .await
+        .expect("record a failure");
+
+        sqlx::query("UPDATE index_jobs SET available_at = now() WHERE id = $1")
+            .bind(failing[0].id.0)
+            .execute(database.pool())
+            .await
+            .expect("let the retry delay elapse");
+
+        failing = jobs::claim(database.pool(), "worker-a", 1)
+            .await
+            .expect("claim after a failure");
+    }
+
+    assert!(
+        failing.is_empty(),
+        "a job that has used its attempts should not be handed out again"
+    );
+
+    let stuck = jobs::exhausted(database.pool(), project.id)
+        .await
+        .expect("read exhausted jobs");
+    assert_eq!(
+        stuck.len(),
+        1,
+        "the job that used its attempts should be listed"
+    );
+    assert_eq!(stuck[0].1, "the index was unreachable");
+
+    assert_eq!(
+        jobs::replay(database.pool(), project.id)
+            .await
+            .expect("replay"),
+        1
+    );
+    assert!(
+        jobs::exhausted(database.pool(), project.id)
+            .await
+            .expect("read exhausted jobs")
+            .is_empty(),
+        "replaying should put the job back in the ordinary queue"
+    );
+
+    // Leave the project clean for anything that counts pending work later.
+    let outstanding = jobs::claim(database.pool(), "worker-a", 100)
+        .await
+        .expect("drain");
+    for job in &outstanding {
+        jobs::complete(database.pool(), job, "worker-a")
+            .await
+            .expect("complete");
+    }
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        0
     );
 }
