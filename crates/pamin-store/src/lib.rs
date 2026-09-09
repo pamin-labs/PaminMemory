@@ -7,6 +7,7 @@
 pub mod database;
 pub mod error;
 pub mod graph;
+pub mod jobs;
 pub mod migrate;
 pub mod repository;
 mod sql;
