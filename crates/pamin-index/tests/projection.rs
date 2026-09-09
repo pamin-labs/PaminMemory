@@ -326,3 +326,109 @@ fn separated(seed: u128) -> Vec<f32> {
     let length: f32 = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
     vector.iter().map(|value| value / length).collect()
 }
+
+/// Asking for a name means every word of it, not any word of it.
+///
+/// Backfill asks "which memories name this topic", and confirms each candidate
+/// exactly afterwards. Ranked disjunction answers a different question -- what
+/// is most relevant to these words -- and fills a bounded list with documents
+/// carrying only the common half of the name, each of which then costs a
+/// confirmation that rejects it.
+///
+/// What this shows is the semantics and the candidate count: a name nothing
+/// carries every word of returns nothing at all, and a name one document
+/// carries returns that document alone rather than it plus four decoys. It does
+/// not show the failure it exists to prevent -- a real match pushed off the end
+/// of the list by decoys -- because the document carrying both words also
+/// scores highest, so at any size a test can build the disjunction still finds
+/// it. That case needs a corpus, not a fixture.
+#[test]
+fn asking_for_a_name_requires_every_word_of_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+    )
+    .expect("open index");
+
+    let both = id(1);
+    index
+        .upsert(both, "the release process is documented here", &stub())
+        .expect("upsert the one that names it");
+    // Documents carrying only the common word, which is the situation a real
+    // project is always in.
+    for n in 2..40u8 {
+        index
+            .upsert(
+                id(n),
+                "another release note about the release we cut this week",
+                &stub(),
+            )
+            .expect("upsert a decoy");
+    }
+    index.flush().expect("flush");
+
+    let named = index
+        .recall_naming("release process", 5)
+        .expect("recall by name");
+    assert_eq!(
+        named,
+        vec![both],
+        "only the document carrying every word of the name should be a candidate"
+    );
+
+    // The same corpus and the same limit through the channel that ranks. Every
+    // extra entry here is a candidate the caller would confirm and reject.
+    let ranked = index
+        .recall_segmented("release process", 5)
+        .expect("recall by relevance");
+    assert!(
+        ranked.len() > named.len(),
+        "the ranking channel should be the one that returns decoys: {ranked:?}"
+    );
+
+    // The names this store actually holds are identifiers and CJK, not English
+    // bigrams, and both are segmented before they are indexed. A conjunction is
+    // over whatever that segmentation produced, so a name that splits into
+    // several tokens has to still find the document it splits the same way in.
+    let identifier = id(200);
+    let chinese = id(201);
+    index
+        .upsert(
+            identifier,
+            "everything goes out through argo_cd now",
+            &stub(),
+        )
+        .expect("upsert an identifier");
+    index
+        .upsert(chinese, "部署流水线运行在持续集成上", &stub())
+        .expect("upsert chinese");
+    index.flush().expect("flush");
+
+    assert!(
+        index
+            .recall_naming("argo_cd", 5)
+            .expect("recall an identifier name")
+            .contains(&identifier),
+        "a name that segments into several tokens should still find its memory"
+    );
+    assert!(
+        index
+            .recall_naming("流水线", 5)
+            .expect("recall a chinese name")
+            .contains(&chinese),
+        "a name with no spaces in it should still find its memory"
+    );
+
+    // A name no document carries every word of matches nothing, rather than
+    // matching everything that carries part of it.
+    let absent = index
+        .recall_naming("release ceremony", 5)
+        .expect("recall an absent name");
+    assert!(
+        absent.is_empty(),
+        "a conjunction nothing satisfies should return nothing: {absent:?}"
+    );
+}
