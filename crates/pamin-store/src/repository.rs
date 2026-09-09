@@ -498,6 +498,112 @@ pub async fn all_live_topic_states(
     Ok(rows.iter().map(row_to_topic_state).collect())
 }
 
+/// Loads these states, skipping any the ledger has soft deleted.
+///
+/// The search path's replacement for reading the project. What it needs is the
+/// states the recall channels actually returned, which is a few hundred rows
+/// whatever the project holds; loading every live state to answer that was the
+/// single largest thing a query did.
+///
+/// Soft-deleted states are dropped here rather than after ranking. Filtering
+/// afterwards meant a state the ledger had removed still occupied a place in
+/// each channel's candidate budget, so deleting content quietly reduced how
+/// much a search could find.
+pub async fn topic_states_by_id(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    states: &[TopicStateId],
+) -> Result<Vec<TopicState>> {
+    if states.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<uuid::Uuid> = states.iter().map(|state| state.0).collect();
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        state_columns!(),
+        " FROM topic_states
+          WHERE project_id = $1 AND id = ANY($2) AND deleted_at IS NULL"
+    ))
+    .bind(project.0)
+    .bind(&ids)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows.iter().map(row_to_topic_state).collect())
+}
+
+/// Loads the states these topics currently resolve to.
+///
+/// Through the pointer on `topics`, so this is a primary key lookup per topic
+/// rather than a search for each one's newest surviving version. The graph
+/// channel walks topic identities and can only return states, so every
+/// neighbour it finds comes through here.
+///
+/// A topic whose every state has been soft deleted resolves to nothing and is
+/// simply absent from the result.
+pub async fn current_states_of(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topics: &[TopicId],
+) -> Result<Vec<TopicState>> {
+    if topics.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<uuid::Uuid> = topics.iter().map(|topic| topic.0).collect();
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        state_columns!(),
+        " FROM topic_states ts
+          JOIN topics t ON t.current_state_id = ts.id
+          WHERE t.project_id = $1 AND t.id = ANY($2)"
+    ))
+    .bind(project.0)
+    .bind(&ids)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows.iter().map(row_to_topic_state).collect())
+}
+
+/// Names these topics, and says which state each currently resolves to.
+///
+/// One lookup for the two things the search path needs about a topic once it
+/// has a result from it: what to call it, and whether the state in hand is the
+/// one the topic stands for now.
+pub async fn topics_by_id(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topics: &[TopicId],
+) -> Result<Vec<(TopicId, String, Option<TopicStateId>)>> {
+    if topics.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<uuid::Uuid> = topics.iter().map(|topic| topic.0).collect();
+    let rows = sqlx::query(
+        "SELECT id, name, current_state_id FROM topics
+         WHERE project_id = $1 AND id = ANY($2)",
+    )
+    .bind(project.0)
+    .bind(&ids)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<uuid::Uuid, _>("id").into(),
+                row.get("name"),
+                row.get::<Option<uuid::Uuid>, _>("current_state_id")
+                    .map(Into::into),
+            )
+        })
+        .collect())
+}
+
 /// Soft deletes one version of a topic.
 ///
 /// The row and its content stay: deletion removes a state from the default
