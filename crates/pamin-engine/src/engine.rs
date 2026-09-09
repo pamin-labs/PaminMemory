@@ -6,12 +6,13 @@
 
 use anyhow::Result;
 use pamin_core::{
-    Channel, ChannelResults, EdgeKind, FusedResult, Fusion, Modifiers, ProjectId, Topic, TopicId,
-    TopicState, TopicStateId, Why,
+    Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
+    ProjectId, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{Database, Workspace, graph, repository};
+use pamin_store::{Database, Workspace, graph, jobs, repository};
+use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
 ///
@@ -78,13 +79,16 @@ const REINDEX_BATCH: usize = 256;
 /// `block_in_place` rather than `spawn_blocking` because the work borrows the
 /// index and the embedder, and neither is `'static`. It requires the
 /// multi-threaded runtime, which is what `pamin` runs on.
-fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
     tokio::task::block_in_place(work)
 }
 
 /// The store, the index, and the embedder, wired together.
 pub struct Engine {
     pub database: Database,
+    /// Who this process is when it claims cascade work. Distinct per process so
+    /// a claim identifies its holder, which is what completion checks against.
+    pub(crate) worker: String,
     /// Behind the trait rather than the concrete type, so the composition layer
     /// names what it needs from a projection and not which engine provides it.
     pub index: Box<dyn Projection>,
@@ -152,6 +156,7 @@ impl Engine {
 
         Ok(Self {
             database,
+            worker: format!("{}:{}", hostname(), std::process::id()),
             index,
             embedder,
             project: project.id,
@@ -169,21 +174,127 @@ impl Engine {
         Ok(())
     }
 
-    /// Returns the topic with this name, creating it if it does not exist.
+    /// Records a memory: evidence, the span over it, and -- when the filter
+    /// promotes it -- a topic state and the work the projection owes it.
     ///
-    /// A topic created here is also linked backwards: memories written before
-    /// it existed may already name it, and without this pass an edge would
-    /// appear only when one of those memories happened to be rewritten. The
-    /// scan runs once in a topic's life, when it is first created.
-    pub async fn ensure_topic(&mut self, name: &str) -> Result<Topic> {
-        let existed = repository::find_topic(self.database.pool(), self.project, name)
-            .await?
-            .is_some();
-        let topic = repository::ensure_topic(self.database.pool(), self.project, name).await?;
+    /// All of it in one transaction, and that transaction touches nothing
+    /// outside PostgreSQL. Deriving the embedding and writing the projection
+    /// used to happen here, inline, which meant a write depended on the index
+    /// being reachable and on a model being loaded; now the write commits a row
+    /// in the outbox saying what is owed, and the cascade pays it. That is the
+    /// first thing an outbox buys, before any question of throughput: the write
+    /// succeeds or fails on the ledger alone.
+    ///
+    /// The topic is created only when something is promoted under it, and only
+    /// inside this transaction, so a held write leaves no name behind.
+    pub async fn write(&mut self, request: &Write<'_>) -> Result<Recorded> {
+        let mut transaction = self.database.pool().begin().await?;
 
-        if !existed {
-            self.backfill_mentions(&topic).await?;
-        }
+        // Manual writes to one topic share a source, so their evidence forms a
+        // single chain rather than a new source per write.
+        let source = repository::ensure_source(
+            &mut transaction,
+            self.project,
+            SourceKind::Manual,
+            &format!("manual:{}", request.topic),
+        )
+        .await?;
+
+        // Evidence first, always, and before the filter's verdict is acted on.
+        // That ordering is what makes a rejection recoverable instead of a loss.
+        let evidence = repository::append_source_version(
+            &mut transaction,
+            self.project,
+            source,
+            request.content,
+            request.content_hash,
+            request.verdict,
+            request.reason,
+        )
+        .await?;
+
+        let span = repository::append_source_span(
+            &mut *transaction,
+            self.project,
+            evidence.id,
+            0,
+            request.content.len() as u32,
+            request.language,
+            request.language_confidence,
+        )
+        .await?;
+
+        let state = if request.promoted {
+            let existed =
+                repository::find_topic(&mut *transaction, self.project, request.topic).await?;
+            let topic = match existed.clone() {
+                Some(topic) => topic,
+                None => {
+                    repository::ensure_topic(&mut transaction, self.project, request.topic).await?
+                }
+            };
+
+            let state = repository::append_topic_state(
+                &mut transaction,
+                self.project,
+                topic.id,
+                request.content,
+                span.id,
+                request.observed_at,
+                request.validity,
+            )
+            .await?;
+
+            // Committed with the state rather than after it. A crash between
+            // the two would otherwise leave a memory the ledger knows about and
+            // the projection never hears of -- which is the failure an outbox
+            // exists to make impossible, and the one a `tokio::spawn` here
+            // would leave wide open.
+            jobs::enqueue(
+                &mut *transaction,
+                self.project,
+                JobKind::SyncTopicIndex,
+                Some(topic.id.0),
+            )
+            .await?;
+            jobs::enqueue(
+                &mut *transaction,
+                self.project,
+                JobKind::DeriveMentions,
+                Some(topic.id.0),
+            )
+            .await?;
+
+            // A topic that did not exist a moment ago may already be named by
+            // memories written before it. Finding them is a scan, so it is
+            // scheduled rather than paid for by whoever created the topic.
+            if existed.is_none() {
+                jobs::enqueue(
+                    &mut *transaction,
+                    self.project,
+                    JobKind::BackfillMentions,
+                    Some(topic.id.0),
+                )
+                .await?;
+            }
+
+            Some(state)
+        } else {
+            None
+        };
+
+        transaction.commit().await?;
+
+        Ok(Recorded {
+            source_version: evidence.version,
+            state,
+        })
+    }
+
+    /// Returns the topic with this name, creating it if it does not exist.
+    pub async fn ensure_topic(&mut self, name: &str) -> Result<Topic> {
+        let mut connection = self.database.pool().acquire().await?;
+        let topic = repository::ensure_topic(&mut connection, self.project, name).await?;
         Ok(topic)
     }
 
@@ -242,19 +353,24 @@ impl Engine {
 
     /// Links a newly created topic to memories that already named it.
     ///
-    /// ponytail: segments every live state in the project. It runs once per
-    /// topic ever created, which is rare enough to pay for; when the cascade
-    /// worker exists this moves there and becomes a queued job.
-    async fn backfill_mentions(&mut self, topic: &Topic) -> Result<usize> {
+    /// Without it an edge would appear only when one of those older memories
+    /// happened to be rewritten, so a topic would know less about the past the
+    /// longer that past was.
+    ///
+    /// Segments every live state in the project, which is why it is a job
+    /// rather than something the write that created the topic pays for. It
+    /// still runs once per topic ever created; 6.2 replaces the scan with a
+    /// lexical probe.
+    pub(crate) async fn backfill_mentions(&mut self, topic: TopicId, name: &str) -> Result<usize> {
         let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
 
         let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
             let segmenter = self.index.segmenter();
             // The fixed side here is the name, so that is the side prepared.
-            let name = segmenter.name_sequence(&topic.name);
+            let name = segmenter.name_sequence(name);
             states
                 .iter()
-                .filter(|state| state.topic_id != topic.id)
+                .filter(|state| state.topic_id != topic)
                 .filter(|state| {
                     pamin_index::segmentation::names(
                         &segmenter.name_sequence(&state.content),
@@ -270,7 +386,7 @@ impl Engine {
             .map(|(from, caused_by)| {
                 (
                     from,
-                    topic.id,
+                    topic,
                     EdgeClaim::derived(EdgeKind::Mentions, caused_by, MENTION_CONFIDENCE),
                 )
             })
@@ -527,6 +643,42 @@ impl Engine {
             repaired_pointers,
         })
     }
+}
+
+/// This machine's name, for identifying who holds a cascade claim.
+///
+/// Best effort: the name only has to distinguish one worker from another, and
+/// the process id already does that within a machine.
+fn hostname() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "local".to_string())
+}
+
+/// One memory, with the filter's verdict already reached.
+///
+/// Grouped rather than passed positionally: most of it is text and optional
+/// text, and a caller swapping two of those would compile.
+pub struct Write<'a> {
+    pub topic: &'a str,
+    pub content: &'a str,
+    pub content_hash: &'a str,
+    /// What the sensory filter decided, and why.
+    pub verdict: FilterDecision,
+    pub reason: &'a str,
+    pub promoted: bool,
+    /// Detected per span rather than per deployment: one workspace holds many
+    /// languages, and this is what the note-language rule reads later.
+    pub language: Option<&'a str>,
+    pub language_confidence: Option<f32>,
+    pub observed_at: OffsetDateTime,
+    pub validity: Validity,
+}
+
+/// What a write left in the ledger.
+pub struct Recorded {
+    /// Always set: evidence is recorded whatever the filter decides.
+    pub source_version: u32,
+    /// Absent when the filter held the content in the evidence layer.
+    pub state: Option<TopicState>,
 }
 
 /// What a rebuild did.

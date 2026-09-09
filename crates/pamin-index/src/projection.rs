@@ -92,6 +92,14 @@ pub trait Projection {
     /// Semantic recall over dense embeddings, nearest first.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>>;
 
+    /// Removes these topic states.
+    ///
+    /// The projection had no way to shrink: the only route out was deleting the
+    /// whole directory. A soft-deleted state therefore stayed in every channel's
+    /// candidate budget, so removing content from the ledger quietly reduced how
+    /// much a search could find.
+    fn delete(&self, states: &[TopicStateId]) -> Result<()>;
+
     /// Makes buffered writes visible to later queries.
     fn flush(&self) -> Result<()>;
 
@@ -288,6 +296,17 @@ impl Projection for ProjectionIndex {
     fn upsert(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<()> {
         let doc = self.document(topic_state, content, embedding)?;
         self.collection.upsert(&[&doc])?;
+        Ok(())
+    }
+
+    /// Removes these topic states.
+    fn delete(&self, states: &[TopicStateId]) -> Result<()> {
+        for chunk in states.chunks(WRITE_BATCH) {
+            let keys: Vec<String> = chunk.iter().map(ToString::to_string).collect();
+            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+            self.collection.delete(&keys)?;
+        }
+
         Ok(())
     }
 

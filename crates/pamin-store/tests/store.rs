@@ -19,6 +19,23 @@ use pamin_store::{Database, Workspace, graph, jobs, repository};
 use sqlx::AssertSqlSafe;
 use time::OffsetDateTime;
 
+/// Runs one repository write inside its own transaction.
+///
+/// The writes that hold a row lock across several statements take a connection
+/// rather than opening a transaction themselves, so that the whole write path
+/// can be one transaction. A pooled connection in autocommit mode ends a
+/// transaction at every statement, which releases the lock before the insert it
+/// was taken for -- so the tests supply a real transaction, the way the engine
+/// does.
+macro_rules! committed {
+    ($database:expr, $call:path, $($argument:expr),* $(,)?) => {{
+        let mut transaction = $database.pool().begin().await.expect("begin");
+        let outcome = $call(&mut *transaction, $($argument),*).await;
+        transaction.commit().await.expect("commit");
+        outcome
+    }};
+}
+
 #[tokio::test]
 #[ignore = "downloads and starts a real postgres cluster"]
 async fn the_ledger_holds_its_promises() {
@@ -83,19 +100,24 @@ async fn write_state(
     locator: &str,
     content: &str,
 ) -> pamin_core::TopicState {
-    let source = repository::ensure_source(database.pool(), project, SourceKind::Manual, locator)
-        .await
-        .expect("ensure source");
-    let version = repository::append_source_version(
-        database.pool(),
+    let source = committed!(
+        database,
+        repository::ensure_source,
+        project,
+        SourceKind::Manual,
+        locator
+    )
+    .expect("ensure source");
+    let version = committed!(
+        database,
+        repository::append_source_version,
         project,
         source,
         content,
         "hash",
         FilterDecision::Promoted,
-        "test fixture",
+        "test fixture"
     )
-    .await
     .expect("append source version");
     let span = repository::append_source_span(
         database.pool(),
@@ -109,16 +131,16 @@ async fn write_state(
     .await
     .expect("append span");
 
-    repository::append_topic_state(
-        database.pool(),
+    committed!(
+        database,
+        repository::append_topic_state,
         project,
         topic,
         content,
         span.id,
         OffsetDateTime::now_utc(),
-        Validity::ALWAYS,
+        Validity::ALWAYS
     )
-    .await
     .expect("append topic state")
 }
 
@@ -126,9 +148,13 @@ async fn appending_versions_builds_a_supersession_chain(database: &Database) {
     let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
-    let topic = repository::ensure_topic(database.pool(), project.id, "deployment_pipeline")
-        .await
-        .expect("ensure topic");
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "deployment_pipeline"
+    )
+    .expect("ensure topic");
 
     let first = write_state(database, project.id, topic.id, "note-1", "deploys via make").await;
     let second = write_state(database, project.id, topic.id, "note-2", "deploys via ci").await;
@@ -173,8 +199,7 @@ async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &D
         .expect("find topic")
         .expect("topic exists");
 
-    let deleted = repository::soft_delete_topic_state(database.pool(), topic.id, 2)
-        .await
+    let deleted = committed!(database, repository::soft_delete_topic_state, topic.id, 2)
         .expect("soft delete");
     assert!(deleted);
 
@@ -204,25 +229,25 @@ async fn filtered_evidence_is_still_stored(database: &Database) {
     let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
-    let source = repository::ensure_source(
-        database.pool(),
+    let source = committed!(
+        database,
+        repository::ensure_source,
         project.id,
         SourceKind::Manual,
-        "noise-source",
+        "noise-source"
     )
-    .await
     .expect("ensure source");
 
-    repository::append_source_version(
-        database.pool(),
+    committed!(
+        database,
+        repository::append_source_version,
         project.id,
         source,
         "ok",
         "hash",
         FilterDecision::Filtered,
-        "no durable claim",
+        "no durable claim"
     )
-    .await
     .expect("append filtered evidence");
 
     let stored = repository::latest_source_version(database.pool(), source)
@@ -253,9 +278,8 @@ async fn graph_fixture(
 
     let mut topics = Vec::new();
     for name in ["service", "database", "backup_job"] {
-        let topic = repository::ensure_topic(database.pool(), project.id, name)
-            .await
-            .expect("ensure topic");
+        let topic =
+            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -520,27 +544,27 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
     let project = repository::ensure_project(database.pool(), "ledger")
         .await
         .expect("ensure project");
-    let source = repository::ensure_source(
-        database.pool(),
+    let source = committed!(
+        database,
+        repository::ensure_source,
         project.id,
         SourceKind::Manual,
-        "grep-source",
+        "grep-source"
     )
-    .await
     .expect("ensure source");
 
     // Held by the filter, so it never became a topic state and never entered
     // the projection index. Reaching it is the entire reason this exists.
-    repository::append_source_version(
-        database.pool(),
+    committed!(
+        database,
+        repository::append_source_version,
         project.id,
         source,
         "the KILN reaches cone ten",
         "hash",
         FilterDecision::Filtered,
-        "no durable claim",
+        "no durable claim"
     )
-    .await
     .expect("append filtered evidence");
 
     let hits = repository::grep_evidence(database.pool(), project.id, "cone ten", true, 10)
@@ -601,9 +625,8 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
 
     let mut topics = Vec::new();
     for name in ["tenant_a", "tenant_b", "tenant_c"] {
-        let topic = repository::ensure_topic(database.pool(), project.id, name)
-            .await
-            .expect("ensure topic");
+        let topic =
+            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -707,9 +730,8 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &Database) 
 
     let mut topics = Vec::new();
     for name in ["ring_a", "ring_b", "ring_c"] {
-        let topic = repository::ensure_topic(database.pool(), project.id, name)
-            .await
-            .expect("ensure topic");
+        let topic =
+            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -775,13 +797,13 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
     let project = repository::ensure_project(database.pool(), "contended")
         .await
         .expect("ensure project");
-    let source = repository::ensure_source(
-        database.pool(),
+    let source = committed!(
+        database,
+        repository::ensure_source,
         project.id,
         SourceKind::Manual,
-        "contended-source",
+        "contended-source"
     )
-    .await
     .expect("ensure source");
 
     let server = workspace
@@ -794,16 +816,16 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
             let server = server.clone();
             tokio::spawn(async move {
                 let database = Database::connect(&server).await.expect("connect");
-                repository::append_source_version(
-                    database.pool(),
+                committed!(
+                    &database,
+                    repository::append_source_version,
                     project.id,
                     source,
                     &format!("evidence from writer {writer}"),
                     "hash",
                     FilterDecision::Promoted,
-                    "test fixture",
+                    "test fixture"
                 )
-                .await
             })
         })
         .collect();
@@ -840,20 +862,18 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
     let project = repository::ensure_project(database.pool(), "idempotent")
         .await
         .expect("ensure project");
-    let source = repository::ensure_source(
-        database.pool(),
+    let source = committed!(
+        database,
+        repository::ensure_source,
         project.id,
         SourceKind::Manual,
-        "idempotent-source",
+        "idempotent-source"
     )
-    .await
     .expect("ensure source");
-    let from = repository::ensure_topic(database.pool(), project.id, "from")
-        .await
-        .expect("ensure topic");
-    let to = repository::ensure_topic(database.pool(), project.id, "to")
-        .await
-        .expect("ensure topic");
+    let from =
+        committed!(database, repository::ensure_topic, project.id, "from").expect("ensure topic");
+    let to =
+        committed!(database, repository::ensure_topic, project.id, "to").expect("ensure topic");
     graph::assert_edge(
         database.pool(),
         project.id,
@@ -876,17 +896,15 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
     repository::ensure_project(database.pool(), "idempotent")
         .await
         .expect("re-ensure project");
-    repository::ensure_source(
-        database.pool(),
+    committed!(
+        database,
+        repository::ensure_source,
         project.id,
         SourceKind::Manual,
-        "idempotent-source",
+        "idempotent-source"
     )
-    .await
     .expect("re-ensure source");
-    repository::ensure_topic(database.pool(), project.id, "from")
-        .await
-        .expect("re-ensure topic");
+    committed!(database, repository::ensure_topic, project.id, "from").expect("re-ensure topic");
     graph::assert_edge(
         database.pool(),
         project.id,
@@ -936,8 +954,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
     let mut topics = Vec::new();
     for name in ["first", "second", "third"] {
         topics.push(
-            repository::ensure_topic(database.pool(), project.id, name)
-                .await
+            committed!(database, repository::ensure_topic, project.id, name)
                 .expect("ensure topic")
                 .id,
         );
@@ -1147,25 +1164,25 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     let project = repository::ensure_project(database.pool(), "columns")
         .await
         .expect("ensure project");
-    let source = repository::ensure_source(
-        database.pool(),
+    let source = committed!(
+        database,
+        repository::ensure_source,
         project.id,
         SourceKind::Manual,
-        "columns-locator",
+        "columns-locator"
     )
-    .await
     .expect("ensure source");
 
-    let evidence = repository::append_source_version(
-        database.pool(),
+    let evidence = committed!(
+        database,
+        repository::append_source_version,
         project.id,
         source,
         "the content",
         "the-hash",
         FilterDecision::Filtered,
-        "the reason",
+        "the reason"
     )
-    .await
     .expect("append source version");
 
     let read_back = repository::latest_source_version(database.pool(), source)
@@ -1194,11 +1211,16 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     assert_eq!(span.byte_end, 11);
     assert_eq!(span.detected_language.as_deref(), Some("eng"));
 
-    let topic = repository::ensure_topic(database.pool(), project.id, "columns_topic")
-        .await
-        .expect("ensure topic");
-    let state = repository::append_topic_state(
-        database.pool(),
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "columns_topic"
+    )
+    .expect("ensure topic");
+    let state = committed!(
+        database,
+        repository::append_topic_state,
         project.id,
         topic.id,
         "the state content",
@@ -1207,9 +1229,8 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         Validity {
             from: Some(valid_from),
             to: Some(valid_to),
-        },
+        }
     )
-    .await
     .expect("append topic state");
 
     let stored = repository::topic_state(database.pool(), topic.id, state.version)
@@ -1229,9 +1250,13 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     assert_eq!(stored.deleted_at, None);
 
     // An edge carrying every field that could be transposed with another.
-    let other = repository::ensure_topic(database.pool(), project.id, "columns_other")
-        .await
-        .expect("ensure topic");
+    let other = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "columns_other"
+    )
+    .expect("ensure topic");
     let claim = EdgeClaim {
         kind: EdgeKind::DependsOn,
         derivation: Derivation::Model,
@@ -1304,9 +1329,13 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
     let project = repository::ensure_project(database.pool(), "pointer")
         .await
         .expect("ensure project");
-    let topic = repository::ensure_topic(database.pool(), project.id, "pointer_topic")
-        .await
-        .expect("ensure topic");
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "pointer_topic"
+    )
+    .expect("ensure topic");
 
     // A topic with no states yet points nowhere.
     assert_pointer_matches_the_ledger(database, project.id, topic.id, None).await;
@@ -1322,26 +1351,38 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
 
     // Deleting the current one falls back to the newest survivor.
     assert!(
-        repository::soft_delete_topic_state(database.pool(), topic.id, third.version)
-            .await
-            .expect("soft delete the current state")
+        committed!(
+            database,
+            repository::soft_delete_topic_state,
+            topic.id,
+            third.version
+        )
+        .expect("soft delete the current state")
     );
     assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(second.version)).await;
 
     // Deleting one that is not current leaves the pointer alone -- which the
     // naive fix of "step back to the predecessor" would get wrong.
     assert!(
-        repository::soft_delete_topic_state(database.pool(), topic.id, first.version)
-            .await
-            .expect("soft delete a state that is not current")
+        committed!(
+            database,
+            repository::soft_delete_topic_state,
+            topic.id,
+            first.version
+        )
+        .expect("soft delete a state that is not current")
     );
     assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(second.version)).await;
 
     // Deleting the last survivor leaves the topic resolving to nothing.
     assert!(
-        repository::soft_delete_topic_state(database.pool(), topic.id, second.version)
-            .await
-            .expect("soft delete the last survivor")
+        committed!(
+            database,
+            repository::soft_delete_topic_state,
+            topic.id,
+            second.version
+        )
+        .expect("soft delete the last survivor")
     );
     assert_pointer_matches_the_ledger(database, project.id, topic.id, None).await;
 
@@ -1351,9 +1392,13 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
 
     // Deleting a version that is already deleted changes nothing.
     assert!(
-        !repository::soft_delete_topic_state(database.pool(), topic.id, first.version)
-            .await
-            .expect("soft delete an already deleted state")
+        !committed!(
+            database,
+            repository::soft_delete_topic_state,
+            topic.id,
+            first.version
+        )
+        .expect("soft delete an already deleted state")
     );
     assert_pointer_matches_the_ledger(database, project.id, topic.id, Some(fourth.version)).await;
 
@@ -1448,8 +1493,7 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         .expect("ensure project");
 
     let topic = |name: String| async move {
-        repository::ensure_topic(database.pool(), project.id, &name)
-            .await
+        committed!(database, repository::ensure_topic, project.id, &name)
             .expect("ensure topic")
             .id
     };
@@ -1530,10 +1574,14 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     let project = repository::ensure_project(database.pool(), "outbox")
         .await
         .expect("ensure project");
-    let topic = repository::ensure_topic(database.pool(), project.id, "outbox_topic")
-        .await
-        .expect("ensure topic")
-        .id;
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "outbox_topic"
+    )
+    .expect("ensure topic")
+    .id;
 
     // Coalescing: three requests for the same subject are one row.
     for _ in 0..3 {
