@@ -4,7 +4,7 @@
 //! delete, which sets `deleted_at` and leaves the content intact.
 
 use pamin_core::{
-    Derivation, EdgeKind, FilterDecision, Project, ProjectId, RetrievalSignals, SourceId,
+    Derivation, EdgeKind, FilterDecision, JobKind, Project, ProjectId, RetrievalSignals, SourceId,
     SourceKind, SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic,
     TopicId, TopicState, TopicStateId, Validity,
 };
@@ -61,6 +61,14 @@ sql_enum!(TombstoneReason {
     Closed => "closed",
     Superseded => "superseded",
     Deleted => "deleted",
+});
+
+sql_enum!(JobKind {
+    SyncTopicIndex => "sync_topic_index",
+    UnindexState => "unindex_state",
+    DeriveMentions => "derive_mentions",
+    BackfillMentions => "backfill_mentions",
+    OptimizeIndex => "optimize_index",
 });
 
 /// Returns the project with this name, creating it if it does not exist.
