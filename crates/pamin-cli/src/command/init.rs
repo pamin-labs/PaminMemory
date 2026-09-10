@@ -1,8 +1,9 @@
 //! `pamin init` — provision the local database.
 
 use anyhow::Result;
-use pamin_store::{Database, Workspace, repository};
 use serde::{Deserialize, Serialize};
+
+use crate::session::Session;
 
 #[derive(Serialize, Deserialize)]
 pub struct Initialized {
@@ -10,15 +11,15 @@ pub struct Initialized {
     home: String,
 }
 
-pub async fn execute(workspace: &Workspace, project: &str) -> Result<Initialized> {
-    // Provisioning, starting, and migrating all happen here, so the quickstart
-    // is one command with no database to install and no configuration to write.
-    let database = Database::open(workspace).await?;
-    repository::ensure_project(database.pool(), project).await?;
+pub async fn execute(session: &Session, project: &str) -> Result<Initialized> {
+    // Provisioning, starting, and migrating all happen when the session opens,
+    // so the quickstart is one command with no database to install and no
+    // configuration to write. All that is left here is the project row.
+    session.project(project).await?;
 
     let result = Initialized {
         project: project.to_string(),
-        home: workspace.root().display().to_string(),
+        home: session.workspace().root().display().to_string(),
     };
 
     Ok(result)

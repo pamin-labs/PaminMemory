@@ -7,12 +7,12 @@
 //! jobs that failed often enough to be set aside for a person to look at.
 
 use anyhow::Result;
-use pamin_index::{Access, Profile};
-use pamin_store::{Database, Workspace, jobs, repository};
+use pamin_index::Profile;
+use pamin_store::jobs;
 use serde::{Deserialize, Serialize};
 
 use crate::output::Format;
-use pamin_engine::Engine;
+use crate::session::Session;
 
 /// How long `run` waits before looking again when it finds nothing.
 ///
@@ -84,16 +84,16 @@ pub struct Moved {
 /// gets told to run it itself, because the loop belongs to the process that
 /// wants to hold the index, and that is the server already.
 pub async fn answer(
-    workspace: &Workspace,
+    session: &Session,
     project: &str,
     profile: Profile,
     args: Args,
 ) -> Result<serde_json::Value> {
     let value = match args.command {
-        Command::Drain => serde_json::to_value(drain(workspace, project, profile).await?)?,
-        Command::Failed => serde_json::to_value(failed(workspace, project).await?)?,
-        Command::Replay => serde_json::to_value(replay(workspace, project).await?)?,
-        Command::Discard => serde_json::to_value(discard(workspace, project).await?)?,
+        Command::Drain => serde_json::to_value(drain(session, project, profile).await?)?,
+        Command::Failed => serde_json::to_value(failed(session, project).await?)?,
+        Command::Replay => serde_json::to_value(replay(session, project).await?)?,
+        Command::Discard => serde_json::to_value(discard(session, project).await?)?,
         Command::Run => anyhow::bail!(
             "`pamin cascade run` holds the index for as long as it runs, so it cannot be \
              served by the process already holding it; run it against a workspace with \
@@ -151,7 +151,7 @@ pub fn render_value(
 /// that has nothing to print: it is a foreground loop rather than a request
 /// with an answer.
 pub async fn execute(
-    workspace: &Workspace,
+    session: &Session,
     project: &str,
     profile: Profile,
     format: Format,
@@ -159,7 +159,7 @@ pub async fn execute(
 ) -> Result<()> {
     match args.command {
         Command::Drain => {
-            let result = drain(workspace, project, profile).await?;
+            let result = drain(session, project, profile).await?;
             format.emit(&result, || {
                 format!(
                     "Ran {} jobs, {} failed, {} still owed",
@@ -167,27 +167,27 @@ pub async fn execute(
                 )
             });
         }
-        Command::Run => keep_running(workspace, project, profile).await?,
+        Command::Run => keep_running(session, project, profile).await?,
         Command::Failed => {
-            let result = failed(workspace, project).await?;
+            let result = failed(session, project).await?;
             format.emit(&result, || render_failures(&result));
         }
         Command::Replay => {
-            let result = replay(workspace, project).await?;
+            let result = replay(session, project).await?;
             format.emit(&result, || {
                 format!("Queued {} failed jobs to run again", result.jobs)
             });
         }
         Command::Discard => {
-            let result = discard(workspace, project).await?;
+            let result = discard(session, project).await?;
             format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
         }
     }
     Ok(())
 }
 
-pub async fn drain(workspace: &Workspace, project: &str, profile: Profile) -> Result<Drained> {
-    let engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
+pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result<Drained> {
+    let engine = session.engine(project, profile).await?;
     let drained = engine.drain_cascade().await?;
 
     Ok(Drained {
@@ -202,8 +202,8 @@ pub async fn drain(workspace: &Workspace, project: &str, profile: Profile) -> Re
 /// Holds the index open for writing the whole time, which is the point: this is
 /// the shape a worker has before there is a server to hold it, and the reason
 /// it cannot run beside a `pamin write` in another terminal.
-async fn keep_running(workspace: &Workspace, project: &str, profile: Profile) -> Result<()> {
-    let engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
+async fn keep_running(session: &Session, project: &str, profile: Profile) -> Result<()> {
+    let engine = session.engine(project, profile).await?;
 
     loop {
         let drained = engine.drain_cascade().await?;
@@ -223,13 +223,12 @@ async fn keep_running(workspace: &Workspace, project: &str, profile: Profile) ->
     }
 }
 
-pub async fn failed(workspace: &Workspace, project: &str) -> Result<Failures> {
+pub async fn failed(session: &Session, project: &str) -> Result<Failures> {
     // Straight to the ledger: listing what failed should not load a model or
     // take the index's exclusive lock, and it must work while a worker holds
     // both.
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
-    let exhausted = jobs::exhausted(database.pool(), project.id).await?;
+    let project = session.project(project).await?;
+    let exhausted = jobs::exhausted(session.database().pool(), project).await?;
 
     let result = Failures {
         failed: exhausted
@@ -266,18 +265,16 @@ fn render_failures(result: &Failures) -> String {
         .join("\n")
 }
 
-pub async fn replay(workspace: &Workspace, project: &str) -> Result<Moved> {
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
-    let revived = jobs::replay(database.pool(), project.id).await?;
+pub async fn replay(session: &Session, project: &str) -> Result<Moved> {
+    let project = session.project(project).await?;
+    let revived = jobs::replay(session.database().pool(), project).await?;
 
     Ok(Moved { jobs: revived })
 }
 
-pub async fn discard(workspace: &Workspace, project: &str) -> Result<Moved> {
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
-    let discarded = jobs::discard(database.pool(), project.id).await?;
+pub async fn discard(session: &Session, project: &str) -> Result<Moved> {
+    let project = session.project(project).await?;
+    let discarded = jobs::discard(session.database().pool(), project).await?;
 
     Ok(Moved { jobs: discarded })
 }

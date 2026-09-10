@@ -6,10 +6,10 @@
 
 use anyhow::Result;
 use pamin_index::Profile;
-use pamin_store::Workspace;
+
 use serde::{Deserialize, Serialize};
 
-use pamin_engine::Engine;
+use crate::session::Session;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {}
@@ -23,14 +23,14 @@ pub struct Reindexed {
 }
 
 pub async fn execute(
-    workspace: &Workspace,
+    session: &Session,
     project: &str,
     profile: Profile,
     _args: Args,
 ) -> Result<Reindexed> {
     // Rebuilding discards this project's index first, and clears the shared
     // pre-split layout if the workspace still has one.
-    let engine = Engine::rebuilding(workspace, project, profile).await?;
+    let engine = session.rebuilding(project, profile).await?;
     let rebuilt = engine.reindex().await?;
 
     let result = Reindexed {

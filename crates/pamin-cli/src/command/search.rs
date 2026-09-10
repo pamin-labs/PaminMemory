@@ -2,11 +2,12 @@
 
 use anyhow::Result;
 use pamin_core::Why;
-use pamin_index::{Access, Profile};
-use pamin_store::Workspace;
+use pamin_index::Profile;
+
 use serde::{Deserialize, Serialize};
 
-use pamin_engine::{Depths, Engine};
+use crate::session::Session;
+use pamin_engine::Depths;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -60,13 +61,12 @@ pub struct Results {
 }
 
 pub async fn execute(
-    workspace: &Workspace,
+    session: &Session,
     project: &str,
     profile: Profile,
     args: Args,
 ) -> Result<Results> {
-    // Read-only, so several agents can search one project at once.
-    let engine = Engine::open(workspace, project, profile, Access::ReadOnly).await?;
+    let engine = session.engine(project, profile).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,

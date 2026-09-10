@@ -2,13 +2,14 @@
 
 use anyhow::{Context, Result};
 use pamin_core::SensoryFilter;
-use pamin_index::{Access, Profile};
-use pamin_store::{Workspace, repository};
+use pamin_index::Profile;
+use pamin_store::repository;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::command::validity;
+use crate::session::Session;
 use pamin_engine::{Engine, Write};
 
 #[derive(clap::Args, Serialize, Deserialize)]
@@ -56,7 +57,7 @@ pub struct Written {
 }
 
 pub async fn execute(
-    workspace: &Workspace,
+    session: &Session,
     project: &str,
     profile: Profile,
     args: Args,
@@ -70,7 +71,7 @@ pub async fn execute(
         None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
     };
 
-    let engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
+    let engine = session.engine(project, profile).await?;
 
     // Looked up rather than created: a write the filter holds should leave no
     // trace on the retrieval surface, and an empty topic is a trace. Promotion

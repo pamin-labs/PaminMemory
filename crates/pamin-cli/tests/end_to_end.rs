@@ -1141,6 +1141,12 @@ fn a_pre_split_workspace_is_migrated_by_reindexing() {
         "a durable claim that has to survive the migration",
     ]);
 
+    // Nothing may be holding the index when the old layout appears. A workspace
+    // that predates the split predates every process that will open it, so what
+    // finds it is always a fresh open -- and a server that already has the
+    // index open is not going to look at the directory again, correctly.
+    cli.run(&["stop"]);
+
     // The shape a workspace had before the split: one shared collection
     // directly under the index directory.
     std::fs::create_dir_all(cli.home().join("index").join("memories"))

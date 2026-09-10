@@ -9,6 +9,7 @@ mod command;
 mod output;
 mod protocol;
 mod server;
+mod session;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -174,49 +175,57 @@ async fn run_here(
     call: protocol::Call,
     format: output::Format,
 ) -> Result<()> {
+    // Before the session, because opening one starts the database, and this is
+    // the command that stops it. It is also the one call that reaches here
+    // after a client has already looked for a server and found none.
+    if let protocol::Call::Stop = call {
+        let result = command::stop::execute(workspace).await?;
+        format.emit(&result, || command::stop::render(&result));
+        return Ok(());
+    }
+
+    let session = session::Session::open(workspace).await?;
+
     match call {
+        protocol::Call::Stop => unreachable!("handled above"),
         protocol::Call::Init => {
-            let result = command::init::execute(workspace, project).await?;
+            let result = command::init::execute(&session, project).await?;
             format.emit(&result, || command::init::render(&result));
         }
         protocol::Call::Write(args) => {
-            let result = command::write::execute(workspace, project, profile, args).await?;
+            let result = command::write::execute(&session, project, profile, args).await?;
             format.emit(&result, || command::write::render(&result));
         }
         protocol::Call::Read(args) => {
-            let result = command::read::execute(workspace, project, args).await?;
+            let result = command::read::execute(&session, project, args).await?;
             format.emit(&result, || command::read::render(&result));
         }
         protocol::Call::Search(args) => {
-            let results = command::search::execute(workspace, project, profile, args).await?;
+            let results = command::search::execute(&session, project, profile, args).await?;
             format.emit(&results, || command::search::render(&results));
         }
         protocol::Call::Grep(args) => {
-            let result = command::grep::execute(workspace, project, args).await?;
+            let result = command::grep::execute(&session, project, args).await?;
             format.emit(&result, || command::grep::render(&result));
         }
         protocol::Call::Link(args) => {
-            let result = command::link::execute(workspace, project, args).await?;
+            let result = command::link::execute(&session, project, args).await?;
             format.emit(&result, || command::link::render(&result));
         }
         protocol::Call::Unlink(args) => {
-            let result = command::unlink::execute(workspace, project, args).await?;
+            let result = command::unlink::execute(&session, project, args).await?;
             format.emit(&result, || command::unlink::render(&result));
         }
         protocol::Call::Neighbors(args) => {
-            let result = command::neighbors::execute(workspace, project, args).await?;
+            let result = command::neighbors::execute(&session, project, args).await?;
             format.emit(&result, || command::neighbors::render(&result));
         }
         protocol::Call::Reindex(args) => {
-            let result = command::reindex::execute(workspace, project, profile, args).await?;
+            let result = command::reindex::execute(&session, project, profile, args).await?;
             format.emit(&result, || command::reindex::render(&result));
         }
         protocol::Call::Cascade(args) => {
-            command::cascade::execute(workspace, project, profile, format, args).await?;
-        }
-        protocol::Call::Stop => {
-            let result = command::stop::execute(workspace).await?;
-            format.emit(&result, || command::stop::render(&result));
+            command::cascade::execute(&session, project, profile, format, args).await?;
         }
     }
 
