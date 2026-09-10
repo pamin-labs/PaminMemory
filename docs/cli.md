@@ -13,7 +13,7 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `balanced` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
 | `--json` | | off | Emit JSON instead of text |
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
@@ -22,6 +22,19 @@ never contaminate the JSON on stdout.
 Changing `--profile` changes the vector space. The index records the profile it
 was built with and refuses to open under a different one, naming `reindex` in
 the error rather than silently mixing two spaces.
+
+| Profile | Model | Width | Resident | Per query |
+| --- | --- | --- | --- | --- |
+| `speed` | multilingual-e5-small | 384 | 465 MB | 13 ms |
+| `balanced` | multilingual-e5-base | 768 | 1.1 GB | 26 ms |
+| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms |
+
+The default is the largest model because quantized weights make it the smallest
+download and because the gap it closes is the one this project is about: on the
+evaluation corpus it roughly doubles cross-lingual retrieval against
+`balanced`, matches it on same-language queries, and costs nine milliseconds.
+`balanced` is kept for those nine milliseconds and for projects already indexed
+under it; there is no other reason left to choose it.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -190,12 +203,12 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.2197  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
-0.2019  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
-0.1981  oncall_rota v1 (current)  the oncall rota rotates every monday morning
-        lexical_ngram#4 vector#4 graph#1 from deployment_pipeline --depends_on-> (1hop)
+0.2273  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#1 from oncall_rota --depends_on-> (1hop)
+0.1955  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#3 graph#3 from deployment_pipeline --mentions-> (1hop)
+0.1905  oncall_rota v1 (current)  the oncall rota rotates every monday morning
+        lexical_ngram#4 vector#4 graph#2 from deployment_pipeline --depends_on-> (1hop)
 ```
 
 The JSON carries the same trace in full:
@@ -207,18 +220,18 @@ $ pamin search "how do we deploy" --limit 1 --json
   "hits": [
     {
       "topic": "deployment_pipeline",
-      "topic_state": "97108331-df8b-492e-bbed-423d2cc96835",
+      "topic_state": "916d72f9-a7ed-43ae-95b1-4d30ce84cdf2",
       "version": 2,
       "is_current": true,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.21969697,
+      "score": 0.22727273,
       "why": [
         { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.5, "contribution": 0.045454547 },
         { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
-        { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
+        { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "2fe21563-81fa-4491-b5b5-21d8823b6aa2"
+      "source_span": "20e99be9-9d10-4833-aaf6-be06fe1a4d9b"
     }
   ]
 }

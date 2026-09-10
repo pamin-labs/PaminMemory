@@ -25,7 +25,7 @@ One rule ran through all of it:
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | `fastembed` over ONNX Runtime, `multilingual-e5-base` by default |
+| Embeddings | `fastembed` over ONNX Runtime, BGE-M3 with int8 weights by default |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -131,24 +131,24 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 
 | | What it is | Measured cost | State |
 | --- | --- | --- | --- |
-| Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **Unavailable** |
+| Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On, by default** |
 | Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off, permanently** |
 
-Weight quantization is a trade worth taking and we do not get to take it. The model registry we load from publishes quantized variants for several embedding families, but none for multilingual E5, so both default profiles run full-precision weights. An earlier draft of this decision recorded it as on by default, which was never true of the shipped models.
+Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on this project's evaluation corpus against the full-precision 0.6720.
 
 Stored vectors are float32 and stay that way. This is a decision rather than a default awaiting evidence: a single workspace holds thousands to low millions of vectors, where float32 storage is inexpensive, so the compression buys little, while the deterministic reranker has no cross-encoder to recover the several percent of accuracy it costs. The variant that would be worth taking is float8, which reaches the same 4x compression under 0.3% loss, and `zvec` offers RaBitQ and PQ-INT8 rather than float8. If that changes, the decision is worth revisiting; memory pressure alone is not a reason to trade accuracy we cannot recover.
 
 The embedding model is a profile, not a constant:
 
-| Profile | Model | Dimensions | Position |
-| --- | --- | --- | --- |
-| `speed` | `multilingual-e5-small` | 384 | Bulk ingestion, low-spec machines |
-| `balanced` (default) | `multilingual-e5-base` | 768 | Default |
-| `accuracy` | BGE-M3 | 1024 | Dense and sparse in one pass, longer context |
+| Profile | Model | Dimensions | Resident | Per query | Cross-lingual nDCG@10 |
+| --- | --- | --- | --- | --- | --- |
+| `speed` | `multilingual-e5-small` | 384 | 465 MB | 13 ms | — |
+| `balanced` | `multilingual-e5-base` | 768 | 1.1 GB | 26 ms | 0.3383 |
+| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms | 0.6550 |
 
-`multilingual-e5-base` is the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and our default reranker is deterministic and has none. Defaulting to the smaller model would have paired the weaker model with the weaker reranker.
+BGE-M3 is the default, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
 
-BGE-M3 is not the default: its main increment is a sparse arm that overlaps the two lexical channels we already have, and its cost per query is an order of magnitude higher. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. It remains available as an opt-in profile. The E5 family and BGE-M3 are Apache-2.0 or MIT.
+`multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and our default reranker is deterministic and has none. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
 
