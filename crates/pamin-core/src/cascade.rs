@@ -78,6 +78,20 @@ impl std::fmt::Display for JobKind {
 /// that a genuine failure is still in front of whoever looks next.
 pub const MAX_ATTEMPTS: i32 = 8;
 
+/// How much owed work means the projection has fallen behind.
+///
+/// The queue is unbounded on purpose: a write must not fail because the index
+/// is slow, and coalescing means a backlog of pending rows is much smaller
+/// than the writes that produced it. But unbounded and unreported are
+/// different things, and the second is what a bulk import that outran its
+/// cascade looked like from outside -- searches quietly missing the newest
+/// memories, with every write reporting success.
+///
+/// Ten thousand is far above what a normal session accumulates and far below
+/// where the backlog is a problem, so crossing it says the writer is producing
+/// faster than the cascade drains rather than that anything is wrong yet.
+pub const LAGGING_AT: i64 = 10_000;
+
 #[cfg(test)]
 mod tests {
     use super::JobKind;

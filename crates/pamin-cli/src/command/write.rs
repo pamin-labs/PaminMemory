@@ -46,6 +46,11 @@ struct Written {
     /// Whether the projection caught up before this command returned, or the
     /// work is still owed. Either way the memory is recorded.
     cascade: &'static str,
+    /// Set when the projection has fallen far enough behind to say so. The
+    /// queue is unbounded on purpose -- a write must not fail because the
+    /// index is slow -- but a backlog nobody reports looks like searches
+    /// quietly missing the newest memories.
+    cascade_lagging: bool,
     /// The truth interval this state was asserted for, if one was given.
     valid_from: Option<String>,
     valid_to: Option<String>,
@@ -103,10 +108,10 @@ pub async fn run(
     // `--defer` is that separation made visible. The memory is committed either
     // way; what changes is whether this process is the one that pays for the
     // index.
-    let applied = if args.defer {
-        false
+    let owed = if args.defer {
+        pamin_store::jobs::pending(engine.database.pool(), engine.project).await?
     } else {
-        engine.drain_cascade().await?.pending == 0
+        engine.drain_cascade().await?.pending
     };
 
     let result = Written {
@@ -115,7 +120,8 @@ pub async fn run(
         promoted: verdict.is_promoted(),
         reason: verdict.reason().to_string(),
         source_version: recorded.source_version,
-        cascade: if applied { "applied" } else { "queued" },
+        cascade: if owed == 0 { "applied" } else { "queued" },
+        cascade_lagging: owed >= pamin_core::LAGGING_AT,
         valid_from: validity.from.map(validity::render),
         valid_to: validity.to.map(validity::render),
     };
