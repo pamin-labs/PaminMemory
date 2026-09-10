@@ -62,6 +62,7 @@ async fn the_ledger_holds_its_promises() {
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
+    one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
 
@@ -1627,7 +1628,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
 
     // Priority decides what a worker sees first: syncing the index for a memory
     // just written comes before deriving its edges.
-    let claimed = jobs::claim(database.pool(), "worker-a", 1)
+    let claimed = jobs::claim(database.pool(), project.id, "worker-a", 1)
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1);
@@ -1639,7 +1640,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // A claimed job is not handed to anyone else.
-    let contended = jobs::claim(database.pool(), "worker-b", 10)
+    let contended = jobs::claim(database.pool(), project.id, "worker-b", 10)
         .await
         .expect("claim again");
     assert!(
@@ -1676,7 +1677,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // So it is still there, and claimable.
-    let requeued = jobs::claim(database.pool(), "worker-a", 1)
+    let requeued = jobs::claim(database.pool(), project.id, "worker-a", 1)
         .await
         .expect("claim the re-requested job");
     assert_eq!(requeued.len(), 1);
@@ -1702,7 +1703,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     )
     .await
     .expect("enqueue after completion");
-    let revived = jobs::claim(database.pool(), "worker-a", 1)
+    let revived = jobs::claim(database.pool(), project.id, "worker-a", 1)
         .await
         .expect("claim revived");
     assert_eq!(
@@ -1736,7 +1737,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
             .await
             .expect("let the retry delay elapse");
 
-        failing = jobs::claim(database.pool(), "worker-a", 1)
+        failing = jobs::claim(database.pool(), project.id, "worker-a", 1)
             .await
             .expect("claim after a failure");
     }
@@ -1771,7 +1772,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // Leave the project clean for anything that counts pending work later.
-    let outstanding = jobs::claim(database.pool(), "worker-a", 100)
+    let outstanding = jobs::claim(database.pool(), project.id, "worker-a", 100)
         .await
         .expect("drain");
     for job in &outstanding {
@@ -1800,6 +1801,79 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
 /// touched -- closing and re-asserting it would churn the ledger on every
 /// write -- and an edge somebody asserted by hand survives, because it is their
 /// claim and not this memory's.
+/// A worker draining one project leaves every other project's queue alone.
+///
+/// The handlers that run a claimed job read the ledger under the project their
+/// engine was opened for, not the project the row names, so a job taken from
+/// somewhere else is run against the wrong project: the topic resolves to
+/// nothing, the handler concludes it has no current state and unindexes it, and
+/// the row is marked complete. The queue drains and the memory is never
+/// indexed. Nothing raises, and only a second project makes it reachable —
+/// which is why it survived until one process began serving many.
+async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
+    let mine = repository::ensure_project(database.pool(), "tenant-mine")
+        .await
+        .expect("ensure project");
+    let theirs = repository::ensure_project(database.pool(), "tenant-theirs")
+        .await
+        .expect("ensure project");
+
+    let mut queued = Vec::new();
+    for (project, name) in [(mine.id, "mine_topic"), (theirs.id, "theirs_topic")] {
+        let topic = committed!(database, repository::ensure_topic, project, name)
+            .expect("ensure topic")
+            .id;
+        jobs::enqueue(
+            database.pool(),
+            project,
+            JobKind::SyncTopicIndex,
+            Some(topic.0),
+        )
+        .await
+        .expect("enqueue");
+        queued.push((project, topic));
+    }
+
+    // A batch far larger than what this project owes, so anything it is allowed
+    // to see it takes.
+    let claimed = jobs::claim(database.pool(), mine.id, "worker-mine", 100)
+        .await
+        .expect("claim");
+    assert!(
+        claimed.iter().all(|job| job.project_id == mine.id),
+        "a worker for one project claimed another project's job"
+    );
+    assert!(
+        claimed.iter().any(|job| job.subject == Some(queued[0].1.0)),
+        "the worker did not claim its own project's job"
+    );
+
+    // And the other project's work is still there to be done, unclaimed.
+    assert_eq!(
+        jobs::pending(database.pool(), theirs.id)
+            .await
+            .expect("count pending"),
+        1,
+        "another project's queue was drained by this project's worker"
+    );
+    let left = jobs::claim(database.pool(), theirs.id, "worker-theirs", 10)
+        .await
+        .expect("claim");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].subject, Some(queued[1].1.0));
+
+    for job in claimed.iter().chain(&left) {
+        let worker = if job.project_id == mine.id {
+            "worker-mine"
+        } else {
+            "worker-theirs"
+        };
+        jobs::complete(database.pool(), job, worker)
+            .await
+            .expect("complete");
+    }
+}
+
 async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database) {
     let project = repository::ensure_project(database.pool(), "retraction")
         .await
