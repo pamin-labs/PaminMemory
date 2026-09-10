@@ -157,6 +157,17 @@ impl Embedder {
         }
     }
 
+    /// Embeds many passages in one forward pass.
+    pub fn embed_passages(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let prefixed: Vec<String> = match self.profile.prefixes() {
+            Some((_, passage)) => texts.iter().map(|t| format!("{passage}{t}")).collect(),
+            None => texts.iter().map(|t| (*t).to_string()).collect(),
+        };
+        self.model
+            .embed(prefixed, None)
+            .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))
+    }
+
     fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
         let mut vectors = self
             .model
