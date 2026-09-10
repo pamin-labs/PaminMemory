@@ -84,6 +84,7 @@ $ pamin write --topic oncall_rota "ok" --json
   "reason": "content was too short to carry a durable claim",
   "source_version": 3,
   "cascade": "applied",
+  "cascade_lagging": false,
   "valid_from": null,
   "valid_to": null
 }
@@ -129,6 +130,13 @@ The memory is committed exactly as it would be otherwise — `pamin read` and
 `pamin grep` see it immediately — and only `search` waits for the queue. Use it
 when importing in bulk and run `pamin cascade drain` once at the end: one
 rebuild of the vector graph instead of one after every write.
+
+`cascade_lagging` is set once the queue passes ten thousand owed jobs. The
+queue is unbounded on purpose — a write must not fail because the index is slow
+— so this is the only thing that distinguishes a cascade keeping up from one
+that is not, and from outside the two look identical apart from searches
+missing the newest memories. An importer that sees it should drain before
+carrying on.
 
 ## `pamin read`
 
