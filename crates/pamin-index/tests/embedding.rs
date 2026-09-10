@@ -114,3 +114,32 @@ fn a_symmetric_model_is_left_alone() {
         "BGE-M3 takes no prefixes; adding them would be a different kind of bug"
     );
 }
+
+#[test]
+#[ignore = "downloads embedding model weights"]
+fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut embedder = Embedder::load(Profile::Speed, dir.path()).expect("load model");
+
+    let texts = [
+        "the deployment pipeline runs on continuous integration",
+        "部署流水线运行在持续集成上",
+        "the office coffee machine needs descaling",
+    ];
+
+    let alone: Vec<_> = texts
+        .iter()
+        .map(|text| embedder.embed_passage(text).expect("embed one"))
+        .collect();
+    let together = embedder.embed_passages(&texts).expect("embed a batch");
+
+    // Position by position, so a batch that returned the right vectors in the
+    // wrong order fails here. That is the failure this is for: every vector is
+    // a real vector and every text has one, so an index built from a shuffled
+    // batch is wrong in a way that nothing downstream can notice -- searches
+    // simply return the wrong memories.
+    assert_eq!(together.len(), alone.len());
+    for (index, (batched, single)) in together.iter().zip(&alone).enumerate() {
+        assert_eq!(batched, single, "{:?} came back changed", texts[index]);
+    }
+}
