@@ -130,8 +130,56 @@ pub struct Engine {
     /// needed `&mut self`. Putting it behind its own lock rather than the
     /// index's is what lets several searches read the index at once while one
     /// of them is embedding.
+    ///
+    /// Shared with every other engine on the same profile, which is why it
+    /// arrives rather than being loaded here. Two projects are two indexes and
+    /// one model.
     embedder: Arc<Mutex<Embedder>>,
     pub project: ProjectId,
+}
+
+/// The embedding models this process has loaded, one per profile.
+///
+/// Shared between projects rather than held by each. The weights are the same
+/// hundreds of megabytes whichever project asks for an embedding, so a process
+/// serving a hundred projects on one profile holds one model, not a hundred.
+/// Keyed by profile because that is what decides which weights these are; the
+/// project decides nothing about them.
+#[derive(Clone)]
+pub struct Models {
+    dir: std::path::PathBuf,
+    loaded: Arc<Mutex<std::collections::HashMap<Profile, Arc<Mutex<Embedder>>>>>,
+}
+
+impl Models {
+    /// Reads and writes the weights a workspace caches.
+    pub fn in_workspace(workspace: &Workspace) -> Self {
+        Self {
+            dir: workspace.root().join("models"),
+            loaded: Arc::default(),
+        }
+    }
+
+    /// The model for a profile, loading it the first time it is asked for.
+    ///
+    /// Blocking, and the registry lock is held across the load. That makes a
+    /// second caller for the same profile wait out the first one's download
+    /// instead of starting its own, which is the whole point; the wait it pays
+    /// is the wait it would have paid loading its own copy.
+    fn get(&self, profile: Profile) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .expect("the model registry lock is poisoned");
+
+        if let Some(embedder) = loaded.get(&profile) {
+            return Ok(Arc::clone(embedder));
+        }
+
+        let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
+        loaded.insert(profile, Arc::clone(&embedder));
+        Ok(embedder)
+    }
 }
 
 impl Engine {
@@ -148,7 +196,11 @@ impl Engine {
         access: Access,
     ) -> Result<Self> {
         let database = Database::open(workspace).await?;
-        Self::assemble(database, workspace, project, profile, access, false).await
+        let models = Models::in_workspace(workspace);
+        Self::assemble(
+            database, &models, workspace, project, profile, access, false,
+        )
+        .await
     }
 
     /// Opens against a database that is already up.
@@ -158,12 +210,13 @@ impl Engine {
     /// a database -- which is what a resident server is -- passes it in.
     pub async fn attached(
         database: Database,
+        models: &Models,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
         access: Access,
     ) -> Result<Self> {
-        Self::assemble(database, workspace, project, profile, access, false).await
+        Self::assemble(database, models, workspace, project, profile, access, false).await
     }
 
     /// Rebuilding, against a database that is already up.
@@ -173,12 +226,14 @@ impl Engine {
     /// ledger no longer has, which is the drift the rebuild exists to remove.
     pub async fn rebuilding_attached(
         database: Database,
+        models: &Models,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
     ) -> Result<Self> {
         Self::assemble(
             database,
+            models,
             workspace,
             project,
             profile,
@@ -190,6 +245,7 @@ impl Engine {
 
     async fn assemble(
         database: Database,
+        models: &Models,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
@@ -202,7 +258,6 @@ impl Engine {
         // the index can be located at all.
         let dir = workspace.index_dir(project.id);
         let legacy = workspace.legacy_index_dir();
-        let models = workspace.root().join("models");
 
         let (index, embedder) = off_the_runtime(|| {
             if discard {
@@ -213,7 +268,7 @@ impl Engine {
             }
 
             let index = ProjectionIndex::open(&dir, &legacy, profile, access)?;
-            let embedder = Embedder::load(profile, &models)?;
+            let embedder = models.get(profile)?;
             Ok::<_, pamin_index::IndexError>((
                 Box::new(index) as Box<dyn Projection + Send + Sync>,
                 embedder,
@@ -224,7 +279,7 @@ impl Engine {
             database,
             worker: format!("{}:{}", hostname(), std::process::id()),
             index: Arc::new(RwLock::new(index)),
-            embedder: Arc::new(Mutex::new(embedder)),
+            embedder,
             project: project.id,
         })
     }
