@@ -13,7 +13,7 @@ use pamin_core::{
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{Database, Workspace, graph, jobs, repository};
+use pamin_store::{Connections, Database, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
@@ -195,7 +195,7 @@ impl Engine {
         profile: Profile,
         access: Access,
     ) -> Result<Self> {
-        let database = Database::open(workspace).await?;
+        let database = Database::open(workspace, Connections::PerCommand).await?;
         let models = Models::in_workspace(workspace);
         Self::assemble(
             database, &models, workspace, project, profile, access, false,

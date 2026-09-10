@@ -13,6 +13,6 @@ pub mod repository;
 mod sql;
 pub mod workspace;
 
-pub use database::Database;
+pub use database::{Connections, Database};
 pub use error::{Result, StoreError};
 pub use workspace::{LocalServer, Workspace};

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
 use pamin_index::Profile;
-use pamin_store::Workspace;
+use pamin_store::{Connections, Workspace};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
 
@@ -30,7 +30,7 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
 
     // Before the socket exists, so a client that connects finds a server that
     // can answer rather than one still starting the database.
-    let session = Arc::new(Session::open(workspace).await?);
+    let session = Arc::new(Session::open(workspace, Connections::Resident).await?);
 
     // A socket file left by a process that died is not a listener, and binding
     // over it is the only way to find out. Removing it first is safe because a

@@ -14,7 +14,7 @@ mod session;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pamin_index::Profile;
-use pamin_store::Workspace;
+use pamin_store::{Connections, Workspace};
 
 #[derive(Parser)]
 #[command(
@@ -184,7 +184,7 @@ async fn run_here(
         return Ok(());
     }
 
-    let session = session::Session::open(workspace).await?;
+    let session = session::Session::open(workspace, Connections::PerCommand).await?;
 
     match call {
         protocol::Call::Stop => unreachable!("handled above"),
