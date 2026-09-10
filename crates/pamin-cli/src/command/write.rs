@@ -9,7 +9,6 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::command::validity;
-use crate::output::Format;
 use pamin_engine::{Engine, Write};
 
 #[derive(clap::Args)]
@@ -34,7 +33,7 @@ pub struct Args {
 }
 
 #[derive(Serialize)]
-struct Written {
+pub struct Written {
     topic: String,
     /// Absent when the filter held the content in the evidence layer.
     version: Option<u32>,
@@ -56,13 +55,12 @@ struct Written {
     valid_to: Option<String>,
 }
 
-pub async fn run(
+pub async fn execute(
     workspace: &Workspace,
     project: &str,
     profile: Profile,
-    format: Format,
     args: Args,
-) -> Result<()> {
+) -> Result<Written> {
     // Parsed before anything is provisioned, so a malformed interval fails
     // without having started a database.
     let validity = args.validity.parse()?;
@@ -126,14 +124,18 @@ pub async fn run(
         valid_to: validity.to.map(validity::render),
     };
 
-    format.emit(&result, || match result.version {
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Written) -> String {
+    match result.version {
         Some(version) => format!("Wrote {} v{}", result.topic, version),
         None => format!(
             "Held in evidence only: {}\nStored as {} source version {}",
             result.reason, result.topic, result.source_version
         ),
-    });
-    Ok(())
+    }
 }
 
 /// The content the topic currently resolves to, if it exists at all.

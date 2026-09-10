@@ -7,7 +7,6 @@ use pamin_store::{Database, Workspace, graph, repository};
 use serde::Serialize;
 
 use crate::command::validity;
-use crate::output::Format;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -27,7 +26,7 @@ pub struct Args {
 }
 
 #[derive(Serialize)]
-struct Linked {
+pub struct Linked {
     from: String,
     to: String,
     kind: String,
@@ -39,7 +38,7 @@ struct Linked {
     valid_to: Option<String>,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
+pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Linked> {
     let Some(kind) = EdgeKind::parse(&args.kind) else {
         bail!("unknown relationship kind {:?}", args.kind);
     };
@@ -68,20 +67,22 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         valid_to: claim.validity.to.map(validity::render),
     };
 
-    format.emit(&result, || {
-        if result.appended {
-            format!(
-                "{} --{}--> {} (v{})",
-                result.from, result.kind, result.to, result.version
-            )
-        } else {
-            format!(
-                "Already linked: {} --{}--> {} (v{})",
-                result.from, result.kind, result.to, result.version
-            )
-        }
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Linked) -> String {
+    if result.appended {
+        format!(
+            "{} --{}--> {} (v{})",
+            result.from, result.kind, result.to, result.version
+        )
+    } else {
+        format!(
+            "Already linked: {} --{}--> {} (v{})",
+            result.from, result.kind, result.to, result.version
+        )
+    }
 }
 
 /// Resolves a topic name, refusing to invent one.

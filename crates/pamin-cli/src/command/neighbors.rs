@@ -11,7 +11,6 @@ use pamin_store::{Database, Workspace, graph, repository};
 use serde::Serialize;
 
 use crate::command::validity;
-use crate::output::Format;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -48,13 +47,13 @@ struct Neighbor {
 }
 
 #[derive(Serialize)]
-struct Neighborhood {
+pub struct Neighborhood {
     topic: String,
     depth: u8,
     neighbors: Vec<Neighbor>,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
+pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Neighborhood> {
     let kinds = args
         .kinds
         .iter()
@@ -116,29 +115,31 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
             .collect(),
     };
 
-    format.emit(&result, || {
-        if result.neighbors.is_empty() {
-            return format!(
-                "{} is connected to nothing within {} hops",
-                result.topic, result.depth
-            );
-        }
-        result
-            .neighbors
-            .iter()
-            .map(|neighbor| {
-                format!(
-                    "{}  {} hop  via {} --{}--> ({}, {:.2})",
-                    neighbor.topic,
-                    neighbor.hops,
-                    neighbor.via,
-                    neighbor.edge,
-                    neighbor.derivation,
-                    neighbor.confidence
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Neighborhood) -> String {
+    if result.neighbors.is_empty() {
+        return format!(
+            "{} is connected to nothing within {} hops",
+            result.topic, result.depth
+        );
+    }
+    result
+        .neighbors
+        .iter()
+        .map(|neighbor| {
+            format!(
+                "{}  {} hop  via {} --{}--> ({}, {:.2})",
+                neighbor.topic,
+                neighbor.hops,
+                neighbor.via,
+                neighbor.edge,
+                neighbor.derivation,
+                neighbor.confidence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

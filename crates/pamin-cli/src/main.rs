@@ -99,26 +99,58 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
 
     match cli.command {
-        Command::Init => command::init::run(&workspace, &cli.project, format).await,
+        Command::Init => {
+            let result = command::init::execute(&workspace, &cli.project).await?;
+            format.emit(&result, || command::init::render(&result));
+            Ok(())
+        }
         Command::Write(args) => {
-            command::write::run(&workspace, &cli.project, profile, format, args).await
+            let result = command::write::execute(&workspace, &cli.project, profile, args).await?;
+            format.emit(&result, || command::write::render(&result));
+            Ok(())
         }
-        Command::Read(args) => command::read::run(&workspace, &cli.project, format, args).await,
+        Command::Read(args) => {
+            let result = command::read::execute(&workspace, &cli.project, args).await?;
+            format.emit(&result, || command::read::render(&result));
+            Ok(())
+        }
         Command::Search(args) => {
-            command::search::run(&workspace, &cli.project, profile, format, args).await
+            let results = command::search::execute(&workspace, &cli.project, profile, args).await?;
+            format.emit(&results, || command::search::render(&results));
+            Ok(())
         }
-        Command::Grep(args) => command::grep::run(&workspace, &cli.project, format, args).await,
-        Command::Link(args) => command::link::run(&workspace, &cli.project, format, args).await,
-        Command::Unlink(args) => command::unlink::run(&workspace, &cli.project, format, args).await,
+        Command::Grep(args) => {
+            let result = command::grep::execute(&workspace, &cli.project, args).await?;
+            format.emit(&result, || command::grep::render(&result));
+            Ok(())
+        }
+        Command::Link(args) => {
+            let result = command::link::execute(&workspace, &cli.project, args).await?;
+            format.emit(&result, || command::link::render(&result));
+            Ok(())
+        }
+        Command::Unlink(args) => {
+            let result = command::unlink::execute(&workspace, &cli.project, args).await?;
+            format.emit(&result, || command::unlink::render(&result));
+            Ok(())
+        }
         Command::Neighbors(args) => {
-            command::neighbors::run(&workspace, &cli.project, format, args).await
+            let result = command::neighbors::execute(&workspace, &cli.project, args).await?;
+            format.emit(&result, || command::neighbors::render(&result));
+            Ok(())
         }
         Command::Reindex(args) => {
-            command::reindex::run(&workspace, &cli.project, profile, format, args).await
+            let result = command::reindex::execute(&workspace, &cli.project, profile, args).await?;
+            format.emit(&result, || command::reindex::render(&result));
+            Ok(())
         }
         Command::Cascade(args) => {
-            command::cascade::run(&workspace, &cli.project, profile, format, args).await
+            command::cascade::execute(&workspace, &cli.project, profile, format, args).await
         }
-        Command::Stop => command::stop::run(&workspace, format).await,
+        Command::Stop => {
+            let result = command::stop::execute(&workspace).await?;
+            format.emit(&result, || command::stop::render(&result));
+            Ok(())
+        }
     }
 }
