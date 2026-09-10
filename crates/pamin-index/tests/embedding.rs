@@ -25,6 +25,7 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
         &dir.path().join("legacy"),
         profile,
         Access::ReadWrite,
+        0,
     )
     .expect("open index");
 

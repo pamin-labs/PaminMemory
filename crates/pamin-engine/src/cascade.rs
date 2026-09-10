@@ -30,16 +30,6 @@ use crate::engine::Engine;
 /// under one flush.
 const BATCH: i32 = 64;
 
-/// How many unindexed documents are worth a rebuild of the vector graph.
-///
-/// Written documents land in a flat buffer and only join the graph when the
-/// index is optimized, so until then every vector query scans them. Optimizing
-/// after each write would rebuild the graph for one document; never optimizing
-/// leaves the graph the index was configured for unbuilt, which is what was
-/// happening -- completeness sat at zero and the vector channel had been
-/// brute-forcing since the index was created.
-const UNINDEXED_BEFORE_OPTIMIZE: f32 = 100_000.0;
-
 /// What a drain did.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Drained {
@@ -147,14 +137,34 @@ impl Engine {
         Ok(drained)
     }
 
-    /// Whether enough has been written to be worth rebuilding the vector graph.
+    /// Whether a segment has sealed without a graph over it.
+    ///
+    /// One segment's worth of unindexed documents means one has, because a
+    /// segment is sealed at exactly that size and only a sealed segment is
+    /// given a graph. Less than that is the segment still being written, which
+    /// vector search scans -- and at that size scanning is measurably the
+    /// faster thing to do, not a fallback.
+    ///
+    /// So there is no threshold here in the sense of a tolerance for
+    /// staleness. The condition is that there is something to build.
+    ///
+    /// What this replaced was a flat hundred thousand: the same shape of rule
+    /// with a number that belonged to no particular collection. A project that
+    /// never reached a hundred thousand documents was never optimized at all --
+    /// not merely ungraphed, since optimizing is also what compacts a segment,
+    /// so its lexical fields went unmerged too. On the cross-lingual benchmark
+    /// that cost 208 ms a query against 63.
     fn needs_optimizing(&self) -> Result<bool> {
-        let (documents, complete) = crate::engine::off_the_runtime(|| {
+        let (documents, complete, segment) = crate::engine::off_the_runtime(|| {
             let index = self.reading();
-            Ok::<_, anyhow::Error>((index.document_count()?, index.vector_index_completeness()?))
+            Ok::<_, anyhow::Error>((
+                index.document_count()?,
+                index.vector_index_completeness()?,
+                index.segment_documents()?,
+            ))
         })?;
 
-        Ok(documents as f32 * (1.0 - complete) >= UNINDEXED_BEFORE_OPTIMIZE)
+        Ok(documents as f32 * (1.0 - complete) >= segment as f32)
     }
 
     /// Runs one job.
