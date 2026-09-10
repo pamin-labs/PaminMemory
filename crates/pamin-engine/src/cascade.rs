@@ -66,7 +66,8 @@ impl Engine {
         let mut weighed_a_rebuild = false;
 
         loop {
-            let claimed = jobs::claim(self.database.pool(), &self.worker, BATCH).await?;
+            let claimed =
+                jobs::claim(self.database.pool(), self.project, &self.worker, BATCH).await?;
             if claimed.is_empty() {
                 // Queued at the end rather than by whoever wrote the hundred
                 // thousandth document: a rebuild is per-project work, and the
