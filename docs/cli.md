@@ -183,11 +183,11 @@ named by name ahead of the ones the lexical and vector channels supplied.
 ```console
 $ pamin search "how do we deploy" --limit 3
 0.0489  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#2 graph#1 via depends_on@1hop Importancex1.00 Worthx1.00
+        lexical_ngram#1 vector#2 graph#1 via depends_on@1hop
 0.0479  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#3 graph#3 via mentions@1hop Importancex1.00 Worthx1.00
+        lexical_ngram#2 vector#3 graph#3 via mentions@1hop
 0.0474  oncall_rota v1 (current)  the oncall rota rotates every monday morning
-        lexical_ngram#4 vector#4 graph#2 via depends_on@1hop Importancex1.00 Worthx1.00
+        lexical_ngram#4 vector#4 graph#2 via depends_on@1hop
 ```
 
 The JSON carries the same trace in full:
@@ -208,9 +208,7 @@ $ pamin search "how do we deploy" --limit 1 --json
         { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
         { "kind": "channel", "channel": "vector", "rank": 2, "weight": 1.0, "contribution": 0.016129032 },
         { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
-        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" },
-        { "kind": "modifier", "modifier": "importance", "factor": 1.0 },
-        { "kind": "modifier", "modifier": "worth", "factor": 1.0 }
+        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
       ],
       "source_span": "af72f5a0-37b0-42b0-ac08-7d499428fc63"
     }
@@ -251,10 +249,15 @@ they are not, and both are needed to follow the route. Nobody can verify a
 reciprocal rank; anyone can verify that two topics are related the way the path
 claims.
 
-**`modifier`** — a post-fusion adjustment, applied at most once each.
-`importance` and `worth` lift a result; `superseded` down-weights a historical
-state rather than removing it, because a question about how something changed
-needs it.
+**`modifier`** — a post-fusion adjustment, applied at most once each, and
+recorded only when it changed the result. `importance` and `worth` lift a
+result; `superseded` down-weights a historical state rather than removing it,
+because a question about how something changed needs it.
+
+The trace above has no `modifier` entry because none of them moved anything.
+`importance` and `worth` are read by the ranker and written by nothing yet, so
+today they are always one; a result that carries no `modifier` line is a result
+that ranked on its channels alone.
 
 ## Relationships
 
