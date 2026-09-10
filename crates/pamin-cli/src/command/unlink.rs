@@ -3,9 +3,9 @@
 use anyhow::{Result, bail};
 use pamin_core::{EdgeKind, TombstoneReason};
 use pamin_store::{Database, Workspace, graph, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic the relationship starts from.
     pub from: String,
@@ -26,7 +26,7 @@ pub struct Args {
     pub reason: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Unlinked {
     from: String,
     to: String,

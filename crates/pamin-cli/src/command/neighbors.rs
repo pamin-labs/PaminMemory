@@ -8,11 +8,11 @@ use anyhow::{Result, bail};
 use pamin_core::EdgeKind;
 use pamin_store::graph::Expansion;
 use pamin_store::{Database, Workspace, graph, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic to walk out from.
     pub topic: String,
@@ -34,7 +34,7 @@ pub struct Args {
     pub at: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Neighbor {
     topic: String,
     hops: u8,
@@ -46,7 +46,7 @@ struct Neighbor {
     confidence: f32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Neighborhood {
     topic: String,
     depth: u8,

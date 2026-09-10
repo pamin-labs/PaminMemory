@@ -9,7 +9,7 @@
 use anyhow::Result;
 use pamin_index::{Access, Profile};
 use pamin_store::{Database, Workspace, jobs, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::output::Format;
 use pamin_engine::Engine;
@@ -22,13 +22,13 @@ use pamin_engine::Engine;
 /// an idle worker is not a load.
 const IDLE: std::time::Duration = std::time::Duration::from_millis(250);
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Command,
 }
 
-#[derive(clap::Subcommand)]
+#[derive(clap::Subcommand, Serialize, Deserialize)]
 pub enum Command {
     /// Run every job that is due, then stop.
     Drain,
@@ -49,7 +49,7 @@ pub enum Command {
     Discard,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Drained {
     completed: usize,
     failed: usize,
@@ -57,7 +57,7 @@ pub struct Drained {
     pending: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Failure {
     job: String,
     subject: Option<String>,
@@ -65,12 +65,12 @@ pub struct Failure {
     error: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Failures {
     failed: Vec<Failure>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Moved {
     jobs: u64,
 }

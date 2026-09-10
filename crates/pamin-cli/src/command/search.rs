@@ -4,11 +4,11 @@ use anyhow::Result;
 use pamin_core::Why;
 use pamin_index::{Access, Profile};
 use pamin_store::Workspace;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use pamin_engine::{Depths, Engine};
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What to search for, in any language.
     pub query: String,
@@ -36,7 +36,7 @@ pub struct Args {
     pub graph_depth: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Hit {
     /// What to pass to `pamin read` to see this topic's other versions.
     topic: String,
@@ -53,7 +53,7 @@ struct Hit {
     source_span: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Results {
     query: String,
     hits: Vec<Hit>,

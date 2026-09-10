@@ -7,12 +7,12 @@
 
 use anyhow::Result;
 use pamin_store::{Database, Workspace, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The exact string to find. Not a pattern.
     pub literal: String,
@@ -26,7 +26,7 @@ pub struct Args {
     pub limit: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Match {
     /// Where the evidence came from.
     source: String,
@@ -41,7 +41,7 @@ struct Match {
     excerpt: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Matches {
     literal: String,
     matches: Vec<Match>,
