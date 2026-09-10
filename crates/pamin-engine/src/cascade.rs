@@ -12,7 +12,7 @@
 
 use anyhow::{Result, anyhow};
 
-use pamin_core::{JobKind, TopicId, TopicStateId};
+use pamin_core::{JobKind, TopicId};
 use pamin_store::jobs::{self, Job};
 
 use crate::engine::Engine;
@@ -127,7 +127,6 @@ impl Engine {
     async fn run(&self, job: &Job) -> Result<()> {
         match job.kind {
             JobKind::SyncTopicIndex => self.sync_topic_index(subject(job)?.into()).await,
-            JobKind::UnindexState => self.unindex_state(subject(job)?.into()).await,
             JobKind::DeriveMentions => self.derive_topic_mentions(subject(job)?.into()).await,
             JobKind::BackfillMentions => self.backfill_topic(subject(job)?.into()).await,
             JobKind::OptimizeIndex => self.optimize_projection().await,
@@ -141,8 +140,9 @@ impl Engine {
     /// runs once, against the fourteenth.
     ///
     /// A topic that now resolves to nothing -- every state soft deleted --
-    /// leaves nothing to write, and the states themselves are removed by
-    /// `unindex_state`.
+    /// has its document removed rather than left behind. That is the same job
+    /// because the projection holds one document per topic: there is no state
+    /// to unindex separately from the topic it belonged to.
     async fn sync_topic_index(&self, topic: TopicId) -> Result<()> {
         let states = pamin_store::repository::current_states_of(
             self.database.pool(),
@@ -152,21 +152,15 @@ impl Engine {
         .await?;
 
         let Some(state) = states.first() else {
-            return Ok(());
+            return crate::engine::off_the_runtime(|| {
+                let index = self.writing();
+                index.delete(&[topic])?;
+                index.flush()
+            })
+            .map_err(Into::into);
         };
 
         self.index_state(state).await
-    }
-
-    /// Removes a state from the projection.
-    async fn unindex_state(&self, state: TopicStateId) -> Result<()> {
-        crate::engine::off_the_runtime(|| {
-            let index = self.writing();
-            index.delete(&[state])?;
-            index.flush()
-        })?;
-
-        Ok(())
     }
 
     /// Recomputes the edges a topic's current content implies.

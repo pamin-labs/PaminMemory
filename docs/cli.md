@@ -185,6 +185,12 @@ guessing at the depth first.
 
 Retrieves across every recall channel and explains the result.
 
+Results are topics, at what each says now. A topic rewritten fourteen times is
+one result and not fourteen, and the `topic_state` and `version` a hit reports
+are its current ones. Earlier versions are read rather than ranked: `pamin read
+--version-offset` reaches them, and `pamin grep` reaches the evidence behind
+them, including what the filter never promoted.
+
 `--channel-depth` sets how many candidates each channel contributes before
 fusion (default 50) and `--graph-depth` how many edges the graph walks out
 (default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`.
@@ -203,12 +209,12 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.2273  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#1 graph#1 from oncall_rota --depends_on-> (1hop)
-0.1955  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#3 graph#3 from deployment_pipeline --mentions-> (1hop)
-0.1905  oncall_rota v1 (current)  the oncall rota rotates every monday morning
-        lexical_ngram#4 vector#4 graph#2 from deployment_pipeline --depends_on-> (1hop)
+0.2197  deployment_pipeline v2  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
+0.2063  oncall_rota v1  the oncall rota rotates every monday morning
+        lexical_ngram#3 vector#3 graph#1 from deployment_pipeline --depends_on-> (1hop)
+0.2019  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
 ```
 
 The JSON carries the same trace in full:
@@ -220,18 +226,17 @@ $ pamin search "how do we deploy" --limit 1 --json
   "hits": [
     {
       "topic": "deployment_pipeline",
-      "topic_state": "916d72f9-a7ed-43ae-95b1-4d30ce84cdf2",
+      "topic_state": "4d6c7768-11ee-4322-a76a-37e1f9e96a76",
       "version": 2,
-      "is_current": true,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.22727273,
+      "score": 0.21969697,
       "why": [
         { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.5, "contribution": 0.045454547 },
         { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
-        { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
+        { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "20e99be9-9d10-4833-aaf6-be06fe1a4d9b"
+      "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9"
     }
   ]
 }
@@ -282,8 +287,7 @@ claims.
 
 **`modifier`** — a post-fusion adjustment, applied at most once each, and
 recorded only when it changed the result. `importance` and `worth` lift a
-result; `superseded` down-weights a historical state rather than removing it,
-because a question about how something changed needs it.
+result.
 
 The trace above has no `modifier` entry because none of them moved anything.
 `importance` and `worth` are read by the ranker and written by nothing yet, so

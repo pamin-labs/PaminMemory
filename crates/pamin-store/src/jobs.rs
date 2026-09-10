@@ -52,7 +52,7 @@ pub struct Job {
 /// waiting on is behind it.
 fn priority(kind: JobKind) -> i32 {
     match kind {
-        JobKind::SyncTopicIndex | JobKind::UnindexState => 10,
+        JobKind::SyncTopicIndex => 10,
         JobKind::DeriveMentions => 20,
         JobKind::BackfillMentions => 50,
         JobKind::OptimizeIndex => 100,

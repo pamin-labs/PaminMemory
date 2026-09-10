@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
-use pamin_core::TopicStateId;
+use pamin_core::TopicId;
 
 use crate::embedding::Profile;
 use zvec_rust::{
@@ -77,17 +77,17 @@ pub trait Projection {
     /// matches against.
     fn segmenter(&self) -> &Segmenter;
 
-    /// Adds or replaces one topic state.
-    fn upsert(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<()>;
+    /// Adds or replaces one topic.
+    fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()>;
 
     /// Adds or replaces many.
-    fn upsert_batch(&self, documents: &[(TopicStateId, &str, &[f32])]) -> Result<()>;
+    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()>;
 
     /// Word-level lexical recall, best first.
-    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>>;
+    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicId>>;
 
     /// Substring lexical recall over raw text, best first.
-    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>>;
+    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicId>>;
 
     /// Lexical recall for documents containing every word of a name.
     ///
@@ -97,18 +97,18 @@ pub trait Projection {
     /// two-word name answered by either word alone fills the candidates with
     /// documents carrying only the common half -- so a real match falls off the
     /// end of a bounded list. The caller still confirms each candidate exactly.
-    fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicStateId>>;
+    fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicId>>;
 
     /// Semantic recall over dense embeddings, nearest first.
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>>;
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicId>>;
 
-    /// Removes these topic states.
+    /// Removes these topics.
     ///
     /// The projection had no way to shrink: the only route out was deleting the
     /// whole directory. A soft-deleted state therefore stayed in every channel's
     /// candidate budget, so removing content from the ledger quietly reduced how
     /// much a search could find.
-    fn delete(&self, states: &[TopicStateId]) -> Result<()>;
+    fn delete(&self, topics: &[TopicId]) -> Result<()>;
 
     /// Makes buffered writes visible to later queries.
     fn flush(&self) -> Result<()>;
@@ -123,19 +123,31 @@ pub trait Projection {
     fn document_count(&self) -> Result<u64>;
 }
 
-/// A lexical or vector index over topic states.
+/// A lexical or vector index over topics.
 pub struct ProjectionIndex {
     collection: Collection,
     segmenter: Segmenter,
 }
 
+/// What one document in this index stands for.
+///
+/// Recorded beside the model because an index keyed by something else is not
+/// stale, it is silently empty: the old scheme's identifiers are read as the
+/// new scheme's, match nothing, and every search comes back with no results
+/// and no error anywhere. Changing what a document is keyed by means changing
+/// this, which turns that silence into a message naming `pamin reindex`.
+const DOCUMENT_GRAIN: &str = "topic";
+
 impl ProjectionIndex {
     /// Opens the index at `dir`, creating it if absent.
     ///
-    /// The profile is recorded on creation and checked on every reopen. Mixing
-    /// embedding spaces in one index produces distances that mean nothing, and
-    /// nothing about the resulting rankings would look wrong, so this is
-    /// enforced rather than documented. Changing profile requires a reindex.
+    /// What the index was built for is recorded on creation and checked on
+    /// every reopen: the embedding model, because mixing embedding spaces
+    /// produces distances that mean nothing, and what a document stands for,
+    /// because reading one scheme's keys as another's matches nothing at all.
+    /// Neither failure looks like a failure -- one returns plausible rankings
+    /// from meaningless distances and the other returns no results and no
+    /// error -- so both are enforced rather than documented.
     pub fn open(dir: &Path, legacy_dir: &Path, profile: Profile, access: Access) -> Result<Self> {
         // A workspace built before projects had their own directory holds one
         // shared collection. Opening this project's empty directory beside it
@@ -148,15 +160,32 @@ impl ProjectionIndex {
         std::fs::create_dir_all(dir)?;
         let marker = dir.join("profile");
         match std::fs::read_to_string(&marker) {
-            Ok(recorded) if recorded.trim() != profile.model_id() => {
-                return Err(IndexError::ProfileMismatch {
-                    indexed: recorded.trim().to_string(),
-                    requested: profile.model_id().to_string(),
-                });
+            Ok(recorded) => {
+                let recorded = recorded.trim();
+                let (model, grain) = recorded.split_once('\n').unwrap_or((recorded, ""));
+
+                if model.trim() != profile.model_id() {
+                    return Err(IndexError::ProfileMismatch {
+                        indexed: model.trim().to_string(),
+                        requested: profile.model_id().to_string(),
+                    });
+                }
+                if grain.trim() != DOCUMENT_GRAIN {
+                    return Err(IndexError::GrainMismatch {
+                        // A marker with no grain line was written before there
+                        // was one, and everything written then was keyed by
+                        // state.
+                        indexed: if grain.trim().is_empty() {
+                            "topic state".to_string()
+                        } else {
+                            grain.trim().to_string()
+                        },
+                        expected: DOCUMENT_GRAIN.to_string(),
+                    });
+                }
             }
-            Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::write(&marker, profile.model_id())?;
+                std::fs::write(&marker, format!("{}\n{DOCUMENT_GRAIN}", profile.model_id()))?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -220,9 +249,9 @@ impl ProjectionIndex {
         })
     }
 
-    fn document(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<Doc> {
+    fn document(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<Doc> {
         let mut doc = Doc::new()?;
-        let key = topic_state.to_string();
+        let key = topic.to_string();
         doc.set_pk(&key);
         doc.add_string("id", &key)?;
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
@@ -231,7 +260,7 @@ impl ProjectionIndex {
         Ok(doc)
     }
 
-    fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+    fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<TopicId>> {
         self.recall_fts(field, query, limit, false)
     }
 
@@ -242,7 +271,7 @@ impl ProjectionIndex {
         query: &str,
         limit: u32,
         every_term: bool,
-    ) -> Result<Vec<TopicStateId>> {
+    ) -> Result<Vec<TopicId>> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -286,7 +315,7 @@ impl Projection for ProjectionIndex {
         &self.segmenter
     }
 
-    /// Adds or replaces many topic states.
+    /// Adds or replaces many topics.
     ///
     /// Chunked because the engine refuses a write of more than [`WRITE_BATCH`]
     /// documents. Rebuilding used to write one document per call, which pays
@@ -295,13 +324,11 @@ impl Projection for ProjectionIndex {
     /// No flush: a caller writing in batches decides when the result becomes
     /// visible, and flushing between batches would make that decision for them
     /// once per batch.
-    fn upsert_batch(&self, documents: &[(TopicStateId, &str, &[f32])]) -> Result<()> {
+    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()> {
         for chunk in documents.chunks(WRITE_BATCH) {
             let docs = chunk
                 .iter()
-                .map(|(topic_state, content, embedding)| {
-                    self.document(*topic_state, content, embedding)
-                })
+                .map(|(topic, content, embedding)| self.document(*topic, content, embedding))
                 .collect::<Result<Vec<_>>>()?;
 
             let refs: Vec<&Doc> = docs.iter().collect();
@@ -311,21 +338,21 @@ impl Projection for ProjectionIndex {
         Ok(())
     }
 
-    /// Adds or replaces one topic state.
+    /// Adds or replaces one topic.
     ///
     /// The embedding is required rather than optional. The engine enforces it,
     /// and it is the right constraint: a document indexed without one is
     /// invisible to the vector channel, which would show up as unexplained
     /// recall gaps rather than as an error.
-    fn upsert(&self, topic_state: TopicStateId, content: &str, embedding: &[f32]) -> Result<()> {
-        let doc = self.document(topic_state, content, embedding)?;
+    fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()> {
+        let doc = self.document(topic, content, embedding)?;
         self.collection.upsert(&[&doc])?;
         Ok(())
     }
 
-    /// Removes these topic states.
-    fn delete(&self, states: &[TopicStateId]) -> Result<()> {
-        for chunk in states.chunks(WRITE_BATCH) {
+    /// Removes these topics.
+    fn delete(&self, topics: &[TopicId]) -> Result<()> {
+        for chunk in topics.chunks(WRITE_BATCH) {
             let keys: Vec<String> = chunk.iter().map(ToString::to_string).collect();
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             self.collection.delete(&keys)?;
@@ -339,18 +366,18 @@ impl Projection for ProjectionIndex {
     /// The query is segmented by the same function that segmented the documents.
     /// Tokenizing the two differently is the standard way to build an index that
     /// never matches.
-    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicId>> {
         let segmented = self.segmenter.segment_for_index(query);
         self.recall_text(FIELD_SEGMENTED, &segmented, limit)
     }
 
     /// Substring lexical recall over raw text, ranked by BM25.
-    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicId>> {
         self.recall_text(FIELD_NGRAM, query, limit)
     }
 
     /// Word-level recall requiring every word of the name.
-    fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicStateId>> {
+    fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicId>> {
         let segmented = self.segmenter.segment_for_index(name);
         self.recall_fts(FIELD_SEGMENTED, &segmented, limit, true)
     }
@@ -360,7 +387,7 @@ impl Projection for ProjectionIndex {
     /// Returns ranks only, like the lexical channels. A cosine distance and a
     /// BM25 score are different quantities, and keeping both as ranks is what
     /// lets one fusion step combine them.
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicStateId>> {
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicId>> {
         let search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
         Ok(collect_ids(self.collection.query(&search)?))
     }
@@ -490,10 +517,10 @@ fn jittered(wait: Duration) -> Duration {
     wait / 2 + (wait / 2).mul_f64(f64::from(nanos % 1_000) / 1_000.0)
 }
 
-fn collect_ids(docs: Vec<Doc>) -> Vec<TopicStateId> {
+fn collect_ids(docs: Vec<Doc>) -> Vec<TopicId> {
     docs.iter()
         .filter_map(|doc| doc.get_pk())
         .filter_map(|pk| uuid::Uuid::parse_str(pk).ok())
-        .map(TopicStateId::from)
+        .map(TopicId::from)
         .collect()
 }

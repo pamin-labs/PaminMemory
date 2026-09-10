@@ -16,6 +16,8 @@ pub struct Args {}
 
 #[derive(Serialize, Deserialize)]
 pub struct Reindexed {
+    /// Topics written to the projection. One document each, whatever a topic's
+    /// version history holds -- searching ranks what a topic says now.
     indexed: usize,
     /// Topics whose current-state pointer disagreed with the ledger and was
     /// corrected. Zero unless something stopped maintaining it.
@@ -47,7 +49,7 @@ pub async fn execute(
 /// Renders the result for a person reading it.
 pub fn render(result: &Reindexed) -> String {
     let mut rendered = format!(
-        "Rebuilt the index from postgres: {} states, {} topic names",
+        "Rebuilt the index from postgres: {} topics, {} topic names",
         result.indexed, result.names
     );
     if result.repaired_pointers > 0 {

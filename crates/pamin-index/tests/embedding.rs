@@ -3,11 +3,11 @@
 //! Ignored by default: the first run downloads model weights. Run with
 //! `cargo test -p pamin-index -- --ignored`.
 
-use pamin_core::TopicStateId;
+use pamin_core::TopicId;
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
 
-fn id(byte: u8) -> TopicStateId {
-    TopicStateId(uuid::Uuid::from_bytes([byte; 16]))
+fn id(byte: u8) -> TopicId {
+    TopicId(uuid::Uuid::from_bytes([byte; 16]))
 }
 
 #[test]

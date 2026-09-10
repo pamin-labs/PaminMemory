@@ -1,6 +1,6 @@
 //! Drives the projection index against the real engine.
 
-use pamin_core::TopicStateId;
+use pamin_core::TopicId;
 use pamin_index::{Access, Profile, Projection, ProjectionIndex};
 
 const PROFILE: Profile = Profile::Speed;
@@ -11,13 +11,13 @@ fn stub() -> Vec<f32> {
     vec![0.1; PROFILE.dimensions() as usize]
 }
 
-fn id(byte: u8) -> TopicStateId {
-    TopicStateId(uuid::Uuid::from_bytes([byte; 16]))
+fn id(byte: u8) -> TopicId {
+    TopicId(uuid::Uuid::from_bytes([byte; 16]))
 }
 
 /// A distinct identifier per number, for the tests that write many documents.
-fn numbered(n: u128) -> TopicStateId {
-    TopicStateId(uuid::Uuid::from_u128(n))
+fn numbered(n: u128) -> TopicId {
+    TopicId(uuid::Uuid::from_u128(n))
 }
 
 #[test]
@@ -430,5 +430,34 @@ fn asking_for_a_name_requires_every_word_of_it() {
     assert!(
         absent.is_empty(),
         "a conjunction nothing satisfies should return nothing: {absent:?}"
+    );
+}
+
+/// An index from before a document meant a topic refuses to open.
+///
+/// This is the one upgrade failure with no symptom. The identifiers in an index
+/// keyed by topic state are read as topic identifiers, match nothing, and every
+/// channel comes back empty -- so `search` returns no results, reports no error,
+/// and looks exactly like a workspace nobody has written to. The embedding model
+/// check does not catch it: a profile whose model did not change opens happily
+/// and answers nothing.
+#[test]
+fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let legacy = dir.path().join("legacy");
+
+    ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite).expect("build one");
+
+    // What the marker held before there was a grain to record: the model, and
+    // nothing else.
+    std::fs::write(dir.path().join("profile"), PROFILE.model_id()).expect("age the marker");
+
+    let message = match ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite) {
+        Ok(_) => panic!("an index of the wrong shape must not open"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("topic state") && message.contains("reindex"),
+        "the refusal has to say what is wrong and what to run: {message}"
     );
 }

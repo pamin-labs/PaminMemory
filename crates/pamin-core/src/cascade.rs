@@ -26,10 +26,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
-    /// Bring the projection's entry for this topic to its current state.
+    /// Bring the projection's entry for this topic to its current state,
+    /// which includes removing it when the topic stands for nothing.
     SyncTopicIndex,
-    /// Remove a state from the projection, and close what it derived.
-    UnindexState,
     /// Recompute the edges this topic's current content implies.
     DeriveMentions,
     /// Link a newly created topic to memories that already named it.
@@ -47,7 +46,6 @@ impl JobKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SyncTopicIndex => "sync_topic_index",
-            Self::UnindexState => "unindex_state",
             Self::DeriveMentions => "derive_mentions",
             Self::BackfillMentions => "backfill_mentions",
             Self::OptimizeIndex => "optimize_index",
@@ -55,9 +53,8 @@ impl JobKind {
     }
 
     /// Every kind, so the schema and the CLI can enumerate them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 4] = [
         Self::SyncTopicIndex,
-        Self::UnindexState,
         Self::DeriveMentions,
         Self::BackfillMentions,
         Self::OptimizeIndex,

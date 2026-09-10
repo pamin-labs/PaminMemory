@@ -41,9 +41,11 @@ pub struct Args {
 struct Hit {
     /// What to pass to `pamin read` to see this topic's other versions.
     topic: String,
+    /// The state the topic stands for now. Search ranks topics, so this is
+    /// always the current one; `pamin read --version-offset` reaches earlier
+    /// versions.
     topic_state: String,
     version: u32,
-    is_current: bool,
     content: String,
     score: f32,
     /// The rank this result held in each channel it appeared in, and every
@@ -81,7 +83,6 @@ pub async fn execute(
                 topic: hit.topic,
                 topic_state: hit.state.id.to_string(),
                 version: hit.state.version,
-                is_current: hit.is_current,
                 content: hit.state.content,
                 score: hit.result.score,
                 why: hit.result.why,
@@ -102,13 +103,8 @@ pub fn render(results: &Results) -> String {
         .hits
         .iter()
         .map(|hit| {
-            let marker = if hit.is_current {
-                "current"
-            } else {
-                "historical"
-            };
             format!(
-                "{:.4}  {} v{} ({marker})  {}\n        {}",
+                "{:.4}  {} v{}  {}\n        {}",
                 hit.score,
                 hit.topic,
                 hit.version,
