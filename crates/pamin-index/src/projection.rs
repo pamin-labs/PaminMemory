@@ -121,6 +121,13 @@ pub trait Projection {
 
     /// How many documents the projection holds.
     fn document_count(&self) -> Result<u64>;
+
+    /// How many documents this collection seals a segment at.
+    ///
+    /// Read from the collection rather than computed, because it was decided
+    /// when the collection was created and an index built by an older version
+    /// carries whatever that one chose.
+    fn segment_documents(&self) -> Result<u64>;
 }
 
 /// A lexical or vector index over topics.
@@ -136,6 +143,77 @@ pub struct ProjectionIndex {
 /// new scheme's, match nothing, and every search comes back with no results
 /// and no error anywhere. Changing what a document is keyed by means changing
 /// this, which turns that silence into a message naming `pamin reindex`.
+/// How many segments a collection is aimed at.
+///
+/// Four, measured. Building 100,000 documents at several segment sizes, against
+/// exact search:
+///
+/// ```text
+///   segments   build s   query ms   recall@10
+///          1     314.3      11.62      0.8940
+///          4     163.0       9.04      0.9920
+///         10      80.9      16.90      0.9990
+///         40      23.6      22.02      1.0000
+/// ```
+///
+/// One segment is worse than four in three directions at once, and past four
+/// the per-segment cost of a query -- about 0.36 ms each -- outgrows what the
+/// smaller graphs save. So the count is held near four and the size follows the
+/// collection, rather than the other way round.
+const TARGET_SEGMENTS: u64 = 4;
+
+/// The largest segment worth sealing, in documents.
+///
+/// A sealed segment has one graph built over it, once, and that build is a
+/// background job. Building is superlinear -- 8.1 s at ten thousand documents,
+/// 124 s at fifty thousand, 314 s at a hundred thousand -- so the size at which
+/// a build stops being a background job and starts being an outage is what caps
+/// this. A quarter of a million extrapolates to about twenty minutes, which is
+/// the most that should ever be owed to one segment.
+///
+/// A project past a million documents therefore runs more than four segments
+/// rather than larger ones, which is the right way round: the query cost of a
+/// segment is linear and the build cost of one is not.
+const LARGEST_SEGMENT: u64 = 250_000;
+
+/// The smallest, so a new and nearly empty project is one segment rather than
+/// a hundred tiny ones.
+const SMALLEST_SEGMENT: u64 = 2_000;
+
+/// How many documents a segment should hold, for a collection of this size.
+///
+/// This one number is the whole vector-maintenance policy, because the engine
+/// makes it do two jobs. Documents land in the segment being written and are
+/// searched by scanning them; the segment seals at this size, and only a sealed
+/// segment gets a graph built over it. So the size decides both what a query
+/// scans and what a build costs, and there is no separate question of when to
+/// build -- the answer is "whenever a segment has sealed without one".
+///
+/// Scanning is not a fallback, it is the faster thing to do at small sizes.
+/// Measured on the default profile, one graph against an exhaustive scan:
+///
+/// ```text
+///  documents   scan ms   graph ms   build s   agreement
+///      1,000      0.57       0.66       0.3      1.0000
+///     10,000      2.70       3.10       8.1      1.0000
+///     25,000      5.78       5.76      40.9      0.9830
+///     50,000     20.85      10.08     124.0      0.9540
+///    100,000     39.58      11.24     325.8      0.8920
+/// ```
+///
+/// The cost of segmenting at all is that BM25 statistics are per segment, so a
+/// term's rarity is measured against a segment rather than the project. On the
+/// cross-lingual benchmark, six segments against one over the same 13,014
+/// sentences moved same-language nDCG@10 from 0.8558 to 0.8517 and recall@50
+/// from 0.9639 to 0.9655, while a query went from 208 ms to 63 ms.
+///
+/// A collection records this when it is created, so a project that has grown
+/// by orders of magnitude keeps the size it was created with until
+/// `pamin reindex` rebuilds it.
+pub fn segment_documents(documents: u64) -> u64 {
+    (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
+}
+
 const DOCUMENT_GRAIN: &str = "topic";
 
 /// How many neighbours each document keeps in the vector graph.
@@ -195,7 +273,13 @@ impl ProjectionIndex {
     /// Neither failure looks like a failure -- one returns plausible rankings
     /// from meaningless distances and the other returns no results and no
     /// error -- so both are enforced rather than documented.
-    pub fn open(dir: &Path, legacy_dir: &Path, profile: Profile, access: Access) -> Result<Self> {
+    pub fn open(
+        dir: &Path,
+        legacy_dir: &Path,
+        profile: Profile,
+        access: Access,
+        documents: u64,
+    ) -> Result<Self> {
         // A workspace built before projects had their own directory holds one
         // shared collection. Opening this project's empty directory beside it
         // would return nothing and look like an empty workspace, so it is
@@ -237,10 +321,15 @@ impl ProjectionIndex {
             Err(error) => return Err(error.into()),
         }
 
-        Self::open_with_dimensions(dir, profile.dimensions(), access)
+        Self::open_with_dimensions(dir, profile.dimensions(), access, documents)
     }
 
-    fn open_with_dimensions(dir: &Path, dimensions: u32, access: Access) -> Result<Self> {
+    fn open_with_dimensions(
+        dir: &Path,
+        dimensions: u32,
+        access: Access,
+        documents: u64,
+    ) -> Result<Self> {
         INITIALIZE.call_once(|| {
             let _ = zvec_rust::initialize(None);
         });
@@ -271,6 +360,7 @@ impl ProjectionIndex {
                 dimensions,
                 IndexParams::hnsw(MetricType::Cosine, GRAPH_DEGREE, GRAPH_EFFORT)?,
             )
+            .max_doc_count_per_segment(segment_documents(documents))
             .build()?;
 
         // The engine refuses to create over an existing path, so reopen when
@@ -488,6 +578,10 @@ impl Projection for ProjectionIndex {
     /// How many documents the index holds.
     fn document_count(&self) -> Result<u64> {
         Ok(self.collection.stats()?.doc_count)
+    }
+
+    fn segment_documents(&self) -> Result<u64> {
+        Ok(self.collection.schema()?.max_doc_count_per_segment())
     }
 }
 

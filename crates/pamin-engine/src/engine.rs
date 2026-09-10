@@ -259,6 +259,11 @@ impl Engine {
         let dir = workspace.index_dir(project.id);
         let legacy = workspace.legacy_index_dir();
 
+        // How large a segment should be follows how much there is to hold, and
+        // a collection records the answer when it is created, so the count has
+        // to be in hand before the index is opened.
+        let documents = repository::topic_count(database.pool(), project.id).await?;
+
         let (index, embedder) = off_the_runtime(|| {
             if discard {
                 ProjectionIndex::discard(&dir)?;
@@ -267,7 +272,7 @@ impl Engine {
                 ProjectionIndex::discard(&legacy)?;
             }
 
-            let index = ProjectionIndex::open(&dir, &legacy, profile, access)?;
+            let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
             let embedder = models.get(profile)?;
             Ok::<_, pamin_index::IndexError>((
                 Box::new(index) as Box<dyn Projection + Send + Sync>,

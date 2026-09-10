@@ -969,6 +969,19 @@ pub async fn all_topics(executor: impl PgExecutor<'_>, project: ProjectId) -> Re
         .collect())
 }
 
+/// How many topics a project holds.
+///
+/// The projection is keyed by topic, so this is how many documents it will
+/// hold once it has caught up -- which is what the index needs to size its
+/// segments before it is opened.
+pub async fn topic_count(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM topics WHERE project_id = $1")
+        .bind(project.0)
+        .fetch_one(executor)
+        .await?;
+    Ok(count.max(0) as u64)
+}
+
 const FIND_TOPIC: &str = "SELECT id, name, path, created_at FROM topics
                           WHERE project_id = $1 AND name = $2";
 
