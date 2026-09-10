@@ -1363,3 +1363,80 @@ fn readers_and_writers_share_one_index_without_bringing_it_down() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// A hundred projects, and one process that can still serve them.
+///
+/// A project is an isolated namespace, so each one gets its own index. What
+/// they do not each need is their own copy of the model: the weights that turn
+/// text into a vector are the same weights whichever namespace asked, and they
+/// are larger than the binary by an order of magnitude. Nor does a process need
+/// to keep every index it has ever opened -- an open one holds 27 file
+/// descriptors and about 100 MB resident, idle or not.
+///
+/// Both of those used to be unbounded, and the descriptors ran out first: this
+/// failed at the thirty-seventh project, with the engine unable to create the
+/// lexical indexer for the thirty-seventh index against the 1024 descriptors
+/// the process started with. That is why the plain fact that a hundred projects
+/// go through is most of what this asserts.
+///
+/// The rest is the shape of the growth. The registry fills during the first
+/// fifty and holds after that, so the second fifty cost what serving costs
+/// rather than what opening costs. Comparing the two halves says so without
+/// naming a number: the gap is around fourfold, and unbounded retention has no
+/// second half at all.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_hundred_projects_are_served_by_one_process() {
+    const PROJECTS: usize = 100;
+
+    let cli = Cli::new();
+    let mut server = cli.serve();
+
+    let idle = resident_kib(&server);
+    let mut halfway = 0;
+
+    for project in 0..PROJECTS {
+        let name = format!("tenant_{project}");
+        cli.run(&[
+            "--project",
+            &name,
+            "write",
+            "--topic",
+            "onboarding",
+            &format!("tenant {project} keeps its notes in its own namespace"),
+        ]);
+        cli.run(&["--project", &name, "search", "notes namespace"]);
+
+        if project == PROJECTS / 2 - 1 {
+            halfway = resident_kib(&server);
+        }
+    }
+
+    let filling = halfway - idle;
+    let serving = resident_kib(&server) - halfway;
+    assert!(
+        serving < filling,
+        "the second fifty projects cost {serving} KiB against the first fifty's {filling} KiB, \
+         so nothing is being let go of"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// How much memory a running process is actually holding, in KiB.
+///
+/// `ps` rather than `/proc`, so the measurement is the same one on every
+/// platform this runs on.
+fn resident_kib(server: &std::process::Child) -> u64 {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &server.id().to_string()])
+        .output()
+        .expect("asking for the server's resident size");
+    assert!(output.status.success(), "the server is gone");
+
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("a resident size in KiB")
+}
