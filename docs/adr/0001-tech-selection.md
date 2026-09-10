@@ -162,6 +162,23 @@ BGE-M3 is the default, reversing this decision's original position. That positio
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
 
+### No cross-encoder reranker, for a reason that is not technical
+
+A cross-encoder is the largest remaining retrieval gain available to us and we cannot take it. On the evaluation corpus recall@50 is 0.95 while nDCG@10 is 0.655, and closing a gap of that shape — the right memory is in the candidates but not at the top — is exactly what reranking does; published results put it at seven or eight points of nDCG@10.
+
+What blocks it is licensing. The embedding library offers four rerankers and none of them can be a default here:
+
+| Model | Multilingual | License | |
+| --- | --- | --- | --- |
+| `BAAI/bge-reranker-base` | English and Chinese only | permissive | not multilingual |
+| `jinaai/jina-reranker-v1-turbo-en` | English only | — | not multilingual |
+| `jinaai/jina-reranker-v2-base-multilingual` | yes | CC-BY-NC-4.0 | non-commercial |
+| `rozgo/bge-reranker-v2-m3` | yes | **none stated** | unusable |
+
+The last one is the interesting case and the one the plan expected to take. It is a third-party ONNX export of `BAAI/bge-reranker-v2-m3`, which is itself Apache-2.0 — but the export declares no license at all, has no model card, and claims no relationship to its base. An unlicensed artifact is not permissively licensed, and making one a default download in an Apache-2.0 project on the strength of what it was probably derived from is not a judgement to make quietly. BAAI publishes no ONNX export of that model itself.
+
+Revisit when a permissively licensed ONNX export of a multilingual cross-encoder exists, or when producing one ourselves is worth its distribution cost. The base model's Apache-2.0 license permits that; nothing in this repository is set up to do it.
+
 ### Engineering budgets
 
 Retrieval quality is governed by numeric gates. Engineering cost gets the same treatment, because otherwise it drifts silently — and an earlier iteration of this decision would have added compile cost for capability the project already had.
