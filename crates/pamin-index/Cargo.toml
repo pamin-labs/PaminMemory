@@ -11,6 +11,7 @@ repository.workspace = true
 pamin-core = { workspace = true }
 fastembed = { workspace = true }
 icu_segmenter = { workspace = true }
+icu_provider = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
