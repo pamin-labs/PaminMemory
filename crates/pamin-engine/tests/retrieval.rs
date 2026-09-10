@@ -55,6 +55,29 @@
 //! | `balanced` (default) | multilingual-e5-base | 0.205 | 0.837 | 0.989 | 1.000 |
 //! | `accuracy` | BGE-M3 | **0.357** | **0.962** | 0.983 | 1.000 |
 //!
+//! ## What it measured next
+//!
+//! Those numbers were fused with the constants the rank fusion literature
+//! supplies: `k = 60`, every channel weighted alike. Both turned out to be
+//! wrong for this shape of retrieval, and correcting them moved the weak group
+//! further than changing the model did. On `balanced`:
+//!
+//! | fusion | cross nDCG@10 | cross recall@50 | mono nDCG@10 |
+//! |---|---|---|---|
+//! | k=60, equal weights | 0.2041 | 0.8372 | 0.9887 |
+//! | k=60, lexical halved | 0.2245 | 0.8605 | 0.9892 |
+//! | k=10, equal weights | 0.2404 | 0.8372 | 0.9940 |
+//! | **k=10, lexical halved** | **0.3383** | 0.8512 | **0.9940** |
+//!
+//! The corrections compound, and neither is a trade: monolingual goes up.
+//! Recall@50 barely moves, which is what you would expect -- `k` and the
+//! weights reorder the candidates rather than change which ones there are.
+//!
+//! The `k` curve keeps improving all the way down (0.3599 at 5, 0.3874 at 1),
+//! so this corpus can say that 60 is too flat for fifty-deep lists and cannot
+//! say where the optimum is. `pamin_core::DEFAULT_K` explains why it stops at
+//! ten rather than at the boundary the corpus prefers.
+//!
 //! Three things fall out of that table, and none of them were visible before
 //! it existed.
 //!
@@ -270,11 +293,11 @@ const DEFAULT_PROFILE: &str = "balanced";
 /// the cross-lingual pair by a distance, which is the point of measuring all
 /// three rather than pinning one.
 const FLOORS: &[(&str, f64, f64)] = &[
-    // 0.205 / 0.837 measured.
-    ("cross_lingual", 0.18, 0.78),
+    // 0.338 / 0.851 measured.
+    ("cross_lingual", 0.30, 0.78),
     // 1.000 / 1.000 measured; at the ceiling, so this catches a collapse only.
     ("lexical", 0.95, 0.98),
-    // 0.989 / 1.000 measured; likewise.
+    // 0.994 / 1.000 measured; likewise.
     ("monolingual", 0.94, 0.98),
 ];
 

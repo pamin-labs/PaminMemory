@@ -82,7 +82,9 @@ LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer 
 
 The graph channel lives in PostgreSQL, where `zvec` cannot see it. Letting the engine pre-fuse the lexical and vector lists would produce an already-fused list that then has to be fused again with the graph list, double-weighting its members and destroying the contract that every result reports its rank in every channel it appeared in.
 
-Recall engines return per-channel ranked lists. Reciprocal rank fusion at `k = 60` runs in our layer, followed by post-fusion modifiers. This is a correctness requirement, not a preference.
+Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer, followed by post-fusion modifiers. This is a correctness requirement, not a preference.
+
+`k = 10`, not the customary 60, and the two lexical channels carry half weight each. Both are measured on this project's evaluation corpus rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights their agreement with each other is counted as two votes against the vector and graph channels' one each. Correcting both takes cross-lingual nDCG@10 from 0.2041 to 0.3383 and costs nothing monolingual.
 
 ### Three recall channels, not seven
 

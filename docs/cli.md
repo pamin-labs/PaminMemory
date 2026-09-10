@@ -190,12 +190,12 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.0489  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#2 graph#1 via depends_on@1hop
-0.0479  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#3 graph#3 via mentions@1hop
-0.0474  oncall_rota v1 (current)  the oncall rota rotates every monday morning
-        lexical_ngram#4 vector#4 graph#2 via depends_on@1hop
+0.2197  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
+0.2019  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
+0.1981  oncall_rota v1 (current)  the oncall rota rotates every monday morning
+        lexical_ngram#4 vector#4 graph#1 from deployment_pipeline --depends_on-> (1hop)
 ```
 
 The JSON carries the same trace in full:
@@ -207,18 +207,18 @@ $ pamin search "how do we deploy" --limit 1 --json
   "hits": [
     {
       "topic": "deployment_pipeline",
-      "topic_state": "6112147e-71bf-4c16-ae34-f812021ac10f",
+      "topic_state": "97108331-df8b-492e-bbed-423d2cc96835",
       "version": 2,
       "is_current": true,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.048915915,
+      "score": 0.21969697,
       "why": [
-        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
-        { "kind": "channel", "channel": "vector", "rank": 2, "weight": 1.0, "contribution": 0.016129032 },
-        { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
+        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.5, "contribution": 0.045454547 },
+        { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
+        { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "af72f5a0-37b0-42b0-ac08-7d499428fc63"
+      "source_span": "2fe21563-81fa-4491-b5b5-21d8823b6aa2"
     }
   ]
 }
@@ -229,18 +229,28 @@ $ pamin search "how do we deploy" --limit 1 --json
 Three kinds of entry, and they answer different questions.
 
 **`channel`** — this result appeared in that channel at that rank, and
-contributed `weight / (60 + rank)` to the score. There are four channels:
+contributed `weight / (10 + rank)` to the score. There are four channels:
 
-| Channel | What it matches |
-| --- | --- |
-| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces |
-| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys |
-| `vector` | Meaning, across languages |
-| `graph` | Topics connected to what the other channels found |
+| Channel | What it matches | Weight |
+| --- | --- | --- |
+| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.5 |
+| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.5 |
+| `vector` | Meaning, across languages | 1.0 |
+| `graph` | Topics connected to what the other channels found | 1.0 |
 
 Ranks travel between channels; scores do not. A BM25 score and a cosine distance
 are not comparable quantities, so fusion combines the ranks rather than
 pretending the scores share a scale.
+
+The two lexical channels carry half weight because they are nearly the same
+channel: both match the literal text, one over segmented words and one over
+character n-grams, so they agree with each other far more often than either
+agrees with the vector or graph channel. At full weight that agreement counts
+twice, and the wording outvotes the meaning on exactly the queries where they
+differ. The `10` is likewise measured here rather than taken from the rank
+fusion literature, which uses 60 for lists thousands of results deep; each
+channel proposes fifty, and 60 flattens fifty candidates to the point where
+being first says almost nothing.
 
 Fusion happens here rather than inside the retrieval engine. The engine offers to
 fuse its own channels and that offer is declined: the graph lives in PostgreSQL
