@@ -18,7 +18,7 @@ use anyhow::Result;
 use pamin_core::ProjectId;
 use pamin_engine::{Engine, Models};
 use pamin_index::{Access, Profile};
-use pamin_store::{Database, Workspace, repository};
+use pamin_store::{Connections, Database, Workspace, repository};
 use tokio::sync::Mutex;
 
 /// The database, and whatever has been opened against it so far.
@@ -73,10 +73,15 @@ struct Entry {
 
 impl Session {
     /// Connects, migrates, and holds the result.
-    pub async fn open(workspace: &Workspace) -> Result<Self> {
+    ///
+    /// How many connections it may hold is the caller's to say, because that
+    /// is a question about the process rather than about the workspace: a
+    /// server is the only one talking to the cluster, and a command is one of
+    /// however many an agent is running.
+    pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace).await?,
+            database: Database::open(workspace, connections).await?,
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Mutex::default(),

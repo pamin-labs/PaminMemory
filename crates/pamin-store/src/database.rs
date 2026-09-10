@@ -18,6 +18,42 @@ use crate::workspace::{LocalServer, Workspace};
 /// The database name created inside the embedded cluster.
 const DATABASE: &str = "pamin";
 
+/// How many connections a process may hold against the cluster.
+///
+/// Not a property of the cluster but of how many processes are pointing at it.
+/// A pool sized for one process is the wrong size when there are thirty, and
+/// the size that survives thirty processes is a bottleneck when there is one.
+#[derive(Clone, Copy, Debug)]
+pub enum Connections {
+    /// One command among many, each with a pool of its own.
+    PerCommand,
+    /// The only process talking to this cluster, holding one pool for it all.
+    Resident,
+}
+
+impl Connections {
+    /// The pool size this calls for.
+    fn limit(self) -> u32 {
+        match self {
+            // Enough for the recall channels of one command to run at once,
+            // and small enough to multiply by however many commands there are.
+            Self::PerCommand => 4,
+            // Four per core, because a connection spends most of its life
+            // waiting on the server rather than on this process, capped
+            // because the cluster allows 300 and one process should not be
+            // able to take all of them.
+            Self::Resident => (4 * available_cores()).clamp(4, 64),
+        }
+    }
+}
+
+/// How many cores this machine will actually give us.
+fn available_cores() -> u32 {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get() as u32)
+        .unwrap_or(1)
+}
+
 /// A connection pool against this workspace's cluster.
 ///
 /// Cloning shares the pool rather than opening a second one: `PgPool` is a
@@ -33,21 +69,21 @@ impl Database {
     ///
     /// Safe to call repeatedly. The first call installs and initializes the
     /// cluster; later calls reuse the running server.
-    pub async fn open(workspace: &Workspace) -> Result<Self> {
+    pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
         let server = match workspace.read_server()? {
             Some(existing) if can_connect(&existing).await => existing,
             _ => start_server(workspace).await?,
         };
 
-        let database = Self::connect(&server).await?;
+        let database = Self::connect(&server, connections).await?;
         crate::migrate::run(&database.pool).await?;
         Ok(database)
     }
 
     /// Connects to an already running server without touching its lifecycle.
-    pub async fn connect(server: &LocalServer) -> Result<Self> {
+    pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
         Ok(Self {
-            pool: pool(&server.url()).await?,
+            pool: pool(&server.url(), connections).await?,
         })
     }
 
@@ -68,15 +104,16 @@ impl Database {
 /// at one cluster, so the pool's size is multiplied by however many agents are
 /// running. The default of ten connections each means thirty agents ask for
 /// three hundred, against a server that allows a hundred, and what they get is
-/// `too many clients` after a thirty-second wait. Four is enough for the three
-/// recall channels to run at once and small enough to multiply.
+/// `too many clients` after a thirty-second wait. A resident server is the
+/// other case entirely -- one pool for the machine, nothing to multiply by --
+/// so [`Connections`] is the caller's to state.
 ///
 /// `test_before_acquire` is off. It costs a full round trip on every acquire to
 /// detect connections dropped by a proxy or an idle timer, and there is neither
 /// between here and a cluster on this machine that this process just started.
-async fn pool(url: &str) -> Result<PgPool> {
+async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
-        .max_connections(4)
+        .max_connections(connections.limit())
         .min_connections(1)
         .test_before_acquire(false)
         // A command outlives neither, so recycling connections underneath it

@@ -13,7 +13,7 @@ use pamin_core::{
     VersionOffset, resolve,
 };
 use pamin_store::graph::{EdgeClaim, Expansion};
-use pamin_store::{Database, Workspace, graph, jobs, repository};
+use pamin_store::{Connections, Database, Workspace, graph, jobs, repository};
 // The table name is a literal from the list above, not caller input; the
 // assertion is what lets it be interpolated at all.
 use sqlx::AssertSqlSafe;
@@ -41,7 +41,9 @@ macro_rules! committed {
 async fn the_ledger_holds_its_promises() {
     let workspace = Workspace::at("/tmp/pamin-ws");
 
-    let database = Database::open(&workspace).await.expect("open workspace");
+    let database = Database::open(&workspace, Connections::PerCommand)
+        .await
+        .expect("open workspace");
 
     migrations_create_every_table(&database).await;
     reopening_reuses_the_running_server(&workspace).await;
@@ -89,7 +91,9 @@ async fn migrations_create_every_table(database: &Database) {
 
 async fn reopening_reuses_the_running_server(workspace: &Workspace) {
     // Must not start a second cluster, and must not fail re-applying migrations.
-    let reopened = Database::open(workspace).await.expect("reopen workspace");
+    let reopened = Database::open(workspace, Connections::PerCommand)
+        .await
+        .expect("reopen workspace");
     drop(reopened);
 }
 
@@ -816,7 +820,9 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
         .map(|writer| {
             let server = server.clone();
             tokio::spawn(async move {
-                let database = Database::connect(&server).await.expect("connect");
+                let database = Database::connect(&server, Connections::PerCommand)
+                    .await
+                    .expect("connect");
                 committed!(
                     &database,
                     repository::append_source_version,
