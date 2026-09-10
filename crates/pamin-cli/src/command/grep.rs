@@ -9,8 +9,6 @@ use anyhow::Result;
 use pamin_store::{Database, Workspace, repository};
 use serde::Serialize;
 
-use crate::output::Format;
-
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
 
@@ -44,12 +42,12 @@ struct Match {
 }
 
 #[derive(Serialize)]
-struct Matches {
+pub struct Matches {
     literal: String,
     matches: Vec<Match>,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
+pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Matches> {
     let database = Database::open(workspace).await?;
     let project = repository::ensure_project(database.pool(), project).await?;
 
@@ -77,23 +75,25 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
             .collect(),
     };
 
-    format.emit(&result, || {
-        if result.matches.is_empty() {
-            return format!("No evidence contains {:?}", result.literal);
-        }
-        result
-            .matches
-            .iter()
-            .map(|hit| {
-                format!(
-                    "{} v{} ({})\n        {}",
-                    hit.source, hit.version, hit.filter_decision, hit.excerpt
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Matches) -> String {
+    if result.matches.is_empty() {
+        return format!("No evidence contains {:?}", result.literal);
+    }
+    result
+        .matches
+        .iter()
+        .map(|hit| {
+            format!(
+                "{} v{} ({})\n        {}",
+                hit.source, hit.version, hit.filter_decision, hit.excerpt
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Renders the text around a match.

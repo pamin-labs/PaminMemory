@@ -8,17 +8,19 @@ use anyhow::Result;
 use pamin_store::Workspace;
 use serde::Serialize;
 
-use crate::output::Format;
-
 #[derive(Serialize)]
-struct Stopped {
+pub struct Stopped {
     stopped: bool,
 }
 
-pub async fn run(workspace: &Workspace, format: Format) -> Result<()> {
+pub async fn execute(workspace: &Workspace) -> Result<Stopped> {
     pamin_store::database::stop(workspace).await?;
 
     let result = Stopped { stopped: true };
-    format.emit(&result, || "Stopped the local database server".to_string());
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(_result: &Stopped) -> String {
+    "Stopped the local database server".to_string()
 }

@@ -50,7 +50,7 @@ pub enum Command {
 }
 
 #[derive(Serialize)]
-struct Drained {
+pub struct Drained {
     completed: usize,
     failed: usize,
     /// Jobs still owed, including any not yet due.
@@ -58,7 +58,7 @@ struct Drained {
 }
 
 #[derive(Serialize)]
-struct Failure {
+pub struct Failure {
     job: String,
     subject: Option<String>,
     attempts: i32,
@@ -66,16 +66,21 @@ struct Failure {
 }
 
 #[derive(Serialize)]
-struct Failures {
+pub struct Failures {
     failed: Vec<Failure>,
 }
 
 #[derive(Serialize)]
-struct Moved {
+pub struct Moved {
     jobs: u64,
 }
 
-pub async fn run(
+/// Runs one of the subcommands and prints it.
+///
+/// The only command that still owns its own printing, because `run` is the one
+/// that has nothing to print: it is a foreground loop rather than a request
+/// with an answer.
+pub async fn execute(
     workspace: &Workspace,
     project: &str,
     profile: Profile,
@@ -83,35 +88,43 @@ pub async fn run(
     args: Args,
 ) -> Result<()> {
     match args.command {
-        Command::Drain => drain(workspace, project, profile, format).await,
-        Command::Run => keep_running(workspace, project, profile).await,
-        Command::Failed => failed(workspace, project, format).await,
-        Command::Replay => replay(workspace, project, format).await,
-        Command::Discard => discard(workspace, project, format).await,
+        Command::Drain => {
+            let result = drain(workspace, project, profile).await?;
+            format.emit(&result, || {
+                format!(
+                    "Ran {} jobs, {} failed, {} still owed",
+                    result.completed, result.failed, result.pending
+                )
+            });
+        }
+        Command::Run => keep_running(workspace, project, profile).await?,
+        Command::Failed => {
+            let result = failed(workspace, project).await?;
+            format.emit(&result, || render_failures(&result));
+        }
+        Command::Replay => {
+            let result = replay(workspace, project).await?;
+            format.emit(&result, || {
+                format!("Queued {} failed jobs to run again", result.jobs)
+            });
+        }
+        Command::Discard => {
+            let result = discard(workspace, project).await?;
+            format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
+        }
     }
+    Ok(())
 }
 
-async fn drain(
-    workspace: &Workspace,
-    project: &str,
-    profile: Profile,
-    format: Format,
-) -> Result<()> {
+pub async fn drain(workspace: &Workspace, project: &str, profile: Profile) -> Result<Drained> {
     let mut engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
     let drained = engine.drain_cascade().await?;
 
-    let result = Drained {
+    Ok(Drained {
         completed: drained.completed,
         failed: drained.failed,
         pending: drained.pending,
-    };
-    format.emit(&result, || {
-        format!(
-            "Ran {} jobs, {} failed, {} still owed",
-            result.completed, result.failed, result.pending
-        )
-    });
-    Ok(())
+    })
 }
 
 /// Drains, then waits, then drains again, for as long as it is left running.
@@ -140,7 +153,7 @@ async fn keep_running(workspace: &Workspace, project: &str, profile: Profile) ->
     }
 }
 
-async fn failed(workspace: &Workspace, project: &str, format: Format) -> Result<()> {
+pub async fn failed(workspace: &Workspace, project: &str) -> Result<Failures> {
     // Straight to the ledger: listing what failed should not load a model or
     // take the index's exclusive lock, and it must work while a worker holds
     // both.
@@ -159,46 +172,42 @@ async fn failed(workspace: &Workspace, project: &str, format: Format) -> Result<
             })
             .collect(),
     };
-    format.emit(&result, || {
-        if result.failed.is_empty() {
-            return "Nothing has failed".to_string();
-        }
-        result
-            .failed
-            .iter()
-            .map(|failure| {
-                format!(
-                    "{} {} after {} attempts: {}",
-                    failure.job,
-                    failure.subject.as_deref().unwrap_or("(project)"),
-                    failure.attempts,
-                    failure.error
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(result)
 }
 
-async fn replay(workspace: &Workspace, project: &str, format: Format) -> Result<()> {
+/// Renders the failed jobs for a person reading them.
+fn render_failures(result: &Failures) -> String {
+    if result.failed.is_empty() {
+        return "Nothing has failed".to_string();
+    }
+    result
+        .failed
+        .iter()
+        .map(|failure| {
+            format!(
+                "{} {} after {} attempts: {}",
+                failure.job,
+                failure.subject.as_deref().unwrap_or("(project)"),
+                failure.attempts,
+                failure.error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub async fn replay(workspace: &Workspace, project: &str) -> Result<Moved> {
     let database = Database::open(workspace).await?;
     let project = repository::ensure_project(database.pool(), project).await?;
     let revived = jobs::replay(database.pool(), project.id).await?;
 
-    let result = Moved { jobs: revived };
-    format.emit(&result, || {
-        format!("Queued {} failed jobs to run again", result.jobs)
-    });
-    Ok(())
+    Ok(Moved { jobs: revived })
 }
 
-async fn discard(workspace: &Workspace, project: &str, format: Format) -> Result<()> {
+pub async fn discard(workspace: &Workspace, project: &str) -> Result<Moved> {
     let database = Database::open(workspace).await?;
     let project = repository::ensure_project(database.pool(), project).await?;
     let discarded = jobs::discard(database.pool(), project.id).await?;
 
-    let result = Moved { jobs: discarded };
-    format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
-    Ok(())
+    Ok(Moved { jobs: discarded })
 }

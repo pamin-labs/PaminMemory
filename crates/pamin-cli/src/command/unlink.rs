@@ -5,8 +5,6 @@ use pamin_core::{EdgeKind, TombstoneReason};
 use pamin_store::{Database, Workspace, graph, repository};
 use serde::Serialize;
 
-use crate::output::Format;
-
 #[derive(clap::Args)]
 pub struct Args {
     /// The topic the relationship starts from.
@@ -29,7 +27,7 @@ pub struct Args {
 }
 
 #[derive(Serialize)]
-struct Unlinked {
+pub struct Unlinked {
     from: String,
     to: String,
     kind: String,
@@ -38,7 +36,7 @@ struct Unlinked {
     closed: bool,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
+pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Unlinked> {
     let Some(kind) = EdgeKind::parse(&args.kind) else {
         bail!("unknown relationship kind {:?}", args.kind);
     };
@@ -77,18 +75,20 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         closed,
     };
 
-    format.emit(&result, || {
-        if result.closed {
-            format!(
-                "Retracted {} --{}--> {} ({})",
-                result.from, result.kind, result.to, result.reason
-            )
-        } else {
-            format!(
-                "Nothing to retract: {} --{}--> {} was not asserted",
-                result.from, result.kind, result.to
-            )
-        }
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Unlinked) -> String {
+    if result.closed {
+        format!(
+            "Retracted {} --{}--> {} ({})",
+            result.from, result.kind, result.to, result.reason
+        )
+    } else {
+        format!(
+            "Nothing to retract: {} --{}--> {} was not asserted",
+            result.from, result.kind, result.to
+        )
+    }
 }
