@@ -28,7 +28,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1", features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "time",
+    # The resident server listens on a Unix domain socket.
+    "net",
+] }
+# Line-delimited framing for that socket, and the Stream/Sink extension traits
+# the framed transport is used through. Both were already compiled -- by
+# `postgresql_embedded`'s download path -- so declaring them costs nothing and
+# stops the build depending on that staying true.
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
 # image-models is on by default and pulls a full image codec stack, including
 # an AVIF encoder, for models we do not use.
 fastembed = { version = "6", default-features = false, features = [

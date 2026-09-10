@@ -75,6 +75,76 @@ pub struct Moved {
     jobs: u64,
 }
 
+/// Runs one subcommand and returns its result as JSON.
+///
+/// The subcommands answer with different types, so the server cannot hand back
+/// one struct the way every other command does; it hands back the JSON each of
+/// them would have printed. `run` is the exception inside the exception -- a
+/// foreground loop with no result -- and a client that asks a server for it
+/// gets told to run it itself, because the loop belongs to the process that
+/// wants to hold the index, and that is the server already.
+pub async fn answer(
+    workspace: &Workspace,
+    project: &str,
+    profile: Profile,
+    args: Args,
+) -> Result<serde_json::Value> {
+    let value = match args.command {
+        Command::Drain => serde_json::to_value(drain(workspace, project, profile).await?)?,
+        Command::Failed => serde_json::to_value(failed(workspace, project).await?)?,
+        Command::Replay => serde_json::to_value(replay(workspace, project).await?)?,
+        Command::Discard => serde_json::to_value(discard(workspace, project).await?)?,
+        Command::Run => anyhow::bail!(
+            "`pamin cascade run` holds the index for as long as it runs, so it cannot be \
+             served by the process already holding it; run it against a workspace with \
+             PAMIN_NO_SERVER=1, or let the server drain on its own"
+        ),
+    };
+
+    Ok(value)
+}
+
+/// Prints a subcommand's result, given the request that produced it.
+///
+/// Which type the JSON is depends on which subcommand was asked for, so the
+/// request has to be in hand to read the response. That is the cost of one
+/// command answering with four shapes, and it is paid here rather than by
+/// flattening them into one shape nobody wanted.
+pub fn render_value(
+    args: &Args,
+    value: &serde_json::Value,
+    format: crate::output::Format,
+) -> Result<()> {
+    match args.command {
+        Command::Drain => {
+            let result: Drained = serde_json::from_value(value.clone())?;
+            format.emit(&result, || {
+                format!(
+                    "Ran {} jobs, {} failed, {} still owed",
+                    result.completed, result.failed, result.pending
+                )
+            });
+        }
+        Command::Failed => {
+            let result: Failures = serde_json::from_value(value.clone())?;
+            format.emit(&result, || render_failures(&result));
+        }
+        Command::Replay => {
+            let result: Moved = serde_json::from_value(value.clone())?;
+            format.emit(&result, || {
+                format!("Queued {} failed jobs to run again", result.jobs)
+            });
+        }
+        Command::Discard => {
+            let result: Moved = serde_json::from_value(value.clone())?;
+            format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
+        }
+        Command::Run => unreachable!("the server refuses `run` rather than answering it"),
+    }
+
+    Ok(())
+}
+
 /// Runs one of the subcommands and prints it.
 ///
 /// The only command that still owns its own printing, because `run` is the one

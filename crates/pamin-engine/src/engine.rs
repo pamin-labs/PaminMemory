@@ -99,7 +99,11 @@ pub struct Engine {
     pub(crate) worker: String,
     /// Behind the trait rather than the concrete type, so the composition layer
     /// names what it needs from a projection and not which engine provides it.
-    pub index: Box<dyn Projection>,
+    ///
+    /// `Send + Sync` on the object as well as on the concrete type: erasing the
+    /// type erases the auto traits with it, and a resident server serves one
+    /// engine from whichever runtime thread takes the request.
+    pub index: Box<dyn Projection + Send + Sync>,
     pub embedder: Embedder,
     pub project: ProjectId,
 }
@@ -159,7 +163,10 @@ impl Engine {
 
             let index = ProjectionIndex::open(&dir, &legacy, profile, access)?;
             let embedder = Embedder::load(profile, &models)?;
-            Ok::<_, pamin_index::IndexError>((Box::new(index) as Box<dyn Projection>, embedder))
+            Ok::<_, pamin_index::IndexError>((
+                Box::new(index) as Box<dyn Projection + Send + Sync>,
+                embedder,
+            ))
         })?;
 
         Ok(Self {
