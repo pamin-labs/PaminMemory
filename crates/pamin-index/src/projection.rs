@@ -19,7 +19,7 @@ use pamin_core::TopicId;
 use crate::embedding::Profile;
 use zvec_rust::{
     Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts,
-    FtsQueryParams, IndexParams, MetricType, SearchQuery,
+    FtsQueryParams, HnswQueryParams, IndexParams, MetricType, SearchQuery,
 };
 
 use crate::error::{IndexError, Result};
@@ -138,6 +138,53 @@ pub struct ProjectionIndex {
 /// this, which turns that silence into a message naming `pamin reindex`.
 const DOCUMENT_GRAIN: &str = "topic";
 
+/// How many neighbours each document keeps in the vector graph.
+///
+/// Measured, on 50,000 clustered 1024-dimensional vectors, against exact
+/// nearest neighbours:
+///
+/// | m | ef_construction | ef | recall@10 | per query |
+/// |---|---|---|---|---|
+/// | 16 | 100 | 300 (default) | 0.689 | 2.4 ms |
+/// | 16 | 500 | 300 | 0.708 | 2.3 ms |
+/// | 16 | 500 | 1200 | 0.917 | 7.9 ms |
+/// | 16 | 500 | 2048 | 0.952 | 12.6 ms |
+/// | 32 | 500 | 300 | 0.862 | 4.3 ms |
+/// | **32** | **500** | **700** | **0.952** | **9.5 ms** |
+/// | 32 | 500 | 1200 | 0.985 | 13.4 ms |
+///
+/// The first row is what this shipped: nearly a third of a query's true
+/// nearest neighbours missed, on a corpus far smaller than the ones this store
+/// is for. Nothing reported it, because a vector channel returning the wrong
+/// neighbours returns plausible ones.
+///
+/// Sixteen to thirty-two doubles the graph, and the graph is the part of an
+/// index that quantizing the payload does not shrink. It is still the right
+/// trade. `ef` alone can buy most of the recall back on a smaller graph -- 16
+/// reaches 0.952 at ef 2048 -- but 2048 is the top of the range the engine
+/// accepts, and recall falls as a project grows (the same configuration scores
+/// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
+/// configuration that needs the maximum at fifty thousand has nothing left at
+/// seven million.
+const GRAPH_DEGREE: i32 = 32;
+
+/// How hard the build works to place each document in the graph.
+///
+/// Five hundred is the engine's own default and this had been at 100. It costs
+/// build time and nothing at query time: 50,000 documents take 21 s at 16/100
+/// and 126 s at 32/500, and a rebuild of a large project is measured in hours
+/// either way.
+const GRAPH_EFFORT: i32 = 500;
+
+/// How wide a query searches the graph.
+///
+/// The engine defaults to 300 and this had never been set, so every query took
+/// that default without anything saying so. Seven hundred is the first value
+/// measured to reach 0.95 recall against exact search, which is the target --
+/// the last few points cost more than the rest put together, and a query
+/// spends 35 ms embedding before it gets here.
+const SEARCH_EFFORT: i32 = 700;
+
 impl ProjectionIndex {
     /// Opens the index at `dir`, creating it if absent.
     ///
@@ -222,7 +269,7 @@ impl ProjectionIndex {
                 FIELD_VECTOR,
                 DataType::VectorFp32,
                 dimensions,
-                IndexParams::hnsw(MetricType::Cosine, 16, 100)?,
+                IndexParams::hnsw(MetricType::Cosine, GRAPH_DEGREE, GRAPH_EFFORT)?,
             )
             .build()?;
 
@@ -388,7 +435,12 @@ impl Projection for ProjectionIndex {
     /// BM25 score are different quantities, and keeping both as ranks is what
     /// lets one fusion step combine them.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicId>> {
-        let search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
+        let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
+        // No radius bound, the graph rather than a linear scan, and no
+        // refiner: the refiner rescores against a full-precision copy that
+        // only exists when the stored vectors were quantized, and asking for
+        // one otherwise fails outright rather than being ignored.
+        search.set_hnsw_params(HnswQueryParams::new(SEARCH_EFFORT, 0.0, false, false))?;
         Ok(collect_ids(self.collection.query(&search)?))
     }
 
