@@ -47,6 +47,11 @@ fn migrations() -> Vec<Migration> {
             "cascade_outbox",
             include_str!("../migrations/V5__cascade_outbox.sql"),
         ),
+        migration(
+            6,
+            "topic_name_index",
+            include_str!("../migrations/V6__topic_name_index.sql"),
+        ),
     ]
 }
 

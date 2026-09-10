@@ -13,7 +13,7 @@ use pamin_core::{
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{Connections, Database, Workspace, graph, jobs, repository};
+use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
@@ -381,7 +381,14 @@ impl Engine {
             let topic = match existed.clone() {
                 Some(topic) => topic,
                 None => {
-                    repository::ensure_topic(&mut transaction, self.project, request.topic).await?
+                    let topic =
+                        repository::ensure_topic(&mut transaction, self.project, request.topic)
+                            .await?;
+                    // In the same transaction as the topic. A topic that exists
+                    // and is missing from the name index is a topic no memory
+                    // will ever derive an edge to, and nothing would report it.
+                    self.record_name(&mut *transaction, &topic).await?;
+                    topic
                 }
             };
 
@@ -446,7 +453,26 @@ impl Engine {
     pub async fn ensure_topic(&self, name: &str) -> Result<Topic> {
         let mut connection = self.database.pool().acquire().await?;
         let topic = repository::ensure_topic(&mut connection, self.project, name).await?;
+        self.record_name(&mut *connection, &topic).await?;
         Ok(topic)
+    }
+
+    /// Files a topic's name in the index that answers "who is named here".
+    ///
+    /// Tokenized here rather than in the store because the segmenter is what
+    /// decides where a name begins and ends, and both sides of the eventual
+    /// comparison have to have gone through it.
+    async fn record_name(&self, executor: impl PgExecutor<'_>, topic: &Topic) -> Result<()> {
+        let tokens = off_the_runtime(|| self.reading().segmenter().name_sequence(&topic.name));
+        repository::record_topic_name(
+            executor,
+            self.project,
+            topic.id,
+            &tokens.join(" "),
+            tokens.len(),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Restates the edges a topic's current content implies.
@@ -465,29 +491,27 @@ impl Engine {
     /// unchanged and written nowhere, and only then is the rest closed, so
     /// re-deriving an unaltered memory still touches no row.
     pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
-        let topics = repository::all_topics(self.database.pool(), self.project).await?;
-
-        let named: Vec<TopicId> = {
+        // Every run of tokens this memory contains that is short enough to be
+        // somebody's name. A name matches only as a contiguous run, so this is
+        // the complete set of things it could be naming -- and asking the index
+        // for these is the same question the old loop asked of every topic in
+        // the project one at a time, with the cost following the length of the
+        // memory rather than the size of the project.
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let runs = off_the_runtime(|| {
             let index = self.reading();
-            let segmenter = index.segmenter();
-            // Segmented once rather than once per topic: this is the same
-            // question asked of every topic in the project, and only the name
-            // changes between askings.
-            let content = segmenter.name_sequence(&state.content);
-            topics
-                .iter()
-                // A topic naming itself is not a relationship, and the schema
-                // rejects the edge anyway.
-                .filter(|topic| topic.id != state.topic_id)
-                .filter(|topic| {
-                    pamin_index::segmentation::names(
-                        &content,
-                        &segmenter.name_sequence(&topic.name),
-                    )
-                })
-                .map(|topic| topic.id)
-                .collect()
-        };
+            runs_of_tokens(&index.segmenter().name_sequence(&state.content), widest)
+        });
+
+        let mut named = repository::topics_named_by(self.database.pool(), self.project, &runs)
+            .await?
+            .into_iter()
+            // A topic naming itself is not a relationship, and the schema
+            // rejects the edge anyway.
+            .filter(|topic| *topic != state.topic_id)
+            .collect::<Vec<TopicId>>();
+        named.sort_unstable();
+        named.dedup();
 
         let edges: Vec<_> = named
             .iter()
@@ -707,46 +731,29 @@ impl Engine {
         ChannelResults,
         std::collections::HashMap<TopicStateId, Neighbor>,
     )> {
-        // ponytail: reads every topic in the project to match the query against
-        // their names. The rest of this path no longer scans, and this is what
-        // is left; the inverted table of name tokens replaces it, and until
-        // then a project's topic count still sets the cost of a search.
-        let topics = repository::all_topics(self.database.pool(), self.project).await?;
+        // Topics the query names directly. Without these, a question about a
+        // topic whose own content happens not to match lexically never walks
+        // out from it, and "what depends on X" cannot be answered by naming X.
+        // Resolving query entities against known topics is the retrieval half
+        // of entity linking; the write path does the other, and both ask the
+        // same index the same way.
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let runs = off_the_runtime(|| {
+            let index = self.reading();
+            runs_of_tokens(&index.segmenter().name_sequence(query), widest)
+        });
+        let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
 
         let seeds: Vec<TopicId> = {
-            let index = self.reading();
-            let segmenter = index.segmenter();
             let mut seen = std::collections::HashSet::new();
 
-            // Topics the query names directly. Without these, a question about
-            // a topic whose own content happens not to match lexically never
-            // walks out from it, and "what depends on X" cannot be answered by
-            // naming X. Resolving query entities against known topics is the
-            // retrieval half of entity linking; the write path does the other.
-            let prepared = segmenter.name_sequence(query);
-            let named: Vec<TopicId> = topics
-                .iter()
-                .filter(|topic| {
-                    pamin_index::segmentation::names(
-                        &prepared,
-                        &segmenter.name_sequence(&topic.name),
-                    )
-                })
-                .map(|topic| topic.id)
-                .filter(|topic| seen.insert(*topic))
-                .collect();
-
+            // Topics the query named come first, so a walk that has to give
+            // something up gives up the weakest lexical and vector candidates
+            // rather than the seed the caller asked about.
             named
                 .into_iter()
-                .chain(
-                    working
-                        .topics()
-                        .into_iter()
-                        .filter(|topic| seen.insert(*topic)),
-                )
-                // Topics the query named come first, so a walk that has to
-                // give something up gives up the weakest lexical and vector
-                // candidates rather than the seed the caller asked about.
+                .chain(working.topics())
+                .filter(|topic| seen.insert(*topic))
                 .take(MAX_SEEDS)
                 .collect()
         };
@@ -803,6 +810,14 @@ impl Engine {
         let repaired_pointers =
             repository::repair_current_state_pointers(self.database.pool(), self.project).await?;
 
+        // Rebuilt with the projection because it is the same kind of thing: a
+        // derived index of what the ledger already says, which the ledger can
+        // restate at any time. It is also how a project that predates the
+        // table gets one -- and every project does, because nothing else
+        // backfills it and a topic missing from it is a topic no memory will
+        // derive an edge to.
+        let names = self.rebuild_name_index().await?;
+
         let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
 
         off_the_runtime(|| {
@@ -847,7 +862,38 @@ impl Engine {
         Ok(Rebuilt {
             indexed: states.len(),
             repaired_pointers,
+            names,
         })
+    }
+
+    /// Restates every topic's name in the name index.
+    ///
+    /// Reads the topics rather than the table, so a name that is missing is
+    /// added and one that is wrong is corrected. This is the one path that
+    /// still walks every topic in a project, and it is the right one to: a
+    /// rebuild is by definition proportional to what it rebuilds.
+    async fn rebuild_name_index(&self) -> Result<usize> {
+        let topics = repository::all_topics(self.database.pool(), self.project).await?;
+
+        let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
+            let index = self.reading();
+            let segmenter = index.segmenter();
+            topics
+                .iter()
+                .map(|topic| {
+                    let tokens = segmenter.name_sequence(&topic.name);
+                    (topic.id, tokens.join(" "), tokens.len())
+                })
+                .collect()
+        });
+
+        let mut connection = self.database.pool().acquire().await?;
+        for (topic, key, tokens) in &keys {
+            repository::record_topic_name(&mut *connection, self.project, *topic, key, *tokens)
+                .await?;
+        }
+
+        Ok(keys.len())
     }
 }
 
@@ -899,6 +945,12 @@ pub struct Rebuilt {
     /// because a number that is not zero is the only outward sign that some
     /// write path stopped maintaining it.
     pub repaired_pointers: u64,
+    /// Topic names restated in the name index.
+    ///
+    /// The index that answers "which topics does this text name". A rebuild is
+    /// the only thing that restates all of them, and for a project that
+    /// predates the index it is the only thing that fills it at all.
+    pub names: usize,
 }
 
 /// The states one search actually touched, and what the ledger says about them.
@@ -975,4 +1027,89 @@ pub struct SearchHit {
     pub state: TopicState,
     pub is_current: bool,
     pub result: FusedResult,
+}
+
+/// Every contiguous run of up to `widest` tokens, as the name index stores them.
+///
+/// The bound is what keeps this proportional to the text: without it the runs
+/// are quadratic in the length of a memory, and a run longer than the longest
+/// name in the project cannot be a name.
+fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
+    let mut runs = Vec::new();
+    for width in 1..=widest.min(tokens.len()) {
+        for window in tokens.windows(width) {
+            runs.push(window.join(" "));
+        }
+    }
+    runs.sort_unstable();
+    runs.dedup();
+    runs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runs_of_tokens;
+    use pamin_index::Segmenter;
+    use pamin_index::segmentation::names;
+
+    /// Every case the segmenter's own naming tests pin, and one that is not a
+    /// name in either scheme.
+    const CASES: &[(&str, &str)] = &[
+        ("the deployment pipeline runs on ci", "deployment_pipeline"),
+        ("we moved off Argo CD last week", "argo_cd"),
+        ("the technical debt is mounting", "db"),
+        ("the db is mounting", "db"),
+        ("the pipeline handles deployment", "deployment_pipeline"),
+        ("部署流水线运行在持续集成上面", "流水线"),
+        ("デプロイパイプラインは東京で動いています", "東京"),
+        ("call deploy_service now", "deploy_service"),
+        ("call the deploy service now", "deploy_service"),
+        (
+            "see crates/pamin-store/src/database.rs for it",
+            "database.rs",
+        ),
+        ("any content at all", "   "),
+        ("any content at all", "!!!"),
+    ];
+
+    /// The lookup finds a name exactly when comparing the sequences would.
+    ///
+    /// Deriving edges used to load every topic in a project and run the
+    /// sequence comparison against each one. It now asks a table keyed by the
+    /// name, which is only the same question if the runs offered to that table
+    /// are exactly the sequences that would have matched. Nothing else checks
+    /// that: a run scheme that missed a case would derive fewer edges, and
+    /// fewer edges is not an error anything reports -- the graph channel would
+    /// simply stop reaching things, on the queries nobody thought to try.
+    #[test]
+    fn a_run_lookup_finds_what_a_sequence_comparison_would() {
+        let segmenter = Segmenter::new();
+
+        for (text, name) in CASES {
+            let content = segmenter.name_sequence(text);
+            let needle = segmenter.name_sequence(name);
+
+            let by_comparison = names(&content, &needle);
+            let by_lookup = !needle.is_empty()
+                && runs_of_tokens(&content, needle.len()).contains(&needle.join(" "));
+
+            assert_eq!(
+                by_comparison, by_lookup,
+                "{text:?} naming {name:?}: comparison said {by_comparison}, lookup said {by_lookup}"
+            );
+        }
+    }
+
+    /// The bound is what keeps the runs proportional to the text.
+    #[test]
+    fn runs_stop_at_the_widest_name_there_is() {
+        let tokens: Vec<String> = ["a", "b", "c", "d"].iter().map(|t| t.to_string()).collect();
+
+        // Widths one and two only: 4 + 3 runs.
+        assert_eq!(runs_of_tokens(&tokens, 2).len(), 7);
+        // A project with no topics asks about nothing at all.
+        assert!(runs_of_tokens(&tokens, 0).is_empty());
+        // Asking for more width than there is text is not an error.
+        assert_eq!(runs_of_tokens(&tokens, 99).len(), 4 + 3 + 2 + 1);
+    }
 }

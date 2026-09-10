@@ -867,6 +867,80 @@ pub async fn grep_evidence(
         .collect())
 }
 
+/// Records how a topic's name tokenizes, for the name index.
+///
+/// The key is computed by the caller because tokenizing is the segmenter's
+/// job and the segmenter lives above this layer. What belongs here is that the
+/// row is written in the same transaction as the topic: a topic that exists
+/// and is not in this table is a topic nothing will ever derive an edge to.
+pub async fn record_topic_name(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topic: TopicId,
+    key: &str,
+    tokens: usize,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (project_id, topic_id) DO UPDATE
+             SET name_key = EXCLUDED.name_key, token_count = EXCLUDED.token_count",
+    )
+    .bind(project.0)
+    .bind(topic.0)
+    .bind(key)
+    .bind(tokens as i16)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+/// How many tokens the longest topic name in this project has.
+///
+/// Bounds the lookup: a run of tokens wider than the widest name cannot be a
+/// name, so there is no point asking about it. Zero when the project has no
+/// topics, which means there is nothing to ask about at all.
+pub async fn widest_topic_name(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<usize> {
+    let row: (Option<i16>,) =
+        sqlx::query_as("SELECT MAX(token_count) FROM topic_name_tokens WHERE project_id = $1")
+            .bind(project.0)
+            .fetch_one(executor)
+            .await?;
+
+    Ok(row.0.unwrap_or(0).max(0) as usize)
+}
+
+/// The topics whose names appear among these token runs.
+///
+/// The runs are every window of the text being examined, at every width up to
+/// [`widest_topic_name`]. A name matches only as a contiguous run, so equality
+/// against the stored key is the whole test -- there is no candidate set to
+/// re-check afterwards.
+pub async fn topics_named_by(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    runs: &[String],
+) -> Result<Vec<TopicId>> {
+    if runs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT topic_id FROM topic_name_tokens
+         WHERE project_id = $1 AND name_key = ANY($2)",
+    )
+    .bind(project.0)
+    .bind(runs)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| row.get::<uuid::Uuid, _>("topic_id").into())
+        .collect())
+}
+
 /// Lists every topic in a project.
 ///
 /// Used to derive relationships from one topic's content naming another, which
