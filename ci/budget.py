@@ -37,8 +37,57 @@ def dependency_count() -> int:
     return len([p for p in packages if p["id"] not in workspace])
 
 
+def projection_containment() -> list[str]:
+    """Return the crates that reach `zvec`, so the boundary stays a rule.
+
+    The architecture decision that picked `zvec` mitigates its pre-1.0 risk by
+    confining it: the engine appears only behind the projection boundary, and
+    its types must not reach the domain layer. That was written as prose and
+    was never enforced, so this checks it the way the SQL drift test checks
+    the enum labels — mechanically, on every run.
+    """
+    out = subprocess.run(
+        ("cargo", "tree", "--workspace", "--invert", "zvec-rust", "--prefix", "none"),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    workspace = set()
+    for line in out.stdout.splitlines():
+        name = line.split(" ", 1)[0]
+        if name.startswith("pamin-"):
+            workspace.add(name)
+    return sorted(workspace)
+
+
+ALLOWED_TO_REACH_ZVEC = {"pamin-index", "pamin-engine", "pamin-cli"}
+
 def directory_bytes(path: pathlib.Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+# Extensions of a native library that ships beside the binary rather than
+# inside it.
+SIDECAR_SUFFIXES = (".so", ".dylib", ".dll")
+
+
+def sidecar_bytes() -> int:
+    """Return the bytes of the native libraries shipped beside the binary.
+
+    The retrieval engine is a dynamic library. The linker records it by name,
+    the build script copies it next to the binary, and an `$ORIGIN` rpath is
+    what lets the pair be moved together -- so what a user downloads is both
+    files, and `binary_bytes` alone has never been the shipped size. Measuring
+    only the executable made every size comparison, including any comparison
+    against a different retrieval engine, wrong by the larger of the two.
+    """
+    profile = BINARY.parent
+    return sum(
+        f.stat().st_size
+        for f in profile.iterdir()
+        if f.is_file() and f.suffix in SIDECAR_SUFFIXES
+    )
 
 
 def measure() -> dict[str, float]:
@@ -60,8 +109,10 @@ def measure() -> dict[str, float]:
     run("cargo", "check", "--workspace")
     incremental_check_seconds = time.monotonic() - start
 
+    binary_bytes = BINARY.stat().st_size
     return {
-        "binary_bytes": BINARY.stat().st_size,
+        "binary_bytes": binary_bytes,
+        "distribution_bytes": binary_bytes + sidecar_bytes(),
         "total_dependencies": dependency_count(),
         "cold_build_seconds": round(cold_build_seconds, 1),
         "incremental_check_seconds": round(incremental_check_seconds, 1),
@@ -87,6 +138,15 @@ def main() -> int:
 
     for name in budgets["reported"]:
         print(f"  {name:<26} {measured[name]:>12,}  (reported)")
+
+    reaches_zvec = set(projection_containment())
+    leaked = sorted(reaches_zvec - ALLOWED_TO_REACH_ZVEC)
+    print(f"\n  zvec is reachable from: {', '.join(sorted(reaches_zvec)) or 'nothing'}")
+    if leaked:
+        failures.append(
+            "zvec escaped the projection boundary and is now reachable from "
+            + ", ".join(leaked)
+        )
 
     summary = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
     if summary is not None:

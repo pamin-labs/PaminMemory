@@ -4,20 +4,23 @@
 //! be a zero-integration path for any agent with a shell, and that promise does
 //! not survive a prerequisite that starts with installing a database.
 
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::time::Duration;
 
 use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
-use crate::error::{Result, StoreError};
+use crate::error::Result;
 use crate::workspace::{LocalServer, Workspace};
 
 /// The database name created inside the embedded cluster.
 const DATABASE: &str = "pamin";
 
-/// A connected client, plus the background task driving its connection.
+/// A connection pool against this workspace's cluster.
 pub struct Database {
-    client: tokio_postgres::Client,
-    connection: tokio::task::JoinHandle<()>,
+    pool: PgPool,
 }
 
 impl Database {
@@ -31,52 +34,71 @@ impl Database {
             _ => start_server(workspace).await?,
         };
 
-        let mut database = Self::connect(&server).await?;
-        crate::migrate::run(&mut database.client).await?;
+        let database = Self::connect(&server).await?;
+        crate::migrate::run(&database.pool).await?;
         Ok(database)
     }
 
     /// Connects to an already running server without touching its lifecycle.
     pub async fn connect(server: &LocalServer) -> Result<Self> {
-        let (client, driver) = tokio_postgres::connect(&server.url(), tokio_postgres::NoTls)
-            .await
-            .map_err(StoreError::Database)?;
-
-        // tokio-postgres splits the client from the connection: the returned
-        // future must be polled for the client to make progress.
-        let connection = tokio::spawn(async move {
-            if let Err(error) = driver.await {
-                tracing::error!(%error, "database connection ended");
-            }
-        });
-
-        Ok(Self { client, connection })
+        Ok(Self {
+            pool: pool(&server.url()).await?,
+        })
     }
 
-    pub fn client(&self) -> &tokio_postgres::Client {
-        &self.client
-    }
-
-    pub fn client_mut(&mut self) -> &mut tokio_postgres::Client {
-        &mut self.client
+    /// The connection pool. Every query goes through this.
+    ///
+    /// Handed out rather than wrapped. A pool is already the right thing to
+    /// hand a query -- it lends a connection per statement and takes it back --
+    /// whereas the single client this replaced was one connection that every
+    /// query in the process queued behind, however many were ready to run.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 }
 
-impl Drop for Database {
-    fn drop(&mut self) {
-        // Drops the client's half of the connection; the server keeps running.
-        self.connection.abort();
-    }
+/// Opens a pool sized for one short-lived command.
+///
+/// Every `pamin` invocation is its own process with its own pool, all pointing
+/// at one cluster, so the pool's size is multiplied by however many agents are
+/// running. The default of ten connections each means thirty agents ask for
+/// three hundred, against a server that allows a hundred, and what they get is
+/// `too many clients` after a thirty-second wait. Four is enough for the three
+/// recall channels to run at once and small enough to multiply.
+///
+/// `test_before_acquire` is off. It costs a full round trip on every acquire to
+/// detect connections dropped by a proxy or an idle timer, and there is neither
+/// between here and a cluster on this machine that this process just started.
+async fn pool(url: &str) -> Result<PgPool> {
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .min_connections(1)
+        .test_before_acquire(false)
+        // A command outlives neither, so recycling connections underneath it
+        // only adds reconnects.
+        .idle_timeout(None)
+        .max_lifetime(None)
+        // Long enough to outlast a busy moment, short enough that a caller
+        // learns the server is unreachable rather than appearing to hang.
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(url)
+        .await?;
+
+    Ok(pool)
 }
 
 /// Returns true when a server is already listening with these credentials.
+///
+/// The pool is closed again rather than kept: this answers whether to start a
+/// cluster, and the caller opens its own once it knows.
 async fn can_connect(server: &LocalServer) -> bool {
-    let Ok((_client, driver)) = tokio_postgres::connect(&server.url(), tokio_postgres::NoTls).await
-    else {
-        return false;
-    };
-    tokio::spawn(driver);
-    true
+    match PgPool::connect(&server.url()).await {
+        Ok(pool) => {
+            pool.close().await;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Installs if needed, starts the server, and leaves it running.
@@ -91,6 +113,19 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
         // Not temporary: the cluster outlives the process that created it, so a
         // workspace survives between commands.
         temporary: false,
+        // A hard limit on `initdb` and `pg_ctl start`, not a poll interval. The
+        // default is five seconds, which a first `initdb` on a cold filesystem
+        // exceeds routinely -- and the failure lands on whoever is setting the
+        // project up for the first time, which is the worst audience for it.
+        timeout: Some(Duration::from_secs(60)),
+        // PostgreSQL allows a hundred clients by default, and every `pamin`
+        // command is a process with its own pool pointing at this one cluster.
+        // A few dozen agents working at once exhaust that, and what they see is
+        // a connection timeout rather than anything naming the limit.
+        //
+        // Passed to the server as it starts, so an already-initialised
+        // workspace keeps whatever it was started with until `pamin stop`.
+        configuration: HashMap::from([("max_connections".to_string(), "300".to_string())]),
         ..Settings::default()
     };
 
@@ -145,6 +180,9 @@ pub async fn stop(workspace: &Workspace) -> Result<()> {
         password: server.password,
         port: server.port,
         temporary: false,
+        // Same reason as starting: this is a hard limit on `pg_ctl stop`, and
+        // a shutdown that waits for a long checkpoint is not a hung one.
+        timeout: Some(Duration::from_secs(60)),
         ..Settings::default()
     };
 

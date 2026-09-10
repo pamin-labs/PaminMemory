@@ -2,12 +2,11 @@
 
 use anyhow::Result;
 use pamin_core::Why;
-use pamin_index::Profile;
+use pamin_index::{Access, Profile};
 use pamin_store::Workspace;
 use serde::Serialize;
 
-use crate::engine::{Depths, Engine};
-use crate::output::Format;
+use pamin_engine::{Depths, Engine};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -28,7 +27,12 @@ pub struct Args {
     pub channel_depth: u32,
 
     /// How many edges the graph channel walks out from its seeds.
-    #[arg(long, env = "PAMIN_GRAPH_DEPTH", default_value_t = Depths::default().graph)]
+    #[arg(
+        long,
+        env = "PAMIN_GRAPH_DEPTH",
+        default_value_t = Depths::default().graph,
+        value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
+    )]
     pub graph_depth: u8,
 }
 
@@ -50,19 +54,19 @@ struct Hit {
 }
 
 #[derive(Serialize)]
-struct Results {
+pub struct Results {
     query: String,
     hits: Vec<Hit>,
 }
 
-pub async fn run(
+pub async fn execute(
     workspace: &Workspace,
     project: &str,
     profile: Profile,
-    format: Format,
     args: Args,
-) -> Result<()> {
-    let mut engine = Engine::open(workspace, project, profile).await?;
+) -> Result<Results> {
+    // Read-only, so several agents can search one project at once.
+    let mut engine = Engine::open(workspace, project, profile, Access::ReadOnly).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
@@ -86,32 +90,34 @@ pub async fn run(
             .collect(),
     };
 
-    format.emit(&results, || {
-        if results.hits.is_empty() {
-            return format!("No memories matched {:?}", results.query);
-        }
-        results
-            .hits
-            .iter()
-            .map(|hit| {
-                let marker = if hit.is_current {
-                    "current"
-                } else {
-                    "historical"
-                };
-                format!(
-                    "{:.4}  {} v{} ({marker})  {}\n        {}",
-                    hit.score,
-                    hit.topic,
-                    hit.version,
-                    hit.content,
-                    describe(&hit.why)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(results)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(results: &Results) -> String {
+    if results.hits.is_empty() {
+        return format!("No memories matched {:?}", results.query);
+    }
+    results
+        .hits
+        .iter()
+        .map(|hit| {
+            let marker = if hit.is_current {
+                "current"
+            } else {
+                "historical"
+            };
+            format!(
+                "{:.4}  {} v{} ({marker})  {}\n        {}",
+                hit.score,
+                hit.topic,
+                hit.version,
+                hit.content,
+                describe(&hit.why)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Renders the trace as one line, so the reason a result is here is visible

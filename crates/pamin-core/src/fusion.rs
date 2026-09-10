@@ -195,6 +195,15 @@ impl Modifiers {
         }
     }
 
+    /// Applies one modifier, and records it only if it changed anything.
+    ///
+    /// A factor of one moved no result past any other, so a trace line for it
+    /// says only that the modifier exists. Two of the three are in that state
+    /// permanently: `importance` and `worth_*` are read here and written by
+    /// nothing, so every result carried `Importancex1.00 Worthx1.00` — and the
+    /// trace is the product. Noise in it costs more than a missing line,
+    /// because a reader who learns to skip `why[]` stops reading the part that
+    /// does carry a reason.
     fn record(&self, result: &mut FusedResult, modifier: Modifier, factor: f32) {
         debug_assert!(
             !result.why.iter().any(|why| matches!(
@@ -204,7 +213,10 @@ impl Modifiers {
             "modifier {modifier:?} applied twice to one result"
         );
         result.score *= factor;
-        result.why.push(Why::Modifier { modifier, factor });
+
+        if (factor - 1.0).abs() > f32::EPSILON {
+            result.why.push(Why::Modifier { modifier, factor });
+        }
     }
 }
 
@@ -300,6 +312,60 @@ mod tests {
             ChannelResults::new(Channel::Vector, vec![id(2)]),
         ]);
         assert_eq!(fused[0].topic_state, id(2));
+    }
+
+    /// A modifier that changed nothing is not worth a line in the trace.
+    ///
+    /// `importance` and `worth_*` are read by the ranker and written by no
+    /// code at all, so with the signals every result actually carries today
+    /// both come out at exactly one — and every explanation was two lines of
+    /// `x1.00` before anything that moved the result. The trace is the product
+    /// here, so padding it is not harmless: it teaches the reader to skip the
+    /// part that does carry a reason.
+    #[test]
+    fn a_modifier_that_changed_nothing_leaves_no_trace() {
+        let mut fused = Fusion::default()
+            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .remove(0);
+        let ranked = fused.score;
+
+        // What a state the ledger has never learned anything about looks like,
+        // which today is every state.
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+
+        let recorded: Vec<_> = fused
+            .why
+            .iter()
+            .filter_map(|why| match why {
+                Why::Modifier { modifier, factor } => Some((*modifier, *factor)),
+                Why::Channel { .. } | Why::Path { .. } => None,
+            })
+            .collect();
+        assert!(
+            recorded.is_empty(),
+            "nothing moved the result, so nothing should claim to have: {recorded:?}"
+        );
+        assert!(
+            (fused.score - ranked).abs() < f32::EPSILON,
+            "and the score is what the channels made it"
+        );
+
+        // A modifier that does move the result still says so.
+        let mut moved = Fusion::default()
+            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .remove(0);
+        Modifiers::default().apply(&mut moved, &RetrievalSignals::default(), false);
+        assert!(
+            moved.why.iter().any(|why| matches!(
+                why,
+                Why::Modifier {
+                    modifier: Modifier::Superseded,
+                    ..
+                }
+            )),
+            "a superseded state was down-weighted with nothing to show for it: {:?}",
+            moved.why
+        );
     }
 
     #[test]

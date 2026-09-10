@@ -823,6 +823,19 @@ fn the_ledger_keeps_history_and_the_filter_keeps_evidence(cli: &Cli) {
         2,
         "a held write must not advance the topic"
     );
+
+    // Nor may it bring a topic into existence. The topic used to be created
+    // before the filter ran, so a held write to a name nobody had used left an
+    // empty topic behind: a name `neighbors` and the graph channel could reach
+    // and that resolved to no content at all.
+    let invented = cli.json(&["write", "--topic", "never_promoted", "ok"]);
+    assert_eq!(invented["promoted"], false);
+
+    let missing = cli.fails(&["read", "never_promoted"]);
+    assert!(
+        missing.contains("never_promoted"),
+        "a topic only ever written to under the filter should not exist: {missing:?}"
+    );
 }
 
 fn a_write_can_state_when_its_claim_holds(cli: &Cli) {
@@ -883,6 +896,48 @@ fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
     assert!(
         error.contains("reindex"),
         "a profile mismatch should say how to fix it, got {error:?}"
+    );
+}
+
+/// A walk deeper than the graph channel goes is refused, not quietly reduced.
+///
+/// `--depth` was a bare `u8`, so 255 parsed. A topic's neighbourhood grows
+/// multiplicatively per hop and hub topics reach five figures of degree, so
+/// what that accepted was a request no project could answer. Refusing it at the
+/// boundary is what tells the operator their number was not honoured; clamping
+/// silently leaves them wondering why the walk stopped at four.
+///
+/// Not ignored, and it needs no workspace: the argument is rejected during
+/// parsing, before the command reaches anything it would have to provision.
+#[test]
+fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    for args in [
+        ["neighbors", "deploy", "--depth", "255"],
+        ["search", "deploy", "--graph-depth", "255"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+            .args(args)
+            .env("PAMIN_HOME", home.path())
+            .output()
+            .expect("running pamin");
+
+        assert!(!output.status.success(), "{args:?} should be refused");
+
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("255"),
+            "{args:?} refused without saying what was wrong: {error:?}"
+        );
+    }
+
+    assert!(
+        std::fs::read_dir(home.path())
+            .expect("temp home")
+            .next()
+            .is_none(),
+        "a refused argument should not have provisioned a workspace"
     );
 }
 
@@ -1109,5 +1164,86 @@ fn a_pre_split_workspace_is_migrated_by_reindexing() {
             .iter()
             .any(|content| content.contains("has to survive")),
         "and the memories are all still there: {found:?}"
+    );
+}
+
+/// A memory outlives the process that was supposed to index it.
+///
+/// This is the property the outbox exists for, and it is the one that is
+/// invisible from a passing test: draining after the write and never queueing
+/// at all look identical once both have finished. What tells them apart is a
+/// process ending between the two, and `--defer` is the only way to reach that
+/// moment on purpose -- the ordinary write path always drains before it
+/// returns, so the gap does not exist to observe.
+///
+/// Every step is a separate `pamin` process. The one that recorded the memory
+/// is gone before the one that indexes it starts, which is exactly the crash
+/// this is about: nothing in memory survives, and the queue is what carries
+/// the work across.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn work_a_write_left_behind_outlives_the_process_that_left_it() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    let written = cli.json(&[
+        "write",
+        "--defer",
+        "--topic",
+        "deferred_memory",
+        "a claim recorded by a process that never indexed it",
+    ]);
+    assert_eq!(
+        written["cascade"], "queued",
+        "a deferred write should say the work is still owed: {written}"
+    );
+    assert_eq!(
+        written["promoted"], true,
+        "deferring changes when the index catches up, not what is recorded: {written}"
+    );
+
+    // The ledger has it -- `read` never goes through the index -- and the
+    // retrieval surface does not yet.
+    let stored = cli.json(&["read", "deferred_memory"]);
+    assert!(
+        stored["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("never indexed it"),
+        "the memory is committed whatever the index knows: {stored}"
+    );
+    let found = contents(&cli.json(&["search", "recorded by a process", "--limit", "5"]));
+    assert!(
+        !found
+            .iter()
+            .any(|content| content.contains("never indexed")),
+        "a deferred write should not be searchable before the cascade runs: {found:?}"
+    );
+
+    // Owed, not lost and not failed. Without this the test would also pass if
+    // the write had silently dropped the work.
+    let owed = cli.json(&["cascade", "failed"]);
+    assert_eq!(
+        owed["failed"].as_array().expect("failed array").len(),
+        0,
+        "nothing should have failed, only waited: {owed}"
+    );
+
+    let drained = cli.json(&["cascade", "drain"]);
+    assert!(
+        drained["completed"].as_u64().unwrap_or_default() > 0,
+        "a drain should find the work the write left: {drained}"
+    );
+    assert_eq!(
+        drained["pending"], 0,
+        "and should leave nothing owed: {drained}"
+    );
+
+    let found = contents(&cli.json(&["search", "recorded by a process", "--limit", "5"]));
+    assert!(
+        found
+            .iter()
+            .any(|content| content.contains("never indexed")),
+        "after the drain the memory is on the retrieval surface: {found:?}"
     );
 }

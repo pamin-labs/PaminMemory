@@ -11,7 +11,6 @@ use pamin_store::{Database, Workspace, graph, repository};
 use serde::Serialize;
 
 use crate::command::validity;
-use crate::output::Format;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -19,7 +18,11 @@ pub struct Args {
     pub topic: String,
 
     /// How many edges to traverse.
-    #[arg(long, default_value_t = 2)]
+    #[arg(
+        long,
+        default_value_t = 2,
+        value_parser = clap::value_parser!(u8).range(0..=graph::MAX_DEPTH as i64)
+    )]
     pub depth: u8,
 
     /// Restrict traversal to one relationship kind. Repeatable.
@@ -44,13 +47,13 @@ struct Neighbor {
 }
 
 #[derive(Serialize)]
-struct Neighborhood {
+pub struct Neighborhood {
     topic: String,
     depth: u8,
     neighbors: Vec<Neighbor>,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
+pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Neighborhood> {
     let kinds = args
         .kinds
         .iter()
@@ -61,16 +64,16 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         .collect::<Result<Vec<_>>>()?;
 
     let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+    let project = repository::ensure_project(database.pool(), project).await?;
 
-    let Some(topic) = repository::find_topic(database.client(), project.id, &args.topic).await?
+    let Some(topic) = repository::find_topic(database.pool(), project.id, &args.topic).await?
     else {
         bail!("no topic named {}", args.topic);
     };
 
     let at = validity::parse(args.at.as_deref(), "--at")?;
     let neighbors = graph::expand(
-        database.client(),
+        database.pool(),
         project.id,
         &[topic.id],
         &Expansion {
@@ -84,7 +87,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
     // Names are resolved in one pass rather than per neighbour, since the walk
     // can return every topic in a well-connected project.
     let names: std::collections::HashMap<_, _> =
-        repository::all_topics(database.client(), project.id)
+        repository::all_topics(database.pool(), project.id)
             .await?
             .into_iter()
             .map(|topic| (topic.id, topic.name))
@@ -112,29 +115,31 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
             .collect(),
     };
 
-    format.emit(&result, || {
-        if result.neighbors.is_empty() {
-            return format!(
-                "{} is connected to nothing within {} hops",
-                result.topic, result.depth
-            );
-        }
-        result
-            .neighbors
-            .iter()
-            .map(|neighbor| {
-                format!(
-                    "{}  {} hop  via {} --{}--> ({}, {:.2})",
-                    neighbor.topic,
-                    neighbor.hops,
-                    neighbor.via,
-                    neighbor.edge,
-                    neighbor.derivation,
-                    neighbor.confidence
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Neighborhood) -> String {
+    if result.neighbors.is_empty() {
+        return format!(
+            "{} is connected to nothing within {} hops",
+            result.topic, result.depth
+        );
+    }
+    result
+        .neighbors
+        .iter()
+        .map(|neighbor| {
+            format!(
+                "{}  {} hop  via {} --{}--> ({}, {:.2})",
+                neighbor.topic,
+                neighbor.hops,
+                neighbor.via,
+                neighbor.edge,
+                neighbor.derivation,
+                neighbor.confidence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

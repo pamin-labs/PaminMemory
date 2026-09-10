@@ -1,0 +1,1097 @@
+[
+  {
+    "group": "monolingual",
+    "query": "how long are database backups kept",
+    "relevant": [
+      "database_backup_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "who approves a production deploy",
+    "relevant": [
+      "deploy_pipeline_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "when does the oncall handover happen",
+    "relevant": [
+      "oncall_rota_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how many requests per minute does a token get",
+    "relevant": [
+      "rate_limiting_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "what triggers a cache invalidation",
+    "relevant": [
+      "cache_invalidation_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how long is a password reset link valid",
+    "relevant": [
+      "password_reset_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how is a mobile release rolled out to users",
+    "relevant": [
+      "mobile_release_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "why is search a few seconds behind writes",
+    "relevant": [
+      "search_indexing_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how long does a refund take to settle",
+    "relevant": [
+      "payment_refund_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how often is warehouse inventory counted",
+    "relevant": [
+      "warehouse_stock_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "what does the quarterly access review remove",
+    "relevant": [
+      "access_review_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how soon must a postmortem be written",
+    "relevant": [
+      "incident_postmortem_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "who writes the meeting notes",
+    "relevant": [
+      "meeting_notes_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how many approvals does a schema change need",
+    "relevant": [
+      "code_review_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how long is raw event data kept",
+    "relevant": [
+      "data_retention_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "when is a feature flag removed",
+    "relevant": [
+      "feature_flag_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how long is an old api version supported",
+    "relevant": [
+      "api_versioning_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "what is the recovery time objective",
+    "relevant": [
+      "disaster_recovery_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "what happens when the queue backlog gets large",
+    "relevant": [
+      "queue_backlog_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "when do certificates renew",
+    "relevant": [
+      "ssl_certificate_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how fast does support answer an outage",
+    "relevant": [
+      "customer_support_sla_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "how quickly does a critical security patch ship",
+    "relevant": [
+      "security_patch_en"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "部署流水线什么时候触发",
+    "relevant": [
+      "deploy_pipeline_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "数据库备份的频率是怎样的",
+    "relevant": [
+      "database_backup_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "换班需要提前多久说",
+    "relevant": [
+      "oncall_rota_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "限流超了会返回什么",
+    "relevant": [
+      "rate_limiting_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "退款多少金额需要审批",
+    "relevant": [
+      "payment_refund_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "事故复盘要写哪些内容",
+    "relevant": [
+      "incident_postmortem_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "功能开关什么时候会被提醒下线",
+    "relevant": [
+      "feature_flag_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "安全补丁最高级别多久上线",
+    "relevant": [
+      "security_patch_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "翻译什么时候送出去",
+    "relevant": [
+      "translation_workflow_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "育儿假可以拆开用吗",
+    "relevant": [
+      "parental_leave_zh"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "デプロイのログはどこに保存されますか",
+    "relevant": [
+      "deploy_pipeline_ja"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "バックアップからの復旧にかかる時間",
+    "relevant": [
+      "database_backup_ja"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "オンコールの応答時間",
+    "relevant": [
+      "oncall_rota_ja"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "検索インデックスの言語処理",
+    "relevant": [
+      "search_indexing_ja"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "コードレビューで明示すること",
+    "relevant": [
+      "code_review_ja"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "災害復旧の訓練の頻度",
+    "relevant": [
+      "disaster_recovery_ja"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "온콜 순번은 어떻게 정해지나요",
+    "relevant": [
+      "oncall_rota_ko"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "비밀번호 재설정 기록은 어디에 남나요",
+    "relevant": [
+      "password_reset_ko"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "접근 권한 검토에서 먼저 보는 것",
+    "relevant": [
+      "access_review_ko"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "노트북 교체할 때 디스크는 어떻게 하나요",
+    "relevant": [
+      "laptop_replacement_ko"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "기능 플래그 기본값",
+    "relevant": [
+      "feature_flag_ko"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "кто одобряет выкат в продакшн",
+    "relevant": [
+      "deploy_pipeline_ru"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "когда резервируются складские остатки",
+    "relevant": [
+      "warehouse_stock_ru"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "публикуется ли разбор инцидента целиком",
+    "relevant": [
+      "incident_postmortem_ru"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "какие логи не выгружаются в хранилище",
+    "relevant": [
+      "log_retention_ru"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "متى يتم إبطال ذاكرة التخزين المؤقت",
+    "relevant": [
+      "cache_invalidation_ar"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "هل يمكن تشغيل خط النشر محليا",
+    "relevant": [
+      "deploy_pipeline_ar"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "ما الذي لا تغطيه سياسة المصروفات",
+    "relevant": [
+      "expense_policy_ar"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "cuándo se verifican las copias de seguridad",
+    "relevant": [
+      "database_backup_es"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "qué conservan los reembolsos parciales",
+    "relevant": [
+      "payment_refund_es"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "cuándo escala el soporte automáticamente",
+    "relevant": [
+      "customer_support_sla_es"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "qui est exclu de la rotation d'astreinte",
+    "relevant": [
+      "oncall_rota_fr"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "qu'est-ce qui bloque la sortie mobile",
+    "relevant": [
+      "mobile_release_fr"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "quand part la traduction",
+    "relevant": [
+      "translation_workflow_fr"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "การรีเซ็ตรหัสผ่านกับบัญชีที่ถูกระงับ",
+    "relevant": [
+      "password_reset_th"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "ดัชนีการค้นหากับเอกสารที่ถูกลบ",
+    "relevant": [
+      "search_indexing_th"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "การเข้าถึง VPN จากต่างประเทศ",
+    "relevant": [
+      "vpn_access_th"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "was zählt nicht gegen das Kontingent",
+    "relevant": [
+      "rate_limiting_de"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "wann endet die Aufbewahrung personenbezogener Daten",
+    "relevant": [
+      "data_retention_de"
+    ]
+  },
+  {
+    "group": "monolingual",
+    "query": "wie wird ein Rückstau in der Warteschlange behoben",
+    "relevant": [
+      "queue_backlog_de"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "VPN access rules and device limits",
+    "relevant": [
+      "vpn_access_de",
+      "vpn_access_ja",
+      "vpn_access_th",
+      "vpn_access_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "VPN 접속 규칙과 기기 제한",
+    "relevant": [
+      "vpn_access_de",
+      "vpn_access_ja",
+      "vpn_access_th",
+      "vpn_access_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "laptop replacement policy and disk disposal",
+    "relevant": [
+      "laptop_replacement_fr",
+      "laptop_replacement_ko",
+      "laptop_replacement_ru",
+      "laptop_replacement_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "ノートパソコンの交換規定",
+    "relevant": [
+      "laptop_replacement_fr",
+      "laptop_replacement_ko",
+      "laptop_replacement_ru",
+      "laptop_replacement_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "travel expense reimbursement rules",
+    "relevant": [
+      "expense_policy_ar",
+      "expense_policy_es",
+      "expense_policy_ja",
+      "expense_policy_ko"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "差旅报销的规定",
+    "relevant": [
+      "expense_policy_ar",
+      "expense_policy_es",
+      "expense_policy_ja",
+      "expense_policy_ko"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "会議の議事録は誰が書きますか",
+    "relevant": [
+      "meeting_notes_de",
+      "meeting_notes_en",
+      "meeting_notes_ru",
+      "meeting_notes_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "회의록 작성 책임",
+    "relevant": [
+      "meeting_notes_de",
+      "meeting_notes_en",
+      "meeting_notes_ru",
+      "meeting_notes_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "代码评审需要几个人批准",
+    "relevant": [
+      "code_review_en",
+      "code_review_fr",
+      "code_review_ja",
+      "code_review_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "сколько одобрений нужно для ревью",
+    "relevant": [
+      "code_review_en",
+      "code_review_fr",
+      "code_review_ja",
+      "code_review_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "hiring process interview rounds",
+    "relevant": [
+      "hiring_loop_ar",
+      "hiring_loop_es",
+      "hiring_loop_ko",
+      "hiring_loop_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "採用面接の進め方",
+    "relevant": [
+      "hiring_loop_ar",
+      "hiring_loop_es",
+      "hiring_loop_ko",
+      "hiring_loop_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "office wifi guest network",
+    "relevant": [
+      "office_wifi_de",
+      "office_wifi_ja",
+      "office_wifi_ru",
+      "office_wifi_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "办公室无线网络的访客规则",
+    "relevant": [
+      "office_wifi_de",
+      "office_wifi_ja",
+      "office_wifi_ru",
+      "office_wifi_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "parental leave scheduling and notice",
+    "relevant": [
+      "parental_leave_es",
+      "parental_leave_fr",
+      "parental_leave_ko",
+      "parental_leave_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "育児休業の分割取得",
+    "relevant": [
+      "parental_leave_es",
+      "parental_leave_fr",
+      "parental_leave_ko",
+      "parental_leave_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "数据保留期限和例外",
+    "relevant": [
+      "data_retention_ar",
+      "data_retention_de",
+      "data_retention_en",
+      "data_retention_ja"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "보존 기간 연장 승인",
+    "relevant": [
+      "data_retention_ar",
+      "data_retention_de",
+      "data_retention_en",
+      "data_retention_ja"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "フィーチャーフラグの既定値と削除",
+    "relevant": [
+      "feature_flag_en",
+      "feature_flag_ko",
+      "feature_flag_ru",
+      "feature_flag_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "valeurs par défaut des drapeaux de fonctionnalité",
+    "relevant": [
+      "feature_flag_en",
+      "feature_flag_ko",
+      "feature_flag_ru",
+      "feature_flag_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "接口版本什么时候停止支持",
+    "relevant": [
+      "api_versioning_en",
+      "api_versioning_es",
+      "api_versioning_ja",
+      "api_versioning_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "поддержка старых версий api",
+    "relevant": [
+      "api_versioning_en",
+      "api_versioning_es",
+      "api_versioning_ja",
+      "api_versioning_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "how long are application logs kept",
+    "relevant": [
+      "log_retention_fr",
+      "log_retention_ko",
+      "log_retention_ru",
+      "log_retention_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "ログの保管期間と費用",
+    "relevant": [
+      "log_retention_fr",
+      "log_retention_ko",
+      "log_retention_ru",
+      "log_retention_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "灾难恢复的目标和演练",
+    "relevant": [
+      "disaster_recovery_ar",
+      "disaster_recovery_en",
+      "disaster_recovery_ja",
+      "disaster_recovery_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "복구 목표 시간",
+    "relevant": [
+      "disaster_recovery_ar",
+      "disaster_recovery_en",
+      "disaster_recovery_ja",
+      "disaster_recovery_th"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "キューの滞留への対応",
+    "relevant": [
+      "queue_backlog_de",
+      "queue_backlog_en",
+      "queue_backlog_ko",
+      "queue_backlog_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "что делать при накоплении очереди",
+    "relevant": [
+      "queue_backlog_de",
+      "queue_backlog_en",
+      "queue_backlog_ko",
+      "queue_backlog_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "证书续期和过期告警",
+    "relevant": [
+      "ssl_certificate_en",
+      "ssl_certificate_es",
+      "ssl_certificate_ja",
+      "ssl_certificate_ru"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "인증서 자동 갱신",
+    "relevant": [
+      "ssl_certificate_en",
+      "ssl_certificate_es",
+      "ssl_certificate_ja",
+      "ssl_certificate_ru"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "translation workflow and terminology",
+    "relevant": [
+      "translation_workflow_fr",
+      "translation_workflow_ja",
+      "translation_workflow_th",
+      "translation_workflow_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "번역 워크플로와 용어집",
+    "relevant": [
+      "translation_workflow_fr",
+      "translation_workflow_ja",
+      "translation_workflow_th",
+      "translation_workflow_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "客户支持的响应时限",
+    "relevant": [
+      "customer_support_sla_ar",
+      "customer_support_sla_en",
+      "customer_support_sla_es",
+      "customer_support_sla_ko"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "サポートの応答時間",
+    "relevant": [
+      "customer_support_sla_ar",
+      "customer_support_sla_en",
+      "customer_support_sla_es",
+      "customer_support_sla_ko"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "セキュリティパッチの適用期限",
+    "relevant": [
+      "security_patch_de",
+      "security_patch_en",
+      "security_patch_ru",
+      "security_patch_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "보안 패치 배포 순서",
+    "relevant": [
+      "security_patch_de",
+      "security_patch_en",
+      "security_patch_ru",
+      "security_patch_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "Zugriffsüberprüfung und Berechtigungen",
+    "relevant": [
+      "access_review_en",
+      "access_review_fr",
+      "access_review_ko",
+      "access_review_th",
+      "access_review_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "การตรวจสอบหลังเกิดเหตุ",
+    "relevant": [
+      "incident_postmortem_en",
+      "incident_postmortem_es",
+      "incident_postmortem_ja",
+      "incident_postmortem_ru",
+      "incident_postmortem_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "Nachbereitung von Störungen",
+    "relevant": [
+      "incident_postmortem_en",
+      "incident_postmortem_es",
+      "incident_postmortem_ja",
+      "incident_postmortem_ru",
+      "incident_postmortem_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "한도 초과 시 응답",
+    "relevant": [
+      "rate_limiting_de",
+      "rate_limiting_en",
+      "rate_limiting_ja",
+      "rate_limiting_ru",
+      "rate_limiting_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "límite de peticiones por token",
+    "relevant": [
+      "rate_limiting_de",
+      "rate_limiting_en",
+      "rate_limiting_ja",
+      "rate_limiting_ru",
+      "rate_limiting_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "캐시 무효화 전파",
+    "relevant": [
+      "cache_invalidation_ar",
+      "cache_invalidation_en",
+      "cache_invalidation_es",
+      "cache_invalidation_ja",
+      "cache_invalidation_zh"
+    ]
+  },
+  {
+    "group": "cross_lingual",
+    "query": "invalidation du cache et délai",
+    "relevant": [
+      "cache_invalidation_ar",
+      "cache_invalidation_en",
+      "cache_invalidation_es",
+      "cache_invalidation_ja",
+      "cache_invalidation_zh"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "E5521",
+    "relevant": [
+      "err_e5521"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "E5522",
+    "relevant": [
+      "err_e5522"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "crates/pamin-store/src/database.rs",
+    "relevant": [
+      "path_database_rs"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "projection.rs",
+    "relevant": [
+      "path_projection_rs"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "crates/pamin-engine/src/cascade.rs",
+    "relevant": [
+      "path_cascade_rs"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "ci/budget.py",
+    "relevant": [
+      "path_budget_py"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "max_connections",
+    "relevant": [
+      "cfg_max_connections"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "work_mem",
+    "relevant": [
+      "cfg_work_mem"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "shared_buffers",
+    "relevant": [
+      "cfg_shared_buffers"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "synchronous_commit",
+    "relevant": [
+      "cfg_synchronous_commit"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "ef_search",
+    "relevant": [
+      "cfg_ef_search"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "append_source_version",
+    "relevant": [
+      "fn_append_source_version"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "derive_mentions",
+    "relevant": [
+      "fn_derive_mentions"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "retract_derived",
+    "relevant": [
+      "fn_retract_derived"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "repair_current_state_pointers",
+    "relevant": [
+      "fn_repair_current_state"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "recall_naming",
+    "relevant": [
+      "fn_recall_naming"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "PAMIN_HOME",
+    "relevant": [
+      "env_pamin_home"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "ORT_LIB_LOCATION",
+    "relevant": [
+      "env_ort_lib"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "PAMIN_PROFILE",
+    "relevant": [
+      "env_pamin_profile"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "HTTPS_PROXY",
+    "relevant": [
+      "env_https_proxy"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "17.6.0",
+    "relevant": [
+      "ver_pg_1760"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "sqlx 0.9.0",
+    "relevant": [
+      "ver_sqlx_090"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "1.98.1",
+    "relevant": [
+      "ver_rust_1981"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "Bgem3Embedding",
+    "relevant": [
+      "ver_fastembed_603"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "idempotency_key",
+    "relevant": [
+      "tbl_index_jobs"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "tombstone_reason",
+    "relevant": [
+      "tbl_relationship_versions"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "source_versions",
+    "relevant": [
+      "tbl_source_versions"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "SQLSTATE 23505",
+    "relevant": [
+      "err_23505"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "P0001",
+    "relevant": [
+      "err_p0001"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "pamin cascade drain",
+    "relevant": [
+      "cmd_cascade_drain"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "pamin write --defer",
+    "relevant": [
+      "cmd_write_defer"
+    ]
+  },
+  {
+    "group": "lexical",
+    "query": "nDCG@10",
+    "relevant": [
+      "metric_ndcg10"
+    ]
+  }
+]

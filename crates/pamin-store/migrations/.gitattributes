@@ -1,0 +1,6 @@
+# Migration checksums are taken over the file's bytes, so a checkout that
+# rewrote line endings would change every one of them and the runner would
+# refuse to start against a database that had already applied them. Windows
+# developers would be the only ones affected, which is the worst way for this
+# to be found.
+*.sql text eol=lf

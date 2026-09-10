@@ -19,8 +19,8 @@ One rule ran through all of it:
 | --- | --- |
 | Language | Rust `1.98.1`, 2024 edition |
 | Async runtime | Tokio |
-| Database driver | `tokio-postgres` |
-| Migrations | `refinery` |
+| Database driver | `sqlx` (pooled; no compile-time macros) |
+| Migrations | `sqlx::migrate`, migrations listed in code |
 | Authoritative store | PostgreSQL, bundled via `postgresql_embedded` |
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
 | Segmentation | `icu_segmenter` (ICU4X) |
@@ -28,7 +28,7 @@ One rule ran through all of it:
 | Embeddings | `fastembed` over ONNX Runtime, `multilingual-e5-base` by default |
 | CLI | `clap` |
 
-Nothing is hand-written where a mature crate already covers it. Migrations use `refinery` rather than a hand-rolled runner, and the same rule applies to argument parsing, configuration, and logging.
+Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
 
 ## Rationale
 
@@ -71,7 +71,7 @@ PostgreSQL is bundled rather than brought by the user. `pamin init` provisions a
 
 `zvec` is pre-1.0 and has made breaking changes between minor versions. Two mitigations make that acceptable, and both are executable rather than declared:
 
-- It appears only in `pamin-index`, behind the projection trait; `zvec` types must not reach `pamin-core`.
+- It appears only in `pamin-index`, behind the `Projection` trait; `zvec` types must not reach `pamin-core`. Both halves are checked rather than reviewed: the trait is what `pamin-engine` holds, and `ci/budget.py` fails the build if the engine becomes reachable from a crate outside `pamin-index`, `pamin-engine`, and `pamin-cli`.
 - The index is fully rebuildable from PostgreSQL, and `pamin reindex` is delivered and tested alongside it. A breaking upgrade is therefore a reindex, not a migration.
 
 LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer coverage available, but its Rust crate is pre-1.0 and pulls roughly sixty direct dependencies including Arrow and DataFusion, which is exactly the build cost this project is trying to avoid. Qdrant Edge runs in-process with on-device BM25, but its API is documented as beta.
@@ -160,7 +160,9 @@ Exceeding a budget is a trade to record in the pull request, not drift to accept
 
 ## Consequences
 
-- A cold build compiles the whole dependency tree, and `target/` is large. The dependency tree is kept thin deliberately: no `sqlx`, whose compile-time macros are a well-known build cost, and no web or metrics stack until something calls it.
+- A cold build compiles the whole dependency tree, and `target/` is large. The dependency tree is kept thin deliberately: no web or metrics stack until something calls it, and no compile-time SQL macros.
+
+  This originally read as a decision against `sqlx`, on the grounds of its compile-time macros. That was wrong twice over. The macros are one feature, off by default, and `sqlx` was already in the tree underneath `postgresql_embedded`, so refusing it bought a second driver rather than none: `tokio-postgres` and `refinery` alongside it, with a duplicate SHA-2 and a duplicate SCRAM implementation compiled into every binary. Moving the store onto `sqlx` and dropping both took the dependency count from 434 to 388. The `macros` feature stays off, which is the part of the original reasoning that survives.
 - `zvec` is pre-1.0, so a breaking upgrade will require a reindex. `pamin reindex` exists from the first release precisely so this stays routine.
 - Building `zvec` downloads a prebuilt native library, and ONNX Runtime does the same. Neither compiles C++ locally, but both require network access at build time and a measure of supply-chain trust.
 - Two full-text fields roughly double the lexical index. This is a measured trade, revisited when the evaluation harness exists.
