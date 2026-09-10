@@ -16,12 +16,21 @@
 //! memory written in another" a thing with a number attached rather than a
 //! claim in a README.
 //!
-//! ## What runs
+//! ## Two tests, one corpus
 //!
-//! The embedder alone, scored by comparing a query against every sentence in
-//! the pool. Deliberately not through the vector index: an approximate index
-//! answers a slightly different question than the model does, and a recall
-//! loss that could have come from either is a measurement of neither.
+//! | test | what runs | what it answers |
+//! |---|---|---|
+//! | `the_model_reaches_across_languages` | the embedder alone, compared against every sentence in the pool | how far the embedding space itself gets |
+//! | `search_reaches_across_languages` | the shipped search path: four channels, fusion, graph | how far the product gets |
+//!
+//! The gap between them is the fusion layer's net effect on cross-lingual
+//! recall, which nothing here had measured. Both are wanted because either
+//! alone misleads: the first cannot see a channel that dilutes the ranking,
+//! and the second cannot separate a weak model from a weak fusion.
+//!
+//! The first deliberately does not go through the vector index. An approximate
+//! index answers a slightly different question than the model does, and a
+//! recall loss that could have come from either is a measurement of neither;
 //! `pamin-index`'s own `recall.rs` is where the approximation is measured.
 //!
 //! ## Two groups, reported separately, never summed
@@ -55,10 +64,29 @@
 //!
 //! 13,014 sentences in eleven languages, 1,190 queries, the default profile:
 //!
-//! | group | nDCG@10 | recall@50 | relevant below rank 10 | queries with any |
-//! |---|---|---|---|---|
-//! | cross-lingual | 0.6338 | 0.8951 | 3,273 | 965 of 1,190 |
-//! | same-language | 0.6748 | 0.9563 | 115 | 115 of 1,190 |
+//! | | group | nDCG@10 | recall@50 | relevant below rank 10 | queries with any |
+//! |---|---|---|---|---|---|
+//! | the model | cross-lingual | 0.6338 | 0.8951 | 3,273 | 965 of 1,190 |
+//! | the model | same-language | 0.6748 | 0.9563 | 115 | 115 of 1,190 |
+//! | the product | cross-lingual | 0.4190 | 0.8476 | 4,845 | 1,149 of 1,190 |
+//! | the product | same-language | 0.8558 | 0.9639 | 39 | 39 of 1,190 |
+//!
+//! **Fusion is not one effect, it is two opposite ones, and they cancel in any
+//! average.** It costs almost no recall -- 0.8951 to 0.8476 cross-lingually --
+//! so the candidates the model reaches are still there. What changes is the
+//! order, and it changes in opposite directions: same-language nDCG@10 goes
+//! from 0.6748 to **0.8558**, because a question and its answer sentence in
+//! one language share words and the two lexical channels find them where a
+//! 1024-dimensional cosine does not; cross-lingual nDCG@10 goes from 0.6338 to
+//! **0.4190**, because those same two channels have nothing to match on across
+//! languages and spend half the fused list on the query's own language about
+//! the wrong subject.
+//!
+//! Neither number is visible from one test, and neither is visible from the
+//! corpus this project wrote, where both groups sat near the ceiling. What to
+//! do about it is a sweep rather than a conclusion: the fusion weights were
+//! settled where lexical carried signal for every query, and here it carries
+//! signal for half of them and noise for the other half.
 //!
 //! The last two columns are the ones that could not be obtained from the
 //! corpus this project wrote. There, across all 137 queries, the count was
@@ -70,8 +98,9 @@
 //!
 //! ## Running it
 //!
-//! Ignored by default: it downloads a dataset, downloads model weights, and
-//! embeds thirteen thousand sentences.
+//! Ignored by default: they download a dataset, download model weights, embed
+//! thirteen thousand sentences, and for the second provision PostgreSQL and
+//! index them.
 //!
 //! ```text
 //! cargo test -p pamin-engine --test crosslingual -- --ignored --nocapture
@@ -80,8 +109,8 @@
 //! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
 //! `$LAREQA_DIR` if that is set. It is not vendored: it is CC-BY-SA-4.0 and
 //! this repository is Apache-2.0. Setting `PAMIN_EVAL_HOME` also keeps the
-//! embeddings between runs, which is the difference between a minute and
-//! a quarter of an hour.
+//! embeddings and the indexed workspace between runs, which is the difference
+//! between minutes and most of an hour.
 //!
 //! `XQUAD_ALL_QUERIES=1` asks every question in all eleven languages, 13,090
 //! queries. The default asks each question in one language, rotating through
@@ -92,7 +121,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use pamin_index::{Embedder, Profile};
+use pamin_engine::{Depths, Engine, Write};
+use pamin_index::{Access, Embedder, Profile};
+use pamin_store::Workspace;
 
 /// The languages XQuAD-R covers, in the order the rotation walks them.
 const LANGUAGES: [&str; 11] = [
@@ -116,6 +147,15 @@ const RECALL_AT: usize = 50;
 /// One more than [`RECALL_AT`], because the cross-lingual group drops the
 /// query's own language from the ranking and still needs fifty left.
 const DEPTH: usize = RECALL_AT + 1;
+
+/// What each channel contributes before fusion, and how far the graph walks.
+///
+/// The shipped defaults, so the second test measures the product rather than a
+/// configuration invented for the benchmark.
+const DEPTHS: Depths = Depths {
+    channel: 50,
+    graph: 2,
+};
 
 /// The profile the floors were measured against, and the product default.
 const DEFAULT_PROFILE: &str = "accuracy";
@@ -141,6 +181,7 @@ struct Sentence {
     /// segmentation as one token and match nothing in the text.
     key: String,
     text: String,
+    language: &'static str,
 }
 
 /// One question, and the sentence that answers it in each language.
@@ -256,6 +297,7 @@ impl Corpus {
                             .expect("a sentence")
                             .trim_start_matches('\u{feff}')
                             .to_string(),
+                        language,
                     });
                 }
 
@@ -690,4 +732,120 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
         }
     }
     vector
+}
+
+// ---------------------------------------------------------------------------
+// The whole search path
+// ---------------------------------------------------------------------------
+
+/// The floors for the whole search path.
+///
+/// A tenth below 0.4190 / 0.8476 cross-lingual and 0.8558 / 0.9639
+/// same-language. The same-language pair sits *above* the model's own floors
+/// and the cross-lingual nDCG well below, which is the finding rather than an
+/// inconsistency: see the table in the module notes.
+const SEARCH_FLOORS: &[(&str, f64, f64)] =
+    &[("cross_lingual", 0.37, 0.76), ("same_language", 0.77, 0.86)];
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
+async fn search_reaches_across_languages() {
+    let corpus = Corpus::load();
+    let queries = corpus.queries();
+    let (named, profile) = profile();
+
+    // A named workspace is reused; an unnamed one is thrown away. Indexing
+    // thirteen thousand sentences is minutes, and a harness that pays that on
+    // every run is a harness nobody runs twice in an afternoon.
+    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let scratch = home
+        .is_none()
+        .then(|| tempfile::tempdir().expect("temp workspace"));
+    let workspace = match (&home, &scratch) {
+        (Some(path), _) => Workspace::at(path),
+        (None, Some(dir)) => Workspace::at(dir.path()),
+        (None, None) => unreachable!("one of the two is always set"),
+    };
+
+    // The profile is part of the workspace identity: an index records the
+    // profile it was built with and refuses to open under another.
+    let project = format!("xquad-{named}-{}", corpus.fingerprint());
+    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
+        .await
+        .expect("open the engine");
+
+    write_corpus(&engine, &corpus).await;
+
+    let mut groups = BTreeMap::new();
+    let started = std::time::Instant::now();
+    for query in &queries {
+        let hits = engine
+            .search(query.text(), DEPTH as u32, DEPTHS)
+            .await
+            .expect("search");
+        let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
+        score(&mut groups, query, &ranked);
+    }
+
+    report(
+        &format!("the shipped search path, {named}"),
+        &groups,
+        started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
+    );
+    assert_floors(&named, &groups, SEARCH_FLOORS);
+}
+
+/// Writes every sentence that is not already a topic, then runs the queue.
+///
+/// Each sentence is its own topic, named by its key. The key is deliberately
+/// unlike anything in the text: mention derivation looks for topic names inside
+/// content, and a corpus whose sentences named each other would measure the
+/// graph channel on relationships the dataset does not assert.
+async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+    let project = engine.project;
+    let mut written = 0;
+
+    for sentence in &corpus.sentences {
+        let existing =
+            pamin_store::repository::find_topic(engine.database.pool(), project, &sentence.key)
+                .await
+                .expect("look for the topic");
+        if existing.is_some() {
+            continue;
+        }
+        written += 1;
+        engine
+            .write(&Write {
+                topic: &sentence.key,
+                content: &sentence.text,
+                content_hash: &sentence.text.len().to_string(),
+                verdict: pamin_core::FilterDecision::Promoted,
+                reason: "cross-lingual evaluation corpus",
+                promoted: true,
+                language: Some(sentence.language),
+                language_confidence: None,
+                observed_at: time::OffsetDateTime::now_utc(),
+                validity: pamin_core::Validity::ALWAYS,
+            })
+            .await
+            .unwrap_or_else(|error| panic!("writing {}: {error}", sentence.key));
+    }
+
+    if written > 0 {
+        println!("  wrote {written} of {} sentences", corpus.sentences.len());
+    }
+    let started = std::time::Instant::now();
+    let drained = engine.drain_cascade().await.expect("drain the cascade");
+    assert_eq!(
+        drained.pending, 0,
+        "the corpus is not fully indexed: {} jobs still owed",
+        drained.pending
+    );
+    if written > 0 {
+        println!(
+            "  ran {} cascade jobs in {:.0}s",
+            drained.completed,
+            started.elapsed().as_secs_f64()
+        );
+    }
 }
