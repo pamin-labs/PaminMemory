@@ -4,10 +4,13 @@
 //! zero-integration path for any agent that can run a process, with no client
 //! library to adopt and no service to stand up.
 
+mod client;
 mod command;
 mod output;
+mod protocol;
+mod server;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pamin_index::Profile;
 use pamin_store::Workspace;
@@ -75,8 +78,14 @@ enum Command {
     /// Run and inspect the work a write left for the projection.
     Cascade(command::cascade::Args),
 
-    /// Stop the local database server.
+    /// Stop the local database server, and the resident server if one is up.
     Stop,
+
+    /// Hold the database, the index and the model, and answer commands.
+    ///
+    /// Started automatically by any command that needs one, so this is for
+    /// running it in the foreground and watching it.
+    Serve,
 }
 
 #[tokio::main]
@@ -98,59 +107,180 @@ async fn main() -> Result<()> {
     let profile = Profile::parse(&cli.profile)
         .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
 
-    match cli.command {
-        Command::Init => {
-            let result = command::init::execute(&workspace, &cli.project).await?;
+    // `serve` is the server, so it never goes through one.
+    if let Command::Serve = cli.command {
+        return server::run(&workspace).await;
+    }
+
+    // Taken before the command is moved into the call below.
+    let project = cli.project.clone();
+
+    let call = match cli.command {
+        Command::Serve => unreachable!("handled above"),
+        Command::Init => protocol::Call::Init,
+        Command::Write(args) => protocol::Call::Write(args),
+        Command::Read(args) => protocol::Call::Read(args),
+        Command::Search(args) => protocol::Call::Search(args),
+        Command::Grep(args) => protocol::Call::Grep(args),
+        Command::Link(args) => protocol::Call::Link(args),
+        Command::Unlink(args) => protocol::Call::Unlink(args),
+        Command::Neighbors(args) => protocol::Call::Neighbors(args),
+        Command::Reindex(args) => protocol::Call::Reindex(args),
+        Command::Cascade(args) => protocol::Call::Cascade(args),
+        Command::Stop => protocol::Call::Stop,
+    };
+
+    // Content on standard input is read here rather than server-side: the
+    // server has no standard input, and `git log | pamin write` is in the
+    // reference.
+    let call = fill_from_stdin(call)?;
+
+    if client::wanted() {
+        let request = protocol::Request {
+            version: protocol::version(),
+            project: project.clone(),
+            profile: cli.profile.clone(),
+            call,
+        };
+        if let Some(value) = client::ask(&workspace, &request).await? {
+            return render(&request.call, &value, format);
+        }
+        // Only `stop` reaches here: there was no server, so there is nothing to
+        // ask, and the database still needs stopping.
+        return run_here(&workspace, &project, profile, request.call, format).await;
+    }
+
+    run_here(&workspace, &project, profile, call, format).await
+}
+
+/// Reads standard input into the one argument that takes it.
+fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {
+    let protocol::Call::Write(mut args) = call else {
+        return Ok(call);
+    };
+
+    if args.content.is_none() {
+        args.content =
+            Some(std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?);
+    }
+    Ok(protocol::Call::Write(args))
+}
+
+/// Runs a call in this process, which is what happens without a server.
+async fn run_here(
+    workspace: &Workspace,
+    project: &str,
+    profile: Profile,
+    call: protocol::Call,
+    format: output::Format,
+) -> Result<()> {
+    match call {
+        protocol::Call::Init => {
+            let result = command::init::execute(workspace, project).await?;
             format.emit(&result, || command::init::render(&result));
-            Ok(())
         }
-        Command::Write(args) => {
-            let result = command::write::execute(&workspace, &cli.project, profile, args).await?;
+        protocol::Call::Write(args) => {
+            let result = command::write::execute(workspace, project, profile, args).await?;
             format.emit(&result, || command::write::render(&result));
-            Ok(())
         }
-        Command::Read(args) => {
-            let result = command::read::execute(&workspace, &cli.project, args).await?;
+        protocol::Call::Read(args) => {
+            let result = command::read::execute(workspace, project, args).await?;
             format.emit(&result, || command::read::render(&result));
-            Ok(())
         }
-        Command::Search(args) => {
-            let results = command::search::execute(&workspace, &cli.project, profile, args).await?;
+        protocol::Call::Search(args) => {
+            let results = command::search::execute(workspace, project, profile, args).await?;
             format.emit(&results, || command::search::render(&results));
-            Ok(())
         }
-        Command::Grep(args) => {
-            let result = command::grep::execute(&workspace, &cli.project, args).await?;
+        protocol::Call::Grep(args) => {
+            let result = command::grep::execute(workspace, project, args).await?;
             format.emit(&result, || command::grep::render(&result));
-            Ok(())
         }
-        Command::Link(args) => {
-            let result = command::link::execute(&workspace, &cli.project, args).await?;
+        protocol::Call::Link(args) => {
+            let result = command::link::execute(workspace, project, args).await?;
             format.emit(&result, || command::link::render(&result));
-            Ok(())
         }
-        Command::Unlink(args) => {
-            let result = command::unlink::execute(&workspace, &cli.project, args).await?;
+        protocol::Call::Unlink(args) => {
+            let result = command::unlink::execute(workspace, project, args).await?;
             format.emit(&result, || command::unlink::render(&result));
-            Ok(())
         }
-        Command::Neighbors(args) => {
-            let result = command::neighbors::execute(&workspace, &cli.project, args).await?;
+        protocol::Call::Neighbors(args) => {
+            let result = command::neighbors::execute(workspace, project, args).await?;
             format.emit(&result, || command::neighbors::render(&result));
-            Ok(())
         }
-        Command::Reindex(args) => {
-            let result = command::reindex::execute(&workspace, &cli.project, profile, args).await?;
+        protocol::Call::Reindex(args) => {
+            let result = command::reindex::execute(workspace, project, profile, args).await?;
             format.emit(&result, || command::reindex::render(&result));
-            Ok(())
         }
-        Command::Cascade(args) => {
-            command::cascade::execute(&workspace, &cli.project, profile, format, args).await
+        protocol::Call::Cascade(args) => {
+            command::cascade::execute(workspace, project, profile, format, args).await?;
         }
-        Command::Stop => {
-            let result = command::stop::execute(&workspace).await?;
+        protocol::Call::Stop => {
+            let result = command::stop::execute(workspace).await?;
             format.emit(&result, || command::stop::render(&result));
-            Ok(())
         }
     }
+
+    Ok(())
+}
+
+/// Prints what the server sent, in whichever form was asked for.
+///
+/// The JSON goes out as it arrived. The text form needs the value back as the
+/// type it was, because rendering is the client's half of the split and each
+/// command's `render` takes its own struct. Naming each type here rather than
+/// hiding it behind a macro keeps the compiler checking that the type the
+/// server serialized is the type the client renders.
+fn render(call: &protocol::Call, value: &serde_json::Value, format: output::Format) -> Result<()> {
+    fn parse<T: serde::de::DeserializeOwned>(value: &serde_json::Value, what: &str) -> Result<T> {
+        serde_json::from_value(value.clone())
+            .with_context(|| format!("reading the {what} the server sent"))
+    }
+
+    match call {
+        protocol::Call::Init => {
+            let result: command::init::Initialized = parse(value, "init")?;
+            format.emit(&result, || command::init::render(&result));
+        }
+        protocol::Call::Write(_) => {
+            let result: command::write::Written = parse(value, "write")?;
+            format.emit(&result, || command::write::render(&result));
+        }
+        protocol::Call::Read(_) => {
+            let result: command::read::Read = parse(value, "read")?;
+            format.emit(&result, || command::read::render(&result));
+        }
+        protocol::Call::Search(_) => {
+            let results: command::search::Results = parse(value, "search")?;
+            format.emit(&results, || command::search::render(&results));
+        }
+        protocol::Call::Grep(_) => {
+            let result: command::grep::Matches = parse(value, "grep")?;
+            format.emit(&result, || command::grep::render(&result));
+        }
+        protocol::Call::Link(_) => {
+            let result: command::link::Linked = parse(value, "link")?;
+            format.emit(&result, || command::link::render(&result));
+        }
+        protocol::Call::Unlink(_) => {
+            let result: command::unlink::Unlinked = parse(value, "unlink")?;
+            format.emit(&result, || command::unlink::render(&result));
+        }
+        protocol::Call::Neighbors(_) => {
+            let result: command::neighbors::Neighborhood = parse(value, "neighbors")?;
+            format.emit(&result, || command::neighbors::render(&result));
+        }
+        protocol::Call::Reindex(_) => {
+            let result: command::reindex::Reindexed = parse(value, "reindex")?;
+            format.emit(&result, || command::reindex::render(&result));
+        }
+        protocol::Call::Stop => {
+            let result: command::stop::Stopped = parse(value, "stop")?;
+            format.emit(&result, || command::stop::render(&result));
+        }
+        // The subcommands answer with different types, so which one to parse
+        // into is a question about the request rather than the response.
+        protocol::Call::Cascade(args) => command::cascade::render_value(args, value, format)?,
+    }
+
+    Ok(())
 }
