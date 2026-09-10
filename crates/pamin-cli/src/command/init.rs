@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use pamin_store::{Database, Workspace, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Initialized {
     project: String,
     home: String,

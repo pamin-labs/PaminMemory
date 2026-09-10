@@ -3,9 +3,9 @@
 use anyhow::{Result, bail};
 use pamin_core::VersionOffset;
 use pamin_store::{Database, Workspace, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic to read.
     pub topic: String,
@@ -15,7 +15,7 @@ pub struct Args {
     pub version_offset: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Read {
     topic: String,
     version: u32,

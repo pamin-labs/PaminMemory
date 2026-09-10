@@ -7,14 +7,14 @@
 use anyhow::Result;
 use pamin_index::Profile;
 use pamin_store::Workspace;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use pamin_engine::Engine;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {}
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Reindexed {
     indexed: usize,
     /// Topics whose current-state pointer disagreed with the ledger and was

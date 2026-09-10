@@ -4,14 +4,14 @@ use anyhow::{Context, Result};
 use pamin_core::SensoryFilter;
 use pamin_index::{Access, Profile};
 use pamin_store::{Workspace, repository};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::command::validity;
 use pamin_engine::{Engine, Write};
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic this memory belongs to.
     #[arg(long)]
@@ -32,7 +32,7 @@ pub struct Args {
     pub validity: validity::Flags,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Written {
     topic: String,
     /// Absent when the filter held the content in the evidence layer.
@@ -44,7 +44,7 @@ pub struct Written {
     source_version: u32,
     /// Whether the projection caught up before this command returned, or the
     /// work is still owed. Either way the memory is recorded.
-    cascade: &'static str,
+    cascade: String,
     /// Set when the projection has fallen far enough behind to say so. The
     /// queue is unbounded on purpose -- a write must not fail because the
     /// index is slow -- but a backlog nobody reports looks like searches
@@ -118,7 +118,7 @@ pub async fn execute(
         promoted: verdict.is_promoted(),
         reason: verdict.reason().to_string(),
         source_version: recorded.source_version,
-        cascade: if owed == 0 { "applied" } else { "queued" },
+        cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
         cascade_lagging: owed >= pamin_core::LAGGING_AT,
         valid_from: validity.from.map(validity::render),
         valid_to: validity.to.map(validity::render),
