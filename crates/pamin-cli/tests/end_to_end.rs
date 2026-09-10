@@ -12,6 +12,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -54,6 +55,39 @@ impl Cli {
         let mut with_json = args.to_vec();
         with_json.push("--json");
         serde_json::from_str(&self.run(&with_json)).expect("json output")
+    }
+
+    /// Starts a server in the foreground and waits until it will answer.
+    ///
+    /// Ordinarily a command starts its own, and that is exactly what makes
+    /// this necessary: a client that cannot reach a server starts one, so a
+    /// server that died would be quietly replaced and every command would keep
+    /// passing. Holding the handle is what lets a test ask whether the process
+    /// that answered the first request is the one that answered the last.
+    fn serve(&self) -> std::process::Child {
+        let log = std::fs::File::create(self.home().join("serve.log")).expect("server log");
+        let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
+            .args(["serve"])
+            .env("PAMIN_HOME", self.home())
+            .env("PAMIN_PROFILE", PROFILE)
+            .stdout(log.try_clone().expect("a second handle on the log"))
+            .stderr(log)
+            .spawn()
+            .expect("starting a server");
+
+        // The socket is bound only once the database is up and migrated, so
+        // waiting for it takes as long as the startup a server exists to pay
+        // once.
+        let socket = self.home().join("pamin.sock");
+        let deadline = Instant::now() + Duration::from_secs(300);
+        while !socket.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the server never started listening"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        child
     }
 
     fn fails(&self, args: &[&str]) -> String {
@@ -1252,4 +1286,80 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
             .any(|content| content.contains("never indexed")),
         "after the drain the memory is on the retrieval surface: {found:?}"
     );
+}
+
+/// Readers and writers share one index for long enough for the race to fire.
+///
+/// The projection engine declares `Sync` and does not honour it: a reader takes
+/// an unsynchronized snapshot of the segments a writer is in the middle of
+/// changing, reported upstream as alibaba/zvec#714 and still open. The engine
+/// therefore holds a lock that the engine's own declaration says is
+/// unnecessary, and nothing in a single-threaded test can tell a load-bearing
+/// lock from a superstitious one. This can: sustained concurrent traffic
+/// through one process, and that process still answering at the end.
+///
+/// Taking the lock out is what says so. Without it this fails inside a minute,
+/// twice out of two runs, with searches returning `Read next record batch
+/// failed (fill_result): fetch table failed` -- the reader reading a table the
+/// writer had already moved. Upstream reports the same race faulting outright,
+/// so an error is the mild form of it.
+///
+/// Linux is where this shows. On macOS the same race is latent, so a green run
+/// there says nothing about whether the lock is doing anything.
+#[test]
+#[ignore = "provisions postgres, downloads model weights, and runs for five minutes"]
+fn readers_and_writers_share_one_index_without_bringing_it_down() {
+    const WRITERS: usize = 20;
+    const READERS: usize = 20;
+    /// Long enough to be sustained rather than a burst. The upstream report
+    /// puts the fault seconds into concurrent traffic, so this is minutes of
+    /// margin rather than a number tuned to anything.
+    const FOR_LONG_ENOUGH: Duration = Duration::from_secs(300);
+
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let deadline = Instant::now() + FOR_LONG_ENOUGH;
+    std::thread::scope(|threads| {
+        for writer in 0..WRITERS {
+            let cli = &cli;
+            threads.spawn(move || {
+                let topic = format!("stress_{writer}");
+                let mut rounds = 0;
+                while Instant::now() < deadline {
+                    // Distinct every time. Repeating content is held in the
+                    // evidence layer rather than promoted, and a held write
+                    // never reaches the index, which is the thing under test.
+                    let content =
+                        format!("writer {writer} recorded round {rounds} of the shared index run");
+                    cli.run(&["write", "--topic", &topic, &content]);
+                    rounds += 1;
+                }
+                assert!(rounds > 0, "writer {writer} never completed a round");
+            });
+        }
+
+        for reader in 0..READERS {
+            let cli = &cli;
+            threads.spawn(move || {
+                let mut rounds = 0;
+                while Instant::now() < deadline {
+                    cli.run(&["search", "recorded round of the shared index run"]);
+                    rounds += 1;
+                }
+                assert!(rounds > 0, "reader {reader} never completed a round");
+            });
+        }
+    });
+
+    // Every command above succeeded, which is not the same claim: a client
+    // whose server had gone would have started a replacement and carried on.
+    assert!(
+        server.try_wait().expect("checking on the server").is_none(),
+        "the server did not survive its readers and writers sharing an index"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
 }
