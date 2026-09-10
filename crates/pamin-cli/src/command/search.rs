@@ -66,7 +66,7 @@ pub async fn execute(
     args: Args,
 ) -> Result<Results> {
     // Read-only, so several agents can search one project at once.
-    let mut engine = Engine::open(workspace, project, profile, Access::ReadOnly).await?;
+    let engine = Engine::open(workspace, project, profile, Access::ReadOnly).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,

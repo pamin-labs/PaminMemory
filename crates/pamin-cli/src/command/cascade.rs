@@ -187,7 +187,7 @@ pub async fn execute(
 }
 
 pub async fn drain(workspace: &Workspace, project: &str, profile: Profile) -> Result<Drained> {
-    let mut engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
+    let engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
     let drained = engine.drain_cascade().await?;
 
     Ok(Drained {
@@ -203,7 +203,7 @@ pub async fn drain(workspace: &Workspace, project: &str, profile: Profile) -> Re
 /// the shape a worker has before there is a server to hold it, and the reason
 /// it cannot run beside a `pamin write` in another terminal.
 async fn keep_running(workspace: &Workspace, project: &str, profile: Profile) -> Result<()> {
-    let mut engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
+    let engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
 
     loop {
         let drained = engine.drain_cascade().await?;

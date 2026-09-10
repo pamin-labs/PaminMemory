@@ -51,7 +51,7 @@ impl Engine {
     /// schedules more work -- creating a topic schedules a backfill -- would
     /// otherwise leave it for whoever came next, and "drain" would mean
     /// something different each time it was called.
-    pub async fn drain_cascade(&mut self) -> Result<Drained> {
+    pub async fn drain_cascade(&self) -> Result<Drained> {
         let mut drained = Drained::default();
         // Considered once, at the end, and never again in this drain. Queueing
         // a rebuild after running one would spin here if the rebuild ever
@@ -115,8 +115,8 @@ impl Engine {
 
     /// Whether enough has been written to be worth rebuilding the vector graph.
     fn needs_optimizing(&self) -> Result<bool> {
-        let index = &self.index;
         let (documents, complete) = crate::engine::off_the_runtime(|| {
+            let index = self.reading();
             Ok::<_, anyhow::Error>((index.document_count()?, index.vector_index_completeness()?))
         })?;
 
@@ -124,7 +124,7 @@ impl Engine {
     }
 
     /// Runs one job.
-    async fn run(&mut self, job: &Job) -> Result<()> {
+    async fn run(&self, job: &Job) -> Result<()> {
         match job.kind {
             JobKind::SyncTopicIndex => self.sync_topic_index(subject(job)?.into()).await,
             JobKind::UnindexState => self.unindex_state(subject(job)?.into()).await,
@@ -143,7 +143,7 @@ impl Engine {
     /// A topic that now resolves to nothing -- every state soft deleted --
     /// leaves nothing to write, and the states themselves are removed by
     /// `unindex_state`.
-    async fn sync_topic_index(&mut self, topic: TopicId) -> Result<()> {
+    async fn sync_topic_index(&self, topic: TopicId) -> Result<()> {
         let states = pamin_store::repository::current_states_of(
             self.database.pool(),
             self.project,
@@ -159,9 +159,9 @@ impl Engine {
     }
 
     /// Removes a state from the projection.
-    async fn unindex_state(&mut self, state: TopicStateId) -> Result<()> {
-        let index = &self.index;
+    async fn unindex_state(&self, state: TopicStateId) -> Result<()> {
         crate::engine::off_the_runtime(|| {
+            let index = self.writing();
             index.delete(&[state])?;
             index.flush()
         })?;
@@ -170,7 +170,7 @@ impl Engine {
     }
 
     /// Recomputes the edges a topic's current content implies.
-    async fn derive_topic_mentions(&mut self, topic: TopicId) -> Result<()> {
+    async fn derive_topic_mentions(&self, topic: TopicId) -> Result<()> {
         let states = pamin_store::repository::current_states_of(
             self.database.pool(),
             self.project,
@@ -187,7 +187,7 @@ impl Engine {
     }
 
     /// Links a topic to memories written before it existed that already name it.
-    async fn backfill_topic(&mut self, topic: TopicId) -> Result<()> {
+    async fn backfill_topic(&self, topic: TopicId) -> Result<()> {
         let topics =
             pamin_store::repository::topics_by_id(self.database.pool(), self.project, &[topic])
                 .await?;
@@ -201,9 +201,8 @@ impl Engine {
     }
 
     /// Builds the vector index over everything written since the last build.
-    async fn optimize_projection(&mut self) -> Result<()> {
-        let index = &self.index;
-        crate::engine::off_the_runtime(|| index.optimize())?;
+    async fn optimize_projection(&self) -> Result<()> {
+        crate::engine::off_the_runtime(|| self.writing().optimize())?;
         Ok(())
     }
 }
