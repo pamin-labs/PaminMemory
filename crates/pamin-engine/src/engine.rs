@@ -113,11 +113,16 @@ pub struct Engine {
     /// engine from whichever runtime thread takes the request.
     ///
     /// Behind a lock even though every method on the trait takes `&self`. The
-    /// engine declares `Sync` and does not honour it: reading a collection
-    /// while another thread writes it segfaults, reported upstream as
-    /// alibaba/zvec#714 and still open. Readers share; a write excludes them.
-    /// On Linux this is the difference between a crash and no crash, and on
-    /// macOS it is latent, so it is not a precaution.
+    /// engine declares `Sync` and does not honour it: a reader takes an
+    /// unsynchronized snapshot of the segments a writer is in the middle of
+    /// changing, reported upstream as alibaba/zvec#714 and still open. Readers
+    /// share; a write excludes them.
+    ///
+    /// Not a precaution. Taking this lock out makes searches fail inside a
+    /// minute under the concurrency `readers_and_writers_share_one_index_
+    /// without_bringing_it_down` puts through it, and that is the mild form --
+    /// upstream reports the same race faulting. On macOS it is latent, so it
+    /// looks like a precaution there.
     index: Arc<RwLock<Box<dyn Projection + Send + Sync>>>,
     /// One model, and one caller into it at a time.
     ///
