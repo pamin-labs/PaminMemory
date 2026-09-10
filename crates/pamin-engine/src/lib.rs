@@ -9,4 +9,4 @@ mod cascade;
 mod engine;
 
 pub use cascade::Drained;
-pub use engine::{Depths, Engine, Rebuilt, Recorded, SearchHit, Write};
+pub use engine::{Depths, Engine, Models, Rebuilt, Recorded, SearchHit, Write};
