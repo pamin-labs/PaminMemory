@@ -16,11 +16,27 @@ use crate::graph::{Derivation, EdgeKind};
 use crate::id::TopicStateId;
 use crate::ledger::RetrievalSignals;
 
-/// The standard reciprocal rank fusion constant.
+/// How sharply a result's rank in one channel counts toward its fused score.
 ///
-/// It needs no tuning and is used unchanged across systems and datasets, which
-/// is most of why rank fusion is the default here.
-pub const DEFAULT_K: f32 = 60.0;
+/// The rank fusion literature uses 60, which came from runs over lists
+/// thousands of results deep. Each channel here proposes fifty, and at 60 the
+/// curve across fifty candidates is almost flat: rank 1 contributes 0.0164 and
+/// rank 10 contributes 0.0143, so the whole top ten spans 14% and a channel
+/// that put the right memory first says barely more than one that put it
+/// tenth.
+///
+/// Ten, measured. On this project's evaluation corpus, moving 60 to 10 with
+/// the weights below takes cross-lingual nDCG@10 from 0.2245 to 0.3383, and
+/// monolingual from 0.9892 to 0.9940 rather than paying for it.
+///
+/// Ten rather than the best number measured. The curve is monotonic all the
+/// way down -- 5 scores 0.3599 and 1 scores 0.3874 -- which means the corpus
+/// cannot locate an optimum, only say that 60 is too flat for lists this
+/// short. Taking the boundary would be fitting a constant to 137 queries
+/// somebody here wrote. Ten is a fifth of the channel depth, well inside the
+/// improving region, and far from the point where rank 1 counts double rank 2
+/// and one channel's mistaken top hit decides the answer.
+pub const DEFAULT_K: f32 = 10.0;
 
 /// One line of the explanation attached to a result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -96,12 +112,23 @@ pub struct Fusion {
 
 impl Default for Fusion {
     fn default() -> Self {
-        // Equal weights until the evaluation harness has something to say.
-        // Guessing weights before measuring is how a retrieval stack acquires
-        // constants nobody can later justify.
+        // The two lexical channels count as one, because they nearly are one.
+        // Both run BM25 over the same text -- one over segmented words, one
+        // over character n-grams -- so they agree with each other far more
+        // often than either agrees with the vector or graph channel. At equal
+        // weights that agreement is counted twice, and the pair outvotes the
+        // other two on every query where the wording matches and the meaning
+        // does not, which is exactly the cross-lingual case.
+        //
+        // Measured, not assumed: at k=10 halving them takes cross-lingual
+        // nDCG@10 from 0.2404 to 0.3383, and the two corrections compound --
+        // halving alone at k=60 is worth 0.2041 to 0.2245.
         Self {
             k: DEFAULT_K,
-            weights: BTreeMap::new(),
+            weights: BTreeMap::from([
+                (Channel::LexicalSegmented, 0.5),
+                (Channel::LexicalNgram, 0.5),
+            ]),
         }
     }
 }
@@ -298,8 +325,12 @@ mod tests {
         // Both channels contribute the same amount at the same rank, whatever
         // the underlying scores were. That is the property that lets a BM25
         // score and a vector distance be combined at all.
+        //
+        // The vector and graph channels, because the two lexical ones
+        // deliberately carry half weight. That says how much they duplicate
+        // each other, not that a rank means something different in each.
         let fused = Fusion::default().fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, vec![id(1)]),
+            ChannelResults::new(Channel::Graph, vec![id(1)]),
             ChannelResults::new(Channel::Vector, vec![id(2)]),
         ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
