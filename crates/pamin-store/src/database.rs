@@ -143,6 +143,54 @@ async fn can_connect(server: &LocalServer) -> bool {
     }
 }
 
+/// What this cluster is started with.
+///
+/// Defaults chosen for a general-purpose server that somebody administers.
+/// Nobody administers this one -- it is started by a memory tool on a
+/// developer's machine and never configured -- so the few that are plainly
+/// wrong for that are set here, and the rest are left alone.
+///
+/// Nothing here reserves memory up front. `shared_buffers` and
+/// `maintenance_work_mem` are the two that usually head a tuning list and both
+/// are deliberately untouched: the usual advice sizes them as a fraction of a
+/// machine dedicated to the database, and this one is a laptop doing something
+/// else. Their defaults cost the operating system's page cache doing the work
+/// instead, which is the right trade for a background process.
+fn settings() -> HashMap<String, String> {
+    HashMap::from([
+        // PostgreSQL allows a hundred clients, and every `pamin` command
+        // without a server is a process with its own pool pointing at this one
+        // cluster. A few dozen agents working at once exhaust that, and what
+        // they see is a connection timeout rather than anything naming the
+        // limit.
+        ("max_connections".to_string(), "300".to_string()),
+        // Four megabytes is enough for a sort of a few thousand rows and is
+        // reached by a project long before it is large. Past it the sort goes
+        // to a temporary file, which is the same answer arriving after a disk
+        // round trip. Thirty-two is a bound on one sort of one connection, so
+        // the worst case is the pool's size times this and not this times
+        // `max_connections`.
+        ("work_mem".to_string(), "32MB".to_string()),
+        // The planner's default assumes a seek costs four times a sequential
+        // page. That was a spinning disk. Local storage makes the two nearly
+        // the same, and the default is what talks the planner out of index
+        // scans it should be choosing.
+        ("random_page_cost".to_string(), "1.1".to_string()),
+        // Compiling a query pays off over seconds of execution. Every query
+        // here is a lookup by key or a bounded scan, so the compilation is the
+        // slow part and there is nothing for it to pay back against.
+        ("jit".to_string(), "off".to_string()),
+        // Autovacuum waits for a fifth of a table to be dead rows. On a table
+        // of a hundred million states that is twenty million, and until then
+        // every scan reads them. Two per cent is still rare enough to be
+        // cheap and often enough to keep up.
+        (
+            "autovacuum_vacuum_scale_factor".to_string(),
+            "0.02".to_string(),
+        ),
+    ])
+}
+
 /// Installs if needed, starts the server, and leaves it running.
 async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
     std::fs::create_dir_all(workspace.root())?;
@@ -160,14 +208,9 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
         // exceeds routinely -- and the failure lands on whoever is setting the
         // project up for the first time, which is the worst audience for it.
         timeout: Some(Duration::from_secs(60)),
-        // PostgreSQL allows a hundred clients by default, and every `pamin`
-        // command is a process with its own pool pointing at this one cluster.
-        // A few dozen agents working at once exhaust that, and what they see is
-        // a connection timeout rather than anything naming the limit.
-        //
         // Passed to the server as it starts, so an already-initialised
         // workspace keeps whatever it was started with until `pamin stop`.
-        configuration: HashMap::from([("max_connections".to_string(), "300".to_string())]),
+        configuration: settings(),
         ..Settings::default()
     };
 
