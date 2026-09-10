@@ -3,10 +3,12 @@
 use anyhow::{Result, bail};
 use pamin_core::EdgeKind;
 use pamin_store::graph::EdgeClaim;
-use pamin_store::{Database, Workspace, graph, repository};
+use pamin_store::{Database, graph, repository};
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
+
+use crate::session::Session;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -38,16 +40,16 @@ pub struct Linked {
     valid_to: Option<String>,
 }
 
-pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Linked> {
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Linked> {
     let Some(kind) = EdgeKind::parse(&args.kind) else {
         bail!("unknown relationship kind {:?}", args.kind);
     };
 
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
+    let database = session.database();
+    let project = session.project(project).await?;
 
-    let from = require_topic(&database, project.id, &args.from).await?;
-    let to = require_topic(&database, project.id, &args.to).await?;
+    let from = require_topic(database, project, &args.from).await?;
+    let to = require_topic(database, project, &args.to).await?;
     if from == to {
         bail!("a topic cannot be related to itself");
     }
@@ -55,7 +57,7 @@ pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result
     let mut claim = EdgeClaim::explicit(kind);
     claim.validity = args.validity.parse()?;
 
-    let assertion = graph::assert_edge(database.pool(), project.id, from, to, &claim).await?;
+    let assertion = graph::assert_edge(database.pool(), project, from, to, &claim).await?;
 
     let result = Linked {
         from: args.from,

@@ -6,8 +6,10 @@
 //! on its way to becoming one.
 
 use anyhow::Result;
-use pamin_store::{Database, Workspace, repository};
+use pamin_store::repository;
 use serde::{Deserialize, Serialize};
+
+use crate::session::Session;
 
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
@@ -47,13 +49,13 @@ pub struct Matches {
     matches: Vec<Match>,
 }
 
-pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Matches> {
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Matches> {
+    let database = session.database();
+    let project = session.project(project).await?;
 
     let hits = repository::grep_evidence(
         database.pool(),
-        project.id,
+        project,
         &args.literal,
         !args.ignore_case,
         args.limit,

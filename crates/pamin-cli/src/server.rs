@@ -1,17 +1,16 @@
 //! `pamin serve` — the process that holds what every command used to rebuild.
 //!
-//! Today it holds nothing: each request runs the same in-process path the CLI
-//! ran, so this is the socket and the dispatch and not yet the point. What it
-//! buys immediately is the seam. Once requests arrive here instead of in a
-//! fresh process, the pool, the open index, and the loaded model have somewhere
-//! to live that outlasts a command, and moving them there is a change to this
-//! file rather than to every command.
+//! One [`Session`] for the process: one pool, migrated once, and one engine per
+//! project and profile, each holding its index open and its model loaded. A
+//! command arriving here finds them already there. Before, and still without a
+//! server, every command built all of it, used it once, and dropped it.
 //!
 //! A Unix domain socket rather than a port: it is filesystem-scoped, so it
 //! inherits the workspace's permissions and cannot be reached from off the
 //! machine by accident. No authentication, for the same reason.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
@@ -22,11 +21,16 @@ use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::command;
 use crate::protocol::{Call, Request, Response, SOCKET};
+use crate::session::Session;
 
 /// Serves until stopped, and cleans up the socket on the way out.
 pub async fn run(workspace: &Workspace) -> Result<()> {
     let path = socket_path(workspace);
     std::fs::create_dir_all(workspace.root())?;
+
+    // Before the socket exists, so a client that connects finds a server that
+    // can answer rather than one still starting the database.
+    let session = Arc::new(Session::open(workspace).await?);
 
     // A socket file left by a process that died is not a listener, and binding
     // over it is the only way to find out. Removing it first is safe because a
@@ -46,10 +50,10 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
             }
         };
 
-        let workspace = workspace.clone();
+        let session = Arc::clone(&session);
         let path = path.clone();
         tokio::spawn(async move {
-            match serve_connection(&workspace, stream).await {
+            match serve_connection(&session, stream).await {
                 Ok(Shutdown::Requested) => {
                     // Answered first, then gone: the client is waiting on the
                     // reply that says the database stopped.
@@ -71,7 +75,7 @@ enum Shutdown {
 }
 
 /// Reads requests from one client until it hangs up.
-async fn serve_connection(workspace: &Workspace, stream: UnixStream) -> Result<Shutdown> {
+async fn serve_connection(session: &Session, stream: UnixStream) -> Result<Shutdown> {
     let mut framed = Framed::new(stream, LinesCodec::new_with_max_length(MAX_REQUEST));
 
     while let Some(line) = framed.next().await {
@@ -102,7 +106,7 @@ async fn serve_connection(workspace: &Workspace, stream: UnixStream) -> Result<S
             continue;
         }
         let name = request.call.name();
-        let response = match answer(workspace, request).await {
+        let response = match answer(session, request).await {
             Ok(value) => Response::Ok(value),
             // Rendered here rather than shipped as a type: this is the same
             // string the in-process path prints, chain and all.
@@ -139,7 +143,7 @@ const MAX_REQUEST: usize = 16 * 1024 * 1024;
 /// The dispatch is a match rather than a trait because there is exactly one
 /// implementation of each arm and the compiler checking that every command has
 /// one is worth more than the indirection would be.
-async fn answer(workspace: &Workspace, request: Request) -> Result<serde_json::Value> {
+async fn answer(session: &Session, request: Request) -> Result<serde_json::Value> {
     let Request {
         project,
         profile,
@@ -151,25 +155,23 @@ async fn answer(workspace: &Workspace, request: Request) -> Result<serde_json::V
         Profile::parse(&profile).ok_or_else(|| anyhow::anyhow!("unknown profile {profile:?}"))?;
 
     let value = match call {
-        Call::Init => json(command::init::execute(workspace, &project).await?)?,
+        Call::Init => json(command::init::execute(session, &project).await?)?,
         Call::Write(args) => {
-            json(command::write::execute(workspace, &project, profile, args).await?)?
+            json(command::write::execute(session, &project, profile, args).await?)?
         }
-        Call::Read(args) => json(command::read::execute(workspace, &project, args).await?)?,
+        Call::Read(args) => json(command::read::execute(session, &project, args).await?)?,
         Call::Search(args) => {
-            json(command::search::execute(workspace, &project, profile, args).await?)?
+            json(command::search::execute(session, &project, profile, args).await?)?
         }
-        Call::Grep(args) => json(command::grep::execute(workspace, &project, args).await?)?,
-        Call::Link(args) => json(command::link::execute(workspace, &project, args).await?)?,
-        Call::Unlink(args) => json(command::unlink::execute(workspace, &project, args).await?)?,
-        Call::Neighbors(args) => {
-            json(command::neighbors::execute(workspace, &project, args).await?)?
-        }
+        Call::Grep(args) => json(command::grep::execute(session, &project, args).await?)?,
+        Call::Link(args) => json(command::link::execute(session, &project, args).await?)?,
+        Call::Unlink(args) => json(command::unlink::execute(session, &project, args).await?)?,
+        Call::Neighbors(args) => json(command::neighbors::execute(session, &project, args).await?)?,
         Call::Reindex(args) => {
-            json(command::reindex::execute(workspace, &project, profile, args).await?)?
+            json(command::reindex::execute(session, &project, profile, args).await?)?
         }
-        Call::Cascade(args) => command::cascade::answer(workspace, &project, profile, args).await?,
-        Call::Stop => json(command::stop::execute(workspace).await?)?,
+        Call::Cascade(args) => command::cascade::answer(session, &project, profile, args).await?,
+        Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
     };
 
     Ok(value)

@@ -572,6 +572,13 @@ The results are identical — it is the same code either way — so this is for
 debugging the server itself, and for a caller that would rather have one process
 to reason about than a fast one.
 
+It does not combine with a server that is already up. A running server holds the
+index open for writing, and the index takes an exclusive lock on its directory,
+so a second process opening the same project fails rather than waiting. That is
+the lock doing its job: two processes writing one index is what it exists to
+prevent. Run `pamin stop` first if you want the in-process path against a
+workspace a server is holding.
+
 Every command goes through the server except two. `serve` is the server, and
 `stop` is what shuts it down.
 

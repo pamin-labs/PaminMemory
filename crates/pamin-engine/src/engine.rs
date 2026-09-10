@@ -142,30 +142,55 @@ impl Engine {
         profile: Profile,
         access: Access,
     ) -> Result<Self> {
-        Self::open_index(workspace, project, profile, access, false).await
+        let database = Database::open(workspace).await?;
+        Self::assemble(database, workspace, project, profile, access, false).await
     }
 
-    /// Opens with the projection discarded first, for a rebuild.
+    /// Opens against a database that is already up.
+    ///
+    /// `Database::open` probes the cluster and runs the migrations, which is
+    /// right once per process and wasteful once per request. A caller holding
+    /// a database -- which is what a resident server is -- passes it in.
+    pub async fn attached(
+        database: Database,
+        workspace: &Workspace,
+        project: &str,
+        profile: Profile,
+        access: Access,
+    ) -> Result<Self> {
+        Self::assemble(database, workspace, project, profile, access, false).await
+    }
+
+    /// Rebuilding, against a database that is already up.
     ///
     /// Discarding before opening rather than overwriting in place is what
     /// makes a rebuild a rebuild: an overwrite leaves behind anything the
     /// ledger no longer has, which is the drift the rebuild exists to remove.
-    pub async fn rebuilding(
+    pub async fn rebuilding_attached(
+        database: Database,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
     ) -> Result<Self> {
-        Self::open_index(workspace, project, profile, Access::ReadWrite, true).await
+        Self::assemble(
+            database,
+            workspace,
+            project,
+            profile,
+            Access::ReadWrite,
+            true,
+        )
+        .await
     }
 
-    async fn open_index(
+    async fn assemble(
+        database: Database,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
         access: Access,
         discard: bool,
     ) -> Result<Self> {
-        let database = Database::open(workspace).await?;
         let project = repository::ensure_project(database.pool(), project).await?;
 
         // The index is per project, so the identity has to be resolved before

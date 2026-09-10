@@ -28,7 +28,7 @@ use crate::error::{IndexError, Result};
 /// are permissively licensed. EmbeddingGemma scores well and would otherwise be
 /// a candidate, but it carries usage restrictions that must be passed on to
 /// downstream users, which is not a burden to attach to an open-source default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     /// 384 dimensions. Bulk ingestion and low-spec machines.
