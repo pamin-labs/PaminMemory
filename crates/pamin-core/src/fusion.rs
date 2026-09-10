@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::channel::{Channel, ChannelResults};
 use crate::graph::{Derivation, EdgeKind};
-use crate::id::TopicStateId;
+use crate::id::TopicId;
 use crate::ledger::RetrievalSignals;
 
 /// How sharply a result's rank in one channel counts toward its fused score.
@@ -91,14 +91,16 @@ pub enum Modifier {
     Importance,
     /// The balance of successful against failed outcomes it took part in.
     Worth,
-    /// The state has been replaced by a newer one.
-    Superseded,
 }
 
 /// A fused result and the reasoning behind its position.
+///
+/// A topic rather than one of its states. The channels rank topics because the
+/// projection holds one document per topic: a topic's history lives in the
+/// ledger and is read by version, never ranked against itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FusedResult {
-    pub topic_state: TopicStateId,
+    pub topic: TopicId,
     pub score: f32,
     pub why: Vec<Why>,
 }
@@ -146,7 +148,7 @@ impl Fusion {
 
     /// Fuses per-channel ranked lists into one ordered result set.
     pub fn fuse(&self, lists: &[ChannelResults]) -> Vec<FusedResult> {
-        let mut accumulated: BTreeMap<TopicStateId, (f32, Vec<Why>)> = BTreeMap::new();
+        let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
 
         for list in lists {
             let weight = self.weight(list.channel);
@@ -166,11 +168,7 @@ impl Fusion {
 
         let mut results: Vec<FusedResult> = accumulated
             .into_iter()
-            .map(|(topic_state, (score, why))| FusedResult {
-                topic_state,
-                score,
-                why,
-            })
+            .map(|(topic, (score, why))| FusedResult { topic, score, why })
             .collect();
 
         sort_results(&mut results);
@@ -190,8 +188,6 @@ pub struct Modifiers {
     pub importance_weight: f32,
     /// How strongly the balance of successful against failed outcomes lifts it.
     pub worth_weight: f32,
-    /// What a superseded state keeps of its score.
-    pub superseded_factor: f32,
 }
 
 impl Default for Modifiers {
@@ -199,27 +195,18 @@ impl Default for Modifiers {
         Self {
             importance_weight: 0.2,
             worth_weight: 0.2,
-            superseded_factor: 0.5,
         }
     }
 }
 
 impl Modifiers {
     /// Applies every modifier to one result, appending a trace line for each.
-    ///
-    /// `is_current` says whether this state is the topic's current one; a
-    /// superseded state is down-weighted rather than removed, because a query
-    /// about how something changed needs it.
-    pub fn apply(&self, result: &mut FusedResult, signals: &RetrievalSignals, is_current: bool) {
+    pub fn apply(&self, result: &mut FusedResult, signals: &RetrievalSignals) {
         let importance = 1.0 + self.importance_weight * signals.importance.clamp(0.0, 1.0);
         self.record(result, Modifier::Importance, importance);
 
         let worth = 1.0 + self.worth_weight * worth_ratio(signals);
         self.record(result, Modifier::Worth, worth);
-
-        if !is_current {
-            self.record(result, Modifier::Superseded, self.superseded_factor);
-        }
     }
 
     /// Applies one modifier, and records it only if it changed anything.
@@ -270,7 +257,7 @@ pub fn sort_results(results: &mut [FusedResult]) {
             .score
             .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.topic_state.0.cmp(&right.topic_state.0))
+            .then_with(|| left.topic.0.cmp(&right.topic.0))
     });
 }
 
@@ -278,8 +265,8 @@ pub fn sort_results(results: &mut [FusedResult]) {
 mod tests {
     use super::*;
 
-    fn id(byte: u8) -> TopicStateId {
-        TopicStateId(uuid::Uuid::from_bytes([byte; 16]))
+    fn id(byte: u8) -> TopicId {
+        TopicId(uuid::Uuid::from_bytes([byte; 16]))
     }
 
     #[test]
@@ -293,7 +280,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            fused[0].topic_state, both,
+            fused[0].topic, both,
             "agreement across channels should outrank a single strong hit"
         );
     }
@@ -306,7 +293,7 @@ mod tests {
             ChannelResults::new(Channel::Vector, vec![target]),
         ]);
 
-        let entry = fused.iter().find(|r| r.topic_state == target).unwrap();
+        let entry = fused.iter().find(|r| r.topic == target).unwrap();
         let ranks: Vec<_> = entry
             .why
             .iter()
@@ -342,7 +329,7 @@ mod tests {
             ChannelResults::new(Channel::LexicalSegmented, vec![id(1)]),
             ChannelResults::new(Channel::Vector, vec![id(2)]),
         ]);
-        assert_eq!(fused[0].topic_state, id(2));
+        assert_eq!(fused[0].topic, id(2));
     }
 
     /// A modifier that changed nothing is not worth a line in the trace.
@@ -362,7 +349,7 @@ mod tests {
 
         // What a state the ledger has never learned anything about looks like,
         // which today is every state.
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
 
         let recorded: Vec<_> = fused
             .why
@@ -385,16 +372,22 @@ mod tests {
         let mut moved = Fusion::default()
             .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
             .remove(0);
-        Modifiers::default().apply(&mut moved, &RetrievalSignals::default(), false);
+        Modifiers::default().apply(
+            &mut moved,
+            &RetrievalSignals {
+                importance: 1.0,
+                ..RetrievalSignals::default()
+            },
+        );
         assert!(
             moved.why.iter().any(|why| matches!(
                 why,
                 Why::Modifier {
-                    modifier: Modifier::Superseded,
+                    modifier: Modifier::Importance,
                     ..
                 }
             )),
-            "a superseded state was down-weighted with nothing to show for it: {:?}",
+            "a result was lifted with nothing to show for it: {:?}",
             moved.why
         );
     }
@@ -413,7 +406,6 @@ mod tests {
                 worth_negative: 1,
                 ..RetrievalSignals::default()
             },
-            true,
         );
 
         let mut applied: Vec<_> = fused
@@ -435,29 +427,13 @@ mod tests {
     }
 
     #[test]
-    fn a_superseded_state_is_down_weighted_rather_than_dropped() {
-        let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
-            .remove(0);
-        let original = fused.score;
-
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), false);
-
-        assert!(fused.score < original);
-        assert!(
-            fused.score > 0.0,
-            "history a query might ask for must stay reachable"
-        );
-    }
-
-    #[test]
     fn a_state_with_no_recorded_outcomes_is_neither_promoted_nor_punished() {
         let mut fused = Fusion::default()
             .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
             .remove(0);
         let original = fused.score;
 
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
 
         assert!((fused.score - original).abs() < f32::EPSILON);
     }
@@ -481,7 +457,7 @@ mod tests {
             derivation: Derivation::Deterministic,
         });
 
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
 
         let channels = fused
             .why
@@ -516,8 +492,8 @@ mod tests {
         let mut reversed: Vec<FusedResult> = tied.iter().rev().cloned().collect();
         sort_results(&mut reversed);
 
-        let left: Vec<_> = tied.iter().map(|r| r.topic_state).collect();
-        let right: Vec<_> = reversed.iter().map(|r| r.topic_state).collect();
+        let left: Vec<_> = tied.iter().map(|r| r.topic).collect();
+        let right: Vec<_> = reversed.iter().map(|r| r.topic).collect();
         assert_eq!(left, right, "ordering must not depend on input order");
     }
 }

@@ -97,11 +97,21 @@ What remains:
 
 ```text
 recall channels (3)   lexical, vector, graph
-document types        topic_state / span / page_node / note   (a filter)
-post-fusion modifiers recency, version currentness, importance and worth,
-                      source quality, stale/superseded penalty, redundancy penalty
+document types        topic / span / page_node / note   (a filter)
+post-fusion modifiers recency, importance and worth, source quality,
+                      redundancy penalty
 agentic primitives    grep, read by id, navigate, typed query
 ```
+
+The projection holds one document per topic, carrying what that topic says now.
+An earlier version of this decision held one per state, and that put a topic's
+whole history into every channel's candidate budget: at the scale here -- a
+million topics averaging a dozen or so versions -- a hundred million documents
+stand in for seven million subjects, thirteen of every fourteen saying something
+their topic no longer says. It also made the version-currentness modifier
+necessary, to push down results the index should not have been returning. With
+one document per topic both go away: history is read by version from the ledger
+and is never ranked, so `search` returns current states only.
 
 All three criteria improve: four fewer query groups per search, four fewer channels of code and index, and no double-weighted recency or importance.
 

@@ -1440,3 +1440,72 @@ fn resident_kib(server: &std::process::Child) -> u64 {
         .parse()
         .expect("a resident size in KiB")
 }
+
+/// A topic's history is in the ledger, not in the retrieval index.
+///
+/// The projection used to hold one document per state. A topic edited fourteen
+/// times therefore put fourteen documents into every channel's candidate
+/// budget, thirteen of them saying something the topic no longer says, and all
+/// fourteen competing with other topics for the fifty candidates a channel
+/// returns. At the scale this store is built for -- millions of topics, a dozen
+/// or so versions each -- that is a hundred million documents standing in for
+/// seven million subjects.
+///
+/// One document per topic, holding what the topic says now. What it said before
+/// is a question for `pamin read --version-offset`, which reads the ledger and
+/// never goes near the index.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_topics_history_does_not_crowd_the_index() {
+    const VERSIONS: usize = 6;
+
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    for version in 0..VERSIONS {
+        cli.run(&[
+            "write",
+            "--topic",
+            "release_process",
+            &format!("the release process is at revision {version} of the rollout plan"),
+        ]);
+    }
+    // A second topic, so a count of one is not simply a count of everything.
+    cli.run(&[
+        "write",
+        "--topic",
+        "oncall_rota",
+        "the oncall rota rotates weekly",
+    ]);
+
+    // The rebuild reads the ledger and writes the index, so what it reports is
+    // the index's shape. Before, this was every live state.
+    let rebuilt = cli.json(&["reindex"]);
+    assert_eq!(
+        rebuilt["indexed"], 2,
+        "two topics is two documents, whatever their histories: {rebuilt}"
+    );
+
+    // And the ranked results agree: one entry for the topic, at what it says
+    // now, rather than one per revision.
+    let found = cli.json(&["search", "revision of the rollout plan", "--limit", "10"]);
+    let hits = found["hits"].as_array().expect("hits");
+    let ours: Vec<_> = hits
+        .iter()
+        .filter(|hit| hit["topic"] == "release_process")
+        .collect();
+    assert_eq!(
+        ours.len(),
+        1,
+        "a topic is one result however often it was rewritten: {found}"
+    );
+    assert_eq!(
+        ours[0]["version"], VERSIONS as u64,
+        "and the result is what the topic says now: {found}"
+    );
+
+    // The history is still there, just not in the index.
+    let earlier = cli.json(&["read", "release_process", "--version-offset", "1"]);
+    assert_eq!(earlier["version"], (VERSIONS - 1) as u64);
+    assert_eq!(earlier["is_current"], false);
+}

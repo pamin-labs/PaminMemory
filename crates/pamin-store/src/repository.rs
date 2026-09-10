@@ -65,7 +65,6 @@ sql_enum!(TombstoneReason {
 
 sql_enum!(JobKind {
     SyncTopicIndex => "sync_topic_index",
-    UnindexState => "unindex_state",
     DeriveMentions => "derive_mentions",
     BackfillMentions => "backfill_mentions",
     OptimizeIndex => "optimize_index",
@@ -523,19 +522,23 @@ pub async fn topic_state(
     Ok(row.as_ref().map(row_to_topic_state))
 }
 
-/// Loads every undeleted state in a project, oldest first.
+/// Every topic's current state, one row per topic.
 ///
-/// Used by reindex, which rebuilds the projection from the authority store.
-pub async fn all_live_topic_states(
+/// What a rebuild indexes. The projection holds one document per topic, so
+/// feeding it every live state would write a topic's fourteen versions onto one
+/// key and leave whichever the scan reached last -- which is not the same thing
+/// as the one the topic stands for.
+pub async fn all_current_topic_states(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
 ) -> Result<Vec<TopicState>> {
     let rows = sqlx::query(concat!(
         "SELECT ",
-        state_columns!(),
-        " FROM topic_states
-          WHERE project_id = $1 AND deleted_at IS NULL
-          ORDER BY topic_id, version ASC"
+        state_columns!("ts."),
+        " FROM topics
+          JOIN topic_states ts ON ts.id = topics.current_state_id
+          WHERE topics.project_id = $1 AND ts.deleted_at IS NULL
+          ORDER BY ts.topic_id ASC"
     ))
     .bind(project.0)
     .fetch_all(executor)

@@ -319,7 +319,7 @@ impl Engine {
         off_the_runtime(|| {
             let embedding = self.embedding().embed_passage(&state.content)?;
             let index = self.writing();
-            index.upsert(state.id, &state.content, &embedding)?;
+            index.upsert(state.topic_id, &state.content, &embedding)?;
             index.flush()
         })?;
         Ok(())
@@ -568,7 +568,7 @@ impl Engine {
             off_the_runtime(|| self.reading().recall_naming(name, BACKFILL_CANDIDATES))?;
 
         let states =
-            repository::topic_states_by_id(self.database.pool(), self.project, &candidates).await?;
+            repository::current_states_of(self.database.pool(), self.project, &candidates).await?;
 
         // The probe returns states; the edge is about topics, and only the
         // state a topic stands for now can support one.
@@ -647,18 +647,19 @@ impl Engine {
             ])
         })?;
 
-        // Only the ledger knows whether a state is current, what it is worth,
-        // and which states still exist at all -- so what the index returned is
-        // looked up rather than trusted. Soft-deleted states drop out here,
-        // before fusion, so a deleted memory stops occupying a place in a
-        // channel's candidate budget.
-        let candidates: Vec<TopicStateId> = lists
+        // Only the ledger knows what a topic stands for now, what it is worth,
+        // and whether it still stands for anything -- so what the index
+        // returned is resolved rather than trusted. A topic whose every state
+        // has been soft deleted resolves to nothing and drops out here, before
+        // fusion, so a deleted memory stops occupying a place in a channel's
+        // candidate budget.
+        let candidates: Vec<TopicId> = lists
             .iter()
             .flat_map(|list| list.candidates.iter().copied())
             .collect();
         let mut working = WorkingSet::default();
         working.add(
-            repository::topic_states_by_id(self.database.pool(), self.project, &candidates).await?,
+            repository::current_states_of(self.database.pool(), self.project, &candidates).await?,
         );
 
         // The graph is the one channel the index cannot see, which is the
@@ -676,14 +677,14 @@ impl Engine {
 
         let mut fused = Fusion::default().fuse(&lists);
 
-        // A state the index still knows about but the ledger has soft deleted
-        // never reached the working set, so it is not ranked.
-        fused.retain(|result| live.state(result.topic_state).is_some());
+        // A topic the index still knows about but the ledger no longer
+        // resolves never reached the working set, so it is not ranked.
+        fused.retain(|result| live.state(result.topic).is_some());
 
         let modifiers = Modifiers::default();
         for result in &mut fused {
-            let state = live.state(result.topic_state).expect("retained above");
-            if let Some(reached) = paths.get(&result.topic_state) {
+            let state = live.state(result.topic).expect("retained above");
+            if let Some(reached) = paths.get(&result.topic) {
                 result.why.push(Why::Path {
                     from: live.topic_name(reached.origin),
                     via: live.topic_name(reached.via),
@@ -692,7 +693,7 @@ impl Engine {
                     derivation: reached.derivation,
                 });
             }
-            modifiers.apply(result, &state.signals, live.is_current(state));
+            modifiers.apply(result, &state.signals);
         }
         pamin_core::sort_results(&mut fused);
 
@@ -700,10 +701,9 @@ impl Engine {
             .into_iter()
             .take(limit as usize)
             .map(|result| {
-                let state = live.state(result.topic_state).expect("retained above");
+                let state = live.state(result.topic).expect("retained above");
                 SearchHit {
-                    topic: live.topic_name(state.topic_id),
-                    is_current: live.is_current(state),
+                    topic: live.topic_name(result.topic),
                     state: state.clone(),
                     result,
                 }
@@ -727,10 +727,7 @@ impl Engine {
         query: &str,
         working: &mut WorkingSet,
         depths: Depths,
-    ) -> Result<(
-        ChannelResults,
-        std::collections::HashMap<TopicStateId, Neighbor>,
-    )> {
+    ) -> Result<(ChannelResults, std::collections::HashMap<TopicId, Neighbor>)> {
         // Topics the query names directly. Without these, a question about a
         // topic whose own content happens not to match lexically never walks
         // out from it, and "what depends on X" cannot be answered by naming X.
@@ -772,15 +769,15 @@ impl Engine {
         // and the work behind it was not.
         neighbors.truncate(depths.channel as usize);
 
-        // A topic identity is not a retrieval result; its current state is. One
-        // lookup for all of them, through the pointer on `topics`.
+        // Resolved here rather than at the end, because a topic that stands
+        // for nothing is not a result and should not take a place in this
+        // channel's budget. One lookup for all of them, through the pointer on
+        // `topics`.
         let reached: Vec<TopicId> = neighbors.iter().map(|neighbor| neighbor.topic).collect();
         let states =
             repository::current_states_of(self.database.pool(), self.project, &reached).await?;
-        let resolves_to: std::collections::HashMap<TopicId, TopicStateId> = states
-            .iter()
-            .map(|state| (state.topic_id, state.id))
-            .collect();
+        let resolves: std::collections::HashSet<TopicId> =
+            states.iter().map(|state| state.topic_id).collect();
         working.add(states);
 
         let mut candidates = Vec::new();
@@ -788,11 +785,11 @@ impl Engine {
         for neighbor in neighbors {
             // A topic whose every state has been soft deleted resolves to
             // nothing and drops out here.
-            let Some(state) = resolves_to.get(&neighbor.topic).copied() else {
+            if !resolves.contains(&neighbor.topic) {
                 continue;
-            };
-            candidates.push(state);
-            paths.insert(state, neighbor);
+            }
+            candidates.push(neighbor.topic);
+            paths.insert(neighbor.topic, neighbor);
         }
 
         Ok((ChannelResults::new(Channel::Graph, candidates), paths))
@@ -800,7 +797,7 @@ impl Engine {
 
     /// Rebuilds the projection index from the authority store.
     ///
-    /// Returns how many states were indexed. The caller discards the index
+    /// Returns how many topics were indexed. The caller discards the index
     /// directory first, which is what makes this a genuine rebuild rather than
     /// an overwrite that could leave orphans behind.
     pub async fn reindex(&self) -> Result<Rebuilt> {
@@ -818,7 +815,11 @@ impl Engine {
         // derive an edge to.
         let names = self.rebuild_name_index().await?;
 
-        let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
+        // Current states, one per topic: the projection holds one document per
+        // topic, so every live state would write a topic's whole history onto
+        // one key and leave whichever row the scan reached last.
+        let states =
+            repository::all_current_topic_states(self.database.pool(), self.project).await?;
 
         off_the_runtime(|| {
             // Both locks, in the order every other caller takes them, and held
@@ -845,7 +846,7 @@ impl Engine {
                     .iter()
                     .zip(&embeddings)
                     .map(|(state, embedding)| {
-                        (state.id, state.content.as_str(), embedding.as_slice())
+                        (state.topic_id, state.content.as_str(), embedding.as_slice())
                     })
                     .collect();
 
@@ -936,7 +937,7 @@ pub struct Recorded {
 /// What a rebuild did.
 #[derive(Clone, Copy, Debug)]
 pub struct Rebuilt {
-    /// States written to the projection.
+    /// Topics written to the projection, which is one document each.
     pub indexed: usize,
     /// Topics whose current-state pointer disagreed with the ledger.
     ///
@@ -962,14 +963,14 @@ pub struct Rebuilt {
 /// channels returned.
 ///
 /// It is filled in two steps because the search path finds its results in two
-/// steps: the index names states, and the graph names topics that then resolve
-/// to states. Both go in here, and the topics behind them are described once at
-/// the end -- when the set of topics that produced a result is finally known.
+/// steps: the index and then the graph, each naming topics. Both go in here,
+/// and the names are attached once at the end -- when the set of topics that
+/// produced a result is finally known.
 #[derive(Default)]
 struct WorkingSet {
-    by_id: std::collections::HashMap<TopicStateId, TopicState>,
-    /// The state each topic stands for now, from the pointer on `topics`.
-    current_state: std::collections::HashMap<TopicId, TopicStateId>,
+    /// What each topic stands for now. Only current states are ranked, so
+    /// there is one per topic and no question of which.
+    current: std::collections::HashMap<TopicId, TopicState>,
     /// Topic names, so a path can explain itself in the terms a caller uses.
     names: std::collections::HashMap<TopicId, String>,
 }
@@ -977,39 +978,26 @@ struct WorkingSet {
 impl WorkingSet {
     fn add(&mut self, states: Vec<TopicState>) {
         for state in states {
-            self.by_id.insert(state.id, state);
+            self.current.insert(state.topic_id, state);
         }
     }
 
-    /// Records what the ledger says about the topics behind these states.
+    /// Records what the ledger calls these topics.
     fn describe(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
-        for (topic, name, current) in topics {
+        for (topic, name, _) in topics {
             self.names.insert(topic, name);
-            if let Some(current) = current {
-                self.current_state.insert(topic, current);
-            }
         }
     }
 
-    /// The topics these states belong to.
+    /// The topics found so far.
     fn topics(&self) -> Vec<TopicId> {
-        let mut topics: Vec<TopicId> = self
-            .by_id
-            .values()
-            .map(|state| state.topic_id)
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+        let mut topics: Vec<TopicId> = self.current.keys().copied().collect();
         topics.sort_unstable_by_key(|topic| topic.0);
         topics
     }
 
-    fn state(&self, id: TopicStateId) -> Option<&TopicState> {
-        self.by_id.get(&id)
-    }
-
-    fn is_current(&self, state: &TopicState) -> bool {
-        self.current_state.get(&state.topic_id) == Some(&state.id)
+    fn state(&self, topic: TopicId) -> Option<&TopicState> {
+        self.current.get(&topic)
     }
 
     fn topic_name(&self, topic: TopicId) -> String {
@@ -1020,12 +1008,13 @@ impl WorkingSet {
     }
 }
 
-/// One search result: the state, its position, and why it is there.
+/// One search result: the topic's current state, its position, and why.
 pub struct SearchHit {
-    /// The topic this state belongs to, by the name a caller addresses it with.
+    /// The topic, by the name a caller addresses it with.
     pub topic: String,
+    /// What that topic stands for now. Search ranks topics and never their
+    /// history; `pamin read --version-offset` is what reaches an earlier one.
     pub state: TopicState,
-    pub is_current: bool,
     pub result: FusedResult,
 }
 

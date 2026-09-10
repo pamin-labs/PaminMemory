@@ -52,6 +52,11 @@ fn migrations() -> Vec<Migration> {
             "topic_name_index",
             include_str!("../migrations/V6__topic_name_index.sql"),
         ),
+        migration(
+            7,
+            "one_document_per_topic",
+            include_str!("../migrations/V7__one_document_per_topic.sql"),
+        ),
     ]
 }
 
