@@ -4,6 +4,8 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
@@ -92,6 +94,12 @@ pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
 }
 
 /// The store, the index, and the embedder, wired together.
+///
+/// Cheap to clone, and every method takes `&self`, so one engine serves many
+/// requests at once rather than one at a time. That is what a resident server
+/// needs and what a short-lived command never did: before, each of these was
+/// opened, used once, and dropped.
+#[derive(Clone)]
 pub struct Engine {
     pub database: Database,
     /// Who this process is when it claims cascade work. Distinct per process so
@@ -103,8 +111,21 @@ pub struct Engine {
     /// `Send + Sync` on the object as well as on the concrete type: erasing the
     /// type erases the auto traits with it, and a resident server serves one
     /// engine from whichever runtime thread takes the request.
-    pub index: Box<dyn Projection + Send + Sync>,
-    pub embedder: Embedder,
+    ///
+    /// Behind a lock even though every method on the trait takes `&self`. The
+    /// engine declares `Sync` and does not honour it: reading a collection
+    /// while another thread writes it segfaults, reported upstream as
+    /// alibaba/zvec#714 and still open. Readers share; a write excludes them.
+    /// On Linux this is the difference between a crash and no crash, and on
+    /// macOS it is latent, so it is not a precaution.
+    index: Arc<RwLock<Box<dyn Projection + Send + Sync>>>,
+    /// One model, and one caller into it at a time.
+    ///
+    /// Inference wants `&mut`, which is the only reason anything here ever
+    /// needed `&mut self`. Putting it behind its own lock rather than the
+    /// index's is what lets several searches read the index at once while one
+    /// of them is embedding.
+    embedder: Arc<Mutex<Embedder>>,
     pub project: ProjectId,
 }
 
@@ -172,17 +193,47 @@ impl Engine {
         Ok(Self {
             database,
             worker: format!("{}:{}", hostname(), std::process::id()),
-            index,
-            embedder,
+            index: Arc::new(RwLock::new(index)),
+            embedder: Arc::new(Mutex::new(embedder)),
             project: project.id,
         })
     }
 
+    /// The projection, for reading. Several readers share it.
+    ///
+    /// # Lock order
+    ///
+    /// Anything taking both the model and the index takes the **model first**.
+    /// The two are separate locks so that several searches can read the index
+    /// while one of them embeds, and that is exactly the shape that deadlocks
+    /// if one caller reverses it: a rebuild holding the index and waiting for
+    /// the model, against a search holding the model and waiting for the
+    /// index. Neither is doing anything wrong on its own, which is why the
+    /// order is written here rather than left to be noticed.
+    ///
+    /// A poisoned lock means a previous request panicked while holding the
+    /// index, so what it holds is whatever that panic left. Failing here is
+    /// the honest outcome: the alternative is serving from state nobody
+    /// finished writing.
+    pub(crate) fn reading(&self) -> RwLockReadGuard<'_, Box<dyn Projection + Send + Sync>> {
+        self.index.read().expect("the index lock is poisoned")
+    }
+
+    /// The projection, for writing. Excludes every reader.
+    pub(crate) fn writing(&self) -> RwLockWriteGuard<'_, Box<dyn Projection + Send + Sync>> {
+        self.index.write().expect("the index lock is poisoned")
+    }
+
+    /// The model. One caller at a time, because inference wants `&mut`.
+    pub(crate) fn embedding(&self) -> std::sync::MutexGuard<'_, Embedder> {
+        self.embedder.lock().expect("the embedder lock is poisoned")
+    }
+
     /// Adds one topic state to the projection index.
-    pub async fn index_state(&mut self, state: &TopicState) -> Result<()> {
-        let (index, embedder) = (&self.index, &mut self.embedder);
+    pub async fn index_state(&self, state: &TopicState) -> Result<()> {
         off_the_runtime(|| {
-            let embedding = embedder.embed_passage(&state.content)?;
+            let embedding = self.embedding().embed_passage(&state.content)?;
+            let index = self.writing();
             index.upsert(state.id, &state.content, &embedding)?;
             index.flush()
         })?;
@@ -202,7 +253,7 @@ impl Engine {
     ///
     /// The topic is created only when something is promoted under it, and only
     /// inside this transaction, so a held write leaves no name behind.
-    pub async fn write(&mut self, request: &Write<'_>) -> Result<Recorded> {
+    pub async fn write(&self, request: &Write<'_>) -> Result<Recorded> {
         let mut transaction = self.database.pool().begin().await?;
 
         // Manual writes to one topic share a source, so their evidence forms a
@@ -307,7 +358,7 @@ impl Engine {
     }
 
     /// Returns the topic with this name, creating it if it does not exist.
-    pub async fn ensure_topic(&mut self, name: &str) -> Result<Topic> {
+    pub async fn ensure_topic(&self, name: &str) -> Result<Topic> {
         let mut connection = self.database.pool().acquire().await?;
         let topic = repository::ensure_topic(&mut connection, self.project, name).await?;
         Ok(topic)
@@ -328,11 +379,12 @@ impl Engine {
     /// Asserting first is what keeps it cheap: a name still present is found
     /// unchanged and written nowhere, and only then is the rest closed, so
     /// re-deriving an unaltered memory still touches no row.
-    pub async fn derive_mentions(&mut self, state: &TopicState) -> Result<usize> {
+    pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
         let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
         let named: Vec<TopicId> = {
-            let segmenter = self.index.segmenter();
+            let index = self.reading();
+            let segmenter = index.segmenter();
             // Segmented once rather than once per topic: this is the same
             // question asked of every topic in the project, and only the name
             // changes between askings.
@@ -402,11 +454,9 @@ impl Engine {
     /// says now -- that is what `derive_mentions` restates and what makes the
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
-    pub(crate) async fn backfill_mentions(&mut self, topic: TopicId, name: &str) -> Result<usize> {
-        let candidates = {
-            let index = &self.index;
-            off_the_runtime(|| index.recall_naming(name, BACKFILL_CANDIDATES))?
-        };
+    pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
+        let candidates =
+            off_the_runtime(|| self.reading().recall_naming(name, BACKFILL_CANDIDATES))?;
 
         let states =
             repository::topic_states_by_id(self.database.pool(), self.project, &candidates).await?;
@@ -422,7 +472,8 @@ impl Engine {
                 .collect();
 
         let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
-            let segmenter = self.index.segmenter();
+            let index = self.reading();
+            let segmenter = index.segmenter();
             // The fixed side here is the name, so that is the side prepared.
             let name = segmenter.name_sequence(name);
             states
@@ -464,15 +515,13 @@ impl Engine {
     /// path is deliberately not taken: fusing there would produce a list that
     /// then had to be fused again with anything PostgreSQL contributes, and the
     /// per-channel ranks each result reports would already be lost.
-    pub async fn search(
-        &mut self,
-        query: &str,
-        limit: u32,
-        depths: Depths,
-    ) -> Result<Vec<SearchHit>> {
-        let (index, embedder) = (&self.index, &mut self.embedder);
+    pub async fn search(&self, query: &str, limit: u32, depths: Depths) -> Result<Vec<SearchHit>> {
         let lists = off_the_runtime(|| {
-            let embedding = embedder.embed_query(query)?;
+            // Embedded before the index is read, and the model lock released
+            // before the read lock is taken: holding both is what would turn
+            // one slow inference into a queue for every reader.
+            let embedding = self.embedding().embed_query(query)?;
+            let index = self.reading();
             Ok::<_, pamin_index::IndexError>(vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
@@ -580,7 +629,8 @@ impl Engine {
         let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
         let seeds: Vec<TopicId> = {
-            let segmenter = self.index.segmenter();
+            let index = self.reading();
+            let segmenter = index.segmenter();
             let mut seen = std::collections::HashSet::new();
 
             // Topics the query names directly. Without these, a question about
@@ -661,7 +711,7 @@ impl Engine {
     /// Returns how many states were indexed. The caller discards the index
     /// directory first, which is what makes this a genuine rebuild rather than
     /// an overwrite that could leave orphans behind.
-    pub async fn reindex(&mut self) -> Result<Rebuilt> {
+    pub async fn reindex(&self) -> Result<Rebuilt> {
         // Before the states are read: the pointer decides which state a topic
         // resolves to, so a rebuild that trusted a stale one would index the
         // wrong content and look like it had worked.
@@ -670,8 +720,17 @@ impl Engine {
 
         let states = repository::all_live_topic_states(self.database.pool(), self.project).await?;
 
-        let (index, embedder) = (&self.index, &mut self.embedder);
         off_the_runtime(|| {
+            // Both locks, in the order every other caller takes them, and held
+            // for the whole rebuild. Taking the index first here would invert
+            // the order against `search` and deadlock: a rebuild holding the
+            // index and wanting the model, against a search holding the model
+            // and wanting the index. Holding both throughout also matches what
+            // a rebuild has always done -- it opens the collection for writing,
+            // which excluded every reader in every other process already.
+            let mut embedder = self.embedding();
+            let index = self.writing();
+
             for batch in states.chunks(REINDEX_BATCH) {
                 let embeddings = batch
                     .iter()

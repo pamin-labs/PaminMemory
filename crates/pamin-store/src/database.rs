@@ -19,6 +19,11 @@ use crate::workspace::{LocalServer, Workspace};
 const DATABASE: &str = "pamin";
 
 /// A connection pool against this workspace's cluster.
+///
+/// Cloning shares the pool rather than opening a second one: `PgPool` is a
+/// handle, and a resident server holding one for the machine is the whole
+/// reason the pool replaced a single client.
+#[derive(Clone)]
 pub struct Database {
     pool: PgPool,
 }

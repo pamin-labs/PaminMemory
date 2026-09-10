@@ -70,7 +70,7 @@ pub async fn execute(
         None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
     };
 
-    let mut engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
+    let engine = Engine::open(workspace, project, profile, Access::ReadWrite).await?;
 
     // Looked up rather than created: a write the filter holds should leave no
     // trace on the retrieval surface, and an empty topic is a trace. Promotion

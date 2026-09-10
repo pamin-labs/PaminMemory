@@ -30,7 +30,7 @@ pub async fn execute(
 ) -> Result<Reindexed> {
     // Rebuilding discards this project's index first, and clears the shared
     // pre-split layout if the workspace still has one.
-    let mut engine = Engine::rebuilding(workspace, project, profile).await?;
+    let engine = Engine::rebuilding(workspace, project, profile).await?;
     let rebuilt = engine.reindex().await?;
 
     let result = Reindexed {
