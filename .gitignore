@@ -10,6 +10,10 @@
 # Rust build output
 /target/
 
+# Python bytecode, from running the budget script
+__pycache__/
+*.pyc
+
 # Rust local/editor outputs
 **/*.rs.bk
 
