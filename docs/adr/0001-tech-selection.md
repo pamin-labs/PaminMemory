@@ -176,22 +176,23 @@ BGE-M3 is the default, reversing this decision's original position. That positio
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
 
-### No cross-encoder reranker, for a reason that is not technical
+### No cross-encoder reranker, because it was measured and it did not help
 
-A cross-encoder is the largest remaining retrieval gain available to us and we cannot take it. On the evaluation corpus recall@50 is 0.95 while nDCG@10 is 0.655, and closing a gap of that shape — the right memory is in the candidates but not at the top — is exactly what reranking does; published results put it at seven or eight points of nDCG@10.
+A cross-encoder looked like the largest retrieval gain left. Published results put reranking at seven or eight points of nDCG@10, and the shape of our numbers seemed to invite it. Two permissively licensed multilingual rerankers were run against the evaluation corpus, and neither earned its cost:
 
-What blocks it is licensing. The embedding library offers four rerankers and none of them can be a default here:
+| | Size | Per query | cross | mono | lexical |
+| --- | --- | --- | --- | --- | --- |
+| dense only, no reranking | — | — | **0.8299** | 0.9849 | **1.0000** |
+| `gte-multilingual-reranker-base`, int8 | 325 MB | 245 ms | 0.7765 | **0.9908** | 0.9693 |
+| `bge-reranker-v2-m3`, int8 | 544 MB | 403 ms | 0.8166 | 0.9821 | 0.9361 |
 
-| Model | Multilingual | License | |
-| --- | --- | --- | --- |
-| `BAAI/bge-reranker-base` | English and Chinese only | permissive | not multilingual |
-| `jinaai/jina-reranker-v1-turbo-en` | English only | — | not multilingual |
-| `jinaai/jina-reranker-v2-base-multilingual` | yes | CC-BY-NC-4.0 | non-commercial |
-| `rozgo/bge-reranker-v2-m3` | yes | **none stated** | unusable |
+Reranking the dense top-30, nDCG@10, both models from ONNX exports of Apache-2.0 base models. Widening the shortlist to 50 made both worse and slower, not better: 0.7560 at 393 ms and 0.8136 at 683 ms.
 
-The last one is the interesting case and the one the plan expected to take. It is a third-party ONNX export of `BAAI/bge-reranker-v2-m3`, which is itself Apache-2.0 — but the export declares no license at all, has no model card, and claims no relationship to its base. An unlicensed artifact is not permissively licensed, and making one a default download in an Apache-2.0 project on the strength of what it was probably derived from is not a judgement to make quietly. BAAI publishes no ONNX export of that model itself.
+The diagnostic matters more than the totals. On this corpus a reranker has nothing to recover: across all 137 queries, the relevant memory is already inside the top ten by dense retrieval alone — not one query has it sitting between rank 10 and rank 50 where reranking would pull it up. What is left is reordering inside the top ten, and on cross-lingual and lexical queries both cross-encoders order worse than BGE-M3's dense similarity does.
 
-Revisit when a permissively licensed ONNX export of a multilingual cross-encoder exists, or when producing one ourselves is worth its distribution cost. The base model's Apache-2.0 license permits that; nothing in this repository is set up to do it.
+So this is not "reranking does not work". It is that a corpus of 210 memories does not put anything far enough down for a reranker to earn 245 ms, and the models cost accuracy in the groups this project cares most about. **Revisit when the opportunity is real** — a corpus where relevant memories fall below the retrieval cut, which is what millions of memories in one project would produce and what this one cannot simulate. The measurement to run first is the diagnostic above, not the nDCG: if nothing is below the cut, there is nothing to rerank.
+
+Licensing is no longer the blocker it was. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, and permissively licensed multilingual exports exist. That path is open whenever the measurement turns.
 
 ### Engineering budgets
 
