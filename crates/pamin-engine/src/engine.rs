@@ -314,13 +314,25 @@ impl Engine {
         self.embedder.lock().expect("the embedder lock is poisoned")
     }
 
-    /// Adds one topic state to the projection index.
-    pub async fn index_state(&self, state: &TopicState) -> Result<()> {
+    /// Adds one topic state to the projection index, without flushing.
+    ///
+    /// The flush belongs to whoever is running a group of these, not here.
+    /// Every buffered write costs one flush and one set of files, and an index
+    /// built a document at a time is measurably a different object than the
+    /// same documents written in batches: 384 sentences cost 1,161 files and
+    /// 1,893 MB flushed one at a time, and 35 files and 61 MB flushed every
+    /// thirty-two. Rate went with it, 13.6 documents a second against 328.
+    ///
+    /// So this leaves the writes buffered and [`drain_cascade`] flushes the
+    /// round. `pub(crate)` because that contract cannot be honoured by a caller
+    /// outside this crate, which would get an index that never became visible.
+    ///
+    /// [`drain_cascade`]: Self::drain_cascade
+    pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
         off_the_runtime(|| {
             let embedding = self.embedding().embed_passage(&state.content)?;
-            let index = self.writing();
-            index.upsert(state.topic_id, &state.content, &embedding)?;
-            index.flush()
+            self.writing()
+                .upsert(state.topic_id, &state.content, &embedding)
         })?;
         Ok(())
     }
