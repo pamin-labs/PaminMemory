@@ -12,10 +12,11 @@
 //! keeps the two paths honest about producing the same answers.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use pamin_core::ProjectId;
-use pamin_engine::Engine;
+use pamin_engine::{Engine, Models};
 use pamin_index::{Access, Profile};
 use pamin_store::{Database, Workspace, repository};
 use tokio::sync::Mutex;
@@ -27,13 +28,47 @@ pub struct Session {
     /// Project names resolved to rows. `ensure_project` is an upsert, so this
     /// saves a round trip rather than changing what happens.
     projects: Mutex<HashMap<String, ProjectId>>,
-    /// One engine per project and profile.
+    /// The models this process has loaded, shared by every engine below.
+    models: Models,
+    /// The engines this process is holding open, most recently used last.
     ///
     /// Keyed by profile as well as project because an index records the
     /// profile it was built with and refuses to open under another; two
     /// profiles against one project are two indexes, and the engine holding
     /// one cannot answer for the other.
-    engines: Mutex<HashMap<(String, Profile), Engine>>,
+    engines: Mutex<Open>,
+}
+
+/// How many indexes stay open at once.
+///
+/// An open index is not free and does not become free by being idle: measured
+/// on the smallest profile, each one holds 27 file descriptors and about 100 MB
+/// resident. Against the 1024-descriptor limit a process usually starts with,
+/// that runs out at the thirty-seventh project -- which is what happened, with
+/// the engine refusing to create its lexical indexer, before there was a bound
+/// here at all.
+///
+/// Sixteen leaves both quantities a wide margin and is large enough that a
+/// server round-robining a working set keeps it. The seventeenth project
+/// closes the one nobody has touched for longest rather than failing.
+const OPEN_INDEXES: usize = 16;
+
+/// The open engines, and which was used when.
+#[derive(Default)]
+struct Open {
+    engines: HashMap<(String, Profile), Entry>,
+    /// Counts uses rather than reading a clock: what matters is the order they
+    /// were last wanted in, and a counter cannot go backwards.
+    uses: u64,
+}
+
+struct Entry {
+    /// Behind an `Arc` so that eviction can tell an idle engine from one a
+    /// request is still using. Dropping the registry's handle to a busy engine
+    /// would leave it open anyway, and the next request for that project would
+    /// try to open its index a second time and be refused by its own lock.
+    engine: Arc<Engine>,
+    used: u64,
 }
 
 impl Session {
@@ -42,6 +77,7 @@ impl Session {
         Ok(Self {
             workspace: workspace.clone(),
             database: Database::open(workspace).await?,
+            models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Mutex::default(),
         })
@@ -80,24 +116,39 @@ impl Session {
     /// project load one model rather than twenty. That costs the second caller
     /// the first caller's wait, which is the same wait it would have paid
     /// loading its own.
-    pub async fn engine(&self, project: &str, profile: Profile) -> Result<Engine> {
+    pub async fn engine(&self, project: &str, profile: Profile) -> Result<Arc<Engine>> {
         let key = (project.to_string(), profile);
 
-        let mut engines = self.engines.lock().await;
-        if let Some(engine) = engines.get(&key) {
-            return Ok(engine.clone());
+        let mut open = self.engines.lock().await;
+        open.uses += 1;
+        let now = open.uses;
+
+        if let Some(entry) = open.engines.get_mut(&key) {
+            entry.used = now;
+            return Ok(Arc::clone(&entry.engine));
         }
 
-        let engine = Engine::attached(
-            self.database.clone(),
-            &self.workspace,
-            project,
-            profile,
-            Access::ReadWrite,
-        )
-        .await?;
+        open.make_room();
 
-        engines.insert(key, engine.clone());
+        let engine = Arc::new(
+            Engine::attached(
+                self.database.clone(),
+                &self.models,
+                &self.workspace,
+                project,
+                profile,
+                Access::ReadWrite,
+            )
+            .await?,
+        );
+
+        open.engines.insert(
+            key,
+            Entry {
+                engine: Arc::clone(&engine),
+                used: now,
+            },
+        );
         Ok(engine)
     }
 
@@ -106,15 +157,57 @@ impl Session {
     /// Evicts rather than reuses: the rebuild throws the collection away and
     /// opens a new one, so an engine held from before points at a directory
     /// that is gone.
-    pub async fn rebuilding(&self, project: &str, profile: Profile) -> Result<Engine> {
-        let mut engines = self.engines.lock().await;
-        engines.remove(&(project.to_string(), profile));
+    pub async fn rebuilding(&self, project: &str, profile: Profile) -> Result<Arc<Engine>> {
+        let key = (project.to_string(), profile);
 
-        let engine =
-            Engine::rebuilding_attached(self.database.clone(), &self.workspace, project, profile)
-                .await?;
+        let mut open = self.engines.lock().await;
+        open.engines.remove(&key);
+        open.uses += 1;
+        let now = open.uses;
+        open.make_room();
 
-        engines.insert((project.to_string(), profile), engine.clone());
+        let engine = Arc::new(
+            Engine::rebuilding_attached(
+                self.database.clone(),
+                &self.models,
+                &self.workspace,
+                project,
+                profile,
+            )
+            .await?,
+        );
+
+        open.engines.insert(
+            key,
+            Entry {
+                engine: Arc::clone(&engine),
+                used: now,
+            },
+        );
         Ok(engine)
+    }
+}
+
+impl Open {
+    /// Closes least-recently-used engines until there is room for one more.
+    ///
+    /// Only ones nothing is using. An engine a request still holds stays open
+    /// whether or not this drops its handle, so evicting it would buy nothing
+    /// and cost the next request for that project a refusal from the index's
+    /// own lock. When every open engine is busy the bound gives way rather
+    /// than the request: it exists to stop idle indexes accumulating, not to
+    /// cap how many projects can be served at once.
+    fn make_room(&mut self) {
+        while self.engines.len() >= OPEN_INDEXES {
+            let idle = self
+                .engines
+                .iter()
+                .filter(|(_, entry)| Arc::strong_count(&entry.engine) == 1)
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone());
+
+            let Some(idle) = idle else { return };
+            self.engines.remove(&idle);
+        }
     }
 }
