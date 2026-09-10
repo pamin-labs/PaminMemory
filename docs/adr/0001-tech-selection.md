@@ -146,7 +146,13 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 
 Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on this project's evaluation corpus against the full-precision 0.6720.
 
-Stored vectors are float32 and stay that way. This is a decision rather than a default awaiting evidence: a single workspace holds thousands to low millions of vectors, where float32 storage is inexpensive, so the compression buys little, while the deterministic reranker has no cross-encoder to recover the several percent of accuracy it costs. The variant that would be worth taking is float8, which reaches the same 4x compression under 0.3% loss, and `zvec` offers RaBitQ and PQ-INT8 rather than float8. If that changes, the decision is worth revisiting; memory pressure alone is not a reason to trade accuracy we cannot recover.
+Stored vectors are float32. The original reasoning was about cost and benefit — a workspace of low millions of vectors makes the compression worth little, and the deterministic reranker has no cross-encoder to recover the accuracy it costs. At the scale this store now targets that reasoning would have expired, so the trade was measured rather than assumed.
+
+It does not work in this engine. On 50,000 clustered 1024-dimensional vectors, an index built with `hnsw_with_quantize(..., Int8)` returns recall@10 of **0.000** against exact search, with or without the refiner — ten results per query, the right number, none of them the right ones. It does not error and nothing about the output looks wrong.
+
+`enable_rotate`, which the engine's own benchmarks describe as what makes INT8 usable (Cohere-768 recall 92.87% unrotated against 94.01% rotated), is not exposed in the Rust binding at all. Whether that is the whole explanation is not established; what is established is that the configuration reachable from here is unusable. The refiner is likewise unavailable without quantization: on a full-precision index `is_using_refiner` fails the query outright rather than being ignored.
+
+Revisit when the binding exposes rotation, or when the measurement above changes. Until then this is not a decision about compression being unworthy — it is that the compression on offer returns the wrong answers.
 
 The embedding model is a profile, not a constant:
 
