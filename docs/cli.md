@@ -546,6 +546,13 @@ authority store, not the index.
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
 
+It is also how a grown project resizes its vector segments. The index sizes
+them from the number of memories it holds when it is created, which for a
+project starting from nothing is the smallest size; a project that has since
+grown by orders of magnitude keeps that size until it is rebuilt. Rebuilding
+recomputes it from what the project holds now, so a project that has outgrown
+its layout searches faster afterwards.
+
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
 search nothing, so commands report it and `pamin reindex` migrates it.

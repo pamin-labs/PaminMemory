@@ -166,6 +166,28 @@ Raising `m` to 32 for the recall measured above doubles that: roughly 196 GiB fo
 
 What it does change is when the disk-resident path stops being optional. Serving that many projects at that size means keeping cold indexes on disk and paging in the working set, and the graph doubling brings that forward rather than pushing it away. The engine exposes `IndexType::Diskann` and `IvfRabitq` for it, with two constraints to carry into that work: DiskANN is Linux x86-64 only, and `enable_mmap` is written into the manifest at creation and ignored when an existing collection is opened, so it cannot be turned on after the fact.
 
+### Segment size is the whole vector-maintenance policy
+
+A vector index needs a rule for when to build a graph, and the obvious form of that rule is a threshold: build once some number of documents are unindexed. This project shipped one — a hundred thousand — and it never fired, because a project reaching a hundred thousand unindexed documents is not the case that needs the graph. A threshold is a constant asked to be right at every size.
+
+The engine makes one number do the job instead. Documents land in the segment being written and are searched by scanning it; the segment seals at a configured size, and only a sealed segment gets a graph. So the size decides both what a query scans and what a build costs, and there is no separate question of when to build — the answer is "whenever a segment sealed without one".
+
+Scanning is not a fallback here, it is the faster thing to do while a segment is small. Measured on the default profile, one graph against an exhaustive scan:
+
+| Documents | Scan | Graph | Build | Agreement |
+| --- | --- | --- | --- | --- |
+| 1,000 | 0.57 ms | 0.66 ms | 0.3 s | 1.0000 |
+| 10,000 | 2.70 ms | 3.10 ms | 8.1 s | 1.0000 |
+| 25,000 | 5.78 ms | 5.76 ms | 40.9 s | 0.9830 |
+| 50,000 | 20.85 ms | 10.08 ms | 124.0 s | 0.9540 |
+| 100,000 | 39.58 ms | 11.24 ms | 325.8 s | 0.8920 |
+
+The crossover is near 25,000, and the build cost is superlinear where the query cost is not. So a segment holds a quarter of the collection, floored at 2,000 so a new project is one segment rather than a hundred tiny ones and capped at 250,000 so no single build is ever worth more than about twenty minutes. A project past a million documents therefore runs more than four segments rather than larger ones, which is the right way round.
+
+The cost of segmenting at all is that BM25 statistics are per segment, so a term's rarity is measured against a segment rather than the project. It is small and it was measured, not assumed: six segments against one over the same 13,014 sentences moved same-language nDCG@10 from 0.8558 to 0.8517 and recall@50 from 0.9639 to 0.9655, while a query went from 208 ms to 63 ms.
+
+**`pamin reindex` is the entry point for recomputing this.** The size is written into the collection's manifest when it is created, from the document count at that moment — which for a project that grows from nothing is the floor. A project that has since grown by orders of magnitude keeps the size it was created with until it is rebuilt, and rebuilding is what recomputes it. That is a deliberate consequence of the size living in the manifest rather than a gap: changing it in place would mean resealing every segment, which is a rebuild under another name.
+
 The embedding model is a profile, not a constant:
 
 | Profile | Model | Dimensions | Resident | Per query | Cross-lingual nDCG@10 |
