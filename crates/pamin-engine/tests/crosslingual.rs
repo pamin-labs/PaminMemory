@@ -68,17 +68,17 @@
 //! |---|---|---|---|---|---|
 //! | the model | cross-lingual | 0.6338 | 0.8951 | 3,273 | 965 of 1,190 |
 //! | the model | same-language | 0.6748 | 0.9563 | 115 | 115 of 1,190 |
-//! | the product | cross-lingual | 0.4190 | 0.8476 | 4,845 | 1,149 of 1,190 |
-//! | the product | same-language | 0.8558 | 0.9639 | 39 | 39 of 1,190 |
+//! | the product | cross-lingual | 0.4238 | 0.8475 | 4,804 | 1,149 of 1,190 |
+//! | the product | same-language | 0.8547 | 0.9630 | 38 | 38 of 1,190 |
 //!
 //! **Fusion is not one effect, it is two opposite ones, and they cancel in any
-//! average.** It costs almost no recall -- 0.8951 to 0.8476 cross-lingually --
+//! average.** It costs almost no recall -- 0.8951 to 0.8475 cross-lingually --
 //! so the candidates the model reaches are still there. What changes is the
 //! order, and it changes in opposite directions: same-language nDCG@10 goes
-//! from 0.6748 to **0.8558**, because a question and its answer sentence in
+//! from 0.6748 to **0.8547**, because a question and its answer sentence in
 //! one language share words and the two lexical channels find them where a
 //! 1024-dimensional cosine does not; cross-lingual nDCG@10 goes from 0.6338 to
-//! **0.4190**, because those same two channels have nothing to match on across
+//! **0.4238**, because those same two channels have nothing to match on across
 //! languages and spend half the fused list on the query's own language about
 //! the wrong subject.
 //!
@@ -87,6 +87,14 @@
 //! do about it is a sweep rather than a conclusion: the fusion weights were
 //! settled where lexical carried signal for every query, and here it carries
 //! signal for half of them and noise for the other half.
+//!
+//! The product row is insensitive to how the index is segmented, which is the
+//! other thing worth knowing from it. The same corpus scored 0.4190 / 0.8558
+//! in one segment with no graph over it, 0.4266 / 0.8517 in six, and the
+//! numbers above in the four the engine picks for a collection this size --
+//! all within the third decimal of each other, while a query went from 208 ms
+//! to 83. Segmenting buys latency and costs no accuracy, which is not what
+//! approximate search usually trades.
 //!
 //! The last two columns are the ones that could not be obtained from the
 //! corpus this project wrote. There, across all 137 queries, the count was
