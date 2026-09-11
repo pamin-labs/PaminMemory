@@ -1774,3 +1774,74 @@ fn the_index_is_tidied_by_the_server_rather_than_by_whoever_wrote_to_it() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// An import is all of the file or none of it, and what it records is findable.
+///
+/// The interesting half is the refusal. Memories are recorded one transaction
+/// at a time, so an importer that parsed as it went would record everything
+/// before a bad line and then stop -- leaving a workspace holding some unknown
+/// prefix of a file, which is worse than either outcome. Parsing the whole file
+/// first is what makes "it failed" mean "nothing happened".
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn an_import_records_the_whole_file_or_none_of_it() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let broken = cli.home().join("broken.ndjson");
+    std::fs::write(
+        &broken,
+        "{\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n\
+         {\"topic\": \"second\", \"content\": \"the oncall rota rotates on mondays\"}\n\
+         this line is not json\n",
+    )
+    .expect("writing the broken file");
+
+    let refused = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        .args(["import", "--from"])
+        .arg(&broken)
+        .env("PAMIN_HOME", cli.home())
+        .env("PAMIN_PROFILE", PROFILE)
+        .output()
+        .expect("running import");
+    assert!(
+        !refused.status.success(),
+        "a file with a line that is not a memory was accepted"
+    );
+
+    let after = cli.json(&["search", "deployment pipeline argo"]);
+    assert!(
+        after["hits"].as_array().expect("hits").is_empty(),
+        "the lines before the bad one were recorded anyway: {after}"
+    );
+
+    let good = cli.home().join("good.ndjson");
+    std::fs::write(
+        &good,
+        "{\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n\
+         \n\
+         {\"topic\": \"second\", \"content\": \"the oncall rota rotates on mondays\"}\n",
+    )
+    .expect("writing the good file");
+
+    let imported = cli.json(&["import", "--from", good.to_str().expect("a path")]);
+    assert_eq!(imported["memories"], 2, "a blank line was counted");
+    assert_eq!(imported["promoted"], 2);
+    assert_eq!(imported["held"], 0);
+
+    let found = cli.json(&["search", "deployment pipeline argo"]);
+    assert!(
+        !found["hits"].as_array().expect("hits").is_empty(),
+        "an imported memory was not searchable afterwards"
+    );
+
+    // Again, unchanged. Every memory is held rather than rejected, which is
+    // what makes re-running an import safe rather than an error to work around.
+    let again = cli.json(&["import", "--from", good.to_str().expect("a path")]);
+    assert_eq!(again["promoted"], 0);
+    assert_eq!(again["held"], 2);
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}

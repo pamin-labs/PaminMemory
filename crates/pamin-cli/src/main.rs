@@ -55,6 +55,9 @@ enum Command {
     /// Record a memory.
     Write(command::write::Args),
 
+    /// Record many memories from a file, in one call.
+    Import(command::import::Args),
+
     /// Read a topic's current or historical state.
     Read(command::read::Args),
 
@@ -120,6 +123,7 @@ async fn main() -> Result<()> {
         Command::Serve => unreachable!("handled above"),
         Command::Init => protocol::Call::Init,
         Command::Write(args) => protocol::Call::Write(args),
+        Command::Import(args) => protocol::Call::Import(args),
         Command::Read(args) => protocol::Call::Read(args),
         Command::Search(args) => protocol::Call::Search(args),
         Command::Grep(args) => protocol::Call::Grep(args),
@@ -196,6 +200,10 @@ async fn run_here(
             let result = command::write::execute(&session, project, profile, args).await?;
             format.emit(&result, || command::write::render(&result));
         }
+        protocol::Call::Import(args) => {
+            let result = command::import::execute(&session, project, profile, args).await?;
+            format.emit(&result, || command::import::render(&result));
+        }
         protocol::Call::Read(args) => {
             let result = command::read::execute(&session, project, args).await?;
             format.emit(&result, || command::read::render(&result));
@@ -249,6 +257,10 @@ fn render(call: &protocol::Call, value: &serde_json::Value, format: output::Form
         protocol::Call::Init => {
             let result: command::init::Initialized = parse(value, "init")?;
             format.emit(&result, || command::init::render(&result));
+        }
+        protocol::Call::Import(_) => {
+            let result: command::import::Imported = parse(value, "import")?;
+            format.emit(&result, || command::import::render(&result));
         }
         protocol::Call::Write(_) => {
             let result: command::write::Written = parse(value, "write")?;
