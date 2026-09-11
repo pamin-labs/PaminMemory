@@ -28,6 +28,7 @@ fn lexical_recall_works_across_languages_and_on_exact_strings() {
         &dir.path().join("legacy"),
         PROFILE,
         Access::ReadWrite,
+        0,
     )
     .expect("open index");
 
@@ -102,6 +103,7 @@ fn discarding_the_directory_leaves_an_empty_index() {
         &dir.path().join("legacy"),
         PROFILE,
         Access::ReadWrite,
+        0,
     )
     .expect("open index");
     index
@@ -118,6 +120,7 @@ fn discarding_the_directory_leaves_an_empty_index() {
         &dir.path().join("legacy"),
         PROFILE,
         Access::ReadWrite,
+        0,
     )
     .expect("reopen index");
     assert!(
@@ -144,6 +147,7 @@ fn a_pre_split_workspace_is_reported_rather_than_searched() {
         &legacy,
         PROFILE,
         Access::ReadWrite,
+        0,
     );
     let Err(error) = opened else {
         panic!("a shared layout must not be opened silently");
@@ -165,9 +169,9 @@ fn two_readers_hold_the_index_at_once() {
     let dir = tempfile::tempdir().expect("temp dir");
     let legacy = dir.path().join("legacy");
 
-    let first = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadOnly)
+    let first = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadOnly, 0)
         .expect("first reader");
-    let second = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadOnly)
+    let second = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadOnly, 0)
         .expect("a second reader should not have to wait for the first");
 
     // Both are usable, not merely open.
@@ -197,15 +201,16 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let legacy = dir.path().join("legacy");
-    let held =
-        ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite).expect("open index");
+    let held = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0)
+        .expect("open index");
 
     let waiting = {
         let dir = dir.path().to_path_buf();
         let legacy = legacy.clone();
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
-            let opened = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite).is_ok();
+            let opened =
+                ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).is_ok();
             (opened, started.elapsed())
         })
     };
@@ -250,6 +255,7 @@ fn building_the_vector_index_loses_nothing() {
         &dir.path().join("legacy"),
         PROFILE,
         Access::ReadWrite,
+        0,
     )
     .expect("open index");
 
@@ -350,6 +356,7 @@ fn asking_for_a_name_requires_every_word_of_it() {
         &dir.path().join("legacy"),
         PROFILE,
         Access::ReadWrite,
+        0,
     )
     .expect("open index");
 
@@ -446,13 +453,13 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let legacy = dir.path().join("legacy");
 
-    ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite).expect("build one");
+    ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0).expect("build one");
 
     // What the marker held before there was a grain to record: the model, and
     // nothing else.
     std::fs::write(dir.path().join("profile"), PROFILE.model_id()).expect("age the marker");
 
-    let message = match ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite) {
+    let message = match ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0) {
         Ok(_) => panic!("an index of the wrong shape must not open"),
         Err(error) => error.to_string(),
     };

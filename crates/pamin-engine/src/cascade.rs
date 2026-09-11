@@ -19,19 +19,16 @@ use crate::engine::Engine;
 
 /// How many jobs one round takes.
 ///
-/// Small: a round holds its jobs for the length of the lease, and every job it
-/// took but has not reached yet is work nothing else will do in the meantime.
-const BATCH: i32 = 8;
-
-/// How many unindexed documents are worth a rebuild of the vector graph.
-///
-/// Written documents land in a flat buffer and only join the graph when the
-/// index is optimized, so until then every vector query scans them. Optimizing
-/// after each write would rebuild the graph for one document; never optimizing
-/// leaves the graph the index was configured for unbuilt, which is what was
-/// happening -- completeness sat at zero and the vector channel had been
-/// brute-forcing since the index was created.
-const UNINDEXED_BEFORE_OPTIMIZE: f32 = 100_000.0;
+/// A round holds its jobs for the length of the lease, and every job it took
+/// but has not reached yet is work nothing else will do in the meantime, which
+/// argues for a small number. Flushing argues the other way, and louder: a
+/// round is what one flush covers, and flushing per document rather than per
+/// batch of thirty-two measured 13.6 documents a second against 328, with
+/// 1,161 index files against 35. Sixty-four leaves a comfortable margin under
+/// a sixty-second lease -- a round is a couple of seconds -- and is large
+/// enough that the three jobs a new topic queues still leave twenty documents
+/// under one flush.
+const BATCH: i32 = 64;
 
 /// What a drain did.
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,7 +56,8 @@ impl Engine {
         let mut weighed_a_rebuild = false;
 
         loop {
-            let claimed = jobs::claim(self.database.pool(), &self.worker, BATCH).await?;
+            let claimed =
+                jobs::claim(self.database.pool(), self.project, &self.worker, BATCH).await?;
             if claimed.is_empty() {
                 // Queued at the end rather than by whoever wrote the hundred
                 // thousandth document: a rebuild is per-project work, and the
@@ -81,8 +79,34 @@ impl Engine {
                 break;
             }
 
-            for job in &claimed {
-                match self.run(job).await {
+            // The jobs that write the index first, then one flush, then the
+            // jobs that read it back. Two things follow from the order. A
+            // backfill searches the projection for memories naming a new
+            // topic, so what this round wrote has to be visible before it
+            // runs -- previously it was, by accident, because every write
+            // flushed itself, and only if the writing job happened to be
+            // claimed first. And the flush lands once per round instead of
+            // once per document, which is the difference measured in `BATCH`.
+            let (writes, reads): (Vec<&Job>, Vec<&Job>) = claimed
+                .iter()
+                .partition(|job| job.kind == JobKind::SyncTopicIndex);
+
+            let mut outcomes: Vec<(&Job, Result<()>)> = Vec::with_capacity(claimed.len());
+            for job in writes {
+                outcomes.push((job, self.run(job).await));
+            }
+            // Before anything is recorded as done, so that a process that dies
+            // here leaves the jobs owed rather than marked complete against an
+            // index that never received them.
+            if outcomes.iter().any(|(_, result)| result.is_ok()) {
+                crate::engine::off_the_runtime(|| self.writing().flush())?;
+            }
+            for job in reads {
+                outcomes.push((job, self.run(job).await));
+            }
+
+            for (job, outcome) in outcomes {
+                match outcome {
                     Ok(()) => {
                         if jobs::complete(self.database.pool(), job, &self.worker).await? {
                             drained.completed += 1;
@@ -113,14 +137,34 @@ impl Engine {
         Ok(drained)
     }
 
-    /// Whether enough has been written to be worth rebuilding the vector graph.
+    /// Whether a segment has sealed without a graph over it.
+    ///
+    /// One segment's worth of unindexed documents means one has, because a
+    /// segment is sealed at exactly that size and only a sealed segment is
+    /// given a graph. Less than that is the segment still being written, which
+    /// vector search scans -- and at that size scanning is measurably the
+    /// faster thing to do, not a fallback.
+    ///
+    /// So there is no threshold here in the sense of a tolerance for
+    /// staleness. The condition is that there is something to build.
+    ///
+    /// What this replaced was a flat hundred thousand: the same shape of rule
+    /// with a number that belonged to no particular collection. A project that
+    /// never reached a hundred thousand documents was never optimized at all --
+    /// not merely ungraphed, since optimizing is also what compacts a segment,
+    /// so its lexical fields went unmerged too. On the cross-lingual benchmark
+    /// that cost 208 ms a query against 63.
     fn needs_optimizing(&self) -> Result<bool> {
-        let (documents, complete) = crate::engine::off_the_runtime(|| {
+        let (documents, complete, segment) = crate::engine::off_the_runtime(|| {
             let index = self.reading();
-            Ok::<_, anyhow::Error>((index.document_count()?, index.vector_index_completeness()?))
+            Ok::<_, anyhow::Error>((
+                index.document_count()?,
+                index.vector_index_completeness()?,
+                index.segment_documents()?,
+            ))
         })?;
 
-        Ok(documents as f32 * (1.0 - complete) >= UNINDEXED_BEFORE_OPTIMIZE)
+        Ok(documents as f32 * (1.0 - complete) >= segment as f32)
     }
 
     /// Runs one job.
@@ -152,12 +196,8 @@ impl Engine {
         .await?;
 
         let Some(state) = states.first() else {
-            return crate::engine::off_the_runtime(|| {
-                let index = self.writing();
-                index.delete(&[topic])?;
-                index.flush()
-            })
-            .map_err(Into::into);
+            return crate::engine::off_the_runtime(|| self.writing().delete(&[topic]))
+                .map_err(Into::into);
         };
 
         self.index_state(state).await

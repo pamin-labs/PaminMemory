@@ -124,6 +124,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
+use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
 use pamin_index::{Access, Profile};
 use pamin_store::Workspace;
@@ -237,6 +238,31 @@ async fn retrieval_quality_by_group() {
     // way: the same content produces the same state.
     write_corpus(&mut engine, &corpus).await;
 
+    if let Some(settings) = sweep() {
+        println!("\n       k   lexical   cross nDCG@10   mono nDCG@10   lexical nDCG@10");
+        println!("  --------------------------------------------------------------------");
+        for (k, weight) in settings {
+            let mut groups: BTreeMap<String, Scores> = BTreeMap::new();
+            let mut ignored = Vec::new();
+            run(
+                &engine,
+                &queries,
+                fusion(k, weight),
+                &mut groups,
+                &mut ignored,
+            )
+            .await;
+            println!(
+                "  {k:>6.0}   {weight:>7.2}   {:>13.4}   {:>12.4}   {:>15.4}",
+                groups["cross_lingual"].mean_ndcg(),
+                groups["monolingual"].mean_ndcg(),
+                groups["lexical"].mean_ndcg(),
+            );
+        }
+        println!();
+        return;
+    }
+
     let mut groups: BTreeMap<String, Scores> = BTreeMap::new();
     let mut worst: Vec<(f64, String, Vec<String>)> = Vec::new();
 
@@ -315,13 +341,74 @@ const DEFAULT_PROFILE: &str = "accuracy";
 /// the cross-lingual pair by a distance, which is the point of measuring all
 /// three rather than pinning one.
 const FLOORS: &[(&str, f64, f64)] = &[
-    // 0.655 / 0.950 measured.
-    ("cross_lingual", 0.58, 0.86),
+    // 0.7223 / 0.9605 measured.
+    ("cross_lingual", 0.65, 0.86),
     // 1.000 / 1.000 measured; at the ceiling, so this catches a collapse only.
     ("lexical", 0.95, 0.98),
     // 0.994 / 1.000 measured; likewise.
     ("monolingual", 0.94, 0.98),
 ];
+
+/// The fusion settings to try when `SWEEP` is set, as (k, lexical weight).
+///
+/// The two numbers fusion has, and the pair this corpus settled once already.
+/// It is swept alongside the cross-lingual harness rather than alone, because
+/// a setting that suits one corpus and ruins the other is the outcome worth
+/// catching.
+fn sweep() -> Option<Vec<(f32, f32)>> {
+    std::env::var("SWEEP").ok()?;
+    Some(
+        [5.0, 10.0, 20.0, 60.0]
+            .into_iter()
+            .flat_map(|k| [0.0, 0.25, 0.5, 1.0].into_iter().map(move |w| (k, w)))
+            .collect(),
+    )
+}
+
+fn fusion(k: f32, lexical: f32) -> Fusion {
+    Fusion::default()
+        .with_k(k)
+        .with_weight(Channel::LexicalSegmented, lexical)
+        .with_weight(Channel::LexicalNgram, lexical)
+}
+
+/// Scores every query under one fusion setting.
+async fn run(
+    engine: &Engine,
+    queries: &[Query],
+    fusion: Fusion,
+    groups: &mut BTreeMap<String, Scores>,
+    worst: &mut Vec<(f64, String, Vec<String>)>,
+) {
+    for query in queries {
+        let hits = engine
+            .search_fused(&query.query, SEARCH_LIMIT, DEPTHS, fusion.clone())
+            .await
+            .expect("search");
+
+        let mut ranked: Vec<String> = Vec::new();
+        let mut seen = HashSet::new();
+        for hit in &hits {
+            if seen.insert(hit.topic.clone()) {
+                ranked.push(hit.topic.clone());
+            }
+        }
+
+        let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+        let ndcg = ndcg_at(&ranked, &relevant, NDCG_AT);
+        let recall = recall_at(&ranked, &relevant, RECALL_AT);
+
+        groups
+            .entry(query.group.clone())
+            .or_default()
+            .add(ndcg, recall);
+        worst.push((
+            ndcg,
+            query.query.clone(),
+            ranked.into_iter().take(3).collect(),
+        ));
+    }
+}
 
 /// Writes every memory that is not already there, then runs the queue.
 ///

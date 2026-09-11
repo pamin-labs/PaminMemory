@@ -120,10 +120,28 @@ pub async fn enqueue(
 /// the worker still runs out of attempts. Counting on the way out would let one
 /// poisoned job take down every worker that reaches it, for ever.
 ///
-/// Ordered by priority alone. Fairness between projects belongs with the
-/// process that serves many of them at once; here the worker runs inside a
-/// command that is already about one project.
-pub async fn claim(pool: &PgPool, worker: &str, batch: i32) -> Result<Vec<Job>> {
+/// One project's jobs, because every handler that runs one reads the ledger
+/// under the project its engine was opened for rather than the project the row
+/// names. Claiming across projects therefore hands a worker for one project
+/// another project's topic: the lookup finds nothing, the handler concludes
+/// the topic has no current state and removes a document from the wrong index,
+/// and the job is marked done. The queue is drained and the memory is never
+/// indexed, with nothing reporting it.
+///
+/// That was safe for exactly as long as a worker ran inside a command that was
+/// already about one project. A resident process serving many at once is what
+/// this table was built toward, and it is what makes the scope a predicate
+/// rather than a convention.
+///
+/// Within a project, ordered by priority alone. Fairness *between* projects is
+/// a scheduling question for whoever drives several drains, and not something
+/// one statement can answer.
+pub async fn claim(
+    pool: &PgPool,
+    project: ProjectId,
+    worker: &str,
+    batch: i32,
+) -> Result<Vec<Job>> {
     let now = OffsetDateTime::now_utc();
     let rows = sqlx::query(
         "UPDATE index_jobs
@@ -134,6 +152,7 @@ pub async fn claim(pool: &PgPool, worker: &str, batch: i32) -> Result<Vec<Job>> 
           WHERE id IN (
               SELECT id FROM index_jobs
                WHERE completed_at IS NULL
+                 AND project_id = $6
                  AND available_at <= $1
                  -- A job that has used its attempts stays pending with its
                  -- error rather than coming round again. Retrying for ever
@@ -151,6 +170,7 @@ pub async fn claim(pool: &PgPool, worker: &str, batch: i32) -> Result<Vec<Job>> 
     .bind(now + LEASE)
     .bind(i64::from(batch))
     .bind(pamin_core::MAX_ATTEMPTS)
+    .bind(project.0)
     .fetch_all(pool)
     .await?;
 

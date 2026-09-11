@@ -13,9 +13,10 @@
 //! returns plausible neighbours that are not the nearest ones.
 //!
 //! Fifty thousand is small against what this store is for and large enough for
-//! the graph to exist. Recall falls as a project grows -- the configuration
-//! that scored 0.952 here scores 0.984 at five thousand -- so the floor below
-//! is a floor on this size and not a promise about any other.
+//! the graph to exist. It is also large enough to be segmented the way the
+//! engine segments a real project of that size, which is the shape being
+//! measured: recall falls as a *graph* grows, not as a project does, so what
+//! keeps this number where it is is that segments stop growing.
 
 use pamin_core::TopicId;
 use pamin_index::{Access, Profile, Projection, ProjectionIndex};
@@ -29,10 +30,17 @@ const TOP: u32 = 10;
 
 /// What the shipped configuration measured when this was written.
 ///
-/// A floor rather than a target, set below the 0.952 measured so ordinary
+/// A floor rather than a target, set below the 0.999 measured so ordinary
 /// variation does not trip it. It catches the graph parameters being lowered,
 /// which is the change that has no other symptom.
-const FLOOR: f64 = 0.90;
+///
+/// Raised from 0.90 when segments stopped growing without bound. One graph over
+/// all fifty thousand documents returned 0.952 in 12.8 ms and took 126 s to
+/// build; four graphs over the same documents return **0.999 in 9.4 ms** and
+/// take 55 s. Smaller graphs are not a trade here -- they are more accurate,
+/// faster to search and cheaper to build, and the floor moves with them because
+/// the reason is understood rather than incidental.
+const FLOOR: f64 = 0.97;
 
 /// Deterministic pseudo-random, so two runs measure the same corpus.
 struct Rng(u64);
@@ -119,11 +127,14 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
     let (documents, queries) = corpus();
     let dir = tempfile::tempdir().expect("temp dir");
 
+    // Sized as the engine would size it for a project this big, so this
+    // measures the shape that ships rather than one segment holding everything.
     let index = ProjectionIndex::open(
         &dir.path().join("index"),
         &dir.path().join("legacy"),
         PROFILE,
         Access::ReadWrite,
+        DOCS as u64,
     )
     .expect("open index");
 

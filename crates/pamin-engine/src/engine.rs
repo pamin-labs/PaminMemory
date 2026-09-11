@@ -259,6 +259,11 @@ impl Engine {
         let dir = workspace.index_dir(project.id);
         let legacy = workspace.legacy_index_dir();
 
+        // How large a segment should be follows how much there is to hold, and
+        // a collection records the answer when it is created, so the count has
+        // to be in hand before the index is opened.
+        let documents = repository::topic_count(database.pool(), project.id).await?;
+
         let (index, embedder) = off_the_runtime(|| {
             if discard {
                 ProjectionIndex::discard(&dir)?;
@@ -267,7 +272,7 @@ impl Engine {
                 ProjectionIndex::discard(&legacy)?;
             }
 
-            let index = ProjectionIndex::open(&dir, &legacy, profile, access)?;
+            let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
             let embedder = models.get(profile)?;
             Ok::<_, pamin_index::IndexError>((
                 Box::new(index) as Box<dyn Projection + Send + Sync>,
@@ -314,13 +319,25 @@ impl Engine {
         self.embedder.lock().expect("the embedder lock is poisoned")
     }
 
-    /// Adds one topic state to the projection index.
-    pub async fn index_state(&self, state: &TopicState) -> Result<()> {
+    /// Adds one topic state to the projection index, without flushing.
+    ///
+    /// The flush belongs to whoever is running a group of these, not here.
+    /// Every buffered write costs one flush and one set of files, and an index
+    /// built a document at a time is measurably a different object than the
+    /// same documents written in batches: 384 sentences cost 1,161 files and
+    /// 1,893 MB flushed one at a time, and 35 files and 61 MB flushed every
+    /// thirty-two. Rate went with it, 13.6 documents a second against 328.
+    ///
+    /// So this leaves the writes buffered and [`drain_cascade`] flushes the
+    /// round. `pub(crate)` because that contract cannot be honoured by a caller
+    /// outside this crate, which would get an index that never became visible.
+    ///
+    /// [`drain_cascade`]: Self::drain_cascade
+    pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
         off_the_runtime(|| {
             let embedding = self.embedding().embed_passage(&state.content)?;
-            let index = self.writing();
-            index.upsert(state.topic_id, &state.content, &embedding)?;
-            index.flush()
+            self.writing()
+                .upsert(state.topic_id, &state.content, &embedding)
         })?;
         Ok(())
     }
@@ -625,6 +642,24 @@ impl Engine {
     /// then had to be fused again with anything PostgreSQL contributes, and the
     /// per-channel ranks each result reports would already be lost.
     pub async fn search(&self, query: &str, limit: u32, depths: Depths) -> Result<Vec<SearchHit>> {
+        self.search_fused(query, limit, depths, Fusion::default())
+            .await
+    }
+
+    /// The same search, with the fusion settings supplied.
+    ///
+    /// Exists for the same reason [`Depths`] is a parameter: the constants
+    /// fusion runs on were settled by measurement and are re-settled the same
+    /// way, so the harness that measures them has to be able to vary them.
+    /// Callers that are not measuring want [`search`](Self::search), which is
+    /// this with what ships.
+    pub async fn search_fused(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
         let lists = off_the_runtime(|| {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
@@ -675,7 +710,7 @@ impl Engine {
         );
         let live = working;
 
-        let mut fused = Fusion::default().fuse(&lists);
+        let mut fused = fusion.fuse(&lists);
 
         // A topic the index still knows about but the ledger no longer
         // resolves never reached the working set, so it is not ranked.
