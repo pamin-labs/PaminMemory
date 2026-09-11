@@ -157,6 +157,23 @@ impl Session {
         Ok(engine)
     }
 
+    /// The engines this process currently holds open.
+    ///
+    /// For the maintenance loop, which has no project of its own to work on:
+    /// upkeep is owed by whatever has been written, and what has been written
+    /// recently is what is open. A project evicted before its upkeep ran keeps
+    /// the job -- nothing is lost, it waits until the project is wanted again,
+    /// which is also when it starts mattering again.
+    pub async fn open_engines(&self) -> Vec<Arc<Engine>> {
+        self.engines
+            .lock()
+            .await
+            .engines
+            .values()
+            .map(|entry| Arc::clone(&entry.engine))
+            .collect()
+    }
+
     /// An engine with this project's index discarded first, for a rebuild.
     ///
     /// Evicts rather than reuses: the rebuild throws the collection away and

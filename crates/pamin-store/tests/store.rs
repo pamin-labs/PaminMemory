@@ -1628,7 +1628,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
 
     // Priority decides what a worker sees first: syncing the index for a memory
     // just written comes before deriving its edges.
-    let claimed = jobs::claim(database.pool(), project.id, "worker-a", 1)
+    let claimed = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1);
@@ -1640,7 +1640,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // A claimed job is not handed to anyone else.
-    let contended = jobs::claim(database.pool(), project.id, "worker-b", 10)
+    let contended = jobs::claim(database.pool(), project.id, "worker-b", 10, &JobKind::ALL)
         .await
         .expect("claim again");
     assert!(
@@ -1679,7 +1679,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // So it is still there, and claimable.
-    let requeued = jobs::claim(database.pool(), project.id, "worker-a", 1)
+    let requeued = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
         .await
         .expect("claim the re-requested job");
     assert_eq!(requeued.len(), 1);
@@ -1706,7 +1706,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     )
     .await
     .expect("enqueue after completion");
-    let revived = jobs::claim(database.pool(), project.id, "worker-a", 1)
+    let revived = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
         .await
         .expect("claim revived");
     assert_eq!(
@@ -1740,7 +1740,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
             .await
             .expect("let the retry delay elapse");
 
-        failing = jobs::claim(database.pool(), project.id, "worker-a", 1)
+        failing = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
             .await
             .expect("claim after a failure");
     }
@@ -1775,7 +1775,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // Leave the project clean for anything that counts pending work later.
-    let outstanding = jobs::claim(database.pool(), project.id, "worker-a", 100)
+    let outstanding = jobs::claim(database.pool(), project.id, "worker-a", 100, &JobKind::ALL)
         .await
         .expect("drain");
     jobs::complete(
@@ -1841,7 +1841,7 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
 
     // A batch far larger than what this project owes, so anything it is allowed
     // to see it takes.
-    let claimed = jobs::claim(database.pool(), mine.id, "worker-mine", 100)
+    let claimed = jobs::claim(database.pool(), mine.id, "worker-mine", 100, &JobKind::ALL)
         .await
         .expect("claim");
     assert!(
@@ -1861,9 +1861,15 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
         1,
         "another project's queue was drained by this project's worker"
     );
-    let left = jobs::claim(database.pool(), theirs.id, "worker-theirs", 10)
-        .await
-        .expect("claim");
+    let left = jobs::claim(
+        database.pool(),
+        theirs.id,
+        "worker-theirs",
+        10,
+        &JobKind::ALL,
+    )
+    .await
+    .expect("claim");
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].subject, Some(queued[1].1.0));
 

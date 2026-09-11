@@ -141,6 +141,7 @@ pub async fn claim(
     project: ProjectId,
     worker: &str,
     batch: i32,
+    kinds: &[JobKind],
 ) -> Result<Vec<Job>> {
     let now = OffsetDateTime::now_utc();
     let rows = sqlx::query(
@@ -153,6 +154,7 @@ pub async fn claim(
               SELECT id FROM index_jobs
                WHERE completed_at IS NULL
                  AND project_id = $6
+                 AND job_type = ANY($7)
                  AND available_at <= $1
                  -- A job that has used its attempts stays pending with its
                  -- error rather than coming round again. Retrying for ever
@@ -171,6 +173,7 @@ pub async fn claim(
     .bind(i64::from(batch))
     .bind(pamin_core::MAX_ATTEMPTS)
     .bind(project.0)
+    .bind(kinds.iter().map(|kind| kind.label()).collect::<Vec<_>>())
     .fetch_all(pool)
     .await?;
 

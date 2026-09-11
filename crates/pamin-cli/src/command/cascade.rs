@@ -7,6 +7,7 @@
 //! jobs that failed often enough to be set aside for a person to look at.
 
 use anyhow::Result;
+use pamin_engine::Owed;
 use pamin_index::Profile;
 use pamin_store::jobs;
 use serde::{Deserialize, Serialize};
@@ -188,7 +189,7 @@ pub async fn execute(
 
 pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result<Drained> {
     let engine = session.engine(project, profile).await?;
-    let drained = engine.drain_cascade().await?;
+    let drained = engine.drain_cascade(Owed::Everything).await?;
 
     Ok(Drained {
         completed: drained.completed,
@@ -206,7 +207,7 @@ async fn keep_running(session: &Session, project: &str, profile: Profile) -> Res
     let engine = session.engine(project, profile).await?;
 
     loop {
-        let drained = engine.drain_cascade().await?;
+        let drained = engine.drain_cascade(Owed::Everything).await?;
         if drained.completed > 0 || drained.failed > 0 {
             tracing::info!(
                 completed = drained.completed,

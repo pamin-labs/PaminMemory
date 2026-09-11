@@ -39,6 +39,8 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
     let listener =
         UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
 
+    tokio::spawn(maintain(Arc::clone(&session)));
+
     tracing::info!(socket = %path.display(), "serving");
 
     loop {
@@ -65,6 +67,39 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
                 Err(error) => tracing::warn!(%error, "connection failed"),
             }
         });
+    }
+}
+
+/// How often the server looks for index upkeep to do.
+///
+/// Not a pace for the work -- the work is scheduled by whoever caused it, and
+/// a tick that finds nothing owed costs one query per open project. It is how
+/// long an index may stay untidy after a burst of writes, and seconds of that
+/// changes nothing a caller can see.
+const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Does the index's housekeeping, away from whoever caused it.
+///
+/// This is the half of the cascade a write no longer waits for. Compacting a
+/// few hundred index files takes a third of a second and makes nothing more
+/// correct, so paying for it in front of an agent was the wrong place; the
+/// server is still here afterwards, which is the whole qualification for the
+/// job.
+///
+/// It claims like any other worker, so two servers against one workspace share
+/// the work rather than repeat it, and a failure is logged and retried on its
+/// own schedule rather than taken out on a request.
+async fn maintain(session: Arc<Session>) {
+    loop {
+        tokio::time::sleep(UPKEEP).await;
+
+        for engine in session.open_engines().await {
+            match engine.maintain().await {
+                Ok(true) => tracing::debug!("ran index upkeep"),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(%error, "index upkeep failed"),
+            }
+        }
     }
 }
 

@@ -41,6 +41,32 @@ pub struct Drained {
     pub pending: i64,
 }
 
+/// How much of what is owed a drain is willing to pay for.
+///
+/// Compacting the index makes it faster and never makes it more correct, which
+/// is the property that lets somebody other than the caller who caused it do
+/// the work. A resident server has such a somebody; a command that exits after
+/// one write does not, so it pays for its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owed {
+    /// Everything. What `pamin cascade` means, and what a process with nothing
+    /// behind it has to do for itself.
+    Everything,
+    /// What a memory needs before it can be found, and nothing that only makes
+    /// finding it quicker.
+    WhatAMemoryNeeds,
+}
+
+impl Owed {
+    /// The kinds this claims.
+    fn kinds(self) -> &'static [JobKind] {
+        match self {
+            Self::Everything => &JobKind::ALL,
+            Self::WhatAMemoryNeeds => &JobKind::URGENT,
+        }
+    }
+}
+
 impl Engine {
     /// Runs queued work until there is none left that is due.
     ///
@@ -48,15 +74,21 @@ impl Engine {
     /// schedules more work -- creating a topic schedules a backfill -- would
     /// otherwise leave it for whoever came next, and "drain" would mean
     /// something different each time it was called.
-    pub async fn drain_cascade(&self) -> Result<Drained> {
+    pub async fn drain_cascade(&self, owed: Owed) -> Result<Drained> {
         let mut drained = Drained::default();
         // Once, at the end, and never again in this drain: the tidy-up is
         // itself a job, so queueing another after running one would spin.
         let mut tidied = false;
 
         loop {
-            let claimed =
-                jobs::claim(self.database.pool(), self.project, &self.worker, BATCH).await?;
+            let claimed = jobs::claim(
+                self.database.pool(),
+                self.project,
+                &self.worker,
+                BATCH,
+                owed.kinds(),
+            )
+            .await?;
             if claimed.is_empty() {
                 // A drain that wrote anything ends by asking whether the index
                 // has spread across more files than it should have. Queued
@@ -72,7 +104,13 @@ impl Engine {
                         None,
                     )
                     .await?;
-                    continue;
+                    // Scheduled either way, run here only when nobody else
+                    // will. Leaving it queued is the whole of the difference
+                    // between a write that pays for maintenance and one that
+                    // does not.
+                    if owed == Owed::Everything {
+                        continue;
+                    }
                 }
                 break;
             }
@@ -203,6 +241,48 @@ impl Engine {
 
         self.backfill_mentions(topic, name).await?;
         Ok(())
+    }
+
+    /// Runs the maintenance a write left for somebody else, if any is owed.
+    ///
+    /// The other half of [`Owed::WhatAMemoryNeeds`]. A write schedules this and
+    /// returns; a process that is going to be here afterwards runs it, so
+    /// compacting a few hundred index files is not something an agent waits
+    /// out. Measured over two hundred writes, that is the difference between
+    /// 37.5 s and 28.3 s in the caller's own time.
+    ///
+    /// It claims like any other worker, so several servers against one
+    /// workspace do not duplicate the work, and a tick that finds nothing owed
+    /// costs one query.
+    ///
+    /// Returns whether it did anything, which is what a caller waiting for a
+    /// quiet moment wants to know.
+    pub async fn maintain(&self) -> Result<bool> {
+        let claimed = jobs::claim(
+            self.database.pool(),
+            self.project,
+            &self.worker,
+            BATCH,
+            &JobKind::MAINTENANCE,
+        )
+        .await?;
+        if claimed.is_empty() {
+            return Ok(false);
+        }
+
+        let mut done: Vec<&Job> = Vec::with_capacity(claimed.len());
+        for job in &claimed {
+            match self.run(job).await {
+                Ok(()) => done.push(job),
+                Err(error) => {
+                    tracing::warn!(job = %job.kind, %error, "maintenance failed");
+                    jobs::fail(self.database.pool(), job, &self.worker, &error.to_string()).await?;
+                }
+            }
+        }
+        jobs::complete(self.database.pool(), &done, &self.worker).await?;
+
+        Ok(true)
     }
 
     /// Whether the index is spread across more files than it should be.
