@@ -1696,3 +1696,81 @@ fn a_topics_history_does_not_crowd_the_index() {
     assert_eq!(earlier["version"], (VERSIONS - 1) as u64);
     assert_eq!(earlier["is_current"], false);
 }
+
+/// Keeping the index tidy is somebody else's job, and somebody else does it.
+///
+/// The index spreads across a couple more files with every write and has to be
+/// compacted before it runs out of descriptors. That compaction takes about a
+/// third of a second and makes nothing more correct -- it only makes the next
+/// search quicker -- so a writer that waits it out is paying for something
+/// nobody asked it for. Measured over two hundred writes, doing it in the
+/// caller's own time costs 37.5 s against 28.3.
+///
+/// So a write schedules it and returns, and the server runs it. That is a claim
+/// about who does the work rather than about whether it gets done, and it takes
+/// both halves to check: that a write leaves it owed, and that it stops being
+/// owed while nobody is asking for anything.
+///
+/// Before this, the writer always ran it, so the first assertion is the one
+/// that fails: every write reported `applied` and nothing was ever left over.
+#[test]
+#[ignore = "provisions postgres, downloads model weights, and writes a few hundred memories"]
+fn the_index_is_tidied_by_the_server_rather_than_by_whoever_wrote_to_it() {
+    /// Enough that the index passes its file budget at least once. It takes
+    /// about a hundred, and a hundred and sixty is margin rather than a
+    /// measurement.
+    const ENOUGH_TO_UNTIDY_IT: usize = 160;
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(90);
+
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let mut left_for_somebody = false;
+    for round in 0..ENOUGH_TO_UNTIDY_IT {
+        let written = cli.json(&[
+            "write",
+            "--topic",
+            &format!("tidy_{}", round % 8),
+            &format!("round {round} of the upkeep run"),
+        ]);
+        if written["cascade"] == "queued" {
+            left_for_somebody = true;
+        }
+    }
+    assert!(
+        left_for_somebody,
+        "no write ever left upkeep for anybody, so either the index never \
+         needed tidying or the writer tidied it itself"
+    );
+
+    // Written once so that writing it again is held in the evidence layer
+    // rather than promoted. A held write schedules nothing, so polling with it
+    // cannot be what empties the queue -- it only reports what is left.
+    cli.run(&["write", "--topic", "quiet", "nothing new is happening here"]);
+
+    let deadline = Instant::now() + GIVE_UP_AFTER;
+    let tidied = loop {
+        if Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        let held = cli.json(&["write", "--topic", "quiet", "nothing new is happening here"]);
+        assert!(
+            !held["promoted"].as_bool().expect("promoted"),
+            "the poll was supposed to be a held write and was promoted instead"
+        );
+        if held["cascade"] == "applied" {
+            break true;
+        }
+    };
+
+    assert!(
+        tidied,
+        "the server never ran the upkeep the writes left it, and nothing else \
+         was going to"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}

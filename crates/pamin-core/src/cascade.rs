@@ -33,7 +33,10 @@ pub enum JobKind {
     DeriveMentions,
     /// Link a newly created topic to memories that already named it.
     BackfillMentions,
-    /// Build the vector index over everything written since the last build.
+    /// Compact the index, and build a graph over any segment that sealed.
+    ///
+    /// The only kind that makes the index faster rather than more correct,
+    /// which is what lets it be run by somebody other than whoever caused it.
     OptimizeIndex,
 }
 
@@ -59,6 +62,22 @@ impl JobKind {
         Self::BackfillMentions,
         Self::OptimizeIndex,
     ];
+
+    /// The kinds that decide whether a memory can be found at all.
+    ///
+    /// A write owes these and nothing else. Everything here changes an answer;
+    /// what is left out only changes how long the answer takes.
+    pub const URGENT: [Self; 3] = [
+        Self::SyncTopicIndex,
+        Self::DeriveMentions,
+        Self::BackfillMentions,
+    ];
+
+    /// The kinds that only make the index faster.
+    ///
+    /// Separated because that is exactly the property that lets this run
+    /// somewhere other than in front of the caller who caused it.
+    pub const MAINTENANCE: [Self; 1] = [Self::OptimizeIndex];
 }
 
 impl std::fmt::Display for JobKind {

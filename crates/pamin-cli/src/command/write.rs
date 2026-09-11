@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 
 use crate::command::validity;
 use crate::session::Session;
-use pamin_engine::{Engine, Write};
+use pamin_engine::{Engine, Owed, Write};
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -113,16 +113,25 @@ pub async fn execute(
     // both was the gap. What the queue owed when this write looked at it is
     // about the writer's rate and stays true whatever is done about it; what it
     // owes on the way out is about whether this memory is searchable yet.
+    // A resident server runs the index's own upkeep on its own time, so a
+    // write leaves it there rather than waiting it out. Without one there is
+    // nobody else, and the writer pays for what it caused.
+    let pays_for_upkeep = if engine.database.is_resident() {
+        Owed::WhatAMemoryNeeds
+    } else {
+        Owed::Everything
+    };
+
     let (behind, owed) = if args.defer {
         let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
         let owed = if pamin_core::may_defer(behind) {
             behind
         } else {
-            engine.drain_cascade().await?.pending
+            engine.drain_cascade(pays_for_upkeep).await?.pending
         };
         (behind, owed)
     } else {
-        let owed = engine.drain_cascade().await?.pending;
+        let owed = engine.drain_cascade(pays_for_upkeep).await?.pending;
         (owed, owed)
     };
 

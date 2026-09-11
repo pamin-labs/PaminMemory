@@ -32,6 +32,16 @@ pub enum Connections {
 }
 
 impl Connections {
+    /// Whether this process is the one that stays.
+    ///
+    /// Asked about work that has to outlive the request that scheduled it.
+    /// A command that exits after one write cannot hand anything on, so it
+    /// finishes what it started; a server can, and should, because the
+    /// alternative is an agent waiting out the index's housekeeping.
+    pub fn resident(self) -> bool {
+        matches!(self, Self::Resident)
+    }
+
     /// The pool size this calls for.
     fn limit(self) -> u32 {
         match self {
@@ -62,6 +72,7 @@ fn available_cores() -> u32 {
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
+    connections: Connections,
 }
 
 impl Database {
@@ -84,6 +95,7 @@ impl Database {
     pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
         Ok(Self {
             pool: pool(&server.url(), connections).await?,
+            connections,
         })
     }
 
@@ -95,6 +107,14 @@ impl Database {
     /// query in the process queued behind, however many were ready to run.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Whether the process holding this is the one that stays.
+    ///
+    /// The same fact that sizes the pool, asked for a different reason: work
+    /// that can be handed on needs somebody to hand it to.
+    pub fn is_resident(&self) -> bool {
+        self.connections.resident()
     }
 }
 
