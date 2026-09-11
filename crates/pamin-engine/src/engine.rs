@@ -733,9 +733,18 @@ impl Engine {
             .iter()
             .map(|position| hits[*position].state.content.as_str())
             .collect();
-        let reranker = self.models.reranker(rerank)?;
+        // Finding the reranker is inside this too, not just using it. The
+        // first search of a tier downloads its weights, holding the registry
+        // lock so that twenty concurrent searches fetch one model rather than
+        // twenty -- and a lock held across a download is a lock held for a long
+        // time. Taken on a runtime thread, that blocks the thread rather than
+        // yielding it, and the callers waiting behind it block their threads
+        // too, until the runtime has no thread left to finish the download with
+        // and the server stops answering anything at all. Measured: twenty
+        // readers against a cold cache wedged it indefinitely.
         let ordered = off_the_runtime(|| {
-            reranker
+            self.models
+                .reranker(rerank)?
                 .lock()
                 .expect("the reranker lock is poisoned")
                 .rank(query, &documents)
