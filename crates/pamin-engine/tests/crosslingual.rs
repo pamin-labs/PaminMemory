@@ -68,19 +68,26 @@
 //! |---|---|---|---|---|---|
 //! | the model | cross-lingual | 0.6338 | 0.8951 | 3,273 | 965 of 1,190 |
 //! | the model | same-language | 0.6748 | 0.9563 | 115 | 115 of 1,190 |
-//! | the product | cross-lingual | 0.4238 | 0.8475 | 4,804 | 1,149 of 1,190 |
-//! | the product | same-language | 0.8547 | 0.9630 | 38 | 38 of 1,190 |
+//! | the product | cross-lingual | 0.5623 | 0.8861 | 3,849 | 1,090 of 1,190 |
+//! | the product | same-language | 0.8219 | 0.9672 | 57 | 57 of 1,190 |
 //!
 //! **Fusion is not one effect, it is two opposite ones, and they cancel in any
 //! average.** It costs almost no recall -- 0.8951 to 0.8475 cross-lingually --
 //! so the candidates the model reaches are still there. What changes is the
 //! order, and it changes in opposite directions: same-language nDCG@10 goes
-//! from 0.6748 to **0.8547**, because a question and its answer sentence in
+//! from 0.6748 to **0.8219**, because a question and its answer sentence in
 //! one language share words and the two lexical channels find them where a
 //! 1024-dimensional cosine does not; cross-lingual nDCG@10 goes from 0.6338 to
-//! **0.4238**, because those same two channels have nothing to match on across
-//! languages and spend half the fused list on the query's own language about
-//! the wrong subject.
+//! **0.5623**, because those same two channels have nothing to match on across
+//! languages and spend part of the fused list on the query's own language
+//! about the wrong subject.
+//!
+//! How much of the list they spend is what the fusion weight decides, and this
+//! corpus is what settled it. Swept here and on the corpus this project wrote,
+//! a quarter beat the half that used to ship on seven of the eight numbers the
+//! two report; the eighth is same-language ranking here, which gave up 0.033.
+//! Equal weighting — what the literature supplies — is worse than either on
+//! every group of both corpora at every `k` tried.
 //!
 //! Neither number is visible from one test, and neither is visible from the
 //! corpus this project wrote, where both groups sat near the ceiling. What to
@@ -89,12 +96,12 @@
 //! signal for half of them and noise for the other half.
 //!
 //! The product row is insensitive to how the index is segmented, which is the
-//! other thing worth knowing from it. The same corpus scored 0.4190 / 0.8558
-//! in one segment with no graph over it, 0.4266 / 0.8517 in six, and the
-//! numbers above in the four the engine picks for a collection this size --
-//! all within the third decimal of each other, while a query went from 208 ms
-//! to 83. Segmenting buys latency and costs no accuracy, which is not what
-//! approximate search usually trades.
+//! other thing worth knowing from it. Under the fusion that shipped before
+//! this, the same corpus scored 0.4190 / 0.8558 in one segment with no graph
+//! over it, 0.4266 / 0.8517 in six, and 0.4238 / 0.8547 in the four the engine
+//! picks for a collection this size -- all within the third decimal of each
+//! other, while a query went from 208 ms to 83. Segmenting buys latency and
+//! costs no accuracy, which is not what approximate search usually trades.
 //!
 //! The last two columns are the ones that could not be obtained from the
 //! corpus this project wrote. There, across all 137 queries, the count was
@@ -129,6 +136,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
 use pamin_index::{Access, Embedder, Profile};
 use pamin_store::Workspace;
@@ -578,6 +586,33 @@ fn assert_floors(named: &str, groups: &BTreeMap<String, Scores>, floors: &[(&str
     }
 }
 
+/// The fusion settings to try when `SWEEP` is set, as (k, lexical weight).
+///
+/// The two numbers fusion has. Both were settled on the corpus this project
+/// wrote, where the lexical pair carried signal for every query; this corpus
+/// is the first place they can be read against one where it carries signal for
+/// half of them and noise for the other half.
+fn sweep() -> Option<Vec<(f32, f32)>> {
+    std::env::var("SWEEP").ok()?;
+    Some(
+        [5.0, 10.0, 20.0, 60.0]
+            .into_iter()
+            .flat_map(|k| [0.0, 0.25, 0.5, 1.0].into_iter().map(move |w| (k, w)))
+            .collect(),
+    )
+}
+
+/// The fusion a sweep step runs, or the shipped one.
+fn fusion(setting: Option<(f32, f32)>) -> Fusion {
+    match setting {
+        None => Fusion::default(),
+        Some((k, lexical)) => Fusion::default()
+            .with_k(k)
+            .with_weight(Channel::LexicalSegmented, lexical)
+            .with_weight(Channel::LexicalNgram, lexical),
+    }
+}
+
 /// The profile to measure.
 fn profile() -> (String, Profile) {
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
@@ -753,7 +788,7 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
 /// and the cross-lingual nDCG well below, which is the finding rather than an
 /// inconsistency: see the table in the module notes.
 const SEARCH_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.37, 0.76), ("same_language", 0.77, 0.86)];
+    &[("cross_lingual", 0.50, 0.79), ("same_language", 0.73, 0.87)];
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
@@ -784,23 +819,49 @@ async fn search_reaches_across_languages() {
 
     write_corpus(&engine, &corpus).await;
 
-    let mut groups = BTreeMap::new();
-    let started = std::time::Instant::now();
-    for query in &queries {
-        let hits = engine
-            .search(query.text(), DEPTH as u32, DEPTHS)
-            .await
-            .expect("search");
-        let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
-        score(&mut groups, query, &ranked);
+    if let Some(settings) = sweep() {
+        println!("\n       k   lexical   cross nDCG@10   same nDCG@10   cross recall@50");
+        println!("  --------------------------------------------------------------------");
+        for setting in settings {
+            let groups = run(&engine, &queries, fusion(Some(setting))).await;
+            let (k, lexical) = setting;
+            println!(
+                "  {k:>6.0}   {lexical:>7.2}   {:>13.4}   {:>12.4}   {:>15.4}",
+                groups["cross_lingual"].mean_ndcg(),
+                groups["same_language"].mean_ndcg(),
+                groups["cross_lingual"].mean_recall(),
+            );
+        }
+        println!();
+        return;
     }
 
+    let started = std::time::Instant::now();
+    let groups = run(&engine, &queries, fusion(None)).await;
     report(
         &format!("the shipped search path, {named}"),
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
     assert_floors(&named, &groups, SEARCH_FLOORS);
+}
+
+/// Scores every query under one fusion setting.
+async fn run<'a>(
+    engine: &Engine,
+    queries: &[Query<'a>],
+    fusion: Fusion,
+) -> BTreeMap<String, Scores> {
+    let mut groups = BTreeMap::new();
+    for query in queries {
+        let hits = engine
+            .search_fused(query.text(), DEPTH as u32, DEPTHS, fusion.clone())
+            .await
+            .expect("search");
+        let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
+        score(&mut groups, query, &ranked);
+    }
+    groups
 }
 
 /// Writes every sentence that is not already a topic, then runs the queue.

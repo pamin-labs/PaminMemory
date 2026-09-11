@@ -114,22 +114,38 @@ pub struct Fusion {
 
 impl Default for Fusion {
     fn default() -> Self {
-        // The two lexical channels count as one, because they nearly are one.
-        // Both run BM25 over the same text -- one over segmented words, one
-        // over character n-grams -- so they agree with each other far more
-        // often than either agrees with the vector or graph channel. At equal
-        // weights that agreement is counted twice, and the pair outvotes the
-        // other two on every query where the wording matches and the meaning
-        // does not, which is exactly the cross-lingual case.
+        // The two lexical channels count as half of one, and both halves of
+        // that are measured rather than reasoned.
         //
-        // Measured, not assumed: at k=10 halving them takes cross-lingual
-        // nDCG@10 from 0.2404 to 0.3383, and the two corrections compound --
-        // halving alone at k=60 is worth 0.2041 to 0.2245.
+        // They are nearly one channel: both run BM25 over the same text, one
+        // over segmented words and one over character n-grams, so they agree
+        // with each other far more often than either agrees with the vector or
+        // the graph. Counted at full weight the pair outvotes the other two on
+        // every query where the wording matches and the meaning does not.
+        //
+        // What is not obvious, and needed a corpus where a query and its answer
+        // are in different languages, is that half of one channel is still too
+        // much. Swept across both evaluation corpora at four values of `k`:
+        //
+        //   weight    cross-lingual nDCG@10, ours / external
+        //     1.00              0.4345 / 0.1231   -- dominated everywhere
+        //     0.50              0.6550 / 0.4238
+        //     0.25              0.7223 / 0.5623
+        //     0.00              0.8328 / 0.6353
+        //
+        // Equal weighting is not a trade at any `k`: it is worse than half on
+        // every group of both corpora, cross-lingual and same-language alike.
+        // Zero is a trade and a bad one -- it takes the monolingual group from
+        // 0.9940 to 0.9860 and the lexical group off its ceiling, which is the
+        // one thing the n-gram channel exists for, and it would make both
+        // channels dead code. A quarter costs 0.033 of same-language ranking on
+        // the external corpus and buys 0.139 and 0.067 of cross-lingual on the
+        // two, with monolingual and lexical unmoved.
         Self {
             k: DEFAULT_K,
             weights: BTreeMap::from([
-                (Channel::LexicalSegmented, 0.5),
-                (Channel::LexicalNgram, 0.5),
+                (Channel::LexicalSegmented, 0.25),
+                (Channel::LexicalNgram, 0.25),
             ]),
         }
     }
@@ -139,6 +155,17 @@ impl Fusion {
     /// Overrides the weight of one channel.
     pub fn with_weight(mut self, channel: Channel, weight: f32) -> Self {
         self.weights.insert(channel, weight);
+        self
+    }
+
+    /// Overrides the rank constant.
+    ///
+    /// Alongside [`with_weight`](Self::with_weight) because the two are the
+    /// whole of what fusion can be tuned to, and the evaluation harnesses
+    /// sweep them together -- neither number was arrived at by argument and
+    /// neither should be changed by one.
+    pub fn with_k(mut self, k: f32) -> Self {
+        self.k = k;
         self
     }
 
