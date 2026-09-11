@@ -194,6 +194,9 @@ async fn answer(session: &Session, request: Request) -> Result<serde_json::Value
         Call::Write(args) => {
             json(command::write::execute(session, &project, profile, args).await?)?
         }
+        Call::Import(args) => {
+            json(command::import::execute(session, &project, profile, args).await?)?
+        }
         Call::Read(args) => json(command::read::execute(session, &project, args).await?)?,
         Call::Search(args) => {
             json(command::search::execute(session, &project, profile, args).await?)?

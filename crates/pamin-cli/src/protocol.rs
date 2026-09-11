@@ -64,6 +64,7 @@ pub struct Request {
 pub enum Call {
     Init,
     Write(command::write::Args),
+    Import(command::import::Args),
     Read(command::read::Args),
     Search(command::search::Args),
     Grep(command::grep::Args),
@@ -83,6 +84,7 @@ impl Call {
         match self {
             Self::Init => "init",
             Self::Write(_) => "write",
+            Self::Import(_) => "import",
             Self::Read(_) => "read",
             Self::Search(_) => "search",
             Self::Grep(_) => "grep",

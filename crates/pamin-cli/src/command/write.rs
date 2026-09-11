@@ -72,32 +72,7 @@ pub async fn execute(
     };
 
     let engine = session.engine(project, profile).await?;
-
-    // Looked up rather than created: a write the filter holds should leave no
-    // trace on the retrieval surface, and an empty topic is a trace. Promotion
-    // is what creates one, inside the write transaction.
-    let current = current_content(&engine, &args.topic).await?;
-    let verdict = SensoryFilter::default().judge(&content, current.as_deref());
-
-    let (language, confidence) = match pamin_index::detect_language(&content) {
-        Some((language, confidence)) => (Some(language), Some(confidence)),
-        None => (None, None),
-    };
-
-    let recorded = engine
-        .write(&Write {
-            topic: &args.topic,
-            content: &content,
-            content_hash: &hash(&content),
-            verdict: verdict.decision,
-            reason: verdict.reason(),
-            promoted: verdict.is_promoted(),
-            language: language.as_deref(),
-            language_confidence: confidence,
-            observed_at: OffsetDateTime::now_utc(),
-            validity,
-        })
-        .await?;
+    let (verdict, recorded) = record(&engine, &args.topic, &content, validity).await?;
 
     // The projection catches up from the outbox rather than here. Draining now
     // keeps `write` then `search` working the way it reads, without the write
@@ -113,14 +88,7 @@ pub async fn execute(
     // both was the gap. What the queue owed when this write looked at it is
     // about the writer's rate and stays true whatever is done about it; what it
     // owes on the way out is about whether this memory is searchable yet.
-    // A resident server runs the index's own upkeep on its own time, so a
-    // write leaves it there rather than waiting it out. Without one there is
-    // nobody else, and the writer pays for what it caused.
-    let pays_for_upkeep = if engine.database.is_resident() {
-        Owed::WhatAMemoryNeeds
-    } else {
-        Owed::Everything
-    };
+    let pays_for_upkeep = pays_for_upkeep(&engine);
 
     let (behind, owed) = if args.defer {
         let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
@@ -148,6 +116,60 @@ pub async fn execute(
     };
 
     Ok(result)
+}
+
+/// Records one memory in the ledger, and nothing else.
+///
+/// Everything a memory costs except the index: the filter's verdict, the
+/// language, and one transaction. Shared with the bulk path, which differs only
+/// in how often it stops to let the projection catch up -- so an import cannot
+/// drift into recording memories by different rules from a write.
+pub(crate) async fn record(
+    engine: &Engine,
+    topic: &str,
+    content: &str,
+    validity: pamin_core::Validity,
+) -> Result<(pamin_core::Verdict, pamin_engine::Recorded)> {
+    // Looked up rather than created: a write the filter holds should leave no
+    // trace on the retrieval surface, and an empty topic is a trace. Promotion
+    // is what creates one, inside the write transaction.
+    let current = current_content(engine, topic).await?;
+    let verdict = SensoryFilter::default().judge(content, current.as_deref());
+
+    let (language, confidence) = match pamin_index::detect_language(content) {
+        Some((language, confidence)) => (Some(language), Some(confidence)),
+        None => (None, None),
+    };
+
+    let recorded = engine
+        .write(&Write {
+            topic,
+            content,
+            content_hash: &hash(content),
+            verdict: verdict.decision,
+            reason: verdict.reason(),
+            promoted: verdict.is_promoted(),
+            language: language.as_deref(),
+            language_confidence: confidence,
+            observed_at: OffsetDateTime::now_utc(),
+            validity,
+        })
+        .await?;
+
+    Ok((verdict, recorded))
+}
+
+/// Who pays for the index's upkeep after this write.
+///
+/// A resident server runs it on its own time, so a write leaves it there rather
+/// than waiting it out. Without one there is nobody else, and the writer pays
+/// for what it caused.
+pub(crate) fn pays_for_upkeep(engine: &Engine) -> Owed {
+    if engine.database.is_resident() {
+        Owed::WhatAMemoryNeeds
+    } else {
+        Owed::Everything
+    }
 }
 
 /// Renders the result for a person reading it.

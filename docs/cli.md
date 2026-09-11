@@ -158,6 +158,45 @@ leave the backlog exactly where it was. A new memory queues three jobs, so an
 import pays for a batch about every three thousand of them and never carries
 more than ten thousand.
 
+## `pamin import`
+
+Records many memories in one call, from a file of one JSON object per line.
+
+```console
+$ pamin import --from memories.ndjson
+Imported 2400 memories: 2400 written, 0 held in evidence only
+```
+
+```json
+{"topic": "deployment_pipeline", "content": "the pipeline runs on argo cd"}
+{"topic": "oncall_rota", "content": "the rota rotates every monday morning"}
+```
+
+Each memory goes through the same filter, the same language detection and the
+same transaction as `pamin write`; what changes is everything around them. One
+invocation instead of one per memory, one open engine instead of one per
+memory, and the projection catching up in rounds of sixty-four rather than
+after each one. Measured on 2,400 memories, getting one into the ledger costs
+**3.2 ms here against 30.1 ms** through `pamin write`, and a whole import of
+2,400 previously-unseen memories takes 55 s against 119 s — the rest of which
+is embedding them, which costs the same either way.
+
+The file is read by whichever process holds the workspace, which is the server
+when one is running. Both are on this machine and run as you.
+
+It is parsed in full before the first memory is recorded, so a malformed last
+line is a refusal rather than half an import. Importing the same file twice is
+not an error: the second time every memory is unchanged, so the filter holds it
+in the evidence layer and nothing reaches the index — which is what the `held`
+count is reporting.
+
+The importer watches the queue as it goes and pays it down if it passes the
+depth that reports the projection behind, so an import cannot leave the index
+arbitrarily far behind however large the file is. `cascade_lagging` in `--json`
+says whether that happened.
+
+`--valid-from` and `--valid-to` apply to every memory in the file.
+
 ## `pamin read`
 
 Reads a topic at a version. `--version-offset` counts back from the current one.
