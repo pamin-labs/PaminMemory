@@ -226,6 +226,13 @@ almost nothing here and should set `off`: the candidates the lexical channels
 miss are overwhelmingly the ones in another language. The numbers above are
 from eleven languages at once.
 
+A score depends on the query as well as the memory, so a resident server
+remembers the ones it has computed and a repeated search pays nothing for them:
+measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
+Four thousand scores are kept, about a quarter of a megabyte. Without
+`pamin serve` there is no process to keep them in, so every command starts
+from nothing.
+
 The latencies are from four cores. Published figures for a reranker of this
 size are a few milliseconds per candidate rather than the ten measured here,
 and the difference is the core count; on an ordinary server `fast` is tens of

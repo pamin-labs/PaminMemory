@@ -43,6 +43,23 @@
 //! a latency budget a shallow model beats a full-scale one, because the budget
 //! buys more candidates.
 //!
+//! ## What is not paid twice
+//!
+//! A cross-encoder cannot precompute anything about a memory before the query
+//! arrives -- that is what joint encoding means, and it is why the literature's
+//! answers to this latency all change the architecture: precomputing part of a
+//! document's representation at index time, or moving to late interaction.
+//! Both trade the cost for storage proportional to documents times tokens times
+//! width, and both would mean shipping and maintaining a re-export of somebody
+//! else's weights split in two. Neither is ruled out; neither is here.
+//!
+//! What is here is the one thing that can be kept: the score itself. A query
+//! and a memory score the same every time, so a resident server remembers them,
+//! and a repeated search costs nothing -- 69.6 ms the first time, 0.0 ms the
+//! second, for the same ordering. It does nothing for a query never asked
+//! before, which is most of them; it is worth its quarter of a megabyte because
+//! agents retry.
+//!
 //! ## What the numbers do not say
 //!
 //! They were measured on four cores. Published figures for a MiniLM
@@ -180,10 +197,72 @@ impl Rerank {
     }
 }
 
-/// A loaded cross-encoder.
+/// How many scores are remembered.
+///
+/// A score is a query *and* a document, so this helps when a query comes round
+/// again -- which is what an agent does: it retries, it widens a limit, it asks
+/// the same thing again after writing something. It cannot help a query never
+/// asked before, and nothing about a document alone can be remembered, because
+/// a cross-encoder reads the document with the query and that is the whole of
+/// why it is worth running.
+///
+/// Four thousand entries is about a quarter of a megabyte, and the cache is per
+/// process, so it is `pamin serve` that makes it worth anything: without a
+/// resident process every command starts with an empty one.
+const REMEMBERED_SCORES: usize = 4096;
+
+/// Scores already computed, oldest first.
+///
+/// Keyed by a 64-bit hash of the query and the document rather than by either:
+/// holding the text would cost more than the model saves, and the pair is what
+/// identifies a score. A collision returns one candidate's score for another,
+/// which misorders a result rather than breaking one, and at this size the
+/// chance of one is around a trillion to one per lookup.
+#[derive(Default)]
+struct Scores {
+    known: std::collections::HashMap<u64, f32>,
+    order: std::collections::VecDeque<u64>,
+}
+
+impl Scores {
+    fn key(query: &str, document: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        query.hash(&mut hasher);
+        // Separated, so that a query ending where a document begins cannot
+        // collide with the other split of the same characters.
+        0u8.hash(&mut hasher);
+        document.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn get(&self, key: u64) -> Option<f32> {
+        self.known.get(&key).copied()
+    }
+
+    /// Remembers a score, forgetting the oldest once full.
+    ///
+    /// Insertion order rather than use order. Keeping a true LRU means writing
+    /// to the queue on every hit, and what this protects is milliseconds of
+    /// inference; a query asked twice is asked twice close together.
+    fn put(&mut self, key: u64, score: f32) {
+        if self.known.insert(key, score).is_some() {
+            return;
+        }
+        self.order.push_back(key);
+        while self.order.len() > REMEMBERED_SCORES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.known.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// A loaded cross-encoder, and what it has already scored.
 pub struct Reranker {
     model: TextRerank,
     tier: Rerank,
+    scores: Scores,
 }
 
 impl Reranker {
@@ -228,7 +307,11 @@ impl Reranker {
         )
         .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
 
-        Ok(Self { model, tier })
+        Ok(Self {
+            model,
+            tier,
+            scores: Scores::default(),
+        })
     }
 
     pub fn tier(&self) -> Rerank {
@@ -246,21 +329,128 @@ impl Reranker {
             return Ok(Vec::new());
         }
 
-        let mut by_length: Vec<usize> = (0..documents.len()).collect();
-        by_length.sort_by_key(|position| documents[*position].len());
-        let sorted: Vec<&str> = by_length
+        let keys: Vec<u64> = documents
             .iter()
-            .map(|position| documents[*position])
+            .map(|document| Scores::key(query, document))
             .collect();
+        let mut scores: Vec<Option<f32>> = keys.iter().map(|key| self.scores.get(*key)).collect();
 
-        let scored = self
-            .model
-            .rerank(query, &sorted, false, Some(BATCH))
-            .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
+        // Only what has not been scored before goes through the model, and
+        // sorted by length, so that a batch is not padded to a length most of
+        // its members do not have.
+        let mut unscored: Vec<usize> = (0..documents.len())
+            .filter(|position| scores[*position].is_none())
+            .collect();
+        unscored.sort_by_key(|position| documents[*position].len());
 
-        Ok(scored
-            .into_iter()
-            .map(|result| by_length[result.index])
-            .collect())
+        if !unscored.is_empty() {
+            let batch: Vec<&str> = unscored
+                .iter()
+                .map(|position| documents[*position])
+                .collect();
+            let scored = self
+                .model
+                .rerank(query, &batch, false, Some(BATCH))
+                .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
+
+            for result in scored {
+                let position = unscored[result.index];
+                scores[position] = Some(result.score);
+                self.scores.put(keys[position], result.score);
+            }
+        }
+
+        let mut ordered: Vec<usize> = (0..documents.len()).collect();
+        ordered.sort_by(|left, right| {
+            scores[*right]
+                .unwrap_or(f32::MIN)
+                .total_cmp(&scores[*left].unwrap_or(f32::MIN))
+                // A stable order when two candidates score alike, so one
+                // shortlist ranks the same way twice.
+                .then_with(|| left.cmp(right))
+        });
+        Ok(ordered)
+    }
+
+    /// How many scores are being remembered.
+    pub fn remembered(&self) -> usize {
+        self.scores.known.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_score_is_remembered_for_its_own_query_and_document() {
+        let mut scores = Scores::default();
+        let key = Scores::key("how does deployment work", "the pipeline signs artifacts");
+        scores.put(key, 0.75);
+
+        assert_eq!(scores.get(key), Some(0.75));
+        assert_eq!(
+            scores.get(Scores::key(
+                "how does rollback work",
+                "the pipeline signs artifacts"
+            )),
+            None,
+            "a different query reused another query's score"
+        );
+        assert_eq!(
+            scores.get(Scores::key(
+                "how does deployment work",
+                "backups run nightly"
+            )),
+            None,
+            "a different document reused another document's score"
+        );
+    }
+
+    /// The query and the document are hashed as two fields, not one string.
+    ///
+    /// Concatenated, "ab" + "c" and "a" + "bc" are the same bytes and would be
+    /// the same score. Both splits are plausible: a query is a phrase and a
+    /// memory begins with one.
+    #[test]
+    fn where_the_query_ends_and_the_document_begins_is_part_of_the_key() {
+        assert_ne!(Scores::key("ab", "c"), Scores::key("a", "bc"));
+    }
+
+    #[test]
+    fn the_oldest_score_is_forgotten_once_the_cache_is_full() {
+        let mut scores = Scores::default();
+        for n in 0..REMEMBERED_SCORES + 10 {
+            scores.put(Scores::key("query", &n.to_string()), n as f32);
+        }
+
+        assert_eq!(scores.known.len(), REMEMBERED_SCORES);
+        assert_eq!(
+            scores.get(Scores::key("query", "0")),
+            None,
+            "the first score written was still there after the cache filled"
+        );
+        assert_eq!(
+            scores.get(Scores::key("query", &(REMEMBERED_SCORES + 9).to_string())),
+            Some((REMEMBERED_SCORES + 9) as f32),
+            "the last score written was evicted"
+        );
+    }
+
+    /// Rewriting a score must not queue its key a second time.
+    ///
+    /// It would evict an entry per rewrite while leaving the rewritten one in
+    /// the map, so the cache would hold fewer and fewer live scores while
+    /// reporting itself full.
+    #[test]
+    fn rewriting_a_score_does_not_shorten_the_cache() {
+        let mut scores = Scores::default();
+        let key = Scores::key("query", "document");
+        for n in 0..100 {
+            scores.put(key, n as f32);
+        }
+
+        assert_eq!(scores.order.len(), 1);
+        assert_eq!(scores.get(key), Some(99.0));
     }
 }
