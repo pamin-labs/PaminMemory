@@ -122,18 +122,19 @@ pub trait Projection {
     /// How many documents the projection holds.
     fn document_count(&self) -> Result<u64>;
 
-    /// How many documents this collection seals a segment at.
+    /// How many files the projection is spread across.
     ///
-    /// Read from the collection rather than computed, because it was decided
-    /// when the collection was created and an index built by an older version
-    /// carries whatever that one chose.
-    fn segment_documents(&self) -> Result<u64>;
+    /// The resource itself rather than a proxy for it. Every one of these is
+    /// held open while the index is, so this is what a descriptor limit is
+    /// counting, and it is what decides when the index is asked to tidy up.
+    fn file_count(&self) -> Result<u64>;
 }
 
 /// A lexical or vector index over topics.
 pub struct ProjectionIndex {
     collection: Collection,
     segmenter: Segmenter,
+    dir: std::path::PathBuf,
 }
 
 /// What one document in this index stands for.
@@ -212,6 +213,48 @@ const SMALLEST_SEGMENT: u64 = 2_000;
 /// `pamin reindex` rebuilds it.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
+}
+
+/// How many files an index may be spread across before it is compacted.
+///
+/// This is the merge policy, and its shape is not ours: Lucene's
+/// `TieredMergePolicy` merges on segments per tier rather than on documents,
+/// Qdrant runs an optimizer continuously, and an engine given no such budget
+/// pays for it. A write leaves about two files behind whatever the collection
+/// holds, so without one the count grows without bound -- ten documents
+/// rewritten two hundred times reached eight hundred and forty files, and a
+/// workspace used normally for a week died of `Too many open files`.
+///
+/// The budget is in files rather than writes or documents because files are
+/// the resource: the index holds them open, and what runs out is descriptors.
+/// Two hundred and fifty-six is one such budget entirely -- the smallest
+/// default a supported platform sets -- which is the size at which one index
+/// is something a process can hold several of.
+///
+/// It is also, measured, the point where holding the budget stops costing
+/// anything. Two hundred writes over ten topics:
+///
+/// ```text
+///     budget   files held   elapsed   against no compaction
+///       none   840, rising     28.3 s                     --
+///        256       47..253     27.8 s                  +0.0
+///        512      197..442     32.1 s                   +13%
+///        128        60..109     37.5 s                  +32%
+///      every         16..18     91.1 s                  +221%
+/// ```
+///
+/// The last row is what an engine without a merge policy does when it is asked
+/// on every change, and it is not a straw man -- it was the first thing tried.
+/// The rows are not monotone between 256 and 512 because at that end the
+/// difference is smaller than the run-to-run spread, which is itself the
+/// finding: past a couple of hundred files the cost of compacting is no longer
+/// what decides the number, so the resource is.
+///
+const MAX_FILES: u64 = 256;
+
+/// Whether an index is spread across more files than it should be.
+pub fn is_fragmented(files: u64) -> bool {
+    files > MAX_FILES
 }
 
 const DOCUMENT_GRAIN: &str = "topic";
@@ -383,6 +426,7 @@ impl ProjectionIndex {
         Ok(Self {
             collection,
             segmenter: Segmenter::new(),
+            dir: dir.to_path_buf(),
         })
     }
 
@@ -580,8 +624,33 @@ impl Projection for ProjectionIndex {
         Ok(self.collection.stats()?.doc_count)
     }
 
-    fn segment_documents(&self) -> Result<u64> {
-        Ok(self.collection.schema()?.max_doc_count_per_segment())
+    /// How many files the index is spread across, counted from the directory.
+    ///
+    /// The engine reports documents and index completeness and nothing about
+    /// files, so this is read from the filesystem -- which is no worse a source,
+    /// since the number that matters is the one the operating system will
+    /// count. A directory read of a few hundred entries is well under a
+    /// millisecond and happens once per drain.
+    ///
+    /// A directory that cannot be read counts as nothing to do. This decides
+    /// whether to schedule maintenance, and failing a write over it would be a
+    /// worse answer than scheduling it a little late.
+    fn file_count(&self) -> Result<u64> {
+        fn walk(dir: &std::path::Path) -> u64 {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
+            entries
+                .flatten()
+                .map(|entry| match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => walk(&entry.path()),
+                    Ok(_) => 1,
+                    Err(_) => 0,
+                })
+                .sum()
+        }
+
+        Ok(walk(&self.dir))
     }
 }
 

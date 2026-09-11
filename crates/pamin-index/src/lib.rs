@@ -11,6 +11,6 @@ pub mod segmentation;
 
 pub use embedding::{Embedder, Profile};
 pub use error::{IndexError, Result};
-pub use projection::{Access, Projection, ProjectionIndex, segment_documents};
+pub use projection::{Access, Projection, ProjectionIndex, is_fragmented, segment_documents};
 pub use reranking::{Rerank, Reranker};
 pub use segmentation::{Segmenter, detect_language};

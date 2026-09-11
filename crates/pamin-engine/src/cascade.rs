@@ -50,31 +50,29 @@ impl Engine {
     /// something different each time it was called.
     pub async fn drain_cascade(&self) -> Result<Drained> {
         let mut drained = Drained::default();
-        // Considered once, at the end, and never again in this drain. Queueing
-        // a rebuild after running one would spin here if the rebuild ever
-        // failed to reduce what is unindexed.
-        let mut weighed_a_rebuild = false;
+        // Once, at the end, and never again in this drain: the tidy-up is
+        // itself a job, so queueing another after running one would spin.
+        let mut tidied = false;
 
         loop {
             let claimed =
                 jobs::claim(self.database.pool(), self.project, &self.worker, BATCH).await?;
             if claimed.is_empty() {
-                // Queued at the end rather than by whoever wrote the hundred
-                // thousandth document: a rebuild is per-project work, and the
+                // A drain that wrote anything ends by asking whether the index
+                // has spread across more files than it should have. Queued
+                // rather than called: maintenance is per-project work, and the
                 // outbox is what makes one worker run it rather than every
                 // worker racing to. The next round claims it.
-                if drained.completed > 0 && !weighed_a_rebuild {
-                    weighed_a_rebuild = true;
-                    if self.needs_optimizing()? {
-                        jobs::enqueue(
-                            self.database.pool(),
-                            self.project,
-                            JobKind::OptimizeIndex,
-                            None,
-                        )
-                        .await?;
-                        continue;
-                    }
+                if drained.completed > 0 && !tidied && self.index_is_fragmented()? {
+                    tidied = true;
+                    jobs::enqueue(
+                        self.database.pool(),
+                        self.project,
+                        JobKind::OptimizeIndex,
+                        None,
+                    )
+                    .await?;
+                    continue;
                 }
                 break;
             }
@@ -138,36 +136,6 @@ impl Engine {
 
         drained.pending = jobs::pending(self.database.pool(), self.project).await?;
         Ok(drained)
-    }
-
-    /// Whether a segment has sealed without a graph over it.
-    ///
-    /// One segment's worth of unindexed documents means one has, because a
-    /// segment is sealed at exactly that size and only a sealed segment is
-    /// given a graph. Less than that is the segment still being written, which
-    /// vector search scans -- and at that size scanning is measurably the
-    /// faster thing to do, not a fallback.
-    ///
-    /// So there is no threshold here in the sense of a tolerance for
-    /// staleness. The condition is that there is something to build.
-    ///
-    /// What this replaced was a flat hundred thousand: the same shape of rule
-    /// with a number that belonged to no particular collection. A project that
-    /// never reached a hundred thousand documents was never optimized at all --
-    /// not merely ungraphed, since optimizing is also what compacts a segment,
-    /// so its lexical fields went unmerged too. On the cross-lingual benchmark
-    /// that cost 208 ms a query against 63.
-    fn needs_optimizing(&self) -> Result<bool> {
-        let (documents, complete, segment) = crate::engine::off_the_runtime(|| {
-            let index = self.reading();
-            Ok::<_, anyhow::Error>((
-                index.document_count()?,
-                index.vector_index_completeness()?,
-                index.segment_documents()?,
-            ))
-        })?;
-
-        Ok(documents as f32 * (1.0 - complete) >= segment as f32)
     }
 
     /// Runs one job.
@@ -237,7 +205,31 @@ impl Engine {
         Ok(())
     }
 
-    /// Builds the vector index over everything written since the last build.
+    /// Whether the index is spread across more files than it should be.
+    ///
+    /// What this replaced looked at documents, because it was written for the
+    /// graph: building one is superlinear in documents, so gating it on
+    /// documents is right. Compaction is not the same cost with the same
+    /// argument -- files accumulate with *writes*, about two per write, whatever
+    /// the document count -- and gating both on one condition meant the second
+    /// never ran. Ten documents rewritten two hundred times left four hundred
+    /// and twenty files, growing without bound, and a workspace used normally
+    /// for a week died of `Too many open files`.
+    ///
+    /// The graph needs no condition of its own any more. A segment seals after
+    /// thousands of writes and this fires every sixty or so, so by the time a
+    /// segment is due a graph the index has already been asked many times over
+    /// -- and asking when there is nothing to do costs 28 ms.
+    fn index_is_fragmented(&self) -> Result<bool> {
+        let files = crate::engine::off_the_runtime(|| self.reading().file_count())?;
+        Ok(pamin_index::is_fragmented(files))
+    }
+
+    /// Compacts the index, and builds a graph over any segment that sealed.
+    ///
+    /// Both happen in one call because the engine does them in one call, and
+    /// it skips whichever is already done -- which is what makes asking cheap
+    /// enough to ask often.
     async fn optimize_projection(&self) -> Result<()> {
         crate::engine::off_the_runtime(|| self.writing().optimize())?;
         Ok(())
