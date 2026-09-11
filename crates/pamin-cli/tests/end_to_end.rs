@@ -147,6 +147,184 @@ const QUERIES: &[(&str, &str)] = &[
     ("развёртывания", "конвейер развёртывания"),
 ];
 
+/// Reranking moves what the lexical channels missed and leaves the rest.
+///
+/// The second pass is confined to candidates no lexical channel found, because
+/// every cross-encoder measured improves cross-lingual ranking and damages
+/// same-language ranking by about as much. Confining it makes the damage
+/// impossible rather than unlikely, and that is the property worth holding to:
+/// a candidate a lexical channel ranked comes back where fusion put it,
+/// whatever the reranker thought of it.
+///
+/// Reverting the restriction -- reranking the whole head -- reorders those too,
+/// and this fails.
+#[test]
+#[ignore = "provisions postgres, and downloads an embedding model and a reranker"]
+fn reranking_moves_what_the_lexical_channels_missed() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    // Several memories sharing the query's words, so there is an order among
+    // them for a reranker to disturb, and several sharing none, so there is
+    // something for it to do.
+    for (topic, content) in [
+        (
+            "deploy_en",
+            "the deployment pipeline publishes signed artifacts",
+        ),
+        (
+            "deploy_en2",
+            "deployment happens after every merge to the trunk",
+        ),
+        (
+            "deploy_en3",
+            "a failed deployment rolls back to the previous tag",
+        ),
+        ("rota_en", "the oncall rota rotates every monday morning"),
+        ("deploy_zh", "部署流水线在每次合并到主干后自动触发"),
+        (
+            "deploy_fr",
+            "le pipeline de déploiement publie des artefacts signés",
+        ),
+        (
+            "deploy_ja",
+            "デプロイは主幹へのマージごとに自動で実行される",
+        ),
+        (
+            "deploy_ar",
+            "يتم تشغيل خط النشر تلقائيا بعد كل دمج في الفرع الرئيسي",
+        ),
+    ] {
+        cli.run(&["write", "--topic", topic, content]);
+    }
+
+    // Each hit, and whether a lexical channel is among the reasons it is here.
+    let ranked = |tier: &str| -> Vec<(String, bool)> {
+        cli.json(&[
+            "search",
+            "how does deployment work",
+            "--limit",
+            "8",
+            "--rerank",
+            tier,
+        ])["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| {
+                let lexical = hit["why"].as_array().expect("why").iter().any(|why| {
+                    why["channel"]
+                        .as_str()
+                        .is_some_and(|channel| channel.starts_with("lexical"))
+                });
+                (hit["topic"].as_str().expect("a topic").to_string(), lexical)
+            })
+            .collect()
+    };
+
+    let plain = ranked("off");
+    let reranked = ranked("fast");
+
+    let lexical = |hits: &[(String, bool)]| -> Vec<String> {
+        hits.iter()
+            .filter(|(_, lexical)| *lexical)
+            .map(|(topic, _)| topic.clone())
+            .collect()
+    };
+    assert!(
+        !lexical(&plain).is_empty(),
+        "no candidate came from a lexical channel, so this proves nothing"
+    );
+    assert_eq!(
+        lexical(&plain),
+        lexical(&reranked),
+        "reranking moved a candidate a lexical channel had already ranked"
+    );
+
+    let order = |hits: &[(String, bool)]| -> Vec<String> {
+        hits.iter().map(|(topic, _)| topic.clone()).collect()
+    };
+    assert_ne!(
+        order(&plain),
+        order(&reranked),
+        "reranking changed nothing at all, so this proves nothing"
+    );
+}
+
+#[test]
+#[ignore = "provisions postgres, and downloads an embedding model and a reranker"]
+fn reranking_reorders_other_languages_and_leaves_this_one_alone() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    // Several memories about one subject in the query's language, so there is
+    // an order among them for a reranker to disturb, and several in others, so
+    // there is something for it to do.
+    for (topic, content) in [
+        (
+            "deploy_en",
+            "the deployment pipeline publishes signed artifacts",
+        ),
+        (
+            "deploy_en2",
+            "deployment happens after every merge to the trunk",
+        ),
+        (
+            "deploy_en3",
+            "a failed deployment rolls back to the previous tag",
+        ),
+        ("rota_en", "the oncall rota rotates every monday morning"),
+        ("deploy_zh", "部署流水线在每次合并到主干后自动触发"),
+        (
+            "deploy_fr",
+            "le pipeline de déploiement publie des artefacts signés",
+        ),
+        (
+            "deploy_ja",
+            "デプロイは主幹へのマージごとに自動で実行される",
+        ),
+    ] {
+        cli.run(&["write", "--topic", topic, content]);
+    }
+
+    let ranked = |tier: &str| -> Vec<String> {
+        cli.json(&[
+            "search",
+            "how does deployment work",
+            "--limit",
+            "7",
+            "--rerank",
+            tier,
+        ])["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| hit["topic"].as_str().expect("a topic").to_string())
+            .collect()
+    };
+
+    let plain = ranked("off");
+    let reranked = ranked("fast");
+
+    let english = |hits: &[String]| -> Vec<String> {
+        hits.iter()
+            .filter(|topic| {
+                topic.ends_with("_en") || topic.ends_with("_en2") || topic.ends_with("_en3")
+            })
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        english(&plain),
+        english(&reranked),
+        "reranking moved memories written in the query's own language"
+    );
+    assert_ne!(
+        plain, reranked,
+        "reranking changed nothing at all, so this proves nothing"
+    );
+}
+
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn a_workspace_serves_memories_in_any_language() {

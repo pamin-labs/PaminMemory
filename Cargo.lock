@@ -1882,6 +1882,7 @@ name = "pamin-index"
 version = "0.0.1"
 dependencies = [
  "fastembed",
+ "hf-hub",
  "icu_provider",
  "icu_segmenter",
  "pamin-core",
