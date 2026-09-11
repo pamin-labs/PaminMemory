@@ -106,11 +106,24 @@ pub async fn execute(
     //
     // `--defer` is that separation made visible. The memory is committed either
     // way; what changes is whether this process is the one that pays for the
-    // index.
-    let owed = if args.defer {
-        pamin_store::jobs::pending(engine.database.pool(), engine.project).await?
+    // index -- and, past the ceiling, it is, because deferring is the only way
+    // the queue grows without bound.
+    //
+    // The two numbers are two different facts, and reporting one of them for
+    // both was the gap. What the queue owed when this write looked at it is
+    // about the writer's rate and stays true whatever is done about it; what it
+    // owes on the way out is about whether this memory is searchable yet.
+    let (behind, owed) = if args.defer {
+        let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
+        let owed = if pamin_core::may_defer(behind) {
+            behind
+        } else {
+            engine.drain_cascade().await?.pending
+        };
+        (behind, owed)
     } else {
-        engine.drain_cascade().await?.pending
+        let owed = engine.drain_cascade().await?.pending;
+        (owed, owed)
     };
 
     let result = Written {
@@ -120,7 +133,7 @@ pub async fn execute(
         reason: verdict.reason().to_string(),
         source_version: recorded.source_version,
         cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
-        cascade_lagging: owed >= pamin_core::LAGGING_AT,
+        cascade_lagging: !pamin_core::may_defer(behind),
         valid_from: validity.from.map(validity::render),
         valid_to: validity.to.map(validity::render),
     };

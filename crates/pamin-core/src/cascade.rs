@@ -89,9 +89,35 @@ pub const MAX_ATTEMPTS: i32 = 8;
 /// faster than the cascade drains rather than that anything is wrong yet.
 pub const LAGGING_AT: i64 = 10_000;
 
+/// Whether a writer that asked to defer its index work may still have it.
+///
+/// The second and last thing that acts on a backlog, the first being the signal
+/// above. Deferring is what makes a bulk import cheap -- write everything, pay
+/// the index once at the end, rather than an embedding and a flush per memory
+/// -- and it is the only way the queue grows without bound, because every other
+/// write drains before it returns. So the bound goes here: a deferred write is
+/// deferred while the queue is within the depth that reports it behind, and
+/// pays it down once it is not. The writer that outran the cascade becomes the
+/// cascade.
+///
+/// **It is deliberately not a pause.** The plan for this layer was that a
+/// writer past the ceiling should sleep, which is what backpressure usually
+/// means and what it cannot mean here: the writer is ordinarily the only thing
+/// that drains, so a writer that sleeps slows the import and leaves the backlog
+/// exactly where it was. Paying it down costs the same writer the same time and
+/// bounds the queue, which sleeping does not do at all.
+///
+/// **One number, not two.** The depth that means "behind" and the depth at
+/// which something is done about it are the same on purpose. A ceiling ten
+/// times the signal would mean watching a backlog run away for an order of
+/// magnitude after already knowing it was running away.
+pub fn may_defer(pending: i64) -> bool {
+    pending < LAGGING_AT
+}
+
 #[cfg(test)]
 mod tests {
-    use super::JobKind;
+    use super::{JobKind, LAGGING_AT, may_defer};
 
     /// Every kind round-trips through the name the database stores.
     ///
@@ -105,5 +131,27 @@ mod tests {
         }
 
         assert_eq!(JobKind::parse("sync_topic"), None);
+    }
+
+    /// A queue nobody is behind on lets a writer defer.
+    ///
+    /// Which is the case a bulk import is in for all but its last few rounds,
+    /// and the reason deferring exists at all.
+    #[test]
+    fn a_writer_may_defer_while_the_queue_is_within_the_ceiling() {
+        assert!(may_defer(0));
+        assert!(may_defer(LAGGING_AT - 1));
+    }
+
+    /// The depth that reports a backlog is the depth that bounds it.
+    ///
+    /// Stated as one assertion rather than two constants because the whole
+    /// argument for the pair is that they are the same number: a ceiling above
+    /// the signal is an interval during which the queue is known to be running
+    /// away and nothing acts on it.
+    #[test]
+    fn the_ceiling_is_the_depth_that_reports_the_projection_behind() {
+        assert!(!may_defer(LAGGING_AT));
+        assert!(!may_defer(LAGGING_AT * 10));
     }
 }

@@ -144,12 +144,19 @@ The memory is committed exactly as it would be otherwise — `pamin read` and
 when importing in bulk and run `pamin cascade drain` once at the end: one
 rebuild of the vector graph instead of one after every write.
 
-`cascade_lagging` is set once the queue passes ten thousand owed jobs. The
-queue is unbounded on purpose — a write must not fail because the index is slow
-— so this is the only thing that distinguishes a cascade keeping up from one
-that is not, and from outside the two look identical apart from searches
-missing the newest memories. An importer that sees it should drain before
-carrying on.
+`cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
+reports what the queue owed when the write looked at it rather than what is left
+afterwards. Without it a cascade keeping up and one falling behind look
+identical from outside, apart from searches missing the newest memories.
+
+Ten thousand is also where `--defer` stops deferring: a write past it drains
+before returning, so an import that ignores the signal still cannot run the
+queue away. That costs the importer the work it created rather than pausing it,
+which is the only form of backpressure that means anything here — ordinarily
+nothing else is draining, so a writer that waited would slow the import and
+leave the backlog exactly where it was. A new memory queues three jobs, so an
+import pays for a batch about every three thousand of them and never carries
+more than ten thousand.
 
 ## `pamin read`
 
