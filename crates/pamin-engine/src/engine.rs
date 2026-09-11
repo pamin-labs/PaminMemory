@@ -642,6 +642,24 @@ impl Engine {
     /// then had to be fused again with anything PostgreSQL contributes, and the
     /// per-channel ranks each result reports would already be lost.
     pub async fn search(&self, query: &str, limit: u32, depths: Depths) -> Result<Vec<SearchHit>> {
+        self.search_fused(query, limit, depths, Fusion::default())
+            .await
+    }
+
+    /// The same search, with the fusion settings supplied.
+    ///
+    /// Exists for the same reason [`Depths`] is a parameter: the constants
+    /// fusion runs on were settled by measurement and are re-settled the same
+    /// way, so the harness that measures them has to be able to vary them.
+    /// Callers that are not measuring want [`search`](Self::search), which is
+    /// this with what ships.
+    pub async fn search_fused(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
         let lists = off_the_runtime(|| {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
@@ -692,7 +710,7 @@ impl Engine {
         );
         let live = working;
 
-        let mut fused = Fusion::default().fuse(&lists);
+        let mut fused = fusion.fuse(&lists);
 
         // A topic the index still knows about but the ledger no longer
         // resolves never reached the working set, so it is not ranked.
