@@ -468,3 +468,67 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
         "the refusal has to say what is wrong and what to run: {message}"
     );
 }
+
+/// Rewriting the same few memories does not make the index grow for ever.
+///
+/// The index spreads across about two more files with every write, whatever it
+/// holds: the count follows writes, not documents. Nothing noticed, because the
+/// only thing that compacted it was gated on documents -- so ten memories
+/// rewritten a few hundred times reached eight hundred files and a workspace
+/// used normally for a week died of `Too many open files` on an ordinary
+/// descriptor limit.
+///
+/// This writes what such a workspace writes and asks how many files are left.
+/// Without a budget it fails on the count long before the assertion means
+/// anything about compaction; with one it settles wherever the policy says.
+#[test]
+fn rewriting_the_same_memories_leaves_a_bounded_number_of_files() {
+    fn files(dir: &std::path::Path) -> u64 {
+        std::fs::read_dir(dir)
+            .expect("read the index directory")
+            .flatten()
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => files(&entry.path()),
+                _ => 1,
+            })
+            .sum()
+    }
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    // Ten topics, two hundred writes, one flush each -- which is what the
+    // cascade does for an interactive write, and why the count follows writes.
+    for round in 0..200u128 {
+        index
+            .upsert(
+                numbered(round % 10),
+                &format!("writer recorded round {round} of the shared index run"),
+                &stub(),
+            )
+            .expect("upsert");
+        index.flush().expect("flush");
+
+        if pamin_index::is_fragmented(index.file_count().expect("count files")) {
+            index.optimize().expect("optimize");
+        }
+    }
+
+    let left = files(dir.path());
+    assert!(
+        left <= 512,
+        "the index settled at {left} files, which is not a bound"
+    );
+    assert_eq!(
+        index.document_count().expect("documents"),
+        10,
+        "the files were compacted away along with the memories"
+    );
+}
