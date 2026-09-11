@@ -246,10 +246,27 @@ impl Engine {
     /// Runs the maintenance a write left for somebody else, if any is owed.
     ///
     /// The other half of [`Owed::WhatAMemoryNeeds`]. A write schedules this and
-    /// returns; a process that is going to be here afterwards runs it, so
-    /// compacting a few hundred index files is not something an agent waits
-    /// out. Measured over two hundred writes, that is the difference between
-    /// 37.5 s and 28.3 s in the caller's own time.
+    /// returns; a process that is going to be here afterwards runs it.
+    ///
+    /// **It does not make writes quicker, and it was measured rather than
+    /// assumed.** Two hundred and fifty writes with the model already warm:
+    ///
+    /// ```text
+    ///                      median   p90   p95   p99    max   total
+    ///     the writer runs it  124    148   177   564   1112   34.8 s
+    ///     this runs it        127    156   166   662   1530   35.2 s
+    /// ```
+    ///
+    /// Indistinguishable, and the index's own lock is why: one caller at a time
+    /// means a write waits out a compaction whether or not it is the one doing
+    /// it. Moving the work off the writer does not move the wait, and nothing
+    /// on this side of the engine can -- that needs maintenance able to run
+    /// alongside a query, which is the same thing the mutex is there for.
+    ///
+    /// What it does buy is that the wait no longer lands on whichever caller
+    /// happened to cross the budget, and that the shape is the one this can be
+    /// fixed from: when the engine can serve a query during its own upkeep,
+    /// the upkeep is already somewhere else.
     ///
     /// It claims like any other worker, so several servers against one
     /// workspace do not duplicate the work, and a tick that finds nothing owed
