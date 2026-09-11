@@ -6,9 +6,9 @@
 
 use anyhow::Result;
 use pamin_store::Workspace;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Stopped {
     stopped: bool,
 }

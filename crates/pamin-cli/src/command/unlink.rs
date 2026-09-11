@@ -2,10 +2,12 @@
 
 use anyhow::{Result, bail};
 use pamin_core::{EdgeKind, TombstoneReason};
-use pamin_store::{Database, Workspace, graph, repository};
-use serde::Serialize;
+use pamin_store::{graph, repository};
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+use crate::session::Session;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic the relationship starts from.
     pub from: String,
@@ -26,7 +28,7 @@ pub struct Args {
     pub reason: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Unlinked {
     from: String,
     to: String,
@@ -36,18 +38,18 @@ pub struct Unlinked {
     closed: bool,
 }
 
-pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Unlinked> {
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Unlinked> {
     let Some(kind) = EdgeKind::parse(&args.kind) else {
         bail!("unknown relationship kind {:?}", args.kind);
     };
 
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
+    let database = session.database();
+    let project = session.project(project).await?;
 
-    let Some(from) = repository::find_topic(database.pool(), project.id, &args.from).await? else {
+    let Some(from) = repository::find_topic(database.pool(), project, &args.from).await? else {
         bail!("no topic named {}", args.from);
     };
-    let Some(to) = repository::find_topic(database.pool(), project.id, &args.to).await? else {
+    let Some(to) = repository::find_topic(database.pool(), project, &args.to).await? else {
         bail!("no topic named {}", args.to);
     };
 
@@ -64,8 +66,7 @@ pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result
 
     // The rows stay either way, so what was believed and when stays
     // answerable, and the truth interval is untouched.
-    let closed =
-        graph::close_edge(database.pool(), project.id, from.id, to.id, kind, reason).await?;
+    let closed = graph::close_edge(database.pool(), project, from.id, to.id, kind, reason).await?;
 
     let result = Unlinked {
         from: args.from,

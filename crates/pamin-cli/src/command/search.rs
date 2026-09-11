@@ -2,13 +2,14 @@
 
 use anyhow::Result;
 use pamin_core::Why;
-use pamin_index::{Access, Profile};
-use pamin_store::Workspace;
-use serde::Serialize;
+use pamin_index::Profile;
 
-use pamin_engine::{Depths, Engine};
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+use crate::session::Session;
+use pamin_engine::Depths;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What to search for, in any language.
     pub query: String,
@@ -36,7 +37,7 @@ pub struct Args {
     pub graph_depth: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Hit {
     /// What to pass to `pamin read` to see this topic's other versions.
     topic: String,
@@ -53,20 +54,19 @@ struct Hit {
     source_span: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Results {
     query: String,
     hits: Vec<Hit>,
 }
 
 pub async fn execute(
-    workspace: &Workspace,
+    session: &Session,
     project: &str,
     profile: Profile,
     args: Args,
 ) -> Result<Results> {
-    // Read-only, so several agents can search one project at once.
-    let mut engine = Engine::open(workspace, project, profile, Access::ReadOnly).await?;
+    let engine = session.engine(project, profile).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,

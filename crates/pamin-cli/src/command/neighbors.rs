@@ -7,12 +7,14 @@
 use anyhow::{Result, bail};
 use pamin_core::EdgeKind;
 use pamin_store::graph::Expansion;
-use pamin_store::{Database, Workspace, graph, repository};
-use serde::Serialize;
+use pamin_store::{graph, repository};
+use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
 
-#[derive(clap::Args)]
+use crate::session::Session;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic to walk out from.
     pub topic: String,
@@ -34,7 +36,7 @@ pub struct Args {
     pub at: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Neighbor {
     topic: String,
     hops: u8,
@@ -46,14 +48,14 @@ struct Neighbor {
     confidence: f32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Neighborhood {
     topic: String,
     depth: u8,
     neighbors: Vec<Neighbor>,
 }
 
-pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Neighborhood> {
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Neighborhood> {
     let kinds = args
         .kinds
         .iter()
@@ -63,18 +65,17 @@ pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
+    let database = session.database();
+    let project = session.project(project).await?;
 
-    let Some(topic) = repository::find_topic(database.pool(), project.id, &args.topic).await?
-    else {
+    let Some(topic) = repository::find_topic(database.pool(), project, &args.topic).await? else {
         bail!("no topic named {}", args.topic);
     };
 
     let at = validity::parse(args.at.as_deref(), "--at")?;
     let neighbors = graph::expand(
         database.pool(),
-        project.id,
+        project,
         &[topic.id],
         &Expansion {
             depth: args.depth,
@@ -86,12 +87,11 @@ pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result
 
     // Names are resolved in one pass rather than per neighbour, since the walk
     // can return every topic in a well-connected project.
-    let names: std::collections::HashMap<_, _> =
-        repository::all_topics(database.pool(), project.id)
-            .await?
-            .into_iter()
-            .map(|topic| (topic.id, topic.name))
-            .collect();
+    let names: std::collections::HashMap<_, _> = repository::all_topics(database.pool(), project)
+        .await?
+        .into_iter()
+        .map(|topic| (topic.id, topic.name))
+        .collect();
     let name_of = |id: &pamin_core::TopicId| {
         names
             .get(id)

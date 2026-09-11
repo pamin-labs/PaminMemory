@@ -2,10 +2,12 @@
 
 use anyhow::{Result, bail};
 use pamin_core::VersionOffset;
-use pamin_store::{Database, Workspace, repository};
-use serde::Serialize;
+use pamin_store::repository;
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+use crate::session::Session;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic to read.
     pub topic: String,
@@ -15,7 +17,7 @@ pub struct Args {
     pub version_offset: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Read {
     topic: String,
     version: u32,
@@ -35,12 +37,11 @@ pub struct Read {
 /// Separated from rendering because the caller that prints it is no longer the
 /// only one: a resident server computes this and hands it back to a client
 /// that does the printing.
-pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Read> {
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Read> {
+    let database = session.database();
+    let project = session.project(project).await?;
 
-    let Some(topic) = repository::find_topic(database.pool(), project.id, &args.topic).await?
-    else {
+    let Some(topic) = repository::find_topic(database.pool(), project, &args.topic).await? else {
         bail!("no topic named {}", args.topic);
     };
 

@@ -6,13 +6,15 @@
 //! on its way to becoming one.
 
 use anyhow::Result;
-use pamin_store::{Database, Workspace, repository};
-use serde::Serialize;
+use pamin_store::repository;
+use serde::{Deserialize, Serialize};
+
+use crate::session::Session;
 
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The exact string to find. Not a pattern.
     pub literal: String,
@@ -26,7 +28,7 @@ pub struct Args {
     pub limit: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Match {
     /// Where the evidence came from.
     source: String,
@@ -41,19 +43,19 @@ struct Match {
     excerpt: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Matches {
     literal: String,
     matches: Vec<Match>,
 }
 
-pub async fn execute(workspace: &Workspace, project: &str, args: Args) -> Result<Matches> {
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.pool(), project).await?;
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Matches> {
+    let database = session.database();
+    let project = session.project(project).await?;
 
     let hits = repository::grep_evidence(
         database.pool(),
-        project.id,
+        project,
         &args.literal,
         !args.ignore_case,
         args.limit,

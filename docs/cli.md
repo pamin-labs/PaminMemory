@@ -543,6 +543,49 @@ Queued 0 failed jobs to run again
 Nothing here can lose a memory. The queue drives the index, and the index holds
 nothing PostgreSQL cannot reproduce — `pamin reindex` rebuilds it outright.
 
+## `pamin serve`
+
+Holds the database, the index and the model, and answers commands over a socket
+at `$PAMIN_HOME/pamin.sock`.
+
+You do not normally run it. Any command that needs a server starts one and
+connects, the same way `pamin init` leaves PostgreSQL running so the next
+command does not pay for it:
+
+```console
+$ pamin read deployment_pipeline    # first call, starts a server
+deployment_pipeline v2 (current, 0 of 2 versions)
+
+the deployment pipeline now runs on argo cd
+```
+
+What that buys is everything a short-lived process used to rebuild. Before, each
+command connected to PostgreSQL, checked migrations, opened the index, and
+loaded an embedding model before it did any work of its own.
+
+`pamin serve` runs it in the foreground instead, which is useful when you want
+to watch it. A server started in the background writes to
+`$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
+
+`PAMIN_NO_SERVER=1` runs everything in the calling process, as it did before.
+The results are identical — it is the same code either way — so this is for
+debugging the server itself, and for a caller that would rather have one process
+to reason about than a fast one.
+
+It does not combine with a server that is already up. A running server holds the
+index open for writing, and the index takes an exclusive lock on its directory,
+so a second process opening the same project fails rather than waiting. That is
+the lock doing its job: two processes writing one index is what it exists to
+prevent. Run `pamin stop` first if you want the in-process path against a
+workspace a server is holding.
+
+Every command goes through the server except two. `serve` is the server, and
+`stop` is what shuts it down.
+
+The socket is a file, so it inherits the workspace's permissions and cannot be
+reached from another machine. There is no authentication, for the same reason:
+anyone who can open the socket can already read the workspace.
+
 ## `pamin stop`
 
 ```console
@@ -550,14 +593,18 @@ $ pamin stop
 Stopped the local database server
 ```
 
-Stops the local PostgreSQL. It is not run automatically, because the common case
-is an agent issuing many commands in a row and paying startup once.
+Stops the local PostgreSQL, and the resident server if one is up. It is not run
+automatically, because the common case is an agent issuing many commands in a
+row and paying startup once.
 
 ## Notes for agents
 
 - Every command accepts `--json`, and stdout carries only that JSON. Logging
   goes to stderr.
 - Failures exit non-zero with the reason on stderr.
+- The first command against a workspace is slow and the rest are not: it starts
+  a server that holds the database, the index and the model. Nothing needs to
+  start or stop it.
 - `search` gives ranked context; `neighbors` gives structure; `read` gives a
   specific version; `grep` gives the verbatim evidence including what the filter
   held. Reach for the last three when the ranking is what you doubt.

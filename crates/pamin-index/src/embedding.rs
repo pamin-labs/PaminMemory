@@ -28,7 +28,7 @@ use crate::error::{IndexError, Result};
 /// are permissively licensed. EmbeddingGemma scores well and would otherwise be
 /// a candidate, but it carries usage restrictions that must be passed on to
 /// downstream users, which is not a burden to attach to an open-source default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     /// 384 dimensions. Bulk ingestion and low-spec machines.
@@ -155,6 +155,17 @@ impl Embedder {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }
+    }
+
+    /// Embeds many passages in one forward pass.
+    pub fn embed_passages(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let prefixed: Vec<String> = match self.profile.prefixes() {
+            Some((_, passage)) => texts.iter().map(|t| format!("{passage}{t}")).collect(),
+            None => texts.iter().map(|t| (*t).to_string()).collect(),
+        };
+        self.model
+            .embed(prefixed, None)
+            .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))
     }
 
     fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
