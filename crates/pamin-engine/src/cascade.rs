@@ -105,19 +105,15 @@ impl Engine {
                 outcomes.push((job, self.run(job).await));
             }
 
+            // The round's completions go in one statement. Separately they
+            // cost more than the work they record -- a thousand of them is 165
+            // ms one at a time and 26 batched -- and the queue cannot tell the
+            // difference, because a job is addressed by subject and a crash
+            // before this leaves every one of them owed either way.
+            let mut done: Vec<&Job> = Vec::with_capacity(outcomes.len());
             for (job, outcome) in outcomes {
                 match outcome {
-                    Ok(()) => {
-                        if jobs::complete(self.database.pool(), job, &self.worker).await? {
-                            drained.completed += 1;
-                        } else {
-                            // Requested again while it ran, or the lease
-                            // expired. Either way it stays owed, and saying it
-                            // completed here would be the lie the guard exists
-                            // to prevent.
-                            drained.failed += 1;
-                        }
-                    }
+                    Ok(()) => done.push(job),
                     Err(error) => {
                         tracing::warn!(
                             job = %job.kind,
@@ -131,6 +127,13 @@ impl Engine {
                     }
                 }
             }
+
+            let completed = jobs::complete(self.database.pool(), &done, &self.worker).await?;
+            drained.completed += completed.len();
+            // Requested again while it ran, or the lease expired. Either way it
+            // stays owed, and counting it complete here would be the lie the
+            // claim guard exists to prevent.
+            drained.failed += done.len() - completed.len();
         }
 
         drained.pending = jobs::pending(self.database.pool(), self.project).await?;

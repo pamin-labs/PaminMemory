@@ -1650,13 +1650,14 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
 
     // The second worker finishes what it did get, so the rest of this is about
     // one job rather than two.
-    for job in &contended {
-        assert!(
-            jobs::complete(database.pool(), job, "worker-b")
-                .await
-                .expect("complete")
-        );
-    }
+    let finished = jobs::complete(
+        database.pool(),
+        &contended.iter().collect::<Vec<_>>(),
+        "worker-b",
+    )
+    .await
+    .expect("complete");
+    assert_eq!(finished.len(), contended.len());
 
     // A request arriving while the job runs is not swallowed by its completion.
     jobs::enqueue(
@@ -1669,9 +1670,10 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     .expect("enqueue during processing");
 
     assert!(
-        !jobs::complete(database.pool(), &claimed[0], "worker-a")
+        jobs::complete(database.pool(), &[&claimed[0]], "worker-a")
             .await
-            .expect("complete"),
+            .expect("complete")
+            .is_empty(),
         "a job requested again mid-flight must not be completed by the attempt \
          that was already running"
     );
@@ -1687,10 +1689,11 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
         "reviving a job resets its attempts"
     );
 
-    assert!(
-        jobs::complete(database.pool(), &requeued[0], "worker-a")
+    assert_eq!(
+        jobs::complete(database.pool(), &[&requeued[0]], "worker-a")
             .await
             .expect("complete"),
+        vec![requeued[0].id],
         "a job nobody re-requested completes"
     );
 
@@ -1775,11 +1778,13 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     let outstanding = jobs::claim(database.pool(), project.id, "worker-a", 100)
         .await
         .expect("drain");
-    for job in &outstanding {
-        jobs::complete(database.pool(), job, "worker-a")
-            .await
-            .expect("complete");
-    }
+    jobs::complete(
+        database.pool(),
+        &outstanding.iter().collect::<Vec<_>>(),
+        "worker-a",
+    )
+    .await
+    .expect("complete");
     assert_eq!(
         jobs::pending(database.pool(), project.id)
             .await
@@ -1862,13 +1867,8 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].subject, Some(queued[1].1.0));
 
-    for job in claimed.iter().chain(&left) {
-        let worker = if job.project_id == mine.id {
-            "worker-mine"
-        } else {
-            "worker-theirs"
-        };
-        jobs::complete(database.pool(), job, worker)
+    for (worker, owned) in [("worker-mine", &claimed), ("worker-theirs", &left)] {
+        jobs::complete(database.pool(), &owned.iter().collect::<Vec<_>>(), worker)
             .await
             .expect("complete");
     }
