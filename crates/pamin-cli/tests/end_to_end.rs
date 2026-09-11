@@ -1702,14 +1702,16 @@ fn a_topics_history_does_not_crowd_the_index() {
 /// The index spreads across a couple more files with every write and has to be
 /// compacted before it runs out of descriptors. That compaction takes about a
 /// third of a second and makes nothing more correct -- it only makes the next
-/// search quicker -- so a writer that waits it out is paying for something
-/// nobody asked it for. Measured over two hundred writes, doing it in the
-/// caller's own time costs 37.5 s against 28.3.
+/// search quicker -- so a write schedules it and returns, and the server runs
+/// it.
 ///
-/// So a write schedules it and returns, and the server runs it. That is a claim
-/// about who does the work rather than about whether it gets done, and it takes
-/// both halves to check: that a write leaves it owed, and that it stops being
-/// owed while nobody is asking for anything.
+/// This checks who does the work, which is all it can check. It is not a
+/// latency test and would be a dishonest one: measured, writes are no quicker
+/// this way, because the index takes one caller at a time and a write waits out
+/// a compaction whether or not it is the one running it.
+///
+/// Who does it still takes both halves to establish: that a write leaves it
+/// owed, and that it stops being owed while nobody is asking for anything.
 ///
 /// Before this, the writer always ran it, so the first assertion is the one
 /// that fails: every write reported `applied` and nothing was ever left over.
