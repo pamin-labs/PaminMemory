@@ -1482,6 +1482,15 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
 /// writer had already moved. Upstream reports the same race faulting outright,
 /// so an error is the mild form of it.
 ///
+/// It also says how much lock. This ran for a long time against a read-write
+/// lock, on the reading that queries may as well share the index, and the
+/// engine does not agree: with readers running together it wedges inside the
+/// engine's own code, forty-six of its threads asleep on futexes and no
+/// processor time used by any of them. Writers alone pass; readers made
+/// exclusive pass. So the lock is a mutex, and this is the test that decides
+/// that rather than a benchmark, because the cost of guessing wrong is a
+/// server that stops answering rather than one that answers slowly.
+///
 /// Linux is where this shows. On macOS the same race is latent, so a green run
 /// there says nothing about whether the lock is doing anything.
 #[test]

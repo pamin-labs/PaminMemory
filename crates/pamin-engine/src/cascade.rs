@@ -97,7 +97,7 @@ impl Engine {
             // here leaves the jobs owed rather than marked complete against an
             // index that never received them.
             if outcomes.iter().any(|(_, result)| result.is_ok()) {
-                crate::engine::off_the_runtime(|| self.writing().flush())?;
+                crate::engine::off_the_runtime(|| self.index().flush())?;
             }
             for job in reads {
                 outcomes.push((job, self.run(job).await));
@@ -167,7 +167,7 @@ impl Engine {
         .await?;
 
         let Some(state) = states.first() else {
-            return crate::engine::off_the_runtime(|| self.writing().delete(&[topic]))
+            return crate::engine::off_the_runtime(|| self.index().delete(&[topic]))
                 .map_err(Into::into);
         };
 
@@ -221,7 +221,7 @@ impl Engine {
     /// segment is due a graph the index has already been asked many times over
     /// -- and asking when there is nothing to do costs 28 ms.
     fn index_is_fragmented(&self) -> Result<bool> {
-        let files = crate::engine::off_the_runtime(|| self.reading().file_count())?;
+        let files = crate::engine::off_the_runtime(|| self.index().file_count())?;
         Ok(pamin_index::is_fragmented(files))
     }
 
@@ -231,7 +231,7 @@ impl Engine {
     /// it skips whichever is already done -- which is what makes asking cheap
     /// enough to ask often.
     async fn optimize_projection(&self) -> Result<()> {
-        crate::engine::off_the_runtime(|| self.writing().optimize())?;
+        crate::engine::off_the_runtime(|| self.index().optimize())?;
         Ok(())
     }
 }
