@@ -65,7 +65,6 @@ sql_enum!(TombstoneReason {
 
 sql_enum!(JobKind {
     SyncTopicIndex => "sync_topic_index",
-    UnindexState => "unindex_state",
     DeriveMentions => "derive_mentions",
     BackfillMentions => "backfill_mentions",
     OptimizeIndex => "optimize_index",
@@ -523,19 +522,23 @@ pub async fn topic_state(
     Ok(row.as_ref().map(row_to_topic_state))
 }
 
-/// Loads every undeleted state in a project, oldest first.
+/// Every topic's current state, one row per topic.
 ///
-/// Used by reindex, which rebuilds the projection from the authority store.
-pub async fn all_live_topic_states(
+/// What a rebuild indexes. The projection holds one document per topic, so
+/// feeding it every live state would write a topic's fourteen versions onto one
+/// key and leave whichever the scan reached last -- which is not the same thing
+/// as the one the topic stands for.
+pub async fn all_current_topic_states(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
 ) -> Result<Vec<TopicState>> {
     let rows = sqlx::query(concat!(
         "SELECT ",
-        state_columns!(),
-        " FROM topic_states
-          WHERE project_id = $1 AND deleted_at IS NULL
-          ORDER BY topic_id, version ASC"
+        state_columns!("ts."),
+        " FROM topics
+          JOIN topic_states ts ON ts.id = topics.current_state_id
+          WHERE topics.project_id = $1 AND ts.deleted_at IS NULL
+          ORDER BY ts.topic_id ASC"
     ))
     .bind(project.0)
     .fetch_all(executor)
@@ -864,6 +867,80 @@ pub async fn grep_evidence(
             // SQL positions are one-based; byte offsets are not.
             offset: (row.get::<i32, _>("match_position") as usize).saturating_sub(1),
         })
+        .collect())
+}
+
+/// Records how a topic's name tokenizes, for the name index.
+///
+/// The key is computed by the caller because tokenizing is the segmenter's
+/// job and the segmenter lives above this layer. What belongs here is that the
+/// row is written in the same transaction as the topic: a topic that exists
+/// and is not in this table is a topic nothing will ever derive an edge to.
+pub async fn record_topic_name(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topic: TopicId,
+    key: &str,
+    tokens: usize,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (project_id, topic_id) DO UPDATE
+             SET name_key = EXCLUDED.name_key, token_count = EXCLUDED.token_count",
+    )
+    .bind(project.0)
+    .bind(topic.0)
+    .bind(key)
+    .bind(tokens as i16)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+/// How many tokens the longest topic name in this project has.
+///
+/// Bounds the lookup: a run of tokens wider than the widest name cannot be a
+/// name, so there is no point asking about it. Zero when the project has no
+/// topics, which means there is nothing to ask about at all.
+pub async fn widest_topic_name(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<usize> {
+    let row: (Option<i16>,) =
+        sqlx::query_as("SELECT MAX(token_count) FROM topic_name_tokens WHERE project_id = $1")
+            .bind(project.0)
+            .fetch_one(executor)
+            .await?;
+
+    Ok(row.0.unwrap_or(0).max(0) as usize)
+}
+
+/// The topics whose names appear among these token runs.
+///
+/// The runs are every window of the text being examined, at every width up to
+/// [`widest_topic_name`]. A name matches only as a contiguous run, so equality
+/// against the stored key is the whole test -- there is no candidate set to
+/// re-check afterwards.
+pub async fn topics_named_by(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    runs: &[String],
+) -> Result<Vec<TopicId>> {
+    if runs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rows = sqlx::query(
+        "SELECT topic_id FROM topic_name_tokens
+         WHERE project_id = $1 AND name_key = ANY($2)",
+    )
+    .bind(project.0)
+    .bind(runs)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| row.get::<uuid::Uuid, _>("topic_id").into())
         .collect())
 }
 

@@ -6,7 +6,7 @@ Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistant
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early days.** The foundation runs end to end and is worth trying, but most of the system described below is not built yet. See [Status](#status).
+> **Early days.** What is here runs end to end and is worth trying, but parts of the system described below are not built yet. See [Status](#status).
 
 ## What It Does
 
@@ -109,9 +109,9 @@ Edges are versioned the way memories are. Changing one closes the old version an
 
 This is an early foundation, not a finished product.
 
-**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; the relationship graph, derived and asserted, with bi-temporal edge versions; the outbox, so a write records what the index owes it in the same transaction, and the cascade that pays it; rebuilding the index from PostgreSQL.
+**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; the relationship graph, derived and asserted, with bi-temporal edge versions; the outbox, so a write records what the index owes it in the same transaction, and the cascade that pays it; rebuilding the index from PostgreSQL; a resident server that holds the database, the index and the model, so a command pays for none of them; and an evaluation harness that measures retrieval in three groups and settles the defaults this used to guess at.
 
-**Not built yet:** the resident server, so the cascade still runs in whichever process wrote; source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface; the evaluation harness that will settle the defaults this version guesses at.
+**Not built yet:** source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface.
 
 ## Development
 

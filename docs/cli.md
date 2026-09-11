@@ -13,7 +13,7 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `balanced` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
 | `--json` | | off | Emit JSON instead of text |
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
@@ -22,6 +22,19 @@ never contaminate the JSON on stdout.
 Changing `--profile` changes the vector space. The index records the profile it
 was built with and refuses to open under a different one, naming `reindex` in
 the error rather than silently mixing two spaces.
+
+| Profile | Model | Width | Resident | Per query |
+| --- | --- | --- | --- | --- |
+| `speed` | multilingual-e5-small | 384 | 465 MB | 13 ms |
+| `balanced` | multilingual-e5-base | 768 | 1.1 GB | 26 ms |
+| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms |
+
+The default is the largest model because quantized weights make it the smallest
+download and because the gap it closes is the one this project is about: on the
+evaluation corpus it roughly doubles cross-lingual retrieval against
+`balanced`, matches it on same-language queries, and costs nine milliseconds.
+`balanced` is kept for those nine milliseconds and for projects already indexed
+under it; there is no other reason left to choose it.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -172,6 +185,12 @@ guessing at the depth first.
 
 Retrieves across every recall channel and explains the result.
 
+Results are topics, at what each says now. A topic rewritten fourteen times is
+one result and not fourteen, and the `topic_state` and `version` a hit reports
+are its current ones. Earlier versions are read rather than ranked: `pamin read
+--version-offset` reaches them, and `pamin grep` reaches the evidence behind
+them, including what the filter never promoted.
+
 `--channel-depth` sets how many candidates each channel contributes before
 fusion (default 50) and `--graph-depth` how many edges the graph walks out
 (default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`.
@@ -190,12 +209,12 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.0489  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#2 graph#1 via depends_on@1hop
-0.0479  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#3 graph#3 via mentions@1hop
-0.0474  oncall_rota v1 (current)  the oncall rota rotates every monday morning
-        lexical_ngram#4 vector#4 graph#2 via depends_on@1hop
+0.2197  deployment_pipeline v2  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
+0.2063  oncall_rota v1  the oncall rota rotates every monday morning
+        lexical_ngram#3 vector#3 graph#1 from deployment_pipeline --depends_on-> (1hop)
+0.2019  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
 ```
 
 The JSON carries the same trace in full:
@@ -207,18 +226,17 @@ $ pamin search "how do we deploy" --limit 1 --json
   "hits": [
     {
       "topic": "deployment_pipeline",
-      "topic_state": "6112147e-71bf-4c16-ae34-f812021ac10f",
+      "topic_state": "4d6c7768-11ee-4322-a76a-37e1f9e96a76",
       "version": 2,
-      "is_current": true,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.048915915,
+      "score": 0.21969697,
       "why": [
-        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
-        { "kind": "channel", "channel": "vector", "rank": 2, "weight": 1.0, "contribution": 0.016129032 },
-        { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
+        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.5, "contribution": 0.045454547 },
+        { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
+        { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "af72f5a0-37b0-42b0-ac08-7d499428fc63"
+      "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9"
     }
   ]
 }
@@ -229,18 +247,28 @@ $ pamin search "how do we deploy" --limit 1 --json
 Three kinds of entry, and they answer different questions.
 
 **`channel`** — this result appeared in that channel at that rank, and
-contributed `weight / (60 + rank)` to the score. There are four channels:
+contributed `weight / (10 + rank)` to the score. There are four channels:
 
-| Channel | What it matches |
-| --- | --- |
-| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces |
-| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys |
-| `vector` | Meaning, across languages |
-| `graph` | Topics connected to what the other channels found |
+| Channel | What it matches | Weight |
+| --- | --- | --- |
+| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.5 |
+| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.5 |
+| `vector` | Meaning, across languages | 1.0 |
+| `graph` | Topics connected to what the other channels found | 1.0 |
 
 Ranks travel between channels; scores do not. A BM25 score and a cosine distance
 are not comparable quantities, so fusion combines the ranks rather than
 pretending the scores share a scale.
+
+The two lexical channels carry half weight because they are nearly the same
+channel: both match the literal text, one over segmented words and one over
+character n-grams, so they agree with each other far more often than either
+agrees with the vector or graph channel. At full weight that agreement counts
+twice, and the wording outvotes the meaning on exactly the queries where they
+differ. The `10` is likewise measured here rather than taken from the rank
+fusion literature, which uses 60 for lists thousands of results deep; each
+channel proposes fifty, and 60 flattens fifty candidates to the point where
+being first says almost nothing.
 
 Fusion happens here rather than inside the retrieval engine. The engine offers to
 fuse its own channels and that offer is declined: the graph lives in PostgreSQL
@@ -259,8 +287,7 @@ claims.
 
 **`modifier`** — a post-fusion adjustment, applied at most once each, and
 recorded only when it changed the result. `importance` and `worth` lift a
-result; `superseded` down-weights a historical state rather than removing it,
-because a question about how something changed needs it.
+result.
 
 The trace above has no `modifier` entry because none of them moved anything.
 `importance` and `worth` are read by the ranker and written by nothing yet, so

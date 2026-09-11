@@ -25,7 +25,7 @@ One rule ran through all of it:
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | `fastembed` over ONNX Runtime, `multilingual-e5-base` by default |
+| Embeddings | `fastembed` over ONNX Runtime, BGE-M3 with int8 weights by default |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -82,7 +82,9 @@ LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer 
 
 The graph channel lives in PostgreSQL, where `zvec` cannot see it. Letting the engine pre-fuse the lexical and vector lists would produce an already-fused list that then has to be fused again with the graph list, double-weighting its members and destroying the contract that every result reports its rank in every channel it appeared in.
 
-Recall engines return per-channel ranked lists. Reciprocal rank fusion at `k = 60` runs in our layer, followed by post-fusion modifiers. This is a correctness requirement, not a preference.
+Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer, followed by post-fusion modifiers. This is a correctness requirement, not a preference.
+
+`k = 10`, not the customary 60, and the two lexical channels carry half weight each. Both are measured on this project's evaluation corpus rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights their agreement with each other is counted as two votes against the vector and graph channels' one each. Correcting both takes cross-lingual nDCG@10 from 0.2041 to 0.3383 and costs nothing monolingual.
 
 ### Three recall channels, not seven
 
@@ -95,11 +97,21 @@ What remains:
 
 ```text
 recall channels (3)   lexical, vector, graph
-document types        topic_state / span / page_node / note   (a filter)
-post-fusion modifiers recency, version currentness, importance and worth,
-                      source quality, stale/superseded penalty, redundancy penalty
+document types        topic / span / page_node / note   (a filter)
+post-fusion modifiers recency, importance and worth, source quality,
+                      redundancy penalty
 agentic primitives    grep, read by id, navigate, typed query
 ```
+
+The projection holds one document per topic, carrying what that topic says now.
+An earlier version of this decision held one per state, and that put a topic's
+whole history into every channel's candidate budget: at the scale here -- a
+million topics averaging a dozen or so versions -- a hundred million documents
+stand in for seven million subjects, thirteen of every fourteen saying something
+their topic no longer says. It also made the version-currentness modifier
+necessary, to push down results the index should not have been returning. With
+one document per topic both go away: history is read by version from the ledger
+and is never ranked, so `search` returns current states only.
 
 All three criteria improve: four fewer query groups per search, four fewer channels of code and index, and no double-weighted recency or importance.
 
@@ -129,26 +141,58 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 
 | | What it is | Measured cost | State |
 | --- | --- | --- | --- |
-| Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **Unavailable** |
+| Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On, by default** |
 | Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off, permanently** |
 
-Weight quantization is a trade worth taking and we do not get to take it. The model registry we load from publishes quantized variants for several embedding families, but none for multilingual E5, so both default profiles run full-precision weights. An earlier draft of this decision recorded it as on by default, which was never true of the shipped models.
+Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on this project's evaluation corpus against the full-precision 0.6720.
 
-Stored vectors are float32 and stay that way. This is a decision rather than a default awaiting evidence: a single workspace holds thousands to low millions of vectors, where float32 storage is inexpensive, so the compression buys little, while the deterministic reranker has no cross-encoder to recover the several percent of accuracy it costs. The variant that would be worth taking is float8, which reaches the same 4x compression under 0.3% loss, and `zvec` offers RaBitQ and PQ-INT8 rather than float8. If that changes, the decision is worth revisiting; memory pressure alone is not a reason to trade accuracy we cannot recover.
+Stored vectors are float32. The original reasoning was about cost and benefit — a workspace of low millions of vectors makes the compression worth little, and the deterministic reranker has no cross-encoder to recover the accuracy it costs. At the scale this store now targets that reasoning would have expired, so the trade was measured rather than assumed.
+
+It does not work in this engine. On 50,000 clustered 1024-dimensional vectors, an index built with `hnsw_with_quantize(..., Int8)` returns recall@10 of **0.000** against exact search, with or without the refiner — ten results per query, the right number, none of them the right ones. It does not error and nothing about the output looks wrong.
+
+`enable_rotate`, which the engine's own benchmarks describe as what makes INT8 usable (Cohere-768 recall 92.87% unrotated against 94.01% rotated), is not exposed in the Rust binding at all. Whether that is the whole explanation is not established; what is established is that the configuration reachable from here is unusable. The refiner is likewise unavailable without quantization: on a full-precision index `is_using_refiner` fails the query outright rather than being ignored.
+
+Revisit when the binding exposes rotation, or when the measurement above changes. Until then this is not a decision about compression being unworthy — it is that the compression on offer returns the wrong answers.
+
+### The graph is the memory floor, and it just doubled
+
+Quantizing stored vectors, if it worked, would shrink the payload and not the graph. The graph is the part that does not respond to it, which makes it the floor under everything else. At the size this store is built for — seven million documents in a project — an HNSW graph at `m = 16` is roughly 0.98 GiB per project, so a hundred projects is about **98 GiB of graph before a single vector is counted**.
+
+Raising `m` to 32 for the recall measured above doubles that: roughly 196 GiB for the same hundred projects. That is a real cost and it is the right trade anyway, for a reason worth stating rather than assuming. Nothing puts hundreds of projects of this size in resident memory under *any* configuration — the fp32 payload alone is 2.7 TB, and the best case measured here, one-bit quantization that does not work in this engine, still leaves a floor in the hundreds of gigabytes. Protecting a factor of two on a budget already out of reach buys nothing, while a vector channel returning seven of every ten true neighbours is a live defect.
+
+What it does change is when the disk-resident path stops being optional. Serving that many projects at that size means keeping cold indexes on disk and paging in the working set, and the graph doubling brings that forward rather than pushing it away. The engine exposes `IndexType::Diskann` and `IvfRabitq` for it, with two constraints to carry into that work: DiskANN is Linux x86-64 only, and `enable_mmap` is written into the manifest at creation and ignored when an existing collection is opened, so it cannot be turned on after the fact.
 
 The embedding model is a profile, not a constant:
 
-| Profile | Model | Dimensions | Position |
-| --- | --- | --- | --- |
-| `speed` | `multilingual-e5-small` | 384 | Bulk ingestion, low-spec machines |
-| `balanced` (default) | `multilingual-e5-base` | 768 | Default |
-| `accuracy` | BGE-M3 | 1024 | Dense and sparse in one pass, longer context |
+| Profile | Model | Dimensions | Resident | Per query | Cross-lingual nDCG@10 |
+| --- | --- | --- | --- | --- | --- |
+| `speed` | `multilingual-e5-small` | 384 | 465 MB | 13 ms | — |
+| `balanced` | `multilingual-e5-base` | 768 | 1.1 GB | 26 ms | 0.3383 |
+| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms | 0.6550 |
 
-`multilingual-e5-base` is the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and our default reranker is deterministic and has none. Defaulting to the smaller model would have paired the weaker model with the weaker reranker.
+BGE-M3 is the default, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
 
-BGE-M3 is not the default: its main increment is a sparse arm that overlaps the two lexical channels we already have, and its cost per query is an order of magnitude higher. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. It remains available as an opt-in profile. The E5 family and BGE-M3 are Apache-2.0 or MIT.
+`multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and our default reranker is deterministic and has none. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
+
+### No cross-encoder reranker, because it was measured and it did not help
+
+A cross-encoder looked like the largest retrieval gain left. Published results put reranking at seven or eight points of nDCG@10, and the shape of our numbers seemed to invite it. Two permissively licensed multilingual rerankers were run against the evaluation corpus, and neither earned its cost:
+
+| | Size | Per query | cross | mono | lexical |
+| --- | --- | --- | --- | --- | --- |
+| dense only, no reranking | — | — | **0.8299** | 0.9849 | **1.0000** |
+| `gte-multilingual-reranker-base`, int8 | 325 MB | 245 ms | 0.7765 | **0.9908** | 0.9693 |
+| `bge-reranker-v2-m3`, int8 | 544 MB | 403 ms | 0.8166 | 0.9821 | 0.9361 |
+
+Reranking the dense top-30, nDCG@10, both models from ONNX exports of Apache-2.0 base models. Widening the shortlist to 50 made both worse and slower, not better: 0.7560 at 393 ms and 0.8136 at 683 ms.
+
+The diagnostic matters more than the totals. On this corpus a reranker has nothing to recover: across all 137 queries, the relevant memory is already inside the top ten by dense retrieval alone — not one query has it sitting between rank 10 and rank 50 where reranking would pull it up. What is left is reordering inside the top ten, and on cross-lingual and lexical queries both cross-encoders order worse than BGE-M3's dense similarity does.
+
+So this is not "reranking does not work". It is that a corpus of 210 memories does not put anything far enough down for a reranker to earn 245 ms, and the models cost accuracy in the groups this project cares most about. **Revisit when the opportunity is real** — a corpus where relevant memories fall below the retrieval cut, which is what millions of memories in one project would produce and what this one cannot simulate. The measurement to run first is the diagnostic above, not the nDCG: if nothing is below the cut, there is nothing to rerank.
+
+Licensing is no longer the blocker it was. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, and permissively licensed multilingual exports exist. That path is open whenever the measurement turns.
 
 ### Engineering budgets
 

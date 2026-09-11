@@ -11,12 +11,13 @@
 //! particularly since the default reranker has no cross-encoder to recover the
 //! loss.
 //!
-//! Neither is in force today. Stored vectors are float32 and will stay that
-//! way. Weight quantization is unavailable rather than declined: the model
-//! registry publishes quantized variants for several families but none for
-//! multilingual E5, so both default profiles run full-precision weights.
+//! Stored vectors are float32. Weights are quantized where a quantized export
+//! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
+//! because the model registry publishes no quantized variant for that family.
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{
+    Bgem3Embedding, Bgem3InitOptions, Bgem3Model, EmbeddingModel, TextEmbedding, TextInitOptions,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{IndexError, Result};
@@ -32,29 +33,47 @@ use crate::error::{IndexError, Result};
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     /// 384 dimensions. Bulk ingestion and low-spec machines.
-    Speed,
-    /// 768 dimensions. The default.
     ///
     /// 384 dimensions is generally held to be enough only alongside a
-    /// cross-encoder reranker, and ours is deterministic and has none, so
-    /// defaulting to the smaller model would pair the weaker model with the
-    /// weaker reranker.
-    #[default]
-    Balanced,
-    /// 1024 dimensions, dense and sparse in one pass, longer context.
+    /// cross-encoder reranker, and ours is deterministic and has none, so this
+    /// pairs the weaker model with the weaker reranker. It is here for
+    /// machines that cannot afford the others.
+    Speed,
+    /// 768 dimensions, full-precision weights.
     ///
-    /// Not the default: its main increment is a sparse arm that overlaps the
-    /// two lexical channels already in place, and it costs an order of
-    /// magnitude more per query.
+    /// No longer the middle rung it was named for. The quantized BGE-M3 export
+    /// beats it on retrieval by a factor of two, is half its size in memory,
+    /// and costs nine milliseconds more per query -- so the only reason left
+    /// to choose this is those nine milliseconds. Kept because a project
+    /// indexed under it should not have to rebuild to keep working.
+    Balanced,
+    /// 1024 dimensions, int8 weights, and by a distance the best cross-lingual
+    /// recall of the three. The default.
+    ///
+    /// Run through the joint BGE-M3 export, which produces dense, sparse and
+    /// ColBERT representations in one forward pass. Only the dense one is
+    /// kept. The sparse arm duplicates the two lexical channels already in
+    /// place and is worth 0.2 points of cross-lingual nDCG by its own authors'
+    /// ablation; the ColBERT arm is one 1024-wide vector per token, which for
+    /// a project of seven million documents is terabytes.
+    ///
+    /// The default because it is not the trade its name implies. Against
+    /// `balanced` it doubles cross-lingual nDCG@10, matches it monolingually,
+    /// occupies 560 MB against 1.1 GB, and costs 35 ms per query against 26.
+    /// The int8 export is what makes all of that true at once; the
+    /// full-precision one is 2.2 GB and was the reason this profile used to be
+    /// described as an order of magnitude more expensive.
+    #[default]
     Accuracy,
 }
 
 impl Profile {
+    /// Which E5 model this profile runs, for the two that run one.
     fn model(self) -> EmbeddingModel {
         match self {
             Self::Speed => EmbeddingModel::MultilingualE5Small,
             Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy => EmbeddingModel::BGEM3,
+            Self::Accuracy => unreachable!("the accuracy profile runs the joint BGE-M3 export"),
         }
     }
 
@@ -94,7 +113,11 @@ impl Profile {
             // so the recorded identity has to change with the encoding.
             Self::Speed => "intfloat/multilingual-e5-small+p1",
             Self::Balanced => "intfloat/multilingual-e5-base+p1",
-            Self::Accuracy => "BAAI/bge-m3",
+            // The quantized export rather than the base model: int8 weights
+            // produce vectors close to the full-precision ones and not equal
+            // to them, and the recorded identity is what stops two encodings
+            // sharing one index.
+            Self::Accuracy => "gpahal/bge-m3-onnx-int8",
         }
     }
 
@@ -111,8 +134,22 @@ impl Profile {
 
 /// Turns text into vectors.
 pub struct Embedder {
-    model: TextEmbedding,
+    model: Model,
     profile: Profile,
+}
+
+/// The loaded model, which is not the same type for every profile.
+///
+/// BGE-M3 ships as a joint export producing three representations at once, and
+/// the library loads it through its own type rather than the general text one.
+/// That is also the only path to its int8 weights, which is most of why the
+/// profile is usable at all.
+///
+/// Both boxed. Each is over a kilobyte of session and tokenizer state, and an
+/// unboxed enum is the size of its largest variant everywhere it appears.
+enum Model {
+    Text(Box<TextEmbedding>),
+    Joint(Box<Bgem3Embedding>),
 }
 
 impl Embedder {
@@ -124,12 +161,24 @@ impl Embedder {
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
 
-        let options = TextInitOptions::new(profile.model())
-            .with_cache_dir(cache_dir.to_path_buf())
-            .with_show_download_progress(false);
-
-        let model = TextEmbedding::try_new(options)
-            .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
+        let model = match profile {
+            Profile::Accuracy => {
+                let options = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
+                    .with_cache_dir(cache_dir.to_path_buf())
+                    .with_show_download_progress(false);
+                Model::Joint(Box::new(Bgem3Embedding::try_new(options).map_err(
+                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
+                )?))
+            }
+            _ => {
+                let options = TextInitOptions::new(profile.model())
+                    .with_cache_dir(cache_dir.to_path_buf())
+                    .with_show_download_progress(false);
+                Model::Text(Box::new(TextEmbedding::try_new(options).map_err(
+                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
+                )?))
+            }
+        };
 
         Ok(Self { model, profile })
     }
@@ -163,20 +212,28 @@ impl Embedder {
             Some((_, passage)) => texts.iter().map(|t| format!("{passage}{t}")).collect(),
             None => texts.iter().map(|t| (*t).to_string()).collect(),
         };
-        self.model
-            .embed(prefixed, None)
-            .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))
+        self.run(prefixed)
     }
 
     fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
-        let mut vectors = self
-            .model
-            .embed(vec![text], None)
-            .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))?;
+        let mut vectors = self.run(vec![text.to_string()])?;
 
         vectors
             .pop()
             .ok_or_else(|| IndexError::Engine("embedding produced no vector".into()))
+    }
+
+    /// One forward pass, whichever model this profile loaded.
+    fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        match &mut self.model {
+            Model::Text(model) => model.embed(texts, None),
+            // The sparse and ColBERT representations come back from the same
+            // pass and are dropped here. They are not free -- the pass
+            // computes them -- but neither is wanted, and no cheaper export of
+            // this model's int8 weights exists.
+            Model::Joint(model) => model.embed(texts, None).map(|output| output.dense),
+        }
+        .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))
     }
 }
 
@@ -211,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_profile_is_balanced() {
-        assert_eq!(Profile::default(), Profile::Balanced);
+    fn the_default_profile_is_accuracy() {
+        assert_eq!(Profile::default(), Profile::Accuracy);
     }
 }

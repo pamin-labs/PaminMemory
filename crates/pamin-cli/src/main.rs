@@ -36,7 +36,7 @@ struct Cli {
     ///
     /// The index records the profile it was built with, so changing this
     /// requires `pamin reindex` rather than silently mixing vector spaces.
-    #[arg(long, env = "PAMIN_PROFILE", global = true, default_value = "balanced")]
+    #[arg(long, env = "PAMIN_PROFILE", global = true, default_value = "accuracy")]
     profile: String,
 
     /// Emit machine-readable JSON instead of text.
@@ -292,4 +292,34 @@ fn render(call: &protocol::Call, value: &serde_json::Value, format: output::Form
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The profile a command gets when nobody names one.
+    ///
+    /// Two defaults, and nothing else makes them agree: `clap` parses a string
+    /// and the library has its own `Default`. They are used in different
+    /// places -- the string here, the impl by anything constructing a profile
+    /// directly -- so a change to one and not the other is two defaults, both
+    /// shipping, differing in which vector space a project ends up in.
+    #[test]
+    fn the_documented_default_profile_is_the_library_default() {
+        // Read off the declared argument rather than by parsing a command
+        // line, because parsing consults `PAMIN_PROFILE` and would then be
+        // measuring whatever the environment running the test happens to say.
+        let command = <Cli as clap::CommandFactory>::command();
+        let declared = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "profile")
+            .and_then(|argument| argument.get_default_values().first().cloned())
+            .expect("the profile argument declares a default");
+
+        assert_eq!(
+            Profile::parse(&declared.to_string_lossy()),
+            Some(Profile::default())
+        );
+    }
 }

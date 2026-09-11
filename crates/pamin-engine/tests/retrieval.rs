@@ -55,6 +55,51 @@
 //! | `balanced` (default) | multilingual-e5-base | 0.205 | 0.837 | 0.989 | 1.000 |
 //! | `accuracy` | BGE-M3 | **0.357** | **0.962** | 0.983 | 1.000 |
 //!
+//! ## What it measured next
+//!
+//! Those numbers were fused with the constants the rank fusion literature
+//! supplies: `k = 60`, every channel weighted alike. Both turned out to be
+//! wrong for this shape of retrieval, and correcting them moved the weak group
+//! further than changing the model did. On `balanced`:
+//!
+//! | fusion | cross nDCG@10 | cross recall@50 | mono nDCG@10 |
+//! |---|---|---|---|
+//! | k=60, equal weights | 0.2041 | 0.8372 | 0.9887 |
+//! | k=60, lexical halved | 0.2245 | 0.8605 | 0.9892 |
+//! | k=10, equal weights | 0.2404 | 0.8372 | 0.9940 |
+//! | **k=10, lexical halved** | **0.3383** | 0.8512 | **0.9940** |
+//!
+//! The corrections compound, and neither is a trade: monolingual goes up.
+//! Recall@50 barely moves, which is what you would expect -- `k` and the
+//! weights reorder the candidates rather than change which ones there are.
+//!
+//! The `k` curve keeps improving all the way down (0.3599 at 5, 0.3874 at 1),
+//! so this corpus can say that 60 is too flat for fifty-deep lists and cannot
+//! say where the optimum is. `pamin_core::DEFAULT_K` explains why it stops at
+//! ten rather than at the boundary the corpus prefers.
+//!
+//! ## And then the model, on the corrected fusion
+//!
+//! The two compound. Re-measuring the profiles with `k = 10` and the lexical
+//! pair halved:
+//!
+//! | profile | model | cross nDCG@10 | cross recall@50 | mono | lexical |
+//! |---|---|---|---|---|---|
+//! | `balanced` | multilingual-e5-base, fp32 | 0.3383 | 0.8512 | 0.9940 | 1.000 |
+//! | `accuracy`, as it was | BGE-M3, fp32 | 0.6720 | 0.9616 | 0.9940 | 1.000 |
+//! | **`accuracy`, the default** | **BGE-M3, int8** | **0.6550** | **0.9500** | **0.9940** | **1.000** |
+//!
+//! Three times what the project shipped with before either change, and the
+//! quantized weights give back 0.017 of it for a model that is 560 MB instead
+//! of 2.2 GB and 35 ms a query instead of the order of magnitude the
+//! full-precision export used to cost.
+//!
+//! The shape of the failures changes too, which the mean hides. On `balanced`
+//! the worst cross-lingual queries score exactly zero: the relevant memory is
+//! not in the top ten at all, and the results come back in the query's own
+//! language about the wrong subject. On the default the worst is 0.246. There
+//! is no longer a query on this corpus that misses outright.
+//!
 //! Three things fall out of that table, and none of them were visible before
 //! it existed.
 //!
@@ -259,7 +304,7 @@ async fn retrieval_quality_by_group() {
 }
 
 /// The profile the floors below were measured against, and the product default.
-const DEFAULT_PROFILE: &str = "balanced";
+const DEFAULT_PROFILE: &str = "accuracy";
 
 /// Per group: nDCG@10 and recall@50 floors, for the default profile.
 ///
@@ -270,11 +315,11 @@ const DEFAULT_PROFILE: &str = "balanced";
 /// the cross-lingual pair by a distance, which is the point of measuring all
 /// three rather than pinning one.
 const FLOORS: &[(&str, f64, f64)] = &[
-    // 0.205 / 0.837 measured.
-    ("cross_lingual", 0.18, 0.78),
+    // 0.655 / 0.950 measured.
+    ("cross_lingual", 0.58, 0.86),
     // 1.000 / 1.000 measured; at the ceiling, so this catches a collapse only.
     ("lexical", 0.95, 0.98),
-    // 0.989 / 1.000 measured; likewise.
+    // 0.994 / 1.000 measured; likewise.
     ("monolingual", 0.94, 0.98),
 ];
 
