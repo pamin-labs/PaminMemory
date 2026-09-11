@@ -4,7 +4,7 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use pamin_core::{
@@ -123,7 +123,7 @@ pub struct Engine {
     /// without_bringing_it_down` puts through it, and that is the mild form --
     /// upstream reports the same race faulting. On macOS it is latent, so it
     /// looks like a precaution there.
-    index: Arc<RwLock<Box<dyn Projection + Send + Sync>>>,
+    index: Arc<Mutex<Box<dyn Projection + Send + Sync>>>,
     /// One model, and one caller into it at a time.
     ///
     /// Inference wants `&mut`, which is the only reason anything here ever
@@ -312,22 +312,37 @@ impl Engine {
         Ok(Self {
             database,
             worker: format!("{}:{}", hostname(), std::process::id()),
-            index: Arc::new(RwLock::new(index)),
+            index: Arc::new(Mutex::new(index)),
             embedder,
             models: models.clone(),
             project: project.id,
         })
     }
 
-    /// The projection, for reading. Several readers share it.
+    /// The projection. One caller at a time.
+    ///
+    /// This was a read-write lock, on the reading that queries are read-only
+    /// and may as well run together. The engine does not agree. Twenty writers
+    /// and twenty readers against one index wedged it inside the engine's own
+    /// code -- forty-six of its threads asleep on futexes with no caller of
+    /// ours above them, four of ours stopped inside a query, and no processor
+    /// time being used by any of them for thirty-five minutes. The same run
+    /// with writers alone passes, and the same run with this lock made
+    /// exclusive passes for the full five minutes. So concurrent queries are
+    /// the thing it cannot do, and an exclusive lock is what it costs to say
+    /// so.
+    ///
+    /// It costs less than it sounds. A search spends about half its time in a
+    /// forward pass, and the model is behind a mutex already, so two searches
+    /// were never going to overlap by much; what is given up is a few
+    /// milliseconds of index work per query, and only between callers sharing
+    /// one project.
     ///
     /// # Lock order
     ///
     /// Anything taking both the model and the index takes the **model first**.
-    /// The two are separate locks so that several searches can read the index
-    /// while one of them embeds, and that is exactly the shape that deadlocks
-    /// if one caller reverses it: a rebuild holding the index and waiting for
-    /// the model, against a search holding the model and waiting for the
+    /// Reversing it is what deadlocks: a rebuild holding the index and waiting
+    /// for the model, against a search holding the model and waiting for the
     /// index. Neither is doing anything wrong on its own, which is why the
     /// order is written here rather than left to be noticed.
     ///
@@ -335,13 +350,8 @@ impl Engine {
     /// index, so what it holds is whatever that panic left. Failing here is
     /// the honest outcome: the alternative is serving from state nobody
     /// finished writing.
-    pub(crate) fn reading(&self) -> RwLockReadGuard<'_, Box<dyn Projection + Send + Sync>> {
-        self.index.read().expect("the index lock is poisoned")
-    }
-
-    /// The projection, for writing. Excludes every reader.
-    pub(crate) fn writing(&self) -> RwLockWriteGuard<'_, Box<dyn Projection + Send + Sync>> {
-        self.index.write().expect("the index lock is poisoned")
+    pub(crate) fn index(&self) -> MutexGuard<'_, Box<dyn Projection + Send + Sync>> {
+        self.index.lock().expect("the index lock is poisoned")
     }
 
     /// The model. One caller at a time, because inference wants `&mut`.
@@ -366,7 +376,7 @@ impl Engine {
     pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
         off_the_runtime(|| {
             let embedding = self.embedding().embed_passage(&state.content)?;
-            self.writing()
+            self.index()
                 .upsert(state.topic_id, &state.content, &embedding)
         })?;
         Ok(())
@@ -510,7 +520,7 @@ impl Engine {
     /// decides where a name begins and ends, and both sides of the eventual
     /// comparison have to have gone through it.
     async fn record_name(&self, executor: impl PgExecutor<'_>, topic: &Topic) -> Result<()> {
-        let tokens = off_the_runtime(|| self.reading().segmenter().name_sequence(&topic.name));
+        let tokens = off_the_runtime(|| self.index().segmenter().name_sequence(&topic.name));
         repository::record_topic_name(
             executor,
             self.project,
@@ -546,7 +556,7 @@ impl Engine {
         // memory rather than the size of the project.
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| {
-            let index = self.reading();
+            let index = self.index();
             runs_of_tokens(&index.segmenter().name_sequence(&state.content), widest)
         });
 
@@ -611,8 +621,7 @@ impl Engine {
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
-        let candidates =
-            off_the_runtime(|| self.reading().recall_naming(name, BACKFILL_CANDIDATES))?;
+        let candidates = off_the_runtime(|| self.index().recall_naming(name, BACKFILL_CANDIDATES))?;
 
         let states =
             repository::current_states_of(self.database.pool(), self.project, &candidates).await?;
@@ -628,7 +637,7 @@ impl Engine {
                 .collect();
 
         let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
-            let index = self.reading();
+            let index = self.index();
             let segmenter = index.segmenter();
             // The fixed side here is the name, so that is the side prepared.
             let name = segmenter.name_sequence(name);
@@ -786,7 +795,7 @@ impl Engine {
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
             let embedding = self.embedding().embed_query(query)?;
-            let index = self.reading();
+            let index = self.index();
             Ok::<_, pamin_index::IndexError>(vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
@@ -892,7 +901,7 @@ impl Engine {
         // same index the same way.
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| {
-            let index = self.reading();
+            let index = self.index();
             runs_of_tokens(&index.segmenter().name_sequence(query), widest)
         });
         let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
@@ -986,7 +995,7 @@ impl Engine {
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
             let mut embedder = self.embedding();
-            let index = self.writing();
+            let index = self.index();
 
             for batch in states.chunks(REINDEX_BATCH) {
                 // One forward pass over the batch rather than one per state.
@@ -1033,7 +1042,7 @@ impl Engine {
         let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
         let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
-            let index = self.reading();
+            let index = self.index();
             let segmenter = index.segmenter();
             topics
                 .iter()
