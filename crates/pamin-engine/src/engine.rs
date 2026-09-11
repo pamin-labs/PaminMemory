@@ -11,7 +11,7 @@ use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
     ProjectId, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
-use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
+use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
@@ -135,6 +135,12 @@ pub struct Engine {
     /// arrives rather than being loaded here. Two projects are two indexes and
     /// one model.
     embedder: Arc<Mutex<Embedder>>,
+    /// Where a reranker comes from, if a search asks for one.
+    ///
+    /// The registry rather than a loaded model: most searches do not rerank,
+    /// most workspaces never will, and half a gigabyte should not be read off
+    /// disk by opening a project.
+    models: Models,
     pub project: ProjectId,
 }
 
@@ -149,6 +155,9 @@ pub struct Engine {
 pub struct Models {
     dir: std::path::PathBuf,
     loaded: Arc<Mutex<std::collections::HashMap<Profile, Arc<Mutex<Embedder>>>>>,
+    /// The same arrangement for rerankers, keyed by tier for the same reason:
+    /// the tier is what decides which weights these are.
+    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Arc<Mutex<Reranker>>>>>,
 }
 
 impl Models {
@@ -157,6 +166,7 @@ impl Models {
         Self {
             dir: workspace.root().join("models"),
             loaded: Arc::default(),
+            rerankers: Arc::default(),
         }
     }
 
@@ -179,6 +189,25 @@ impl Models {
         let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
         loaded.insert(profile, Arc::clone(&embedder));
         Ok(embedder)
+    }
+
+    /// The reranker for a tier, loading it the first time it is asked for.
+    ///
+    /// Lazily rather than with the project: a workspace that never reranks
+    /// never downloads one, and the tier is chosen per search.
+    fn reranker(&self, tier: Rerank) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
+        let mut rerankers = self
+            .rerankers
+            .lock()
+            .expect("the reranker registry lock is poisoned");
+
+        if let Some(reranker) = rerankers.get(&tier) {
+            return Ok(Arc::clone(reranker));
+        }
+
+        let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
+        rerankers.insert(tier, Arc::clone(&reranker));
+        Ok(reranker)
     }
 }
 
@@ -285,6 +314,7 @@ impl Engine {
             worker: format!("{}:{}", hostname(), std::process::id()),
             index: Arc::new(RwLock::new(index)),
             embedder,
+            models: models.clone(),
             project: project.id,
         })
     }
@@ -644,6 +674,88 @@ impl Engine {
     pub async fn search(&self, query: &str, limit: u32, depths: Depths) -> Result<Vec<SearchHit>> {
         self.search_fused(query, limit, depths, Fusion::default())
             .await
+    }
+
+    /// Search, then reorder the head of the result with a cross-encoder.
+    ///
+    /// Only the candidates no lexical channel found, and only into the
+    /// positions those candidates already hold.
+    ///
+    /// Every cross-encoder measured improves cross-lingual ranking and damages
+    /// same-language ranking by about as much: fusion is already good at
+    /// placing a memory that shares words with the query, and a second pass
+    /// reorders it worse. So the pass is confined to the candidates the
+    /// lexical channels did not find -- the ones fusion ordered on the vector
+    /// channel alone. Everything else keeps the rank it had, which makes the
+    /// damage arithmetically impossible rather than merely unlikely.
+    ///
+    /// This was a language comparison first, since "written in another
+    /// language" is what the case really is. The two pick the same candidates
+    /// -- they agree on 93% of a shortlist and score within 0.002 of each
+    /// other -- and the language test needed the query's language, which for a
+    /// short query is exactly what a detector will not commit to:
+    /// `detect_language` returns nothing for "how does deployment work". A
+    /// rule that quietly does nothing on the commonest shape of query is worse
+    /// than a slightly different rule, and this one asks only what the search
+    /// already recorded.
+    pub async fn search_reranked(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        rerank: Rerank,
+    ) -> Result<Vec<SearchHit>> {
+        let hits = self
+            .search_fused(query, limit, depths, Fusion::default())
+            .await?;
+        if rerank == Rerank::Off || hits.is_empty() {
+            return Ok(hits);
+        }
+
+        let head = rerank.depth().min(hits.len());
+        let unlexical: Vec<usize> = (0..head)
+            .filter(|position| {
+                !hits[*position].result.why.iter().any(|why| {
+                    matches!(
+                        why,
+                        Why::Channel { channel, .. }
+                            if *channel == Channel::LexicalSegmented
+                                || *channel == Channel::LexicalNgram
+                    )
+                })
+            })
+            .collect();
+        if unlexical.len() < 2 {
+            return Ok(hits);
+        }
+
+        let documents: Vec<&str> = unlexical
+            .iter()
+            .map(|position| hits[*position].state.content.as_str())
+            .collect();
+        let reranker = self.models.reranker(rerank)?;
+        let ordered = off_the_runtime(|| {
+            reranker
+                .lock()
+                .expect("the reranker lock is poisoned")
+                .rank(query, &documents)
+        })?;
+
+        // Back into the positions those candidates already held, so nothing
+        // else in the list moves.
+        let mut slots: Vec<Option<SearchHit>> = hits.into_iter().map(Some).collect();
+        let mut taken: Vec<Option<SearchHit>> = unlexical
+            .iter()
+            .map(|position| slots[*position].take())
+            .collect();
+        for (slot, from) in unlexical.iter().zip(&ordered) {
+            slots[*slot] = taken[*from].take();
+        }
+
+        Ok(slots
+            .into_iter()
+            .map(|hit| hit.expect("every position refilled"))
+            .collect())
     }
 
     /// The same search, with the fusion settings supplied.

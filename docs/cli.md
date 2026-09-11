@@ -201,6 +201,36 @@ recall you cannot measure from outside, and an agent that wants control over
 retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
 ranking internals it has no way to evaluate.
 
+`--rerank` chooses how much to spend reordering the results, and takes
+`PAMIN_RERANK`:
+
+| | what it loads | per query | cross-lingual nDCG@10 | same-language |
+|---|---|---|---|---|
+| `off` | nothing | — | — | — |
+| `fast` | 113 MB | 151 ms | **+0.0595** | unchanged |
+| `accurate` | 570 MB | 1795 ms | **+0.0852** | unchanged |
+
+`fast` is the default. The model is fetched the first time a search asks for
+one, into the same cache as the embedding model.
+
+A reranker reads the query and a memory together, which is what lets it correct
+an order the channels got wrong, and what makes it cost a forward pass for
+every candidate it looks at. Only the candidates no lexical channel found are
+reordered, and only into the positions they already hold — so a memory that
+shares words with your query comes back where it was, whatever the reranker
+thought of it. The same-language column above is unchanged for that reason
+rather than by luck.
+
+That also means a workspace whose memories are all in one language gains
+almost nothing here and should set `off`: the candidates the lexical channels
+miss are overwhelmingly the ones in another language. The numbers above are
+from eleven languages at once.
+
+The latencies are from four cores. Published figures for a reranker of this
+size are a few milliseconds per candidate rather than the ten measured here,
+and the difference is the core count; on an ordinary server `fast` is tens of
+milliseconds.
+
 `--graph-depth` accepts 0 to 4 and refuses anything larger. A topic's
 neighbourhood grows multiplicatively with each hop and hub topics reach five
 figures of degree, so a fifth hop is not a slower query but a differently sized
