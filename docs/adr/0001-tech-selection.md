@@ -206,7 +206,7 @@ Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but 
 
 An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on this project's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
 
-On 13,014 sentences in eleven languages, 4,845 relevant sentences sit between rank 10 and rank 50, across 1,149 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository.
+On 13,014 sentences in eleven languages, 3,849 relevant sentences sit between rank 10 and rank 50, across 1,090 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
 
 | Tier | Loads | Per query | Cross-lingual nDCG@10 | Same-language |
 | --- | --- | --- | --- | --- |
