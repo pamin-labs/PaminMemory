@@ -42,6 +42,19 @@ pub struct Job {
     pub subject: Option<uuid::Uuid>,
     /// How many times this job has been claimed, including now.
     pub attempts: i32,
+    /// When this claim was taken, if this job is held at all.
+    ///
+    /// What identifies the claim, rather than the worker that holds it: the
+    /// worker is one string per process, so a job whose lease expired and was
+    /// taken again by the same process cannot be told from the attempt that
+    /// read it. [`complete`] compares this so that it cannot mark somebody
+    /// else's attempt done -- including a later attempt of its own.
+    ///
+    /// Absent for a job nobody holds, which is every job [`exhausted`] returns:
+    /// failing clears the claim. Such a job cannot be completed, and comparing
+    /// against an absent claim is what says so rather than a check that has to
+    /// be remembered.
+    pub claimed_at: Option<OffsetDateTime>,
 }
 
 /// What runs first when several jobs are pending.
@@ -165,7 +178,7 @@ pub async fn claim(
                  FOR UPDATE SKIP LOCKED
                LIMIT $4
           )
-      RETURNING id, project_id, job_type, payload, attempts",
+      RETURNING id, project_id, job_type, payload, attempts, claimed_at",
     )
     .bind(now)
     .bind(worker)
@@ -184,9 +197,19 @@ pub async fn claim(
 ///
 /// A job missing from the result was not completed, which happens two ways and
 /// means the same thing both times: it was requested again while this attempt
-/// was running, or the lease expired and another worker took it. In either case
-/// the state this attempt read is not the state the queue is now asking about,
-/// so the row stays pending and runs again.
+/// was running, or the lease expired and the job was claimed again. In either
+/// case the state this attempt read is not the state the queue is now asking
+/// about, so the row stays pending and runs again.
+///
+/// The claim is identified by when it was taken and not only by who holds it.
+/// A worker is one string per process -- host and pid -- so a job whose lease
+/// expired and was then re-claimed by the same process carries a `claimed_by`
+/// this attempt cannot distinguish from its own, and completing against the
+/// worker alone would mark the second attempt done against work only the first
+/// one did. That is reachable rather than theoretical: the lease is a minute
+/// and building a graph over a sealed segment is longer, so a compaction's own
+/// lease expires while it runs and the upkeep loop claims it again five seconds
+/// later.
 ///
 /// A round's completions go together because separately they cost more than the
 /// work they record. Measured on this cluster, a thousand completions:
@@ -215,15 +238,24 @@ pub async fn complete(
     }
 
     let ids: Vec<uuid::Uuid> = jobs.iter().map(|job| job.id.0).collect();
+    // A job nobody holds has no claim to compare against, and comparing with
+    // SQL's absent value is never true -- so it is not completed, which is the
+    // answer.
+    let claims: Vec<Option<OffsetDateTime>> = jobs.iter().map(|job| job.claimed_at).collect();
     let rows = sqlx::query(
         "UPDATE index_jobs
             SET completed_at = $3, claimed_at = NULL, claimed_by = NULL, last_error = NULL
-          WHERE id = ANY($1) AND claimed_by = $2 AND completed_at IS NULL
-      RETURNING id",
+           FROM unnest($1::uuid[], $4::timestamptz[]) AS held (id, claimed_at)
+          WHERE index_jobs.id = held.id
+            AND index_jobs.claimed_by = $2
+            AND index_jobs.claimed_at = held.claimed_at
+            AND index_jobs.completed_at IS NULL
+      RETURNING index_jobs.id",
     )
     .bind(&ids)
     .bind(worker)
     .bind(OffsetDateTime::now_utc())
+    .bind(&claims)
     .fetch_all(executor)
     .await?;
 
@@ -283,7 +315,7 @@ pub async fn exhausted(
     project: ProjectId,
 ) -> Result<Vec<(Job, String)>> {
     let rows = sqlx::query(
-        "SELECT id, project_id, job_type, payload, attempts, last_error
+        "SELECT id, project_id, job_type, payload, attempts, claimed_at, last_error
            FROM index_jobs
           WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $2
           ORDER BY priority, available_at",
@@ -358,5 +390,6 @@ fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
             .and_then(serde_json::Value::as_str)
             .and_then(|subject| uuid::Uuid::parse_str(subject).ok()),
         attempts: row.get("attempts"),
+        claimed_at: row.get("claimed_at"),
     }
 }
