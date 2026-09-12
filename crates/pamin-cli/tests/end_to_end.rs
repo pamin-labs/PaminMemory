@@ -1571,16 +1571,108 @@ fn readers_and_writers_share_one_index_without_bringing_it_down() {
         "the server did not survive its readers and writers sharing an index"
     );
 
-    // Compaction runs outside the index lock, so it is the one thing here that
-    // overlaps the queries rather than queuing with them. Without this the run
-    // could go green having never compacted at all -- which would be a green
-    // run for the wrong reason, since the overlap is what it is checking.
+    // Flushing is what this run does concurrently with its queries: a write
+    // applies its document and returns, and the server puts it on disk. That
+    // takes the index lock like any other write, so the readers above are
+    // sharing an index with it for the whole five minutes.
+    //
+    // It used to be compaction. This workload no longer fragments the index at
+    // all: three thousand writes leave 136 files against a budget of 256, and
+    // nothing is ever compacted. Amortizing the flush was most of what produced
+    // the files, so asserting compaction here would only be asserting that the
+    // old cost was still being paid.
     let log = std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
-    let upkeeps = log.matches("ran index upkeep").count();
     assert!(
-        upkeeps > 0,
-        "the index was never compacted during the run, so nothing here \
-         overlapped a query and a green result says nothing about it"
+        log.contains("made applied writes durable"),
+        "nothing was flushed during the run, so nothing overlapped the queries \
+         and a green result says nothing about whether it can"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// A write is findable before it is on disk, and somebody else puts it there.
+///
+/// The projection buffers a write in memory and a query reads that buffer, so a
+/// memory is findable the moment it is applied. Making it durable is a separate
+/// operation, it calls `fsync`, and it costs 39 ms -- more than everything else
+/// a write does put together. Paying it per write also interrupts the engine's
+/// own batching: two thousand memories flushed one at a time leave 10,031 index
+/// files and 2.2 GB resident, against 25 files and 4 MB left alone.
+///
+/// So a write applies its document and returns, and the job stays claimed until
+/// a flush covers it. Both halves need saying, and this says both: that the
+/// memory is searchable straight away, and that the flush happened somewhere
+/// other than in front of the writer.
+///
+/// What makes it safe is the claim, not the engine. Power lost between the two
+/// leaves the job owed and the ledger replays it -- the same guarantee as
+/// before, reached without the writer waiting for a disk.
+///
+/// Before this, the writer flushed its own round: the search still succeeded
+/// and the server never reported making anything durable, so the second
+/// assertion is the one that fails.
+///
+/// This replaces a test that asked the same question about compaction -- that a
+/// write leaves the index's upkeep to the server rather than paying for it.
+/// Compaction was the upkeep a write left behind because a write flushed, and
+/// flushing per write was what produced the files: two thousand memories left
+/// 10,031 index files that way and 25 left to the engine's own schedule. With
+/// the flush amortized the index does not fragment at ordinary rates -- three
+/// thousand writes leave 136 files against a budget of 256 -- so the old test
+/// could no longer reach the state it was named for. The division of labour it
+/// was about is this one; the file budget still has its own test at the index
+/// layer, where the files can be produced deliberately.
+#[test]
+#[ignore = "provisions postgres, downloads model weights, and writes a hundred memories"]
+fn a_write_is_findable_before_the_server_has_put_it_on_disk() {
+    /// More than one upkeep tick's worth, so the flushing is a batch rather
+    /// than one write's worth done late.
+    const ENOUGH_TO_BATCH: usize = 100;
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(60);
+
+    let cli = Cli::new();
+    // Asked for its log, because "somebody else flushed" is half the claim.
+    let mut server = cli.serve_logging("pamin=debug");
+    cli.run(&["init"]);
+
+    for round in 0..ENOUGH_TO_BATCH {
+        let written = cli.json(&[
+            "write",
+            "--topic",
+            &format!("durable_{round}"),
+            &format!("round {round} of the durability run mentions marmalade"),
+        ]);
+        assert_eq!(
+            written["cascade"], "applied",
+            "a write whose document the index has is not still owed, whatever \
+             the queue says about flushing it"
+        );
+    }
+
+    // Findable now, with nothing having been flushed on its account.
+    let hits = cli.json(&["search", "marmalade", "--limit", "5"]);
+    assert!(
+        !hits["hits"].as_array().expect("hits").is_empty(),
+        "a memory the index has applied was not findable"
+    );
+
+    // And the server is what puts them on disk.
+    let deadline = Instant::now() + GIVE_UP_AFTER;
+    let flushed = loop {
+        if Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        let log = std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+        if log.contains("made applied writes durable") {
+            break true;
+        }
+    };
+    assert!(
+        flushed,
+        "no applied write was ever made durable by anybody but the writer"
     );
 
     server.kill().expect("stopping the server");
@@ -1731,86 +1823,6 @@ fn a_topics_history_does_not_crowd_the_index() {
     let earlier = cli.json(&["read", "release_process", "--version-offset", "1"]);
     assert_eq!(earlier["version"], (VERSIONS - 1) as u64);
     assert_eq!(earlier["is_current"], false);
-}
-
-/// Keeping the index tidy is somebody else's job, and somebody else does it.
-///
-/// The index spreads across a couple more files with every write and has to be
-/// compacted before it runs out of descriptors. That compaction takes about a
-/// third of a second and makes nothing more correct -- it only makes the next
-/// search quicker -- so a write schedules it and returns, and the server runs
-/// it.
-///
-/// This checks who does the work, which is all it can check. It is not a
-/// latency test and would be a dishonest one: measured, writes are no quicker
-/// this way, because the index takes one caller at a time and a write waits out
-/// a compaction whether or not it is the one running it.
-///
-/// Who does it still takes both halves to establish: that a write leaves it
-/// owed, and that it stops being owed while nobody is asking for anything.
-///
-/// Before this, the writer always ran it, so the first assertion is the one
-/// that fails: every write reported `applied` and nothing was ever left over.
-#[test]
-#[ignore = "provisions postgres, downloads model weights, and writes a few hundred memories"]
-fn the_index_is_tidied_by_the_server_rather_than_by_whoever_wrote_to_it() {
-    /// Enough that the index passes its file budget at least once. It takes
-    /// about a hundred, and a hundred and sixty is margin rather than a
-    /// measurement.
-    const ENOUGH_TO_UNTIDY_IT: usize = 160;
-    const GIVE_UP_AFTER: Duration = Duration::from_secs(90);
-
-    let cli = Cli::new();
-    let mut server = cli.serve();
-    cli.run(&["init"]);
-
-    let mut left_for_somebody = false;
-    for round in 0..ENOUGH_TO_UNTIDY_IT {
-        let written = cli.json(&[
-            "write",
-            "--topic",
-            &format!("tidy_{}", round % 8),
-            &format!("round {round} of the upkeep run"),
-        ]);
-        if written["cascade"] == "queued" {
-            left_for_somebody = true;
-        }
-    }
-    assert!(
-        left_for_somebody,
-        "no write ever left upkeep for anybody, so either the index never \
-         needed tidying or the writer tidied it itself"
-    );
-
-    // Written once so that writing it again is held in the evidence layer
-    // rather than promoted. A held write schedules nothing, so polling with it
-    // cannot be what empties the queue -- it only reports what is left.
-    cli.run(&["write", "--topic", "quiet", "nothing new is happening here"]);
-
-    let deadline = Instant::now() + GIVE_UP_AFTER;
-    let tidied = loop {
-        if Instant::now() > deadline {
-            break false;
-        }
-        std::thread::sleep(Duration::from_secs(2));
-        let held = cli.json(&["write", "--topic", "quiet", "nothing new is happening here"]);
-        assert!(
-            !held["promoted"].as_bool().expect("promoted"),
-            "the poll was supposed to be a held write and was promoted instead"
-        );
-        if held["cascade"] == "applied" {
-            break true;
-        }
-    };
-
-    assert!(
-        tidied,
-        "the server never ran the upkeep the writes left it, and nothing else \
-         was going to"
-    );
-
-    server.kill().expect("stopping the server");
-    server.wait().expect("reaping the server");
 }
 
 /// An import is all of the file or none of it, and what it records is findable.

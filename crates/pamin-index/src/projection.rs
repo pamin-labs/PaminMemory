@@ -256,6 +256,14 @@ pub fn segment_documents(documents: u64) -> u64 {
 /// finding: past a couple of hundred files the cost of compacting is no longer
 /// what decides the number, so the resource is.
 ///
+/// Those numbers were measured while every write flushed the index, which is
+/// what produced the files. Now that a write applies its document and leaves
+/// the flush to the server, this is a bound rather than a working limit: three
+/// thousand writes through a server leave 136 files and nothing is ever
+/// compacted, where two thousand flushed one at a time left 10,031. It is kept
+/// for the cases that still reach it -- an import, and a workspace written to
+/// with no server behind it -- and because a bound that is not being
+/// approached is the one worth having.
 const MAX_FILES: u64 = 256;
 
 /// Whether an index is spread across more files than it should be.

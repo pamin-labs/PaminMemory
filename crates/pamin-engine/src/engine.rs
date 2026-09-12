@@ -135,6 +135,29 @@ pub struct Engine {
     ///
     /// [`Engine::index`]: Self::index
     index: Arc<Mutex<Arc<dyn Projection + Send + Sync>>>,
+    /// Index writes that are applied but not yet on disk, with their claims.
+    ///
+    /// The projection buffers a write in memory and a query reads that buffer,
+    /// so a memory is findable the moment it is upserted -- verified against
+    /// every channel, and against a reopen. What the buffer is not is durable:
+    /// `upsert` reaches the engine's log with no `fsync` behind it, and only
+    /// `flush` calls one. So a write survives this process being killed and
+    /// would not survive the machine losing power.
+    ///
+    /// That is the whole of what a flush buys, and paying for it per write is
+    /// the most expensive thing in the write path: 39 ms, against 0.15 ms a
+    /// document when the engine is left to materialize on its own schedule.
+    /// Worse than the latency, it interrupts that schedule -- two thousand
+    /// memories flushed one at a time leave 10,031 index files and 2.2 GB
+    /// resident, and left alone leave 25 files and 4 MB.
+    ///
+    /// So the flush is amortized, and a job stays claimed until one covers it.
+    /// That is what keeps the outbox's promise without relying on the engine's:
+    /// power lost here leaves these jobs owed and the ledger replays them. The
+    /// same is true of this process going away with the list non-empty, or of
+    /// the project being evicted from the registry -- the claims lapse and the
+    /// work comes round again.
+    unflushed: Arc<Mutex<Vec<jobs::Job>>>,
     /// How this splits text, held here rather than reached through the index.
     ///
     /// It is the index's segmenter -- taken from it at open, so the two cannot
@@ -338,6 +361,7 @@ impl Engine {
             // would be the same code today and a divergence the first time
             // either side changed.
             segmenter: index.segmenter(),
+            unflushed: Arc::default(),
             index: Arc::new(Mutex::new(index)),
             embedder,
             models: models.clone(),
@@ -378,6 +402,13 @@ impl Engine {
     /// finished writing.
     pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
         self.index.lock().expect("the index lock is poisoned")
+    }
+
+    /// The claims held open by writes the index has and the disk does not.
+    pub(crate) fn unflushed(
+        &self,
+    ) -> std::sync::LockResult<MutexGuard<'_, Vec<pamin_store::jobs::Job>>> {
+        self.unflushed.lock()
     }
 
     /// The projection, for the one thing that may run while others use it.

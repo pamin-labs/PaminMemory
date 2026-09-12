@@ -95,11 +95,11 @@ pub async fn execute(
         let owed = if pamin_core::may_defer(behind) {
             behind
         } else {
-            engine.drain_cascade(pays_for_upkeep).await?.pending
+            still_owed(engine.drain_cascade(pays_for_upkeep).await?)
         };
         (behind, owed)
     } else {
-        let owed = engine.drain_cascade(pays_for_upkeep).await?.pending;
+        let owed = still_owed(engine.drain_cascade(pays_for_upkeep).await?);
         (owed, owed)
     };
 
@@ -158,6 +158,22 @@ pub(crate) async fn record(
         .await?;
 
     Ok((verdict, recorded))
+}
+
+/// What the projection still owes that would change what a search finds.
+///
+/// Not the same as what the queue still holds. A write whose document the index
+/// has but whose flush has not happened yet is findable now -- the projection
+/// buffers it in memory and a query reads that buffer -- and its job stays
+/// claimed only so that a power cut replays it rather than losing it. Reporting
+/// those as owed would say a memory is not searchable when it is, on every
+/// single write, which is the opposite of what this field is for.
+fn still_owed(drained: pamin_engine::Drained) -> i64 {
+    // Never below nothing: the two numbers are read a moment apart while the
+    // server's flusher is retiring rows between them, so the applied count can
+    // outrun the queue's. Both readings mean the same thing here -- there is
+    // nothing left that a search would miss.
+    (drained.pending - drained.applied as i64).max(0)
 }
 
 /// Who pays for the index's upkeep after this write.

@@ -117,9 +117,17 @@ pub async fn execute(
     }
 
     // Once at the end rather than per memory, which is the whole point: the
-    // cascade claims sixty-four jobs a round and flushes the index once a
-    // round, so an import that drained per memory would pay one flush each.
-    let owed = engine.drain_cascade(upkeep).await?.pending;
+    // cascade claims sixty-four jobs a round, so an import that drained per
+    // memory would pay a round's fixed costs for every line of the file.
+    engine.drain_cascade(upkeep).await?;
+
+    // And the import is on disk when it returns. A write leaves its flush to
+    // the server and reports the memory findable, which it is; an import is a
+    // batch somebody is waiting on the end of, and it has just accumulated the
+    // largest number of applied writes anything here produces. Flushing them
+    // together is what the batching was for.
+    engine.flush_what_is_applied().await?;
+    let owed = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
 
     Ok(Imported {
         memories: memories.len(),
