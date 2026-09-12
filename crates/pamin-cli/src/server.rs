@@ -100,7 +100,16 @@ async fn maintain(session: Arc<Session>) {
     loop {
         tokio::time::sleep(UPKEEP).await;
 
-        for engine in session.open_engines().await {
+        // One engine at a time, and taken by key. Holding all of them for the
+        // length of a sweep makes every one of them look busy to eviction,
+        // which then finds nothing to close and lets the registry grow past
+        // its bound whenever a cold project arrives during a tick.
+        for key in session.opened_projects() {
+            let Some(engine) = session.opened_engine(&key) else {
+                // Being opened, or being rebuilt. Its upkeep waits for the
+                // next tick rather than this loop waiting for it.
+                continue;
+            };
             match engine.flush_what_is_applied().await {
                 Ok(0) => {}
                 Ok(durable) => tracing::debug!(durable, "made applied writes durable"),
