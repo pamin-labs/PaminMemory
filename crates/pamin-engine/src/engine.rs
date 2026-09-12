@@ -160,6 +160,24 @@ pub struct Engine {
     /// the project being evicted from the registry -- the claims lapse and the
     /// work comes round again.
     unflushed: Arc<Mutex<Vec<jobs::Job>>>,
+    /// The longest topic name in this project, in tokens, as far as this
+    /// process has seen.
+    ///
+    /// A search asks for it before anything else it does, to know how wide a
+    /// window of the query could be a name. The answer changes only when a
+    /// topic is created whose name is wider than any before it -- names are
+    /// immutable and nothing deletes them -- so it only ever grows, and a
+    /// remembered value is either right or too low.
+    ///
+    /// Too low is not symmetrical with too high, which is why this is only
+    /// consulted by the search path. Too high costs windows that match
+    /// nothing, because a run is compared against stored names by equality.
+    /// Too low means a name is never looked for -- and on the write path that
+    /// is not a missed edge but a **retracted** one, because deriving mentions
+    /// asserts what it found and then closes everything it did not. A search
+    /// that misses a graph seed is right again on the next query; an edge
+    /// retracted against a name nobody looked for stays gone.
+    widest_name: Arc<std::sync::atomic::AtomicUsize>,
     /// How this splits text, held here rather than reached through the index.
     ///
     /// It is the index's segmenter -- taken from it at open, so the two cannot
@@ -363,6 +381,7 @@ impl Engine {
             // would be the same code today and a divergence the first time
             // either side changed.
             segmenter: index.segmenter(),
+            widest_name: Arc::default(),
             unflushed: Arc::default(),
             index: Arc::new(Mutex::new(index)),
             embedder,
@@ -404,6 +423,40 @@ impl Engine {
     /// finished writing.
     pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
         self.index.lock().expect("the index lock is poisoned")
+    }
+
+    /// How wide the widest topic name in this project is, in tokens.
+    ///
+    /// Read once and remembered. It is asked at the top of every search -- to
+    /// decide how long a run of the query could be a name -- and it answers a
+    /// `MAX` over a column that only grows: names cannot be renamed and nothing
+    /// deletes them, so a value this process has seen can only become stale by
+    /// being too low, and only when some other writer creates a wider name.
+    ///
+    /// Too low costs a search one graph seed, which the next search gets right
+    /// once this process sees the wider name itself. That is the whole reason
+    /// this is on the search path and not on the write path, where the same
+    /// staleness would retract edges rather than miss them.
+    async fn widest_name(&self) -> Result<usize> {
+        use std::sync::atomic::Ordering;
+
+        let known = self.widest_name.load(Ordering::Relaxed);
+        if known > 0 {
+            return Ok(known);
+        }
+
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        self.remember_widest_name(widest);
+        Ok(widest)
+    }
+
+    /// Raises what this process believes the widest name to be.
+    ///
+    /// Never lowers it. Two writers racing here both win: the larger stands,
+    /// which is the direction that cannot lose a lookup.
+    pub(crate) fn remember_widest_name(&self, tokens: usize) {
+        self.widest_name
+            .fetch_max(tokens, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The claims held open by writes the index has and the disk does not.
@@ -614,6 +667,10 @@ impl Engine {
             tokens.len(),
         )
         .await?;
+        // This process now knows of a name at least this wide, whether or not
+        // it had asked. Raising it here is what keeps the search path's
+        // remembered value from going stale against writes made through it.
+        self.remember_widest_name(tokens.len());
         Ok(())
     }
 
@@ -639,6 +696,10 @@ impl Engine {
         // for these is the same question the old loop asked of every topic in
         // the project one at a time, with the cost following the length of the
         // memory rather than the size of the project.
+        // Asked fresh, never from what this process remembers. A remembered
+        // value can only be too low, and too low here does not mean a missed
+        // edge -- what is not found below is closed as no longer named. See
+        // [`Engine::widest_name`].
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| {
             runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest)
@@ -999,7 +1060,7 @@ impl Engine {
         // Resolving query entities against known topics is the retrieval half
         // of entity linking; the write path does the other, and both ask the
         // same index the same way.
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let widest = self.widest_name().await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
         let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
 
@@ -1442,6 +1503,25 @@ mod tests {
                 fused_for(5, tier)
             );
         }
+    }
+
+    /// What this process remembers about the widest name only ever grows.
+    ///
+    /// The direction matters more than the caching does. Remembering a value
+    /// that is too high costs a search some query windows that match nothing;
+    /// too low means a whole class of name is never looked for. So a second
+    /// writer reporting a narrower name must not be able to lower it.
+    #[test]
+    fn the_widest_name_is_raised_and_never_lowered() {
+        let widest = std::sync::atomic::AtomicUsize::new(0);
+        let raise = |tokens: usize| {
+            widest.fetch_max(tokens, std::sync::atomic::Ordering::Relaxed);
+            widest.load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        assert_eq!(raise(3), 3);
+        assert_eq!(raise(5), 5, "a wider name did not raise it");
+        assert_eq!(raise(2), 5, "a narrower name lowered it");
     }
 
     /// A caller wanting more than the reranker reads still gets what it asked.
