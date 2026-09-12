@@ -11,7 +11,7 @@
 //! to report would already be gone.
 
 use std::path::Path;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use pamin_core::TopicId;
@@ -75,7 +75,13 @@ pub trait Projection {
     /// to split it the way the index did. A projection that tokenizes one way
     /// and hands out a segmenter that tokenizes another is an index nothing
     /// matches against.
-    fn segmenter(&self) -> &Segmenter;
+    ///
+    /// A handle rather than a borrow, so a caller can keep tokenizing after it
+    /// has let go of the projection. Splitting text touches nothing the
+    /// projection owns, and the lock the composition layer holds the projection
+    /// behind is there for an engine defect the segmenter has no part in; a
+    /// borrow would keep that lock held for work that never needed it.
+    fn segmenter(&self) -> Arc<Segmenter>;
 
     /// Adds or replaces one topic.
     fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()>;
@@ -133,7 +139,7 @@ pub trait Projection {
 /// A lexical or vector index over topics.
 pub struct ProjectionIndex {
     collection: Collection,
-    segmenter: Segmenter,
+    segmenter: Arc<Segmenter>,
     dir: std::path::PathBuf,
 }
 
@@ -425,7 +431,7 @@ impl ProjectionIndex {
 
         Ok(Self {
             collection,
-            segmenter: Segmenter::new(),
+            segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
         })
     }
@@ -492,8 +498,8 @@ impl Projection for ProjectionIndex {
     /// indexed content splits it the same way this index did. A second
     /// segmenter would be the same code today and a divergence the first time
     /// either side changed.
-    fn segmenter(&self) -> &Segmenter {
-        &self.segmenter
+    fn segmenter(&self) -> Arc<Segmenter> {
+        Arc::clone(&self.segmenter)
     }
 
     /// Adds or replaces many topics.
