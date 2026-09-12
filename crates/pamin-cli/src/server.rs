@@ -172,7 +172,7 @@ async fn serve_connection(session: &Session, stream: UnixStream) -> Result<Shutd
             }
         };
 
-        framed.send(serde_json::to_string(&response)?).await?;
+        framed.send(within_bounds(&response)?).await?;
 
         // Stopping happens whether or not the database could be stopped. The
         // reply carries that failure, and the caller sees it -- but a server
@@ -199,7 +199,7 @@ const MAX_REQUEST: usize = 16 * 1024 * 1024;
 /// The dispatch is a match rather than a trait because there is exactly one
 /// implementation of each arm and the compiler checking that every command has
 /// one is worth more than the indirection would be.
-async fn answer(session: &Session, request: Request) -> Result<serde_json::Value> {
+async fn answer(session: &Session, request: Request) -> Result<Payload> {
     let Request {
         project,
         profile,
@@ -229,15 +229,41 @@ async fn answer(session: &Session, request: Request) -> Result<serde_json::Value
         Call::Reindex(args) => {
             json(command::reindex::execute(session, &project, profile, args).await?)?
         }
-        Call::Cascade(args) => command::cascade::answer(session, &project, profile, args).await?,
+        Call::Cascade(args) => {
+            json(command::cascade::answer(session, &project, profile, args).await?)?
+        }
         Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
     };
 
     Ok(value)
 }
 
-fn json<T: serde::Serialize>(value: T) -> Result<serde_json::Value> {
-    Ok(serde_json::to_value(value)?)
+/// A command's result, serialized once and never re-walked.
+type Payload = Box<serde_json::value::RawValue>;
+
+/// The response as a line, refused here if it is one the client cannot read.
+///
+/// The codec's limit is a decoder's: it bounds what this reads and says nothing
+/// about what it writes. So an oversized answer used to be computed in full,
+/// written in full, and rejected at the other end by the client's decoder --
+/// which reports it as an unreadable response rather than as a result too large
+/// to send. Saying so here costs a length check and makes the message name the
+/// problem.
+fn within_bounds(response: &Response) -> Result<String> {
+    let line = serde_json::to_string(response)?;
+    if line.len() > MAX_REQUEST {
+        let too_big = Response::Err(format!(
+            "the result is {} bytes and the most that can be sent is {MAX_REQUEST}; \
+             ask for less of it -- a smaller --limit, or a narrower grep",
+            line.len()
+        ));
+        return Ok(serde_json::to_string(&too_big)?);
+    }
+    Ok(line)
+}
+
+fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
+    Ok(serde_json::value::to_raw_value(&value)?)
 }
 
 /// Where this workspace's socket lives.
