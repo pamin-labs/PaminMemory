@@ -62,6 +62,7 @@ async fn the_ledger_holds_its_promises() {
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
+    a_completion_names_the_claim_it_belongs_to(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
@@ -1562,6 +1563,96 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         walked.iter().filter(|n| n.hops == 2).count(),
         SPOKES,
         "two hops reaches the far hub's spokes and nothing further"
+    );
+}
+
+/// A completion belongs to one claim, not to whoever happens to hold the job.
+///
+/// The worker is one string per process -- host and pid -- so two attempts by
+/// the same process are indistinguishable by it. That matters because a lease
+/// expires on a timer rather than on the worker going away: a job that outruns
+/// its minute is claimed again while the first attempt is still working, and
+/// when that attempt finishes it must not mark the second one done.
+///
+/// Not a hypothetical. Building the vector graph over a sealed segment takes
+/// longer than the lease, and the server's upkeep loop comes round every five
+/// seconds, so a compaction is re-claimed by the same process as a matter of
+/// course.
+///
+/// Before the completion named its claim, the last assertion here failed: the
+/// stale attempt completed the fresh one, and the work the fresh claim stood
+/// for was recorded as done without being run.
+async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "reclaim")
+        .await
+        .expect("ensure project");
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "reclaimed_topic"
+    )
+    .expect("ensure topic")
+    .id;
+
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::SyncTopicIndex,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue");
+
+    // One process, one worker string, for both attempts.
+    const WORKER: &str = "the-only-worker";
+
+    let first = jobs::claim(database.pool(), project.id, WORKER, 1, &JobKind::ALL)
+        .await
+        .expect("claim");
+    assert_eq!(first.len(), 1);
+
+    // The lease running out, without waiting a minute for it. The lease is
+    // `available_at` and nothing else, so this is exactly what expiry is.
+    sqlx::query("UPDATE index_jobs SET available_at = $1 WHERE id = $2")
+        .bind(time::OffsetDateTime::now_utc() - std::time::Duration::from_secs(1))
+        .bind(first[0].id.0)
+        .execute(database.pool())
+        .await
+        .expect("expire the lease");
+
+    let second = jobs::claim(database.pool(), project.id, WORKER, 1, &JobKind::ALL)
+        .await
+        .expect("claim again after the lease expired");
+    assert_eq!(second.len(), 1, "an expired claim is claimable again");
+    assert_eq!(second[0].id, first[0].id);
+    assert_eq!(
+        second[0].attempts, 2,
+        "the second claim is a second attempt"
+    );
+    assert!(
+        first[0].claimed_at.is_some() && second[0].claimed_at.is_some(),
+        "a claimed job is held"
+    );
+    assert_ne!(
+        second[0].claimed_at, first[0].claimed_at,
+        "two claims of one job are two different claims"
+    );
+
+    assert!(
+        jobs::complete(database.pool(), &[&first[0]], WORKER)
+            .await
+            .expect("complete")
+            .is_empty(),
+        "an attempt whose lease expired completed the attempt that replaced it"
+    );
+
+    assert_eq!(
+        jobs::complete(database.pool(), &[&second[0]], WORKER)
+            .await
+            .expect("complete"),
+        vec![second[0].id],
+        "the claim that still holds the job could not complete it"
     );
 }
 
