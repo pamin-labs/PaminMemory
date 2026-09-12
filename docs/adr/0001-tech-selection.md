@@ -88,7 +88,27 @@ Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in o
 
 The weight was swept across both evaluation corpora — the one written for this project and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
 
-What the sweep cannot settle is that the ideal weight is not the same for every query — near zero when a query and its answer are in different languages, and a half when they are not. One constant serves both by compromise. Making it a function of the query is recorded as an open question rather than guessed at here.
+The ideal weight is not the same for every query — near zero when a query and its answer are in different languages, and a half when they are not. One constant serves both by compromise, and making it a function of the query was tried.
+
+The signal was the lexical channels themselves. They match on shared tokens, so whichever language they put the most of their score behind is, empirically, the language the query was asked in — no detector, which matters, because detection declines on "how does deployment work" and a rule that needed it would be absent on exactly the short queries an agent asks. A candidate in any other language then had its lexical contribution scaled down after fusion, by the fraction in the `xling` column below. `1.00` is the rule switched off.
+
+| lexical | xling | ours: cross | ours: mono | XQuAD-R: cross | XQuAD-R: same |
+| --- | --- | --- | --- | --- | --- |
+| 0.25 | 1.00 | 0.7223 | 0.9940 | 0.5722 | 0.8033 |
+| 0.25 | 0.50 | 0.7234 | 0.9940 | 0.5750 | 0.8000 |
+| 0.25 | 0.25 | 0.7201 | 0.9940 | 0.5760 | 0.7914 |
+| 0.25 | 0.00 | 0.7181 | 0.9821 | 0.5759 | 0.7895 |
+| 0.50 | 0.00 | 0.6444 | 0.9708 | 0.4649 | 0.8145 |
+
+No setting clears the bar the reranker had to clear — cross-lingual up, same-language not down. The one cell that clears it on this project's corpus, `0.25 / 0.50`, buys 0.0011 there, which on 137 queries is one of them, and on XQuAD-R the same setting costs 0.0033 of same-language for 0.0028 of cross-lingual. It fails in two separate ways, and both are worth recording.
+
+**Cross-language lexical hits are not noise.** If they were, removing them could only help the cross-lingual group; on this project's corpus it falls, 0.7223 to 0.7181. What a query shares with an answer in another language is proper nouns, numbers and borrowed technical terms — which is signal, and the only lexical signal that crosses a language boundary at all.
+
+**A query's language cannot be read off its own lexical hits.** Same-language ranking falls at every setting on XQuAD-R, and it should not move at all if the rule only ever fired across a boundary. That corpus isolates the cause: every sentence in it carries the dataset's own language label, so the candidate side is ground truth and the inference is the only thing left to be wrong. It is wrong often enough to cost more than the rule buys, and it is worst exactly where the rule was aimed — eleven parallel translations of one passage give the ten wrong languages ten chances to outweigh the right one.
+
+And the trade the constant exists to avoid does not open up. Half weight with cross-language contributions removed entirely scores 0.4649 cross-lingual on XQuAD-R, against 0.5722 for a quarter with the rule switched off.
+
+So the weight stays a constant and none of this was kept. What would change the answer is a different signal for the query's language — one that does not come from the channel it is being used to correct.
 
 ### Three recall channels, not seven
 
