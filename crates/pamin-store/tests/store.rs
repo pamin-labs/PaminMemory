@@ -62,6 +62,8 @@ async fn the_ledger_holds_its_promises() {
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
+    what_a_topic_says_now_is_one_lookup(&database).await;
+    a_completion_names_the_claim_it_belongs_to(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
@@ -143,7 +145,7 @@ async fn write_state(
         project,
         topic,
         content,
-        span.id,
+        &span,
         OffsetDateTime::now_utc(),
         Validity::ALWAYS
     )
@@ -475,6 +477,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: Some(&[EdgeKind::Mentions]),
             at: None,
+            keep: None,
         },
     )
     .await
@@ -503,6 +506,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: None,
             at: Some(OffsetDateTime::now_utc()),
+            keep: None,
         },
     )
     .await
@@ -520,6 +524,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: None,
             at: Some(OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1)),
+            keep: None,
         },
     )
     .await
@@ -709,6 +714,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
             depth: 1,
             kinds: None,
             at: Some(before_retraction),
+            keep: None,
         },
     )
     .await
@@ -1232,7 +1238,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         project.id,
         topic.id,
         "the state content",
-        span.id,
+        &span,
         observed,
         Validity {
             from: Some(valid_from),
@@ -1247,6 +1253,11 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         .expect("the state was written");
     assert_eq!(stored.content, "the state content");
     assert_eq!(stored.source_span_id, span.id);
+    // The span's language, read back through the join -- and the first time
+    // anything reads `source_spans` at all. The assertion above on `span` is on
+    // the struct `append_source_span` built and handed back, so an INSERT that
+    // dropped this column would have passed it; this one would not.
+    assert_eq!(stored.language.as_deref(), Some("eng"));
     assert_eq!(stored.observed_at, observed);
     assert_eq!(stored.validity.from, Some(valid_from));
     assert_eq!(stored.validity.to, Some(valid_to));
@@ -1565,6 +1576,156 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
     );
 }
 
+/// What a topic says now comes from the pointer, at any length of history.
+///
+/// The sensory filter asks this before every write, to decide whether the
+/// content it was handed is what the topic already says. It used to be answered
+/// by reading *every* version of the topic, in order, into memory and taking
+/// the last -- three round trips and a scan proportional to how often that
+/// topic has been edited, to compare one string. `topics.current_state_id`
+/// answers it directly, which is what it was added for.
+///
+/// The two differ once a state is soft deleted, because the pointer is not
+/// repaired when one is: reading the versions skipped the deleted state and
+/// returned the newest survivor, while the pointer still names the deleted one.
+/// Following the pointer is what `current_states_of` does, so this is the
+/// reading the search path already has, and having the filter and the search
+/// disagree about what a topic says is worse than either answer.
+async fn what_a_topic_says_now_is_one_lookup(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "saysnow")
+        .await
+        .expect("ensure project");
+
+    assert_eq!(
+        repository::current_content(database.pool(), project.id, "never_written")
+            .await
+            .expect("look up a topic that does not exist"),
+        None,
+        "a topic nobody has written has nothing to compare against"
+    );
+
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "edited_often"
+    )
+    .expect("ensure topic")
+    .id;
+
+    // Enough history that reading all of it would be a different answer from
+    // reading none of it.
+    for round in 0..25 {
+        write_state(
+            database,
+            project.id,
+            topic,
+            &format!("note-{round}"),
+            &format!("what the topic said in round {round}"),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        repository::current_content(database.pool(), project.id, "edited_often")
+            .await
+            .expect("look up the current content")
+            .as_deref(),
+        Some("what the topic said in round 24"),
+        "the newest state is what the topic says now"
+    );
+}
+
+/// A completion belongs to one claim, not to whoever happens to hold the job.
+///
+/// The worker is one string per process -- host and pid -- so two attempts by
+/// the same process are indistinguishable by it. That matters because a lease
+/// expires on a timer rather than on the worker going away: a job that outruns
+/// its minute is claimed again while the first attempt is still working, and
+/// when that attempt finishes it must not mark the second one done.
+///
+/// Not a hypothetical. Building the vector graph over a sealed segment takes
+/// longer than the lease, and the server's upkeep loop comes round every five
+/// seconds, so a compaction is re-claimed by the same process as a matter of
+/// course.
+///
+/// Before the completion named its claim, the last assertion here failed: the
+/// stale attempt completed the fresh one, and the work the fresh claim stood
+/// for was recorded as done without being run.
+async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "reclaim")
+        .await
+        .expect("ensure project");
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "reclaimed_topic"
+    )
+    .expect("ensure topic")
+    .id;
+
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::SyncTopicIndex,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue");
+
+    // One process, one worker string, for both attempts.
+    const WORKER: &str = "the-only-worker";
+
+    let first = jobs::claim(database.pool(), project.id, WORKER, 1, &JobKind::ALL)
+        .await
+        .expect("claim");
+    assert_eq!(first.len(), 1);
+
+    // The lease running out, without waiting a minute for it. The lease is
+    // `available_at` and nothing else, so this is exactly what expiry is.
+    sqlx::query("UPDATE index_jobs SET available_at = $1 WHERE id = $2")
+        .bind(time::OffsetDateTime::now_utc() - std::time::Duration::from_secs(1))
+        .bind(first[0].id.0)
+        .execute(database.pool())
+        .await
+        .expect("expire the lease");
+
+    let second = jobs::claim(database.pool(), project.id, WORKER, 1, &JobKind::ALL)
+        .await
+        .expect("claim again after the lease expired");
+    assert_eq!(second.len(), 1, "an expired claim is claimable again");
+    assert_eq!(second[0].id, first[0].id);
+    assert_eq!(
+        second[0].attempts, 2,
+        "the second claim is a second attempt"
+    );
+    assert!(
+        first[0].claimed_at.is_some() && second[0].claimed_at.is_some(),
+        "a claimed job is held"
+    );
+    assert_ne!(
+        second[0].claimed_at, first[0].claimed_at,
+        "two claims of one job are two different claims"
+    );
+
+    assert!(
+        jobs::complete(database.pool(), &[&first[0]], WORKER)
+            .await
+            .expect("complete")
+            .is_empty(),
+        "an attempt whose lease expired completed the attempt that replaced it"
+    );
+
+    assert_eq!(
+        jobs::complete(database.pool(), &[&second[0]], WORKER)
+            .await
+            .expect("complete"),
+        vec![second[0].id],
+        "the claim that still holds the job could not complete it"
+    );
+}
+
 /// What the outbox has to get right for the projection to stay correct.
 ///
 /// Four properties, each of which fails silently if it is wrong -- the queue
@@ -1628,7 +1789,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
 
     // Priority decides what a worker sees first: syncing the index for a memory
     // just written comes before deriving its edges.
-    let claimed = jobs::claim(database.pool(), project.id, "worker-a", 1)
+    let claimed = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1);
@@ -1640,7 +1801,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // A claimed job is not handed to anyone else.
-    let contended = jobs::claim(database.pool(), project.id, "worker-b", 10)
+    let contended = jobs::claim(database.pool(), project.id, "worker-b", 10, &JobKind::ALL)
         .await
         .expect("claim again");
     assert!(
@@ -1650,13 +1811,14 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
 
     // The second worker finishes what it did get, so the rest of this is about
     // one job rather than two.
-    for job in &contended {
-        assert!(
-            jobs::complete(database.pool(), job, "worker-b")
-                .await
-                .expect("complete")
-        );
-    }
+    let finished = jobs::complete(
+        database.pool(),
+        &contended.iter().collect::<Vec<_>>(),
+        "worker-b",
+    )
+    .await
+    .expect("complete");
+    assert_eq!(finished.len(), contended.len());
 
     // A request arriving while the job runs is not swallowed by its completion.
     jobs::enqueue(
@@ -1669,15 +1831,16 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     .expect("enqueue during processing");
 
     assert!(
-        !jobs::complete(database.pool(), &claimed[0], "worker-a")
+        jobs::complete(database.pool(), &[&claimed[0]], "worker-a")
             .await
-            .expect("complete"),
+            .expect("complete")
+            .is_empty(),
         "a job requested again mid-flight must not be completed by the attempt \
          that was already running"
     );
 
     // So it is still there, and claimable.
-    let requeued = jobs::claim(database.pool(), project.id, "worker-a", 1)
+    let requeued = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
         .await
         .expect("claim the re-requested job");
     assert_eq!(requeued.len(), 1);
@@ -1687,10 +1850,11 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
         "reviving a job resets its attempts"
     );
 
-    assert!(
-        jobs::complete(database.pool(), &requeued[0], "worker-a")
+    assert_eq!(
+        jobs::complete(database.pool(), &[&requeued[0]], "worker-a")
             .await
             .expect("complete"),
+        vec![requeued[0].id],
         "a job nobody re-requested completes"
     );
 
@@ -1703,7 +1867,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     )
     .await
     .expect("enqueue after completion");
-    let revived = jobs::claim(database.pool(), project.id, "worker-a", 1)
+    let revived = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
         .await
         .expect("claim revived");
     assert_eq!(
@@ -1737,7 +1901,7 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
             .await
             .expect("let the retry delay elapse");
 
-        failing = jobs::claim(database.pool(), project.id, "worker-a", 1)
+        failing = jobs::claim(database.pool(), project.id, "worker-a", 1, &JobKind::ALL)
             .await
             .expect("claim after a failure");
     }
@@ -1772,14 +1936,16 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     );
 
     // Leave the project clean for anything that counts pending work later.
-    let outstanding = jobs::claim(database.pool(), project.id, "worker-a", 100)
+    let outstanding = jobs::claim(database.pool(), project.id, "worker-a", 100, &JobKind::ALL)
         .await
         .expect("drain");
-    for job in &outstanding {
-        jobs::complete(database.pool(), job, "worker-a")
-            .await
-            .expect("complete");
-    }
+    jobs::complete(
+        database.pool(),
+        &outstanding.iter().collect::<Vec<_>>(),
+        "worker-a",
+    )
+    .await
+    .expect("complete");
     assert_eq!(
         jobs::pending(database.pool(), project.id)
             .await
@@ -1836,7 +2002,7 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
 
     // A batch far larger than what this project owes, so anything it is allowed
     // to see it takes.
-    let claimed = jobs::claim(database.pool(), mine.id, "worker-mine", 100)
+    let claimed = jobs::claim(database.pool(), mine.id, "worker-mine", 100, &JobKind::ALL)
         .await
         .expect("claim");
     assert!(
@@ -1856,19 +2022,20 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
         1,
         "another project's queue was drained by this project's worker"
     );
-    let left = jobs::claim(database.pool(), theirs.id, "worker-theirs", 10)
-        .await
-        .expect("claim");
+    let left = jobs::claim(
+        database.pool(),
+        theirs.id,
+        "worker-theirs",
+        10,
+        &JobKind::ALL,
+    )
+    .await
+    .expect("claim");
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].subject, Some(queued[1].1.0));
 
-    for job in claimed.iter().chain(&left) {
-        let worker = if job.project_id == mine.id {
-            "worker-mine"
-        } else {
-            "worker-theirs"
-        };
-        jobs::complete(database.pool(), job, worker)
+    for (worker, owned) in [("worker-mine", &claimed), ("worker-theirs", &left)] {
+        jobs::complete(database.pool(), &owned.iter().collect::<Vec<_>>(), worker)
             .await
             .expect("complete");
     }
@@ -1990,6 +2157,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
             depth: 1,
             at: Some(before),
             kinds: None,
+            keep: None,
         },
     )
     .await

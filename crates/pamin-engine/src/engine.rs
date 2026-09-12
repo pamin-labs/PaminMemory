@@ -4,14 +4,14 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
     ProjectId, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
-use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
+use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
@@ -55,10 +55,12 @@ const MENTION_CONFIDENCE: f32 = 0.5;
 
 /// How many topics the graph channel is willing to walk out from.
 ///
-/// Every seed is a separate expansion, and each one costs a neighbourhood that
-/// grows with the depth. Without a bound the cost of the graph channel is set
-/// by how many topics the other channels happened to surface, which is not a
-/// quantity anything holds down.
+/// Not a query count -- the walk asks one question per hop for the whole
+/// frontier, however many seeds it started from. What a seed costs is a place
+/// in that frontier: walks are tracked per (topic, seed) pair, so one neighbour
+/// reached from sixty-four seeds takes sixty-four of the frontier's places and
+/// still produces one result. Without a bound here, how far the walk reaches is
+/// decided by how many topics the other channels happened to surface.
 const MAX_SEEDS: usize = 64;
 
 /// How many states a rebuild embeds and writes at a time.
@@ -115,15 +117,77 @@ pub struct Engine {
     /// Behind a lock even though every method on the trait takes `&self`. The
     /// engine declares `Sync` and does not honour it: a reader takes an
     /// unsynchronized snapshot of the segments a writer is in the middle of
-    /// changing, reported upstream as alibaba/zvec#714 and still open. Readers
-    /// share; a write excludes them.
+    /// changing, reported upstream as alibaba/zvec#714. One caller at a time,
+    /// not readers sharing -- see [`Engine::index`] for what decided that.
     ///
     /// Not a precaution. Taking this lock out makes searches fail inside a
     /// minute under the concurrency `readers_and_writers_share_one_index_
     /// without_bringing_it_down` puts through it, and that is the mild form --
     /// upstream reports the same race faulting. On macOS it is latent, so it
     /// looks like a precaution there.
-    index: Arc<RwLock<Box<dyn Projection + Send + Sync>>>,
+    ///
+    /// **Merged upstream and not released.** #714 closed with alibaba/zvec#715,
+    /// merged as `515c11a`, which gives the segment locks shared readers; the
+    /// sibling report #724 closed with #731 as `31d88ea`. The newest published
+    /// version is 0.7.0, which predates both, so what this depends on is still
+    /// the code that needs the lock. Neither touched a public header, so
+    /// picking them up is a version bump rather than a binding change -- see
+    /// the deferred entry in `docs/adr/0001-tech-selection.md` for the trigger
+    /// and for what has to be measured before the lock comes off.
+    ///
+    /// [`Engine::index`]: Self::index
+    index: Arc<Mutex<Arc<dyn Projection + Send + Sync>>>,
+    /// Index writes that are applied but not yet on disk, with their claims.
+    ///
+    /// The projection buffers a write in memory and a query reads that buffer,
+    /// so a memory is findable the moment it is upserted -- verified against
+    /// every channel, and against a reopen. What the buffer is not is durable:
+    /// `upsert` reaches the engine's log with no `fsync` behind it, and only
+    /// `flush` calls one. So a write survives this process being killed and
+    /// would not survive the machine losing power.
+    ///
+    /// That is the whole of what a flush buys, and paying for it per write is
+    /// the most expensive thing in the write path: 39 ms, against 0.15 ms a
+    /// document when the engine is left to materialize on its own schedule.
+    /// Worse than the latency, it interrupts that schedule -- two thousand
+    /// memories flushed one at a time leave 10,031 index files and 2.2 GB
+    /// resident, and left alone leave 25 files and 4 MB.
+    ///
+    /// So the flush is amortized, and a job stays claimed until one covers it.
+    /// That is what keeps the outbox's promise without relying on the engine's:
+    /// power lost here leaves these jobs owed and the ledger replays them. The
+    /// same is true of this process going away with the list non-empty, or of
+    /// the project being evicted from the registry -- the claims lapse and the
+    /// work comes round again.
+    unflushed: Arc<Mutex<Vec<jobs::Job>>>,
+    /// The longest topic name in this project, in tokens, as far as this
+    /// process has seen.
+    ///
+    /// A search asks for it before anything else it does, to know how wide a
+    /// window of the query could be a name. The answer changes only when a
+    /// topic is created whose name is wider than any before it -- names are
+    /// immutable and nothing deletes them -- so it only ever grows, and a
+    /// remembered value is either right or too low.
+    ///
+    /// Too low is not symmetrical with too high, which is why this is only
+    /// consulted by the search path. Too high costs windows that match
+    /// nothing, because a run is compared against stored names by equality.
+    /// Too low means a name is never looked for -- and on the write path that
+    /// is not a missed edge but a **retracted** one, because deriving mentions
+    /// asserts what it found and then closes everything it did not. A search
+    /// that misses a graph seed is right again on the next query; an edge
+    /// retracted against a name nobody looked for stays gone.
+    widest_name: Arc<std::sync::atomic::AtomicUsize>,
+    /// How this splits text, held here rather than reached through the index.
+    ///
+    /// It is the index's segmenter -- taken from it at open, so the two cannot
+    /// drift -- but splitting text touches nothing the index owns, and the lock
+    /// above is there for an engine defect that has no bearing on it. Reaching
+    /// it through the index meant five callers took that lock for work the
+    /// index was not doing, and two of them held it a long time: segmenting up
+    /// to [`BACKFILL_CANDIDATES`] documents, and segmenting every topic name in
+    /// the project. Every search on the project queued behind them.
+    segmenter: Arc<pamin_index::segmentation::Segmenter>,
     /// One model, and one caller into it at a time.
     ///
     /// Inference wants `&mut`, which is the only reason anything here ever
@@ -135,6 +199,12 @@ pub struct Engine {
     /// arrives rather than being loaded here. Two projects are two indexes and
     /// one model.
     embedder: Arc<Mutex<Embedder>>,
+    /// Where a reranker comes from, if a search asks for one.
+    ///
+    /// The registry rather than a loaded model: most searches do not rerank,
+    /// most workspaces never will, and half a gigabyte should not be read off
+    /// disk by opening a project.
+    models: Models,
     pub project: ProjectId,
 }
 
@@ -149,6 +219,9 @@ pub struct Engine {
 pub struct Models {
     dir: std::path::PathBuf,
     loaded: Arc<Mutex<std::collections::HashMap<Profile, Arc<Mutex<Embedder>>>>>,
+    /// The same arrangement for rerankers, keyed by tier for the same reason:
+    /// the tier is what decides which weights these are.
+    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Arc<Mutex<Reranker>>>>>,
 }
 
 impl Models {
@@ -157,6 +230,7 @@ impl Models {
         Self {
             dir: workspace.root().join("models"),
             loaded: Arc::default(),
+            rerankers: Arc::default(),
         }
     }
 
@@ -179,6 +253,25 @@ impl Models {
         let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
         loaded.insert(profile, Arc::clone(&embedder));
         Ok(embedder)
+    }
+
+    /// The reranker for a tier, loading it the first time it is asked for.
+    ///
+    /// Lazily rather than with the project: a workspace that never reranks
+    /// never downloads one, and the tier is chosen per search.
+    fn reranker(&self, tier: Rerank) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
+        let mut rerankers = self
+            .rerankers
+            .lock()
+            .expect("the reranker registry lock is poisoned");
+
+        if let Some(reranker) = rerankers.get(&tier) {
+            return Ok(Arc::clone(reranker));
+        }
+
+        let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
+        rerankers.insert(tier, Arc::clone(&reranker));
+        Ok(reranker)
     }
 }
 
@@ -275,7 +368,7 @@ impl Engine {
             let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
             let embedder = models.get(profile)?;
             Ok::<_, pamin_index::IndexError>((
-                Box::new(index) as Box<dyn Projection + Send + Sync>,
+                Arc::new(index) as Arc<dyn Projection + Send + Sync>,
                 embedder,
             ))
         })?;
@@ -283,21 +376,44 @@ impl Engine {
         Ok(Self {
             database,
             worker: format!("{}:{}", hostname(), std::process::id()),
-            index: Arc::new(RwLock::new(index)),
+            // Taken from the index rather than built here, so what this
+            // tokenizes with is what the index tokenized with. Two segmenters
+            // would be the same code today and a divergence the first time
+            // either side changed.
+            segmenter: index.segmenter(),
+            widest_name: Arc::default(),
+            unflushed: Arc::default(),
+            index: Arc::new(Mutex::new(index)),
             embedder,
+            models: models.clone(),
             project: project.id,
         })
     }
 
-    /// The projection, for reading. Several readers share it.
+    /// The projection. One caller at a time.
+    ///
+    /// This was a read-write lock, on the reading that queries are read-only
+    /// and may as well run together. The engine does not agree. Twenty writers
+    /// and twenty readers against one index wedged it inside the engine's own
+    /// code -- forty-six of its threads asleep on futexes with no caller of
+    /// ours above them, four of ours stopped inside a query, and no processor
+    /// time being used by any of them for thirty-five minutes. The same run
+    /// with writers alone passes, and the same run with this lock made
+    /// exclusive passes for the full five minutes. So concurrent queries are
+    /// the thing it cannot do, and an exclusive lock is what it costs to say
+    /// so.
+    ///
+    /// It costs less than it sounds. A search spends about half its time in a
+    /// forward pass, and the model is behind a mutex already, so two searches
+    /// were never going to overlap by much; what is given up is a few
+    /// milliseconds of index work per query, and only between callers sharing
+    /// one project.
     ///
     /// # Lock order
     ///
     /// Anything taking both the model and the index takes the **model first**.
-    /// The two are separate locks so that several searches can read the index
-    /// while one of them embeds, and that is exactly the shape that deadlocks
-    /// if one caller reverses it: a rebuild holding the index and waiting for
-    /// the model, against a search holding the model and waiting for the
+    /// Reversing it is what deadlocks: a rebuild holding the index and waiting
+    /// for the model, against a search holding the model and waiting for the
     /// index. Neither is doing anything wrong on its own, which is why the
     /// order is written here rather than left to be noticed.
     ///
@@ -305,13 +421,75 @@ impl Engine {
     /// index, so what it holds is whatever that panic left. Failing here is
     /// the honest outcome: the alternative is serving from state nobody
     /// finished writing.
-    pub(crate) fn reading(&self) -> RwLockReadGuard<'_, Box<dyn Projection + Send + Sync>> {
-        self.index.read().expect("the index lock is poisoned")
+    pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
+        self.index.lock().expect("the index lock is poisoned")
     }
 
-    /// The projection, for writing. Excludes every reader.
-    pub(crate) fn writing(&self) -> RwLockWriteGuard<'_, Box<dyn Projection + Send + Sync>> {
-        self.index.write().expect("the index lock is poisoned")
+    /// How wide the widest topic name in this project is, in tokens.
+    ///
+    /// Read once and remembered. It is asked at the top of every search -- to
+    /// decide how long a run of the query could be a name -- and it answers a
+    /// `MAX` over a column that only grows: names cannot be renamed and nothing
+    /// deletes them, so a value this process has seen can only become stale by
+    /// being too low, and only when some other writer creates a wider name.
+    ///
+    /// Too low costs a search one graph seed, which the next search gets right
+    /// once this process sees the wider name itself. That is the whole reason
+    /// this is on the search path and not on the write path, where the same
+    /// staleness would retract edges rather than miss them.
+    async fn widest_name(&self) -> Result<usize> {
+        use std::sync::atomic::Ordering;
+
+        let known = self.widest_name.load(Ordering::Relaxed);
+        if known > 0 {
+            return Ok(known);
+        }
+
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        self.remember_widest_name(widest);
+        Ok(widest)
+    }
+
+    /// Raises what this process believes the widest name to be.
+    ///
+    /// Never lowers it. Two writers racing here both win: the larger stands,
+    /// which is the direction that cannot lose a lookup.
+    pub(crate) fn remember_widest_name(&self, tokens: usize) {
+        self.widest_name
+            .fetch_max(tokens, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The claims held open by writes the index has and the disk does not.
+    pub(crate) fn unflushed(
+        &self,
+    ) -> std::sync::LockResult<MutexGuard<'_, Vec<pamin_store::jobs::Job>>> {
+        self.unflushed.lock()
+    }
+
+    /// The projection, for the one thing that may run while others use it.
+    ///
+    /// Compaction and graph building are the long operation in this system --
+    /// a third of a second for a few hundred files, minutes for a graph over a
+    /// sealed segment -- and they make nothing more correct, only faster. That
+    /// is what makes them safe to run alongside a query, and the engine agrees:
+    /// alibaba/zvec#614 turned Optimize into a brief exclusive seal, a long
+    /// phase holding no schema lock, and a brief exclusive commit, so reads and
+    /// writes proceed through the middle of it. Unlike the concurrency fix this
+    /// index is still waiting on, **that one shipped**, in the 0.7.0 this
+    /// depends on.
+    ///
+    /// So holding [`index`] across it was our own exclusion, not the engine's,
+    /// and it was the whole reason moving upkeep off the writer bought nothing:
+    /// a write waited out a compaction whether or not it was the one running
+    /// it. Taking a handle instead lets the upkeep worker compact while the
+    /// searches it is speeding up are still being answered.
+    ///
+    /// Only this operation gets it. Every other call goes through [`index`],
+    /// because #714 is what that lock is for and it is still unfixed here.
+    ///
+    /// [`index`]: Self::index
+    pub(crate) fn index_for_upkeep(&self) -> Arc<dyn Projection + Send + Sync> {
+        Arc::clone(&self.index())
     }
 
     /// The model. One caller at a time, because inference wants `&mut`.
@@ -336,7 +514,7 @@ impl Engine {
     pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
         off_the_runtime(|| {
             let embedding = self.embedding().embed_passage(&state.content)?;
-            self.writing()
+            self.index()
                 .upsert(state.topic_id, &state.content, &embedding)
         })?;
         Ok(())
@@ -414,7 +592,7 @@ impl Engine {
                 self.project,
                 topic.id,
                 request.content,
-                span.id,
+                &span,
                 request.observed_at,
                 request.validity,
             )
@@ -480,7 +658,7 @@ impl Engine {
     /// decides where a name begins and ends, and both sides of the eventual
     /// comparison have to have gone through it.
     async fn record_name(&self, executor: impl PgExecutor<'_>, topic: &Topic) -> Result<()> {
-        let tokens = off_the_runtime(|| self.reading().segmenter().name_sequence(&topic.name));
+        let tokens = off_the_runtime(|| self.segmenter.name_sequence(&topic.name));
         repository::record_topic_name(
             executor,
             self.project,
@@ -489,6 +667,10 @@ impl Engine {
             tokens.len(),
         )
         .await?;
+        // This process now knows of a name at least this wide, whether or not
+        // it had asked. Raising it here is what keeps the search path's
+        // remembered value from going stale against writes made through it.
+        self.remember_widest_name(tokens.len());
         Ok(())
     }
 
@@ -514,10 +696,13 @@ impl Engine {
         // for these is the same question the old loop asked of every topic in
         // the project one at a time, with the cost following the length of the
         // memory rather than the size of the project.
+        // Asked fresh, never from what this process remembers. A remembered
+        // value can only be too low, and too low here does not mean a missed
+        // edge -- what is not found below is closed as no longer named. See
+        // [`Engine::widest_name`].
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| {
-            let index = self.reading();
-            runs_of_tokens(&index.segmenter().name_sequence(&state.content), widest)
+            runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest)
         });
 
         let mut named = repository::topics_named_by(self.database.pool(), self.project, &runs)
@@ -581,8 +766,7 @@ impl Engine {
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
-        let candidates =
-            off_the_runtime(|| self.reading().recall_naming(name, BACKFILL_CANDIDATES))?;
+        let candidates = off_the_runtime(|| self.index().recall_naming(name, BACKFILL_CANDIDATES))?;
 
         let states =
             repository::current_states_of(self.database.pool(), self.project, &candidates).await?;
@@ -597,9 +781,12 @@ impl Engine {
                 .filter_map(|(_, _, current)| current)
                 .collect();
 
-        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
-            let index = self.reading();
-            let segmenter = index.segmenter();
+        // Off the runtime because this segments every candidate the probe
+        // returned -- up to `BACKFILL_CANDIDATES` documents -- and that is tens
+        // of milliseconds of ICU work that would otherwise run on a runtime
+        // thread and stall every task sharing it.
+        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
             // The fixed side here is the name, so that is the side prepared.
             let name = segmenter.name_sequence(name);
             states
@@ -614,7 +801,7 @@ impl Engine {
                 })
                 .map(|state| (state.topic_id, state.id))
                 .collect()
-        };
+        });
 
         let edges: Vec<_> = naming
             .into_iter()
@@ -646,6 +833,106 @@ impl Engine {
             .await
     }
 
+    /// Search, then reorder the head of the result with a cross-encoder.
+    ///
+    /// Only the candidates no lexical channel found, and only into the
+    /// positions those candidates already hold.
+    ///
+    /// Fused deeper than it returns, because a reranker that only sees what the
+    /// caller asked for has nothing to work with. See [`fused_for`]: the tier's
+    /// depth was measured over a list of fifty and the default `--limit` is
+    /// five, so cutting first left it reordering five candidates and usually
+    /// declining to reorder at all.
+    ///
+    /// Every cross-encoder measured improves cross-lingual ranking and damages
+    /// same-language ranking by about as much: fusion is already good at
+    /// placing a memory that shares words with the query, and a second pass
+    /// reorders it worse. So the pass is confined to the candidates the
+    /// lexical channels did not find -- the ones fusion ordered on the vector
+    /// channel alone. Everything else keeps the rank it had, which makes the
+    /// damage arithmetically impossible rather than merely unlikely.
+    ///
+    /// This was a language comparison first, since "written in another
+    /// language" is what the case really is. The two pick the same candidates
+    /// -- they agree on 93% of a shortlist and score within 0.002 of each
+    /// other -- and the language test needed the query's language, which for a
+    /// short query is exactly what a detector will not commit to:
+    /// `detect_language` returns nothing for "how does deployment work". A
+    /// rule that quietly does nothing on the commonest shape of query is worse
+    /// than a slightly different rule, and this one asks only what the search
+    /// already recorded.
+    pub async fn search_reranked(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        rerank: Rerank,
+    ) -> Result<Vec<SearchHit>> {
+        let hits = self
+            .search_fused(query, fused_for(limit, rerank), depths, Fusion::default())
+            .await?;
+        if rerank == Rerank::Off || hits.is_empty() {
+            return Ok(hits);
+        }
+
+        let head = rerank.depth().min(hits.len());
+        let unlexical: Vec<usize> = (0..head)
+            .filter(|position| {
+                !hits[*position].result.why.iter().any(|why| {
+                    matches!(
+                        why,
+                        Why::Channel { channel, .. }
+                            if *channel == Channel::LexicalSegmented
+                                || *channel == Channel::LexicalNgram
+                    )
+                })
+            })
+            .collect();
+        if unlexical.len() < 2 {
+            return Ok(only(hits, limit));
+        }
+
+        let documents: Vec<&str> = unlexical
+            .iter()
+            .map(|position| hits[*position].state.content.as_str())
+            .collect();
+        // Finding the reranker is inside this too, not just using it. The
+        // first search of a tier downloads its weights, holding the registry
+        // lock so that twenty concurrent searches fetch one model rather than
+        // twenty -- and a lock held across a download is a lock held for a long
+        // time. Taken on a runtime thread, that blocks the thread rather than
+        // yielding it, and the callers waiting behind it block their threads
+        // too, until the runtime has no thread left to finish the download with
+        // and the server stops answering anything at all. Measured: twenty
+        // readers against a cold cache wedged it indefinitely.
+        let ordered = off_the_runtime(|| {
+            self.models
+                .reranker(rerank)?
+                .lock()
+                .expect("the reranker lock is poisoned")
+                .rank(query, &documents)
+        })?;
+
+        // Back into the positions those candidates already held, so nothing
+        // else in the list moves.
+        let mut slots: Vec<Option<SearchHit>> = hits.into_iter().map(Some).collect();
+        let mut taken: Vec<Option<SearchHit>> = unlexical
+            .iter()
+            .map(|position| slots[*position].take())
+            .collect();
+        for (slot, from) in unlexical.iter().zip(&ordered) {
+            slots[*slot] = taken[*from].take();
+        }
+
+        Ok(only(
+            slots
+                .into_iter()
+                .map(|hit| hit.expect("every position refilled"))
+                .collect(),
+            limit,
+        ))
+    }
+
     /// The same search, with the fusion settings supplied.
     ///
     /// Exists for the same reason [`Depths`] is a parameter: the constants
@@ -665,7 +952,7 @@ impl Engine {
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
             let embedding = self.embedding().embed_query(query)?;
-            let index = self.reading();
+            let index = self.index();
             Ok::<_, pamin_index::IndexError>(vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
@@ -688,10 +975,11 @@ impl Engine {
         // has been soft deleted resolves to nothing and drops out here, before
         // fusion, so a deleted memory stops occupying a place in a channel's
         // candidate budget.
-        let candidates: Vec<TopicId> = lists
-            .iter()
-            .flat_map(|list| list.candidates.iter().copied())
-            .collect();
+        // Interleaved by rank rather than concatenated, because this order is
+        // what the graph channel seeds from and concatenating would offer it
+        // one channel's whole list before another's first result. Fusion
+        // cannot do the ordering: the graph is one of the lists it fuses.
+        let candidates = best_first(&lists);
         let mut working = WorkingSet::default();
         working.add(
             repository::current_states_of(self.database.pool(), self.project, &candidates).await?,
@@ -699,7 +987,9 @@ impl Engine {
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
-        let (graph_list, paths) = self.recall_graph(query, &mut working, depths).await?;
+        let (graph_list, paths) = self
+            .recall_graph(query, &candidates, &mut working, depths)
+            .await?;
         let mut lists = lists;
         lists.push(graph_list);
 
@@ -760,6 +1050,7 @@ impl Engine {
     async fn recall_graph(
         &self,
         query: &str,
+        ranked: &[TopicId],
         working: &mut WorkingSet,
         depths: Depths,
     ) -> Result<(ChannelResults, std::collections::HashMap<TopicId, Neighbor>)> {
@@ -769,11 +1060,8 @@ impl Engine {
         // Resolving query entities against known topics is the retrieval half
         // of entity linking; the write path does the other, and both ask the
         // same index the same way.
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
-        let runs = off_the_runtime(|| {
-            let index = self.reading();
-            runs_of_tokens(&index.segmenter().name_sequence(query), widest)
-        });
+        let widest = self.widest_name().await?;
+        let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
         let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
 
         let seeds: Vec<TopicId> = {
@@ -781,10 +1069,15 @@ impl Engine {
 
             // Topics the query named come first, so a walk that has to give
             // something up gives up the weakest lexical and vector candidates
-            // rather than the seed the caller asked about.
+            // rather than the seed the caller asked about. The rest follow in
+            // the order the channels ranked them, which is what makes "the
+            // weakest" mean anything: taken from the working set instead, they
+            // arrive in whatever order a hash map yields, and the bound below
+            // keeps an arbitrary sixty-four rather than the best sixty-four.
             named
                 .into_iter()
-                .chain(working.topics())
+                .chain(ranked.iter().copied())
+                .filter(|topic| working.state(*topic).is_some())
                 .filter(|topic| seen.insert(*topic))
                 .take(MAX_SEEDS)
                 .collect()
@@ -794,7 +1087,9 @@ impl Engine {
             self.database.pool(),
             self.project,
             &seeds,
-            &Expansion::to_depth(depths.graph),
+            // Bounded by what this channel keeps, so a hub-shaped project
+            // does not make the walk the whole cost of a search.
+            &Expansion::to_depth(depths.graph).keeping(depths.channel as usize),
         )
         .await?;
 
@@ -865,7 +1160,7 @@ impl Engine {
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
             let mut embedder = self.embedding();
-            let index = self.writing();
+            let index = self.index();
 
             for batch in states.chunks(REINDEX_BATCH) {
                 // One forward pass over the batch rather than one per state.
@@ -912,8 +1207,7 @@ impl Engine {
         let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
         let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
-            let index = self.reading();
-            let segmenter = index.segmenter();
+            let segmenter = &self.segmenter;
             topics
                 .iter()
                 .map(|topic| {
@@ -1053,6 +1347,34 @@ pub struct SearchHit {
     pub result: FusedResult,
 }
 
+/// The channels' candidates in one order, best first, without duplicates.
+///
+/// Round-robin by rank rather than one list after another: the lists are three
+/// independent rankings of the same corpus and nothing has fused them yet, so
+/// the only defensible reading of "best" across them is that each channel's
+/// first pick outranks every channel's second. Concatenating would give one
+/// channel's fiftieth candidate a better place than another channel's first.
+fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
+    let deepest = lists
+        .iter()
+        .map(|list| list.candidates.len())
+        .max()
+        .unwrap_or(0);
+    let mut seen = std::collections::HashSet::new();
+    let mut ranked = Vec::new();
+
+    for rank in 0..deepest {
+        for list in lists {
+            if let Some(topic) = list.candidates.get(rank)
+                && seen.insert(*topic)
+            {
+                ranked.push(*topic);
+            }
+        }
+    }
+    ranked
+}
+
 /// Every contiguous run of up to `widest` tokens, as the name index stores them.
 ///
 /// The bound is what keeps this proportional to the text: without it the runs
@@ -1070,11 +1392,147 @@ fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
     runs
 }
 
+/// How deep to fuse when a reranker is going to reorder the head.
+///
+/// A cross-encoder can only reorder what it is shown, so the list it works on
+/// has to be at least as long as the tier's depth even when the caller wants
+/// five results. Cutting to the caller's limit first is what made the tuned
+/// depth unreachable: `--limit` defaults to five, the tier's depth is twenty,
+/// and the sweep that chose twenty was run over a list of fifty. What arrived
+/// at the reranker was five candidates, of which the two it needs to find
+/// unlexical are usually not among them -- so the shipped default reordered
+/// nothing and returned the ranking a search with reranking off would have.
+///
+/// Deeper costs the fusion nothing extra: every channel already contributes
+/// [`Depths::channel`] candidates and all of them are already resolved against
+/// the ledger. What grows is the hydration, by the difference between the two
+/// numbers.
+fn fused_for(limit: u32, rerank: Rerank) -> u32 {
+    match rerank {
+        Rerank::Off => limit,
+        tier => limit.max(tier.depth() as u32),
+    }
+}
+
+/// The first `limit` of a list that was fused deeper than the caller asked for.
+fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
+    hits.truncate(limit as usize);
+    hits
+}
+
 #[cfg(test)]
 mod tests {
-    use super::runs_of_tokens;
+    use super::{best_first, fused_for, runs_of_tokens};
+    use pamin_core::{Channel, ChannelResults, TopicId};
+    use pamin_index::Rerank;
+
+    fn topic(byte: u8) -> TopicId {
+        TopicId(uuid::Uuid::from_bytes([byte; 16]))
+    }
+
+    /// Every channel's first pick outranks every channel's second.
+    ///
+    /// The graph channel seeds from this order and keeps only the first
+    /// sixty-four, so what the order means decides which topics get walked.
+    /// Concatenating the lists would hand one channel's fiftieth candidate a
+    /// better place than another channel's first.
+    #[test]
+    fn the_channels_merge_by_rank_and_not_by_channel() {
+        let lists = vec![
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![topic(1), topic(2), topic(3)],
+            ),
+            ChannelResults::new(Channel::Vector, vec![topic(9), topic(8)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), topic(9), topic(2), topic(8), topic(3)],
+            "the lists were concatenated rather than interleaved by rank"
+        );
+    }
+
+    /// A topic several channels agree on takes its best place, once.
+    #[test]
+    fn a_topic_two_channels_found_appears_at_its_best_rank() {
+        let shared = topic(5);
+        let lists = vec![
+            ChannelResults::new(Channel::LexicalSegmented, vec![topic(1), shared]),
+            ChannelResults::new(Channel::Vector, vec![shared, topic(2)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), shared, topic(2)],
+            "agreement should promote a candidate, not duplicate it"
+        );
+    }
+
+    /// Channels of different depths do not lose their tail.
+    #[test]
+    fn a_deeper_channel_keeps_the_rest_of_its_list() {
+        let lists = vec![
+            ChannelResults::new(Channel::LexicalSegmented, vec![topic(1)]),
+            ChannelResults::new(Channel::Vector, vec![topic(7), topic(8), topic(9)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), topic(7), topic(8), topic(9)]
+        );
+    }
+
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
+
+    /// A reranker is shown at least as many candidates as it was tuned for.
+    ///
+    /// The constant saying how many a tier looks at is measured, and before
+    /// this it was unreachable: the fused list was cut to the caller's limit
+    /// first, so at the default `--limit 5` the tier saw five candidates rather
+    /// than its twenty, and the shipped default reordered nothing. This is the
+    /// arithmetic that was wrong, on its own, because the alternative is a test
+    /// that needs half a gigabyte of weights to observe a reordering that
+    /// silently did not happen.
+    #[test]
+    fn a_reranker_is_fused_at_least_as_deep_as_it_reads() {
+        for tier in [Rerank::Fast, Rerank::Accurate] {
+            assert!(
+                fused_for(5, tier) >= tier.depth() as u32,
+                "{tier:?} reads {} candidates and was handed {}",
+                tier.depth(),
+                fused_for(5, tier)
+            );
+        }
+    }
+
+    /// What this process remembers about the widest name only ever grows.
+    ///
+    /// The direction matters more than the caching does. Remembering a value
+    /// that is too high costs a search some query windows that match nothing;
+    /// too low means a whole class of name is never looked for. So a second
+    /// writer reporting a narrower name must not be able to lower it.
+    #[test]
+    fn the_widest_name_is_raised_and_never_lowered() {
+        let widest = std::sync::atomic::AtomicUsize::new(0);
+        let raise = |tokens: usize| {
+            widest.fetch_max(tokens, std::sync::atomic::Ordering::Relaxed);
+            widest.load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        assert_eq!(raise(3), 3);
+        assert_eq!(raise(5), 5, "a wider name did not raise it");
+        assert_eq!(raise(2), 5, "a narrower name lowered it");
+    }
+
+    /// A caller wanting more than the reranker reads still gets what it asked.
+    #[test]
+    fn fusing_for_a_reranker_never_shortens_what_was_asked_for() {
+        assert_eq!(fused_for(500, Rerank::Fast), 500);
+        // Nothing is going to reorder it, so nothing needs to be fused deep.
+        assert_eq!(fused_for(5, Rerank::Off), 5);
+    }
 
     /// Every case the segmenter's own naming tests pin, and one that is not a
     /// name in either scheme.

@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 pamin-core = { workspace = true }
 fastembed = { workspace = true }
+hf-hub = { workspace = true }
 icu_segmenter = { workspace = true }
 icu_provider = { workspace = true }
 serde = { workspace = true }

@@ -904,7 +904,10 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
         println!("  wrote {written} of {} sentences", corpus.sentences.len());
     }
     let started = std::time::Instant::now();
-    let drained = engine.drain_cascade().await.expect("drain the cascade");
+    let drained = engine
+        .drain_cascade(pamin_engine::Owed::Everything)
+        .await
+        .expect("drain the cascade");
     assert_eq!(
         drained.pending, 0,
         "the corpus is not fully indexed: {} jobs still owed",

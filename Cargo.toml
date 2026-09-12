@@ -25,7 +25,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known"] }
 tokio = { version = "1", features = [
@@ -48,6 +48,11 @@ fastembed = { version = "6", default-features = false, features = [
     "ort-download-binaries-native-tls",
     "hf-hub-native-tls",
 ] }
+# The model hub client, for the reranker's weights. Already compiled -- it is
+# how `fastembed` fetches the embedding model -- so declaring it adds nothing
+# to the tree and stops the build depending on that staying true. TLS has to
+# match what `fastembed` chose.
+hf-hub = { version = "0.5", default-features = false, features = ["native-tls"] }
 icu_segmenter = { version = "2", features = ["compiled_data", "auto"] }
 # Not used directly: icu4x reference-counts its compiled data with `Rc` unless
 # this is on, which makes every segmenter -- and so every index that holds one

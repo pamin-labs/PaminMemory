@@ -8,5 +8,5 @@
 mod cascade;
 mod engine;
 
-pub use cascade::Drained;
+pub use cascade::{Drained, Owed};
 pub use engine::{Depths, Engine, Models, Rebuilt, Recorded, SearchHit, Write};

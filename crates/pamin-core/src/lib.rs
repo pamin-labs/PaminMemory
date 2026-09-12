@@ -14,7 +14,7 @@ pub mod id;
 pub mod ledger;
 pub mod version;
 
-pub use cascade::{JobKind, LAGGING_AT, MAX_ATTEMPTS};
+pub use cascade::{JobKind, LAGGING_AT, MAX_ATTEMPTS, may_defer};
 pub use channel::{Channel, ChannelResults};
 pub use filter::{Rejection, SensoryFilter, Verdict};
 pub use fusion::{DEFAULT_K, FusedResult, Fusion, Modifier, Modifiers, Why, sort_results};

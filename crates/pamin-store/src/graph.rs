@@ -562,6 +562,18 @@ pub struct Expansion<'a> {
     /// Keeps only edges asserted to hold at this instant. `None` ignores truth
     /// validity and considers every edge we still stand behind.
     pub at: Option<OffsetDateTime>,
+    /// How many neighbours the caller is going to keep, if it knows.
+    ///
+    /// The walk stops once it has that many, which costs nothing and is not an
+    /// approximation: arrivals are breadth first, the ranking sorts on hops
+    /// before anything else, and a later hop only ever improves an entry from
+    /// the *same* hop. So once a hop has produced this many, every arrival
+    /// still to come sorts behind all of them and cannot enter the result.
+    ///
+    /// `None` walks to the depth whatever it finds, which is what
+    /// `pamin neighbors` wants -- it is asking what the neighbourhood *is*,
+    /// not for the best few of it.
+    pub keep: Option<usize>,
 }
 
 impl Expansion<'_> {
@@ -576,6 +588,15 @@ impl Expansion<'_> {
             depth: depth.min(MAX_DEPTH),
             kinds: None,
             at: None,
+            keep: None,
+        }
+    }
+
+    /// The same walk, stopped once `keep` neighbours have been found.
+    pub fn keeping(self, keep: usize) -> Self {
+        Self {
+            keep: Some(keep),
+            ..self
         }
     }
 }
@@ -775,6 +796,17 @@ pub async fn expand(
         next.truncate(MAX_FRONTIER);
 
         frontier = next.into_iter().map(|(step, _)| step).collect();
+
+        // Enough for whoever asked. Going further can only add arrivals at a
+        // greater distance, and distance is the first thing the ranking sorts
+        // on, so none of them could displace what is already here. On a graph
+        // with hubs in it this is the difference between walking the
+        // neighbourhood and walking the project: two hops off a
+        // twenty-thousand-degree hub reaches forty thousand topics, sorts all
+        // of them, and hands back fifty.
+        if options.keep.is_some_and(|keep| reached.len() >= keep) {
+            break;
+        }
     }
 
     let mut neighbors: Vec<Neighbor> = reached.into_values().collect();

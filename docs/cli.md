@@ -144,12 +144,58 @@ The memory is committed exactly as it would be otherwise — `pamin read` and
 when importing in bulk and run `pamin cascade drain` once at the end: one
 rebuild of the vector graph instead of one after every write.
 
-`cascade_lagging` is set once the queue passes ten thousand owed jobs. The
-queue is unbounded on purpose — a write must not fail because the index is slow
-— so this is the only thing that distinguishes a cascade keeping up from one
-that is not, and from outside the two look identical apart from searches
-missing the newest memories. An importer that sees it should drain before
-carrying on.
+`cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
+reports what the queue owed when the write looked at it rather than what is left
+afterwards. Without it a cascade keeping up and one falling behind look
+identical from outside, apart from searches missing the newest memories.
+
+Ten thousand is also where `--defer` stops deferring: a write past it drains
+before returning, so an import that ignores the signal still cannot run the
+queue away. That costs the importer the work it created rather than pausing it,
+which is the only form of backpressure that means anything here — ordinarily
+nothing else is draining, so a writer that waited would slow the import and
+leave the backlog exactly where it was. A new memory queues three jobs, so an
+import pays for a batch about every three thousand of them and never carries
+more than ten thousand.
+
+## `pamin import`
+
+Records many memories in one call, from a file of one JSON object per line.
+
+```console
+$ pamin import --from memories.ndjson
+Imported 2400 memories: 2400 written, 0 held in evidence only
+```
+
+```json
+{"topic": "deployment_pipeline", "content": "the pipeline runs on argo cd"}
+{"topic": "oncall_rota", "content": "the rota rotates every monday morning"}
+```
+
+Each memory goes through the same filter, the same language detection and the
+same transaction as `pamin write`; what changes is everything around them. One
+invocation instead of one per memory, one open engine instead of one per
+memory, and the projection catching up in rounds of sixty-four rather than
+after each one. Measured on 2,400 memories, getting one into the ledger costs
+**3.2 ms here against 30.1 ms** through `pamin write`, and a whole import of
+2,400 previously-unseen memories takes 55 s against 119 s — the rest of which
+is embedding them, which costs the same either way.
+
+The file is read by whichever process holds the workspace, which is the server
+when one is running. Both are on this machine and run as you.
+
+It is parsed in full before the first memory is recorded, so a malformed last
+line is a refusal rather than half an import. Importing the same file twice is
+not an error: the second time every memory is unchanged, so the filter holds it
+in the evidence layer and nothing reaches the index — which is what the `held`
+count is reporting.
+
+The importer watches the queue as it goes and pays it down if it passes the
+depth that reports the projection behind, so an import cannot leave the index
+arbitrarily far behind however large the file is. `cascade_lagging` in `--json`
+says whether that happened.
+
+`--valid-from` and `--valid-to` apply to every memory in the file.
 
 ## `pamin read`
 
@@ -200,6 +246,43 @@ not a tuning surface for ordinary use: raising the depth costs latency for
 recall you cannot measure from outside, and an agent that wants control over
 retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
 ranking internals it has no way to evaluate.
+
+`--rerank` chooses how much to spend reordering the results, and takes
+`PAMIN_RERANK`:
+
+| | what it loads | per query | cross-lingual nDCG@10 | same-language |
+|---|---|---|---|---|
+| `off` | nothing | — | — | — |
+| `fast` | 113 MB | 151 ms | **+0.0595** | unchanged |
+| `accurate` | 570 MB | 1795 ms | **+0.0852** | unchanged |
+
+`fast` is the default. The model is fetched the first time a search asks for
+one, into the same cache as the embedding model.
+
+A reranker reads the query and a memory together, which is what lets it correct
+an order the channels got wrong, and what makes it cost a forward pass for
+every candidate it looks at. Only the candidates no lexical channel found are
+reordered, and only into the positions they already hold — so a memory that
+shares words with your query comes back where it was, whatever the reranker
+thought of it. The same-language column above is unchanged for that reason
+rather than by luck.
+
+That also means a workspace whose memories are all in one language gains
+almost nothing here and should set `off`: the candidates the lexical channels
+miss are overwhelmingly the ones in another language. The numbers above are
+from eleven languages at once.
+
+A score depends on the query as well as the memory, so a resident server
+remembers the ones it has computed and a repeated search pays nothing for them:
+measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
+Four thousand scores are kept, about a quarter of a megabyte. Without
+`pamin serve` there is no process to keep them in, so every command starts
+from nothing.
+
+The latencies are from four cores. Published figures for a reranker of this
+size are a few milliseconds per candidate rather than the ten measured here,
+and the difference is the core count; on an ordinary server `fast` is tens of
+milliseconds.
 
 `--graph-depth` accepts 0 to 4 and refuses anything larger. A topic's
 neighbourhood grows multiplicatively with each hop and hub topics reach five
@@ -508,6 +591,13 @@ authority store, not the index.
 
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
+
+It is also how a grown project resizes its vector segments. The index sizes
+them from the number of memories it holds when it is created, which for a
+project starting from nothing is the smallest size; a project that has since
+grown by orders of magnitude keeps that size until it is rebuilt. Rebuilding
+recomputes it from what the project holds now, so a project that has outgrown
+its layout searches faster afterwards.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would

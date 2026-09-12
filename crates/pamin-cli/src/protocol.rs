@@ -64,6 +64,7 @@ pub struct Request {
 pub enum Call {
     Init,
     Write(command::write::Args),
+    Import(command::import::Args),
     Read(command::read::Args),
     Search(command::search::Args),
     Grep(command::grep::Args),
@@ -83,6 +84,7 @@ impl Call {
         match self {
             Self::Init => "init",
             Self::Write(_) => "write",
+            Self::Import(_) => "import",
             Self::Read(_) => "read",
             Self::Search(_) => "search",
             Self::Grep(_) => "grep",
@@ -102,10 +104,17 @@ impl Call {
 /// exactly what the in-process path produces: `anyhow` context, rendered once,
 /// printed to stderr. Reconstructing an error type across the socket would give
 /// the client something it has never had and does not use.
+/// The success payload is carried as the bytes it already is.
+///
+/// A command's result is serialized once, by whoever produced it, and copied
+/// from here into the socket. Holding a `serde_json::Value` instead meant
+/// building a tree, walking it again to write it out, and -- on the other end
+/// -- cloning the whole tree before reading a type out of it. None of those
+/// three passes decided anything.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
-    Ok(serde_json::Value),
+    Ok(Box<serde_json::value::RawValue>),
     Err(String),
     /// The server is from a different build. Its own identity comes back so the
     /// client can say what it replaced, and the client kills it and starts one

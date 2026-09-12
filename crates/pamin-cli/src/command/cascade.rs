@@ -7,6 +7,7 @@
 //! jobs that failed often enough to be set aside for a person to look at.
 
 use anyhow::Result;
+use pamin_engine::Owed;
 use pamin_index::Profile;
 use pamin_store::jobs;
 use serde::{Deserialize, Serialize};
@@ -112,12 +113,12 @@ pub async fn answer(
 /// flattening them into one shape nobody wanted.
 pub fn render_value(
     args: &Args,
-    value: &serde_json::Value,
+    value: &serde_json::value::RawValue,
     format: crate::output::Format,
 ) -> Result<()> {
     match args.command {
         Command::Drain => {
-            let result: Drained = serde_json::from_value(value.clone())?;
+            let result: Drained = serde_json::from_str(value.get())?;
             format.emit(&result, || {
                 format!(
                     "Ran {} jobs, {} failed, {} still owed",
@@ -126,17 +127,17 @@ pub fn render_value(
             });
         }
         Command::Failed => {
-            let result: Failures = serde_json::from_value(value.clone())?;
+            let result: Failures = serde_json::from_str(value.get())?;
             format.emit(&result, || render_failures(&result));
         }
         Command::Replay => {
-            let result: Moved = serde_json::from_value(value.clone())?;
+            let result: Moved = serde_json::from_str(value.get())?;
             format.emit(&result, || {
                 format!("Queued {} failed jobs to run again", result.jobs)
             });
         }
         Command::Discard => {
-            let result: Moved = serde_json::from_value(value.clone())?;
+            let result: Moved = serde_json::from_str(value.get())?;
             format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
         }
         Command::Run => unreachable!("the server refuses `run` rather than answering it"),
@@ -188,7 +189,7 @@ pub async fn execute(
 
 pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result<Drained> {
     let engine = session.engine(project, profile).await?;
-    let drained = engine.drain_cascade().await?;
+    let drained = engine.drain_cascade(Owed::Everything).await?;
 
     Ok(Drained {
         completed: drained.completed,
@@ -206,7 +207,7 @@ async fn keep_running(session: &Session, project: &str, profile: Profile) -> Res
     let engine = session.engine(project, profile).await?;
 
     loop {
-        let drained = engine.drain_cascade().await?;
+        let drained = engine.drain_cascade(Owed::Everything).await?;
         if drained.completed > 0 || drained.failed > 0 {
             tracing::info!(
                 completed = drained.completed,
