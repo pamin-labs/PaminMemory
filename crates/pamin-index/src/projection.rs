@@ -27,6 +27,13 @@ use crate::segmentation::Segmenter;
 
 const COLLECTION: &str = "memories";
 
+/// The primary key field, and the only one any query here reads back.
+///
+/// Every channel returns ranks -- the caller resolves what a topic stands for
+/// against the ledger -- so the text and the vector the engine would otherwise
+/// send back cross the boundary only to be dropped.
+const FIELD_ID: &str = "id";
+
 /// Word-level recall, fed pre-segmented text so every language tokenizes well.
 const FIELD_SEGMENTED: &str = "content_segmented";
 /// Substring recall over raw text: paths, error codes, identifiers.
@@ -395,7 +402,7 @@ impl ProjectionIndex {
         let path = dir.join(COLLECTION);
 
         let schema = CollectionSchema::builder(COLLECTION)
-            .add_field(FieldSchema::new("id", DataType::String, false, 0)?)
+            .add_field(FieldSchema::new(FIELD_ID, DataType::String, false, 0)?)
             // Input is already segmented, so the engine only has to split on
             // the spaces we produced.
             .add_indexed_field(
@@ -448,7 +455,7 @@ impl ProjectionIndex {
         let mut doc = Doc::new()?;
         let key = topic.to_string();
         doc.set_pk(&key);
-        doc.add_string("id", &key)?;
+        doc.add_string(FIELD_ID, &key)?;
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
         doc.add_string(FIELD_NGRAM, content)?;
         doc.add_vector_f32(FIELD_VECTOR, embedding)?;
@@ -474,6 +481,7 @@ impl ProjectionIndex {
         let mut fts = Fts::new()?;
         fts.set_match_string(query)?;
         let mut search = SearchQuery::fts(field, &fts, limit as i32)?;
+        search.set_output_fields(&[FIELD_ID])?;
         if every_term {
             search.set_fts_params(FtsQueryParams::new(Some("AND"))?)?;
         }
@@ -584,6 +592,8 @@ impl Projection for ProjectionIndex {
     /// lets one fusion step combine them.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicId>> {
         let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
+        search.set_output_fields(&[FIELD_ID])?;
+        search.set_include_vector(false)?;
         // No radius bound, the graph rather than a linear scan, and no
         // refiner: the refiner rescores against a full-precision copy that
         // only exists when the stored vectors were quantized, and asking for
