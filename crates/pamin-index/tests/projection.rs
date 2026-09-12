@@ -233,12 +233,13 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
 
 /// Everything written is still recallable after the vector index is built.
 ///
-/// Building the graph rewrites the vector storage, and zvec has an open report
-/// -- alibaba/zvec#724, against 0.6 and 0.7 -- of that step dropping the last
-/// documents of a collection. What makes it worth a standing test rather than a
-/// note is how it fails: the dropped documents keep appearing in the document
-/// count and in scalar reads, so only a vector query can tell, and re-running
-/// the build does not bring them back.
+/// Building the graph rewrites the vector storage, and zvec has a report --
+/// alibaba/zvec#724, against 0.6 and 0.7 -- of that step dropping the last
+/// documents of a collection. It is fixed upstream and not released: #731
+/// merged as `31d88ea`, and the newest published version is 0.7.0. What makes
+/// it worth a standing test rather than a note is how it fails: the dropped
+/// documents keep appearing in the document count and in scalar reads, so only
+/// a vector query can tell, and re-running the build does not bring them back.
 ///
 /// It does not reproduce here, across five rounds of write-delete-build in the
 /// shape the cascade produces. That is a reason to call `optimize`, not a

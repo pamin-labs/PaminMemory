@@ -115,14 +115,25 @@ pub struct Engine {
     /// Behind a lock even though every method on the trait takes `&self`. The
     /// engine declares `Sync` and does not honour it: a reader takes an
     /// unsynchronized snapshot of the segments a writer is in the middle of
-    /// changing, reported upstream as alibaba/zvec#714 and still open. Readers
-    /// share; a write excludes them.
+    /// changing, reported upstream as alibaba/zvec#714. One caller at a time,
+    /// not readers sharing -- see [`Engine::index`] for what decided that.
     ///
     /// Not a precaution. Taking this lock out makes searches fail inside a
     /// minute under the concurrency `readers_and_writers_share_one_index_
     /// without_bringing_it_down` puts through it, and that is the mild form --
     /// upstream reports the same race faulting. On macOS it is latent, so it
     /// looks like a precaution there.
+    ///
+    /// **Merged upstream and not released.** #714 closed with alibaba/zvec#715,
+    /// merged as `515c11a`, which gives the segment locks shared readers; the
+    /// sibling report #724 closed with #731 as `31d88ea`. The newest published
+    /// version is 0.7.0, which predates both, so what this depends on is still
+    /// the code that needs the lock. Neither touched a public header, so
+    /// picking them up is a version bump rather than a binding change -- see
+    /// the deferred entry in `docs/adr/0001-tech-selection.md` for the trigger
+    /// and for what has to be measured before the lock comes off.
+    ///
+    /// [`Engine::index`]: Self::index
     index: Arc<Mutex<Box<dyn Projection + Send + Sync>>>,
     /// How this splits text, held here rather than reached through the index.
     ///
