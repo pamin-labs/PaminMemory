@@ -65,11 +65,21 @@ impl Cli {
     /// passing. Holding the handle is what lets a test ask whether the process
     /// that answered the first request is the one that answered the last.
     fn serve(&self) -> std::process::Child {
+        self.serve_logging("warn")
+    }
+
+    /// A server whose log is part of what the test is checking.
+    ///
+    /// The default filter is `warn`, so a test that wants to see what the
+    /// server did rather than only what it returned has to ask for it. The log
+    /// is `serve.log` in the workspace either way.
+    fn serve_logging(&self, filter: &str) -> std::process::Child {
         let log = std::fs::File::create(self.home().join("serve.log")).expect("server log");
         let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(["serve"])
             .env("PAMIN_HOME", self.home())
             .env("PAMIN_PROFILE", PROFILE)
+            .env("PAMIN_LOG", filter)
             .stdout(log.try_clone().expect("a second handle on the log"))
             .stderr(log)
             .spawn()
@@ -1494,6 +1504,15 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
 /// that rather than a benchmark, because the cost of guessing wrong is a
 /// server that stops answering rather than one that answers slowly.
 ///
+/// It covers one thing the lock deliberately does not: compaction runs on a
+/// handle taken out from under it, because the engine supports queries during
+/// its own maintenance and has since #614, which did ship in the version this
+/// depends on. That makes compaction the one operation here genuinely
+/// overlapping a query rather than queuing with it, and the seal it starts with
+/// is a segment switch -- the same event #714 is about. So this is also what
+/// says the narrower window is safe, and it checks the server's log at the end
+/// rather than trusting that compaction happened at all.
+///
 /// Linux is where this shows. On macOS the same race is latent, so a green run
 /// there says nothing about whether the lock is doing anything.
 #[test]
@@ -1507,7 +1526,9 @@ fn readers_and_writers_share_one_index_without_bringing_it_down() {
     const FOR_LONG_ENOUGH: Duration = Duration::from_secs(300);
 
     let cli = Cli::new();
-    let mut server = cli.serve();
+    // Asked for its log, because "compaction ran" is half of what this checks
+    // and the server is the only one who knows.
+    let mut server = cli.serve_logging("pamin=debug");
     cli.run(&["init"]);
 
     let deadline = Instant::now() + FOR_LONG_ENOUGH;
@@ -1548,6 +1569,18 @@ fn readers_and_writers_share_one_index_without_bringing_it_down() {
     assert!(
         server.try_wait().expect("checking on the server").is_none(),
         "the server did not survive its readers and writers sharing an index"
+    );
+
+    // Compaction runs outside the index lock, so it is the one thing here that
+    // overlaps the queries rather than queuing with them. Without this the run
+    // could go green having never compacted at all -- which would be a green
+    // run for the wrong reason, since the overlap is what it is checking.
+    let log = std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+    let upkeeps = log.matches("ran index upkeep").count();
+    assert!(
+        upkeeps > 0,
+        "the index was never compacted during the run, so nothing here \
+         overlapped a query and a green result says nothing about it"
     );
 
     server.kill().expect("stopping the server");
