@@ -237,6 +237,50 @@ Both routes rest on premises this project has not measured — that the hot set 
 
 Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path both tiers take.
 
+### The index lock, and what would actually lift it
+
+Every call into the projection goes through one exclusive lock. The engine
+declares `Sync` and does not honour it — a reader takes an unsynchronized
+snapshot of the segments a writer is changing, reported upstream as
+alibaba/zvec#714 — and without the lock, searches fail inside a minute under
+sustained concurrent traffic.
+
+Two things about that lock are worth writing down, because both are easy to get
+wrong from the outside.
+
+**It is a mutex rather than a read-write lock, and that was decided by a hang
+nobody upstream has reported.** With readers allowed to share, twenty writers
+and twenty readers wedged the process inside the engine's own code: forty-six of
+its threads asleep on futexes, no caller of ours above them, and no processor
+time used by any of them for thirty-five minutes. The same run with writers
+alone passes; the same run with readers made exclusive passes for the full five
+minutes. Upstream #714 reports SIGSEGV, and the error we also saw —
+`Read next record batch failed (fill_result): fetch table failed` — but **no
+upstream issue reports a hang**. So the two are consistent with each other and
+have not been shown to be the same defect.
+
+**Which means the fix landing upstream is not, by itself, permission to remove
+the lock.** #714 closed with #715 (merged as `515c11a`, giving the segment locks
+shared readers) and the sibling data-loss report #724 closed with #731 (as
+`31d88ea`). Neither is in a published version — 0.7.0 predates both — and
+neither touched a public header, so adopting them is a version bump rather than
+a binding change.
+
+The trigger is therefore two-part, and the second part is the one that matters:
+
+- **When** a `zvec-rust` release contains `515c11a`, take it.
+- **Then** run `readers_and_writers_share_one_index_without_bringing_it_down`
+  for its full five minutes with the lock relaxed to a read-write lock, on
+  Linux, before believing anything. On macOS the race is latent and a green run
+  says nothing. If it wedges again, the hang is a second defect, the lock stays
+  a mutex, and *that* is the point at which it is worth reporting upstream with
+  the stack and the three-way bisect above.
+
+Compaction is already outside this lock, on the strength of #614, which did ship
+in 0.7.0: Optimize is a brief exclusive seal, a long phase holding no schema
+lock, and a brief exclusive commit. That is the one part of the engine's
+concurrency this project relies on today.
+
 ### Engineering budgets
 
 Retrieval quality is governed by numeric gates. Engineering cost gets the same treatment, because otherwise it drifts silently — and an earlier iteration of this decision would have added compile cost for capability the project already had.
