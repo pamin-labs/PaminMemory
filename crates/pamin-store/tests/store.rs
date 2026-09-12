@@ -145,7 +145,7 @@ async fn write_state(
         project,
         topic,
         content,
-        span.id,
+        &span,
         OffsetDateTime::now_utc(),
         Validity::ALWAYS
     )
@@ -1238,7 +1238,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         project.id,
         topic.id,
         "the state content",
-        span.id,
+        &span,
         observed,
         Validity {
             from: Some(valid_from),
@@ -1253,6 +1253,11 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         .expect("the state was written");
     assert_eq!(stored.content, "the state content");
     assert_eq!(stored.source_span_id, span.id);
+    // The span's language, read back through the join -- and the first time
+    // anything reads `source_spans` at all. The assertion above on `span` is on
+    // the struct `append_source_span` built and handed back, so an INSERT that
+    // dropped this column would have passed it; this one would not.
+    assert_eq!(stored.language.as_deref(), Some("eng"));
     assert_eq!(stored.observed_at, observed);
     assert_eq!(stored.validity.from, Some(valid_from));
     assert_eq!(stored.validity.to, Some(valid_to));

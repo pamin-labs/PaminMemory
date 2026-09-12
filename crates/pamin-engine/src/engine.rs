@@ -592,7 +592,7 @@ impl Engine {
                 self.project,
                 topic.id,
                 request.content,
-                span.id,
+                &span,
                 request.observed_at,
                 request.validity,
             )

@@ -175,6 +175,10 @@ pub struct TopicState {
     /// The span this state was derived from, so every claim can be traced back
     /// to bytes in a source.
     pub source_span_id: SourceSpanId,
+    /// What language the content was detected to be in, carried up from that
+    /// span. `None` when detection was not confident, which is the ordinary
+    /// case for content too short to tell.
+    pub language: Option<String>,
     /// When the source claims the fact was true or happened.
     pub observed_at: OffsetDateTime,
     /// When PaminMemory recorded it.
