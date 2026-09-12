@@ -301,6 +301,68 @@ in 0.7.0: Optimize is a brief exclusive seal, a long phase holding no schema
 lock, and a brief exclusive commit. That is the one part of the engine's
 concurrency this project relies on today.
 
+**And on four cores the lock is not what is stopping concurrent search anyway.**
+That was measured before planning anything around it, because the cost of the
+lock had been asserted and never established.
+
+A search takes two exclusive guards in sequence: the embedder, for one forward
+pass, and then the index, for the three recalls. Two arms separate them without
+instrumenting the source. Every request in the *fresh* arm asks something never
+asked before, so it pays the forward pass and meets both guards; every request
+in the *cached* arm comes from a set of 128, which fits under the query cache's
+256, so the model never runs and what is left is the index guard. Thirteen
+thousand XQuAD-R sentences, accuracy profile, the resident pool the server uses,
+median of three runs:
+
+| N | cached q/s | cached p50 | fresh q/s | fresh p50 |
+| --- | --- | --- | --- | --- |
+| 1 | 65.7 | 13.4 ms | 21.1 | 45.6 ms |
+| 2 | 35.7 | 53.3 | 26.6 | 73.0 |
+| 4 | 40.6 | 89.6 | 27.2 | 143.9 |
+| 8 | 42.5 | 174.3 | 28.0 | 284.2 |
+
+Read alone, the cached column looks like exactly the indictment expected: two
+concurrent readers get *less* total throughput than one, and it never recovers.
+
+It is not the lock. The control is the same sweep with nothing shared at all —
+one `Embedder` per worker, each with its own model, no guard of ours anywhere in
+it (speed profile, so that eight models is a gigabyte rather than several):
+
+| N | embeddings/s | per pass |
+| --- | --- | --- |
+| 1 | 182.3 | 5.5 ms |
+| 2 | 92.3 | 10.8 |
+| 4 | 66.9 | 14.9 |
+| 8 | 53.5 | 18.2 |
+
+**Throughput halves at N=2 with no lock in the picture, and keeps falling.** ONNX
+Runtime's own intra-op pool already uses all four cores for a single forward
+pass, so a second caller does not find an idle core to run on — it finds the
+first caller's threads. Against that control the cached arm degrades *less* than
+lock-free work does, and the fresh arm gains a third rather than losing
+anything. Neither guard is the binding constraint here; the machine is.
+
+So there is nothing for removing the index mutex to buy on this hardware, and
+nothing for splitting the embedder's cache guard from its model guard either —
+a cache hit is already three times the throughput of a miss at every N.
+
+**This says nothing about a machine with cores to spare.** On sixteen or
+thirty-two, one forward pass would not saturate the box, callers would not be
+fighting for the same cores, and the guards could well become exactly the
+ceiling this measurement failed to find. The sweep is `conc-harness.sh`, kept
+out of the repository with the rest of the measurement harnesses; re-run it
+there before concluding anything about a larger machine, and treat the two-part
+trigger above as unchanged until then.
+
+One methodological note, because it nearly went the other way: `Engine::open`
+takes `Connections::PerCommand`, which caps the pool at four, and a search uses
+several connections. The first run of this sweep went through it, so eight
+concurrent searches were partly queueing on connections rather than on anything
+being measured. Re-running against `Connections::Resident` — what `pamin serve`
+actually uses — moved no number outside run-to-run noise, so the pool was not
+the confound it looked like. A measurement of a lock has to be a measurement of
+that lock.
+
 ### Engineering budgets
 
 Retrieval quality is governed by numeric gates. Engineering cost gets the same treatment, because otherwise it drifts silently — and an earlier iteration of this decision would have added compile cost for capability the project already had.
