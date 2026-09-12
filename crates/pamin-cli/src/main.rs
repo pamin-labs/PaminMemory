@@ -8,6 +8,7 @@ mod client;
 mod command;
 mod output;
 mod protocol;
+mod registry;
 mod server;
 mod session;
 
