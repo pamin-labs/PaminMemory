@@ -133,7 +133,8 @@ pub(crate) async fn record(
     // Looked up rather than created: a write the filter holds should leave no
     // trace on the retrieval surface, and an empty topic is a trace. Promotion
     // is what creates one, inside the write transaction.
-    let current = current_content(engine, topic).await?;
+    let current =
+        repository::current_content(engine.database.pool(), engine.project, topic).await?;
     let verdict = SensoryFilter::default().judge(content, current.as_deref());
 
     let (language, confidence) = match pamin_index::detect_language(content) {
@@ -181,25 +182,6 @@ pub fn render(result: &Written) -> String {
             result.reason, result.topic, result.source_version
         ),
     }
-}
-
-/// The content the topic currently resolves to, if it exists at all.
-async fn current_content(engine: &Engine, topic: &str) -> Result<Option<String>> {
-    let Some(topic) = repository::find_topic(engine.database.pool(), engine.project, topic).await?
-    else {
-        return Ok(None);
-    };
-
-    let versions = repository::topic_versions(engine.database.pool(), topic.id).await?;
-    let Some(resolved) = pamin_core::resolve(&versions, pamin_core::VersionOffset::LATEST) else {
-        return Ok(None);
-    };
-
-    Ok(
-        repository::topic_state(engine.database.pool(), topic.id, resolved.version)
-            .await?
-            .map(|state| state.content),
-    )
 }
 
 fn hash(content: &str) -> String {

@@ -62,6 +62,7 @@ async fn the_ledger_holds_its_promises() {
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
+    what_a_topic_says_now_is_one_lookup(&database).await;
     a_completion_names_the_claim_it_belongs_to(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
@@ -1563,6 +1564,66 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         walked.iter().filter(|n| n.hops == 2).count(),
         SPOKES,
         "two hops reaches the far hub's spokes and nothing further"
+    );
+}
+
+/// What a topic says now comes from the pointer, at any length of history.
+///
+/// The sensory filter asks this before every write, to decide whether the
+/// content it was handed is what the topic already says. It used to be answered
+/// by reading *every* version of the topic, in order, into memory and taking
+/// the last -- three round trips and a scan proportional to how often that
+/// topic has been edited, to compare one string. `topics.current_state_id`
+/// answers it directly, which is what it was added for.
+///
+/// The two differ once a state is soft deleted, because the pointer is not
+/// repaired when one is: reading the versions skipped the deleted state and
+/// returned the newest survivor, while the pointer still names the deleted one.
+/// Following the pointer is what `current_states_of` does, so this is the
+/// reading the search path already has, and having the filter and the search
+/// disagree about what a topic says is worse than either answer.
+async fn what_a_topic_says_now_is_one_lookup(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "saysnow")
+        .await
+        .expect("ensure project");
+
+    assert_eq!(
+        repository::current_content(database.pool(), project.id, "never_written")
+            .await
+            .expect("look up a topic that does not exist"),
+        None,
+        "a topic nobody has written has nothing to compare against"
+    );
+
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "edited_often"
+    )
+    .expect("ensure topic")
+    .id;
+
+    // Enough history that reading all of it would be a different answer from
+    // reading none of it.
+    for round in 0..25 {
+        write_state(
+            database,
+            project.id,
+            topic,
+            &format!("note-{round}"),
+            &format!("what the topic said in round {round}"),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        repository::current_content(database.pool(), project.id, "edited_often")
+            .await
+            .expect("look up the current content")
+            .as_deref(),
+        Some("what the topic said in round 24"),
+        "the newest state is what the topic says now"
     );
 }
 
