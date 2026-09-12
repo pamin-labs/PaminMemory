@@ -327,8 +327,17 @@ impl Engine {
     /// Both happen in one call because the engine does them in one call, and
     /// it skips whichever is already done -- which is what makes asking cheap
     /// enough to ask often.
+    ///
+    /// Runs on a handle rather than under the index lock, so the searches this
+    /// is speeding up are still answered while it runs. The engine supports
+    /// that and has since before the version this depends on; holding the lock
+    /// across it was our own doing. [`Engine::index_for_upkeep`] carries the
+    /// argument and the one measurement that has to keep passing for it.
+    ///
+    /// [`Engine::index_for_upkeep`]: crate::engine::Engine::index_for_upkeep
     async fn optimize_projection(&self) -> Result<()> {
-        crate::engine::off_the_runtime(|| self.index().optimize())?;
+        let index = self.index_for_upkeep();
+        crate::engine::off_the_runtime(|| index.optimize())?;
         Ok(())
     }
 }

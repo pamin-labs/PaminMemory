@@ -134,7 +134,7 @@ pub struct Engine {
     /// and for what has to be measured before the lock comes off.
     ///
     /// [`Engine::index`]: Self::index
-    index: Arc<Mutex<Box<dyn Projection + Send + Sync>>>,
+    index: Arc<Mutex<Arc<dyn Projection + Send + Sync>>>,
     /// How this splits text, held here rather than reached through the index.
     ///
     /// It is the index's segmenter -- taken from it at open, so the two cannot
@@ -325,7 +325,7 @@ impl Engine {
             let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
             let embedder = models.get(profile)?;
             Ok::<_, pamin_index::IndexError>((
-                Box::new(index) as Box<dyn Projection + Send + Sync>,
+                Arc::new(index) as Arc<dyn Projection + Send + Sync>,
                 embedder,
             ))
         })?;
@@ -376,8 +376,34 @@ impl Engine {
     /// index, so what it holds is whatever that panic left. Failing here is
     /// the honest outcome: the alternative is serving from state nobody
     /// finished writing.
-    pub(crate) fn index(&self) -> MutexGuard<'_, Box<dyn Projection + Send + Sync>> {
+    pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
         self.index.lock().expect("the index lock is poisoned")
+    }
+
+    /// The projection, for the one thing that may run while others use it.
+    ///
+    /// Compaction and graph building are the long operation in this system --
+    /// a third of a second for a few hundred files, minutes for a graph over a
+    /// sealed segment -- and they make nothing more correct, only faster. That
+    /// is what makes them safe to run alongside a query, and the engine agrees:
+    /// alibaba/zvec#614 turned Optimize into a brief exclusive seal, a long
+    /// phase holding no schema lock, and a brief exclusive commit, so reads and
+    /// writes proceed through the middle of it. Unlike the concurrency fix this
+    /// index is still waiting on, **that one shipped**, in the 0.7.0 this
+    /// depends on.
+    ///
+    /// So holding [`index`] across it was our own exclusion, not the engine's,
+    /// and it was the whole reason moving upkeep off the writer bought nothing:
+    /// a write waited out a compaction whether or not it was the one running
+    /// it. Taking a handle instead lets the upkeep worker compact while the
+    /// searches it is speeding up are still being answered.
+    ///
+    /// Only this operation gets it. Every other call goes through [`index`],
+    /// because #714 is what that lock is for and it is still unfixed here.
+    ///
+    /// [`index`]: Self::index
+    pub(crate) fn index_for_upkeep(&self) -> Arc<dyn Projection + Send + Sync> {
+        Arc::clone(&self.index())
     }
 
     /// The model. One caller at a time, because inference wants `&mut`.
