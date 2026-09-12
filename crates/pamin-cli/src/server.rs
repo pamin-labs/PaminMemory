@@ -89,11 +89,23 @@ const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 /// It claims like any other worker, so two servers against one workspace share
 /// the work rather than repeat it, and a failure is logged and retried on its
 /// own schedule rather than taken out on a request.
+///
+/// Flushing comes first and is the more important half. A write leaves its
+/// document in the projection's buffer, where queries can already see it, and
+/// leaves the job claimed until a flush puts it on disk -- so this loop is what
+/// turns those claims into completions. Nothing is lost if it never runs: the
+/// claims lapse and the ledger replays them. What is lost is the amortization,
+/// which is the entire reason the write did not flush for itself.
 async fn maintain(session: Arc<Session>) {
     loop {
         tokio::time::sleep(UPKEEP).await;
 
         for engine in session.open_engines().await {
+            match engine.flush_what_is_applied().await {
+                Ok(0) => {}
+                Ok(durable) => tracing::debug!(durable, "made applied writes durable"),
+                Err(error) => tracing::warn!(%error, "flushing applied writes failed"),
+            }
             match engine.maintain().await {
                 Ok(true) => tracing::debug!("ran index upkeep"),
                 Ok(false) => {}

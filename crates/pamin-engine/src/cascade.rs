@@ -30,15 +30,38 @@ use crate::engine::Engine;
 /// under one flush.
 const BATCH: i32 = 64;
 
+/// How many applied writes may wait for one flush.
+///
+/// The bound is on the writes a flush covers, not on time, because the time
+/// bound is the upkeep tick and that is already short. What this decides is
+/// how much replay a power loss costs and how long a claim is held: a job in
+/// here still holds its claim, and a claim is good for [`jobs::LEASE`], so the
+/// list has to be flushed well inside that whatever the write rate.
+///
+/// A hundred and twenty-eight, from what a flush costs per document at each
+/// batch: one is 57.7 ms and leaves 1,287 files, eight is 6.3 ms and 141,
+/// thirty-two is 1.8 ms and 69, and a hundred and twenty-eight is 0.65 ms and
+/// 51. The curve is flat past that and the cost of being wrong is not, so this
+/// is the knee rather than the floor.
+const AWAITING_DURABILITY: usize = 128;
+
 /// What a drain did.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Drained {
     /// Jobs that ran and were recorded as done.
     pub completed: usize,
+    /// Jobs still owed when the drain stopped.
+    ///
+    /// Counted from the queue, so it includes [`Drained::applied`] -- work this
+    /// process has already done and is holding a claim on until a flush makes
+    /// it durable. A caller asking "is this memory findable" wants the
+    /// difference; a caller asking "what would replay after a power cut" wants
+    /// this.
+    pub pending: i64,
     /// Jobs that failed and will be tried again, or have run out of attempts.
     pub failed: usize,
-    /// Jobs still owed when the drain stopped.
-    pub pending: i64,
+    /// Jobs whose writes the index has, waiting only for a flush.
+    pub applied: usize,
 }
 
 /// How much of what is owed a drain is willing to pay for.
@@ -127,16 +150,45 @@ impl Engine {
                 .iter()
                 .partition(|job| job.kind == JobKind::SyncTopicIndex);
 
-            let mut outcomes: Vec<(&Job, Result<()>)> = Vec::with_capacity(claimed.len());
+            let mut written: Vec<(&Job, Result<()>)> = Vec::with_capacity(claimed.len());
             for job in writes {
-                outcomes.push((job, self.run(job).await));
+                written.push((job, self.run(job).await));
             }
-            // Before anything is recorded as done, so that a process that dies
-            // here leaves the jobs owed rather than marked complete against an
-            // index that never received them.
-            if outcomes.iter().any(|(_, result)| result.is_ok()) {
-                crate::engine::off_the_runtime(|| self.index().flush())?;
+
+            // What happens to the writes now is the difference between a
+            // caller with somebody behind it and one without. Either way they
+            // are applied, and applied is findable: the projection buffers a
+            // write in memory and a query reads that buffer. What is left is
+            // durability, and a job stays claimed until a flush provides it.
+            //
+            // Without a server there is nobody to flush later, so this pays
+            // for it -- one flush for the round, before anything is recorded
+            // as done, so that a process dying here leaves the jobs owed
+            // rather than marked complete against an index that never received
+            // them.
+            let mut outcomes: Vec<(&Job, Result<()>)> = Vec::with_capacity(claimed.len());
+            match owed {
+                Owed::Everything => {
+                    if written.iter().any(|(_, result)| result.is_ok()) {
+                        crate::engine::off_the_runtime(|| self.index().flush())?;
+                    }
+                    outcomes.append(&mut written);
+                }
+                Owed::WhatAMemoryNeeds => {
+                    for (job, result) in written {
+                        match result {
+                            Ok(()) => self.await_durability(job),
+                            // A failure put nothing in the buffer, so there is
+                            // nothing for a flush to cover.
+                            Err(error) => outcomes.push((job, Err(error))),
+                        }
+                    }
+                }
             }
+
+            // Whatever a read job writes goes to the ledger, which commits it,
+            // so nothing it does is waiting on a flush. It reads the index,
+            // and what this round wrote is already there to be read.
             for job in reads {
                 outcomes.push((job, self.run(job).await));
             }
@@ -166,14 +218,71 @@ impl Engine {
 
             let completed = jobs::complete(self.database.pool(), &done, &self.worker).await?;
             drained.completed += completed.len();
+            // Past the bound the flush is this caller's after all: the list
+            // holds claims, and a claim is only good for so long.
+            if self.awaiting_durability() >= AWAITING_DURABILITY {
+                drained.completed += self.flush_what_is_applied().await?;
+            }
             // Requested again while it ran, or the lease expired. Either way it
             // stays owed, and counting it complete here would be the lie the
             // claim guard exists to prevent.
             drained.failed += done.len() - completed.len();
         }
 
+        // Read before the count, not after. Both move -- the server's flusher
+        // is completing these rows as this runs -- and the order decides which
+        // way a job caught between the two reads is wrong. Counted as applied
+        // and then not as pending, it is reported findable, which it is.
+        // Counted as pending and then not as applied, it is reported owed,
+        // which it is not, and every write says so.
+        drained.applied = self.awaiting_durability();
         drained.pending = jobs::pending(self.database.pool(), self.project).await?;
         Ok(drained)
+    }
+
+    /// Holds a claim on a write the index has but the disk does not.
+    fn await_durability(&self, job: &Job) {
+        self.unflushed()
+            .expect("the durability queue lock is poisoned")
+            .push(job.clone());
+    }
+
+    /// How many applied writes are waiting for a flush.
+    pub fn awaiting_durability(&self) -> usize {
+        self.unflushed()
+            .expect("the durability queue lock is poisoned")
+            .len()
+    }
+
+    /// Makes the applied writes durable, and completes the jobs they came from.
+    ///
+    /// One flush for all of them, then one statement to record them done. The
+    /// order is the whole point and is the same order a round takes without a
+    /// server: nothing is recorded as done until a flush has covered it, so a
+    /// power cut here leaves every one of them owed and the ledger replays
+    /// them.
+    ///
+    /// A job whose claim lapsed while it waited is not completed -- the
+    /// completion names the claim it belongs to -- so it runs again. That
+    /// costs an embedding and produces the same document, which is what every
+    /// handler here is written to survive.
+    ///
+    /// Returns how many were recorded done.
+    pub async fn flush_what_is_applied(&self) -> Result<usize> {
+        let waiting: Vec<Job> = std::mem::take(
+            &mut *self
+                .unflushed()
+                .expect("the durability queue lock is poisoned"),
+        );
+        if waiting.is_empty() {
+            return Ok(0);
+        }
+
+        crate::engine::off_the_runtime(|| self.index().flush())?;
+
+        let held: Vec<&Job> = waiting.iter().collect();
+        let completed = jobs::complete(self.database.pool(), &held, &self.worker).await?;
+        Ok(completed.len())
     }
 
     /// Runs one job.
