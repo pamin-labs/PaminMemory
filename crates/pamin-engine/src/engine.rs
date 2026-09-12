@@ -1087,7 +1087,9 @@ impl Engine {
             self.database.pool(),
             self.project,
             &seeds,
-            &Expansion::to_depth(depths.graph),
+            // Bounded by what this channel keeps, so a hub-shaped project
+            // does not make the walk the whole cost of a search.
+            &Expansion::to_depth(depths.graph).keeping(depths.channel as usize),
         )
         .await?;
 

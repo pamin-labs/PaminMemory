@@ -477,6 +477,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: Some(&[EdgeKind::Mentions]),
             at: None,
+            keep: None,
         },
     )
     .await
@@ -505,6 +506,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: None,
             at: Some(OffsetDateTime::now_utc()),
+            keep: None,
         },
     )
     .await
@@ -522,6 +524,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: None,
             at: Some(OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1)),
+            keep: None,
         },
     )
     .await
@@ -711,6 +714,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
             depth: 1,
             kinds: None,
             at: Some(before_retraction),
+            keep: None,
         },
     )
     .await
@@ -2148,6 +2152,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
             depth: 1,
             at: Some(before),
             kinds: None,
+            keep: None,
         },
     )
     .await
