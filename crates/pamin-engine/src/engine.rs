@@ -744,6 +744,12 @@ impl Engine {
     /// Only the candidates no lexical channel found, and only into the
     /// positions those candidates already hold.
     ///
+    /// Fused deeper than it returns, because a reranker that only sees what the
+    /// caller asked for has nothing to work with. See [`fused_for`]: the tier's
+    /// depth was measured over a list of fifty and the default `--limit` is
+    /// five, so cutting first left it reordering five candidates and usually
+    /// declining to reorder at all.
+    ///
     /// Every cross-encoder measured improves cross-lingual ranking and damages
     /// same-language ranking by about as much: fusion is already good at
     /// placing a memory that shares words with the query, and a second pass
@@ -769,7 +775,7 @@ impl Engine {
         rerank: Rerank,
     ) -> Result<Vec<SearchHit>> {
         let hits = self
-            .search_fused(query, limit, depths, Fusion::default())
+            .search_fused(query, fused_for(limit, rerank), depths, Fusion::default())
             .await?;
         if rerank == Rerank::Off || hits.is_empty() {
             return Ok(hits);
@@ -789,7 +795,7 @@ impl Engine {
             })
             .collect();
         if unlexical.len() < 2 {
-            return Ok(hits);
+            return Ok(only(hits, limit));
         }
 
         let documents: Vec<&str> = unlexical
@@ -824,10 +830,13 @@ impl Engine {
             slots[*slot] = taken[*from].take();
         }
 
-        Ok(slots
-            .into_iter()
-            .map(|hit| hit.expect("every position refilled"))
-            .collect())
+        Ok(only(
+            slots
+                .into_iter()
+                .map(|hit| hit.expect("every position refilled"))
+                .collect(),
+            limit,
+        ))
     }
 
     /// The same search, with the fusion settings supplied.
@@ -1250,11 +1259,69 @@ fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
     runs
 }
 
+/// How deep to fuse when a reranker is going to reorder the head.
+///
+/// A cross-encoder can only reorder what it is shown, so the list it works on
+/// has to be at least as long as the tier's depth even when the caller wants
+/// five results. Cutting to the caller's limit first is what made the tuned
+/// depth unreachable: `--limit` defaults to five, the tier's depth is twenty,
+/// and the sweep that chose twenty was run over a list of fifty. What arrived
+/// at the reranker was five candidates, of which the two it needs to find
+/// unlexical are usually not among them -- so the shipped default reordered
+/// nothing and returned the ranking a search with reranking off would have.
+///
+/// Deeper costs the fusion nothing extra: every channel already contributes
+/// [`Depths::channel`] candidates and all of them are already resolved against
+/// the ledger. What grows is the hydration, by the difference between the two
+/// numbers.
+fn fused_for(limit: u32, rerank: Rerank) -> u32 {
+    match rerank {
+        Rerank::Off => limit,
+        tier => limit.max(tier.depth() as u32),
+    }
+}
+
+/// The first `limit` of a list that was fused deeper than the caller asked for.
+fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
+    hits.truncate(limit as usize);
+    hits
+}
+
 #[cfg(test)]
 mod tests {
-    use super::runs_of_tokens;
+    use super::{fused_for, runs_of_tokens};
+    use pamin_index::Rerank;
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
+
+    /// A reranker is shown at least as many candidates as it was tuned for.
+    ///
+    /// The constant saying how many a tier looks at is measured, and before
+    /// this it was unreachable: the fused list was cut to the caller's limit
+    /// first, so at the default `--limit 5` the tier saw five candidates rather
+    /// than its twenty, and the shipped default reordered nothing. This is the
+    /// arithmetic that was wrong, on its own, because the alternative is a test
+    /// that needs half a gigabyte of weights to observe a reordering that
+    /// silently did not happen.
+    #[test]
+    fn a_reranker_is_fused_at_least_as_deep_as_it_reads() {
+        for tier in [Rerank::Fast, Rerank::Accurate] {
+            assert!(
+                fused_for(5, tier) >= tier.depth() as u32,
+                "{tier:?} reads {} candidates and was handed {}",
+                tier.depth(),
+                fused_for(5, tier)
+            );
+        }
+    }
+
+    /// A caller wanting more than the reranker reads still gets what it asked.
+    #[test]
+    fn fusing_for_a_reranker_never_shortens_what_was_asked_for() {
+        assert_eq!(fused_for(500, Rerank::Fast), 500);
+        // Nothing is going to reorder it, so nothing needs to be fused deep.
+        assert_eq!(fused_for(5, Rerank::Off), 5);
+    }
 
     /// Every case the segmenter's own naming tests pin, and one that is not a
     /// name in either scheme.
