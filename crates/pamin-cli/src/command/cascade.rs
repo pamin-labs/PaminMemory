@@ -113,12 +113,12 @@ pub async fn answer(
 /// flattening them into one shape nobody wanted.
 pub fn render_value(
     args: &Args,
-    value: &serde_json::Value,
+    value: &serde_json::value::RawValue,
     format: crate::output::Format,
 ) -> Result<()> {
     match args.command {
         Command::Drain => {
-            let result: Drained = serde_json::from_value(value.clone())?;
+            let result: Drained = serde_json::from_str(value.get())?;
             format.emit(&result, || {
                 format!(
                     "Ran {} jobs, {} failed, {} still owed",
@@ -127,17 +127,17 @@ pub fn render_value(
             });
         }
         Command::Failed => {
-            let result: Failures = serde_json::from_value(value.clone())?;
+            let result: Failures = serde_json::from_str(value.get())?;
             format.emit(&result, || render_failures(&result));
         }
         Command::Replay => {
-            let result: Moved = serde_json::from_value(value.clone())?;
+            let result: Moved = serde_json::from_str(value.get())?;
             format.emit(&result, || {
                 format!("Queued {} failed jobs to run again", result.jobs)
             });
         }
         Command::Discard => {
-            let result: Moved = serde_json::from_value(value.clone())?;
+            let result: Moved = serde_json::from_str(value.get())?;
             format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
         }
         Command::Run => unreachable!("the server refuses `run` rather than answering it"),

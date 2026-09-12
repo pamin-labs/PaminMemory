@@ -248,9 +248,16 @@ async fn run_here(
 /// command's `render` takes its own struct. Naming each type here rather than
 /// hiding it behind a macro keeps the compiler checking that the type the
 /// server serialized is the type the client renders.
-fn render(call: &protocol::Call, value: &serde_json::Value, format: output::Format) -> Result<()> {
-    fn parse<T: serde::de::DeserializeOwned>(value: &serde_json::Value, what: &str) -> Result<T> {
-        serde_json::from_value(value.clone())
+fn render(
+    call: &protocol::Call,
+    value: &serde_json::value::RawValue,
+    format: output::Format,
+) -> Result<()> {
+    fn parse<T: serde::de::DeserializeOwned>(
+        value: &serde_json::value::RawValue,
+        what: &str,
+    ) -> Result<T> {
+        serde_json::from_str(value.get())
             .with_context(|| format!("reading the {what} the server sent"))
     }
 
