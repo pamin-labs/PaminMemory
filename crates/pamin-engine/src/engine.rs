@@ -124,6 +124,16 @@ pub struct Engine {
     /// upstream reports the same race faulting. On macOS it is latent, so it
     /// looks like a precaution there.
     index: Arc<Mutex<Box<dyn Projection + Send + Sync>>>,
+    /// How this splits text, held here rather than reached through the index.
+    ///
+    /// It is the index's segmenter -- taken from it at open, so the two cannot
+    /// drift -- but splitting text touches nothing the index owns, and the lock
+    /// above is there for an engine defect that has no bearing on it. Reaching
+    /// it through the index meant five callers took that lock for work the
+    /// index was not doing, and two of them held it a long time: segmenting up
+    /// to [`BACKFILL_CANDIDATES`] documents, and segmenting every topic name in
+    /// the project. Every search on the project queued behind them.
+    segmenter: Arc<pamin_index::segmentation::Segmenter>,
     /// One model, and one caller into it at a time.
     ///
     /// Inference wants `&mut`, which is the only reason anything here ever
@@ -312,6 +322,11 @@ impl Engine {
         Ok(Self {
             database,
             worker: format!("{}:{}", hostname(), std::process::id()),
+            // Taken from the index rather than built here, so what this
+            // tokenizes with is what the index tokenized with. Two segmenters
+            // would be the same code today and a divergence the first time
+            // either side changed.
+            segmenter: index.segmenter(),
             index: Arc::new(Mutex::new(index)),
             embedder,
             models: models.clone(),
@@ -520,7 +535,7 @@ impl Engine {
     /// decides where a name begins and ends, and both sides of the eventual
     /// comparison have to have gone through it.
     async fn record_name(&self, executor: impl PgExecutor<'_>, topic: &Topic) -> Result<()> {
-        let tokens = off_the_runtime(|| self.index().segmenter().name_sequence(&topic.name));
+        let tokens = off_the_runtime(|| self.segmenter.name_sequence(&topic.name));
         repository::record_topic_name(
             executor,
             self.project,
@@ -556,8 +571,7 @@ impl Engine {
         // memory rather than the size of the project.
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| {
-            let index = self.index();
-            runs_of_tokens(&index.segmenter().name_sequence(&state.content), widest)
+            runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest)
         });
 
         let mut named = repository::topics_named_by(self.database.pool(), self.project, &runs)
@@ -636,9 +650,12 @@ impl Engine {
                 .filter_map(|(_, _, current)| current)
                 .collect();
 
-        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = {
-            let index = self.index();
-            let segmenter = index.segmenter();
+        // Off the runtime because this segments every candidate the probe
+        // returned -- up to `BACKFILL_CANDIDATES` documents -- and that is tens
+        // of milliseconds of ICU work that would otherwise run on a runtime
+        // thread and stall every task sharing it.
+        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
             // The fixed side here is the name, so that is the side prepared.
             let name = segmenter.name_sequence(name);
             states
@@ -653,7 +670,7 @@ impl Engine {
                 })
                 .map(|state| (state.topic_id, state.id))
                 .collect()
-        };
+        });
 
         let edges: Vec<_> = naming
             .into_iter()
@@ -900,10 +917,7 @@ impl Engine {
         // of entity linking; the write path does the other, and both ask the
         // same index the same way.
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
-        let runs = off_the_runtime(|| {
-            let index = self.index();
-            runs_of_tokens(&index.segmenter().name_sequence(query), widest)
-        });
+        let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
         let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
 
         let seeds: Vec<TopicId> = {
@@ -1042,8 +1056,7 @@ impl Engine {
         let topics = repository::all_topics(self.database.pool(), self.project).await?;
 
         let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
-            let index = self.index();
-            let segmenter = index.segmenter();
+            let segmenter = &self.segmenter;
             topics
                 .iter()
                 .map(|topic| {
