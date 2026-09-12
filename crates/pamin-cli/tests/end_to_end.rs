@@ -1470,7 +1470,10 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
 ///
 /// The projection engine declares `Sync` and does not honour it: a reader takes
 /// an unsynchronized snapshot of the segments a writer is in the middle of
-/// changing, reported upstream as alibaba/zvec#714 and still open. The engine
+/// changing, reported upstream as alibaba/zvec#714. It is fixed there and not
+/// released -- #715 merged as `515c11a`, against a newest published version of
+/// 0.7.0 that predates it -- so what this runs against is still the code that
+/// needs the lock, and this stays the test that decides when it can go. The engine
 /// therefore holds a lock that the engine's own declaration says is
 /// unnecessary, and nothing in a single-threaded test can tell a load-bearing
 /// lock from a superstitious one. This can: sustained concurrent traffic
