@@ -55,10 +55,12 @@ const MENTION_CONFIDENCE: f32 = 0.5;
 
 /// How many topics the graph channel is willing to walk out from.
 ///
-/// Every seed is a separate expansion, and each one costs a neighbourhood that
-/// grows with the depth. Without a bound the cost of the graph channel is set
-/// by how many topics the other channels happened to surface, which is not a
-/// quantity anything holds down.
+/// Not a query count -- the walk asks one question per hop for the whole
+/// frontier, however many seeds it started from. What a seed costs is a place
+/// in that frontier: walks are tracked per (topic, seed) pair, so one neighbour
+/// reached from sixty-four seeds takes sixty-four of the frontier's places and
+/// still produces one result. Without a bound here, how far the walk reaches is
+/// decided by how many topics the other channels happened to surface.
 const MAX_SEEDS: usize = 64;
 
 /// How many states a rebuild embeds and writes at a time.
@@ -912,10 +914,11 @@ impl Engine {
         // has been soft deleted resolves to nothing and drops out here, before
         // fusion, so a deleted memory stops occupying a place in a channel's
         // candidate budget.
-        let candidates: Vec<TopicId> = lists
-            .iter()
-            .flat_map(|list| list.candidates.iter().copied())
-            .collect();
+        // Interleaved by rank rather than concatenated, because this order is
+        // what the graph channel seeds from and concatenating would offer it
+        // one channel's whole list before another's first result. Fusion
+        // cannot do the ordering: the graph is one of the lists it fuses.
+        let candidates = best_first(&lists);
         let mut working = WorkingSet::default();
         working.add(
             repository::current_states_of(self.database.pool(), self.project, &candidates).await?,
@@ -923,7 +926,9 @@ impl Engine {
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
-        let (graph_list, paths) = self.recall_graph(query, &mut working, depths).await?;
+        let (graph_list, paths) = self
+            .recall_graph(query, &candidates, &mut working, depths)
+            .await?;
         let mut lists = lists;
         lists.push(graph_list);
 
@@ -984,6 +989,7 @@ impl Engine {
     async fn recall_graph(
         &self,
         query: &str,
+        ranked: &[TopicId],
         working: &mut WorkingSet,
         depths: Depths,
     ) -> Result<(ChannelResults, std::collections::HashMap<TopicId, Neighbor>)> {
@@ -1002,10 +1008,15 @@ impl Engine {
 
             // Topics the query named come first, so a walk that has to give
             // something up gives up the weakest lexical and vector candidates
-            // rather than the seed the caller asked about.
+            // rather than the seed the caller asked about. The rest follow in
+            // the order the channels ranked them, which is what makes "the
+            // weakest" mean anything: taken from the working set instead, they
+            // arrive in whatever order a hash map yields, and the bound below
+            // keeps an arbitrary sixty-four rather than the best sixty-four.
             named
                 .into_iter()
-                .chain(working.topics())
+                .chain(ranked.iter().copied())
+                .filter(|topic| working.state(*topic).is_some())
                 .filter(|topic| seen.insert(*topic))
                 .take(MAX_SEEDS)
                 .collect()
@@ -1273,6 +1284,34 @@ pub struct SearchHit {
     pub result: FusedResult,
 }
 
+/// The channels' candidates in one order, best first, without duplicates.
+///
+/// Round-robin by rank rather than one list after another: the lists are three
+/// independent rankings of the same corpus and nothing has fused them yet, so
+/// the only defensible reading of "best" across them is that each channel's
+/// first pick outranks every channel's second. Concatenating would give one
+/// channel's fiftieth candidate a better place than another channel's first.
+fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
+    let deepest = lists
+        .iter()
+        .map(|list| list.candidates.len())
+        .max()
+        .unwrap_or(0);
+    let mut seen = std::collections::HashSet::new();
+    let mut ranked = Vec::new();
+
+    for rank in 0..deepest {
+        for list in lists {
+            if let Some(topic) = list.candidates.get(rank)
+                && seen.insert(*topic)
+            {
+                ranked.push(*topic);
+            }
+        }
+    }
+    ranked
+}
+
 /// Every contiguous run of up to `widest` tokens, as the name index stores them.
 ///
 /// The bound is what keeps this proportional to the text: without it the runs
@@ -1320,8 +1359,67 @@ fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fused_for, runs_of_tokens};
+    use super::{best_first, fused_for, runs_of_tokens};
+    use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    fn topic(byte: u8) -> TopicId {
+        TopicId(uuid::Uuid::from_bytes([byte; 16]))
+    }
+
+    /// Every channel's first pick outranks every channel's second.
+    ///
+    /// The graph channel seeds from this order and keeps only the first
+    /// sixty-four, so what the order means decides which topics get walked.
+    /// Concatenating the lists would hand one channel's fiftieth candidate a
+    /// better place than another channel's first.
+    #[test]
+    fn the_channels_merge_by_rank_and_not_by_channel() {
+        let lists = vec![
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![topic(1), topic(2), topic(3)],
+            ),
+            ChannelResults::new(Channel::Vector, vec![topic(9), topic(8)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), topic(9), topic(2), topic(8), topic(3)],
+            "the lists were concatenated rather than interleaved by rank"
+        );
+    }
+
+    /// A topic several channels agree on takes its best place, once.
+    #[test]
+    fn a_topic_two_channels_found_appears_at_its_best_rank() {
+        let shared = topic(5);
+        let lists = vec![
+            ChannelResults::new(Channel::LexicalSegmented, vec![topic(1), shared]),
+            ChannelResults::new(Channel::Vector, vec![shared, topic(2)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), shared, topic(2)],
+            "agreement should promote a candidate, not duplicate it"
+        );
+    }
+
+    /// Channels of different depths do not lose their tail.
+    #[test]
+    fn a_deeper_channel_keeps_the_rest_of_its_list() {
+        let lists = vec![
+            ChannelResults::new(Channel::LexicalSegmented, vec![topic(1)]),
+            ChannelResults::new(Channel::Vector, vec![topic(7), topic(8), topic(9)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), topic(7), topic(8), topic(9)]
+        );
+    }
+
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
