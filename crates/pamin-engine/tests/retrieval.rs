@@ -126,7 +126,7 @@ use std::path::PathBuf;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Profile};
+use pamin_index::{Access, Profile, Rerank};
 use pamin_store::Workspace;
 
 /// How many results the ranked metric looks at.
@@ -267,8 +267,18 @@ async fn retrieval_quality_by_group() {
     let mut worst: Vec<(f64, String, Vec<String>)> = Vec::new();
 
     for query in &queries {
+        // `search_reranked`, because that is what `pamin search` calls and a
+        // floor is only worth having over the path that ships. The sweep below
+        // stays on `search_fused`, which is the one that takes a weighting.
+        //
+        // The tier reorders the top twenty of a hundred, so recall@50 cannot
+        // move and only nDCG@10 can. On this corpus it is expected not to move
+        // either -- nothing relevant here has ever sat below rank ten, which is
+        // the finding that sent reranking to the external benchmark in the
+        // first place -- but expected-not-to-move is still measured, because
+        // otherwise nothing guards it.
         let hits = engine
-            .search(&query.query, SEARCH_LIMIT, DEPTHS)
+            .search_reranked(&query.query, SEARCH_LIMIT, DEPTHS, Rerank::default())
             .await
             .expect("search");
 

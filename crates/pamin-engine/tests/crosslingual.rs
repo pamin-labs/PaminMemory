@@ -138,7 +138,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile};
+use pamin_index::{Access, Embedder, Profile, Rerank};
 use pamin_store::Workspace;
 
 /// The languages XQuAD-R covers, in the order the rotation walks them.
@@ -823,7 +823,7 @@ async fn search_reaches_across_languages() {
         println!("\n       k   lexical   cross nDCG@10   same nDCG@10   cross recall@50");
         println!("  --------------------------------------------------------------------");
         for setting in settings {
-            let groups = run(&engine, &queries, fusion(Some(setting))).await;
+            let groups = run(&engine, &queries, Route::Fused(fusion(Some(setting)))).await;
             let (k, lexical) = setting;
             println!(
                 "  {k:>6.0}   {lexical:>7.2}   {:>13.4}   {:>12.4}   {:>15.4}",
@@ -836,8 +836,25 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `TIERS` compares the reranker's settings against each other on this
+    // path, which is the only place the comparison means anything: the tier
+    // reorders what fusion produced, so a number for it has to come from the
+    // same pipeline that produced the ordering.
+    if std::env::var("TIERS").is_ok() {
+        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+            let started = std::time::Instant::now();
+            let groups = run(&engine, &queries, Route::Shipped(tier)).await;
+            report(
+                &format!("{tier:?}, {named}"),
+                &groups,
+                started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
+            );
+        }
+        return;
+    }
+
     let started = std::time::Instant::now();
-    let groups = run(&engine, &queries, fusion(None)).await;
+    let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
     report(
         &format!("the shipped search path, {named}"),
         &groups,
@@ -846,18 +863,47 @@ async fn search_reaches_across_languages() {
     assert_floors(&named, &groups, SEARCH_FLOORS);
 }
 
-/// Scores every query under one fusion setting.
-async fn run<'a>(
-    engine: &Engine,
-    queries: &[Query<'a>],
-    fusion: Fusion,
-) -> BTreeMap<String, Scores> {
+/// Which of the engine's two search entry points a scoring run drives.
+///
+/// Both exist because they answer different questions and neither can answer
+/// the other's. `search_reranked` is what `pamin search` calls, so it is the
+/// only thing a floor can guard -- but it fixes `Fusion::default()` internally,
+/// so a weight sweep cannot go through it. `search_fused` takes the weighting
+/// and stops before the reranker.
+///
+/// Keeping the sweep on the fused path is not a compromise: what the sweep
+/// tunes is the fusion, and measuring it through a reranker that reorders the
+/// top twenty afterwards would attribute the reranker's work to the weight.
+#[derive(Clone)]
+enum Route {
+    /// The product's own entry point, reranker and all.
+    Shipped(Rerank),
+    /// Fusion alone, at a weighting the caller chooses.
+    Fused(Fusion),
+}
+
+/// Scores every query through one of the engine's search paths.
+async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeMap<String, Scores> {
     let mut groups = BTreeMap::new();
     for query in queries {
-        let hits = engine
-            .search_fused(query.text(), DEPTH as u32, DEPTHS, fusion.clone())
-            .await
-            .expect("search");
+        let hits = match &route {
+            // `DEPTH` is fifty-one and a tier's depth is twenty, so
+            // `fused_for` keeps the fifty-one this scores at and the reranker
+            // reorders the head. recall@50 is therefore the same list either
+            // way and only the ordering moves, which is what the tier claims
+            // to change.
+            Route::Shipped(rerank) => {
+                engine
+                    .search_reranked(query.text(), DEPTH as u32, DEPTHS, *rerank)
+                    .await
+            }
+            Route::Fused(fusion) => {
+                engine
+                    .search_fused(query.text(), DEPTH as u32, DEPTHS, fusion.clone())
+                    .await
+            }
+        }
+        .expect("search");
         let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
         score(&mut groups, query, &ranked);
     }
