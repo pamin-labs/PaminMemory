@@ -83,7 +83,12 @@
 //! They were measured on four cores. Published figures for a MiniLM
 //! cross-encoder on CPU are 0.5 to 3 ms per pair; this measures 9.75, and the
 //! gap is two layers' worth of depth and a quarter of the cores. On an ordinary
-//! server the `fast` tier is tens of milliseconds rather than 151.
+//! server the `fast` tier should be tens of milliseconds rather than 165.
+//!
+//! The latency column is also the soft one. The same configuration measured in
+//! two separate runs of the harness differs by as much as a fifth, so only
+//! figures taken inside one run are comparable with each other. The nDCG
+//! columns have no such problem: they repeat to four decimals.
 //!
 //! They were also measured on parallel text, where every candidate is a
 //! translation of every other. Real memories are not, and a corpus where the
@@ -134,10 +139,28 @@ pub enum Rerank {
 
 /// How many of the fused results a tier looks at.
 ///
-/// Twenty for both, which is where the gain flattens: measured on the `fast`
-/// model, ten is worth +0.0147, fifteen +0.0417, twenty +0.0572, thirty
-/// +0.0667 and fifty +0.0629 -- past thirty it goes backwards, and the last
-/// ten candidates cost half the latency for a tenth of the gain.
+/// Twenty for both, which is where the gain stops. Swept through
+/// `search_reranked` on the `fast` model, 1,190 XQuAD-R queries, against a
+/// baseline of 0.5722 cross-lingual with reranking off:
+///
+/// | depth | cross-lingual | gain | same-language |
+/// |---|---|---|---|
+/// | 10 | 0.5831 | +0.0110 | 0.8005 |
+/// | 15 | 0.6047 | +0.0325 | 0.7987 |
+/// | **20** | **0.6091** | **+0.0369** | **0.7974** |
+/// | 30 | 0.6099 | +0.0378 | 0.7967 |
+/// | 50 | 0.6055 | +0.0333 | 0.7957 |
+///
+/// The constant is unchanged and the reason for it is not. An earlier sweep,
+/// on the scratch harness whose figures ran about half again high, put twenty
+/// at +0.0572 and thirty at +0.0667 and recorded thirty as the better score
+/// given up for latency. Measured through the engine, thirty buys +0.0009 --
+/// a tenth of what was recorded, for sixteen per cent more latency. There is
+/// no trade to make; twenty is simply where it stops.
+///
+/// Same-language ranking falls monotonically with depth, which is the same
+/// effect the tier table describes: more candidates reranked means more of the
+/// ones the lexical channels missed being carried down.
 const DEPTH: usize = 20;
 
 /// The tuning constants above, overridable for a sweep.
@@ -158,11 +181,30 @@ fn tuned(name: &str, fallback: usize) -> usize {
 
 /// How many candidates go through the model at once.
 ///
-/// Eight, measured. A batch is padded to its longest member, so a large batch
-/// pays for its longest candidate on every member: sixteen takes 191 ms and
-/// eight takes 151 for the same candidates, and thirty-two and sixty-four are
-/// slower again. Sorting by length before batching is the other half of the
-/// same saving and is done below.
+/// Eight, and the honest statement is that the corpus cannot separate it from
+/// the alternatives. A batch is padded to its longest member, so in principle a
+/// large batch pays for its longest candidate on every member, and an earlier
+/// sweep recorded eight at 151 ms against sixteen at 191. Swept again through
+/// the engine, at a depth of twenty:
+///
+/// | batch | cross-lingual | a search |
+/// |---|---|---|
+/// | 4 | 0.6102 | 226 ms |
+/// | **8** | **0.6091** | **217 ms** |
+/// | 16 | 0.6095 | 230 ms |
+/// | 20 | 0.6098 | 242 ms |
+///
+/// Eight is fastest here, but the spread across all four is eleven per cent and
+/// the same configuration measured in two separate runs differs by nineteen --
+/// so this says only that none of them is clearly better, not that eight wins.
+/// Separating them would need repeats inside one process, and nothing here
+/// turns on the answer.
+///
+/// The score column is not noise, though: it moves by up to 0.0011 across batch
+/// sizes because a quantized model scores a pair slightly differently depending
+/// on what it was padded alongside. Anything that changes how candidates are
+/// grouped moves the fourth decimal, which is worth knowing before attributing
+/// such a change to something else.
 const BATCH: usize = 8;
 
 /// How long a candidate the model reads, and how many at once. See [`tuned`].
@@ -176,9 +218,22 @@ fn max_tokens() -> usize {
 
 /// The longest candidate the model reads.
 ///
-/// Generous rather than binding: halving it to 128 changed latency by a fifth
-/// and nothing else, which says the candidates are already shorter than this.
-/// It is here so that one long memory cannot make one query slow.
+/// Two hundred and fifty-six, and halving it is not the free saving this used
+/// to record. The claim here was that 128 "changed latency by a fifth and
+/// nothing else". Measured through the engine, at a depth of twenty:
+///
+/// | tokens | cross-lingual | same-language | a search |
+/// |---|---|---|---|
+/// | 128 | 0.6077 | 0.7974 | 207 ms |
+/// | **256** | **0.6091** | **0.7974** | **217 ms** |
+///
+/// Both halves were wrong. The saving is five per cent rather than twenty, and
+/// it costs 0.0014 of cross-lingual ranking rather than nothing. `fastembed`
+/// pads a batch to its longest member and not to this limit, so the limit only
+/// truncates the candidates that genuinely exceed it -- on a corpus of
+/// sentences, few of them. It earns its place by bounding the worst case rather
+/// than by shaping the ordinary one: one long memory cannot make one query
+/// slow.
 const MAX_TOKENS: usize = 256;
 
 impl Rerank {
@@ -424,6 +479,14 @@ impl Reranker {
         // the batches it forms are not the ones the saving assumes. Characters
         // are not tokens either, but they are within a small factor across
         // scripts where bytes are within three.
+        //
+        // Not score-neutral, and it was first recorded as though it were:
+        // grouping candidates differently pads them differently, and a
+        // quantized model scores a pair slightly differently depending on what
+        // it shared a tensor with. Cross-lingual nDCG@10 moved from 0.6097 to
+        // 0.6091 when this changed -- the fourth decimal, and in the direction
+        // nobody would choose, but it is a real signed change rather than
+        // noise. See `BATCH` for the same effect across batch sizes.
         let mut unscored: Vec<usize> = (0..documents.len())
             .filter(|position| scores[*position].is_none())
             .collect();
