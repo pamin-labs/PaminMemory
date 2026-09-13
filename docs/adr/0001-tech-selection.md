@@ -318,27 +318,33 @@ That was measured before planning anything around it, because the cost of the
 lock had been asserted and never established.
 
 A search takes two exclusive guards in sequence: the embedder, for one forward
-pass, and then the index, for the three recalls. Two arms separate them without
-instrumenting the source. Every request in the *fresh* arm asks something never
-asked before, so it pays the forward pass and meets both guards; every request
-in the *cached* arm comes from a set of 128, which fits under the query cache's
-256, so the model never runs and what is left is the index guard. Thirteen
-thousand XQuAD-R sentences, accuracy profile, the resident pool the server uses,
-median of three runs:
+pass, and then the index, for the three recalls. Varying how many requests hit
+the query cache separates them without instrumenting the source: a hit skips the
+model, so what is left is the index guard. Thirteen thousand XQuAD-R sentences,
+accuracy profile, the resident pool the server uses, throughput in queries a
+second:
 
-| N | cached q/s | cached p50 | fresh q/s | fresh p50 |
-| --- | --- | --- | --- | --- |
-| 1 | 65.7 | 13.4 ms | 21.1 | 45.6 ms |
-| 2 | 35.7 | 53.3 | 26.6 | 73.0 |
-| 4 | 40.6 | 89.6 | 27.2 | 143.9 |
-| 8 | 42.5 | 174.3 | 28.0 | 284.2 |
+| N | 0% cached | 50% | 100% |
+| --- | --- | --- | --- |
+| 1 | 13.1 | 21.9 | 47.4 |
+| 2 | 15.3 | 22.1 | 70.0 |
+| 4 | 14.9 | 24.2 | 75.2 |
+| 8 | 15.5 | 23.8 | 77.9 |
 
-Read alone, the cached column looks like exactly the indictment expected: two
-concurrent readers get *less* total throughput than one, and it never recovers.
+**Concurrency never costs throughput here.** An earlier version of this section
+reported that it did — that two cached readers got less than one, 65.7 q/s down
+to 35.7 — and that was an artefact of the harness rather than a property of the
+engine. The query cache holds 256 entries and evicts first-in, and the sweep
+warmed it once before measuring every configuration in turn, so each
+cache-miss configuration flushed the entries the next cache-hit configuration
+depended on. Only the very first row was measuring what it claimed. Re-warming
+before each configuration, and asserting that a fully-cached run is at least
+twice as fast as an uncached one, reverses the finding: cache hits scale from
+47.4 to 77.9 and misses stay flat.
 
-It is not the lock. The control is the same sweep with nothing shared at all —
-one `Embedder` per worker, each with its own model, no guard of ours anywhere in
-it (speed profile, so that eight models is a gigabyte rather than several):
+Flat is the real result. Cache-miss throughput barely moves from one caller to
+eight because the forward pass is compute-bound on four cores, and the control
+below says the locks are not why:
 
 | N | embeddings/s | per pass |
 | --- | --- | --- |
@@ -357,6 +363,38 @@ anything. Neither guard is the binding constraint here; the machine is.
 So there is nothing for removing the index mutex to buy on this hardware, and
 nothing for splitting the embedder's cache guard from its model guard either —
 a cache hit is already three times the throughput of a miss at every N.
+
+**No admission control either.** Throughput never falls as callers are added at
+the shipped settings, so there is no concurrency limit for a semaphore in front
+of the server to recover. That question was worth asking only while the cached
+column appeared to say the opposite.
+
+**What the cores are divided between is worth setting, and is not worth
+changing by default.** ONNX Runtime splits one forward pass across every core
+unless told otherwise, and `PAMIN_INFERENCE_THREADS` is the other way to divide
+them — fewer threads per pass, more passes at once. Throughput in queries a
+second, same sweep:
+
+| | 0% cached | | | 50% | | | 100% | | |
+| N | 1 thread | 2 | 4 | 1 | 2 | 4 | 1 | 2 | 4 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 9.7 | 12.1 | **13.1** | 15.2 | 19.8 | **21.9** | 46.0 | **47.7** | 47.4 |
+| 2 | 11.6 | **18.3** | 15.3 | 18.6 | **24.2** | 22.1 | 67.9 | 68.4 | **70.0** |
+| 4 | 10.9 | **16.7** | 14.9 | 22.1 | **30.2** | 24.2 | 69.6 | 71.9 | **75.2** |
+| 8 | 11.0 | **16.4** | 15.5 | 19.4 | **29.0** | 23.8 | 70.7 | 72.9 | **77.9** |
+
+Two threads is worth up to a quarter more throughput on concurrent traffic that
+misses the cache, and it loses on the two cases either side: a single caller,
+where four threads finish one pass sooner, and fully-cached traffic, where the
+model does not run and the split is pure overhead. One thread is worst
+everywhere — the per-pass cost of splitting a small model's tensors four ways is
+smaller than the cost of not splitting them at all.
+
+The rule set before the sweep was that a setting has to beat the shipped one at
+every mix to become the default. Two threads does not, so the default stays as
+it was and the setting is documented instead: a deployment that knows it serves
+concurrent, mostly-distinct queries can take the quarter, and one serving a
+single agent should not.
 
 **This says nothing about a machine with cores to spare.** On sixteen or
 thirty-two, one forward pass would not saturate the box, callers would not be
