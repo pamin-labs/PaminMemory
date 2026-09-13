@@ -228,19 +228,31 @@ An earlier version of this decision recorded that reranking was measured and did
 
 On 13,014 sentences in eleven languages, 3,849 relevant sentences sit between rank 10 and rank 50, across 1,090 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
 
-| Tier | Loads | Per query | Cross-lingual nDCG@10 | Same-language |
-| --- | --- | --- | --- | --- |
-| `off` | nothing | — | — | — |
-| `fast` (default) | 113 MB | 151 ms | **+0.0595** | unchanged |
-| `accurate` | 570 MB | 1795 ms | **+0.0852** | unchanged |
+| Tier | Loads | A search costs | Of which reranking | Cross-lingual nDCG@10 | Same-language |
+| --- | --- | --- | --- | --- | --- |
+| `off` | nothing | 39 ms | — | — | — |
+| `fast` (default) | 113 MB | 204 ms | 165 ms | **+0.0375** | **−0.0062** |
+| `accurate` | 570 MB | 508 ms | 469 ms | **+0.0458** | **+0.0022** |
+
+Measured through `Engine::search_reranked`, the entry point `pamin search`
+calls, with `TIERS=1` on the cross-lingual harness; median of three runs, which
+returned identical figures because the corpus, index and pass are all fixed. The
+first version of this table came from a scratch program that reordered a dumped
+shortlist with its own copy of the pipeline. It overstated both gains by about
+half and `accurate`'s latency by a factor of four, which is the argument for
+measuring the product rather than a model of it.
 
 `fast` is `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, a 21M-parameter distilled multilingual MiniLM; `accurate` is `onnx-community/bge-reranker-v2-m3-ONNX`, XLM-RoBERTa-large at 303M. Both are quantized ONNX behind the library's user-defined loader, fetched on first use into the same cache as the embedding model.
 
-**The same-language column is unchanged by construction, not by luck.** Every cross-encoder tried improves cross-lingual ranking and damages same-language ranking by about as much — three models across two orders of magnitude of size, −0.0403 to −0.2109. Fusion is already good at placing a memory that shares words with the query, and a second pass reorders it worse. So the pass is confined to the candidates no lexical channel found, and they are written back into the positions they already held. Unconfined, two of those models score +0.1698/−0.2109 and +0.1678/−0.0806; confined, the same-language column cannot move at all.
+**The same-language column is nearly, but not exactly, unchanged.** Every cross-encoder tried improves cross-lingual ranking and damages same-language ranking by about as much — three models across two orders of magnitude of size, −0.0403 to −0.2109. Fusion is already good at placing a memory that shares words with the query, and a second pass reorders it worse. So the pass is confined to the candidates no lexical channel found, and they are written back into the positions they already held. Unconfined, two of those models score +0.1698/−0.2109 and +0.1678/−0.0806.
+
+Confining it was previously recorded here as making the same-language column *unable* to move. That was wrong, and measuring the shipped path is what found it. The confinement holds movement to the candidates the lexical channels missed — but a same-language answer they missed is one of those candidates, and reordering can carry it down. Sixty-one same-language queries leave a relevant sentence below rank ten with reranking off, and seventy-one with `fast` on. The residue is −0.0062, small enough that the design still works and large enough that "cannot move" was a claim about the code rather than about the corpus.
 
 The rule was a language comparison first, since "written in another language" is what the case really is. The two rules pick the same candidates — they agree on 93% of a shortlist and score within 0.002 — but the language test needs the query's language, and that is exactly what a detector will not commit to for a short query: `detect_language` returns nothing for "how does deployment work". A rule that quietly does nothing on the commonest shape of query is worse than a slightly different rule.
 
-**Smaller is not worse.** `accurate` is fourteen times larger and twelve times slower than `fast` for 0.026 more. That reproduces *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) without having read it first: under a latency budget the shallow model wins, because the budget buys more candidates. `fast` is therefore the default, and a workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
+**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 165 ms against 469 — 2.8x, not the twelve this section claimed from the scratch measurement. For that it gives up 0.0083 cross-lingual, and it gives up the 0.0084 of same-language that `accurate` gains: `accurate` is the only tier that costs nothing on either group.
+
+So the shallow model no longer wins outright, and the appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) is weaker than it looked — that argument turns on a latency budget, and 204 ms against 508 is a narrower gap than twelve-to-one. `fast` stays the default because a search that takes half a second is a different product from one that takes a fifth, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently. A workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
 
 A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
 
