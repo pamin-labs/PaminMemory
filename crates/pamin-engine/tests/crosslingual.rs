@@ -68,19 +68,30 @@
 //! |---|---|---|---|---|---|
 //! | the model | cross-lingual | 0.6338 | 0.8951 | 3,273 | 965 of 1,190 |
 //! | the model | same-language | 0.6748 | 0.9563 | 115 | 115 of 1,190 |
-//! | the product | cross-lingual | 0.5623 | 0.8861 | 3,849 | 1,090 of 1,190 |
-//! | the product | same-language | 0.8219 | 0.9672 | 57 | 57 of 1,190 |
+//! | fusion alone | cross-lingual | 0.5722 | 0.8864 | 3,811 | 1,095 of 1,190 |
+//! | fusion alone | same-language | 0.8033 | 0.9630 | 61 | 61 of 1,190 |
+//! | **the product** | cross-lingual | **0.6097** | 0.8864 | 3,337 | 1,042 of 1,190 |
+//! | **the product** | same-language | **0.7971** | 0.9630 | 71 | 71 of 1,190 |
+//!
+//! "The product" is `search_reranked` at the default tier, which is what
+//! `pamin search` calls. "Fusion alone" is `search_fused`, one stage short of
+//! it. Both rows are here because the difference between them is the
+//! reranker's, and for a while only the shorter one was measured.
 //!
 //! **Fusion is not one effect, it is two opposite ones, and they cancel in any
-//! average.** It costs almost no recall -- 0.8951 to 0.8475 cross-lingually --
+//! average.** It costs almost no recall -- 0.8951 to 0.8864 cross-lingually --
 //! so the candidates the model reaches are still there. What changes is the
 //! order, and it changes in opposite directions: same-language nDCG@10 goes
-//! from 0.6748 to **0.8219**, because a question and its answer sentence in
+//! from 0.6748 to **0.8033**, because a question and its answer sentence in
 //! one language share words and the two lexical channels find them where a
 //! 1024-dimensional cosine does not; cross-lingual nDCG@10 goes from 0.6338 to
-//! **0.5623**, because those same two channels have nothing to match on across
+//! **0.5722**, because those same two channels have nothing to match on across
 //! languages and spend part of the fused list on the query's own language
 //! about the wrong subject.
+//!
+//! The reranker then buys back most of what fusion cost cross-lingually,
+//! +0.0375, and takes 0.0062 off same-language doing it. Both tiers and the
+//! latency they cost are in the ADR; `TIERS=1` reproduces the comparison.
 //!
 //! How much of the list they spend is what the fusion weight decides, and this
 //! corpus is what settled it. Swept here and on the corpus this project wrote,
@@ -781,14 +792,30 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
 // The whole search path
 // ---------------------------------------------------------------------------
 
-/// The floors for the whole search path.
+/// The floors for the whole search path, as the product calls it.
 ///
-/// A tenth below 0.4190 / 0.8476 cross-lingual and 0.8558 / 0.9639
-/// same-language. The same-language pair sits *above* the model's own floors
-/// and the cross-lingual nDCG well below, which is the finding rather than an
-/// inconsistency: see the table in the module notes.
+/// A tenth below 0.6097 / 0.8864 cross-lingual and 0.7971 / 0.9630
+/// same-language, which is what `search_reranked` scores at the default tier.
+/// The same-language pair sits *above* the model's own floors and the
+/// cross-lingual nDCG below, which is the finding rather than an inconsistency:
+/// see the table in the module notes.
 const SEARCH_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.50, 0.79), ("same_language", 0.73, 0.87)];
+    &[("cross_lingual", 0.54, 0.79), ("same_language", 0.71, 0.86)];
+
+/// The least the reranker must be worth, in cross-lingual nDCG@10.
+///
+/// A floor cannot carry this. The tenth of margin every other floor here uses
+/// is wider than the reranker's own contribution -- fusion alone scores 0.5722
+/// and the default tier 0.6097, so a floor set a tenth below the tier still
+/// passes with the reranker switched off entirely. Losing it would be silent.
+///
+/// So the floor test scores fusion alone as well and asserts the gap. Measured
+/// at 0.0375, and the measurement is exactly repeatable: three runs of all
+/// three tiers returned the same four decimals every time, because the corpus,
+/// the index and the model are all fixed and the pass is greedy. Half of what
+/// was measured, so that this fails when the reranker stops working rather than
+/// when it works slightly less well.
+const RERANK_IS_WORTH: f64 = 0.018;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
@@ -861,6 +888,28 @@ async fn search_reaches_across_languages() {
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
     assert_floors(&named, &groups, SEARCH_FLOORS);
+
+    // Fusion alone, to price the reranker. Forty seconds against the four
+    // minutes above, and without it nothing here notices the reranker going
+    // missing -- see `RERANK_IS_WORTH`.
+    if named == DEFAULT_PROFILE {
+        let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
+        let (with, without) = (
+            groups["cross_lingual"].mean_ndcg(),
+            alone["cross_lingual"].mean_ndcg(),
+        );
+        println!(
+            "  reranking is worth {:+.4} cross-lingual nDCG@{NDCG_AT}\n",
+            with - without
+        );
+        assert!(
+            with - without >= RERANK_IS_WORTH,
+            "reranking moved cross-lingual nDCG@{NDCG_AT} by {:+.4}, under the \
+             {RERANK_IS_WORTH:.4} it is supposed to be worth: {without:.4} without it, \
+             {with:.4} with",
+            with - without
+        );
+    }
 }
 
 /// Which of the engine's two search entry points a scoring run drives.
