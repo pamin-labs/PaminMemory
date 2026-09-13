@@ -140,6 +140,22 @@ pub enum Rerank {
 /// ten candidates cost half the latency for a tenth of the gain.
 const DEPTH: usize = 20;
 
+/// The tuning constants above, overridable for a sweep.
+///
+/// `DEPTH`, `BATCH` and `MAX_TOKENS` were each settled by measurement, and two
+/// of the three were settled on the scratch harness whose figures turned out to
+/// be about half again too high -- so they have to be re-settleable, and by the
+/// harness rather than by editing a constant and rebuilding. Same shape as the
+/// evaluation's own `SWEEP` and `TIERS`: unset means the constant, so nothing a
+/// user runs is affected.
+fn tuned(name: &str, fallback: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
+}
+
 /// How many candidates go through the model at once.
 ///
 /// Eight, measured. A batch is padded to its longest member, so a large batch
@@ -148,6 +164,15 @@ const DEPTH: usize = 20;
 /// slower again. Sorting by length before batching is the other half of the
 /// same saving and is done below.
 const BATCH: usize = 8;
+
+/// How long a candidate the model reads, and how many at once. See [`tuned`].
+fn batch() -> usize {
+    tuned("PAMIN_RERANK_BATCH", BATCH)
+}
+
+fn max_tokens() -> usize {
+    tuned("PAMIN_RERANK_MAX_TOKENS", MAX_TOKENS)
+}
 
 /// The longest candidate the model reads.
 ///
@@ -178,7 +203,7 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate => DEPTH,
+            Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
         }
     }
 
@@ -249,6 +274,16 @@ const REMEMBERED_SCORES: usize = 4096;
 struct Scores {
     known: std::collections::HashMap<u64, f32>,
     order: std::collections::VecDeque<u64>,
+    /// Lookups that found a score, and lookups that did not.
+    ///
+    /// Counted because the ADR makes them the evidence for a decision it has
+    /// deferred: whether precomputing part of each document's representation
+    /// at index time is worth its storage depends on the hot set being small,
+    /// and this ratio is what says whether it is. Before this the only
+    /// accessor reported occupancy, which says how much has been stored and
+    /// nothing about how often it is read.
+    hits: u64,
+    misses: u64,
 }
 
 impl Scores {
@@ -263,8 +298,13 @@ impl Scores {
         hasher.finish()
     }
 
-    fn get(&self, key: u64) -> Option<f32> {
-        self.known.get(&key).copied()
+    fn get(&mut self, key: u64) -> Option<f32> {
+        let found = self.known.get(&key).copied();
+        match found {
+            Some(_) => self.hits += 1,
+            None => self.misses += 1,
+        }
+        found
     }
 
     /// Remembers a score, forgetting the oldest once full.
@@ -330,7 +370,15 @@ impl Reranker {
                     tokenizer_config_file: read("tokenizer_config.json")?,
                 },
             ),
-            RerankInitOptionsUserDefined::new().with_max_length(MAX_TOKENS),
+            {
+                let mut options = RerankInitOptionsUserDefined::new().with_max_length(max_tokens());
+                // Same setting as the embedder's, and for the same reason:
+                // see `crate::inference`.
+                if let Some(threads) = crate::inference::threads() {
+                    options = options.with_intra_threads(threads);
+                }
+                options
+            },
         )
         .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
 
@@ -360,15 +408,26 @@ impl Reranker {
             .iter()
             .map(|document| Scores::key(query, document))
             .collect();
-        let mut scores: Vec<Option<f32>> = keys.iter().map(|key| self.scores.get(*key)).collect();
+        let mut scores: Vec<Option<f32>> = keys
+            .iter()
+            .map(|key| self.scores.get(*key))
+            .collect::<Vec<_>>();
 
         // Only what has not been scored before goes through the model, and
         // sorted by length, so that a batch is not padded to a length most of
         // its members do not have.
+        //
+        // By characters rather than by bytes. What the padding is measured in
+        // is tokens, and `str::len` is UTF-8 bytes -- three per character for
+        // the Chinese and Thai in this corpus against one for the Latin, so a
+        // byte sort puts a short Thai candidate after a long English one and
+        // the batches it forms are not the ones the saving assumes. Characters
+        // are not tokens either, but they are within a small factor across
+        // scripts where bytes are within three.
         let mut unscored: Vec<usize> = (0..documents.len())
             .filter(|position| scores[*position].is_none())
             .collect();
-        unscored.sort_by_key(|position| documents[*position].len());
+        unscored.sort_by_key(|position| documents[*position].chars().count());
 
         if !unscored.is_empty() {
             let batch: Vec<&str> = unscored
@@ -377,7 +436,7 @@ impl Reranker {
                 .collect();
             let scored = self
                 .model
-                .rerank(query, &batch, false, Some(BATCH))
+                .rerank(query, &batch, false, Some(self::batch()))
                 .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
 
             for result in scored {
@@ -399,9 +458,17 @@ impl Reranker {
         Ok(ordered)
     }
 
-    /// How many scores are being remembered.
-    pub fn remembered(&self) -> usize {
-        self.scores.known.len()
+    /// How many scores are being remembered, and how often they are read.
+    ///
+    /// Returns occupancy, hits and misses. The occupancy alone was the only
+    /// thing exposed before and it answers the wrong question: what the
+    /// deferred late-interaction decision turns on is the hit rate.
+    pub fn remembered(&self) -> (usize, u64, u64) {
+        (
+            self.scores.known.len(),
+            self.scores.hits,
+            self.scores.misses,
+        )
     }
 }
 
