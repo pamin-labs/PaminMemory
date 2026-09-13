@@ -17,27 +17,45 @@
 //!
 //! On 13,014 sentences in eleven languages, reranking the fused shortlist:
 //!
-//! | | cross-lingual | same-language | per query |
-//! |---|---|---|---|
-//! | off | — | — | 0 ms |
-//! | `fast` | **+0.0595** | 0.0000 | 151 ms |
-//! | `accurate` | **+0.0852** | 0.0000 | 1795 ms |
+//! | | cross-lingual | same-language | per query | of which reranking |
+//! |---|---|---|---|---|
+//! | off | — | — | 39 ms | — |
+//! | `fast` | **+0.0375** | **-0.0062** | 204 ms | 165 ms |
+//! | `accurate` | **+0.0458** | **+0.0022** | 508 ms | 469 ms |
 //!
-//! Two things in that table need saying.
+//! Measured through `Engine::search_reranked` -- the entry point `pamin search`
+//! calls -- with `TIERS=1` on the cross-lingual harness. An earlier version of
+//! this table came from a scratch program that reordered a dumped shortlist
+//! with its own copy of the pipeline, and it overstated both gains by about
+//! half and `accurate`'s latency by a factor of four. The three tiers return
+//! the same four decimals on every run: fixed corpus, fixed index, greedy pass.
 //!
-//! **The same-language column is zero by construction, not by luck.** Every
+//! Three things in that table need saying.
+//!
+//! **The same-language column is nearly, but not exactly, zero.** Every
 //! reranker tried -- three, across two orders of magnitude in size -- improves
 //! cross-lingual ranking and damages same-language ranking, because the fused
 //! list is already good at same-language and a cross-encoder reorders it worse.
-//! So only the candidates written in a language other than the query's are
-//! reranked, and they are placed back into the positions they already held.
-//! A same-language candidate cannot move, and that group's score cannot change.
-//! Unrestricted, the same two models score +0.1698 / -0.2109 and +0.1678 /
-//! -0.0806: more cross-lingual, at a cost that is not this project's to take.
+//! So only the candidates no lexical channel found are reranked, and they are
+//! placed back into the positions they already held. That confines the damage
+//! but does not eliminate it, and the earlier claim that the group "cannot
+//! move" was wrong: a same-language answer the lexical channels *missed* is an
+//! unlexical candidate like any other, and reordering can carry it down.
+//! Sixty-one same-language queries leave something below rank ten before
+//! reranking and seventy-one after. The cost is small and it is real.
+//! (Unrestricted, two of those models scored +0.1698 / -0.2109 and +0.1678 /
+//! -0.0806 on the scratch harness. Not re-measured here.)
 //!
-//! **Smaller is not worse here.** The `fast` model is a twelve-layer distilled
-//! MiniLM with 21M encoder parameters; `accurate` is XLM-RoBERTa-large with
-//! 303M, fourteen times larger and twelve times slower, and it buys 0.026.
+//! **`accurate` is better on both groups, not just the first.** It is the only
+//! tier that does not cost same-language ranking.
+//!
+//! **`fast` is the default on latency, not on quality.** It is a twelve-layer
+//! distilled MiniLM with 21M encoder parameters against XLM-RoBERTa-large's
+//! 303M -- fourteen times smaller, and its pass costs 165 ms against 469, so
+//! 2.8x rather than the twelve this once claimed. For that it gives up 0.0083
+//! cross-lingual and the 0.0084 same-language that `accurate` gains. Whether
+//! four fifths of the gain is worth two fifths of the latency is a workspace's
+//! call and `--rerank accurate` is how to make it.
 //! That is the finding of [Shallow Cross-Encoders for Low-Latency
 //! Retrieval](https://arxiv.org/abs/2403.20222) arrived at independently: under
 //! a latency budget a shallow model beats a full-scale one, because the budget
@@ -88,20 +106,29 @@ pub enum Rerank {
     /// Return what fusion ordered.
     ///
     /// The right setting for a workspace whose memories are all in one
-    /// language: the measured gain there is exactly zero, because only
-    /// candidates in another language are reordered and there are none.
+    /// language, where there is very little for the pass to find: what it
+    /// reorders is the candidates the lexical channels missed, and across a
+    /// language boundary that is most of them.
+    ///
+    /// Not *nothing*, though, and the difference matters. The rule is "no
+    /// lexical channel found it", not "it is in another language" -- the two
+    /// agree on 93% of a shortlist but not on all of it -- so a one-language
+    /// workspace still has vector-only candidates and the pass still moves
+    /// them. On this project's own corpus the monolingual group does not
+    /// budge, but that group sits at 0.9940 where nothing could move it.
     Off,
     /// A twelve-layer distilled multilingual MiniLM, 113 MB. The default.
     ///
-    /// Chosen over the larger model on the shape of the trade rather than on
-    /// the score: it reaches seven tenths of the gain for a twelfth of the
-    /// latency and a fifth of the download.
+    /// Chosen over the larger model on latency rather than on the score: it
+    /// reaches four fifths of the cross-lingual gain for two fifths of the
+    /// latency and a fifth of the download. It is the one tier that costs
+    /// same-language ranking, by 0.0062.
     #[default]
     Fast,
-    /// XLM-RoBERTa-large, 570 MB, twelve times slower for a quarter more gain.
+    /// XLM-RoBERTa-large, 570 MB, 2.8x the latency for 22% more gain.
     ///
-    /// For a workspace where retrieval quality is worth a second of latency --
-    /// an agent doing research rather than one answering interactively.
+    /// Better than `fast` on *both* groups -- the only tier that costs nothing
+    /// on either. For a workspace where that is worth half a second a search.
     Accurate,
 }
 

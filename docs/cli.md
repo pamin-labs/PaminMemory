@@ -250,14 +250,20 @@ ranking internals it has no way to evaluate.
 `--rerank` chooses how much to spend reordering the results, and takes
 `PAMIN_RERANK`:
 
-| | what it loads | per query | cross-lingual nDCG@10 | same-language |
+| | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|
-| `off` | nothing | — | — | — |
-| `fast` | 113 MB | 151 ms | **+0.0595** | unchanged |
-| `accurate` | 570 MB | 1795 ms | **+0.0852** | unchanged |
+| `off` | nothing | 39 ms | — | — |
+| `fast` | 113 MB | 204 ms | **+0.0375** | −0.0062 |
+| `accurate` | 570 MB | 508 ms | **+0.0458** | +0.0022 |
 
-`fast` is the default. The model is fetched the first time a search asks for
-one, into the same cache as the embedding model.
+`fast` is the default, on latency: its pass costs 165 ms against `accurate`'s
+469. `accurate` scores better on both groups, so a workspace that can afford
+half a second a search should ask for it. A workspace whose memories are all in
+one language should set `off` — only candidates the lexical channels missed are
+reranked, and those are overwhelmingly the ones written in another language.
+
+The model is fetched the first time a search asks for one, into the same cache
+as the embedding model.
 
 A reranker reads the query and a memory together, which is what lets it correct
 an order the channels got wrong, and what makes it cost a forward pass for
