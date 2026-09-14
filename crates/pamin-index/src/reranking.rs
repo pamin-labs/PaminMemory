@@ -61,6 +61,45 @@
 //! a latency budget a shallow model beats a full-scale one, because the budget
 //! buys more candidates.
 //!
+//! ## And on a corpus that is not parallel text, the gap doubles
+//!
+//! Everything above is XQuAD-R, where the eleven versions of a sentence are
+//! translations of each other. MIRACL's Swahili dev split is not: 131,924 real
+//! passages averaging 229 characters, 482 queries, human relevance judgements,
+//! one language throughout.
+//!
+//! | | nDCG@10 | gain | a search | of which reranking |
+//! |---|---|---|---|---|
+//! | off | 0.7158 | — | 142 ms | — |
+//! | `fast` | 0.7359 | **+0.0201** | 474 ms | 332 ms |
+//! | `accurate` | 0.7654 | **+0.0496** | 1867 ms | 1725 ms |
+//!
+//! `fast` is worth about half what it is worth on parallel sentences. That much
+//! was expected: the pass only reorders what the lexical channels missed, and
+//! across a language boundary that is nearly the whole shortlist while within
+//! one language it is a fraction -- 84 of 482 queries leave a relevant passage
+//! below rank ten here against 1,042 of 1,190 there.
+//!
+//! **`accurate` was expected to shrink with it and does the opposite.** It
+//! gains more on this corpus than on the other, +0.0496 against +0.0458, so the
+//! ratio between the two tiers goes from 1.2 to 2.5. The passages are long and
+//! genuinely varied, which is where twenty-one million parameters start to tell
+//! against three hundred million. The shallow-cross-encoder argument the
+//! default leans on was validated on parallel single sentences, and this is the
+//! shape of corpus it does not describe.
+//!
+//! What it costs is the other half. Reranking is 332 ms and 1725 ms here
+//! against 165 and 469 on sentences, because a cross-encoder reads the
+//! candidate and `MAX_TOKENS` actually binds on a passage. Two seconds a search
+//! is not an interactive budget, so `fast` stays the default -- but on real
+//! passages the choice is giving up three fifths of the available gain rather
+//! than a fifth, and a workspace of long documents should know that before
+//! accepting it.
+//!
+//! recall@50 is 0.9494 for all three tiers, to four decimals, as on the other
+//! corpus: the pass reorders a shortlist and never changes it.
+//!
+//!
 //! ## What is not paid twice
 //!
 //! A cross-encoder cannot precompute anything about a memory before the query
@@ -90,10 +129,10 @@
 //! figures taken inside one run are comparable with each other. The nDCG
 //! columns have no such problem: they repeat to four decimals.
 //!
-//! They were also measured on parallel text, where every candidate is a
-//! translation of every other. Real memories are not, and a corpus where the
-//! same-language candidates are not near-duplicates of the foreign ones may
-//! divide the gain differently.
+//! What was a caveat here -- that all of this was measured on parallel text,
+//! and a corpus whose candidates are not translations of each other might
+//! divide the gain differently -- is now the MIRACL section above. It does
+//! divide it differently, and not in the direction the caveat guessed.
 
 use std::path::{Path, PathBuf};
 
@@ -130,10 +169,20 @@ pub enum Rerank {
     /// same-language ranking, by 0.0062.
     #[default]
     Fast,
-    /// XLM-RoBERTa-large, 570 MB, 2.8x the latency for 22% more gain.
+    /// XLM-RoBERTa-large, 570 MB. Worth more the less the corpus looks like
+    /// a parallel sentence benchmark.
     ///
-    /// Better than `fast` on *both* groups -- the only tier that costs nothing
-    /// on either. For a workspace where that is worth half a second a search.
+    /// On XQuAD-R it is 2.8x the latency for 22% more gain, and better than
+    /// `fast` on *both* groups -- the only tier that costs nothing on either.
+    /// On MIRACL's Swahili passages it is worth **two and a half times** what
+    /// `fast` is, +0.0496 against +0.0201, because a twenty-one-million
+    /// parameter model runs out of capacity on long real text where a
+    /// three-hundred-million one does not.
+    ///
+    /// It is also five times the cost there rather than three: reranking is
+    /// 1725 ms a search against `fast`'s 332. Two seconds is not interactive,
+    /// which is why this is not the default -- but a workspace of long
+    /// documents that can afford it is giving up rather more by not asking.
     Accurate,
 }
 
