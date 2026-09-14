@@ -986,6 +986,16 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
                 verdict: pamin_core::FilterDecision::Promoted,
                 reason: "cross-lingual evaluation corpus",
                 promoted: true,
+                // The dataset's own two-letter tags, which are not what the
+                // product writes: `pamin write` takes its language from
+                // `detect_language`, and that returns ISO-639-3 -- `eng` where
+                // this says `en`. Nothing compares the two today, and the rule
+                // that would have (a fusion weight that knew the query's
+                // language) was measured and dropped. Left as the dataset has
+                // it rather than translated, because changing it would mean
+                // re-indexing thirteen thousand sentences to alter a column no
+                // reader consults. Anything that starts consulting it should
+                // fix this first.
                 language: Some(sentence.language),
                 language_confidence: None,
                 observed_at: time::OffsetDateTime::now_utc(),
