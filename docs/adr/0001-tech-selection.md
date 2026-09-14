@@ -252,7 +252,19 @@ The rule was a language comparison first, since "written in another language" is
 
 **`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 165 ms against 469 — 2.8x, not the twelve this section claimed from the scratch measurement. For that it gives up 0.0083 cross-lingual, and it gives up the 0.0084 of same-language that `accurate` gains: `accurate` is the only tier that costs nothing on either group.
 
-So the shallow model no longer wins outright, and the appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) is weaker than it looked — that argument turns on a latency budget, and 204 ms against 508 is a narrower gap than twelve-to-one. `fast` stays the default because a search that takes half a second is a different product from one that takes a fifth, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently. A workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
+So the shallow model no longer wins outright, and the appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) is weaker than it looked — that argument turns on a latency budget, and 204 ms against 508 is a narrower gap than twelve-to-one. `fast` stays the default because a search that takes half a second is a different product from one that takes a fifth, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
+
+**On a corpus that is not parallel text the two tiers separate much further.** MIRACL's Swahili dev split is 131,924 real passages averaging 229 characters with human judgements, one language throughout — the shape XQuAD-R is not:
+
+| Tier | nDCG@10 | Gain | A search | Of which reranking |
+| --- | --- | --- | --- | --- |
+| `off` | 0.7158 | — | 142 ms | — |
+| `fast` | 0.7359 | **+0.0201** | 474 ms | 332 ms |
+| `accurate` | 0.7654 | **+0.0496** | 1867 ms | 1725 ms |
+
+`fast` is worth half what it is worth on sentences, which was expected: the pass reorders only what the lexical channels missed, and within one language that is a fraction of the shortlist rather than nearly all of it — 84 of 482 queries leave a relevant passage below rank ten here against 1,042 of 1,190 there. `accurate` was expected to shrink with it and does the opposite, gaining more here than there, so the ratio between the tiers goes from 1.2 to 2.5. Long varied passages are where twenty-one million parameters start to tell against three hundred million, and that is the case the shallow-cross-encoder argument does not cover.
+
+It costs accordingly: 1725 ms against 332. Two seconds a search is not an interactive budget, so the default does not move — but on real passages choosing `fast` gives up three fifths of the available gain rather than a fifth, and that is worth knowing before accepting it. recall@50 is 0.9494 for all three tiers, which is the same invariant the other corpus shows. A workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
 
 A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
 
