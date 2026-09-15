@@ -308,6 +308,12 @@ pub async fn ensure_topic(
 
 /// Appends a new state to a topic.
 ///
+/// Takes the whole span rather than its identifier, because the state records
+/// both what it points at and what language that span was found to be in, and
+/// the caller has the span in hand -- it just wrote it. Reading the language
+/// back instead (another `SELECT` in the transaction, or a scalar subquery in
+/// the `RETURNING`) would pay a round trip to save nothing.
+///
 /// Runs in a transaction that first locks the topic row. Without that lock, two
 /// concurrent writers can both read the same maximum version and race to insert
 /// it; one loses on the unique constraint, and the loser's content is dropped
@@ -318,7 +324,7 @@ pub async fn append_topic_state(
     project: ProjectId,
     topic: TopicId,
     content: &str,
-    source_span: SourceSpanId,
+    source_span: &SourceSpan,
     observed_at: OffsetDateTime,
     validity: Validity,
 ) -> Result<TopicState> {
@@ -350,7 +356,7 @@ pub async fn append_topic_state(
     .bind(project.0)
     .bind(topic.0)
     .bind(content)
-    .bind(source_span.0)
+    .bind(source_span.id.0)
     .bind(observed_at)
     .bind(OffsetDateTime::now_utc())
     .bind(previous.map(|id| id.0))
@@ -365,7 +371,8 @@ pub async fn append_topic_state(
         topic_id: topic,
         version: from_sql_version(row.get("version")),
         content: content.to_string(),
-        source_span_id: source_span,
+        source_span_id: source_span.id,
+        language: source_span.detected_language.clone(),
         observed_at,
         recorded_at: row.get("recorded_at"),
         validity,
@@ -410,6 +417,7 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
         version: from_sql_version(row.get("version")),
         content: row.get("content"),
         source_span_id: row.get::<uuid::Uuid, _>("source_span_id").into(),
+        language: row.get("detected_language"),
         observed_at: row.get("observed_at"),
         recorded_at: row.get("recorded_at"),
         validity: Validity::new(row.get("valid_from"), row.get("valid_to")),
@@ -435,14 +443,30 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
 /// of building SQL with `format!`; this keeps the column list in one place
 /// without stepping over it.
 ///
-/// Takes the table's alias, because a statement that joins `topics` has two
-/// `id` and two `project_id` columns in scope and an unqualified list is
-/// ambiguous there -- an error PostgreSQL raises at execution, so only a query
-/// that actually runs finds it.
-macro_rules! state_columns {
+/// Takes the table's alias, because every statement below joins `source_spans`
+/// -- which has its own `id` and `project_id` -- and an unqualified list is
+/// ambiguous there. PostgreSQL raises that at execution, so only a query that
+/// actually runs finds it.
+///
+/// The language column is not in here. It lives on the other table, so it takes
+/// a different alias and is spelled out at each call site instead.
+/// The language column, spelled the way every statement below spells it.
+///
+/// `topic_states.source_span_id` is `NOT NULL` and references `source_spans`,
+/// so the inner join that brings this in cannot drop a state. What is nullable
+/// is the value: detection declines on content too short to be sure about.
+///
+/// The join is on `source_spans`' primary key and costs about that much.
+/// Measured on `current_states_of` at its hundred-and-fifty-candidate ceiling,
+/// same rows, same process, alternating: 1.00 ms median without it and 1.04 ms
+/// with, over three runs.
+macro_rules! language_column {
     () => {
-        state_columns!("")
+        ", sp.detected_language"
     };
+}
+
+macro_rules! state_columns {
     ($alias:literal) => {
         concat!(
             $alias,
@@ -511,8 +535,11 @@ pub async fn topic_state(
 ) -> Result<Option<TopicState>> {
     let row = sqlx::query(concat!(
         "SELECT ",
-        state_columns!(),
-        " FROM topic_states WHERE topic_id = $1 AND version = $2"
+        state_columns!("ts."),
+        language_column!(),
+        " FROM topic_states ts
+          JOIN source_spans sp ON sp.id = ts.source_span_id
+          WHERE ts.topic_id = $1 AND ts.version = $2"
     ))
     .bind(topic.0)
     .bind(to_sql_version(version))
@@ -535,8 +562,10 @@ pub async fn all_current_topic_states(
     let rows = sqlx::query(concat!(
         "SELECT ",
         state_columns!("ts."),
+        language_column!(),
         " FROM topics
           JOIN topic_states ts ON ts.id = topics.current_state_id
+          JOIN source_spans sp ON sp.id = ts.source_span_id
           WHERE topics.project_id = $1 AND ts.deleted_at IS NULL
           ORDER BY ts.topic_id ASC"
     ))
@@ -570,9 +599,11 @@ pub async fn topic_states_by_id(
     let ids: Vec<uuid::Uuid> = states.iter().map(|state| state.0).collect();
     let rows = sqlx::query(concat!(
         "SELECT ",
-        state_columns!(),
-        " FROM topic_states
-          WHERE project_id = $1 AND id = ANY($2) AND deleted_at IS NULL"
+        state_columns!("ts."),
+        language_column!(),
+        " FROM topic_states ts
+          JOIN source_spans sp ON sp.id = ts.source_span_id
+          WHERE ts.project_id = $1 AND ts.id = ANY($2) AND ts.deleted_at IS NULL"
     ))
     .bind(project.0)
     .bind(&ids)
@@ -604,8 +635,10 @@ pub async fn current_states_of(
     let rows = sqlx::query(concat!(
         "SELECT ",
         state_columns!("ts."),
+        language_column!(),
         " FROM topic_states ts
           JOIN topics t ON t.current_state_id = ts.id
+          JOIN source_spans sp ON sp.id = ts.source_span_id
           WHERE t.project_id = $1 AND t.id = ANY($2)"
     ))
     .bind(project.0)
@@ -725,10 +758,12 @@ pub async fn soft_delete_topic_state(
     // is an answer to.
     let surviving = sqlx::query(concat!(
         "SELECT ",
-        state_columns!(),
-        " FROM topic_states
-          WHERE topic_id = $1 AND deleted_at IS NULL
-          ORDER BY version DESC LIMIT 1"
+        state_columns!("ts."),
+        language_column!(),
+        " FROM topic_states ts
+          JOIN source_spans sp ON sp.id = ts.source_span_id
+          WHERE ts.topic_id = $1 AND ts.deleted_at IS NULL
+          ORDER BY ts.version DESC LIMIT 1"
     ))
     .bind(topic.0)
     .fetch_optional(&mut *connection)

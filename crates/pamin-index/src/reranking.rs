@@ -17,31 +17,88 @@
 //!
 //! On 13,014 sentences in eleven languages, reranking the fused shortlist:
 //!
-//! | | cross-lingual | same-language | per query |
-//! |---|---|---|---|
-//! | off | — | — | 0 ms |
-//! | `fast` | **+0.0595** | 0.0000 | 151 ms |
-//! | `accurate` | **+0.0852** | 0.0000 | 1795 ms |
+//! | | cross-lingual | same-language | per query | of which reranking |
+//! |---|---|---|---|---|
+//! | off | — | — | 39 ms | — |
+//! | `fast` | **+0.0375** | **-0.0062** | 204 ms | 165 ms |
+//! | `accurate` | **+0.0458** | **+0.0022** | 508 ms | 469 ms |
 //!
-//! Two things in that table need saying.
+//! Measured through `Engine::search_reranked` -- the entry point `pamin search`
+//! calls -- with `TIERS=1` on the cross-lingual harness. An earlier version of
+//! this table came from a scratch program that reordered a dumped shortlist
+//! with its own copy of the pipeline, and it overstated both gains by about
+//! half and `accurate`'s latency by a factor of four. The three tiers return
+//! the same four decimals on every run: fixed corpus, fixed index, greedy pass.
 //!
-//! **The same-language column is zero by construction, not by luck.** Every
+//! Three things in that table need saying.
+//!
+//! **The same-language column is nearly, but not exactly, zero.** Every
 //! reranker tried -- three, across two orders of magnitude in size -- improves
 //! cross-lingual ranking and damages same-language ranking, because the fused
 //! list is already good at same-language and a cross-encoder reorders it worse.
-//! So only the candidates written in a language other than the query's are
-//! reranked, and they are placed back into the positions they already held.
-//! A same-language candidate cannot move, and that group's score cannot change.
-//! Unrestricted, the same two models score +0.1698 / -0.2109 and +0.1678 /
-//! -0.0806: more cross-lingual, at a cost that is not this project's to take.
+//! So only the candidates no lexical channel found are reranked, and they are
+//! placed back into the positions they already held. That confines the damage
+//! but does not eliminate it, and the earlier claim that the group "cannot
+//! move" was wrong: a same-language answer the lexical channels *missed* is an
+//! unlexical candidate like any other, and reordering can carry it down.
+//! Sixty-one same-language queries leave something below rank ten before
+//! reranking and seventy-one after. The cost is small and it is real.
+//! (Unrestricted, two of those models scored +0.1698 / -0.2109 and +0.1678 /
+//! -0.0806 on the scratch harness. Not re-measured here.)
 //!
-//! **Smaller is not worse here.** The `fast` model is a twelve-layer distilled
-//! MiniLM with 21M encoder parameters; `accurate` is XLM-RoBERTa-large with
-//! 303M, fourteen times larger and twelve times slower, and it buys 0.026.
+//! **`accurate` is better on both groups, not just the first.** It is the only
+//! tier that does not cost same-language ranking.
+//!
+//! **`fast` is the default on latency, not on quality.** It is a twelve-layer
+//! distilled MiniLM with 21M encoder parameters against XLM-RoBERTa-large's
+//! 303M -- fourteen times smaller, and its pass costs 165 ms against 469, so
+//! 2.8x rather than the twelve this once claimed. For that it gives up 0.0083
+//! cross-lingual and the 0.0084 same-language that `accurate` gains. Whether
+//! four fifths of the gain is worth two fifths of the latency is a workspace's
+//! call and `--rerank accurate` is how to make it.
 //! That is the finding of [Shallow Cross-Encoders for Low-Latency
 //! Retrieval](https://arxiv.org/abs/2403.20222) arrived at independently: under
 //! a latency budget a shallow model beats a full-scale one, because the budget
 //! buys more candidates.
+//!
+//! ## And on a corpus that is not parallel text, the gap doubles
+//!
+//! Everything above is XQuAD-R, where the eleven versions of a sentence are
+//! translations of each other. MIRACL's Swahili dev split is not: 131,924 real
+//! passages averaging 229 characters, 482 queries, human relevance judgements,
+//! one language throughout.
+//!
+//! | | nDCG@10 | gain | a search | of which reranking |
+//! |---|---|---|---|---|
+//! | off | 0.7158 | — | 142 ms | — |
+//! | `fast` | 0.7359 | **+0.0201** | 474 ms | 332 ms |
+//! | `accurate` | 0.7654 | **+0.0496** | 1867 ms | 1725 ms |
+//!
+//! `fast` is worth about half what it is worth on parallel sentences. That much
+//! was expected: the pass only reorders what the lexical channels missed, and
+//! across a language boundary that is nearly the whole shortlist while within
+//! one language it is a fraction -- 84 of 482 queries leave a relevant passage
+//! below rank ten here against 1,042 of 1,190 there.
+//!
+//! **`accurate` was expected to shrink with it and does the opposite.** It
+//! gains more on this corpus than on the other, +0.0496 against +0.0458, so the
+//! ratio between the two tiers goes from 1.2 to 2.5. The passages are long and
+//! genuinely varied, which is where twenty-one million parameters start to tell
+//! against three hundred million. The shallow-cross-encoder argument the
+//! default leans on was validated on parallel single sentences, and this is the
+//! shape of corpus it does not describe.
+//!
+//! What it costs is the other half. Reranking is 332 ms and 1725 ms here
+//! against 165 and 469 on sentences, because a cross-encoder reads the
+//! candidate and `MAX_TOKENS` actually binds on a passage. Two seconds a search
+//! is not an interactive budget, so `fast` stays the default -- but on real
+//! passages the choice is giving up three fifths of the available gain rather
+//! than a fifth, and a workspace of long documents should know that before
+//! accepting it.
+//!
+//! recall@50 is 0.9494 for all three tiers, to four decimals, as on the other
+//! corpus: the pass reorders a shortlist and never changes it.
+//!
 //!
 //! ## What is not paid twice
 //!
@@ -65,12 +122,17 @@
 //! They were measured on four cores. Published figures for a MiniLM
 //! cross-encoder on CPU are 0.5 to 3 ms per pair; this measures 9.75, and the
 //! gap is two layers' worth of depth and a quarter of the cores. On an ordinary
-//! server the `fast` tier is tens of milliseconds rather than 151.
+//! server the `fast` tier should be tens of milliseconds rather than 165.
 //!
-//! They were also measured on parallel text, where every candidate is a
-//! translation of every other. Real memories are not, and a corpus where the
-//! same-language candidates are not near-duplicates of the foreign ones may
-//! divide the gain differently.
+//! The latency column is also the soft one. The same configuration measured in
+//! two separate runs of the harness differs by as much as a fifth, so only
+//! figures taken inside one run are comparable with each other. The nDCG
+//! columns have no such problem: they repeat to four decimals.
+//!
+//! What was a caveat here -- that all of this was measured on parallel text,
+//! and a corpus whose candidates are not translations of each other might
+//! divide the gain differently -- is now the MIRACL section above. It does
+//! divide it differently, and not in the direction the caveat guessed.
 
 use std::path::{Path, PathBuf};
 
@@ -88,45 +150,139 @@ pub enum Rerank {
     /// Return what fusion ordered.
     ///
     /// The right setting for a workspace whose memories are all in one
-    /// language: the measured gain there is exactly zero, because only
-    /// candidates in another language are reordered and there are none.
+    /// language, where there is very little for the pass to find: what it
+    /// reorders is the candidates the lexical channels missed, and across a
+    /// language boundary that is most of them.
+    ///
+    /// Not *nothing*, though, and the difference matters. The rule is "no
+    /// lexical channel found it", not "it is in another language" -- the two
+    /// agree on 93% of a shortlist but not on all of it -- so a one-language
+    /// workspace still has vector-only candidates and the pass still moves
+    /// them. On this project's own corpus the monolingual group does not
+    /// budge, but that group sits at 0.9940 where nothing could move it.
     Off,
     /// A twelve-layer distilled multilingual MiniLM, 113 MB. The default.
     ///
-    /// Chosen over the larger model on the shape of the trade rather than on
-    /// the score: it reaches seven tenths of the gain for a twelfth of the
-    /// latency and a fifth of the download.
+    /// Chosen over the larger model on latency rather than on the score: it
+    /// reaches four fifths of the cross-lingual gain for two fifths of the
+    /// latency and a fifth of the download. It is the one tier that costs
+    /// same-language ranking, by 0.0062.
     #[default]
     Fast,
-    /// XLM-RoBERTa-large, 570 MB, twelve times slower for a quarter more gain.
+    /// XLM-RoBERTa-large, 570 MB. Worth more the less the corpus looks like
+    /// a parallel sentence benchmark.
     ///
-    /// For a workspace where retrieval quality is worth a second of latency --
-    /// an agent doing research rather than one answering interactively.
+    /// On XQuAD-R it is 2.8x the latency for 22% more gain, and better than
+    /// `fast` on *both* groups -- the only tier that costs nothing on either.
+    /// On MIRACL's Swahili passages it is worth **two and a half times** what
+    /// `fast` is, +0.0496 against +0.0201, because a twenty-one-million
+    /// parameter model runs out of capacity on long real text where a
+    /// three-hundred-million one does not.
+    ///
+    /// It is also five times the cost there rather than three: reranking is
+    /// 1725 ms a search against `fast`'s 332. Two seconds is not interactive,
+    /// which is why this is not the default -- but a workspace of long
+    /// documents that can afford it is giving up rather more by not asking.
     Accurate,
 }
 
 /// How many of the fused results a tier looks at.
 ///
-/// Twenty for both, which is where the gain flattens: measured on the `fast`
-/// model, ten is worth +0.0147, fifteen +0.0417, twenty +0.0572, thirty
-/// +0.0667 and fifty +0.0629 -- past thirty it goes backwards, and the last
-/// ten candidates cost half the latency for a tenth of the gain.
+/// Twenty for both, which is where the gain stops. Swept through
+/// `search_reranked` on the `fast` model, 1,190 XQuAD-R queries, against a
+/// baseline of 0.5722 cross-lingual with reranking off:
+///
+/// | depth | cross-lingual | gain | same-language |
+/// |---|---|---|---|
+/// | 10 | 0.5831 | +0.0110 | 0.8005 |
+/// | 15 | 0.6047 | +0.0325 | 0.7987 |
+/// | **20** | **0.6091** | **+0.0369** | **0.7974** |
+/// | 30 | 0.6099 | +0.0378 | 0.7967 |
+/// | 50 | 0.6055 | +0.0333 | 0.7957 |
+///
+/// The constant is unchanged and the reason for it is not. An earlier sweep,
+/// on the scratch harness whose figures ran about half again high, put twenty
+/// at +0.0572 and thirty at +0.0667 and recorded thirty as the better score
+/// given up for latency. Measured through the engine, thirty buys +0.0009 --
+/// a tenth of what was recorded, for sixteen per cent more latency. There is
+/// no trade to make; twenty is simply where it stops.
+///
+/// Same-language ranking falls monotonically with depth, which is the same
+/// effect the tier table describes: more candidates reranked means more of the
+/// ones the lexical channels missed being carried down.
 const DEPTH: usize = 20;
+
+/// The tuning constants above, overridable for a sweep.
+///
+/// `DEPTH`, `BATCH` and `MAX_TOKENS` were each settled by measurement, and two
+/// of the three were settled on the scratch harness whose figures turned out to
+/// be about half again too high -- so they have to be re-settleable, and by the
+/// harness rather than by editing a constant and rebuilding. Same shape as the
+/// evaluation's own `SWEEP` and `TIERS`: unset means the constant, so nothing a
+/// user runs is affected.
+fn tuned(name: &str, fallback: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
+}
 
 /// How many candidates go through the model at once.
 ///
-/// Eight, measured. A batch is padded to its longest member, so a large batch
-/// pays for its longest candidate on every member: sixteen takes 191 ms and
-/// eight takes 151 for the same candidates, and thirty-two and sixty-four are
-/// slower again. Sorting by length before batching is the other half of the
-/// same saving and is done below.
+/// Eight, and the honest statement is that the corpus cannot separate it from
+/// the alternatives. A batch is padded to its longest member, so in principle a
+/// large batch pays for its longest candidate on every member, and an earlier
+/// sweep recorded eight at 151 ms against sixteen at 191. Swept again through
+/// the engine, at a depth of twenty:
+///
+/// | batch | cross-lingual | a search |
+/// |---|---|---|
+/// | 4 | 0.6102 | 226 ms |
+/// | **8** | **0.6091** | **217 ms** |
+/// | 16 | 0.6095 | 230 ms |
+/// | 20 | 0.6098 | 242 ms |
+///
+/// Eight is fastest here, but the spread across all four is eleven per cent and
+/// the same configuration measured in two separate runs differs by nineteen --
+/// so this says only that none of them is clearly better, not that eight wins.
+/// Separating them would need repeats inside one process, and nothing here
+/// turns on the answer.
+///
+/// The score column is not noise, though: it moves by up to 0.0011 across batch
+/// sizes because a quantized model scores a pair slightly differently depending
+/// on what it was padded alongside. Anything that changes how candidates are
+/// grouped moves the fourth decimal, which is worth knowing before attributing
+/// such a change to something else.
 const BATCH: usize = 8;
+
+/// How long a candidate the model reads, and how many at once. See [`tuned`].
+fn batch() -> usize {
+    tuned("PAMIN_RERANK_BATCH", BATCH)
+}
+
+fn max_tokens() -> usize {
+    tuned("PAMIN_RERANK_MAX_TOKENS", MAX_TOKENS)
+}
 
 /// The longest candidate the model reads.
 ///
-/// Generous rather than binding: halving it to 128 changed latency by a fifth
-/// and nothing else, which says the candidates are already shorter than this.
-/// It is here so that one long memory cannot make one query slow.
+/// Two hundred and fifty-six, and halving it is not the free saving this used
+/// to record. The claim here was that 128 "changed latency by a fifth and
+/// nothing else". Measured through the engine, at a depth of twenty:
+///
+/// | tokens | cross-lingual | same-language | a search |
+/// |---|---|---|---|
+/// | 128 | 0.6077 | 0.7974 | 207 ms |
+/// | **256** | **0.6091** | **0.7974** | **217 ms** |
+///
+/// Both halves were wrong. The saving is five per cent rather than twenty, and
+/// it costs 0.0014 of cross-lingual ranking rather than nothing. `fastembed`
+/// pads a batch to its longest member and not to this limit, so the limit only
+/// truncates the candidates that genuinely exceed it -- on a corpus of
+/// sentences, few of them. It earns its place by bounding the worst case rather
+/// than by shaping the ordinary one: one long memory cannot make one query
+/// slow.
 const MAX_TOKENS: usize = 256;
 
 impl Rerank {
@@ -151,7 +307,7 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate => DEPTH,
+            Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
         }
     }
 
@@ -222,6 +378,16 @@ const REMEMBERED_SCORES: usize = 4096;
 struct Scores {
     known: std::collections::HashMap<u64, f32>,
     order: std::collections::VecDeque<u64>,
+    /// Lookups that found a score, and lookups that did not.
+    ///
+    /// Counted because the ADR makes them the evidence for a decision it has
+    /// deferred: whether precomputing part of each document's representation
+    /// at index time is worth its storage depends on the hot set being small,
+    /// and this ratio is what says whether it is. Before this the only
+    /// accessor reported occupancy, which says how much has been stored and
+    /// nothing about how often it is read.
+    hits: u64,
+    misses: u64,
 }
 
 impl Scores {
@@ -236,8 +402,13 @@ impl Scores {
         hasher.finish()
     }
 
-    fn get(&self, key: u64) -> Option<f32> {
-        self.known.get(&key).copied()
+    fn get(&mut self, key: u64) -> Option<f32> {
+        let found = self.known.get(&key).copied();
+        match found {
+            Some(_) => self.hits += 1,
+            None => self.misses += 1,
+        }
+        found
     }
 
     /// Remembers a score, forgetting the oldest once full.
@@ -303,7 +474,15 @@ impl Reranker {
                     tokenizer_config_file: read("tokenizer_config.json")?,
                 },
             ),
-            RerankInitOptionsUserDefined::new().with_max_length(MAX_TOKENS),
+            {
+                let mut options = RerankInitOptionsUserDefined::new().with_max_length(max_tokens());
+                // Same setting as the embedder's, and for the same reason:
+                // see `crate::inference`.
+                if let Some(threads) = crate::inference::threads() {
+                    options = options.with_intra_threads(threads);
+                }
+                options
+            },
         )
         .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
 
@@ -333,15 +512,34 @@ impl Reranker {
             .iter()
             .map(|document| Scores::key(query, document))
             .collect();
-        let mut scores: Vec<Option<f32>> = keys.iter().map(|key| self.scores.get(*key)).collect();
+        let mut scores: Vec<Option<f32>> = keys
+            .iter()
+            .map(|key| self.scores.get(*key))
+            .collect::<Vec<_>>();
 
         // Only what has not been scored before goes through the model, and
         // sorted by length, so that a batch is not padded to a length most of
         // its members do not have.
+        //
+        // By characters rather than by bytes. What the padding is measured in
+        // is tokens, and `str::len` is UTF-8 bytes -- three per character for
+        // the Chinese and Thai in this corpus against one for the Latin, so a
+        // byte sort puts a short Thai candidate after a long English one and
+        // the batches it forms are not the ones the saving assumes. Characters
+        // are not tokens either, but they are within a small factor across
+        // scripts where bytes are within three.
+        //
+        // Not score-neutral, and it was first recorded as though it were:
+        // grouping candidates differently pads them differently, and a
+        // quantized model scores a pair slightly differently depending on what
+        // it shared a tensor with. Cross-lingual nDCG@10 moved from 0.6097 to
+        // 0.6091 when this changed -- the fourth decimal, and in the direction
+        // nobody would choose, but it is a real signed change rather than
+        // noise. See `BATCH` for the same effect across batch sizes.
         let mut unscored: Vec<usize> = (0..documents.len())
             .filter(|position| scores[*position].is_none())
             .collect();
-        unscored.sort_by_key(|position| documents[*position].len());
+        unscored.sort_by_key(|position| documents[*position].chars().count());
 
         if !unscored.is_empty() {
             let batch: Vec<&str> = unscored
@@ -350,7 +548,7 @@ impl Reranker {
                 .collect();
             let scored = self
                 .model
-                .rerank(query, &batch, false, Some(BATCH))
+                .rerank(query, &batch, false, Some(self::batch()))
                 .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
 
             for result in scored {
@@ -372,9 +570,17 @@ impl Reranker {
         Ok(ordered)
     }
 
-    /// How many scores are being remembered.
-    pub fn remembered(&self) -> usize {
-        self.scores.known.len()
+    /// How many scores are being remembered, and how often they are read.
+    ///
+    /// Returns occupancy, hits and misses. The occupancy alone was the only
+    /// thing exposed before and it answers the wrong question: what the
+    /// deferred late-interaction decision turns on is the hit rate.
+    pub fn remembered(&self) -> (usize, u64, u64) {
+        (
+            self.scores.known.len(),
+            self.scores.hits,
+            self.scores.misses,
+        )
     }
 }
 

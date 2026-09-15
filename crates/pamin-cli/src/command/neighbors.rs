@@ -81,6 +81,7 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Nei
             depth: args.depth,
             kinds: (!kinds.is_empty()).then_some(kinds.as_slice()),
             at,
+            keep: None,
         },
     )
     .await?;

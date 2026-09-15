@@ -166,19 +166,29 @@ impl Embedder {
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
 
+        // See `crate::inference`: unset leaves fastembed on one thread per
+        // core, which is what this did before the setting existed.
+        let threads = crate::inference::threads();
+
         let model = match profile {
             Profile::Accuracy => {
-                let options = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
+                let mut options = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
                     .with_cache_dir(cache_dir.to_path_buf())
                     .with_show_download_progress(false);
+                if let Some(threads) = threads {
+                    options = options.with_intra_threads(threads);
+                }
                 Model::Joint(Box::new(Bgem3Embedding::try_new(options).map_err(
                     |error| IndexError::Engine(format!("loading embedding model: {error}")),
                 )?))
             }
             _ => {
-                let options = TextInitOptions::new(profile.model())
+                let mut options = TextInitOptions::new(profile.model())
                     .with_cache_dir(cache_dir.to_path_buf())
                     .with_show_download_progress(false);
+                if let Some(threads) = threads {
+                    options = options.with_intra_threads(threads);
+                }
                 Model::Text(Box::new(TextEmbedding::try_new(options).map_err(
                     |error| IndexError::Engine(format!("loading embedding model: {error}")),
                 )?))

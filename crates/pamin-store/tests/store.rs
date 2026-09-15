@@ -145,7 +145,7 @@ async fn write_state(
         project,
         topic,
         content,
-        span.id,
+        &span,
         OffsetDateTime::now_utc(),
         Validity::ALWAYS
     )
@@ -477,6 +477,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: Some(&[EdgeKind::Mentions]),
             at: None,
+            keep: None,
         },
     )
     .await
@@ -505,6 +506,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: None,
             at: Some(OffsetDateTime::now_utc()),
+            keep: None,
         },
     )
     .await
@@ -522,6 +524,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
             depth: 2,
             kinds: None,
             at: Some(OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1)),
+            keep: None,
         },
     )
     .await
@@ -711,6 +714,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
             depth: 1,
             kinds: None,
             at: Some(before_retraction),
+            keep: None,
         },
     )
     .await
@@ -1234,7 +1238,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         project.id,
         topic.id,
         "the state content",
-        span.id,
+        &span,
         observed,
         Validity {
             from: Some(valid_from),
@@ -1249,6 +1253,11 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         .expect("the state was written");
     assert_eq!(stored.content, "the state content");
     assert_eq!(stored.source_span_id, span.id);
+    // The span's language, read back through the join -- and the first time
+    // anything reads `source_spans` at all. The assertion above on `span` is on
+    // the struct `append_source_span` built and handed back, so an INSERT that
+    // dropped this column would have passed it; this one would not.
+    assert_eq!(stored.language.as_deref(), Some("eng"));
     assert_eq!(stored.observed_at, observed);
     assert_eq!(stored.validity.from, Some(valid_from));
     assert_eq!(stored.validity.to, Some(valid_to));
@@ -2148,6 +2157,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
             depth: 1,
             at: Some(before),
             kinds: None,
+            keep: None,
         },
     )
     .await

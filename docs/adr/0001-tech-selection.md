@@ -88,7 +88,27 @@ Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in o
 
 The weight was swept across both evaluation corpora — the one written for this project and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
 
-What the sweep cannot settle is that the ideal weight is not the same for every query — near zero when a query and its answer are in different languages, and a half when they are not. One constant serves both by compromise. Making it a function of the query is recorded as an open question rather than guessed at here.
+The ideal weight is not the same for every query — near zero when a query and its answer are in different languages, and a half when they are not. One constant serves both by compromise, and making it a function of the query was tried.
+
+The signal was the lexical channels themselves. They match on shared tokens, so whichever language they put the most of their score behind is, empirically, the language the query was asked in — no detector, which matters, because detection declines on "how does deployment work" and a rule that needed it would be absent on exactly the short queries an agent asks. A candidate in any other language then had its lexical contribution scaled down after fusion, by the fraction in the `xling` column below. `1.00` is the rule switched off.
+
+| lexical | xling | ours: cross | ours: mono | XQuAD-R: cross | XQuAD-R: same |
+| --- | --- | --- | --- | --- | --- |
+| 0.25 | 1.00 | 0.7223 | 0.9940 | 0.5722 | 0.8033 |
+| 0.25 | 0.50 | 0.7234 | 0.9940 | 0.5750 | 0.8000 |
+| 0.25 | 0.25 | 0.7201 | 0.9940 | 0.5760 | 0.7914 |
+| 0.25 | 0.00 | 0.7181 | 0.9821 | 0.5759 | 0.7895 |
+| 0.50 | 0.00 | 0.6444 | 0.9708 | 0.4649 | 0.8145 |
+
+No setting clears the bar the reranker had to clear — cross-lingual up, same-language not down. The one cell that clears it on this project's corpus, `0.25 / 0.50`, buys 0.0011 there, which on 137 queries is one of them, and on XQuAD-R the same setting costs 0.0033 of same-language for 0.0028 of cross-lingual. It fails in two separate ways, and both are worth recording.
+
+**Cross-language lexical hits are not noise.** If they were, removing them could only help the cross-lingual group; on this project's corpus it falls, 0.7223 to 0.7181. What a query shares with an answer in another language is proper nouns, numbers and borrowed technical terms — which is signal, and the only lexical signal that crosses a language boundary at all.
+
+**A query's language cannot be read off its own lexical hits.** Same-language ranking falls at every setting on XQuAD-R, and it should not move at all if the rule only ever fired across a boundary. That corpus isolates the cause: every sentence in it carries the dataset's own language label, so the candidate side is ground truth and the inference is the only thing left to be wrong. It is wrong often enough to cost more than the rule buys, and it is worst exactly where the rule was aimed — eleven parallel translations of one passage give the ten wrong languages ten chances to outweigh the right one.
+
+And the trade the constant exists to avoid does not open up. Half weight with cross-language contributions removed entirely scores 0.4649 cross-lingual on XQuAD-R, against 0.5722 for a quarter with the rule switched off.
+
+So the weight stays a constant and none of this was kept. What would change the answer is a different signal for the query's language — one that does not come from the channel it is being used to correct.
 
 ### Three recall channels, not seven
 
@@ -208,19 +228,43 @@ An earlier version of this decision recorded that reranking was measured and did
 
 On 13,014 sentences in eleven languages, 3,849 relevant sentences sit between rank 10 and rank 50, across 1,090 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
 
-| Tier | Loads | Per query | Cross-lingual nDCG@10 | Same-language |
-| --- | --- | --- | --- | --- |
-| `off` | nothing | — | — | — |
-| `fast` (default) | 113 MB | 151 ms | **+0.0595** | unchanged |
-| `accurate` | 570 MB | 1795 ms | **+0.0852** | unchanged |
+| Tier | Loads | A search costs | Of which reranking | Cross-lingual nDCG@10 | Same-language |
+| --- | --- | --- | --- | --- | --- |
+| `off` | nothing | 39 ms | — | — | — |
+| `fast` (default) | 113 MB | 204 ms | 165 ms | **+0.0375** | **−0.0062** |
+| `accurate` | 570 MB | 508 ms | 469 ms | **+0.0458** | **+0.0022** |
+
+Measured through `Engine::search_reranked`, the entry point `pamin search`
+calls, with `TIERS=1` on the cross-lingual harness; median of three runs, which
+returned identical figures because the corpus, index and pass are all fixed. The
+first version of this table came from a scratch program that reordered a dumped
+shortlist with its own copy of the pipeline. It overstated both gains by about
+half and `accurate`'s latency by a factor of four, which is the argument for
+measuring the product rather than a model of it.
 
 `fast` is `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, a 21M-parameter distilled multilingual MiniLM; `accurate` is `onnx-community/bge-reranker-v2-m3-ONNX`, XLM-RoBERTa-large at 303M. Both are quantized ONNX behind the library's user-defined loader, fetched on first use into the same cache as the embedding model.
 
-**The same-language column is unchanged by construction, not by luck.** Every cross-encoder tried improves cross-lingual ranking and damages same-language ranking by about as much — three models across two orders of magnitude of size, −0.0403 to −0.2109. Fusion is already good at placing a memory that shares words with the query, and a second pass reorders it worse. So the pass is confined to the candidates no lexical channel found, and they are written back into the positions they already held. Unconfined, two of those models score +0.1698/−0.2109 and +0.1678/−0.0806; confined, the same-language column cannot move at all.
+**The same-language column is nearly, but not exactly, unchanged.** Every cross-encoder tried improves cross-lingual ranking and damages same-language ranking by about as much — three models across two orders of magnitude of size, −0.0403 to −0.2109. Fusion is already good at placing a memory that shares words with the query, and a second pass reorders it worse. So the pass is confined to the candidates no lexical channel found, and they are written back into the positions they already held. Unconfined, two of those models score +0.1698/−0.2109 and +0.1678/−0.0806.
+
+Confining it was previously recorded here as making the same-language column *unable* to move. That was wrong, and measuring the shipped path is what found it. The confinement holds movement to the candidates the lexical channels missed — but a same-language answer they missed is one of those candidates, and reordering can carry it down. Sixty-one same-language queries leave a relevant sentence below rank ten with reranking off, and seventy-one with `fast` on. The residue is −0.0062, small enough that the design still works and large enough that "cannot move" was a claim about the code rather than about the corpus.
 
 The rule was a language comparison first, since "written in another language" is what the case really is. The two rules pick the same candidates — they agree on 93% of a shortlist and score within 0.002 — but the language test needs the query's language, and that is exactly what a detector will not commit to for a short query: `detect_language` returns nothing for "how does deployment work". A rule that quietly does nothing on the commonest shape of query is worse than a slightly different rule.
 
-**Smaller is not worse.** `accurate` is fourteen times larger and twelve times slower than `fast` for 0.026 more. That reproduces *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) without having read it first: under a latency budget the shallow model wins, because the budget buys more candidates. `fast` is therefore the default, and a workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
+**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 165 ms against 469 — 2.8x, not the twelve this section claimed from the scratch measurement. For that it gives up 0.0083 cross-lingual, and it gives up the 0.0084 of same-language that `accurate` gains: `accurate` is the only tier that costs nothing on either group.
+
+So the shallow model no longer wins outright, and the appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) is weaker than it looked — that argument turns on a latency budget, and 204 ms against 508 is a narrower gap than twelve-to-one. `fast` stays the default because a search that takes half a second is a different product from one that takes a fifth, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
+
+**On a corpus that is not parallel text the two tiers separate much further.** MIRACL's Swahili dev split is 131,924 real passages averaging 229 characters with human judgements, one language throughout — the shape XQuAD-R is not:
+
+| Tier | nDCG@10 | Gain | A search | Of which reranking |
+| --- | --- | --- | --- | --- |
+| `off` | 0.7158 | — | 142 ms | — |
+| `fast` | 0.7359 | **+0.0201** | 474 ms | 332 ms |
+| `accurate` | 0.7654 | **+0.0496** | 1867 ms | 1725 ms |
+
+`fast` is worth half what it is worth on sentences, which was expected: the pass reorders only what the lexical channels missed, and within one language that is a fraction of the shortlist rather than nearly all of it — 84 of 482 queries leave a relevant passage below rank ten here against 1,042 of 1,190 there. `accurate` was expected to shrink with it and does the opposite, gaining more here than there, so the ratio between the tiers goes from 1.2 to 2.5. Long varied passages are where twenty-one million parameters start to tell against three hundred million, and that is the case the shallow-cross-encoder argument does not cover.
+
+It costs accordingly: 1725 ms against 332. Two seconds a search is not an interactive budget, so the default does not move — but on real passages choosing `fast` gives up three fifths of the available gain rather than a fifth, and that is worth knowing before accepting it. recall@50 is 0.9494 for all three tiers, which is the same invariant the other corpus shows. A workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
 
 A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
 
@@ -280,6 +324,106 @@ Compaction is already outside this lock, on the strength of #614, which did ship
 in 0.7.0: Optimize is a brief exclusive seal, a long phase holding no schema
 lock, and a brief exclusive commit. That is the one part of the engine's
 concurrency this project relies on today.
+
+**And on four cores the lock is not what is stopping concurrent search anyway.**
+That was measured before planning anything around it, because the cost of the
+lock had been asserted and never established.
+
+A search takes two exclusive guards in sequence: the embedder, for one forward
+pass, and then the index, for the three recalls. Varying how many requests hit
+the query cache separates them without instrumenting the source: a hit skips the
+model, so what is left is the index guard. Thirteen thousand XQuAD-R sentences,
+accuracy profile, the resident pool the server uses, throughput in queries a
+second:
+
+| N | 0% cached | 50% | 100% |
+| --- | --- | --- | --- |
+| 1 | 13.1 | 21.9 | 47.4 |
+| 2 | 15.3 | 22.1 | 70.0 |
+| 4 | 14.9 | 24.2 | 75.2 |
+| 8 | 15.5 | 23.8 | 77.9 |
+
+**Concurrency never costs throughput here.** An earlier version of this section
+reported that it did — that two cached readers got less than one, 65.7 q/s down
+to 35.7 — and that was an artefact of the harness rather than a property of the
+engine. The query cache holds 256 entries and evicts first-in, and the sweep
+warmed it once before measuring every configuration in turn, so each
+cache-miss configuration flushed the entries the next cache-hit configuration
+depended on. Only the very first row was measuring what it claimed. Re-warming
+before each configuration, and asserting that a fully-cached run is at least
+twice as fast as an uncached one, reverses the finding: cache hits scale from
+47.4 to 77.9 and misses stay flat.
+
+Flat is the real result. Cache-miss throughput barely moves from one caller to
+eight because the forward pass is compute-bound on four cores, and the control
+below says the locks are not why:
+
+| N | embeddings/s | per pass |
+| --- | --- | --- |
+| 1 | 182.3 | 5.5 ms |
+| 2 | 92.3 | 10.8 |
+| 4 | 66.9 | 14.9 |
+| 8 | 53.5 | 18.2 |
+
+**Throughput halves at N=2 with no lock in the picture, and keeps falling.** ONNX
+Runtime's own intra-op pool already uses all four cores for a single forward
+pass, so a second caller does not find an idle core to run on — it finds the
+first caller's threads. Against that control the cached arm degrades *less* than
+lock-free work does, and the fresh arm gains a third rather than losing
+anything. Neither guard is the binding constraint here; the machine is.
+
+So there is nothing for removing the index mutex to buy on this hardware, and
+nothing for splitting the embedder's cache guard from its model guard either —
+a cache hit is already three times the throughput of a miss at every N.
+
+**No admission control either.** Throughput never falls as callers are added at
+the shipped settings, so there is no concurrency limit for a semaphore in front
+of the server to recover. That question was worth asking only while the cached
+column appeared to say the opposite.
+
+**What the cores are divided between is worth setting, and is not worth
+changing by default.** ONNX Runtime splits one forward pass across every core
+unless told otherwise, and `PAMIN_INFERENCE_THREADS` is the other way to divide
+them — fewer threads per pass, more passes at once. Throughput in queries a
+second, same sweep:
+
+| | 0% cached | | | 50% | | | 100% | | |
+| N | 1 thread | 2 | 4 | 1 | 2 | 4 | 1 | 2 | 4 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 9.7 | 12.1 | **13.1** | 15.2 | 19.8 | **21.9** | 46.0 | **47.7** | 47.4 |
+| 2 | 11.6 | **18.3** | 15.3 | 18.6 | **24.2** | 22.1 | 67.9 | 68.4 | **70.0** |
+| 4 | 10.9 | **16.7** | 14.9 | 22.1 | **30.2** | 24.2 | 69.6 | 71.9 | **75.2** |
+| 8 | 11.0 | **16.4** | 15.5 | 19.4 | **29.0** | 23.8 | 70.7 | 72.9 | **77.9** |
+
+Two threads is worth up to a quarter more throughput on concurrent traffic that
+misses the cache, and it loses on the two cases either side: a single caller,
+where four threads finish one pass sooner, and fully-cached traffic, where the
+model does not run and the split is pure overhead. One thread is worst
+everywhere — the per-pass cost of splitting a small model's tensors four ways is
+smaller than the cost of not splitting them at all.
+
+The rule set before the sweep was that a setting has to beat the shipped one at
+every mix to become the default. Two threads does not, so the default stays as
+it was and the setting is documented instead: a deployment that knows it serves
+concurrent, mostly-distinct queries can take the quarter, and one serving a
+single agent should not.
+
+**This says nothing about a machine with cores to spare.** On sixteen or
+thirty-two, one forward pass would not saturate the box, callers would not be
+fighting for the same cores, and the guards could well become exactly the
+ceiling this measurement failed to find. The sweep is `conc-harness.sh`, kept
+out of the repository with the rest of the measurement harnesses; re-run it
+there before concluding anything about a larger machine, and treat the two-part
+trigger above as unchanged until then.
+
+One methodological note, because it nearly went the other way: `Engine::open`
+takes `Connections::PerCommand`, which caps the pool at four, and a search uses
+several connections. The first run of this sweep went through it, so eight
+concurrent searches were partly queueing on connections rather than on anything
+being measured. Re-running against `Connections::Resident` — what `pamin serve`
+actually uses — moved no number outside run-to-run noise, so the pool was not
+the confound it looked like. A measurement of a lock has to be a measurement of
+that lock.
 
 ### Engineering budgets
 
