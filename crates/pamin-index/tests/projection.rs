@@ -233,12 +233,13 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
 
 /// Everything written is still recallable after the vector index is built.
 ///
-/// Building the graph rewrites the vector storage, and zvec has an open report
-/// -- alibaba/zvec#724, against 0.6 and 0.7 -- of that step dropping the last
-/// documents of a collection. What makes it worth a standing test rather than a
-/// note is how it fails: the dropped documents keep appearing in the document
-/// count and in scalar reads, so only a vector query can tell, and re-running
-/// the build does not bring them back.
+/// Building the graph rewrites the vector storage, and zvec has a report --
+/// alibaba/zvec#724, against 0.6 and 0.7 -- of that step dropping the last
+/// documents of a collection. It is fixed upstream and not released: #731
+/// merged as `31d88ea`, and the newest published version is 0.7.0. What makes
+/// it worth a standing test rather than a note is how it fails: the dropped
+/// documents keep appearing in the document count and in scalar reads, so only
+/// a vector query can tell, and re-running the build does not bring them back.
 ///
 /// It does not reproduce here, across five rounds of write-delete-build in the
 /// shape the cascade produces. That is a reason to call `optimize`, not a
@@ -467,4 +468,119 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
         message.contains("topic state") && message.contains("reindex"),
         "the refusal has to say what is wrong and what to run: {message}"
     );
+}
+
+/// Rewriting the same few memories does not make the index grow for ever.
+///
+/// The index spreads across about two more files with every write, whatever it
+/// holds: the count follows writes, not documents. Nothing noticed, because the
+/// only thing that compacted it was gated on documents -- so ten memories
+/// rewritten a few hundred times reached eight hundred files and a workspace
+/// used normally for a week died of `Too many open files` on an ordinary
+/// descriptor limit.
+///
+/// This writes what such a workspace writes and asks how many files are left.
+/// Without a budget it fails on the count long before the assertion means
+/// anything about compaction; with one it settles wherever the policy says.
+#[test]
+fn rewriting_the_same_memories_leaves_a_bounded_number_of_files() {
+    fn files(dir: &std::path::Path) -> u64 {
+        std::fs::read_dir(dir)
+            .expect("read the index directory")
+            .flatten()
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => files(&entry.path()),
+                _ => 1,
+            })
+            .sum()
+    }
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    // Ten topics, two hundred writes, one flush each -- which is what the
+    // cascade does for an interactive write, and why the count follows writes.
+    for round in 0..200u128 {
+        index
+            .upsert(
+                numbered(round % 10),
+                &format!("writer recorded round {round} of the shared index run"),
+                &stub(),
+            )
+            .expect("upsert");
+        index.flush().expect("flush");
+
+        if pamin_index::is_fragmented(index.file_count().expect("count files")) {
+            index.optimize().expect("optimize");
+        }
+    }
+
+    let left = files(dir.path());
+    assert!(
+        left <= 512,
+        "the index settled at {left} files, which is not a bound"
+    );
+    assert_eq!(
+        index.document_count().expect("documents"),
+        10,
+        "the files were compacted away along with the memories"
+    );
+}
+
+/// Splitting text does not wait for whoever is using the index.
+///
+/// The composition layer holds the projection behind a mutex, for a defect in
+/// the search engine that has nothing to do with segmentation. Handing out the
+/// segmenter as a borrow made that lock cover tokenizing too: five callers took
+/// it for work the index was not doing, and two held it a long time -- one
+/// segments every candidate a probe returned, the other every topic name in the
+/// project. Every search on that project queued behind them.
+///
+/// So the segmenter is a handle, and this is what says so: a caller takes one,
+/// somebody else locks the projection and keeps it, and the tokenizing still
+/// finishes. Before the change this does not compile rather than failing an
+/// assertion -- the borrow's lifetime was the guard's, so there was no way to
+/// write the second half of it. That is the stronger form of the same claim.
+#[test]
+fn tokenizing_does_not_wait_for_the_index() {
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    // The shape the composition layer holds it in, so this is the lock the test
+    // is actually about and not a stand-in for it.
+    let index: Arc<Mutex<Box<dyn Projection + Send + Sync>>> =
+        Arc::new(Mutex::new(Box::new(index)));
+
+    let segmenter = index.lock().expect("lock the index").segmenter();
+    let held = index.lock().expect("lock the index");
+
+    let tokens = std::thread::spawn(move || segmenter.name_sequence("index lock contention"))
+        .join()
+        .expect("the segmenting thread panicked");
+
+    assert_eq!(
+        tokens,
+        vec!["index", "lock", "contention"],
+        "the segmenter handed out by the projection stopped tokenizing"
+    );
+
+    // Named rather than dropped at the end of scope, so it is visible that the
+    // lock was still held for all of the above.
+    drop(held);
 }

@@ -39,6 +39,8 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
     let listener =
         UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
 
+    tokio::spawn(maintain(Arc::clone(&session)));
+
     tracing::info!(socket = %path.display(), "serving");
 
     loop {
@@ -65,6 +67,60 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
                 Err(error) => tracing::warn!(%error, "connection failed"),
             }
         });
+    }
+}
+
+/// How often the server looks for index upkeep to do.
+///
+/// Not a pace for the work -- the work is scheduled by whoever caused it, and
+/// a tick that finds nothing owed costs one query per open project. It is how
+/// long an index may stay untidy after a burst of writes, and seconds of that
+/// changes nothing a caller can see.
+const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Does the index's housekeeping, away from whoever caused it.
+///
+/// This is the half of the cascade a write no longer waits for. Compacting a
+/// few hundred index files takes a third of a second and makes nothing more
+/// correct, so paying for it in front of an agent was the wrong place; the
+/// server is still here afterwards, which is the whole qualification for the
+/// job.
+///
+/// It claims like any other worker, so two servers against one workspace share
+/// the work rather than repeat it, and a failure is logged and retried on its
+/// own schedule rather than taken out on a request.
+///
+/// Flushing comes first and is the more important half. A write leaves its
+/// document in the projection's buffer, where queries can already see it, and
+/// leaves the job claimed until a flush puts it on disk -- so this loop is what
+/// turns those claims into completions. Nothing is lost if it never runs: the
+/// claims lapse and the ledger replays them. What is lost is the amortization,
+/// which is the entire reason the write did not flush for itself.
+async fn maintain(session: Arc<Session>) {
+    loop {
+        tokio::time::sleep(UPKEEP).await;
+
+        // One engine at a time, and taken by key. Holding all of them for the
+        // length of a sweep makes every one of them look busy to eviction,
+        // which then finds nothing to close and lets the registry grow past
+        // its bound whenever a cold project arrives during a tick.
+        for key in session.opened_projects() {
+            let Some(engine) = session.opened_engine(&key) else {
+                // Being opened, or being rebuilt. Its upkeep waits for the
+                // next tick rather than this loop waiting for it.
+                continue;
+            };
+            match engine.flush_what_is_applied().await {
+                Ok(0) => {}
+                Ok(durable) => tracing::debug!(durable, "made applied writes durable"),
+                Err(error) => tracing::warn!(%error, "flushing applied writes failed"),
+            }
+            match engine.maintain().await {
+                Ok(true) => tracing::debug!("ran index upkeep"),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(%error, "index upkeep failed"),
+            }
+        }
     }
 }
 
@@ -116,7 +172,7 @@ async fn serve_connection(session: &Session, stream: UnixStream) -> Result<Shutd
             }
         };
 
-        framed.send(serde_json::to_string(&response)?).await?;
+        framed.send(within_bounds(&response)?).await?;
 
         // Stopping happens whether or not the database could be stopped. The
         // reply carries that failure, and the caller sees it -- but a server
@@ -143,7 +199,7 @@ const MAX_REQUEST: usize = 16 * 1024 * 1024;
 /// The dispatch is a match rather than a trait because there is exactly one
 /// implementation of each arm and the compiler checking that every command has
 /// one is worth more than the indirection would be.
-async fn answer(session: &Session, request: Request) -> Result<serde_json::Value> {
+async fn answer(session: &Session, request: Request) -> Result<Payload> {
     let Request {
         project,
         profile,
@@ -159,6 +215,9 @@ async fn answer(session: &Session, request: Request) -> Result<serde_json::Value
         Call::Write(args) => {
             json(command::write::execute(session, &project, profile, args).await?)?
         }
+        Call::Import(args) => {
+            json(command::import::execute(session, &project, profile, args).await?)?
+        }
         Call::Read(args) => json(command::read::execute(session, &project, args).await?)?,
         Call::Search(args) => {
             json(command::search::execute(session, &project, profile, args).await?)?
@@ -170,15 +229,41 @@ async fn answer(session: &Session, request: Request) -> Result<serde_json::Value
         Call::Reindex(args) => {
             json(command::reindex::execute(session, &project, profile, args).await?)?
         }
-        Call::Cascade(args) => command::cascade::answer(session, &project, profile, args).await?,
+        Call::Cascade(args) => {
+            json(command::cascade::answer(session, &project, profile, args).await?)?
+        }
         Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
     };
 
     Ok(value)
 }
 
-fn json<T: serde::Serialize>(value: T) -> Result<serde_json::Value> {
-    Ok(serde_json::to_value(value)?)
+/// A command's result, serialized once and never re-walked.
+type Payload = Box<serde_json::value::RawValue>;
+
+/// The response as a line, refused here if it is one the client cannot read.
+///
+/// The codec's limit is a decoder's: it bounds what this reads and says nothing
+/// about what it writes. So an oversized answer used to be computed in full,
+/// written in full, and rejected at the other end by the client's decoder --
+/// which reports it as an unreadable response rather than as a result too large
+/// to send. Saying so here costs a length check and makes the message name the
+/// problem.
+fn within_bounds(response: &Response) -> Result<String> {
+    let line = serde_json::to_string(response)?;
+    if line.len() > MAX_REQUEST {
+        let too_big = Response::Err(format!(
+            "the result is {} bytes and the most that can be sent is {MAX_REQUEST}; \
+             ask for less of it -- a smaller --limit, or a narrower grep",
+            line.len()
+        ));
+        return Ok(serde_json::to_string(&too_big)?);
+    }
+    Ok(line)
+}
+
+fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
+    Ok(serde_json::value::to_raw_value(&value)?)
 }
 
 /// Where this workspace's socket lives.

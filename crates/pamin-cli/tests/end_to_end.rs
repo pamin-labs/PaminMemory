@@ -65,11 +65,21 @@ impl Cli {
     /// passing. Holding the handle is what lets a test ask whether the process
     /// that answered the first request is the one that answered the last.
     fn serve(&self) -> std::process::Child {
+        self.serve_logging("warn")
+    }
+
+    /// A server whose log is part of what the test is checking.
+    ///
+    /// The default filter is `warn`, so a test that wants to see what the
+    /// server did rather than only what it returned has to ask for it. The log
+    /// is `serve.log` in the workspace either way.
+    fn serve_logging(&self, filter: &str) -> std::process::Child {
         let log = std::fs::File::create(self.home().join("serve.log")).expect("server log");
         let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(["serve"])
             .env("PAMIN_HOME", self.home())
             .env("PAMIN_PROFILE", PROFILE)
+            .env("PAMIN_LOG", filter)
             .stdout(log.try_clone().expect("a second handle on the log"))
             .stderr(log)
             .spawn()
@@ -146,6 +156,184 @@ const QUERIES: &[(&str, &str)] = &[
     ("أنابيب", "أنابيب النشر"),
     ("развёртывания", "конвейер развёртывания"),
 ];
+
+/// Reranking moves what the lexical channels missed and leaves the rest.
+///
+/// The second pass is confined to candidates no lexical channel found, because
+/// every cross-encoder measured improves cross-lingual ranking and damages
+/// same-language ranking by about as much. Confining it makes the damage
+/// impossible rather than unlikely, and that is the property worth holding to:
+/// a candidate a lexical channel ranked comes back where fusion put it,
+/// whatever the reranker thought of it.
+///
+/// Reverting the restriction -- reranking the whole head -- reorders those too,
+/// and this fails.
+#[test]
+#[ignore = "provisions postgres, and downloads an embedding model and a reranker"]
+fn reranking_moves_what_the_lexical_channels_missed() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    // Several memories sharing the query's words, so there is an order among
+    // them for a reranker to disturb, and several sharing none, so there is
+    // something for it to do.
+    for (topic, content) in [
+        (
+            "deploy_en",
+            "the deployment pipeline publishes signed artifacts",
+        ),
+        (
+            "deploy_en2",
+            "deployment happens after every merge to the trunk",
+        ),
+        (
+            "deploy_en3",
+            "a failed deployment rolls back to the previous tag",
+        ),
+        ("rota_en", "the oncall rota rotates every monday morning"),
+        ("deploy_zh", "部署流水线在每次合并到主干后自动触发"),
+        (
+            "deploy_fr",
+            "le pipeline de déploiement publie des artefacts signés",
+        ),
+        (
+            "deploy_ja",
+            "デプロイは主幹へのマージごとに自動で実行される",
+        ),
+        (
+            "deploy_ar",
+            "يتم تشغيل خط النشر تلقائيا بعد كل دمج في الفرع الرئيسي",
+        ),
+    ] {
+        cli.run(&["write", "--topic", topic, content]);
+    }
+
+    // Each hit, and whether a lexical channel is among the reasons it is here.
+    let ranked = |tier: &str| -> Vec<(String, bool)> {
+        cli.json(&[
+            "search",
+            "how does deployment work",
+            "--limit",
+            "8",
+            "--rerank",
+            tier,
+        ])["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| {
+                let lexical = hit["why"].as_array().expect("why").iter().any(|why| {
+                    why["channel"]
+                        .as_str()
+                        .is_some_and(|channel| channel.starts_with("lexical"))
+                });
+                (hit["topic"].as_str().expect("a topic").to_string(), lexical)
+            })
+            .collect()
+    };
+
+    let plain = ranked("off");
+    let reranked = ranked("fast");
+
+    let lexical = |hits: &[(String, bool)]| -> Vec<String> {
+        hits.iter()
+            .filter(|(_, lexical)| *lexical)
+            .map(|(topic, _)| topic.clone())
+            .collect()
+    };
+    assert!(
+        !lexical(&plain).is_empty(),
+        "no candidate came from a lexical channel, so this proves nothing"
+    );
+    assert_eq!(
+        lexical(&plain),
+        lexical(&reranked),
+        "reranking moved a candidate a lexical channel had already ranked"
+    );
+
+    let order = |hits: &[(String, bool)]| -> Vec<String> {
+        hits.iter().map(|(topic, _)| topic.clone()).collect()
+    };
+    assert_ne!(
+        order(&plain),
+        order(&reranked),
+        "reranking changed nothing at all, so this proves nothing"
+    );
+}
+
+#[test]
+#[ignore = "provisions postgres, and downloads an embedding model and a reranker"]
+fn reranking_reorders_other_languages_and_leaves_this_one_alone() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+
+    // Several memories about one subject in the query's language, so there is
+    // an order among them for a reranker to disturb, and several in others, so
+    // there is something for it to do.
+    for (topic, content) in [
+        (
+            "deploy_en",
+            "the deployment pipeline publishes signed artifacts",
+        ),
+        (
+            "deploy_en2",
+            "deployment happens after every merge to the trunk",
+        ),
+        (
+            "deploy_en3",
+            "a failed deployment rolls back to the previous tag",
+        ),
+        ("rota_en", "the oncall rota rotates every monday morning"),
+        ("deploy_zh", "部署流水线在每次合并到主干后自动触发"),
+        (
+            "deploy_fr",
+            "le pipeline de déploiement publie des artefacts signés",
+        ),
+        (
+            "deploy_ja",
+            "デプロイは主幹へのマージごとに自動で実行される",
+        ),
+    ] {
+        cli.run(&["write", "--topic", topic, content]);
+    }
+
+    let ranked = |tier: &str| -> Vec<String> {
+        cli.json(&[
+            "search",
+            "how does deployment work",
+            "--limit",
+            "7",
+            "--rerank",
+            tier,
+        ])["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| hit["topic"].as_str().expect("a topic").to_string())
+            .collect()
+    };
+
+    let plain = ranked("off");
+    let reranked = ranked("fast");
+
+    let english = |hits: &[String]| -> Vec<String> {
+        hits.iter()
+            .filter(|topic| {
+                topic.ends_with("_en") || topic.ends_with("_en2") || topic.ends_with("_en3")
+            })
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        english(&plain),
+        english(&reranked),
+        "reranking moved memories written in the query's own language"
+    );
+    assert_ne!(
+        plain, reranked,
+        "reranking changed nothing at all, so this proves nothing"
+    );
+}
 
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
@@ -1292,7 +1480,10 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
 ///
 /// The projection engine declares `Sync` and does not honour it: a reader takes
 /// an unsynchronized snapshot of the segments a writer is in the middle of
-/// changing, reported upstream as alibaba/zvec#714 and still open. The engine
+/// changing, reported upstream as alibaba/zvec#714. It is fixed there and not
+/// released -- #715 merged as `515c11a`, against a newest published version of
+/// 0.7.0 that predates it -- so what this runs against is still the code that
+/// needs the lock, and this stays the test that decides when it can go. The engine
 /// therefore holds a lock that the engine's own declaration says is
 /// unnecessary, and nothing in a single-threaded test can tell a load-bearing
 /// lock from a superstitious one. This can: sustained concurrent traffic
@@ -1303,6 +1494,24 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
 /// failed (fill_result): fetch table failed` -- the reader reading a table the
 /// writer had already moved. Upstream reports the same race faulting outright,
 /// so an error is the mild form of it.
+///
+/// It also says how much lock. This ran for a long time against a read-write
+/// lock, on the reading that queries may as well share the index, and the
+/// engine does not agree: with readers running together it wedges inside the
+/// engine's own code, forty-six of its threads asleep on futexes and no
+/// processor time used by any of them. Writers alone pass; readers made
+/// exclusive pass. So the lock is a mutex, and this is the test that decides
+/// that rather than a benchmark, because the cost of guessing wrong is a
+/// server that stops answering rather than one that answers slowly.
+///
+/// It covers one thing the lock deliberately does not: compaction runs on a
+/// handle taken out from under it, because the engine supports queries during
+/// its own maintenance and has since #614, which did ship in the version this
+/// depends on. That makes compaction the one operation here genuinely
+/// overlapping a query rather than queuing with it, and the seal it starts with
+/// is a segment switch -- the same event #714 is about. So this is also what
+/// says the narrower window is safe, and it checks the server's log at the end
+/// rather than trusting that compaction happened at all.
 ///
 /// Linux is where this shows. On macOS the same race is latent, so a green run
 /// there says nothing about whether the lock is doing anything.
@@ -1317,7 +1526,9 @@ fn readers_and_writers_share_one_index_without_bringing_it_down() {
     const FOR_LONG_ENOUGH: Duration = Duration::from_secs(300);
 
     let cli = Cli::new();
-    let mut server = cli.serve();
+    // Asked for its log, because "compaction ran" is half of what this checks
+    // and the server is the only one who knows.
+    let mut server = cli.serve_logging("pamin=debug");
     cli.run(&["init"]);
 
     let deadline = Instant::now() + FOR_LONG_ENOUGH;
@@ -1358,6 +1569,110 @@ fn readers_and_writers_share_one_index_without_bringing_it_down() {
     assert!(
         server.try_wait().expect("checking on the server").is_none(),
         "the server did not survive its readers and writers sharing an index"
+    );
+
+    // Flushing is what this run does concurrently with its queries: a write
+    // applies its document and returns, and the server puts it on disk. That
+    // takes the index lock like any other write, so the readers above are
+    // sharing an index with it for the whole five minutes.
+    //
+    // It used to be compaction. This workload no longer fragments the index at
+    // all: three thousand writes leave 136 files against a budget of 256, and
+    // nothing is ever compacted. Amortizing the flush was most of what produced
+    // the files, so asserting compaction here would only be asserting that the
+    // old cost was still being paid.
+    let log = std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+    assert!(
+        log.contains("made applied writes durable"),
+        "nothing was flushed during the run, so nothing overlapped the queries \
+         and a green result says nothing about whether it can"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// A write is findable before it is on disk, and somebody else puts it there.
+///
+/// The projection buffers a write in memory and a query reads that buffer, so a
+/// memory is findable the moment it is applied. Making it durable is a separate
+/// operation, it calls `fsync`, and it costs 39 ms -- more than everything else
+/// a write does put together. Paying it per write also interrupts the engine's
+/// own batching: two thousand memories flushed one at a time leave 10,031 index
+/// files and 2.2 GB resident, against 25 files and 4 MB left alone.
+///
+/// So a write applies its document and returns, and the job stays claimed until
+/// a flush covers it. Both halves need saying, and this says both: that the
+/// memory is searchable straight away, and that the flush happened somewhere
+/// other than in front of the writer.
+///
+/// What makes it safe is the claim, not the engine. Power lost between the two
+/// leaves the job owed and the ledger replays it -- the same guarantee as
+/// before, reached without the writer waiting for a disk.
+///
+/// Before this, the writer flushed its own round: the search still succeeded
+/// and the server never reported making anything durable, so the second
+/// assertion is the one that fails.
+///
+/// This replaces a test that asked the same question about compaction -- that a
+/// write leaves the index's upkeep to the server rather than paying for it.
+/// Compaction was the upkeep a write left behind because a write flushed, and
+/// flushing per write was what produced the files: two thousand memories left
+/// 10,031 index files that way and 25 left to the engine's own schedule. With
+/// the flush amortized the index does not fragment at ordinary rates -- three
+/// thousand writes leave 136 files against a budget of 256 -- so the old test
+/// could no longer reach the state it was named for. The division of labour it
+/// was about is this one; the file budget still has its own test at the index
+/// layer, where the files can be produced deliberately.
+#[test]
+#[ignore = "provisions postgres, downloads model weights, and writes a hundred memories"]
+fn a_write_is_findable_before_the_server_has_put_it_on_disk() {
+    /// More than one upkeep tick's worth, so the flushing is a batch rather
+    /// than one write's worth done late.
+    const ENOUGH_TO_BATCH: usize = 100;
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(60);
+
+    let cli = Cli::new();
+    // Asked for its log, because "somebody else flushed" is half the claim.
+    let mut server = cli.serve_logging("pamin=debug");
+    cli.run(&["init"]);
+
+    for round in 0..ENOUGH_TO_BATCH {
+        let written = cli.json(&[
+            "write",
+            "--topic",
+            &format!("durable_{round}"),
+            &format!("round {round} of the durability run mentions marmalade"),
+        ]);
+        assert_eq!(
+            written["cascade"], "applied",
+            "a write whose document the index has is not still owed, whatever \
+             the queue says about flushing it"
+        );
+    }
+
+    // Findable now, with nothing having been flushed on its account.
+    let hits = cli.json(&["search", "marmalade", "--limit", "5"]);
+    assert!(
+        !hits["hits"].as_array().expect("hits").is_empty(),
+        "a memory the index has applied was not findable"
+    );
+
+    // And the server is what puts them on disk.
+    let deadline = Instant::now() + GIVE_UP_AFTER;
+    let flushed = loop {
+        if Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        let log = std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+        if log.contains("made applied writes durable") {
+            break true;
+        }
+    };
+    assert!(
+        flushed,
+        "no applied write was ever made durable by anybody but the writer"
     );
 
     server.kill().expect("stopping the server");
@@ -1508,4 +1823,75 @@ fn a_topics_history_does_not_crowd_the_index() {
     let earlier = cli.json(&["read", "release_process", "--version-offset", "1"]);
     assert_eq!(earlier["version"], (VERSIONS - 1) as u64);
     assert_eq!(earlier["is_current"], false);
+}
+
+/// An import is all of the file or none of it, and what it records is findable.
+///
+/// The interesting half is the refusal. Memories are recorded one transaction
+/// at a time, so an importer that parsed as it went would record everything
+/// before a bad line and then stop -- leaving a workspace holding some unknown
+/// prefix of a file, which is worse than either outcome. Parsing the whole file
+/// first is what makes "it failed" mean "nothing happened".
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn an_import_records_the_whole_file_or_none_of_it() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let broken = cli.home().join("broken.ndjson");
+    std::fs::write(
+        &broken,
+        "{\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n\
+         {\"topic\": \"second\", \"content\": \"the oncall rota rotates on mondays\"}\n\
+         this line is not json\n",
+    )
+    .expect("writing the broken file");
+
+    let refused = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        .args(["import", "--from"])
+        .arg(&broken)
+        .env("PAMIN_HOME", cli.home())
+        .env("PAMIN_PROFILE", PROFILE)
+        .output()
+        .expect("running import");
+    assert!(
+        !refused.status.success(),
+        "a file with a line that is not a memory was accepted"
+    );
+
+    let after = cli.json(&["search", "deployment pipeline argo"]);
+    assert!(
+        after["hits"].as_array().expect("hits").is_empty(),
+        "the lines before the bad one were recorded anyway: {after}"
+    );
+
+    let good = cli.home().join("good.ndjson");
+    std::fs::write(
+        &good,
+        "{\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n\
+         \n\
+         {\"topic\": \"second\", \"content\": \"the oncall rota rotates on mondays\"}\n",
+    )
+    .expect("writing the good file");
+
+    let imported = cli.json(&["import", "--from", good.to_str().expect("a path")]);
+    assert_eq!(imported["memories"], 2, "a blank line was counted");
+    assert_eq!(imported["promoted"], 2);
+    assert_eq!(imported["held"], 0);
+
+    let found = cli.json(&["search", "deployment pipeline argo"]);
+    assert!(
+        !found["hits"].as_array().expect("hits").is_empty(),
+        "an imported memory was not searchable afterwards"
+    );
+
+    // Again, unchanged. Every memory is held rather than rejected, which is
+    // what makes re-running an import safe rather than an error to work around.
+    let again = cli.json(&["import", "--from", good.to_str().expect("a path")]);
+    assert_eq!(again["promoted"], 0);
+    assert_eq!(again["held"], 2);
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
 }

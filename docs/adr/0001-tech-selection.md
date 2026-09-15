@@ -166,6 +166,28 @@ Raising `m` to 32 for the recall measured above doubles that: roughly 196 GiB fo
 
 What it does change is when the disk-resident path stops being optional. Serving that many projects at that size means keeping cold indexes on disk and paging in the working set, and the graph doubling brings that forward rather than pushing it away. The engine exposes `IndexType::Diskann` and `IvfRabitq` for it, with two constraints to carry into that work: DiskANN is Linux x86-64 only, and `enable_mmap` is written into the manifest at creation and ignored when an existing collection is opened, so it cannot be turned on after the fact.
 
+### Segment size is the whole vector-maintenance policy
+
+A vector index needs a rule for when to build a graph, and the obvious form of that rule is a threshold: build once some number of documents are unindexed. This project shipped one — a hundred thousand — and it never fired, because a project reaching a hundred thousand unindexed documents is not the case that needs the graph. A threshold is a constant asked to be right at every size.
+
+The engine makes one number do the job instead. Documents land in the segment being written and are searched by scanning it; the segment seals at a configured size, and only a sealed segment gets a graph. So the size decides both what a query scans and what a build costs, and there is no separate question of when to build — the answer is "whenever a segment sealed without one".
+
+Scanning is not a fallback here, it is the faster thing to do while a segment is small. Measured on the default profile, one graph against an exhaustive scan:
+
+| Documents | Scan | Graph | Build | Agreement |
+| --- | --- | --- | --- | --- |
+| 1,000 | 0.57 ms | 0.66 ms | 0.3 s | 1.0000 |
+| 10,000 | 2.70 ms | 3.10 ms | 8.1 s | 1.0000 |
+| 25,000 | 5.78 ms | 5.76 ms | 40.9 s | 0.9830 |
+| 50,000 | 20.85 ms | 10.08 ms | 124.0 s | 0.9540 |
+| 100,000 | 39.58 ms | 11.24 ms | 325.8 s | 0.8920 |
+
+The crossover is near 25,000, and the build cost is superlinear where the query cost is not. So a segment holds a quarter of the collection, floored at 2,000 so a new project is one segment rather than a hundred tiny ones and capped at 250,000 so no single build is ever worth more than about twenty minutes. A project past a million documents therefore runs more than four segments rather than larger ones, which is the right way round.
+
+The cost of segmenting at all is that BM25 statistics are per segment, so a term's rarity is measured against a segment rather than the project. It is small and it was measured, not assumed: six segments against one over the same 13,014 sentences moved same-language nDCG@10 from 0.8558 to 0.8517 and recall@50 from 0.9639 to 0.9655, while a query went from 208 ms to 63 ms.
+
+**`pamin reindex` is the entry point for recomputing this.** The size is written into the collection's manifest when it is created, from the document count at that moment — which for a project that grows from nothing is the floor. A project that has since grown by orders of magnitude keeps the size it was created with until it is rebuilt, and rebuilding is what recomputes it. That is a deliberate consequence of the size living in the manifest rather than a gap: changing it in place would mean resealing every segment, which is a rebuild under another name.
+
 The embedding model is a profile, not a constant:
 
 | Profile | Model | Dimensions | Resident | Per query | Cross-lingual nDCG@10 |
@@ -176,27 +198,88 @@ The embedding model is a profile, not a constant:
 
 BGE-M3 is the default, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
 
-`multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and our default reranker is deterministic and has none. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
+`multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and the one this project ships reorders only the candidates the lexical channels missed. It is not there to rescue a weaker embedding across the board, and cannot be relied on to. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
 
-### No cross-encoder reranker, because it was measured and it did not help
+### A cross-encoder reranker, once the opportunity was real
 
-A cross-encoder looked like the largest retrieval gain left. Published results put reranking at seven or eight points of nDCG@10, and the shape of our numbers seemed to invite it. Two permissively licensed multilingual rerankers were run against the evaluation corpus, and neither earned its cost:
+An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on this project's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
 
-| | Size | Per query | cross | mono | lexical |
-| --- | --- | --- | --- | --- | --- |
-| dense only, no reranking | — | — | **0.8299** | 0.9849 | **1.0000** |
-| `gte-multilingual-reranker-base`, int8 | 325 MB | 245 ms | 0.7765 | **0.9908** | 0.9693 |
-| `bge-reranker-v2-m3`, int8 | 544 MB | 403 ms | 0.8166 | 0.9821 | 0.9361 |
+On 13,014 sentences in eleven languages, 3,849 relevant sentences sit between rank 10 and rank 50, across 1,090 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
 
-Reranking the dense top-30, nDCG@10, both models from ONNX exports of Apache-2.0 base models. Widening the shortlist to 50 made both worse and slower, not better: 0.7560 at 393 ms and 0.8136 at 683 ms.
+| Tier | Loads | Per query | Cross-lingual nDCG@10 | Same-language |
+| --- | --- | --- | --- | --- |
+| `off` | nothing | — | — | — |
+| `fast` (default) | 113 MB | 151 ms | **+0.0595** | unchanged |
+| `accurate` | 570 MB | 1795 ms | **+0.0852** | unchanged |
 
-The diagnostic matters more than the totals. On this corpus a reranker has nothing to recover: across all 137 queries, the relevant memory is already inside the top ten by dense retrieval alone — not one query has it sitting between rank 10 and rank 50 where reranking would pull it up. What is left is reordering inside the top ten, and on cross-lingual and lexical queries both cross-encoders order worse than BGE-M3's dense similarity does.
+`fast` is `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, a 21M-parameter distilled multilingual MiniLM; `accurate` is `onnx-community/bge-reranker-v2-m3-ONNX`, XLM-RoBERTa-large at 303M. Both are quantized ONNX behind the library's user-defined loader, fetched on first use into the same cache as the embedding model.
 
-So this is not "reranking does not work". It is that a corpus of 210 memories does not put anything far enough down for a reranker to earn 245 ms, and the models cost accuracy in the groups this project cares most about. **Revisit when the opportunity is real** — a corpus where relevant memories fall below the retrieval cut, which is what millions of memories in one project would produce and what this one cannot simulate. The measurement to run first is the diagnostic above, not the nDCG: if nothing is below the cut, there is nothing to rerank.
+**The same-language column is unchanged by construction, not by luck.** Every cross-encoder tried improves cross-lingual ranking and damages same-language ranking by about as much — three models across two orders of magnitude of size, −0.0403 to −0.2109. Fusion is already good at placing a memory that shares words with the query, and a second pass reorders it worse. So the pass is confined to the candidates no lexical channel found, and they are written back into the positions they already held. Unconfined, two of those models score +0.1698/−0.2109 and +0.1678/−0.0806; confined, the same-language column cannot move at all.
 
-Licensing is no longer the blocker it was. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, and permissively licensed multilingual exports exist. That path is open whenever the measurement turns.
+The rule was a language comparison first, since "written in another language" is what the case really is. The two rules pick the same candidates — they agree on 93% of a shortlist and score within 0.002 — but the language test needs the query's language, and that is exactly what a detector will not commit to for a short query: `detect_language` returns nothing for "how does deployment work". A rule that quietly does nothing on the commonest shape of query is worse than a slightly different rule.
+
+**Smaller is not worse.** `accurate` is fourteen times larger and twelve times slower than `fast` for 0.026 more. That reproduces *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) without having read it first: under a latency budget the shallow model wins, because the budget buys more candidates. `fast` is therefore the default, and a workspace whose memories are all in one language should set `off` — the candidates the lexical channels miss are overwhelmingly the ones in another language.
+
+A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
+
+**There is no compilation trick left in the runtime.** Sorting candidates by length before batching and using batches of eight rather than sixteen took the same work from 191 ms to 151, because a batch is padded to its longest member. Against that, the export format is worth at most 1.45x on identical weights, fp16 is slower than fp32 on a CPU, and the session already runs every core at the highest graph optimization level. The measured 9.75 ms a pair is what twelve transformer layers on four cores cost.
+
+The published answers to this latency all change the architecture instead, and both are deferred on a missing export rather than on a licence or a doubt:
+
+| Route | Worth | Blocked on | Revisit when |
+| --- | --- | --- | --- |
+| Precomputed document layers (PreTTR, arXiv 2004.14255) | ~6x on this shape: twelve layers over a ten-token query and a hundred-token memory is 1320 layer-tokens; caching the memory's first eleven layers makes it 220. 151 ms becomes roughly 25. Storage is hot set x tokens x width: 384 MB for ten thousand memories | An export split into two halves. It is an export-time job, not runtime graph surgery — `ort` selects only among declared graph outputs and no ONNX graph-editing crate is in the tree | A split export of `mmarco-mMiniLMv2` exists **and** the score cache's hit rate shows the hot set is actually small, which is the same evidence that decides whether it is worth its storage |
+| Late interaction (ColBERT) | Moves the cost to write time, where the cascade already runs a forward pass per memory; query time becomes MaxSim. At 64–128 dimensions int8 that is 6.4–12.8 KB a memory, the same order as the vector index | No usable model. `colbert-xm` is MIT and multilingual but has no ONNX export; the exports that exist are English-only; the multilingual one with an export is CC-BY-NC-4.0. BGE-M3's own ColBERT head is 1024-dimensional, 100 KB a memory int8, ten times the whole index | An ONNX export of `colbert-xm` exists and measures competitively cross-lingual |
+
+Both routes rest on premises this project has not measured — that the hot set is small, that write-time cost is cheap — and the triggers are written to test the premise before the work.
+
+Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path both tiers take.
+
+### The index lock, and what would actually lift it
+
+Every call into the projection goes through one exclusive lock. The engine
+declares `Sync` and does not honour it — a reader takes an unsynchronized
+snapshot of the segments a writer is changing, reported upstream as
+alibaba/zvec#714 — and without the lock, searches fail inside a minute under
+sustained concurrent traffic.
+
+Two things about that lock are worth writing down, because both are easy to get
+wrong from the outside.
+
+**It is a mutex rather than a read-write lock, and that was decided by a hang
+nobody upstream has reported.** With readers allowed to share, twenty writers
+and twenty readers wedged the process inside the engine's own code: forty-six of
+its threads asleep on futexes, no caller of ours above them, and no processor
+time used by any of them for thirty-five minutes. The same run with writers
+alone passes; the same run with readers made exclusive passes for the full five
+minutes. Upstream #714 reports SIGSEGV, and the error we also saw —
+`Read next record batch failed (fill_result): fetch table failed` — but **no
+upstream issue reports a hang**. So the two are consistent with each other and
+have not been shown to be the same defect.
+
+**Which means the fix landing upstream is not, by itself, permission to remove
+the lock.** #714 closed with #715 (merged as `515c11a`, giving the segment locks
+shared readers) and the sibling data-loss report #724 closed with #731 (as
+`31d88ea`). Neither is in a published version — 0.7.0 predates both — and
+neither touched a public header, so adopting them is a version bump rather than
+a binding change.
+
+The trigger is therefore two-part, and the second part is the one that matters:
+
+- **When** a `zvec-rust` release contains `515c11a`, take it.
+- **Then** run `readers_and_writers_share_one_index_without_bringing_it_down`
+  for its full five minutes with the lock relaxed to a read-write lock, on
+  Linux, before believing anything. On macOS the race is latent and a green run
+  says nothing. If it wedges again, the hang is a second defect, the lock stays
+  a mutex, and *that* is the point at which it is worth reporting upstream with
+  the stack and the three-way bisect above.
+
+Compaction is already outside this lock, on the strength of #614, which did ship
+in 0.7.0: Optimize is a brief exclusive seal, a long phase holding no schema
+lock, and a brief exclusive commit. That is the one part of the engine's
+concurrency this project relies on today.
 
 ### Engineering budgets
 

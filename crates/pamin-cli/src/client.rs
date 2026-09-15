@@ -45,7 +45,10 @@ pub fn wanted() -> bool {
 /// `Ok(None)` means there was no server and none was wanted -- only `stop` asks
 /// for that, since starting a server to stop it is a way of doing nothing
 /// slowly. Every other call gets one started.
-pub async fn ask(workspace: &Workspace, request: &Request) -> Result<Option<serde_json::Value>> {
+pub async fn ask(
+    workspace: &Workspace,
+    request: &Request,
+) -> Result<Option<Box<serde_json::value::RawValue>>> {
     let path = socket_path(workspace);
     let start_one = !matches!(request.call, Call::Stop);
 

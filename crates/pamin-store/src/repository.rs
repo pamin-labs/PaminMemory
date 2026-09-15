@@ -616,6 +616,41 @@ pub async fn current_states_of(
     Ok(rows.iter().map(row_to_topic_state).collect())
 }
 
+/// What one topic currently says, found by name.
+///
+/// Through the pointer on `topics`, like [`current_states_of`], and for the
+/// same reason: the alternative is a search for the topic's newest surviving
+/// version. The write path used to do exactly that -- read *every* version of
+/// the topic, ordered, into memory, and take the last one -- to answer a
+/// question the pointer answers directly. That is three round trips and a scan
+/// that grows with the topic's edit history, on every write, to compare one
+/// string.
+///
+/// Only the content, because that is the whole question the caller has: is what
+/// is being written what the topic already says.
+///
+/// A topic that does not exist and a topic whose every state has been soft
+/// deleted both resolve to nothing, and the caller treats them the same -- in
+/// both cases there is nothing for the new content to be identical to.
+pub async fn current_content(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    name: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT ts.content
+           FROM topics t
+           JOIN topic_states ts ON ts.id = t.current_state_id
+          WHERE t.project_id = $1 AND t.name = $2",
+    )
+    .bind(project.0)
+    .bind(name)
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(row.map(|(content,)| content))
+}
+
 /// Names these topics, and says which state each currently resolves to.
 ///
 /// One lookup for the two things the search path needs about a topic once it

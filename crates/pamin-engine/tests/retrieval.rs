@@ -451,7 +451,10 @@ async fn write_corpus(engine: &mut Engine, corpus: &[Memory]) {
             .unwrap_or_else(|error| panic!("writing {}: {error}", memory.topic));
     }
 
-    let drained = engine.drain_cascade().await.expect("drain the cascade");
+    let drained = engine
+        .drain_cascade(pamin_engine::Owed::Everything)
+        .await
+        .expect("drain the cascade");
     assert_eq!(
         drained.pending, 0,
         "the corpus is not fully indexed: {} jobs still owed",

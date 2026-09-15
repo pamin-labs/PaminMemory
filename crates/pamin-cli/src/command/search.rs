@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::Why;
-use pamin_index::Profile;
+use pamin_index::{Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,16 @@ pub struct Args {
         value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
     )]
     pub graph_depth: u8,
+
+    /// How much to spend reordering the results: off, fast, or accurate.
+    ///
+    /// A cross-encoder reads the query and a memory together, which is what
+    /// lets it correct an order the channels got wrong and what makes it cost
+    /// a forward pass per candidate. Only memories written in a language other
+    /// than the query's are reordered, so a workspace in one language gains
+    /// exactly nothing from this and should turn it off.
+    #[arg(long, env = "PAMIN_RERANK", default_value = "fast")]
+    pub rerank: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,7 +83,11 @@ pub async fn execute(
         channel: args.channel_depth,
         graph: args.graph_depth,
     };
-    let hits = engine.search(&args.query, args.limit, depths).await?;
+    let rerank = Rerank::parse(&args.rerank)
+        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
+    let hits = engine
+        .search_reranked(&args.query, args.limit, depths, rerank)
+        .await?;
 
     let results = Results {
         query: args.query,
