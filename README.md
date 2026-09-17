@@ -148,6 +148,57 @@ and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later; v1–v3
 report 0.786 and were corrected). The 0.7359 above was re-run and reproduced
 exactly before being placed here.
 
+**Retrieval on a memory benchmark.** LongMemEval-S, 59 of its 500 questions
+drawn stratified by type, with the abstention questions dropped because their
+correct answer is a refusal and the benchmark's own scorer drops them too. Each
+question carries its own haystack of about fifty sessions and five hundred
+turns; turns are indexed individually and rolled up to the session that
+contains them. `recall_all@k` requires every gold session inside the top k;
+`ndcg_any@k` counts any gold session as relevant. A plain BM25 over the same
+turns, the same roll-up and the same cut runs beside it, because a retrieval
+number without a lexical baseline says nothing about retrieval:
+
+| LongMemEval-S, session level, 59 questions | BM25 | this project |
+| --- | --- | --- |
+| recall_all@5 | 0.7966 | 0.8983 |
+| ndcg_any@10 | 0.8898 | 0.9202 |
+
+The total is not the result. Split by question type it is:
+
+| recall_all@5, by question type | n | BM25 | this project |
+| --- | --- | --- | --- |
+| multi-session | 15 | 0.467 | **0.867** |
+| temporal-reasoning | 16 | 0.750 | 0.750 |
+| knowledge-update | 9 | 1.000 | 1.000 |
+| single-session-user | 8 | 1.000 | 1.000 |
+| single-session-assistant | 7 | 1.000 | 1.000 |
+| single-session-preference | 4 | 1.000 | 1.000 |
+
+Four channels, rank fusion and a cross-encoder beat a plain lexical baseline on
+one of the six question types. On four of the others BM25 already scores
+perfectly, so those rows measure the benchmark and not any system. On the
+sixth the two are not merely close: across all sixteen temporal-reasoning
+questions they reach the same verdict question for question and fail on the
+same four. Nothing in the stack bought anything there.
+
+The win is real where it is real. multi-session is the type whose evidence is
+spread over several sessions with no single one matching the question well, and
+there this is forty points of recall@5 above lexical retrieval — with no
+question anywhere in the set where it scores below BM25.
+
+Three things this is not. It is not evidence about temporal reasoning: the
+haystack was loaded as one memory per turn, so no topic ever had a second
+version and the validity columns were never populated — the ledger this project
+is built around was not in the measurement at all, and the retrieval that was
+measured performs exactly as a lexical baseline does. It is not comparable to
+the retrieval tables in the LongMemEval paper, which are computed on
+LongMemEval-M, where each haystack holds roughly ten times as many sessions.
+And recall@50 is omitted because the haystack holds about fifty sessions, so it
+would be near one by construction.
+
+Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
+all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
+
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
