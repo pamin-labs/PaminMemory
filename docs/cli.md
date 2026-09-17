@@ -270,8 +270,10 @@ an order the channels got wrong, and what makes it cost a forward pass for
 every candidate it looks at. Only the candidates no lexical channel found are
 reordered, and only into the positions they already hold — so a memory that
 shares words with your query comes back where it was, whatever the reranker
-thought of it. The same-language column above is unchanged for that reason
-rather than by luck.
+thought of it. That is why the same-language column moves by thousandths rather
+than by the hundredths the cross-lingual column moves. It does not hold the
+column still: a same-language answer the lexical channels happened to miss is
+an unlexical candidate like any other, and reordering can carry it down.
 
 That also means a workspace whose memories are all in one language gains
 almost nothing here and should set `off`: the candidates the lexical channels
