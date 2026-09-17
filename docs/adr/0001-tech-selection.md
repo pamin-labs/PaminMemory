@@ -226,21 +226,41 @@ Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but 
 
 An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on this project's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
 
-On 13,014 sentences in eleven languages, 3,849 relevant sentences sit between rank 10 and rank 50, across 1,090 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
+On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between rank 10 and rank 50, across 1,088 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
 
 | Tier | Loads | A search costs | Of which reranking | Cross-lingual nDCG@10 | Same-language |
 | --- | --- | --- | --- | --- | --- |
-| `off` | nothing | 39 ms | — | — | — |
-| `fast` (default) | 113 MB | 204 ms | 165 ms | **+0.0375** | **−0.0062** |
-| `accurate` | 570 MB | 508 ms | 469 ms | **+0.0458** | **+0.0022** |
+| `off` | nothing | 53 ms | — | — | — |
+| `fast` (default) | 113 MB | 264 ms | 211 ms | **+0.0381** | **−0.0053** |
+| `accurate` | 570 MB | 1001 ms | 948 ms | **+0.0448** | **+0.0017** |
 
 Measured through `Engine::search_reranked`, the entry point `pamin search`
-calls, with `TIERS=1` on the cross-lingual harness; median of three runs, which
-returned identical figures because the corpus, index and pass are all fixed. The
+calls, with `TIERS=1` on the cross-lingual harness over all 1,190 queries. The
 first version of this table came from a scratch program that reordered a dumped
-shortlist with its own copy of the pipeline. It overstated both gains by about
-half and `accurate`'s latency by a factor of four, which is the argument for
-measuring the product rather than a model of it.
+shortlist with its own copy of the pipeline, and overstated both gains by about
+half — which is the argument for measuring the product rather than a model of
+it.
+
+**The latency in this row is a correction, and the figure it corrects was
+itself a correction.** This table recorded 204 ms and 508 ms, the second of
+those having replaced an earlier 1795 ms. Re-running the same harness on the
+same machine, the same binary and the same workspace returns 264 ms and 1001
+ms: `accurate` costs about twice what was recorded, and the reranking pass
+948 ms rather than 469. So the first figure was too high, the correction was
+too low, and neither was checked by running it again.
+
+Where to look, offered as a lead rather than a cause: the pass is confined to
+the candidates no lexical channel found, so its cost moves with the fusion that
+decides which those are, and the lexical pair's weight was changed from 0.5 to
+0.25 in the same round. A figure that was not re-derived after that change
+would be a figure for a different shortlist.
+
+The quality columns reproduce and the latency does not, which is worth saying
+separately. Cross-lingual `off` returns 0.5705 exactly; the gains come back as
++0.0381 and +0.0448 against the +0.0375 and +0.0458 recorded, and the counts
+below rank ten as 3,813 against 3,849. A thousandth is not nothing: it means
+these numbers are not bit-identical across runs the way the MIRACL figures are,
+and the index has been served and maintained between them.
 
 `fast` is `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, a 21M-parameter distilled multilingual MiniLM; `accurate` is `onnx-community/bge-reranker-v2-m3-ONNX`, XLM-RoBERTa-large at 303M. Both are quantized ONNX behind the library's user-defined loader, fetched on first use into the same cache as the embedding model.
 
@@ -250,9 +270,9 @@ Confining it was previously recorded here as making the same-language column *un
 
 The rule was a language comparison first, since "written in another language" is what the case really is. The two rules pick the same candidates — they agree on 93% of a shortlist and score within 0.002 — but the language test needs the query's language, and that is exactly what a detector will not commit to for a short query: `detect_language` returns nothing for "how does deployment work". A rule that quietly does nothing on the commonest shape of query is worse than a slightly different rule.
 
-**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 165 ms against 469 — 2.8x, not the twelve this section claimed from the scratch measurement. For that it gives up 0.0083 cross-lingual, and it gives up the 0.0084 of same-language that `accurate` gains: `accurate` is the only tier that costs nothing on either group.
+**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 211 ms against 948 — 4.5x. For that it gives up 0.0067 cross-lingual, and it gives up the 0.0070 of same-language that `accurate` gains: `accurate` is the only tier that costs nothing on either group.
 
-So the shallow model no longer wins outright, and the appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) is weaker than it looked — that argument turns on a latency budget, and 204 ms against 508 is a narrower gap than twelve-to-one. `fast` stays the default because a search that takes half a second is a different product from one that takes a fifth, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
+The appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) turns on a latency budget, and the budget is what this section got wrong twice. At the figures recorded here the gap was 2.5x and the shallow model's case looked thin; re-measured it is 3.8x end to end, 264 ms against 1001. `fast` stays the default, and the reason is unchanged and now better supported: a search that takes a second is a different product from one that takes a quarter, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
 
 **On a corpus that is not parallel text the two tiers separate much further.** MIRACL's Swahili dev split is 131,924 real passages averaging 229 characters with human judgements, one language throughout — the shape XQuAD-R is not:
 
