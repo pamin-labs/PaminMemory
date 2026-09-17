@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
 use pamin_index::Profile;
 use pamin_store::{Connections, Workspace};
@@ -32,9 +32,23 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
     // can answer rather than one still starting the database.
     let session = Arc::new(Session::open(workspace, Connections::Resident).await?);
 
-    // A socket file left by a process that died is not a listener, and binding
-    // over it is the only way to find out. Removing it first is safe because a
-    // live server would have failed the client's connect attempt, not this one.
+    // A socket file left by a process that died is not a listener, so the stale
+    // one has to go before binding. Connecting to it first is what tells the
+    // two apart: a live server accepts, a dead one's leftover file does not.
+    //
+    // Removing unconditionally was the bug. A second server would take the
+    // socket from a working one and then fail every request, because the index
+    // lock it also needs is still held by the server it displaced -- and the
+    // workspace looked broken rather than busy. It happens whenever a client
+    // runs as a different user from the server, since that client cannot see
+    // the running one as its own and tries to start its own.
+    if tokio::net::UnixStream::connect(&path).await.is_ok() {
+        bail!(
+            "a server is already listening at {}; run `pamin stop` first if you \
+             mean to replace it",
+            path.display()
+        );
+    }
     let _ = std::fs::remove_file(&path);
     let listener =
         UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
