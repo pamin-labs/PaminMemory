@@ -121,6 +121,33 @@ is where this project's numbers have been wrong before.
 Both corpora are fetched rather than vendored, and the harness that drives them
 is in the repository: `cargo test -p pamin-engine --test crosslingual -- --ignored`.
 
+**What those MIRACL figures are worth, against published results on the same
+corpus, the same dev split and the same qrels:**
+
+| MIRACL Swahili dev, 131,924 passages | nDCG@10 | what it is |
+| --- | --- | --- |
+| Pyserini BM25 baseline | 0.3826 | lexical only |
+| this project, `--rerank off` | 0.7158 | four channels fused |
+| this project, `fast` (default) | **0.7359** | fused, then a cross-encoder |
+| this project, `accurate` | 0.7654 | fused, then a larger cross-encoder |
+| BGE-M3, published | 0.787 | dense retrieval alone |
+
+Read that last row carefully, because it is the honest reading: **a whole
+retrieval stack here scores below a single dense retriever** — and it is the
+same model, an int8 export of BGE-M3. Two differences are known and neither is
+measured: the published figure is fp32, and MIRACL's own training split is in
+BGE-M3's fine-tuning data, where this runs zero-shot. Neither excuses the gap;
+they are where to look for it.
+
+What the table does establish is the distance from the lexical baseline a
+memory system would otherwise ship with, on a low-resource language, on four
+CPU cores with no GPU anywhere.
+
+Sources: [Pyserini MIRACL v1.0 regressions](https://github.com/castorini/pyserini/blob/master/docs/experiments-miracl-v1.0.md)
+and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later; v1–v3
+report 0.786 and were corrected). The 0.7359 above was re-run and reproduced
+exactly before being placed here.
+
 **Latency**, through a warm resident server at the default `accuracy` profile:
 
 | operation | corpus | median |
