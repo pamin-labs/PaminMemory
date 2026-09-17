@@ -134,6 +134,52 @@ instrument with a documented 63% false-accept rate against an answer key that is
 6.4% wrong, and would require instructing the model never to say "I don't know"
 — which is the opposite of what this project is for.
 
+## Reference points on MIRACL, and the traps around them
+
+This project reports nDCG@10 on MIRACL's Swahili dev split, so the numbers a
+reader will reach for to interpret it are collected here, each traced to a
+primary source. Every figure below is over the same 131,924-passage corpus and
+the same `miracl-v1.0-sw` dev qrels, verified rather than assumed: the corpus
+file decompresses to exactly 131,924 lines, and the qrels hold 5,092 judgements
+over 482 queries, labels in {0, 1}, 910 positives, 1.89 per query.
+
+| | nDCG@10 | source |
+| --- | --- | --- |
+| Pyserini BM25 baseline | 0.3826 | [Pyserini MIRACL v1.0 regressions][pyserini] |
+| MIRACL paper, same baseline | 0.383 | [arXiv 2210.09984][miracl] Table 2 |
+| BGE-M3 dense | 0.787 | [arXiv 2402.03216][bgem3] Table 1 |
+| BGE-M3 sparse | 0.579 | same |
+| BGE-M3 multi-vector (ColBERT) | 0.791 | same |
+| BGE-M3 dense + sparse | 0.785 | same |
+| BGE-M3 all three | 0.796 | same |
+
+Four things that will bite anyone quoting these:
+
+- **0.787 is not 0.786.** arXiv v1–v3 report 0.786; the model card records a
+  2024-07-01 correction ("we mistakenly removed the passages that have the same
+  id as the query"), and v4, v5 and the ACL camera-ready report 0.787. Cite v4
+  or later.
+- **The hybrid premium on Swahili is small.** Dense 0.787 to all-three 0.796 is
+  +0.009. Anyone reaching for the hybrid number to make a gap look smaller is
+  reaching for nine thousandths.
+- **BGE-M3's own BM25 row says 0.351, not 0.3826.** They re-ran BM25 with the
+  XLM-R tokenizer instead of the Lucene analyzer (their Appendix C.2). Both are
+  legitimate; putting them in one table without saying which is not.
+- **A MIRACL figure from the MTEB leaderboard is probably not comparable.** MTEB
+  carries a `MIRACLRetrievalHardNegatives` variant whose corpus is the top 250
+  documents per query from three retrievers — a pooled subset, not 131,924
+  passages. Confirm the variant before using the number.
+
+And one ceiling that applies to every row including this project's: MIRACL's
+judgements come from pooling a 2022 ensemble's top ten. Anything relevant that
+no pooled system surfaced counts as a miss for every system scored afterwards.
+It does not break comparisons between the rows; it caps all of them together.
+
+**What is not established**: the quality cost of the int8 export this project
+runs against the fp32 weights the published figure used. No measurement of that
+delta was found, and it is the single experiment that would explain part of the
+gap rather than gesturing at it.
+
 ## Keeping this current
 
 This page goes stale faster than anything else in the repository: mem0's own
@@ -161,3 +207,6 @@ methodology. When refreshing it:
 [supermemory]: https://supermemory.ai/research/longmembench/
 [locomo-critique]: https://dev.to/gde03/the-ai-memory-benchmark-everyone-quotes-forbids-saying-i-dont-know-o1n
 [longmemeval]: https://github.com/xiaowu0162/LongMemEval
+[pyserini]: https://github.com/castorini/pyserini/blob/master/docs/experiments-miracl-v1.0.md
+[miracl]: https://arxiv.org/abs/2210.09984
+[bgem3]: https://arxiv.org/abs/2402.03216
