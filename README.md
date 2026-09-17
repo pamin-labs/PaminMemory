@@ -104,6 +104,44 @@ pamin link oncall_rota deployment_pipeline --kind depends_on
 
 Edges are versioned the way memories are. Changing one closes the old version and appends a new one, `unlink` retracts a claim without erasing that it was made, and every edge carries its own validity interval — so "what did we think depended on this, back then" has an answer.
 
+## Measured
+
+Every figure below comes from `pamin search` and `pamin write` themselves, not
+from the model or the index underneath them, because the gap between those two
+is where this project's numbers have been wrong before.
+
+**Retrieval quality**, at the shipped defaults, median of three runs:
+
+| corpus | group | nDCG@10 | recall@50 |
+| --- | --- | --- | --- |
+| MIRACL Swahili dev — 131,924 real passages, 482 queries, 5,092 human judgements | one language throughout | 0.7359 | 0.9494 |
+| XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6097 | 0.8864 |
+| XQuAD-R | query and answer in the same language | 0.7971 | 0.9630 |
+
+Both corpora are fetched rather than vendored, and the harness that drives them
+is in the repository: `cargo test -p pamin-engine --test crosslingual -- --ignored`.
+
+**Latency**, warm resident server, four cores, the default `accuracy` profile:
+
+| | |
+| --- | --- |
+| a write | 32 ms |
+| a search, small workspace | 32 ms |
+| a search over 13,014 documents, reranker included | 204 ms |
+| the same search with `--rerank off` | 39 ms |
+
+`--rerank accurate` scores higher than the default on every corpus measured and
+costs 469 ms instead of 165 for its pass; `fast` is the default on that latency
+difference alone, which is a judgement rather than a result.
+
+Two things these numbers are not. They are a four-core result, so they settle
+nothing about a machine with cores to spare. And the write figure is for short
+memories — a forward pass scales with length, so longer content costs more.
+
+What was measured, how, and the conclusions that reversed on measurement are in
+[docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
+source of truth if it and this page ever disagree.
+
 ## Status
 
 This is an early foundation, not a finished product.
