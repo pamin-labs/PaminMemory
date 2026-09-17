@@ -1835,6 +1835,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "libc",
  "pamin-core",
  "pamin-engine",
  "pamin-index",
