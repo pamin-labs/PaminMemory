@@ -9,6 +9,23 @@
 - Do not recreate local private planning folders in this repository.
 - Prefer `rtk <command>` for shell commands when `rtk` is available.
 
+## Skills
+
+Longer-form guidance lives in `.agents/skills/`, one directory per skill, each
+with a `SKILL.md`. Read the one that matches what you are doing:
+
+- **`pamin-memory`** — using the `pamin` CLI as memory: which of `search`,
+  `read`, `grep` and `neighbors` answers which question, how to read the `why`
+  trace, and the traps around the evidence filter.
+- **`pamin-dev`** — measuring this project and keeping its claims true: measure
+  the entry point the product calls, make every measurement arm assert its own
+  premise, keep harnesses out of the tracked tree, and audit documentation for
+  claims the code stopped backing.
+
+`.claude/skills/` holds symlinks to the same directories, the way `CLAUDE.md`
+symlinks to this file, so Claude Code discovers them without a second copy
+going stale.
+
 ## Commits And Pull Requests
 
 - Use the `git-commit` skill whenever possible when creating commits.
