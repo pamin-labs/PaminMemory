@@ -19,16 +19,23 @@
 //!
 //! | | cross-lingual | same-language | per query | of which reranking |
 //! |---|---|---|---|---|
-//! | off | — | — | 39 ms | — |
-//! | `fast` | **+0.0375** | **-0.0062** | 204 ms | 165 ms |
-//! | `accurate` | **+0.0458** | **+0.0022** | 508 ms | 469 ms |
+//! | off | — | — | 53 ms | — |
+//! | `fast` | **+0.0381** | **-0.0053** | 264 ms | 211 ms |
+//! | `accurate` | **+0.0448** | **+0.0017** | 1001 ms | 948 ms |
 //!
 //! Measured through `Engine::search_reranked` -- the entry point `pamin search`
-//! calls -- with `TIERS=1` on the cross-lingual harness. An earlier version of
-//! this table came from a scratch program that reordered a dumped shortlist
-//! with its own copy of the pipeline, and it overstated both gains by about
-//! half and `accurate`'s latency by a factor of four. The three tiers return
-//! the same four decimals on every run: fixed corpus, fixed index, greedy pass.
+//! calls -- with `TIERS=1` on the cross-lingual harness, over all 1,190
+//! queries. An earlier version of this table came from a scratch program that
+//! reordered a dumped shortlist with its own copy of the pipeline, and it
+//! overstated both gains by about half.
+//!
+//! The latency here replaces 204 ms and 508 ms, which replaced an earlier
+//! 1795 ms for `accurate`. Re-running the same harness on the same machine and
+//! workspace returns twice the recorded cost for `accurate`, so the first
+//! figure was too high and its correction too low. The quality columns do
+//! reproduce, to a thousandth rather than exactly -- the claim that these
+//! tiers "return the same four decimals on every run" was a claim about a
+//! fixed corpus and index, and the index is maintained between runs.
 //!
 //! Three things in that table need saying.
 //!
@@ -51,11 +58,11 @@
 //!
 //! **`fast` is the default on latency, not on quality.** It is a twelve-layer
 //! distilled MiniLM with 21M encoder parameters against XLM-RoBERTa-large's
-//! 303M -- fourteen times smaller, and its pass costs 165 ms against 469, so
-//! 2.8x rather than the twelve this once claimed. For that it gives up 0.0083
-//! cross-lingual and the 0.0084 same-language that `accurate` gains. Whether
-//! four fifths of the gain is worth two fifths of the latency is a workspace's
-//! call and `--rerank accurate` is how to make it.
+//! 303M -- fourteen times smaller, and its pass costs 211 ms against 948, so
+//! 4.5x. For that it gives up 0.0067 cross-lingual and the 0.0070
+//! same-language that `accurate` gains. Whether six sevenths of the gain is
+//! worth a quarter of the latency is a workspace's call and `--rerank
+//! accurate` is how to make it.
 //! That is the finding of [Shallow Cross-Encoders for Low-Latency
 //! Retrieval](https://arxiv.org/abs/2403.20222) arrived at independently: under
 //! a latency budget a shallow model beats a full-scale one, because the budget
