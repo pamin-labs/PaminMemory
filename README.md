@@ -148,22 +148,33 @@ and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later; v1–v3
 report 0.786 and were corrected). The 0.7359 above was re-run and reproduced
 exactly before being placed here.
 
-**Latency**, through a warm resident server at the default `accuracy` profile:
+**Latency**, what one `pamin search` costs against a warm resident server at
+the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
+exec, connect to the socket, and back — run serially over forty distinct
+queries, reported as the median of them:
 
-| operation | corpus | median |
-| --- | --- | --- |
-| a write | short memories, small workspace | 32 ms |
-| a search | small workspace | 32 ms |
-| a search, reranker included | 13,014 documents | 204 ms |
-| the same search, `--rerank off` | 13,014 documents | 39 ms |
+| corpus | `--rerank off` | `fast` (default) | `accurate` |
+| --- | --- | --- | --- |
+| XQuAD-R, 13,014 documents | 77 ms | 251 ms | 1241 ms |
+| MIRACL Swahili dev, 131,924 documents | 142 ms | 472 ms | 1675 ms |
+
+Seventeen to nineteen of those milliseconds are the invocation rather than the
+search: `pamin --help` against the same workspace costs that much. It is
+measured separately rather than subtracted, because a caller pays it either
+way.
+
+A write is 32 ms, most of it the `fsync` a durable append owes. That figure is
+from the write-path measurement in the ADR and was not re-taken in this sweep.
 
 Measured on 4 vCPU (Intel Xeon @ 2.80GHz, no SMT), 15 GB RAM, Ubuntu 24.04,
-rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. Median of
-three runs.
+rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. The
+queries in each cell are disjoint from every other cell's, because a repeated
+query is answered from a cache in microseconds and would be reported here as
+search latency.
 
 `--rerank accurate` scores higher than the default on every corpus measured and
-costs 469 ms instead of 165 for its pass; `fast` is the default on that latency
-difference alone, which is a judgement rather than a result.
+its pass costs about four and a half times `fast`'s; `fast` is the default on
+that latency difference alone, which is a judgement rather than a result.
 
 Two things these numbers are not. Four cores is where the embedding model and
 the reranker contend, so a machine with cores to spare will not look like this
