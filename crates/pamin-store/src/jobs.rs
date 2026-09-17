@@ -1,0 +1,395 @@
+//! The cascade outbox: durable work a write leaves behind.
+//!
+//! A write commits evidence, a span, a topic state, the topic's current
+//! pointer, and a row here, in one transaction that touches nothing outside
+//! PostgreSQL. Everything derived from it happens afterwards, driven from that
+//! row. So a write does not depend on the index being reachable, and the
+//! derived work outlives the process that scheduled it -- which is the whole
+//! point, and the part a `tokio::spawn` cannot give.
+//!
+//! Jobs are addressed by subject rather than by event: "bring topic T up to
+//! date", not "T changed at 12:04". That makes them idempotent by construction
+//! and makes them coalesce -- fourteen edits to one topic leave one pending row
+//! and thirteen embeddings never computed.
+
+use std::time::Duration;
+
+use pamin_core::{IndexJobId, JobKind, ProjectId};
+use sqlx::{PgExecutor, PgPool, Row};
+use time::OffsetDateTime;
+
+use crate::error::Result;
+use crate::sql::SqlLabel;
+
+/// How long a claim is good for.
+///
+/// A worker that dies holding a job leaves the row claimed, and nothing would
+/// pick it up again without this. Long enough that an ordinary job finishes
+/// inside it -- the slowest is an embedding -- and short enough that a crash
+/// does not strand work for the rest of the session.
+pub const LEASE: Duration = Duration::from_secs(60);
+
+/// How long a failed job waits before it is tried again.
+pub const RETRY_AFTER: Duration = Duration::from_secs(3600);
+
+/// One row of pending work.
+#[derive(Clone, Debug)]
+pub struct Job {
+    pub id: IndexJobId,
+    pub project_id: ProjectId,
+    pub kind: JobKind,
+    /// The topic or state the job is about. Absent for project-wide work.
+    pub subject: Option<uuid::Uuid>,
+    /// How many times this job has been claimed, including now.
+    pub attempts: i32,
+    /// When this claim was taken, if this job is held at all.
+    ///
+    /// What identifies the claim, rather than the worker that holds it: the
+    /// worker is one string per process, so a job whose lease expired and was
+    /// taken again by the same process cannot be told from the attempt that
+    /// read it. [`complete`] compares this so that it cannot mark somebody
+    /// else's attempt done -- including a later attempt of its own.
+    ///
+    /// Absent for a job nobody holds, which is every job [`exhausted`] returns:
+    /// failing clears the claim. Such a job cannot be completed, and comparing
+    /// against an absent claim is what says so rather than a check that has to
+    /// be remembered.
+    pub claimed_at: Option<OffsetDateTime>,
+}
+
+/// What runs first when several jobs are pending.
+///
+/// Deriving the edges of a memory somebody just wrote is worth more than
+/// rebuilding a vector index in the background. Without an ordering the
+/// background work goes first as often as not, and the write the user is
+/// waiting on is behind it.
+fn priority(kind: JobKind) -> i32 {
+    match kind {
+        JobKind::SyncTopicIndex => 10,
+        JobKind::DeriveMentions => 20,
+        JobKind::BackfillMentions => 50,
+        JobKind::OptimizeIndex => 100,
+    }
+}
+
+/// Schedules work, coalescing with anything already scheduled for it.
+///
+/// One row per subject and kind, forever. A conflict means the same work is
+/// either still pending -- in which case this call is already represented by it
+/// -- or was completed earlier and is being asked for again, in which case the
+/// row is revived. Either way the queue never holds two rows saying the same
+/// thing.
+///
+/// Reviving clears the claim as well as the completion. That is what keeps a
+/// worker from marking work done that was requested after it started reading:
+/// [`complete`] only completes a job it still holds, and a claim cleared out
+/// from under it is exactly the signal that the state it read is stale.
+pub async fn enqueue(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    kind: JobKind,
+    subject: Option<uuid::Uuid>,
+) -> Result<()> {
+    let key = match subject {
+        Some(subject) => format!("{kind}:{subject}"),
+        None => format!("{kind}:"),
+    };
+    let payload = serde_json::json!({ "subject": subject });
+    let now = OffsetDateTime::now_utc();
+
+    sqlx::query(
+        "INSERT INTO index_jobs
+             (id, project_id, job_type, payload, idempotency_key,
+              available_at, created_at, priority)
+         VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+         ON CONFLICT (project_id, idempotency_key) DO UPDATE
+             SET completed_at = NULL,
+                 available_at = $6,
+                 claimed_at   = NULL,
+                 claimed_by   = NULL,
+                 last_error   = NULL,
+                 attempts     = 0",
+    )
+    .bind(IndexJobId::new().0)
+    .bind(project.0)
+    .bind(kind.label())
+    .bind(&payload)
+    .bind(&key)
+    .bind(now)
+    .bind(priority(kind))
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+/// Takes up to `batch` jobs that are due, and holds them for [`LEASE`].
+///
+/// `FOR UPDATE SKIP LOCKED` is what lets several workers drain the queue at
+/// once without queueing behind each other on the same row -- the construct
+/// `V1` named when it created this table.
+///
+/// Attempts are counted at claim rather than at failure, so a job that panics
+/// the worker still runs out of attempts. Counting on the way out would let one
+/// poisoned job take down every worker that reaches it, for ever.
+///
+/// One project's jobs, because every handler that runs one reads the ledger
+/// under the project its engine was opened for rather than the project the row
+/// names. Claiming across projects therefore hands a worker for one project
+/// another project's topic: the lookup finds nothing, the handler concludes
+/// the topic has no current state and removes a document from the wrong index,
+/// and the job is marked done. The queue is drained and the memory is never
+/// indexed, with nothing reporting it.
+///
+/// That was safe for exactly as long as a worker ran inside a command that was
+/// already about one project. A resident process serving many at once is what
+/// this table was built toward, and it is what makes the scope a predicate
+/// rather than a convention.
+///
+/// Within a project, ordered by priority alone. Fairness *between* projects is
+/// a scheduling question for whoever drives several drains, and not something
+/// one statement can answer.
+pub async fn claim(
+    pool: &PgPool,
+    project: ProjectId,
+    worker: &str,
+    batch: i32,
+    kinds: &[JobKind],
+) -> Result<Vec<Job>> {
+    let now = OffsetDateTime::now_utc();
+    let rows = sqlx::query(
+        "UPDATE index_jobs
+            SET claimed_at   = $1,
+                claimed_by   = $2,
+                attempts     = attempts + 1,
+                available_at = $3
+          WHERE id IN (
+              SELECT id FROM index_jobs
+               WHERE completed_at IS NULL
+                 AND project_id = $6
+                 AND job_type = ANY($7)
+                 AND available_at <= $1
+                 -- A job that has used its attempts stays pending with its
+                 -- error rather than coming round again. Retrying for ever
+                 -- turns one poisoned job into a worker that never does
+                 -- anything else; `cascade replay` is how it comes back.
+                 AND attempts < $5
+               ORDER BY priority, available_at
+                 FOR UPDATE SKIP LOCKED
+               LIMIT $4
+          )
+      RETURNING id, project_id, job_type, payload, attempts, claimed_at",
+    )
+    .bind(now)
+    .bind(worker)
+    .bind(now + LEASE)
+    .bind(i64::from(batch))
+    .bind(pamin_core::MAX_ATTEMPTS)
+    .bind(project.0)
+    .bind(kinds.iter().map(|kind| kind.label()).collect::<Vec<_>>())
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(row_to_job).collect())
+}
+
+/// Marks jobs done, and reports which of them this worker still held.
+///
+/// A job missing from the result was not completed, which happens two ways and
+/// means the same thing both times: it was requested again while this attempt
+/// was running, or the lease expired and the job was claimed again. In either
+/// case the state this attempt read is not the state the queue is now asking
+/// about, so the row stays pending and runs again.
+///
+/// The claim is identified by when it was taken and not only by who holds it.
+/// A worker is one string per process -- host and pid -- so a job whose lease
+/// expired and was then re-claimed by the same process carries a `claimed_by`
+/// this attempt cannot distinguish from its own, and completing against the
+/// worker alone would mark the second attempt done against work only the first
+/// one did. That is reachable rather than theoretical: the lease is a minute
+/// and building a graph over a sealed segment is longer, so a compaction's own
+/// lease expires while it runs and the upkeep loop claims it again five seconds
+/// later.
+///
+/// A round's completions go together because separately they cost more than the
+/// work they record. Measured on this cluster, a thousand completions:
+///
+/// ```text
+///     one statement each, as this was                  165-221 ms
+///     one transaction each, durability relaxed         354-402 ms
+///     batched by sixty-four                              26-30 ms
+///     batched by sixty-four, durability relaxed          29-42 ms
+/// ```
+///
+/// The second row is the change this replaced, and it is a regression: a
+/// transaction to hold `SET LOCAL synchronous_commit = off` costs four round
+/// trips where the statement it wraps costs one, and the flush it skips is
+/// worth less than the three it adds. The fourth row is why the relaxation is
+/// not here at all -- batched, one flush already covers sixty-four completions,
+/// so there is nothing left for it to save and no reason to give up the
+/// guarantee. Amortizing the commit is the whole of the win.
+pub async fn complete(
+    executor: impl PgExecutor<'_>,
+    jobs: &[&Job],
+    worker: &str,
+) -> Result<Vec<IndexJobId>> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<uuid::Uuid> = jobs.iter().map(|job| job.id.0).collect();
+    // A job nobody holds has no claim to compare against, and comparing with
+    // SQL's absent value is never true -- so it is not completed, which is the
+    // answer.
+    let claims: Vec<Option<OffsetDateTime>> = jobs.iter().map(|job| job.claimed_at).collect();
+    let rows = sqlx::query(
+        "UPDATE index_jobs
+            SET completed_at = $3, claimed_at = NULL, claimed_by = NULL, last_error = NULL
+           FROM unnest($1::uuid[], $4::timestamptz[]) AS held (id, claimed_at)
+          WHERE index_jobs.id = held.id
+            AND index_jobs.claimed_by = $2
+            AND index_jobs.claimed_at = held.claimed_at
+            AND index_jobs.completed_at IS NULL
+      RETURNING index_jobs.id",
+    )
+    .bind(&ids)
+    .bind(worker)
+    .bind(OffsetDateTime::now_utc())
+    .bind(&claims)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows.iter().map(|row| IndexJobId(row.get("id"))).collect())
+}
+
+/// Records a failure and schedules a retry, until the attempts run out.
+///
+/// A job that has used its attempts is left pending with its error, which is
+/// what `pamin cascade failed` reads. It is not retried again on its own:
+/// retrying for ever turns one poisoned job into a worker that never does
+/// anything else.
+pub async fn fail(
+    executor: impl PgExecutor<'_>,
+    job: &Job,
+    worker: &str,
+    error: &str,
+) -> Result<()> {
+    let exhausted = job.attempts >= pamin_core::MAX_ATTEMPTS;
+    let retry_at = OffsetDateTime::now_utc() + RETRY_AFTER;
+
+    sqlx::query(
+        "UPDATE index_jobs
+            SET last_error   = $3,
+                claimed_at   = NULL,
+                claimed_by   = NULL,
+                available_at = CASE WHEN $4 THEN available_at ELSE $5 END
+          WHERE id = $1 AND claimed_by = $2",
+    )
+    .bind(job.id.0)
+    .bind(worker)
+    .bind(error)
+    .bind(exhausted)
+    .bind(retry_at)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+/// How many jobs are waiting, whether or not they are due yet.
+pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<i64> {
+    let (waiting,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM index_jobs
+          WHERE project_id = $1 AND completed_at IS NULL",
+    )
+    .bind(project.0)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(waiting)
+}
+
+/// Jobs that have used their attempts, with the error that stopped them.
+pub async fn exhausted(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<(Job, String)>> {
+    let rows = sqlx::query(
+        "SELECT id, project_id, job_type, payload, attempts, claimed_at, last_error
+           FROM index_jobs
+          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $2
+          ORDER BY priority, available_at",
+    )
+    .bind(project.0)
+    .bind(pamin_core::MAX_ATTEMPTS)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row_to_job(row),
+                row.get::<Option<String>, _>("last_error")
+                    .unwrap_or_default(),
+            )
+        })
+        .collect())
+}
+
+/// Makes exhausted jobs due again, and returns how many.
+///
+/// The manual counterpart to the retry the worker gives up on: whatever was
+/// wrong has presumably been fixed, and this says so.
+pub async fn replay(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
+    let revived = sqlx::query(
+        "UPDATE index_jobs
+            SET attempts = 0, available_at = $2, claimed_at = NULL, claimed_by = NULL
+          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $3",
+    )
+    .bind(project.0)
+    .bind(OffsetDateTime::now_utc())
+    .bind(pamin_core::MAX_ATTEMPTS)
+    .execute(executor)
+    .await?;
+
+    Ok(revived.rows_affected())
+}
+
+/// Abandons exhausted jobs, and returns how many.
+///
+/// Completing them rather than deleting them keeps the row, so a later write to
+/// the same subject revives it rather than being coalesced onto a row that no
+/// longer means anything.
+pub async fn discard(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
+    let discarded = sqlx::query(
+        "UPDATE index_jobs
+            SET completed_at = $2, claimed_at = NULL, claimed_by = NULL
+          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $3",
+    )
+    .bind(project.0)
+    .bind(OffsetDateTime::now_utc())
+    .bind(pamin_core::MAX_ATTEMPTS)
+    .execute(executor)
+    .await?;
+
+    Ok(discarded.rows_affected())
+}
+
+fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
+    let payload: serde_json::Value = row.get("payload");
+
+    Job {
+        id: row.get::<uuid::Uuid, _>("id").into(),
+        project_id: row.get::<uuid::Uuid, _>("project_id").into(),
+        // The column's CHECK constraint admits nothing else, and the drift test
+        // holds it to the same list this parses from.
+        kind: JobKind::from_label(row.get("job_type")).unwrap_or(JobKind::SyncTopicIndex),
+        subject: payload
+            .get("subject")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|subject| uuid::Uuid::parse_str(subject).ok()),
+        attempts: row.get("attempts"),
+        claimed_at: row.get("claimed_at"),
+    }
+}

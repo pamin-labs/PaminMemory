@@ -1,6 +1,8 @@
 //! Subcommand implementations.
 
+pub mod cascade;
 pub mod grep;
+pub mod import;
 pub mod init;
 pub mod link;
 pub mod neighbors;

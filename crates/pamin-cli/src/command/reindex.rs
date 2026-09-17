@@ -6,35 +6,57 @@
 
 use anyhow::Result;
 use pamin_index::Profile;
-use pamin_store::Workspace;
-use serde::Serialize;
 
-use crate::engine::Engine;
-use crate::output::Format;
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+use crate::session::Session;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {}
 
-#[derive(Serialize)]
-struct Reindexed {
+#[derive(Serialize, Deserialize)]
+pub struct Reindexed {
+    /// Topics written to the projection. One document each, whatever a topic's
+    /// version history holds -- searching ranks what a topic says now.
     indexed: usize,
+    /// Topics whose current-state pointer disagreed with the ledger and was
+    /// corrected. Zero unless something stopped maintaining it.
+    repaired_pointers: u64,
+    /// Topic names restated in the index that answers which topics a memory
+    /// names.
+    names: usize,
 }
 
-pub async fn run(
-    workspace: &Workspace,
+pub async fn execute(
+    session: &Session,
     project: &str,
     profile: Profile,
-    format: Format,
     _args: Args,
-) -> Result<()> {
+) -> Result<Reindexed> {
     // Rebuilding discards this project's index first, and clears the shared
     // pre-split layout if the workspace still has one.
-    let mut engine = Engine::rebuilding(workspace, project, profile).await?;
-    let indexed = engine.reindex().await?;
+    let engine = session.rebuilding(project, profile).await?;
+    let rebuilt = engine.reindex().await?;
 
-    let result = Reindexed { indexed };
-    format.emit(&result, || {
-        format!("Rebuilt the index from postgres: {} states", result.indexed)
-    });
-    Ok(())
+    let result = Reindexed {
+        indexed: rebuilt.indexed,
+        repaired_pointers: rebuilt.repaired_pointers,
+        names: rebuilt.names,
+    };
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Reindexed) -> String {
+    let mut rendered = format!(
+        "Rebuilt the index from postgres: {} topics, {} topic names",
+        result.indexed, result.names
+    );
+    if result.repaired_pointers > 0 {
+        rendered.push_str(&format!(
+            "\nRepaired {} topics pointing at the wrong current state",
+            result.repaired_pointers
+        ));
+    }
+    rendered
 }

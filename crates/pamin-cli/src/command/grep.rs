@@ -6,15 +6,15 @@
 //! on its way to becoming one.
 
 use anyhow::Result;
-use pamin_store::{Database, Workspace, repository};
-use serde::Serialize;
+use pamin_store::repository;
+use serde::{Deserialize, Serialize};
 
-use crate::output::Format;
+use crate::session::Session;
 
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The exact string to find. Not a pattern.
     pub literal: String,
@@ -28,7 +28,7 @@ pub struct Args {
     pub limit: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Match {
     /// Where the evidence came from.
     source: String,
@@ -43,19 +43,19 @@ struct Match {
     excerpt: String,
 }
 
-#[derive(Serialize)]
-struct Matches {
+#[derive(Serialize, Deserialize)]
+pub struct Matches {
     literal: String,
     matches: Vec<Match>,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
-    let database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Matches> {
+    let database = session.database();
+    let project = session.project(project).await?;
 
     let hits = repository::grep_evidence(
-        database.client(),
-        project.id,
+        database.pool(),
+        project,
         &args.literal,
         !args.ignore_case,
         args.limit,
@@ -77,23 +77,25 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
             .collect(),
     };
 
-    format.emit(&result, || {
-        if result.matches.is_empty() {
-            return format!("No evidence contains {:?}", result.literal);
-        }
-        result
-            .matches
-            .iter()
-            .map(|hit| {
-                format!(
-                    "{} v{} ({})\n        {}",
-                    hit.source, hit.version, hit.filter_decision, hit.excerpt
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Matches) -> String {
+    if result.matches.is_empty() {
+        return format!("No evidence contains {:?}", result.literal);
+    }
+    result
+        .matches
+        .iter()
+        .map(|hit| {
+            format!(
+                "{} v{} ({})\n        {}",
+                hit.source, hit.version, hit.filter_decision, hit.excerpt
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Renders the text around a match.

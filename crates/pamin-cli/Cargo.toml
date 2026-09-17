@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 pamin-core = { workspace = true }
+pamin-engine = { workspace = true }
 pamin-index = { workspace = true }
 pamin-store = { workspace = true }
 anyhow = { workspace = true }
@@ -22,6 +23,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

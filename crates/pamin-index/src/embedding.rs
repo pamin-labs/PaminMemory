@@ -11,12 +11,13 @@
 //! particularly since the default reranker has no cross-encoder to recover the
 //! loss.
 //!
-//! Neither is in force today. Stored vectors are float32 and will stay that
-//! way. Weight quantization is unavailable rather than declined: the model
-//! registry publishes quantized variants for several families but none for
-//! multilingual E5, so both default profiles run full-precision weights.
+//! Stored vectors are float32. Weights are quantized where a quantized export
+//! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
+//! because the model registry publishes no quantized variant for that family.
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{
+    Bgem3Embedding, Bgem3InitOptions, Bgem3Model, EmbeddingModel, TextEmbedding, TextInitOptions,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{IndexError, Result};
@@ -28,33 +29,51 @@ use crate::error::{IndexError, Result};
 /// are permissively licensed. EmbeddingGemma scores well and would otherwise be
 /// a candidate, but it carries usage restrictions that must be passed on to
 /// downstream users, which is not a burden to attach to an open-source default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     /// 384 dimensions. Bulk ingestion and low-spec machines.
-    Speed,
-    /// 768 dimensions. The default.
     ///
     /// 384 dimensions is generally held to be enough only alongside a
-    /// cross-encoder reranker, and ours is deterministic and has none, so
-    /// defaulting to the smaller model would pair the weaker model with the
-    /// weaker reranker.
-    #[default]
-    Balanced,
-    /// 1024 dimensions, dense and sparse in one pass, longer context.
+    /// cross-encoder reranker, and ours is deterministic and has none, so this
+    /// pairs the weaker model with the weaker reranker. It is here for
+    /// machines that cannot afford the others.
+    Speed,
+    /// 768 dimensions, full-precision weights.
     ///
-    /// Not the default: its main increment is a sparse arm that overlaps the
-    /// two lexical channels already in place, and it costs an order of
-    /// magnitude more per query.
+    /// No longer the middle rung it was named for. The quantized BGE-M3 export
+    /// beats it on retrieval by a factor of two, is half its size in memory,
+    /// and costs nine milliseconds more per query -- so the only reason left
+    /// to choose this is those nine milliseconds. Kept because a project
+    /// indexed under it should not have to rebuild to keep working.
+    Balanced,
+    /// 1024 dimensions, int8 weights, and by a distance the best cross-lingual
+    /// recall of the three. The default.
+    ///
+    /// Run through the joint BGE-M3 export, which produces dense, sparse and
+    /// ColBERT representations in one forward pass. Only the dense one is
+    /// kept. The sparse arm duplicates the two lexical channels already in
+    /// place and is worth 0.2 points of cross-lingual nDCG by its own authors'
+    /// ablation; the ColBERT arm is one 1024-wide vector per token, which for
+    /// a project of seven million documents is terabytes.
+    ///
+    /// The default because it is not the trade its name implies. Against
+    /// `balanced` it doubles cross-lingual nDCG@10, matches it monolingually,
+    /// occupies 560 MB against 1.1 GB, and costs 35 ms per query against 26.
+    /// The int8 export is what makes all of that true at once; the
+    /// full-precision one is 2.2 GB and was the reason this profile used to be
+    /// described as an order of magnitude more expensive.
+    #[default]
     Accuracy,
 }
 
 impl Profile {
+    /// Which E5 model this profile runs, for the two that run one.
     fn model(self) -> EmbeddingModel {
         match self {
             Self::Speed => EmbeddingModel::MultilingualE5Small,
             Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy => EmbeddingModel::BGEM3,
+            Self::Accuracy => unreachable!("the accuracy profile runs the joint BGE-M3 export"),
         }
     }
 
@@ -94,7 +113,11 @@ impl Profile {
             // so the recorded identity has to change with the encoding.
             Self::Speed => "intfloat/multilingual-e5-small+p1",
             Self::Balanced => "intfloat/multilingual-e5-base+p1",
-            Self::Accuracy => "BAAI/bge-m3",
+            // The quantized export rather than the base model: int8 weights
+            // produce vectors close to the full-precision ones and not equal
+            // to them, and the recorded identity is what stops two encodings
+            // sharing one index.
+            Self::Accuracy => "gpahal/bge-m3-onnx-int8",
         }
     }
 
@@ -111,8 +134,27 @@ impl Profile {
 
 /// Turns text into vectors.
 pub struct Embedder {
-    model: TextEmbedding,
+    model: Model,
     profile: Profile,
+    /// Query vectors already computed.
+    ///
+    /// Shared with every project on this profile, because the vector depends on
+    /// the model and the text and on nothing else.
+    remembered: Queries,
+}
+
+/// The loaded model, which is not the same type for every profile.
+///
+/// BGE-M3 ships as a joint export producing three representations at once, and
+/// the library loads it through its own type rather than the general text one.
+/// That is also the only path to its int8 weights, which is most of why the
+/// profile is usable at all.
+///
+/// Both boxed. Each is over a kilobyte of session and tokenizer state, and an
+/// unboxed enum is the size of its largest variant everywhere it appears.
+enum Model {
+    Text(Box<TextEmbedding>),
+    Joint(Box<Bgem3Embedding>),
 }
 
 impl Embedder {
@@ -124,14 +166,40 @@ impl Embedder {
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
 
-        let options = TextInitOptions::new(profile.model())
-            .with_cache_dir(cache_dir.to_path_buf())
-            .with_show_download_progress(false);
+        // See `crate::inference`: unset leaves fastembed on one thread per
+        // core, which is what this did before the setting existed.
+        let threads = crate::inference::threads();
 
-        let model = TextEmbedding::try_new(options)
-            .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
+        let model = match profile {
+            Profile::Accuracy => {
+                let mut options = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
+                    .with_cache_dir(cache_dir.to_path_buf())
+                    .with_show_download_progress(false);
+                if let Some(threads) = threads {
+                    options = options.with_intra_threads(threads);
+                }
+                Model::Joint(Box::new(Bgem3Embedding::try_new(options).map_err(
+                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
+                )?))
+            }
+            _ => {
+                let mut options = TextInitOptions::new(profile.model())
+                    .with_cache_dir(cache_dir.to_path_buf())
+                    .with_show_download_progress(false);
+                if let Some(threads) = threads {
+                    options = options.with_intra_threads(threads);
+                }
+                Model::Text(Box::new(TextEmbedding::try_new(options).map_err(
+                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
+                )?))
+            }
+        };
 
-        Ok(Self { model, profile })
+        Ok(Self {
+            model,
+            profile,
+            remembered: Queries::default(),
+        })
     }
 
     pub fn profile(&self) -> Profile {
@@ -150,27 +218,162 @@ impl Embedder {
     ///
     /// Queries and passages take different prefixes, so this is not the same
     /// call as `embed_passage` even though both end in one forward pass.
+    ///
+    /// Remembered, because the pass is the most expensive thing a search does
+    /// -- 16.9 ms of a search at the shipping profile -- and a query is a pure
+    /// function of the model and the text. What makes it worth remembering is
+    /// the same thing that makes the reranker remember its scores: an agent
+    /// retries, widens a limit, and asks again after writing something. Only
+    /// queries. A passage is embedded once in its life, so a cache of those
+    /// would hold the corpus and never be read.
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        match self.profile.prefixes() {
+        if let Some(known) = self.remembered.get(text) {
+            return Ok(known);
+        }
+
+        let vector = match self.profile.prefixes() {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
-        }
+        }?;
+        self.remembered.put(text, &vector);
+        Ok(vector)
     }
 
+    /// Embeds many passages in one forward pass.
+    pub fn embed_passages(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let prefixed: Vec<String> = match self.profile.prefixes() {
+            Some((_, passage)) => texts.iter().map(|t| format!("{passage}{t}")).collect(),
+            None => texts.iter().map(|t| (*t).to_string()).collect(),
+        };
+        self.run(prefixed)
+    }
+
+    /// How many queries this remembers, per profile.
+    ///
+    /// A vector is [`Profile::dimensions`] floats -- four kilobytes at the
+    /// widest -- so this is a megabyte at the top of the range. Per process,
+    /// like the reranker's, so it is `pamin serve` that makes it worth
+    /// anything.
+    const REMEMBERED_QUERIES: usize = 256;
+
     fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
-        let mut vectors = self
-            .model
-            .embed(vec![text], None)
-            .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))?;
+        let mut vectors = self.run(vec![text.to_string()])?;
 
         vectors
             .pop()
             .ok_or_else(|| IndexError::Engine("embedding produced no vector".into()))
     }
+
+    /// One forward pass, whichever model this profile loaded.
+    fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        match &mut self.model {
+            Model::Text(model) => model.embed(texts, None),
+            // The sparse and ColBERT representations come back from the same
+            // pass and are dropped here. They are not free -- the pass
+            // computes them -- but neither is wanted, and no cheaper export of
+            // this model's int8 weights exists.
+            Model::Joint(model) => model.embed(texts, None).map(|output| output.dense),
+        }
+        .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))
+    }
+}
+
+/// Query vectors already computed, oldest first.
+///
+/// Keyed by the query itself rather than by a hash of it. The reranker's cache
+/// keys scores by a hash and accepts that a collision misorders a result; a
+/// collision here would hand back another query's vector, and a search for one
+/// thing would quietly answer another. A query is a few dozen bytes against a
+/// four-kilobyte vector, so keeping it costs almost nothing next to what it
+/// guards.
+#[derive(Default)]
+struct Queries {
+    known: std::collections::HashMap<String, Vec<f32>>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl Queries {
+    fn get(&self, query: &str) -> Option<Vec<f32>> {
+        self.known.get(query).cloned()
+    }
+
+    /// Remembers a vector, forgetting the oldest once full.
+    ///
+    /// Insertion order rather than use order, for the reason the reranker's is:
+    /// keeping a true LRU means writing on every hit, and a query asked twice
+    /// is asked twice close together.
+    fn put(&mut self, query: &str, vector: &[f32]) {
+        if self
+            .known
+            .insert(query.to_string(), vector.to_vec())
+            .is_some()
+        {
+            return;
+        }
+        self.order.push_back(query.to_string());
+        while self.order.len() > Embedder::REMEMBERED_QUERIES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.known.remove(&oldest);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    /// A remembered query is the same vector, and a different one is not.
+    ///
+    /// Keyed by the text, so the thing worth proving is that two queries never
+    /// share an entry -- a cache that returned one query's vector for another
+    /// would answer a search for one thing with the results for a different
+    /// one, and nothing downstream could tell.
+    #[test]
+    fn a_remembered_query_is_its_own() {
+        let mut queries = super::Queries::default();
+        assert!(queries.get("how does deployment work").is_none());
+
+        queries.put("how does deployment work", &[1.0, 2.0, 3.0]);
+        queries.put("how does deployment fail", &[4.0, 5.0, 6.0]);
+
+        assert_eq!(
+            queries.get("how does deployment work"),
+            Some(vec![1.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            queries.get("how does deployment fail"),
+            Some(vec![4.0, 5.0, 6.0])
+        );
+        assert!(queries.get("how does deployment").is_none());
+    }
+
+    /// The oldest is forgotten, and the cache stays the size it says.
+    #[test]
+    fn the_oldest_query_is_forgotten_once_it_is_full() {
+        let mut queries = super::Queries::default();
+        let cap = super::Embedder::REMEMBERED_QUERIES;
+        for i in 0..cap + 10 {
+            queries.put(&format!("query {i}"), &[i as f32]);
+        }
+        assert_eq!(queries.known.len(), cap);
+        assert!(queries.get("query 0").is_none(), "the oldest survived");
+        assert_eq!(
+            queries.get(&format!("query {}", cap + 9)),
+            Some(vec![(cap + 9) as f32]),
+            "the newest was lost"
+        );
+    }
+
+    /// Rewriting a query does not grow the queue behind it.
+    #[test]
+    fn remembering_a_query_twice_does_not_shorten_the_cache() {
+        let mut queries = super::Queries::default();
+        for _ in 0..super::Embedder::REMEMBERED_QUERIES * 2 {
+            queries.put("the same question", &[1.0]);
+        }
+        assert_eq!(queries.order.len(), 1);
+        assert_eq!(queries.get("the same question"), Some(vec![1.0]));
+    }
+
     use super::*;
 
     #[test]
@@ -200,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_profile_is_balanced() {
-        assert_eq!(Profile::default(), Profile::Balanced);
+    fn the_default_profile_is_accuracy() {
+        assert_eq!(Profile::default(), Profile::Accuracy);
     }
 }

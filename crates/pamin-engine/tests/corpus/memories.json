@@ -1,0 +1,1052 @@
+[
+  {
+    "topic": "deploy_pipeline_en",
+    "content": "the deployment pipeline runs on continuous integration and publishes signed artifacts to the release bucket",
+    "language": "en"
+  },
+  {
+    "topic": "deploy_pipeline_zh",
+    "content": "部署流水线在每次合并到主干后自动触发，失败时会把变更回滚到上一个标签",
+    "language": "zh"
+  },
+  {
+    "topic": "deploy_pipeline_ja",
+    "content": "デプロイパイプラインの実行ログは東京リージョンのバケットに三十日間保存されます",
+    "language": "ja"
+  },
+  {
+    "topic": "deploy_pipeline_ru",
+    "content": "конвейер развёртывания требует одобрения двух рецензентов перед выкатом в продакшн",
+    "language": "ru"
+  },
+  {
+    "topic": "deploy_pipeline_ar",
+    "content": "خط أنابيب النشر يعمل على خوادم بعيدة ولا يمكن تشغيله من جهاز محلي",
+    "language": "ar"
+  },
+  {
+    "topic": "database_backup_en",
+    "content": "database backups run nightly at two in the morning and are kept for thirty five days",
+    "language": "en"
+  },
+  {
+    "topic": "database_backup_zh",
+    "content": "数据库备份每晚做一次全量，另外每小时增量一次，恢复演练每季度做一遍",
+    "language": "zh"
+  },
+  {
+    "topic": "database_backup_ja",
+    "content": "データベースのバックアップからの復旧には平均で四十分かかります",
+    "language": "ja"
+  },
+  {
+    "topic": "database_backup_ko",
+    "content": "데이터베이스 백업은 다른 리전에 복제되며 암호화된 상태로 보관됩니다",
+    "language": "ko"
+  },
+  {
+    "topic": "database_backup_es",
+    "content": "las copias de seguridad de la base de datos se verifican automáticamente cada domingo",
+    "language": "es"
+  },
+  {
+    "topic": "oncall_rota_en",
+    "content": "the oncall rota rotates every monday morning and the handover happens on a shared call",
+    "language": "en"
+  },
+  {
+    "topic": "oncall_rota_zh",
+    "content": "值班轮换表由团队自己维护，换班需要提前两天在日历上标注",
+    "language": "zh"
+  },
+  {
+    "topic": "oncall_rota_ja",
+    "content": "オンコール担当者は深夜のアラートに十五分以内に応答することになっています",
+    "language": "ja"
+  },
+  {
+    "topic": "oncall_rota_ko",
+    "content": "온콜 순번은 휴가 일정과 자동으로 맞춰지며 주말은 두 명이 함께 담당합니다",
+    "language": "ko"
+  },
+  {
+    "topic": "oncall_rota_fr",
+    "content": "la rotation d'astreinte exclut les personnes qui ont travaillé le week-end précédent",
+    "language": "fr"
+  },
+  {
+    "topic": "rate_limiting_en",
+    "content": "api rate limiting allows six hundred requests per minute per token before it starts rejecting",
+    "language": "en"
+  },
+  {
+    "topic": "rate_limiting_zh",
+    "content": "接口限流按令牌桶实现，超出配额返回 429 并带上重试等待秒数",
+    "language": "zh"
+  },
+  {
+    "topic": "rate_limiting_ja",
+    "content": "レート制限の上限は契約プランごとに異なり、上位プランでは十倍になります",
+    "language": "ja"
+  },
+  {
+    "topic": "rate_limiting_ru",
+    "content": "ограничение частоты запросов не применяется к внутренним сервисам внутри кластера",
+    "language": "ru"
+  },
+  {
+    "topic": "rate_limiting_de",
+    "content": "die Ratenbegrenzung zählt fehlgeschlagene Anfragen nicht gegen das Kontingent",
+    "language": "de"
+  },
+  {
+    "topic": "cache_invalidation_en",
+    "content": "cache invalidation is driven by write events rather than by a fixed expiry time",
+    "language": "en"
+  },
+  {
+    "topic": "cache_invalidation_zh",
+    "content": "缓存失效采用写时广播，跨区域传播大约需要两秒",
+    "language": "zh"
+  },
+  {
+    "topic": "cache_invalidation_ja",
+    "content": "キャッシュの無効化に失敗した場合は古い値が最大五分間返り続けます",
+    "language": "ja"
+  },
+  {
+    "topic": "cache_invalidation_ar",
+    "content": "إبطال ذاكرة التخزين المؤقت يتم يدويا عند نشر إصدار كبير",
+    "language": "ar"
+  },
+  {
+    "topic": "cache_invalidation_es",
+    "content": "la invalidación de caché se registra para poder auditar lecturas obsoletas",
+    "language": "es"
+  },
+  {
+    "topic": "password_reset_en",
+    "content": "the password reset flow sends a single use link that expires after fifteen minutes",
+    "language": "en"
+  },
+  {
+    "topic": "password_reset_zh",
+    "content": "密码重置流程要求二次验证，连续失败五次会锁定账号一小时",
+    "language": "zh"
+  },
+  {
+    "topic": "password_reset_ja",
+    "content": "パスワード再設定のリンクは一度使うと無効になり再送は三回までです",
+    "language": "ja"
+  },
+  {
+    "topic": "password_reset_ko",
+    "content": "비밀번호 재설정 요청은 감사 로그에 기록되고 관리자에게 알림이 갑니다",
+    "language": "ko"
+  },
+  {
+    "topic": "password_reset_th",
+    "content": "ขั้นตอนการรีเซ็ตรหัสผ่านจะไม่ทำงานหากบัญชีถูกระงับอยู่",
+    "language": "th"
+  },
+  {
+    "topic": "mobile_release_en",
+    "content": "the mobile app release goes to five percent of users first and widens over three days",
+    "language": "en"
+  },
+  {
+    "topic": "mobile_release_zh",
+    "content": "移动端发布需要通过应用商店审核，通常两到三天，节假日会更久",
+    "language": "zh"
+  },
+  {
+    "topic": "mobile_release_ja",
+    "content": "モバイルアプリのリリースノートは社内向けと公開用で別々に書かれます",
+    "language": "ja"
+  },
+  {
+    "topic": "mobile_release_ru",
+    "content": "релиз мобильного приложения откладывается, если краши превышают полпроцента",
+    "language": "ru"
+  },
+  {
+    "topic": "mobile_release_fr",
+    "content": "la sortie de l'application mobile est bloquée tant que les traductions sont incomplètes",
+    "language": "fr"
+  },
+  {
+    "topic": "search_indexing_en",
+    "content": "search indexing lags behind writes by a few seconds because it runs from a queue",
+    "language": "en"
+  },
+  {
+    "topic": "search_indexing_zh",
+    "content": "搜索索引重建一次大约要四十分钟，期间旧索引继续对外提供服务",
+    "language": "zh"
+  },
+  {
+    "topic": "search_indexing_ja",
+    "content": "検索インデックスは言語ごとに分かち書きしてから登録されます",
+    "language": "ja"
+  },
+  {
+    "topic": "search_indexing_ko",
+    "content": "검색 색인은 실패한 문서를 따로 모아 두었다가 나중에 다시 시도합니다",
+    "language": "ko"
+  },
+  {
+    "topic": "search_indexing_th",
+    "content": "การจัดทำดัชนีการค้นหาจะข้ามเอกสารที่ถูกลบไปแล้ว",
+    "language": "th"
+  },
+  {
+    "topic": "payment_refund_en",
+    "content": "payment refunds are issued to the original method and settle within five business days",
+    "language": "en"
+  },
+  {
+    "topic": "payment_refund_zh",
+    "content": "退款超过一万元需要财务二次审批，且不能拆单规避",
+    "language": "zh"
+  },
+  {
+    "topic": "payment_refund_ja",
+    "content": "返金処理は元の通貨で行われ、為替差額は請求されません",
+    "language": "ja"
+  },
+  {
+    "topic": "payment_refund_es",
+    "content": "los reembolsos parciales conservan el número de pedido original para la conciliación",
+    "language": "es"
+  },
+  {
+    "topic": "payment_refund_de",
+    "content": "Rückerstattungen werden storniert, wenn die Bestellung bereits versandt wurde",
+    "language": "de"
+  },
+  {
+    "topic": "warehouse_stock_en",
+    "content": "warehouse inventory counts happen quarterly and discrepancies over one percent are investigated",
+    "language": "en"
+  },
+  {
+    "topic": "warehouse_stock_zh",
+    "content": "仓库库存在系统里按批次管理，临期批次会自动优先出库",
+    "language": "zh"
+  },
+  {
+    "topic": "warehouse_stock_ja",
+    "content": "倉庫の在庫データは深夜のバッチで会計システムに転記されます",
+    "language": "ja"
+  },
+  {
+    "topic": "warehouse_stock_ru",
+    "content": "складские остатки резервируются в момент оплаты, а не в момент отгрузки",
+    "language": "ru"
+  },
+  {
+    "topic": "warehouse_stock_ar",
+    "content": "جرد المستودع يتوقف مؤقتا خلال موسم الذروة",
+    "language": "ar"
+  },
+  {
+    "topic": "access_review_en",
+    "content": "the quarterly access review removes permissions nobody has used in ninety days",
+    "language": "en"
+  },
+  {
+    "topic": "access_review_zh",
+    "content": "权限复核每季度一次，未通过复核的账号会被降级为只读",
+    "language": "zh"
+  },
+  {
+    "topic": "access_review_ko",
+    "content": "접근 권한 검토는 퇴사자 계정을 가장 먼저 확인합니다",
+    "language": "ko"
+  },
+  {
+    "topic": "access_review_fr",
+    "content": "la revue des accès est signée par le responsable de chaque équipe",
+    "language": "fr"
+  },
+  {
+    "topic": "access_review_th",
+    "content": "การตรวจสอบสิทธิ์เข้าถึงครอบคลุมทั้งบัญชีคนและบัญชีบริการ",
+    "language": "th"
+  },
+  {
+    "topic": "incident_postmortem_en",
+    "content": "an incident postmortem is written within five working days and never names an individual as the cause",
+    "language": "en"
+  },
+  {
+    "topic": "incident_postmortem_zh",
+    "content": "事故复盘文档必须包含时间线、影响范围和可验证的改进项",
+    "language": "zh"
+  },
+  {
+    "topic": "incident_postmortem_ja",
+    "content": "障害の事後検証では再発防止策に必ず担当チームと期限を書きます",
+    "language": "ja"
+  },
+  {
+    "topic": "incident_postmortem_ru",
+    "content": "разбор инцидента публикуется внутри компании целиком, без сокращений",
+    "language": "ru"
+  },
+  {
+    "topic": "incident_postmortem_es",
+    "content": "el análisis posterior al incidente se revisa en la reunión semanal de ingeniería",
+    "language": "es"
+  },
+  {
+    "topic": "err_e5521",
+    "content": "error E5521 is raised when the signing key has expired and is not the same as E5522",
+    "language": "en"
+  },
+  {
+    "topic": "err_e5522",
+    "content": "error E5522 means the signing key is present but was revoked upstream",
+    "language": "en"
+  },
+  {
+    "topic": "path_database_rs",
+    "content": "connection retry lives in crates/pamin-store/src/database.rs and not in the pool wrapper",
+    "language": "en"
+  },
+  {
+    "topic": "path_projection_rs",
+    "content": "the flush interval is decided in crates/pamin-index/src/projection.rs",
+    "language": "en"
+  },
+  {
+    "topic": "cfg_max_connections",
+    "content": "set max_connections=300 on the cluster or thirty agents exhaust the default of one hundred",
+    "language": "en"
+  },
+  {
+    "topic": "cfg_work_mem",
+    "content": "work_mem defaults to 4MB which is why the two large sorts spill to disk",
+    "language": "en"
+  },
+  {
+    "topic": "fn_append_source_version",
+    "content": "append_source_version takes a row lock so concurrent writers do not collide on the version number",
+    "language": "en"
+  },
+  {
+    "topic": "fn_derive_mentions",
+    "content": "derive_mentions segments the content once rather than once per topic",
+    "language": "en"
+  },
+  {
+    "topic": "env_pamin_home",
+    "content": "PAMIN_HOME points at the workspace and PAMIN_PROJECT selects the namespace inside it",
+    "language": "en"
+  },
+  {
+    "topic": "env_ort_lib",
+    "content": "ORT_LIB_LOCATION has to be set when the onnxruntime shared library is not on the default search path",
+    "language": "en"
+  },
+  {
+    "topic": "ver_pg_1760",
+    "content": "the embedded cluster is pinned to PostgreSQL 17.6.0 and refuses to start against 17.5.0",
+    "language": "en"
+  },
+  {
+    "topic": "ver_sqlx_090",
+    "content": "sqlx 0.9.0 changed query() to take SqlSafeStr which broke five format! call sites",
+    "language": "en"
+  },
+  {
+    "topic": "issue_zvec_724",
+    "content": "zvec issue 724 reports that optimize silently drops the last K documents from the vector index",
+    "language": "en"
+  },
+  {
+    "topic": "issue_zvec_714",
+    "content": "zvec issue 714 is the concurrent read and write segfault and it is still open",
+    "language": "en"
+  },
+  {
+    "topic": "tbl_index_jobs",
+    "content": "index_jobs carries idempotency_key which is unique per project and is what makes enqueue coalesce",
+    "language": "en"
+  },
+  {
+    "topic": "tbl_topic_states",
+    "content": "topic_states had no index containing project_id so every search was a sequential scan",
+    "language": "en"
+  },
+  {
+    "topic": "noise_deploy_bay",
+    "content": "the loading bay deploys its ramp automatically when a lorry reverses into the marked area",
+    "language": "en"
+  },
+  {
+    "topic": "noise_backup_singer",
+    "content": "the backup singer for the friday set cancelled and the venue wants a replacement by wednesday",
+    "language": "en"
+  },
+  {
+    "topic": "noise_cache_county",
+    "content": "cache county fairground hosts the regional show every august and parking is on the south field",
+    "language": "en"
+  },
+  {
+    "topic": "noise_rota_vitamin",
+    "content": "beta carotene and rota virus are unrelated despite both appearing in the same health leaflet",
+    "language": "en"
+  },
+  {
+    "topic": "noise_refund_museum",
+    "content": "the museum refunds nothing but will move a booking to any other weekday free of charge",
+    "language": "en"
+  },
+  {
+    "topic": "noise_index_finger",
+    "content": "the index finger callus comes from the way the bow is held rather than from practice length",
+    "language": "en"
+  },
+  {
+    "topic": "noise_password_poem",
+    "content": "the poem about a forgotten word was written long before anyone reset anything electronic",
+    "language": "en"
+  },
+  {
+    "topic": "noise_search_party",
+    "content": "the search party met at the north gate at dawn and worked south along the ridge",
+    "language": "en"
+  },
+  {
+    "topic": "noise_pipeline_oil",
+    "content": "the oil pipeline follows the old rail bed for eleven kilometres before turning east",
+    "language": "en"
+  },
+  {
+    "topic": "noise_warehouse_loft",
+    "content": "the converted warehouse loft has original beams and no lift, which the listing does not mention",
+    "language": "en"
+  },
+  {
+    "topic": "noise_e5_train",
+    "content": "the E5 series train sets run the northern route and are due for interior refurbishment",
+    "language": "en"
+  },
+  {
+    "topic": "noise_stock_broth",
+    "content": "stock is simmered for six hours and skimmed twice, never boiled, or it turns cloudy",
+    "language": "en"
+  },
+  {
+    "topic": "vpn_access_de",
+    "content": "der VPN-Zugang wird nach sechzig Tagen ohne Nutzung automatisch entzogen",
+    "language": "de"
+  },
+  {
+    "topic": "vpn_access_zh",
+    "content": "VPN 接入需要硬件密钥，软件验证码在去年已经停用",
+    "language": "zh"
+  },
+  {
+    "topic": "vpn_access_ja",
+    "content": "VPN の同時接続は一人あたり二台までに制限されています",
+    "language": "ja"
+  },
+  {
+    "topic": "vpn_access_th",
+    "content": "การเข้าถึง VPN จากต่างประเทศต้องขออนุมัติล่วงหน้า",
+    "language": "th"
+  },
+  {
+    "topic": "laptop_replacement_fr",
+    "content": "le remplacement d'ordinateur portable intervient au bout de quatre ans ou à la première panne matérielle",
+    "language": "fr"
+  },
+  {
+    "topic": "laptop_replacement_zh",
+    "content": "笔记本更换申请由直属主管批准，旧机需要在两周内交还并抹除",
+    "language": "zh"
+  },
+  {
+    "topic": "laptop_replacement_ko",
+    "content": "노트북 교체 시 기존 기기의 디스크는 물리적으로 파쇄됩니다",
+    "language": "ko"
+  },
+  {
+    "topic": "laptop_replacement_ru",
+    "content": "замена ноутбука не покрывает повреждения от жидкости",
+    "language": "ru"
+  },
+  {
+    "topic": "expense_policy_es",
+    "content": "los gastos de viaje se reembolsan solo con factura y dentro de los sesenta días",
+    "language": "es"
+  },
+  {
+    "topic": "expense_policy_ja",
+    "content": "経費精算は月末締めで、領収書の原本は不要になりました",
+    "language": "ja"
+  },
+  {
+    "topic": "expense_policy_ar",
+    "content": "سياسة المصروفات لا تغطي ترقية الدرجة على الرحلات القصيرة",
+    "language": "ar"
+  },
+  {
+    "topic": "expense_policy_ko",
+    "content": "출장 경비는 사전 승인 없이는 상한선을 넘을 수 없습니다",
+    "language": "ko"
+  },
+  {
+    "topic": "meeting_notes_en",
+    "content": "meeting notes are written by the person who called the meeting, not by a rotating scribe",
+    "language": "en"
+  },
+  {
+    "topic": "meeting_notes_ru",
+    "content": "заметки со встречи публикуются в течение суток, иначе встреча считается несостоявшейся",
+    "language": "ru"
+  },
+  {
+    "topic": "meeting_notes_th",
+    "content": "บันทึกการประชุมต้องระบุผู้รับผิดชอบของทุกข้อสรุป",
+    "language": "th"
+  },
+  {
+    "topic": "meeting_notes_de",
+    "content": "Besprechungsnotizen enthalten keine wörtlichen Zitate ohne Zustimmung",
+    "language": "de"
+  },
+  {
+    "topic": "code_review_en",
+    "content": "code review asks for one approval on a small change and two on anything touching the schema",
+    "language": "en"
+  },
+  {
+    "topic": "code_review_ja",
+    "content": "コードレビューでは指摘の重要度を必ず明示することになっています",
+    "language": "ja"
+  },
+  {
+    "topic": "code_review_fr",
+    "content": "la revue de code ne bloque pas sur le style, qui est traité par le formateur automatique",
+    "language": "fr"
+  },
+  {
+    "topic": "code_review_th",
+    "content": "การรีวิวโค้ดจะต้องเสร็จภายในสองวันทำการ",
+    "language": "th"
+  },
+  {
+    "topic": "hiring_loop_zh",
+    "content": "面试流程固定为四轮，其中一轮由未来的同级同事主持",
+    "language": "zh"
+  },
+  {
+    "topic": "hiring_loop_es",
+    "content": "el proceso de contratación incluye una prueba práctica pagada de cuatro horas",
+    "language": "es"
+  },
+  {
+    "topic": "hiring_loop_ko",
+    "content": "채용 절차의 최종 결정은 만장일치가 아니라 다수결로 이루어집니다",
+    "language": "ko"
+  },
+  {
+    "topic": "hiring_loop_ar",
+    "content": "حلقة التوظيف تتضمن مقابلة حول التعامل مع الخلافات داخل الفريق",
+    "language": "ar"
+  },
+  {
+    "topic": "office_wifi_ja",
+    "content": "オフィスの無線ネットワークはゲスト用と社員用で完全に分離されています",
+    "language": "ja"
+  },
+  {
+    "topic": "office_wifi_ru",
+    "content": "гостевой wifi в офисе выдаёт пароль на сутки и не пускает во внутреннюю сеть",
+    "language": "ru"
+  },
+  {
+    "topic": "office_wifi_th",
+    "content": "ไวไฟในสำนักงานจะรีเซ็ตรหัสผ่านทุกวันจันทร์",
+    "language": "th"
+  },
+  {
+    "topic": "office_wifi_de",
+    "content": "das Bürowlan drosselt Streaming ab siebzehn Uhr nicht mehr",
+    "language": "de"
+  },
+  {
+    "topic": "parental_leave_fr",
+    "content": "le congé parental peut être fractionné en trois périodes sur dix-huit mois",
+    "language": "fr"
+  },
+  {
+    "topic": "parental_leave_zh",
+    "content": "育儿假可以拆分使用，返岗后前一个月按弹性工时安排",
+    "language": "zh"
+  },
+  {
+    "topic": "parental_leave_ko",
+    "content": "육아휴직 기간에도 주식 보상은 계속 적립됩니다",
+    "language": "ko"
+  },
+  {
+    "topic": "parental_leave_es",
+    "content": "la baja parental se comunica al equipo con al menos un mes de antelación",
+    "language": "es"
+  },
+  {
+    "topic": "data_retention_en",
+    "content": "raw event data is deleted after ninety days and only aggregates survive past that",
+    "language": "en"
+  },
+  {
+    "topic": "data_retention_de",
+    "content": "die Aufbewahrung personenbezogener Daten endet mit dem Vertrag, nicht mit dem Kalenderjahr",
+    "language": "de"
+  },
+  {
+    "topic": "data_retention_ja",
+    "content": "データ保持期間の延長には法務の承認が必要です",
+    "language": "ja"
+  },
+  {
+    "topic": "data_retention_ar",
+    "content": "الاحتفاظ بالبيانات لا يشمل النسخ الموجودة في بيئات الاختبار",
+    "language": "ar"
+  },
+  {
+    "topic": "feature_flag_en",
+    "content": "a feature flag that has been fully on for a month is removed rather than left in the code",
+    "language": "en"
+  },
+  {
+    "topic": "feature_flag_zh",
+    "content": "功能开关必须写明负责人和下线日期，过期会被自动提醒",
+    "language": "zh"
+  },
+  {
+    "topic": "feature_flag_ru",
+    "content": "флаг функциональности нельзя включать сразу на всех, минимум две ступени",
+    "language": "ru"
+  },
+  {
+    "topic": "feature_flag_ko",
+    "content": "기능 플래그의 기본값은 항상 꺼짐이며 예외는 문서로 남깁니다",
+    "language": "ko"
+  },
+  {
+    "topic": "api_versioning_en",
+    "content": "an api version is supported for eighteen months after its successor ships",
+    "language": "en"
+  },
+  {
+    "topic": "api_versioning_ja",
+    "content": "APIのバージョン廃止は半年前に告知し、利用者には個別に連絡します",
+    "language": "ja"
+  },
+  {
+    "topic": "api_versioning_es",
+    "content": "el versionado de la api no permite cambios incompatibles dentro de una misma versión",
+    "language": "es"
+  },
+  {
+    "topic": "api_versioning_th",
+    "content": "การกำหนดเวอร์ชันของ API จะไม่ใช้วันที่แต่ใช้ตัวเลขลำดับ",
+    "language": "th"
+  },
+  {
+    "topic": "log_retention_zh",
+    "content": "应用日志保留十四天，审计日志保留一年，两者存在不同的存储桶",
+    "language": "zh"
+  },
+  {
+    "topic": "log_retention_ru",
+    "content": "логи с уровнем debug не выгружаются в централизованное хранилище",
+    "language": "ru"
+  },
+  {
+    "topic": "log_retention_fr",
+    "content": "les journaux applicatifs sont anonymisés avant d'être exportés vers l'outil d'analyse",
+    "language": "fr"
+  },
+  {
+    "topic": "log_retention_ko",
+    "content": "로그 보관 비용은 팀별로 청구되며 매월 검토합니다",
+    "language": "ko"
+  },
+  {
+    "topic": "disaster_recovery_en",
+    "content": "the disaster recovery target is four hours to restore service and one hour of acceptable data loss",
+    "language": "en"
+  },
+  {
+    "topic": "disaster_recovery_ja",
+    "content": "災害復旧の訓練は年二回、うち一回は予告なしで実施されます",
+    "language": "ja"
+  },
+  {
+    "topic": "disaster_recovery_ar",
+    "content": "خطة التعافي من الكوارث تفترض فقدان مركز البيانات الرئيسي بالكامل",
+    "language": "ar"
+  },
+  {
+    "topic": "disaster_recovery_th",
+    "content": "แผนกู้คืนระบบครอบคลุมเฉพาะบริการที่จัดระดับความสำคัญไว้แล้ว",
+    "language": "th"
+  },
+  {
+    "topic": "queue_backlog_en",
+    "content": "a queue backlog over ten thousand messages pages the oncall rather than waiting for business hours",
+    "language": "en"
+  },
+  {
+    "topic": "queue_backlog_zh",
+    "content": "队列积压超过阈值会自动扩容消费者，但上限是八个实例",
+    "language": "zh"
+  },
+  {
+    "topic": "queue_backlog_de",
+    "content": "ein Rückstau in der Warteschlange wird nicht durch Neustarts behoben, sondern durch Drosselung der Erzeuger",
+    "language": "de"
+  },
+  {
+    "topic": "queue_backlog_ko",
+    "content": "큐 적체가 발생하면 오래된 메시지부터 처리하지 않고 우선순위 순으로 처리합니다",
+    "language": "ko"
+  },
+  {
+    "topic": "ssl_certificate_en",
+    "content": "certificates renew automatically thirty days before expiry and alert if renewal fails twice",
+    "language": "en"
+  },
+  {
+    "topic": "ssl_certificate_ru",
+    "content": "сертификат для внутренних сервисов выдаётся собственным центром сертификации",
+    "language": "ru"
+  },
+  {
+    "topic": "ssl_certificate_ja",
+    "content": "証明書の有効期限切れは過去二回とも監視ではなく利用者から報告されました",
+    "language": "ja"
+  },
+  {
+    "topic": "ssl_certificate_es",
+    "content": "los certificados comodín están prohibidos fuera del entorno de pruebas",
+    "language": "es"
+  },
+  {
+    "topic": "translation_workflow_fr",
+    "content": "la traduction part une semaine avant le gel du code et revient par lots",
+    "language": "fr"
+  },
+  {
+    "topic": "translation_workflow_zh",
+    "content": "翻译流程要求源文案冻结后才送翻，术语表由产品维护",
+    "language": "zh"
+  },
+  {
+    "topic": "translation_workflow_ja",
+    "content": "翻訳の品質確認は母語話者が担当し、機械翻訳の下訳は許容されます",
+    "language": "ja"
+  },
+  {
+    "topic": "translation_workflow_th",
+    "content": "กระบวนการแปลจะข้ามข้อความที่ยังไม่ผ่านการรีวิว",
+    "language": "th"
+  },
+  {
+    "topic": "customer_support_sla_en",
+    "content": "support answers within one business day and within two hours for anything marked outage",
+    "language": "en"
+  },
+  {
+    "topic": "customer_support_sla_es",
+    "content": "el soporte al cliente escala automáticamente si no hay respuesta en cuatro horas",
+    "language": "es"
+  },
+  {
+    "topic": "customer_support_sla_ko",
+    "content": "고객 지원 응대 시간은 고객의 현지 시간 기준으로 계산됩니다",
+    "language": "ko"
+  },
+  {
+    "topic": "customer_support_sla_ar",
+    "content": "دعم العملاء متاح بالعربية خلال ساعات العمل فقط",
+    "language": "ar"
+  },
+  {
+    "topic": "security_patch_en",
+    "content": "a critical security patch ships within seven days and skips the normal release train",
+    "language": "en"
+  },
+  {
+    "topic": "security_patch_zh",
+    "content": "安全补丁按严重级别定时限，最高级别要求二十四小时内上线",
+    "language": "zh"
+  },
+  {
+    "topic": "security_patch_ru",
+    "content": "патч безопасности выкатывается сначала на внутренние окружения, но не дольше суток",
+    "language": "ru"
+  },
+  {
+    "topic": "security_patch_de",
+    "content": "Sicherheitsupdates werden auch dann eingespielt, wenn ein Release-Stopp gilt",
+    "language": "de"
+  },
+  {
+    "topic": "err_p0001",
+    "content": "error P0001 comes from a plpgsql raise and is not the same class as 23505",
+    "language": "en"
+  },
+  {
+    "topic": "err_23505",
+    "content": "SQLSTATE 23505 is a unique violation and the detail line names the constraint",
+    "language": "en"
+  },
+  {
+    "topic": "path_engine_rs",
+    "content": "the working set is assembled in crates/pamin-engine/src/engine.rs before fusion runs",
+    "language": "en"
+  },
+  {
+    "topic": "path_cascade_rs",
+    "content": "job handlers live in crates/pamin-engine/src/cascade.rs one function each",
+    "language": "en"
+  },
+  {
+    "topic": "path_budget_py",
+    "content": "ci/budget.py measures binary_bytes and total_dependencies and fails the build over either",
+    "language": "en"
+  },
+  {
+    "topic": "cfg_shared_buffers",
+    "content": "shared_buffers should be a quarter of memory capped at 8GB on a dedicated host",
+    "language": "en"
+  },
+  {
+    "topic": "cfg_synchronous_commit",
+    "content": "synchronous_commit stays on; measured it saves 0.22ms per write and costs 600ms of evidence",
+    "language": "en"
+  },
+  {
+    "topic": "cfg_ef_search",
+    "content": "ef_search defaults to 300 in the engine and we had never set it from our side",
+    "language": "en"
+  },
+  {
+    "topic": "fn_retract_derived",
+    "content": "retract_derived closes the derived edges of a kind out of a topic that the content no longer implies",
+    "language": "en"
+  },
+  {
+    "topic": "fn_repair_current_state",
+    "content": "repair_current_state_pointers recomputes the pointer from the ledger and returns how many were wrong",
+    "language": "en"
+  },
+  {
+    "topic": "fn_recall_naming",
+    "content": "recall_naming runs a conjunction so a two word name is not answered by either word alone",
+    "language": "en"
+  },
+  {
+    "topic": "env_pamin_profile",
+    "content": "PAMIN_PROFILE selects speed balanced or accuracy and changing it requires a reindex",
+    "language": "en"
+  },
+  {
+    "topic": "env_https_proxy",
+    "content": "HTTPS_PROXY has to be honoured or the model download fails with a CONNECT error",
+    "language": "en"
+  },
+  {
+    "topic": "ver_rust_1981",
+    "content": "the toolchain is pinned to Rust 1.98.1 because 1.98.0 miscompiles vtables",
+    "language": "en"
+  },
+  {
+    "topic": "ver_fastembed_603",
+    "content": "fastembed 6.0.3 exposes Bgem3Embedding which loads a different onnx file than TextEmbedding",
+    "language": "en"
+  },
+  {
+    "topic": "tbl_relationship_versions",
+    "content": "relationship_versions carries tombstone_reason which is what separates closed from deleted",
+    "language": "en"
+  },
+  {
+    "topic": "tbl_source_versions",
+    "content": "source_versions is append only and grep reads it directly, including content the filter held",
+    "language": "en"
+  },
+  {
+    "topic": "cmd_cascade_drain",
+    "content": "pamin cascade drain runs everything that is due and stops, unlike run which keeps going",
+    "language": "en"
+  },
+  {
+    "topic": "cmd_write_defer",
+    "content": "pamin write --defer records the memory and leaves the indexing for the queue",
+    "language": "en"
+  },
+  {
+    "topic": "metric_ndcg10",
+    "content": "nDCG@10 and recall@50 fail differently and a reranker can only fix the first of them",
+    "language": "en"
+  },
+  {
+    "topic": "noise_patch_quilt",
+    "content": "the patch on the quilt is the only piece cut from the original curtain fabric",
+    "language": "en"
+  },
+  {
+    "topic": "noise_queue_theatre",
+    "content": "the queue outside the theatre forms along the wall and not across the pavement",
+    "language": "en"
+  },
+  {
+    "topic": "noise_flag_semaphore",
+    "content": "flag semaphore was still taught to cadets long after radio made it unnecessary",
+    "language": "en"
+  },
+  {
+    "topic": "noise_certificate_birth",
+    "content": "a replacement birth certificate takes six weeks and cannot be ordered by phone",
+    "language": "en"
+  },
+  {
+    "topic": "noise_review_restaurant",
+    "content": "the restaurant review complains about the noise and says nothing about the food",
+    "language": "en"
+  },
+  {
+    "topic": "noise_leave_autumn",
+    "content": "the leaves turn late this far south and drop all at once after the first frost",
+    "language": "en"
+  },
+  {
+    "topic": "noise_version_bible",
+    "content": "the 1611 version is the one most often quoted even by people reading a later one",
+    "language": "en"
+  },
+  {
+    "topic": "noise_retention_water",
+    "content": "water retention in the raised beds improved after the second year of mulching",
+    "language": "en"
+  },
+  {
+    "topic": "noise_recovery_room",
+    "content": "the recovery room holds four beds and visiting is limited to one person at a time",
+    "language": "en"
+  },
+  {
+    "topic": "noise_wifi_cafe",
+    "content": "the cafe on the corner has no wifi on purpose and says so on a card at each table",
+    "language": "en"
+  },
+  {
+    "topic": "noise_translation_poem",
+    "content": "the translation keeps the rhyme and loses the pun, which most reviewers thought was the right trade",
+    "language": "en"
+  },
+  {
+    "topic": "noise_support_beam",
+    "content": "the support beam was replaced in the eighties and the join is visible from the loft",
+    "language": "en"
+  },
+  {
+    "topic": "noise_index_book",
+    "content": "the index at the back of the book runs to forty pages and was compiled by hand",
+    "language": "en"
+  },
+  {
+    "topic": "noise_backlog_publisher",
+    "content": "the publisher's backlog means a manuscript accepted now appears in about two years",
+    "language": "en"
+  },
+  {
+    "topic": "noise_expense_scenery",
+    "content": "the expense of the scenery was justified by reusing it across three productions",
+    "language": "en"
+  },
+  {
+    "topic": "noise_laptop_case",
+    "content": "the laptop case is the wrong size for the machine and the zip has already gone",
+    "language": "en"
+  },
+  {
+    "topic": "noise_hiring_hall",
+    "content": "the hiring hall system ended in the sixties but the building is still standing",
+    "language": "en"
+  },
+  {
+    "topic": "noise_meeting_river",
+    "content": "the meeting of the two rivers is marked by a stone that floods most winters",
+    "language": "en"
+  },
+  {
+    "topic": "noise_disaster_film",
+    "content": "the disaster film was shot in the same quarry as the previous four and it shows",
+    "language": "en"
+  },
+  {
+    "topic": "noise_stock_photo",
+    "content": "the stock photo on the homepage has been used by two competitors in the same month",
+    "language": "en"
+  },
+  {
+    "topic": "noise_reset_button",
+    "content": "the reset button on the panel is recessed so it cannot be pressed by accident",
+    "language": "en"
+  },
+  {
+    "topic": "noise_pipeline_dream",
+    "content": "the project is still in the pipeline, which everyone understands to mean nobody is working on it",
+    "language": "en"
+  },
+  {
+    "topic": "noise_rate_exchange",
+    "content": "the exchange rate quoted at the airport is worse than any bank in the city centre",
+    "language": "en"
+  },
+  {
+    "topic": "noise_access_road",
+    "content": "the access road is unadopted so the council will not resurface it whatever the residents pay",
+    "language": "en"
+  },
+  {
+    "topic": "noise_deploy_parachute",
+    "content": "the reserve parachute deploys automatically below a set altitude and cannot be disabled",
+    "language": "en"
+  },
+  {
+    "topic": "noise_flag_iris",
+    "content": "the yellow flag iris spreads by rhizome and will take a pond bank in three seasons",
+    "language": "en"
+  },
+  {
+    "topic": "noise_key_signature",
+    "content": "the key signature changes twice in the last movement and the second one catches everybody",
+    "language": "en"
+  },
+  {
+    "topic": "noise_batch_bread",
+    "content": "the batch of bread is scored differently so the two doughs can be told apart after baking",
+    "language": "en"
+  },
+  {
+    "topic": "noise_token_ring",
+    "content": "token ring lost to ethernet on price rather than on any technical argument",
+    "language": "en"
+  },
+  {
+    "topic": "noise_lock_canal",
+    "content": "the canal lock takes eleven minutes to fill and there is no way to hurry it",
+    "language": "en"
+  }
+]

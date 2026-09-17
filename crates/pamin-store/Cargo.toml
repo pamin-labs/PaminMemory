@@ -11,12 +11,11 @@ repository.workspace = true
 pamin-core = { workspace = true }
 thiserror = { workspace = true }
 postgresql_embedded = { workspace = true }
-refinery = { workspace = true }
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
-tokio-postgres = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 

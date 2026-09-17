@@ -10,6 +10,20 @@
 # Rust build output
 /target/
 
+# Measurement harnesses, which build a throwaway integration test by copying a
+# real one and appending to the copy. They used to append to the tracked file
+# and revert it afterwards; a background run and a `git add -A` then put two
+# hundred lines of scratch into a commit. Cargo discovers anything matching
+# tests/*.rs, so the copy runs without being registered anywhere -- and being
+# ignored here is what keeps it out of a commit by construction rather than by
+# remembering. The harnesses delete these on the way in as well as on the way
+# out, because a run that is killed never reaches its trap.
+crates/*/tests/scratch_*.rs
+
+# Python bytecode, from running the budget script
+__pycache__/
+*.pyc
+
 # Rust local/editor outputs
 **/*.rs.bk
 

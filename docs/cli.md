@@ -13,7 +13,7 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `balanced` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
 | `--json` | | off | Emit JSON instead of text |
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
@@ -22,6 +22,19 @@ never contaminate the JSON on stdout.
 Changing `--profile` changes the vector space. The index records the profile it
 was built with and refuses to open under a different one, naming `reindex` in
 the error rather than silently mixing two spaces.
+
+| Profile | Model | Width | Resident | Per query |
+| --- | --- | --- | --- | --- |
+| `speed` | multilingual-e5-small | 384 | 465 MB | 13 ms |
+| `balanced` | multilingual-e5-base | 768 | 1.1 GB | 26 ms |
+| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms |
+
+The default is the largest model because quantized weights make it the smallest
+download and because the gap it closes is the one this project is about: on the
+evaluation corpus it roughly doubles cross-lingual retrieval against
+`balanced`, matches it on same-language queries, and costs nine milliseconds.
+`balanced` is kept for those nine milliseconds and for projects already indexed
+under it; there is no other reason left to choose it.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -82,12 +95,21 @@ $ pamin write --topic oncall_rota "ok" --json
   "version": null,
   "promoted": false,
   "reason": "content was too short to carry a durable claim",
-  "source_version": 3
+  "source_version": 3,
+  "cascade": "applied",
+  "cascade_lagging": false,
+  "valid_from": null,
+  "valid_to": null
 }
 ```
 
 A `null` version means the filter held it. `source_version` is always set: the
 filter decides what reaches the retrieval surface, never what is kept.
+
+A held write does not create the topic either. Writing to a name that does not
+exist yet, and having the content held, leaves the evidence and no topic: the
+name stays unknown to `read`, `neighbors`, and the graph channel until something
+is promoted under it.
 
 `--valid-from` and `--valid-to` state when the claim is asserted to hold, as
 RFC 3339. Both are open by default:
@@ -101,6 +123,79 @@ This is separate from when the memory was written. See
 [Two kinds of time](#two-kinds-of-time).
 
 Writing also derives relationships. See [Relationships](#relationships).
+
+`cascade` says whether the projection caught up before the command returned.
+The write itself commits the evidence, the span, the state and a record of what
+the projection is owed, all in one transaction that touches only PostgreSQL;
+the index is brought up to date afterwards. `applied` means that happened here.
+`queued` means some of it is still owed and `pamin cascade` will run it — the
+memory is recorded either way. See [`pamin cascade`](#pamin-cascade).
+
+`--defer` records the memory and leaves the index to catch up later, so the
+command returns without embedding anything:
+
+```console
+$ pamin write --defer --topic release_notes "cut 1.4.0 from main"
+Wrote release_notes v1
+```
+
+The memory is committed exactly as it would be otherwise — `pamin read` and
+`pamin grep` see it immediately — and only `search` waits for the queue. Use it
+when importing in bulk and run `pamin cascade drain` once at the end: one
+rebuild of the vector graph instead of one after every write.
+
+`cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
+reports what the queue owed when the write looked at it rather than what is left
+afterwards. Without it a cascade keeping up and one falling behind look
+identical from outside, apart from searches missing the newest memories.
+
+Ten thousand is also where `--defer` stops deferring: a write past it drains
+before returning, so an import that ignores the signal still cannot run the
+queue away. That costs the importer the work it created rather than pausing it,
+which is the only form of backpressure that means anything here — ordinarily
+nothing else is draining, so a writer that waited would slow the import and
+leave the backlog exactly where it was. A new memory queues three jobs, so an
+import pays for a batch about every three thousand of them and never carries
+more than ten thousand.
+
+## `pamin import`
+
+Records many memories in one call, from a file of one JSON object per line.
+
+```console
+$ pamin import --from memories.ndjson
+Imported 2400 memories: 2400 written, 0 held in evidence only
+```
+
+```json
+{"topic": "deployment_pipeline", "content": "the pipeline runs on argo cd"}
+{"topic": "oncall_rota", "content": "the rota rotates every monday morning"}
+```
+
+Each memory goes through the same filter, the same language detection and the
+same transaction as `pamin write`; what changes is everything around them. One
+invocation instead of one per memory, one open engine instead of one per
+memory, and the projection catching up in rounds of sixty-four rather than
+after each one. Measured on 2,400 memories, getting one into the ledger costs
+**3.2 ms here against 30.1 ms** through `pamin write`, and a whole import of
+2,400 previously-unseen memories takes 55 s against 119 s — the rest of which
+is embedding them, which costs the same either way.
+
+The file is read by whichever process holds the workspace, which is the server
+when one is running. Both are on this machine and run as you.
+
+It is parsed in full before the first memory is recorded, so a malformed last
+line is a refusal rather than half an import. Importing the same file twice is
+not an error: the second time every memory is unchanged, so the filter holds it
+in the evidence layer and nothing reaches the index — which is what the `held`
+count is reporting.
+
+The importer watches the queue as it goes and pays it down if it passes the
+depth that reports the projection behind, so an import cannot leave the index
+arbitrarily far behind however large the file is. `cascade_lagging` in `--json`
+says whether that happened.
+
+`--valid-from` and `--valid-to` apply to every memory in the file.
 
 ## `pamin read`
 
@@ -136,6 +231,12 @@ guessing at the depth first.
 
 Retrieves across every recall channel and explains the result.
 
+Results are topics, at what each says now. A topic rewritten fourteen times is
+one result and not fourteen, and the `topic_state` and `version` a hit reports
+are its current ones. Earlier versions are read rather than ranked: `pamin read
+--version-offset` reaches them, and `pamin grep` reaches the evidence behind
+them, including what the filter never promoted.
+
 `--channel-depth` sets how many candidates each channel contributes before
 fusion (default 50) and `--graph-depth` how many edges the graph walks out
 (default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`.
@@ -146,14 +247,63 @@ recall you cannot measure from outside, and an agent that wants control over
 retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
 ranking internals it has no way to evaluate.
 
+`--rerank` chooses how much to spend reordering the results, and takes
+`PAMIN_RERANK`:
+
+| | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
+|---|---|---|---|---|
+| `off` | nothing | 39 ms | — | — |
+| `fast` | 113 MB | 204 ms | **+0.0375** | −0.0062 |
+| `accurate` | 570 MB | 508 ms | **+0.0458** | +0.0022 |
+
+`fast` is the default, on latency: its pass costs 165 ms against `accurate`'s
+469. `accurate` scores better on both groups, so a workspace that can afford
+half a second a search should ask for it. A workspace whose memories are all in
+one language should set `off` — only candidates the lexical channels missed are
+reranked, and those are overwhelmingly the ones written in another language.
+
+The model is fetched the first time a search asks for one, into the same cache
+as the embedding model.
+
+A reranker reads the query and a memory together, which is what lets it correct
+an order the channels got wrong, and what makes it cost a forward pass for
+every candidate it looks at. Only the candidates no lexical channel found are
+reordered, and only into the positions they already hold — so a memory that
+shares words with your query comes back where it was, whatever the reranker
+thought of it. The same-language column above is unchanged for that reason
+rather than by luck.
+
+That also means a workspace whose memories are all in one language gains
+almost nothing here and should set `off`: the candidates the lexical channels
+miss are overwhelmingly the ones in another language. The numbers above are
+from eleven languages at once.
+
+A score depends on the query as well as the memory, so a resident server
+remembers the ones it has computed and a repeated search pays nothing for them:
+measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
+Four thousand scores are kept, about a quarter of a megabyte. Without
+`pamin serve` there is no process to keep them in, so every command starts
+from nothing.
+
+The latencies are from four cores. Published figures for a reranker of this
+size are a few milliseconds per candidate rather than the ten measured here,
+and the difference is the core count; on an ordinary server `fast` is tens of
+milliseconds.
+
+`--graph-depth` accepts 0 to 4 and refuses anything larger. A topic's
+neighbourhood grows multiplicatively with each hop and hub topics reach five
+figures of degree, so a fifth hop is not a slower query but a differently sized
+one. The walk also starts from at most 64 seeds, keeping the topics the query
+named by name ahead of the ones the lexical and vector channels supplied.
+
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.0489  deployment_pipeline v2 (current)  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#2 graph#1 via depends_on@1hop Importancex1.00 Worthx1.00
-0.0479  rollback_plan v1 (current)  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#3 graph#3 via mentions@1hop Importancex1.00 Worthx1.00
-0.0474  oncall_rota v1 (current)  the oncall rota rotates every monday morning
-        lexical_ngram#4 vector#4 graph#2 via depends_on@1hop Importancex1.00 Worthx1.00
+0.2197  deployment_pipeline v2  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
+0.2063  oncall_rota v1  the oncall rota rotates every monday morning
+        lexical_ngram#3 vector#3 graph#1 from deployment_pipeline --depends_on-> (1hop)
+0.2019  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
 ```
 
 The JSON carries the same trace in full:
@@ -165,20 +315,17 @@ $ pamin search "how do we deploy" --limit 1 --json
   "hits": [
     {
       "topic": "deployment_pipeline",
-      "topic_state": "6112147e-71bf-4c16-ae34-f812021ac10f",
+      "topic_state": "4d6c7768-11ee-4322-a76a-37e1f9e96a76",
       "version": 2,
-      "is_current": true,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.048915915,
+      "score": 0.21969697,
       "why": [
-        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
-        { "kind": "channel", "channel": "vector", "rank": 2, "weight": 1.0, "contribution": 0.016129032 },
-        { "kind": "channel", "channel": "graph", "rank": 1, "weight": 1.0, "contribution": 0.016393442 },
-        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" },
-        { "kind": "modifier", "modifier": "importance", "factor": 1.0 },
-        { "kind": "modifier", "modifier": "worth", "factor": 1.0 }
+        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.5, "contribution": 0.045454547 },
+        { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
+        { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
+        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "af72f5a0-37b0-42b0-ac08-7d499428fc63"
+      "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9"
     }
   ]
 }
@@ -189,18 +336,28 @@ $ pamin search "how do we deploy" --limit 1 --json
 Three kinds of entry, and they answer different questions.
 
 **`channel`** — this result appeared in that channel at that rank, and
-contributed `weight / (60 + rank)` to the score. There are four channels:
+contributed `weight / (10 + rank)` to the score. There are four channels:
 
-| Channel | What it matches |
-| --- | --- |
-| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces |
-| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys |
-| `vector` | Meaning, across languages |
-| `graph` | Topics connected to what the other channels found |
+| Channel | What it matches | Weight |
+| --- | --- | --- |
+| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.5 |
+| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.5 |
+| `vector` | Meaning, across languages | 1.0 |
+| `graph` | Topics connected to what the other channels found | 1.0 |
 
 Ranks travel between channels; scores do not. A BM25 score and a cosine distance
 are not comparable quantities, so fusion combines the ranks rather than
 pretending the scores share a scale.
+
+The two lexical channels carry half weight because they are nearly the same
+channel: both match the literal text, one over segmented words and one over
+character n-grams, so they agree with each other far more often than either
+agrees with the vector or graph channel. At full weight that agreement counts
+twice, and the wording outvotes the meaning on exactly the queries where they
+differ. The `10` is likewise measured here rather than taken from the rank
+fusion literature, which uses 60 for lists thousands of results deep; each
+channel proposes fifty, and 60 flattens fifty candidates to the point where
+being first says almost nothing.
 
 Fusion happens here rather than inside the retrieval engine. The engine offers to
 fuse its own channels and that offer is declined: the graph lives in PostgreSQL
@@ -217,10 +374,14 @@ they are not, and both are needed to follow the route. Nobody can verify a
 reciprocal rank; anyone can verify that two topics are related the way the path
 claims.
 
-**`modifier`** — a post-fusion adjustment, applied at most once each.
-`importance` and `worth` lift a result; `superseded` down-weights a historical
-state rather than removing it, because a question about how something changed
-needs it.
+**`modifier`** — a post-fusion adjustment, applied at most once each, and
+recorded only when it changed the result. `importance` and `worth` lift a
+result.
+
+The trace above has no `modifier` entry because none of them moved anything.
+`importance` and `worth` are read by the ranker and written by nothing yet, so
+today they are always one; a result that carries no `modifier` line is a result
+that ranked on its channels alone.
 
 ## Relationships
 
@@ -327,7 +488,8 @@ to see a derived edge that never placed high enough to surface in a search.
 Traversal ignores edge direction, since both ends of a `depends_on` are relevant
 to recall. `--kind` restricts it, repeatably. `--at <rfc3339>` follows only edges
 asserted to hold at that instant, which is how a question about the past avoids
-relationships that were only claimed later.
+relationships that were only claimed later. `--depth` accepts 0 to 4, for the
+reason given under [`pamin search`](#pamin-search).
 
 ## `pamin grep`
 
@@ -436,9 +598,116 @@ authority store, not the index.
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
 
+It is also how a grown project resizes its vector segments. The index sizes
+them from the number of memories it holds when it is created, which for a
+project starting from nothing is the smallest size; a project that has since
+grown by orders of magnitude keeps that size until it is rebuilt. Rebuilding
+recomputes it from what the project holds now, so a project that has outgrown
+its layout searches faster afterwards.
+
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
 search nothing, so commands report it and `pamin reindex` migrates it.
+
+## `pamin cascade`
+
+Runs the work a write left for the projection.
+
+A write records the memory and, in the same transaction, a record of what the
+index still owes it: the embedding, the vector and lexical entries, and the
+relationships the content implies. Nothing derived happens inside that
+transaction, so a memory is never recorded without its follow-up work also
+being recorded — and a process that dies between the two leaves the work owed
+rather than lost.
+
+`pamin write` runs the queue before it returns, so ordinarily there is nothing
+here to do. These commands are for when there is: a queue left behind by a
+process that was killed, writes made with [`--defer`](#pamin-write), work
+deferred because something it needed was unavailable, and jobs that failed
+often enough to be set aside.
+
+```console
+$ pamin cascade drain
+Ran 3 jobs, 0 failed, 0 still owed
+```
+
+`drain` runs everything that is due and stops. `run` keeps going, waiting for
+new work until it is interrupted; it holds the index open for writing the whole
+time, so no other command that writes can run alongside it.
+
+Jobs name a subject rather than an event — "bring this topic up to date", not
+"this topic changed" — so running one twice leaves the same result as running
+it once, and fourteen edits to one topic leave one job rather than fourteen.
+
+A job that fails is tried again an hour later, up to eight times. After that it
+is set aside with the error that stopped it, rather than retried forever:
+
+```console
+$ pamin cascade failed
+Nothing has failed
+```
+
+```console
+$ pamin cascade failed --json
+{
+  "failed": []
+}
+```
+
+`pamin cascade replay` makes those jobs due again, for when whatever broke them
+is fixed. `pamin cascade discard` abandons them. Both report how many they
+moved:
+
+```console
+$ pamin cascade replay
+Queued 0 failed jobs to run again
+```
+
+Nothing here can lose a memory. The queue drives the index, and the index holds
+nothing PostgreSQL cannot reproduce — `pamin reindex` rebuilds it outright.
+
+## `pamin serve`
+
+Holds the database, the index and the model, and answers commands over a socket
+at `$PAMIN_HOME/pamin.sock`.
+
+You do not normally run it. Any command that needs a server starts one and
+connects, the same way `pamin init` leaves PostgreSQL running so the next
+command does not pay for it:
+
+```console
+$ pamin read deployment_pipeline    # first call, starts a server
+deployment_pipeline v2 (current, 0 of 2 versions)
+
+the deployment pipeline now runs on argo cd
+```
+
+What that buys is everything a short-lived process used to rebuild. Before, each
+command connected to PostgreSQL, checked migrations, opened the index, and
+loaded an embedding model before it did any work of its own.
+
+`pamin serve` runs it in the foreground instead, which is useful when you want
+to watch it. A server started in the background writes to
+`$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
+
+`PAMIN_NO_SERVER=1` runs everything in the calling process, as it did before.
+The results are identical — it is the same code either way — so this is for
+debugging the server itself, and for a caller that would rather have one process
+to reason about than a fast one.
+
+It does not combine with a server that is already up. A running server holds the
+index open for writing, and the index takes an exclusive lock on its directory,
+so a second process opening the same project fails rather than waiting. That is
+the lock doing its job: two processes writing one index is what it exists to
+prevent. Run `pamin stop` first if you want the in-process path against a
+workspace a server is holding.
+
+Every command goes through the server except two. `serve` is the server, and
+`stop` is what shuts it down.
+
+The socket is a file, so it inherits the workspace's permissions and cannot be
+reached from another machine. There is no authentication, for the same reason:
+anyone who can open the socket can already read the workspace.
 
 ## `pamin stop`
 
@@ -447,14 +716,18 @@ $ pamin stop
 Stopped the local database server
 ```
 
-Stops the local PostgreSQL. It is not run automatically, because the common case
-is an agent issuing many commands in a row and paying startup once.
+Stops the local PostgreSQL, and the resident server if one is up. It is not run
+automatically, because the common case is an agent issuing many commands in a
+row and paying startup once.
 
 ## Notes for agents
 
 - Every command accepts `--json`, and stdout carries only that JSON. Logging
   goes to stderr.
 - Failures exit non-zero with the reason on stderr.
+- The first command against a workspace is slow and the rest are not: it starts
+  a server that holds the database, the index and the model. Nothing needs to
+  start or stop it.
 - `search` gives ranked context; `neighbors` gives structure; `read` gives a
   specific version; `grep` gives the verbatim evidence including what the filter
   held. Reach for the last three when the ranking is what you doubt.

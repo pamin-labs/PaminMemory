@@ -13,14 +13,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::channel::{Channel, ChannelResults};
 use crate::graph::{Derivation, EdgeKind};
-use crate::id::TopicStateId;
+use crate::id::TopicId;
 use crate::ledger::RetrievalSignals;
 
-/// The standard reciprocal rank fusion constant.
+/// How sharply a result's rank in one channel counts toward its fused score.
 ///
-/// It needs no tuning and is used unchanged across systems and datasets, which
-/// is most of why rank fusion is the default here.
-pub const DEFAULT_K: f32 = 60.0;
+/// The rank fusion literature uses 60, which came from runs over lists
+/// thousands of results deep. Each channel here proposes fifty, and at 60 the
+/// curve across fifty candidates is almost flat: rank 1 contributes 0.0164 and
+/// rank 10 contributes 0.0143, so the whole top ten spans 14% and a channel
+/// that put the right memory first says barely more than one that put it
+/// tenth.
+///
+/// Ten, measured. On this project's evaluation corpus, moving 60 to 10 with
+/// the weights below takes cross-lingual nDCG@10 from 0.2245 to 0.3383, and
+/// monolingual from 0.9892 to 0.9940 rather than paying for it.
+///
+/// Ten rather than the best number measured. The curve is monotonic all the
+/// way down -- 5 scores 0.3599 and 1 scores 0.3874 -- which means the corpus
+/// cannot locate an optimum, only say that 60 is too flat for lists this
+/// short. Taking the boundary would be fitting a constant to 137 queries
+/// somebody here wrote. Ten is a fifth of the channel depth, well inside the
+/// improving region, and far from the point where rank 1 counts double rank 2
+/// and one channel's mistaken top hit decides the answer.
+pub const DEFAULT_K: f32 = 10.0;
 
 /// One line of the explanation attached to a result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -75,14 +91,16 @@ pub enum Modifier {
     Importance,
     /// The balance of successful against failed outcomes it took part in.
     Worth,
-    /// The state has been replaced by a newer one.
-    Superseded,
 }
 
 /// A fused result and the reasoning behind its position.
+///
+/// A topic rather than one of its states. The channels rank topics because the
+/// projection holds one document per topic: a topic's history lives in the
+/// ledger and is read by version, never ranked against itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FusedResult {
-    pub topic_state: TopicStateId,
+    pub topic: TopicId,
     pub score: f32,
     pub why: Vec<Why>,
 }
@@ -96,12 +114,39 @@ pub struct Fusion {
 
 impl Default for Fusion {
     fn default() -> Self {
-        // Equal weights until the evaluation harness has something to say.
-        // Guessing weights before measuring is how a retrieval stack acquires
-        // constants nobody can later justify.
+        // The two lexical channels count as half of one, and both halves of
+        // that are measured rather than reasoned.
+        //
+        // They are nearly one channel: both run BM25 over the same text, one
+        // over segmented words and one over character n-grams, so they agree
+        // with each other far more often than either agrees with the vector or
+        // the graph. Counted at full weight the pair outvotes the other two on
+        // every query where the wording matches and the meaning does not.
+        //
+        // What is not obvious, and needed a corpus where a query and its answer
+        // are in different languages, is that half of one channel is still too
+        // much. Swept across both evaluation corpora at four values of `k`:
+        //
+        //   weight    cross-lingual nDCG@10, ours / external
+        //     1.00              0.4345 / 0.1231   -- dominated everywhere
+        //     0.50              0.6550 / 0.4238
+        //     0.25              0.7223 / 0.5623
+        //     0.00              0.8328 / 0.6353
+        //
+        // Equal weighting is not a trade at any `k`: it is worse than half on
+        // every group of both corpora, cross-lingual and same-language alike.
+        // Zero is a trade and a bad one -- it takes the monolingual group from
+        // 0.9940 to 0.9860 and the lexical group off its ceiling, which is the
+        // one thing the n-gram channel exists for, and it would make both
+        // channels dead code. A quarter costs 0.033 of same-language ranking on
+        // the external corpus and buys 0.139 and 0.067 of cross-lingual on the
+        // two, with monolingual and lexical unmoved.
         Self {
             k: DEFAULT_K,
-            weights: BTreeMap::new(),
+            weights: BTreeMap::from([
+                (Channel::LexicalSegmented, 0.25),
+                (Channel::LexicalNgram, 0.25),
+            ]),
         }
     }
 }
@@ -113,13 +158,24 @@ impl Fusion {
         self
     }
 
+    /// Overrides the rank constant.
+    ///
+    /// Alongside [`with_weight`](Self::with_weight) because the two are the
+    /// whole of what fusion can be tuned to, and the evaluation harnesses
+    /// sweep them together -- neither number was arrived at by argument and
+    /// neither should be changed by one.
+    pub fn with_k(mut self, k: f32) -> Self {
+        self.k = k;
+        self
+    }
+
     fn weight(&self, channel: Channel) -> f32 {
         self.weights.get(&channel).copied().unwrap_or(1.0)
     }
 
     /// Fuses per-channel ranked lists into one ordered result set.
     pub fn fuse(&self, lists: &[ChannelResults]) -> Vec<FusedResult> {
-        let mut accumulated: BTreeMap<TopicStateId, (f32, Vec<Why>)> = BTreeMap::new();
+        let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
 
         for list in lists {
             let weight = self.weight(list.channel);
@@ -139,11 +195,7 @@ impl Fusion {
 
         let mut results: Vec<FusedResult> = accumulated
             .into_iter()
-            .map(|(topic_state, (score, why))| FusedResult {
-                topic_state,
-                score,
-                why,
-            })
+            .map(|(topic, (score, why))| FusedResult { topic, score, why })
             .collect();
 
         sort_results(&mut results);
@@ -163,8 +215,6 @@ pub struct Modifiers {
     pub importance_weight: f32,
     /// How strongly the balance of successful against failed outcomes lifts it.
     pub worth_weight: f32,
-    /// What a superseded state keeps of its score.
-    pub superseded_factor: f32,
 }
 
 impl Default for Modifiers {
@@ -172,29 +222,29 @@ impl Default for Modifiers {
         Self {
             importance_weight: 0.2,
             worth_weight: 0.2,
-            superseded_factor: 0.5,
         }
     }
 }
 
 impl Modifiers {
     /// Applies every modifier to one result, appending a trace line for each.
-    ///
-    /// `is_current` says whether this state is the topic's current one; a
-    /// superseded state is down-weighted rather than removed, because a query
-    /// about how something changed needs it.
-    pub fn apply(&self, result: &mut FusedResult, signals: &RetrievalSignals, is_current: bool) {
+    pub fn apply(&self, result: &mut FusedResult, signals: &RetrievalSignals) {
         let importance = 1.0 + self.importance_weight * signals.importance.clamp(0.0, 1.0);
         self.record(result, Modifier::Importance, importance);
 
         let worth = 1.0 + self.worth_weight * worth_ratio(signals);
         self.record(result, Modifier::Worth, worth);
-
-        if !is_current {
-            self.record(result, Modifier::Superseded, self.superseded_factor);
-        }
     }
 
+    /// Applies one modifier, and records it only if it changed anything.
+    ///
+    /// A factor of one moved no result past any other, so a trace line for it
+    /// says only that the modifier exists. Two of the three are in that state
+    /// permanently: `importance` and `worth_*` are read here and written by
+    /// nothing, so every result carried `Importancex1.00 Worthx1.00` — and the
+    /// trace is the product. Noise in it costs more than a missing line,
+    /// because a reader who learns to skip `why[]` stops reading the part that
+    /// does carry a reason.
     fn record(&self, result: &mut FusedResult, modifier: Modifier, factor: f32) {
         debug_assert!(
             !result.why.iter().any(|why| matches!(
@@ -204,7 +254,10 @@ impl Modifiers {
             "modifier {modifier:?} applied twice to one result"
         );
         result.score *= factor;
-        result.why.push(Why::Modifier { modifier, factor });
+
+        if (factor - 1.0).abs() > f32::EPSILON {
+            result.why.push(Why::Modifier { modifier, factor });
+        }
     }
 }
 
@@ -231,7 +284,7 @@ pub fn sort_results(results: &mut [FusedResult]) {
             .score
             .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.topic_state.0.cmp(&right.topic_state.0))
+            .then_with(|| left.topic.0.cmp(&right.topic.0))
     });
 }
 
@@ -239,8 +292,8 @@ pub fn sort_results(results: &mut [FusedResult]) {
 mod tests {
     use super::*;
 
-    fn id(byte: u8) -> TopicStateId {
-        TopicStateId(uuid::Uuid::from_bytes([byte; 16]))
+    fn id(byte: u8) -> TopicId {
+        TopicId(uuid::Uuid::from_bytes([byte; 16]))
     }
 
     #[test]
@@ -254,7 +307,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            fused[0].topic_state, both,
+            fused[0].topic, both,
             "agreement across channels should outrank a single strong hit"
         );
     }
@@ -267,7 +320,7 @@ mod tests {
             ChannelResults::new(Channel::Vector, vec![target]),
         ]);
 
-        let entry = fused.iter().find(|r| r.topic_state == target).unwrap();
+        let entry = fused.iter().find(|r| r.topic == target).unwrap();
         let ranks: Vec<_> = entry
             .why
             .iter()
@@ -286,8 +339,12 @@ mod tests {
         // Both channels contribute the same amount at the same rank, whatever
         // the underlying scores were. That is the property that lets a BM25
         // score and a vector distance be combined at all.
+        //
+        // The vector and graph channels, because the two lexical ones
+        // deliberately carry half weight. That says how much they duplicate
+        // each other, not that a rank means something different in each.
         let fused = Fusion::default().fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, vec![id(1)]),
+            ChannelResults::new(Channel::Graph, vec![id(1)]),
             ChannelResults::new(Channel::Vector, vec![id(2)]),
         ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
@@ -299,7 +356,67 @@ mod tests {
             ChannelResults::new(Channel::LexicalSegmented, vec![id(1)]),
             ChannelResults::new(Channel::Vector, vec![id(2)]),
         ]);
-        assert_eq!(fused[0].topic_state, id(2));
+        assert_eq!(fused[0].topic, id(2));
+    }
+
+    /// A modifier that changed nothing is not worth a line in the trace.
+    ///
+    /// `importance` and `worth_*` are read by the ranker and written by no
+    /// code at all, so with the signals every result actually carries today
+    /// both come out at exactly one — and every explanation was two lines of
+    /// `x1.00` before anything that moved the result. The trace is the product
+    /// here, so padding it is not harmless: it teaches the reader to skip the
+    /// part that does carry a reason.
+    #[test]
+    fn a_modifier_that_changed_nothing_leaves_no_trace() {
+        let mut fused = Fusion::default()
+            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .remove(0);
+        let ranked = fused.score;
+
+        // What a state the ledger has never learned anything about looks like,
+        // which today is every state.
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
+
+        let recorded: Vec<_> = fused
+            .why
+            .iter()
+            .filter_map(|why| match why {
+                Why::Modifier { modifier, factor } => Some((*modifier, *factor)),
+                Why::Channel { .. } | Why::Path { .. } => None,
+            })
+            .collect();
+        assert!(
+            recorded.is_empty(),
+            "nothing moved the result, so nothing should claim to have: {recorded:?}"
+        );
+        assert!(
+            (fused.score - ranked).abs() < f32::EPSILON,
+            "and the score is what the channels made it"
+        );
+
+        // A modifier that does move the result still says so.
+        let mut moved = Fusion::default()
+            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .remove(0);
+        Modifiers::default().apply(
+            &mut moved,
+            &RetrievalSignals {
+                importance: 1.0,
+                ..RetrievalSignals::default()
+            },
+        );
+        assert!(
+            moved.why.iter().any(|why| matches!(
+                why,
+                Why::Modifier {
+                    modifier: Modifier::Importance,
+                    ..
+                }
+            )),
+            "a result was lifted with nothing to show for it: {:?}",
+            moved.why
+        );
     }
 
     #[test]
@@ -316,7 +433,6 @@ mod tests {
                 worth_negative: 1,
                 ..RetrievalSignals::default()
             },
-            true,
         );
 
         let mut applied: Vec<_> = fused
@@ -338,29 +454,13 @@ mod tests {
     }
 
     #[test]
-    fn a_superseded_state_is_down_weighted_rather_than_dropped() {
-        let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
-            .remove(0);
-        let original = fused.score;
-
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), false);
-
-        assert!(fused.score < original);
-        assert!(
-            fused.score > 0.0,
-            "history a query might ask for must stay reachable"
-        );
-    }
-
-    #[test]
     fn a_state_with_no_recorded_outcomes_is_neither_promoted_nor_punished() {
         let mut fused = Fusion::default()
             .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
             .remove(0);
         let original = fused.score;
 
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
 
         assert!((fused.score - original).abs() < f32::EPSILON);
     }
@@ -384,7 +484,7 @@ mod tests {
             derivation: Derivation::Deterministic,
         });
 
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default(), true);
+        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
 
         let channels = fused
             .why
@@ -419,8 +519,8 @@ mod tests {
         let mut reversed: Vec<FusedResult> = tied.iter().rev().cloned().collect();
         sort_results(&mut reversed);
 
-        let left: Vec<_> = tied.iter().map(|r| r.topic_state).collect();
-        let right: Vec<_> = reversed.iter().map(|r| r.topic_state).collect();
+        let left: Vec<_> = tied.iter().map(|r| r.topic).collect();
+        let right: Vec<_> = reversed.iter().map(|r| r.topic).collect();
         assert_eq!(left, right, "ordering must not depend on input order");
     }
 }
