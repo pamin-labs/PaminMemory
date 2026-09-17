@@ -61,6 +61,19 @@ the uncached p50; an evicted cache fails the arm instead of reporting a number.
 Ask of every arm: what would it look like if this arm were silently measuring
 the wrong thing, and what assertion distinguishes the two?
 
+A second sweep, on the same harness, was pointed at a project that was empty.
+The corpus lived in `xquad-accuracy-24ad7f1862182925`; the sweep asked
+`default`, got no hits, and answered every query in 53 ms. It would have
+produced a full p50/p95/p99 table for two corpora and three reranking tiers,
+every cell of it the cost of searching nothing — and the cache guard that
+sweep already carried would have passed it, because 53 ms is comfortably above
+a cache hit.
+
+That is the shape to watch for: **a guard only catches the failure it was
+written for.** The arm now discovers which project holds the corpus, asserts
+its topic count equals the document count the sweep claims, and asserts that a
+real query returns hits, before a single cell is measured.
+
 The same question applies to any test. "Would this assertion have failed before
 the fix?" If not, it is decoration. Known trap: verifying "after drain the index
 has it" also passes on code with no queue at all — proving the outbox is worth
@@ -120,6 +133,37 @@ will compile it and may fail the `-D warnings` gate on scratch code.
   (+0.0496) than on the parallel corpus (+0.0458). A prediction that survives is
   cheap; one that fails is the most informative output of the run.
 
+## The environment is part of the measurement
+
+Five runs in one session died or lied, and not one of them was wrong about
+retrieval. They were wrong about the box.
+
+- **Memory, not just CPU.** A retrieval run was killed at question 6 of 59 by
+  starting a second measurement beside it. The reasoning was "quality scores do
+  not depend on CPU contention, so these can share the machine", which is true
+  and beside the point: each server holds a model and an index, 3.6 GB at
+  13,014 documents and 7.2 GB at 131,924, and two of them do not fit. Before
+  running anything beside a measurement, price it in memory.
+- **Count the servers, and count them again after.** `pamin search` starts a
+  server when none is listening. A harness that spawns `pamin serve` and then
+  probes it with a search races the two: the spawned one has not bound the
+  socket yet, the probe starts a second, and two copies of a large model are
+  resident. Wait on the socket, then assert the count is exactly one.
+- **The user.** These workspaces keep PostgreSQL's data directory at mode 700.
+  Run as anyone else and the server never starts, which surfaces as a startup
+  timeout rather than a permission error. Derive the user from the directory
+  rather than hard-coding one.
+- **The file-descriptor limit.** A 131,924-document index is 2,111 segment
+  files and a search holds 2,733 descriptors, against the 1,024 a Linux process
+  gets by default. This was a real defect and is fixed in the server, but the
+  general form stands: a measurement that only ever ran under a raised limit
+  was measuring the shell, not the product.
+- **The measurement process itself.** A harness run through a pipe that the
+  caller then closed exited with status 0 having printed one tier of three, its
+  remaining output still in a block buffer. Detach it, force line buffering,
+  and write to a file — `setsid`, `stdbuf -oL`, `> log 2>&1` — so a death shows
+  where it died instead of looking like a short run.
+
 ## A number without its corpus is a claim, not a measurement
 
 Every figure carries the corpus it came from, the profile, and the hardware when
@@ -158,6 +202,22 @@ repository after a large merge found six:
 
 The pattern in all six: a later commit corrected the mechanism, or the table,
 and left the prose that explained the old behaviour standing.
+
+A seventh is worse than stale, because it was introduced by a correction:
+
+| where | said | actually |
+| --- | --- | --- |
+| ADR reranker table, `docs/cli.md`, `reranking.rs` | `accurate` costs 508 ms, its pass 469 ms | 1001 ms and 948 ms, from the same harness on the same machine and workspace |
+
+That 469 ms had itself replaced an earlier 1795 ms. The first figure was too
+high, the correction was too low, and the argument for the default tier was
+rewritten around the wrong ratio twice. Neither number was checked by running
+it again.
+
+So: **a figure you correct is a figure you re-run.** A correction inherits all
+the trust of the thing it replaces and none of the scrutiny, which makes it the
+easiest place in a repository for a wrong number to live. Re-run it, and say in
+the commit message that you did.
 
 Worth a sweep whenever a behaviour changes, and before any PR that touches docs.
 Places to look, in rough order of how often they are wrong:
