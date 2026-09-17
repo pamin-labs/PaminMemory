@@ -1027,6 +1027,29 @@ fn the_ledger_keeps_history_and_the_filter_keeps_evidence(cli: &Cli) {
     assert_eq!(previous["version"], 1);
     assert_eq!(previous["is_current"], false);
 
+    // "When did this change" is answerable only by comparing the two
+    // versions' recording times, and no read surface used to carry one. The
+    // ledger has held `recorded_at` and `observed_at` since the first
+    // migration; `read` dropped both, so a caller could see that a topic had
+    // been rewritten and never when.
+    for reading in [&current, &previous] {
+        for field in ["recorded_at", "observed_at"] {
+            let at = reading[field].as_str().unwrap_or_default();
+            assert!(
+                at.contains('T') && at.len() >= 20,
+                "{field} should be an RFC 3339 timestamp, got {at:?}"
+            );
+        }
+    }
+    assert!(
+        previous["recorded_at"].as_str().unwrap() < current["recorded_at"].as_str().unwrap(),
+        "the superseded version was recorded before the one that replaced it"
+    );
+    // Open unless a writer bounded them, which is what the other timeline
+    // means: a claim is asserted to hold, not asserted to hold between dates.
+    assert!(current["valid_from"].is_null());
+    assert!(current["valid_to"].is_null());
+
     // Past the oldest version, resolution clamps and says how far it reached.
     let clamped = cli.json(&["read", "deploy_en", "--version-offset", "9"]);
     assert_eq!(clamped["version"], 1);

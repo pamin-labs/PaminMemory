@@ -203,7 +203,7 @@ Reads a topic at a version. `--version-offset` counts back from the current one.
 
 ```console
 $ pamin read deployment_pipeline
-deployment_pipeline v2 (current, 0 of 2 versions)
+deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-03-04T09:12:44.325845Z)
 
 the deployment pipeline now runs on argo cd
 ```
@@ -218,7 +218,11 @@ $ pamin read deployment_pipeline --version-offset 1 --json
   "actual_version_offset": 1,
   "oldest_version": 1,
   "latest_version": 2,
-  "available_versions": 2
+  "available_versions": 2,
+  "recorded_at": "2026-03-04T09:12:44.098121Z",
+  "observed_at": "2026-03-04T09:12:44.092905Z",
+  "valid_from": null,
+  "valid_to": null
 }
 ```
 
@@ -226,6 +230,14 @@ An offset past the oldest surviving version clamps rather than failing, and
 `actual_version_offset` reports how far the read actually reached. A caller
 walking backwards can therefore stop when the two stop agreeing instead of
 guessing at the depth first.
+
+`recorded_at` and `observed_at` are the two timelines of
+[Two kinds of time](#two-kinds-of-time), and comparing `recorded_at` across
+versions is how "when did this change" is answered — the question a version
+list on its own raises and cannot settle. `valid_from` and `valid_to` are the
+asserted truth interval, open unless a writer bounded them. `pamin search`
+carries `recorded_at` on each hit for the same reason: ranking says how well a
+memory matches, not how current it is.
 
 ## `pamin search`
 
@@ -327,7 +339,8 @@ $ pamin search "how do we deploy" --limit 1 --json
         { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline", "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9"
+      "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9",
+      "recorded_at": "2026-03-04T09:12:44.325845Z"
     }
   ]
 }
