@@ -182,6 +182,44 @@ the reranker contend, so a machine with cores to spare will not look like this
 candidate against the ten measured here. And the write figure is for short
 memories: a forward pass scales with length, so longer content costs more.
 
+**Throughput, and where it stops.** The same sweep at one, eight and
+thirty-two concurrent callers, `fast` being the default:
+
+| corpus | tier | 1 | 8 | 32 | ceiling |
+| --- | --- | --- | --- | --- | --- |
+| XQuAD-R, 13,014 | `off` | 13.1 q/s | 19.5 | 20.7 | **~21 q/s** |
+| | `fast` | 3.5 q/s | 4.7 | 4.2 | **~4.7 q/s at eight** |
+| | `accurate` | 0.8 q/s | 0.9 | 1.0 | **~1 q/s** |
+| MIRACL, 131,924 | `off` | 6.5 q/s | 10.3 | 10.6 | **~11 q/s** |
+| | `fast` | 2.0 q/s | 2.4 | 2.4 | **~2.4 q/s** |
+| | `accurate` | 0.6 q/s | 0.6 | 0.6 | **~0.6 q/s** |
+
+Read it as a ceiling rather than a score. Four cores saturate at eight
+concurrent callers and the rest is queueing: on the default tier, thirty-two
+callers get *less* throughput than eight (4.2 against 4.7) and wait twenty-one
+times longer than one does — p50 goes from 251 ms to 5.4 s. Nothing here
+scales by adding callers. Adding cores is the lever; this measurement does not
+say by how much.
+
+**What a server holds.** Resident memory after all three tiers have run, which
+is when the embedding model and both rerankers are loaded at once:
+
+| corpus | server RSS | index on disk | workspace |
+| --- | --- | --- | --- |
+| XQuAD-R, 13,014 documents | 3.6 GB | 119 MB | 2.1 GB |
+| MIRACL, 131,924 documents | 7.2 GB | 1.1 GB | 2.2 GB |
+
+Seven gigabytes for a hundred and thirty thousand documents is the number to
+plan around, and it is why two workspaces do not fit on a sixteen-gigabyte
+machine at this corpus size. A workspace that never asks for `accurate` never
+loads the 570 MB reranker; `--rerank off` never loads either.
+
+**Above this, nothing is measured.** The largest corpus here is 131,924
+documents. A million and beyond is untested — not projected, not extrapolated,
+untested — and the descriptor count is the first thing that would break: this
+index is 2,111 segment files and a search holds 2,733 descriptors open, which
+already exceeds the 1,024 a Linux process is given by default.
+
 What was measured, how, and the conclusions that reversed on measurement are in
 [docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
 source of truth if it and this page ever disagree.
