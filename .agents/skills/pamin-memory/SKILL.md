@@ -220,6 +220,35 @@ than that the claim was wrong.
   index refuses to open under a different one until `pamin reindex` rebuilds
   that project.
 
+## Why this rather than a notes file
+
+The obvious alternative to `pamin write` is appending to `CLAUDE.md`, a
+`NOTES.md`, or whatever the project already has, and for one fact it is
+genuinely simpler. It stops working for the same reason a pile of snippets
+stops working:
+
+- **Nothing reads it back.** A fact in `CLAUDE.md` is invisible to `search`,
+  `grep` and `neighbors`. Split your memory across both and neither place is
+  complete, and you will not remember which is which.
+- **There is no query.** A notes file is loaded whole or not at all. That is
+  fine at ten facts and useless at a thousand, because the answer to "what did
+  we decide about connection pools" is a search, not a file.
+- **It grows without bound, and you pay for all of it every time.** An
+  auto-loaded file is a context tax on every session: recording the hundredth
+  fact means paying for the ninety-nine before it, in every turn, forever.
+  Retrieval exists precisely so recall costs the size of the answer rather than
+  the size of the history.
+- **Rewriting loses what was there before.** Editing a line in a notes file
+  destroys the previous claim, when it was decided, and why. `pamin write`
+  appends a version; `read --version-offset` still reaches the old one and
+  `grep` still reaches the evidence behind it.
+
+The place a notes file still wins is instructions you want loaded
+unconditionally — conventions, build commands, what not to touch. Those are not
+memories, they are configuration, and they belong in `CLAUDE.md`. The
+distinction that holds: **if you would ever need to look it up, write it here;
+if it must be in front of you before you do anything, write it there.**
+
 ## Working memory across a session
 
 A pattern that works well: search before you assume, write once you have
