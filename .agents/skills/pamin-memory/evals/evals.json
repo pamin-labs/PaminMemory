@@ -1,0 +1,24 @@
+{
+  "skill_name": "pamin-memory",
+  "fixture": "A pamin workspace at /tmp/pm-eval/fixture containing: deploy_pipeline (2 versions, jenkins -> argo cd), rollback_plan, oncall_rota, checkout_incident (v1 promoted, v2 'E5521' held by the filter), pool_sizing (Chinese), and an asserted oncall_rota --depends_on--> deploy_pipeline edge.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "held-evidence-needs-grep",
+      "prompt": "Last week the checkout service had an incident and I'm fairly sure the error code was E5521. There's a pamin workspace at /tmp/pm-eval/fixture (set PAMIN_HOME to it, the binary is /home/user/PaminMemory/target/release/pamin). Pull up everything we recorded that mentions that code -- I need to confirm what was actually written down at the time, not a summary.",
+      "expected_output": "Uses `pamin grep E5521`, surfaces BOTH the promoted v1 memory and the v2 fragment the filter held, and states that v2 was held in evidence only and is therefore invisible to search."
+    },
+    {
+      "id": 1,
+      "name": "history-needs-read-not-search",
+      "prompt": "Using the pamin workspace at /tmp/pm-eval/fixture (PAMIN_HOME, binary at /home/user/PaminMemory/target/release/pamin): what does deploy_pipeline say now, and what did it say before someone changed it? I want both, and roughly when it changed.",
+      "expected_output": "Uses `pamin read deploy_pipeline` and `pamin read deploy_pipeline --version-offset 1`, reports the current argo cd state and the earlier jenkins state, and notes that jenkins was retired in march."
+    },
+    {
+      "id": 2,
+      "name": "structure-needs-neighbors",
+      "prompt": "pamin workspace at /tmp/pm-eval/fixture (PAMIN_HOME, binary /home/user/PaminMemory/target/release/pamin). If deploy_pipeline breaks, what else is affected? Give me the complete set of things connected to it -- I specifically don't want just whatever a search ranks highly, I've been burned by that before.",
+      "expected_output": "Uses `pamin neighbors deploy_pipeline`, reports BOTH rollback_plan (derived `mentions` edge) and oncall_rota (asserted `depends_on` edge), and distinguishes derived from asserted."
+    }
+  ]
+}
