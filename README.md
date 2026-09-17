@@ -12,7 +12,7 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 - Preserves raw evidence and source spans as the authority behind memory.
 - Tracks versioned memories so current, stale, contradicted, and historical facts can be separated.
-- Combines page/tree structure, semantic recall, lexical matching, temporal relationships, and reranking.
+- Combines lexical matching, semantic recall, relationship structure, and a reranking pass over what the lexical channels missed.
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
 
@@ -41,7 +41,7 @@ Every command takes `--json`, because the usual caller is an agent parsing outpu
 pamin search "deployment" --json
 ```
 
-`pamin stop` shuts the local database down. It is deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
+`pamin stop` shuts down the local database and the resident server. Both are deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
 `pamin grep` searches the evidence itself — verbatim, unranked, and including content the filter held and no index ever saw.
 
@@ -77,11 +77,10 @@ Retrieval draws on four channels — segmented lexical, n-gram lexical, vector, 
 
 ```bash
 $ pamin search "deployment pipeline" --json | jq '.hits[0].why'
-[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1, ... },
-  { "kind": "channel", "channel": "vector",        "rank": 2, ... },
-  { "kind": "channel", "channel": "graph",         "rank": 1, ... },
-  { "kind": "path", "via": "oncall_rota", "hops": 1, "edge": "depends_on", ... },
-  { "kind": "modifier", "modifier": "importance",  "factor": 1.0 } ]
+[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, ... },
+  { "kind": "channel", "channel": "vector",        "rank": 2, "weight": 1.0,  ... },
+  { "kind": "channel", "channel": "graph",         "rank": 1, "weight": 1.0,  ... },
+  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, ... } ]
 ```
 
 The graph is why fusion has to happen here. It lives in PostgreSQL, where the index cannot see it, so letting the index pre-fuse its own three channels would produce a list that had to be fused again — weighting its members twice and losing the per-channel ranks.
