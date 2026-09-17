@@ -202,6 +202,38 @@ feature disabled is not guarding it. A tenth of margin is wider than the whole
 reranker contribution, which is why the reranker needed its own assertion
 (`RERANK_IS_WORTH`) rather than a floor.
 
+## Comparing against other projects
+
+Before quoting anyone else's number, read
+[docs/benchmarks.md](../../../docs/benchmarks.md). The short version: this
+category publishes LLM-judge accuracy on conversational QA, which measures a
+retrieval stage plus a reader model plus a judge, compounded — not the same
+quantity as `nDCG@10`, and not placeable on the same axis. Several headline
+figures in that field have been audited by competitors and did not survive.
+
+That page also records the one comparison that is honest and cheap
+(LongMemEval's retrieval-only stage, scored with Recall@k and NDCG@k, no LLM
+anywhere), what it would take to run, and what result to expect before running
+it so the outcome can falsify the expectation.
+
+## Standing up a live workspace for a measurement
+
+`initdb` refuses to run as root, which is what stops an `--ignored` suite or an
+ad-hoc harness in a root container. Run as an unprivileged user, and reuse the
+model cache rather than downloading 1.7 GB again:
+
+```sh
+W=/tmp/scratch-ws
+mkdir -p "$W/postgres"
+ln -s /tmp/pamin-eval5/models "$W/models"       # whatever cache already exists
+cp -a /tmp/pamin-eval5/postgres/install "$W/postgres/"
+chown -R ubuntu:ubuntu "$W"
+su ubuntu -c "PAMIN_HOME=$W .../pamin init"
+```
+
+Once the server is up, other users can reach it through the socket, so only the
+provisioning needs the unprivileged user.
+
 Decisions and the measurements behind them live in
 [docs/adr/0001-tech-selection.md](../../../docs/adr/0001-tech-selection.md),
 which is the source of truth when it and any other page disagree.
