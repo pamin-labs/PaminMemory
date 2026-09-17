@@ -47,10 +47,20 @@ Five reasons, any one of which is disqualifying:
    1.)
 4. **Haystack size differs by orders of magnitude.** ~50 sessions, or LOCOMO's
    16k–26k tokens, against MIRACL's 131,924-passage Swahili dev split.
-5. **The benchmarks are contaminated.** The same analysis finds 446 LOCOMO
-   questions (22.5%) whose only correct answer is a refusal, silently dropped by
-   the standard harness while the model is instructed never to abstain; 6.4% of
-   the answer key wrong; and 56% of per-category comparisons inside noise.
+5. **The benchmarks are contaminated.** The same analysis finds 6.4% of LOCOMO's
+   answer key wrong and 56% of per-category comparisons inside noise, and
+   reports that the standard harness silently drops its adversarial category --
+   446 questions, 22.5% of the set -- while instructing the model never to
+   abstain.
+
+   An earlier version of this page said those 446 questions have a refusal for
+   their only correct answer. Reading the file says otherwise: all 446 carry an
+   `adversarial_answer` rather than an `answer`, and the value is a substantive
+   answer -- "Sweden", "researching adoption agencies" -- in every case but two.
+   What makes them adversarial is that the answer is implied rather than stated,
+   not that it is absent. Dropping them still removes a fifth of the benchmark
+   and the hardest fifth; it does not remove an abstention test, because there
+   is not one to remove.
 
 So: we cannot say this project beats mem0, and we cannot say it loses. The
 quantities do not overlap. What is sayable is architectural — no LLM on the
