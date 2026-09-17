@@ -72,6 +72,15 @@ pub enum Why {
         via: String,
         /// Edges traversed from the seed. Never zero.
         hops: u8,
+        /// The end the final edge was asserted from, and the end it points at.
+        ///
+        /// The graph walk is undirected, so `via` says how this result was
+        /// reached rather than what was claimed, and the same edge reads in
+        /// opposite directions depending on which end the walk started from.
+        /// For `depends_on` and its like the direction is the claim, so it is
+        /// named outright rather than left to be inferred from the traversal.
+        asserted_from: String,
+        asserted_to: String,
         /// Named `edge` rather than `kind`, which serde already uses to tag
         /// the variant itself.
         edge: EdgeKind,
@@ -480,6 +489,8 @@ mod tests {
             from: "oncall_rota".to_string(),
             via: "release_process".to_string(),
             hops: 2,
+            asserted_from: "release_process".to_string(),
+            asserted_to: "deployment_pipeline".to_string(),
             edge: EdgeKind::DependsOn,
             derivation: Derivation::Deterministic,
         });

@@ -43,6 +43,15 @@ struct Neighbor {
     /// The topic on the other end of the final edge.
     via: String,
     edge: String,
+    /// The end the final edge was asserted from, and the end it points at.
+    ///
+    /// The walk is undirected, so `via` says how this topic was reached and
+    /// not what was claimed. For `depends_on`, `supersedes`, `contradicts`,
+    /// `derived_from` and `part_of` the direction is the claim, and reading it
+    /// off `via` gives the opposite answer depending on which end the walk
+    /// started from. These two say it outright.
+    asserted_from: String,
+    asserted_to: String,
     /// Whether the edge was asserted by a caller or derived by the engine.
     derivation: String,
     confidence: f32,
@@ -110,6 +119,16 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Nei
                 hops: neighbor.hops,
                 via: name_of(&neighbor.via),
                 edge: neighbor.kind.as_str().to_string(),
+                asserted_from: name_of(if neighbor.outbound {
+                    &neighbor.via
+                } else {
+                    &neighbor.topic
+                }),
+                asserted_to: name_of(if neighbor.outbound {
+                    &neighbor.topic
+                } else {
+                    &neighbor.via
+                }),
                 derivation: format!("{:?}", neighbor.derivation).to_lowercase(),
                 confidence: neighbor.confidence,
             })
@@ -131,12 +150,18 @@ pub fn render(result: &Neighborhood) -> String {
         .neighbors
         .iter()
         .map(|neighbor| {
+            // The arrow is drawn in the direction the edge was asserted, not
+            // the direction the walk took, so the same edge reads the same way
+            // from either end. `via` is not printed because at the final edge
+            // it is always whichever of the two endpoints is not this topic.
             format!(
-                "{}  {} hop  via {} --{}--> ({}, {:.2})",
+                "{}  {} hop{}  {} --{}--> {} ({}, {:.2})",
                 neighbor.topic,
                 neighbor.hops,
-                neighbor.via,
+                if neighbor.hops == 1 { "" } else { "s" },
+                neighbor.asserted_from,
                 neighbor.edge,
+                neighbor.asserted_to,
                 neighbor.derivation,
                 neighbor.confidence
             )

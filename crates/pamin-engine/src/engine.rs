@@ -1010,10 +1010,17 @@ impl Engine {
         for result in &mut fused {
             let state = live.state(result.topic).expect("retained above");
             if let Some(reached) = paths.get(&result.topic) {
+                let (asserted_from, asserted_to) = if reached.outbound {
+                    (reached.via, reached.topic)
+                } else {
+                    (reached.topic, reached.via)
+                };
                 result.why.push(Why::Path {
                     from: live.topic_name(reached.origin),
                     via: live.topic_name(reached.via),
                     hops: reached.hops,
+                    asserted_from: live.topic_name(asserted_from),
+                    asserted_to: live.topic_name(asserted_to),
                     edge: reached.kind,
                     derivation: reached.derivation,
                 });
