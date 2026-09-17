@@ -301,11 +301,11 @@ named by name ahead of the ones the lexical and vector channels supplied.
 ```console
 $ pamin search "how do we deploy" --limit 3
 0.1970  deployment_pipeline v2  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
+        lexical_ngram#1 vector#1 graph#2 oncall_rota --depends_on-> deployment_pipeline (1hop)
 0.1871  oncall_rota v1  the oncall rota rotates every monday morning
-        lexical_ngram#3 vector#3 graph#1 from deployment_pipeline --depends_on-> (1hop)
+        lexical_ngram#3 vector#3 graph#1 oncall_rota --depends_on-> deployment_pipeline (1hop)
 0.1811  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
+        lexical_ngram#2 vector#2 graph#3 rollback_plan --mentions-> deployment_pipeline (1hop)
 ```
 
 The JSON carries the same trace in full:
@@ -325,7 +325,7 @@ $ pamin search "how do we deploy" --limit 1 --json
         { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, "contribution": 0.022727273 },
         { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
         { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
-        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
+        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline", "edge": "depends_on", "derivation": "explicit" }
       ],
       "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9"
     }
@@ -376,6 +376,14 @@ they are not, and both are needed to follow the route. Nobody can verify a
 reciprocal rank; anyone can verify that two topics are related the way the path
 claims.
 
+`asserted_from` and `asserted_to` say which way the edge itself runs. The walk
+ignores direction, because both ends of a `depends_on` are relevant to recall
+— but that means `via` describes the route taken and not the claim, and the
+same edge would otherwise read in opposite directions depending on which end
+the walk started from. For `depends_on`, `supersedes`, `contradicts`,
+`derived_from` and `part_of` the direction *is* the claim, so it is stated
+rather than left to be inferred.
+
 **`modifier`** — a post-fusion adjustment, applied at most once each, and
 recorded only when it changed the result. `importance` and `worth` lift a
 result.
@@ -397,7 +405,7 @@ involved:
 
 ```console
 $ pamin neighbors rollback_plan --depth 1
-deployment_pipeline  1 hop  via rollback_plan --mentions--> (deterministic, 0.50)
+deployment_pipeline  1 hop  rollback_plan --mentions--> deployment_pipeline (deterministic, 0.50)
 ```
 
 `rollback_plan` says "reverts the deployment pipeline", which names
@@ -476,6 +484,8 @@ $ pamin neighbors rollback_plan --depth 1 --json
       "hops": 1,
       "via": "rollback_plan",
       "edge": "mentions",
+      "asserted_from": "rollback_plan",
+      "asserted_to": "deployment_pipeline",
       "derivation": "deterministic",
       "confidence": 0.5
     }
@@ -488,7 +498,10 @@ the question to ask when the ranking itself is what you doubt, and the only way
 to see a derived edge that never placed high enough to surface in a search.
 
 Traversal ignores edge direction, since both ends of a `depends_on` are relevant
-to recall. `--kind` restricts it, repeatably. `--at <rfc3339>` follows only edges
+to recall — so the arrow printed is the one the edge was asserted with, and
+`asserted_from` / `asserted_to` carry it in the JSON. Without that the same edge
+reads one way walked from one end and the opposite way walked from the other,
+which for a question like "what depends on this" is the whole answer. `--kind` restricts it, repeatably. `--at <rfc3339>` follows only edges
 asserted to hold at that instant, which is how a question about the past avoids
 relationships that were only claimed later. `--depth` accepts 0 to 4, for the
 reason given under [`pamin search`](#pamin-search).

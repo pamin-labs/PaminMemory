@@ -517,6 +517,15 @@ pub struct Neighbor {
     pub kind: EdgeKind,
     pub derivation: Derivation,
     pub confidence: f32,
+    /// Whether the final edge was asserted from `via` to `topic`.
+    ///
+    /// The walk ignores direction, because both ends of a `depends_on` are
+    /// relevant to recall. But which end asserted it is the claim itself for
+    /// `depends_on`, `supersedes`, `contradicts`, `derived_from` and
+    /// `part_of`, and without this the same edge reads one way walked from one
+    /// end and the opposite way walked from the other -- so a caller asking
+    /// what depends on what could not answer from the result.
+    pub outbound: bool,
 }
 
 /// How many positions the walk carries into the next hop.
@@ -536,12 +545,19 @@ struct Step {
     via: TopicId,
 }
 
-/// What an edge contributes to an arrival, once its direction is discarded.
+/// What an edge contributes to an arrival.
 #[derive(Clone, Copy)]
 struct Crossing {
     kind: EdgeKind,
     derivation: Derivation,
     confidence: f32,
+    /// Whether the edge points away from the position holding this crossing.
+    ///
+    /// The walk is undirected, so each edge is entered from both ends and the
+    /// same edge yields one crossing with this set and one without. Keeping it
+    /// is what lets an arrival report the direction the edge was asserted in,
+    /// rather than the direction the walk happened to take.
+    outbound: bool,
 }
 
 /// The deepest walk this channel will make.
@@ -619,8 +635,10 @@ impl Expansion<'_> {
 ///
 /// Traversal ignores edge direction. Both ends of a `depends_on` are relevant
 /// to recall, and which way the arrow points is a fact about the relationship
-/// rather than about who may find whom. The direction taken is reported in
-/// `via` so the path stays explainable.
+/// rather than about who may find whom. `via` reports the topic on the other
+/// end of the final edge, and `outbound` reports which of the two asserted the
+/// edge -- both, because `via` alone says how the walk arrived and not what was
+/// claimed, and for `depends_on` the claim is the whole content.
 ///
 /// A query per hop rather than one recursive pass.
 ///
@@ -721,10 +739,23 @@ pub async fn expand(
                 derivation: Derivation::from_label(row.get("derivation"))
                     .unwrap_or(Derivation::Imported),
                 confidence: row.get("confidence"),
+                outbound: true,
             };
 
-            neighbours.entry(from).or_default().push((to, crossing));
-            neighbours.entry(to).or_default().push((from, crossing));
+            neighbours.entry(from).or_default().push((
+                to,
+                Crossing {
+                    outbound: true,
+                    ..crossing
+                },
+            ));
+            neighbours.entry(to).or_default().push((
+                from,
+                Crossing {
+                    outbound: false,
+                    ..crossing
+                },
+            ));
         }
 
         let mut next: Vec<(Step, f32)> = Vec::new();
@@ -754,6 +785,7 @@ pub async fn expand(
                     kind: crossing.kind,
                     derivation: crossing.derivation,
                     confidence: crossing.confidence,
+                    outbound: crossing.outbound,
                 };
 
                 // Breadth first, so the first arrival is the shortest. Among
