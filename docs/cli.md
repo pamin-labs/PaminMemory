@@ -59,6 +59,13 @@ Initialized project default in /home/you/.pamin
 configuration. The server is left running between commands so an agent invoking
 the CLI repeatedly does not pay startup each time; `pamin stop` shuts it down.
 
+**It will not run as root.** That is PostgreSQL's rule, not this project's:
+`initdb` refuses, so the bundled cluster cannot be created or started by a root
+user. It matters because containers run as root by default, which makes this
+the first thing many people hit. Add an unprivileged user and run as that one.
+A root process can still be a *client* of a server an unprivileged user
+started, which is what makes `docker exec` into a running workspace work.
+
 ```console
 $ pamin write --topic deployment_pipeline "the deployment pipeline runs on continuous integration and publishes artifacts"
 Wrote deployment_pipeline v1
