@@ -6,7 +6,7 @@ Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistant
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early days.** What is here runs end to end and is worth trying, but parts of the system described below are not built yet. See [Status](#status).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Status](#status).
 
 ## What It Does
 
@@ -121,22 +121,28 @@ is where this project's numbers have been wrong before.
 Both corpora are fetched rather than vendored, and the harness that drives them
 is in the repository: `cargo test -p pamin-engine --test crosslingual -- --ignored`.
 
-**Latency**, warm resident server, four cores, the default `accuracy` profile:
+**Latency**, through a warm resident server at the default `accuracy` profile:
 
-| | |
-| --- | --- |
-| a write | 32 ms |
-| a search, small workspace | 32 ms |
-| a search over 13,014 documents, reranker included | 204 ms |
-| the same search with `--rerank off` | 39 ms |
+| operation | corpus | median |
+| --- | --- | --- |
+| a write | short memories, small workspace | 32 ms |
+| a search | small workspace | 32 ms |
+| a search, reranker included | 13,014 documents | 204 ms |
+| the same search, `--rerank off` | 13,014 documents | 39 ms |
+
+Measured on 4 vCPU (Intel Xeon @ 2.80GHz, no SMT), 15 GB RAM, Ubuntu 24.04,
+rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. Median of
+three runs.
 
 `--rerank accurate` scores higher than the default on every corpus measured and
 costs 469 ms instead of 165 for its pass; `fast` is the default on that latency
 difference alone, which is a judgement rather than a result.
 
-Two things these numbers are not. They are a four-core result, so they settle
-nothing about a machine with cores to spare. And the write figure is for short
-memories — a forward pass scales with length, so longer content costs more.
+Two things these numbers are not. Four cores is where the embedding model and
+the reranker contend, so a machine with cores to spare will not look like this
+— published figures for a reranker of this size are a few milliseconds per
+candidate against the ten measured here. And the write figure is for short
+memories: a forward pass scales with length, so longer content costs more.
 
 What was measured, how, and the conclusions that reversed on measurement are in
 [docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
