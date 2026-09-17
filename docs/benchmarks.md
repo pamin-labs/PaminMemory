@@ -38,10 +38,13 @@ Five reasons, any one of which is disqualifying:
 2. **The judge is an instrument with known error.** An independent analysis of
    the LOCOMO harness ([gde03][locomo-critique]) reports the judge accepting
    **63% of intentionally wrong answers**.
-3. **Binary hit against graded relevance.** Where these projects do report
-   recall, it is "is the one gold session in the top k" over roughly fifty
-   candidates. MIRACL has human graded judgements; XQuAD-R has eleven parallel
-   relevant sentences per query.
+3. **One gold document against many.** Where these projects do report recall,
+   it is "is the one gold session in the top k" over roughly fifty candidates.
+   MIRACL's Swahili dev split carries 5,092 judgements over 482 queries, 1.89
+   relevant passages each, pooled over 131,924; XQuAD-R has eleven parallel
+   relevant sentences per query. (Those judgements are binary, not graded -- an
+   earlier draft of this page said graded, and the qrels file holds only 0 and
+   1.)
 4. **Haystack size differs by orders of magnitude.** ~50 sessions, or LOCOMO's
    16k–26k tokens, against MIRACL's 131,924-passage Swahili dev split.
 5. **The benchmarks are contaminated.** The same analysis finds 446 LOCOMO
