@@ -4,10 +4,10 @@
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
-    Database(#[from] tokio_postgres::Error),
+    Database(#[from] sqlx::Error),
 
     #[error("migration failed: {0}")]
-    Migration(#[from] refinery::Error),
+    Migration(#[from] sqlx::migrate::MigrateError),
 
     #[error("embedded postgres: {0}")]
     EmbeddedPostgres(#[from] postgresql_embedded::Error),

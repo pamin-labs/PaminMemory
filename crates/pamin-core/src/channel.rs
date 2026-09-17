@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::TopicStateId;
+use crate::id::TopicId;
 
 /// A source of candidates.
 ///
@@ -47,11 +47,11 @@ impl Channel {
 #[derive(Clone, Debug)]
 pub struct ChannelResults {
     pub channel: Channel,
-    pub candidates: Vec<TopicStateId>,
+    pub candidates: Vec<TopicId>,
 }
 
 impl ChannelResults {
-    pub fn new(channel: Channel, candidates: Vec<TopicStateId>) -> Self {
+    pub fn new(channel: Channel, candidates: Vec<TopicId>) -> Self {
         Self {
             channel,
             candidates,

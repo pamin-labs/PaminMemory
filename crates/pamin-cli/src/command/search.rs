@@ -2,14 +2,14 @@
 
 use anyhow::Result;
 use pamin_core::Why;
-use pamin_index::Profile;
-use pamin_store::Workspace;
-use serde::Serialize;
+use pamin_index::{Profile, Rerank};
 
-use crate::engine::{Depths, Engine};
-use crate::output::Format;
+use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args)]
+use crate::session::Session;
+use pamin_engine::Depths;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What to search for, in any language.
     pub query: String,
@@ -28,17 +28,34 @@ pub struct Args {
     pub channel_depth: u32,
 
     /// How many edges the graph channel walks out from its seeds.
-    #[arg(long, env = "PAMIN_GRAPH_DEPTH", default_value_t = Depths::default().graph)]
+    #[arg(
+        long,
+        env = "PAMIN_GRAPH_DEPTH",
+        default_value_t = Depths::default().graph,
+        value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
+    )]
     pub graph_depth: u8,
+
+    /// How much to spend reordering the results: off, fast, or accurate.
+    ///
+    /// A cross-encoder reads the query and a memory together, which is what
+    /// lets it correct an order the channels got wrong and what makes it cost
+    /// a forward pass per candidate. Only memories written in a language other
+    /// than the query's are reordered, so a workspace in one language gains
+    /// exactly nothing from this and should turn it off.
+    #[arg(long, env = "PAMIN_RERANK", default_value = "fast")]
+    pub rerank: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Hit {
     /// What to pass to `pamin read` to see this topic's other versions.
     topic: String,
+    /// The state the topic stands for now. Search ranks topics, so this is
+    /// always the current one; `pamin read --version-offset` reaches earlier
+    /// versions.
     topic_state: String,
     version: u32,
-    is_current: bool,
     content: String,
     score: f32,
     /// The rank this result held in each channel it appeared in, and every
@@ -49,25 +66,28 @@ struct Hit {
     source_span: String,
 }
 
-#[derive(Serialize)]
-struct Results {
+#[derive(Serialize, Deserialize)]
+pub struct Results {
     query: String,
     hits: Vec<Hit>,
 }
 
-pub async fn run(
-    workspace: &Workspace,
+pub async fn execute(
+    session: &Session,
     project: &str,
     profile: Profile,
-    format: Format,
     args: Args,
-) -> Result<()> {
-    let mut engine = Engine::open(workspace, project, profile).await?;
+) -> Result<Results> {
+    let engine = session.engine(project, profile).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
     };
-    let hits = engine.search(&args.query, args.limit, depths).await?;
+    let rerank = Rerank::parse(&args.rerank)
+        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
+    let hits = engine
+        .search_reranked(&args.query, args.limit, depths, rerank)
+        .await?;
 
     let results = Results {
         query: args.query,
@@ -77,7 +97,6 @@ pub async fn run(
                 topic: hit.topic,
                 topic_state: hit.state.id.to_string(),
                 version: hit.state.version,
-                is_current: hit.is_current,
                 content: hit.state.content,
                 score: hit.result.score,
                 why: hit.result.why,
@@ -86,32 +105,29 @@ pub async fn run(
             .collect(),
     };
 
-    format.emit(&results, || {
-        if results.hits.is_empty() {
-            return format!("No memories matched {:?}", results.query);
-        }
-        results
-            .hits
-            .iter()
-            .map(|hit| {
-                let marker = if hit.is_current {
-                    "current"
-                } else {
-                    "historical"
-                };
-                format!(
-                    "{:.4}  {} v{} ({marker})  {}\n        {}",
-                    hit.score,
-                    hit.topic,
-                    hit.version,
-                    hit.content,
-                    describe(&hit.why)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok(())
+    Ok(results)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(results: &Results) -> String {
+    if results.hits.is_empty() {
+        return format!("No memories matched {:?}", results.query);
+    }
+    results
+        .hits
+        .iter()
+        .map(|hit| {
+            format!(
+                "{:.4}  {} v{}  {}\n        {}",
+                hit.score,
+                hit.topic,
+                hit.version,
+                hit.content,
+                describe(&hit.why)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Renders the trace as one line, so the reason a result is here is visible

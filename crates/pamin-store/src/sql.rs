@@ -52,7 +52,7 @@ pub(crate) use sql_enum;
 #[cfg(test)]
 mod tests {
     use super::SqlLabel;
-    use pamin_core::{Derivation, EdgeKind, FilterDecision, TombstoneReason};
+    use pamin_core::{Derivation, EdgeKind, FilterDecision, JobKind, TombstoneReason};
 
     /// Enums whose column is constrained to their label set.
     ///
@@ -65,6 +65,7 @@ mod tests {
             EdgeKind::labels(),
             Derivation::labels(),
             TombstoneReason::labels(),
+            JobKind::labels(),
         ]
     }
 

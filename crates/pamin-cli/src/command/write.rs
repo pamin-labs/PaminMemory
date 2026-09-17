@@ -1,18 +1,18 @@
 //! `pamin write` — record a memory.
 
 use anyhow::{Context, Result};
-use pamin_core::{SensoryFilter, SourceKind};
+use pamin_core::SensoryFilter;
 use pamin_index::Profile;
-use pamin_store::{Workspace, repository};
-use serde::Serialize;
+use pamin_store::repository;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::command::validity;
-use crate::engine::Engine;
-use crate::output::Format;
+use crate::session::Session;
+use pamin_engine::{Engine, Owed, Write};
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic this memory belongs to.
     #[arg(long)]
@@ -21,12 +21,20 @@ pub struct Args {
     /// The memory content. Reads standard input when omitted.
     pub content: Option<String>,
 
+    /// Record the memory without waiting for the index to catch up.
+    ///
+    /// The work is queued rather than skipped, and `pamin cascade drain` runs
+    /// it. Importing in bulk is what this is for: one rebuild of the vector
+    /// graph at the end instead of the queue being drained after every write.
+    #[arg(long)]
+    pub defer: bool,
+
     #[command(flatten)]
     pub validity: validity::Flags,
 }
 
-#[derive(Serialize)]
-struct Written {
+#[derive(Serialize, Deserialize)]
+pub struct Written {
     topic: String,
     /// Absent when the filter held the content in the evidence layer.
     version: Option<u32>,
@@ -35,18 +43,25 @@ struct Written {
     reason: String,
     /// Always set: evidence is recorded whatever the filter decides.
     source_version: u32,
+    /// Whether the projection caught up before this command returned, or the
+    /// work is still owed. Either way the memory is recorded.
+    cascade: String,
+    /// Set when the projection has fallen far enough behind to say so. The
+    /// queue is unbounded on purpose -- a write must not fail because the
+    /// index is slow -- but a backlog nobody reports looks like searches
+    /// quietly missing the newest memories.
+    cascade_lagging: bool,
     /// The truth interval this state was asserted for, if one was given.
     valid_from: Option<String>,
     valid_to: Option<String>,
 }
 
-pub async fn run(
-    workspace: &Workspace,
+pub async fn execute(
+    session: &Session,
     project: &str,
     profile: Profile,
-    format: Format,
     args: Args,
-) -> Result<()> {
+) -> Result<Written> {
     // Parsed before anything is provisioned, so a malformed interval fails
     // without having started a database.
     let validity = args.validity.parse()?;
@@ -56,114 +71,133 @@ pub async fn run(
         None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
     };
 
-    let mut engine = Engine::open(workspace, project, profile).await?;
-    let project = engine.project;
+    let engine = session.engine(project, profile).await?;
+    let (verdict, recorded) = record(&engine, &args.topic, &content, validity).await?;
 
-    // Manual writes to one topic share a source, so their evidence forms a
-    // single chain rather than a new source per write.
-    let source = repository::ensure_source(
-        engine.database.client(),
-        project,
-        SourceKind::Manual,
-        &format!("manual:{}", args.topic),
-    )
-    .await?;
+    // The projection catches up from the outbox rather than here. Draining now
+    // keeps `write` then `search` working the way it reads, without the write
+    // transaction having depended on the index at all: if the index is
+    // unreachable the memory is still recorded and the work is still owed.
+    //
+    // `--defer` is that separation made visible. The memory is committed either
+    // way; what changes is whether this process is the one that pays for the
+    // index -- and, past the ceiling, it is, because deferring is the only way
+    // the queue grows without bound.
+    //
+    // The two numbers are two different facts, and reporting one of them for
+    // both was the gap. What the queue owed when this write looked at it is
+    // about the writer's rate and stays true whatever is done about it; what it
+    // owes on the way out is about whether this memory is searchable yet.
+    let pays_for_upkeep = pays_for_upkeep(&engine);
 
-    let topic = engine.ensure_topic(&args.topic).await?;
-    let current = current_content(&engine.database, topic.id).await?;
-
-    let verdict = SensoryFilter::default().judge(&content, current.as_deref());
-
-    // Evidence first, always, and before the filter's verdict is acted on. That
-    // ordering is what makes a rejection recoverable instead of a loss.
-    let source_version = repository::append_source_version(
-        engine.database.client(),
-        project,
-        source,
-        &content,
-        &hash(&content),
-        verdict.decision,
-        verdict.reason(),
-    )
-    .await?;
-
-    // Detected per span, not per deployment: one workspace holds many
-    // languages, and this is what the note-language rule reads later.
-    let (language, confidence) = match pamin_index::detect_language(&content) {
-        Some((language, confidence)) => (Some(language), Some(confidence)),
-        None => (None, None),
-    };
-
-    let span = repository::append_source_span(
-        engine.database.client(),
-        project,
-        source_version.id,
-        0,
-        content.len() as u32,
-        language.as_deref(),
-        confidence,
-    )
-    .await?;
-
-    let state = if verdict.is_promoted() {
-        let state = repository::append_topic_state(
-            engine.database.client_mut(),
-            project,
-            topic.id,
-            &content,
-            span.id,
-            OffsetDateTime::now_utc(),
-            validity,
-        )
-        .await?;
-
-        // Index only what was promoted. Filtered content stays in the evidence
-        // layer, reachable and replayable, but off the retrieval surface, which
-        // is the whole point of filtering after persistence rather than before.
-        engine.index_state(&state)?;
-
-        // Derived writes run here rather than in a worker because there is no
-        // worker yet. Both this and the index update move into the cascade
-        // pipeline together, which is where derived writes belong.
-        engine.derive_mentions(&state).await?;
-        Some(state)
+    let (behind, owed) = if args.defer {
+        let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
+        let owed = if pamin_core::may_defer(behind) {
+            behind
+        } else {
+            still_owed(engine.drain_cascade(pays_for_upkeep).await?)
+        };
+        (behind, owed)
     } else {
-        None
+        let owed = still_owed(engine.drain_cascade(pays_for_upkeep).await?);
+        (owed, owed)
     };
 
     let result = Written {
         topic: args.topic,
-        version: state.as_ref().map(|state| state.version),
+        version: recorded.state.as_ref().map(|state| state.version),
         promoted: verdict.is_promoted(),
         reason: verdict.reason().to_string(),
-        source_version: source_version.version,
+        source_version: recorded.source_version,
+        cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
+        cascade_lagging: !pamin_core::may_defer(behind),
         valid_from: validity.from.map(validity::render),
         valid_to: validity.to.map(validity::render),
     };
 
-    format.emit(&result, || match result.version {
+    Ok(result)
+}
+
+/// Records one memory in the ledger, and nothing else.
+///
+/// Everything a memory costs except the index: the filter's verdict, the
+/// language, and one transaction. Shared with the bulk path, which differs only
+/// in how often it stops to let the projection catch up -- so an import cannot
+/// drift into recording memories by different rules from a write.
+pub(crate) async fn record(
+    engine: &Engine,
+    topic: &str,
+    content: &str,
+    validity: pamin_core::Validity,
+) -> Result<(pamin_core::Verdict, pamin_engine::Recorded)> {
+    // Looked up rather than created: a write the filter holds should leave no
+    // trace on the retrieval surface, and an empty topic is a trace. Promotion
+    // is what creates one, inside the write transaction.
+    let current =
+        repository::current_content(engine.database.pool(), engine.project, topic).await?;
+    let verdict = SensoryFilter::default().judge(content, current.as_deref());
+
+    let (language, confidence) = match pamin_index::detect_language(content) {
+        Some((language, confidence)) => (Some(language), Some(confidence)),
+        None => (None, None),
+    };
+
+    let recorded = engine
+        .write(&Write {
+            topic,
+            content,
+            content_hash: &hash(content),
+            verdict: verdict.decision,
+            reason: verdict.reason(),
+            promoted: verdict.is_promoted(),
+            language: language.as_deref(),
+            language_confidence: confidence,
+            observed_at: OffsetDateTime::now_utc(),
+            validity,
+        })
+        .await?;
+
+    Ok((verdict, recorded))
+}
+
+/// What the projection still owes that would change what a search finds.
+///
+/// Not the same as what the queue still holds. A write whose document the index
+/// has but whose flush has not happened yet is findable now -- the projection
+/// buffers it in memory and a query reads that buffer -- and its job stays
+/// claimed only so that a power cut replays it rather than losing it. Reporting
+/// those as owed would say a memory is not searchable when it is, on every
+/// single write, which is the opposite of what this field is for.
+fn still_owed(drained: pamin_engine::Drained) -> i64 {
+    // Never below nothing: the two numbers are read a moment apart while the
+    // server's flusher is retiring rows between them, so the applied count can
+    // outrun the queue's. Both readings mean the same thing here -- there is
+    // nothing left that a search would miss.
+    (drained.pending - drained.applied as i64).max(0)
+}
+
+/// Who pays for the index's upkeep after this write.
+///
+/// A resident server runs it on its own time, so a write leaves it there rather
+/// than waiting it out. Without one there is nobody else, and the writer pays
+/// for what it caused.
+pub(crate) fn pays_for_upkeep(engine: &Engine) -> Owed {
+    if engine.database.is_resident() {
+        Owed::WhatAMemoryNeeds
+    } else {
+        Owed::Everything
+    }
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Written) -> String {
+    match result.version {
         Some(version) => format!("Wrote {} v{}", result.topic, version),
         None => format!(
             "Held in evidence only: {}\nStored as {} source version {}",
             result.reason, result.topic, result.source_version
         ),
-    });
-    Ok(())
-}
-
-async fn current_content(
-    database: &pamin_store::Database,
-    topic: pamin_core::TopicId,
-) -> Result<Option<String>> {
-    let versions = repository::topic_versions(database.client(), topic).await?;
-    let Some(resolved) = pamin_core::resolve(&versions, pamin_core::VersionOffset::LATEST) else {
-        return Ok(None);
-    };
-    Ok(
-        repository::topic_state(database.client(), topic, resolved.version)
-            .await?
-            .map(|state| state.content),
-    )
+    }
 }
 
 fn hash(content: &str) -> String {

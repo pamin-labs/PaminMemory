@@ -3,13 +3,14 @@
 use anyhow::{Result, bail};
 use pamin_core::EdgeKind;
 use pamin_store::graph::EdgeClaim;
-use pamin_store::{Database, Workspace, graph, repository};
-use serde::Serialize;
+use pamin_store::{Database, graph, repository};
+use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
-use crate::output::Format;
 
-#[derive(clap::Args)]
+use crate::session::Session;
+
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic the relationship starts from.
     pub from: String,
@@ -26,8 +27,8 @@ pub struct Args {
     pub validity: validity::Flags,
 }
 
-#[derive(Serialize)]
-struct Linked {
+#[derive(Serialize, Deserialize)]
+pub struct Linked {
     from: String,
     to: String,
     kind: String,
@@ -39,16 +40,16 @@ struct Linked {
     valid_to: Option<String>,
 }
 
-pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Args) -> Result<()> {
+pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Linked> {
     let Some(kind) = EdgeKind::parse(&args.kind) else {
         bail!("unknown relationship kind {:?}", args.kind);
     };
 
-    let mut database = Database::open(workspace).await?;
-    let project = repository::ensure_project(database.client(), project).await?;
+    let database = session.database();
+    let project = session.project(project).await?;
 
-    let from = require_topic(&database, project.id, &args.from).await?;
-    let to = require_topic(&database, project.id, &args.to).await?;
+    let from = require_topic(database, project, &args.from).await?;
+    let to = require_topic(database, project, &args.to).await?;
     if from == to {
         bail!("a topic cannot be related to itself");
     }
@@ -56,7 +57,7 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
     let mut claim = EdgeClaim::explicit(kind);
     claim.validity = args.validity.parse()?;
 
-    let assertion = graph::assert_edge(database.client_mut(), project.id, from, to, &claim).await?;
+    let assertion = graph::assert_edge(database.pool(), project, from, to, &claim).await?;
 
     let result = Linked {
         from: args.from,
@@ -68,20 +69,22 @@ pub async fn run(workspace: &Workspace, project: &str, format: Format, args: Arg
         valid_to: claim.validity.to.map(validity::render),
     };
 
-    format.emit(&result, || {
-        if result.appended {
-            format!(
-                "{} --{}--> {} (v{})",
-                result.from, result.kind, result.to, result.version
-            )
-        } else {
-            format!(
-                "Already linked: {} --{}--> {} (v{})",
-                result.from, result.kind, result.to, result.version
-            )
-        }
-    });
-    Ok(())
+    Ok(result)
+}
+
+/// Renders the result for a person reading it.
+pub fn render(result: &Linked) -> String {
+    if result.appended {
+        format!(
+            "{} --{}--> {} (v{})",
+            result.from, result.kind, result.to, result.version
+        )
+    } else {
+        format!(
+            "Already linked: {} --{}--> {} (v{})",
+            result.from, result.kind, result.to, result.version
+        )
+    }
 }
 
 /// Resolves a topic name, refusing to invent one.
@@ -94,7 +97,7 @@ async fn require_topic(
     project: pamin_core::ProjectId,
     name: &str,
 ) -> Result<pamin_core::TopicId> {
-    match repository::find_topic(database.client(), project, name).await? {
+    match repository::find_topic(database.pool(), project, name).await? {
         Some(topic) => Ok(topic.id),
         None => bail!("no topic named {name}"),
     }

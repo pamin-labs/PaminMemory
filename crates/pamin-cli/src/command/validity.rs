@@ -6,10 +6,11 @@
 
 use anyhow::{Context, Result, bail};
 use pamin_core::Validity;
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 pub struct Flags {
     /// When the claim starts holding, as RFC 3339. Open by default.
     #[arg(long)]

@@ -81,14 +81,18 @@ impl Segmenter {
     /// Case is folded, so a topic named `argo_cd` is found in prose that
     /// capitalises it. An empty needle names nothing.
     pub fn names(&self, text: &str, needle: &str) -> bool {
-        let needle = self.name_tokens(needle);
-        if needle.is_empty() {
-            return false;
-        }
+        names(&self.name_sequence(text), &self.name_sequence(needle))
+    }
 
+    /// Tokenizes once for repeated name matching.
+    ///
+    /// Deriving edges asks whether one memory names any of a project's topics,
+    /// which is one question per topic against the same text. Calling `names`
+    /// in that loop re-segments the text every time, so the cost of a single
+    /// write grows with the size of the project rather than with the length of
+    /// what was written. Preparing whichever side is fixed removes that factor.
+    pub fn name_sequence(&self, text: &str) -> Vec<String> {
         self.name_tokens(text)
-            .windows(needle.len())
-            .any(|window| window == needle.as_slice())
     }
 
     /// Tokenizes for name comparison, which is not how the index tokenizes.
@@ -119,6 +123,19 @@ impl Segmenter {
     pub fn segment_for_index(&self, text: &str) -> String {
         self.tokens(text).join(" ")
     }
+}
+
+/// Whether a prepared token sequence contains another, as `names` compares them.
+///
+/// Both arguments come from [`Segmenter::name_sequence`]; comparing sequences
+/// produced any other way is what makes a name match and an index miss the
+/// same text.
+pub fn names(text: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+
+    text.windows(needle.len()).any(|window| window == needle)
 }
 
 /// Detects the dominant language of a span, when confident.
