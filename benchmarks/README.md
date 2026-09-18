@@ -57,6 +57,15 @@ Third-party systems each install into their own virtualenv. Installing one of
 them into the shared environment moved `protobuf` past the ceiling another
 declares, while that other one was being measured.
 
+**Install each one the way its own documentation does, optional extras
+included.** `pip install mem0ai` leaves out `mem0ai[nlp]`, and without it
+mem0's `lemmatize_for_bm25` returns its input unchanged -- so every memory is
+stored with an unlemmatised keyword field and every query is matched against
+one, which turns off half of a hybrid retriever. It reports this on a log line
+and nowhere else. A default install is not the same as the system, and
+measuring a competitor with part of it disabled is not a measurement of that
+competitor.
+
 ## Where you run this changes which numbers mean anything
 
 Half of what this reports is a property of the memory systems and travels
