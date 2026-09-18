@@ -274,6 +274,7 @@ class Mem0:
     name = "mem0"
     store_path = f"{WORK}/mem0-qdrant"
     holder = None          # qdrant runs inside this process
+    LIMIT = None           # falls back to TOP_K
 
     def __init__(self):
         from mem0 import Memory
@@ -319,10 +320,21 @@ class Mem0:
         return time.time() - started, len(turns)
 
     def recall(self, question):
+        # The keyword is `top_k`, not `limit`, and it has a default of 20.
+        # mem0 collects unknown keywords into **kwargs and drops them, so a
+        # misnamed shortlist is not an error -- it is a silent fall back to
+        # that default. An arm that cannot see this is not measuring the
+        # shortlist it says it is, so the arm checks what it got back.
+        want = self.LIMIT or TOP_K
         found = self.memory.search(
-            question, filters={"user_id": self.user}, limit=TOP_K)
+            question, filters={"user_id": self.user}, top_k=want)
         results = found.get("results", found) if isinstance(found, dict) else found
-        return [r.get("memory", "") for r in results]
+        memories = [r.get("memory", "") for r in results]
+        if len(memories) > want:
+            raise RuntimeError(
+                f"mem0 returned {len(memories)} results for top_k={want}; "
+                "this arm is not at the shortlist it reports")
+        return memories
 
 
 class MemPalace:
@@ -436,12 +448,6 @@ class Mem0Wide(Mem0):
 
     name = "mem0-wide"
     LIMIT = 30
-
-    def recall(self, question):
-        found = self.memory.search(
-            question, filters={"user_id": self.user}, limit=self.LIMIT)
-        results = found.get("results", found) if isinstance(found, dict) else found
-        return [r.get("memory", "") for r in results]
 
 
 ARMS = {
