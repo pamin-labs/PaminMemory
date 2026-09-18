@@ -286,7 +286,7 @@ quantity as `nDCG@10`, and not placeable on the same axis. Several headline
 figures in that field have been audited by competitors and did not survive.
 
 The harness that runs those comparisons is in [benchmarks/](../../../benchmarks),
-along with what it holds fixed and how each of those is asserted. Six rules
+along with what it holds fixed and how each of those is asserted. Seven rules
 come out of building it, and each cost a run to learn.
 
 **Open the other side's budget before claiming a win.** Raising `--limit` from
@@ -315,6 +315,16 @@ LOCOMO at this size churns about a fifth of its questions under almost any
 perturbation — a deterministic configuration change worth 0.005 moved the same
 41. A net of five or ten questions is inside that. Spend one run on the same
 arm twice, before spending ten on arms whose differences you cannot read.
+
+**Install the other side the way its own documentation does.** mem0's BM25
+channel lemmatises on both sides -- every memory stores a `text_lemmatized`
+field, every query is lemmatised before the keyword search -- and that path
+needs the `mem0ai[nlp]` extra, which a plain install does not bring. Without
+it `lemmatize_for_bm25` returns its input unchanged and half of a hybrid
+retriever is off, announced on one log line and nowhere else. Every mem0
+figure taken before this was found was taken in that state. A default install
+is not the same as the system: read what extras the other side's own
+instructions install, and have the arm refuse to run when one is missing.
 
 **Cost is half the claim.** A project whose pitch is "less" cannot check that
 pitch with an accuracy table. Measure what each arm spends: calls to a model
