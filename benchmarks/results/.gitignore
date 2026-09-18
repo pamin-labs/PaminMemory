@@ -1,0 +1,6 @@
+# Raw rows from a run land here. They are evidence and worth keeping, but a
+# run in progress writes here continuously, so only summarised results are
+# committed -- by name, deliberately, rather than by whatever a run left
+# behind.
+*.jsonl
+!summary-*.json
