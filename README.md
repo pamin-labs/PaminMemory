@@ -16,6 +16,47 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
 
+## Where This Differs
+
+Measured against mem0 and MemPalace on LOCOMO, every arm reading and judged by
+the same model and embedding through the same endpoint. The full tables,
+including the two conditions that were measured wrongly the first time, are
+under [Measured](#measured).
+
+**On answer accuracy the three systems tie, and this page will not claim
+otherwise.** At a matched shortlist of thirty passages: 0.628 here, 0.623 for
+MemPalace, 0.583 for mem0, and no pair of them separates statistically. Anyone
+selling you a memory system on a few points of LOCOMO is selling you noise —
+mem0 run twice at identical settings scores 0.603 and 0.598 while answering 41
+of the same 199 questions differently.
+
+The differences that are real are architectural, and they follow from one
+choice: **no language model runs on the write path.**
+
+| | this project | mem0 |
+| --- | --- | --- |
+| model calls to ingest 10 conversations | **0** | 272 |
+| cost of that ingest | **$0** | $27.77 |
+| time | **356 s** | 4,121 s |
+| embedding requests to a service you must run | **0**, in-process | 6,335 |
+| same corpus written twice | **byte-identical** | 41 of 199 answers change |
+| questions whose answer is implied, not stated | **0.429** | 0.190 |
+
+A system that asks a model to decide what a conversation *means* before storing
+it pays for that on every ingest, cannot reproduce its own store, and cannot
+return what the model chose not to write down. A system that stores the
+evidence pays instead on every query, in the prompt it hands back. The two
+cross at roughly **1,900 questions asked of a single conversation's memory**;
+below that this is cheaper, and at LOCOMO's own density of twenty questions it
+is cheaper by a factor of 31.
+
+**Where this is behind.** mem0 leads temporal questions by about twenty points
+(0.735 against 0.529) — reproducibly, across independent runs. Holding the
+embedding model in-process costs about 2 GB resident where a system calling out
+to an endpoint holds 177 MB and a bill. And at thirty passages this hands the
+reader 1,511 prompt tokens against mem0's 1,017, because passages are longer
+than rewritten facts.
+
 ## Quickstart
 
 No Docker. No API key. No configuration. `init` provisions a local PostgreSQL for you, and the embedding model downloads the first time you search.
