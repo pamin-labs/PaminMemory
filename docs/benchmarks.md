@@ -210,81 +210,99 @@ question about any gain is whether it came from the thing you changed:
 mem0 and MemPalace each get two arms for the same reason, so that neither side
 is alone in being allowed a wider shortlist.
 
-### The shortlist every arm actually got
+### What the mem0 arms were first measured with
 
-One column has to come before the results, because getting it wrong invalidates
-a comparison silently. mem0's search keyword is `top_k`, not `limit`, and it
+Two conditions were wrong in the first run of the mem0 arms, both silent, both
+found while writing the results up rather than while running them. mem0 has
+since been re-measured with both corrected; this section says what was wrong so
+the withdrawn figures are not quietly replaced.
+
+**The shortlist.** mem0's search keyword is `top_k`, not `limit`, and it
 defaults to 20; unknown keywords go into `**kwargs` and are dropped without an
-error. The first run of these arms passed `limit`, so **both mem0 arms ran at
-20** — the narrow one wider than it claimed, the wide one narrower. Every one of
-the 199 questions returned exactly 20 passages, which is how it was caught. The
-arm now passes `top_k` and checks the count it gets back, the way the MemPalace
-arm checks that it embedded through the shared endpoint.
+error. Both mem0 arms therefore ran at 20 — the narrow one wider than it
+claimed, the wide one narrower. Every one of the 199 questions returned exactly
+20 passages, which is how it was caught. The arm now passes `top_k` and checks
+the count it gets back.
 
-The figures below are from that first run and are labelled with the shortlist
-each arm was actually at, not the one it was asked for.
+**The retriever.** mem0's BM25 channel lemmatises on both sides: every memory
+is stored with a `text_lemmatized` field and every query is lemmatised before
+the keyword search. That path needs the `mem0ai[nlp]` extra, which a plain
+`pip install mem0ai` does not bring, and without it `lemmatize_for_bm25`
+returns its input unchanged. So the first mem0 figures were taken with half of
+a hybrid retriever turned off, announced on one log line and nowhere else.
 
-| arm | shortlist asked | shortlist received |
-| --- | --- | --- |
-| `pamin`, `pamin-ledger`, MemPalace, BM25 | 10 | 10 |
-| `pamin-wide`, MemPalace at 30 | 30 | 30 |
-| mem0 | 10 | **20** |
-| mem0 at `limit 30` | 30 | **20** |
+Both are the same rule: an arm asserts every premise it reports, and opening
+the other side's budget covers the extras its own documentation installs, not
+only its settings.
+
+The re-measurement ingests once per conversation and queries that store at both
+shortlists. mem0 clears its store before each conversation, so running two arms
+separately pays its $27.77 write bill twice; sharing the ingest pays it once and
+has the better property besides — the two arms then read identical memories, so
+what separates them is the shortlist alone.
 
 ### Accuracy
 
-| arm | shortlist | accuracy | against `pamin` |
-| --- | --- | --- | --- |
-| BM25, no memory system | 10 | 0.427 | |
-| `pamin` | 10 | 0.518 | |
-| `pamin-ledger` | 10 | 0.523 | +0.005, **p = 1.00** |
-| MemPalace | 10 | 0.558 | |
-| mem0 | 20 | 0.603 | |
-| mem0, second run | 20 | 0.598 | |
-| MemPalace at 30 | 30 | 0.623 | |
-| `pamin-wide` | 30 | **0.628** | +0.110, **p = 0.002** |
+Every arm at the shortlist it actually received, which for every arm here is
+now the one it asked for:
 
-Paired McNemar on the discordant questions, which is the test that matters
-when every arm answers the same set:
+| arm | shortlist | accuracy |
+| --- | --- | --- |
+| BM25, no memory system | 10 | 0.427 |
+| `pamin` | 10 | 0.518 |
+| `pamin-ledger` | 10 | 0.523 |
+| mem0 | 10 | 0.538 |
+| MemPalace | 10 | 0.558 |
+| mem0 | 30 | 0.583 |
+| MemPalace | 30 | 0.623 |
+| `pamin-wide` | 30 | **0.628** |
+
+Paired McNemar on the discordant questions, which is the test that matters when
+every arm answers the same set. Comparisons across different shortlists are
+listed but decide nothing:
 
 | | this one right | that one right | p |
 | --- | --- | --- | --- |
 | `pamin-wide` vs BM25 | 52 | 12 | **0.0000** |
 | MemPalace at 30 vs BM25 | 56 | 17 | **0.0000** |
-| mem0 vs BM25 | 54 | 19 | **0.0001** |
+| mem0 at 30 vs BM25 | 50 | 19 | **0.0002** |
 | `pamin-wide` vs `pamin` | 35 | 13 | **0.0021** |
 | MemPalace at 30 vs `pamin` | 39 | 18 | **0.0075** |
 | `pamin` vs BM25 | 42 | 24 | **0.0356** |
-| mem0 vs `pamin` | 40 | 23 | **0.0430** |
-| MemPalace at 30 vs MemPalace | 26 | 13 | 0.053 |
-| `pamin-wide` vs MemPalace | 35 | 21 | 0.081 |
-| `pamin-wide` vs mem0 | 31 | 26 | 0.597 |
-| `pamin-wide` vs MemPalace at 30 | 31 | 30 | 1.000 |
+| *`pamin-wide` vs mem0 at 10* | *40* | *22* | *0.030, different shortlists* |
+| **`pamin-wide` vs mem0 at 30** | 33 | 24 | **0.289** |
+| **`pamin-wide` vs MemPalace at 30** | 31 | 30 | **1.000** |
+| **MemPalace at 30 vs mem0 at 30** | 38 | 30 | **0.396** |
+| **`pamin` vs mem0 at 10** | 30 | 34 | **0.708** |
+| **`pamin` vs MemPalace at 10** | 28 | 36 | **0.382** |
 | `pamin-ledger` vs `pamin` | 21 | 20 | 1.000 |
-| mem0 second run vs mem0 | 20 | 21 | 1.000 |
+| mem0 at 20, run twice | 21 | 20 | 1.000 |
 
-**Four findings, and two of them are negative.**
+**Five findings, and three of them are negative.**
 
 **There is a noise floor, and it is large.** The last row is not a comparison
-between two configurations. Both mem0 arms ran at the same shortlist, on the
-same data, with the same settings — it is the same experiment twice. The totals
-differ by 0.005, which looks like reassuring stability, but **41 of the 199
-questions changed answer between the two runs**. About a fifth of the benchmark
-is not repeatable for an arm whose write path distils conversations with a
-model, because the distillation is not the same twice. That number is the scale
-against which every other gap on this page has to be read, and two of them do
-not survive it.
+between two configurations. The shortlist bug left both mem0 arms at the same
+setting, so it is one experiment run twice: totals 0.603 and 0.598, and **41 of
+199 questions answered differently**. A deterministic configuration change worth
+0.005 — `pamin` against `pamin-ledger` — moved the same 41, so the churn is
+LOCOMO's at this size as much as it is mem0's nondeterminism. A net of five or
+ten questions is inside it whoever produces it. That accident is the most useful
+pair on this page, and the rule from it is to run one arm twice before comparing
+two.
 
 This project has no such floor on the write side: there is no model there, so
-`pamin-wide` reads a store that `pamin` built, byte for byte. That is a
-property worth having, but it is a property of reproducibility, not of accuracy.
+`pamin-wide` reads a store that `pamin` built, byte for byte. That is a property
+of reproducibility, not of accuracy, but it is the reason only one side of this
+comparison has to be run twice to be believed.
 
-Two things are being separated here and only one of them is mem0's. Identical
-mem0 runs flip 41 questions, which is run-to-run variance. But `pamin` against
-`pamin-ledger` — both deterministic — also flips 41, from a configuration change
-worth 0.005. So LOCOMO at this size churns about a fifth of its questions under
-almost any perturbation, and a net difference of five or ten questions is inside
-that whoever produces it.
+**Giving mem0 its missing retriever changed nothing measurable, and the
+prediction that it would was wrong.** Written down before the re-run: restoring
+the lemmatiser would raise mem0's figures, so the tie might become a loss. At
+thirty passages *and* with the full retriever, mem0 reaches 0.583 against the
+0.603 it scored at twenty passages with the retriever half off — slightly lower,
+14 against 18 discordant, p = 0.597. The extra was worth nothing here. It was
+still wrong to have measured without it, and the disclosure stands whichever way
+the number moved.
 
 **The ledger bought nothing.** Twenty-one questions it got right that the flat
 arm missed, twenty the other way. Not "a small gain" — no gain. It does not
@@ -300,80 +318,121 @@ benchmark that asks what changed rather than what happened.
 the floor.** That is the largest single retrieval gain in this repository and
 it is a configuration change.
 
-**Against both other systems the result is a tie.** `pamin-wide` against mem0
-is 31 to 26, p = 0.597; against MemPalace at the same shortlist it is 31 to 30,
-p = 1.000. Fifty-odd questions disagree and the net is five, then one — the
-churn described above with no direction in it. Neither is evidence of anything.
+**At a matched shortlist, all three systems tie.** At thirty passages:
+`pamin-wide` 0.628, MemPalace 0.623, mem0 0.583, and no pair separates —
+33 to 24 against mem0 (p = 0.289), 31 to 30 against MemPalace (p = 1.000), and
+MemPalace against mem0 38 to 30 (p = 0.396). At ten passages: MemPalace 0.558,
+mem0 0.538, `pamin` 0.518, and again nothing separates. Fifty-odd questions
+disagree in each pair and the nets are inside the floor above. This project is
+numerically first at thirty passages, which is not the same as being ahead and
+is not reported as one.
 
-Two earlier readings of this comparison were wrong and are withdrawn. The first
-was a prediction, that mem0 would gain from a wider shortlist and pull ahead;
-the second was the conclusion drawn when it did not move, that the widening was
-worthless to it. Both were about an arm that never widened. What the pair
-actually measures is repeatability, and it is the more useful of the two.
-
-The one comparison that was never confounded is `pamin` against mem0 at what
-mem0 really ran: 23 to 40 against us, p = 0.043, with mem0 holding twice the
-shortlist. Read as written that is a real loss; read as a like-for-like it is
-not a comparison at all. It is the reason the wide arms exist.
+Two earlier readings are withdrawn outright. The first was a prediction, that
+mem0 would gain from a wider shortlist and pull ahead; the second was the
+conclusion drawn when it appeared not to, that widening was worthless to it.
+Both were about an arm that never widened. The unconfounded version of that
+question now exists, and mem0 does gain from the wider shortlist: 0.538 to
+0.583, 21 questions to 12, though at p = 0.163 even that is not established.
 
 By question type the three systems are not close anywhere; they are opposite:
 
-| | BM25 | `pamin` | `pamin-ledger` | MemPalace | mem0 | mem0 (2nd) | MP 30 | `pamin-wide` |
+| | BM25 | `pamin` | `pamin-ledger` | mem0 10 | MemPalace 10 | mem0 30 | MemPalace 30 | `pamin-wide` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| multi-hop | 0.241 | 0.517 | 0.483 | **0.724** | 0.690 | 0.621 | 0.690 | 0.586 |
-| temporal | 0.324 | 0.412 | 0.500 | 0.382 | 0.676 | **0.765** | 0.382 | 0.529 |
-| open-domain | 0.222 | **0.333** | 0.222 | 0.111 | **0.333** | 0.222 | 0.222 | 0.222 |
-| single-hop | 0.682 | 0.718 | 0.706 | 0.753 | 0.765 | 0.765 | **0.835** | 0.824 |
-| adversarial | 0.167 | 0.238 | 0.262 | 0.286 | 0.214 | 0.190 | **0.429** | **0.429** |
+| multi-hop | 0.241 | 0.517 | 0.483 | 0.483 | **0.724** | 0.655 | 0.690 | 0.586 |
+| temporal | 0.324 | 0.412 | 0.500 | 0.706 | 0.382 | **0.735** | 0.382 | 0.529 |
+| open-domain | 0.222 | **0.333** | 0.222 | 0.222 | 0.111 | 0.222 | 0.222 | 0.222 |
+| single-hop | 0.682 | 0.718 | 0.706 | 0.718 | 0.753 | 0.729 | **0.835** | 0.824 |
+| adversarial | 0.167 | 0.238 | 0.262 | 0.143 | 0.286 | 0.190 | **0.429** | **0.429** |
 
-Two splits are wide enough to clear the floor. mem0 leads **temporal** by
-fifteen to twenty-four points over every arm here; this project and MemPalace
-lead **adversarial** — questions whose answer is implied rather than stated — by
-about the same over mem0, which is what distilling a conversation into rewritten
-facts costs you when the question is about what was never said. The totals tie
-because those cancel, which is a different fact from "the systems perform alike"
-and should not be reported as one.
+Two splits are wide enough to clear the floor, and both reproduce across mem0's
+two independent runs, which is what makes them worth stating at all.
+
+**Temporal is mem0's**, by about twenty points at either shortlist: 0.706 and
+0.735 against this project's best of 0.529. It scored 0.676 and 0.765 in the
+earlier pair too, so this is not the churn.
+
+**Adversarial is this project's and MemPalace's**, 0.429 against mem0's 0.143
+and 0.190 — and 0.214 and 0.190 in the earlier pair. These are the questions
+whose answer is implied rather than stated, and losing them is what distilling
+a conversation into rewritten facts costs: what was never said is not in the
+distillate to retrieve.
+
+The totals tie because those two cancel, which is a different fact from "the
+systems perform alike" and should not be reported as one.
 
 Nine open-domain questions is too few to say anything, and it is listed only so
 the column is not quietly dropped.
 
 ### What each arm spends
 
-Accuracy is half of a claim that says "less". The other half:
+Accuracy is half of a claim that says "less". The other half, over the same ten
+conversations and 5,882 turns.
 
-| arm | write: LLM calls | write: seconds | query: prompt tokens | passages |
+**The write side, paid once:**
+
+| arm | LLM calls | model seconds | cost | texts embedded | on disk |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | 0 | 0 | $0 | 0 | 0 MB |
+| `pamin` | **0** | **0** | **$0** | 0, in-process | 13 MB |
+| `pamin-ledger` | **0** | **0** | **$0** | 0, in-process | — |
+| MemPalace | 20 | 286 | $1.15 | 1,668 | 1 MB |
+| mem0 | **272** | **3,913** | **$27.77** | 6,335 | 5 MB |
+
+Ingest wall-clock: 356 s for `pamin`, 520 s for MemPalace, 4,121 s for mem0.
+mem0's figure covers one ingest serving both of its shortlists — it clears its
+store before each conversation, so measuring its two arms separately would have
+paid that bill twice.
+
+**The query side, paid on every question:**
+
+| arm | passages | context bytes | prompt tokens | recall latency |
 | --- | --- | --- | --- | --- |
-| BM25 | 0 | 0 | 547 | 10 |
-| `pamin` | **0** | 292 | 557 | 10 |
-| `pamin-wide` | **0** | — | 1,511 | 30 |
-| MemPalace | 21 | 462 | 1,756 | 10 |
-| MemPalace at 30 | 20 | 476 | 5,133 | 30 |
-| mem0 | **272** | 3,999 | **676** | 20 |
+| BM25 | 10 | 1,728 | 547 | < 1 ms |
+| `pamin` | 10 | 1,736 | 557 | 170 ms |
+| `pamin-ledger` | 10 | 1,741 | ~557 | 108 ms |
+| mem0 | 10 | 1,403 | ~384 | 106 ms |
+| MemPalace | 10 | 7,475 | 1,756 | 830 ms |
+| `pamin-wide` | 30 | 5,154 | **1,511** | 159 ms |
+| mem0 | 30 | 4,224 | **~1,017** | 108 ms |
+| MemPalace | 30 | 22,350 | 5,133 | 924 ms |
 
-Ten conversations, 5,882 turns. Prompt tokens are counted with
-`cl100k_base` — not the model's own tokenizer, so the absolute figures are
-approximate, but every arm is counted the same way and what this needs is the
-ratio.
+Context bytes are measured. Prompt tokens are counted with `cl100k_base` — not
+the model's own tokenizer, so absolute figures are approximate, and every arm is
+counted the same way because what this needs is the ratio. The four marked `~`
+are not counted at all: they are derived from the measured bytes at mem0's own
+ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s. Latency is a
+property of this container and does not travel.
 
 **The two halves point in opposite directions, and that is the whole result.**
-mem0 spends 272 model calls and an hour of model time putting ten
-conversations in, which `pamin` does in five minutes with none. But mem0
-stores rewritten facts, so what it hands the reader afterwards is compact —
-676 tokens a question against `pamin-wide`'s 1,511. One arm pays once; the
-other pays on every question, forever.
+mem0 spends 272 model calls and an hour of model time putting ten conversations
+in, which `pamin` does in six minutes with none and at no cost. But mem0 stores
+rewritten facts, so what it hands the reader afterwards is compact — 1,017
+tokens a question against `pamin-wide`'s 1,511 at the same thirty passages. One
+arm pays once; the other pays on every question, forever.
 
-So there is a crossing point, and it is worth stating rather than leaving each
-side to quote its favourite half. `pamin-wide` costs 835 more prompt tokens a
-question than mem0. Against mem0's write side — $27.83 as reported, less
-roughly $9 of per-call overhead this environment adds to every call, so about
-$19 of marginal cost — and Sonnet's list input price, the two meet at roughly
-seven and a half thousand questions across those ten conversations, or about
-750 questions asked of one conversation's memory.
+So there is a crossing point. At thirty passages each, `pamin-wide` costs 494
+more prompt tokens a question. Against mem0's write side — $27.77 as reported,
+less roughly $9 of per-call overhead this environment adds to every call, so
+about $19 of marginal cost — and Sonnet's list input price:
 
-That estimate rests on two assumptions, both stated so they can be attacked:
-the overhead subtraction, and list pricing. What does not rest on either is
-the shape — a one-time cost against a per-question one — and which side each
-system is on.
+| | break-even |
+| --- | --- |
+| thirty passages each, against mem0's full $27.77 | ~1,900 questions per conversation |
+| thirty passages each, against ~$19 marginal | ~1,270 questions per conversation |
+| ten passages each | 3,600 – 5,400 questions per conversation |
+
+An earlier version of this section put the crossing at about 750 questions. That
+figure compared this project's thirty passages against mem0's twenty, which was
+the shortlist bug, and so charged this side for context the other was not
+carrying.
+
+At LOCOMO's own density — twenty questions asked of one conversation — the
+totals are $0.09 for `pamin-wide` against $2.84 for mem0, a factor of 31.
+
+That estimate rests on two assumptions, both stated so they can be attacked: the
+overhead subtraction, and list pricing. What does not rest on either is the
+shape — a one-time cost against a per-question one — and which side each system
+is on.
 
 ### Memory and disk
 
@@ -406,10 +465,14 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   intervals gained nothing, and that is a fact about this benchmark as much as
   about the feature. It is not evidence the feature works, and it is not
   evidence it does not.
-- **Nothing about mem0 at a shortlist of its own choosing.** Both its arms
-  ran at 20 because of the dropped keyword above. Re-running them at 10 and 30
-  costs another $27.83 and about an hour of model time, because the arm clears
-  its store before each conversation and so cannot reuse the one it built.
+- **Nothing about mem0's own defaults.** It is measured here with the shortlist
+  and the extras this comparison chose for it, not the configuration its authors
+  would pick. The re-run corrects two ways it was handicapped; there may be a
+  third nobody has looked for, and the way to find one is to read its
+  documentation rather than its behaviour.
+- **Nothing about MemPalace re-measured.** Only mem0 was run again. MemPalace's
+  arms have not been checked for an equivalent missing extra, and until they are
+  the possibility that they are also handicapped stays open.
 - **Nothing about any difference smaller than the noise floor.** Forty-one of
   199 questions moved between two identical mem0 runs. Anything at that scale
   here is unmeasured, not measured-as-equal — the two are different claims and
