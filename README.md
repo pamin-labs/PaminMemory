@@ -199,6 +199,66 @@ would be near one by construction.
 Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
 all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
 
+**Against the other memory systems.** LOCOMO, ten conversations and 5,882
+turns, 199 questions drawn stratified and answered by every arm. One model
+reads the retrieved passages and one judges the answer, the same model for
+everyone; every arm embeds with the same BGE-M3 file, through one endpoint that
+counts what each of them asks for. A comparison where the arms use different
+models measures the models.
+
+| LOCOMO, 199 questions | passages | accuracy | write: model calls | write: cost |
+| --- | --- | --- | --- | --- |
+| BM25, no memory system | 10 | 0.427 | 0 | $0 |
+| this project | 10 | 0.518 | **0** | **$0** |
+| mem0 | 10 | 0.538 | 272 | $27.77 |
+| MemPalace | 10 | 0.558 | 20 | $0.38 – $1.15 |
+| mem0 | 30 | 0.583 | 272 | $27.77 |
+| MemPalace | 30 | 0.623 | 20 | $0.38 – $1.15 |
+| this project, `--limit 30` | 30 | **0.628** | **0** | **$0** |
+
+mem0's two rows share one ingest, so its write bill is paid once for both.
+MemPalace's rows are two separate ingests of the same conversations, which cost
+$1.15 and $0.38 — the same twenty calls, priced differently by prompt caching,
+which is why its cell is a range and not a figure.
+
+**On accuracy this is a tie, and reporting it as a win would be wrong.** At
+thirty passages the three systems are 0.628, 0.623 and 0.583, and paired
+McNemar separates no pair of them — p = 0.289, 1.000 and 0.396. At ten
+passages, likewise. Being first by five thousandths is not being ahead.
+
+There is a floor under those comparisons, and it is worth more than they are.
+Running mem0 twice at the same settings on the same data gives 0.603 and 0.598
+— but **41 of the 199 questions change answer between the two runs**. A
+distillation performed by a model is not the same twice. This project has no
+such floor on the write side, because there is no model there: the `--limit 30`
+row above reads a store the `--limit 10` row built, byte for byte.
+
+Two question types do clear that floor, and both reproduce across independent
+runs. mem0 leads **temporal** questions by about twenty points, 0.735 against
+0.529. This project and MemPalace lead **adversarial** questions — the ones
+whose answer is implied rather than stated — by about the same, 0.429 against
+0.190. That is what rewriting a conversation into facts costs: what was never
+said is not in the rewrite to find. The totals tie because these cancel, which
+is not the same as the systems performing alike.
+
+**The difference is on the bill.** This project puts ten conversations in with
+no model calls, no cost and no external service, in 356 seconds; mem0 takes 272
+calls, $27.77 and 4,121 seconds, and 6,335 embedding requests to an endpoint it
+does not host. What mem0 buys with that is a smaller prompt afterwards — about
+1,017 tokens a question against 1,511 here, since it hands back rewritten facts
+rather than passages. So one side pays once and the other pays forever, and
+they cross at roughly **1,900 questions asked of a single conversation's
+memory**. At LOCOMO's own density of twenty questions, the totals are $0.09
+against $2.84.
+
+Two findings here are negative and stay on the page: the version ledger this
+project is built around bought nothing on this benchmark (p = 1.00), and a
+prediction written down before re-running mem0 with its full retriever — that
+its figures would rise — was wrong. The arms, what is held fixed and how each
+condition is asserted are in [benchmarks/](benchmarks); the full tables,
+including two conditions that were measured wrongly the first time and what
+they invalidated, are in [docs/benchmarks.md](docs/benchmarks.md).
+
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
