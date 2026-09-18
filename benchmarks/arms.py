@@ -294,7 +294,24 @@ class Mem0:
                                         "on_disk": True}},
         }
 
+
+    # mem0's BM25 channel lemmatises on both sides -- every memory is stored
+    # with a `text_lemmatized` field and every query is lemmatised before the
+    # keyword search. Without the `nlp` extra `lemmatize_for_bm25` returns its
+    # input unchanged and that whole channel degrades, silently, on a log line
+    # this harness would never see. Comparing against a competitor with half
+    # its retrieval turned off is not a comparison, so the arm checks.
+    @staticmethod
+    def _assert_lemmatiser():
+        from mem0.utils.lemmatization import lemmatize_for_bm25
+        probe = "Where did the dogs go running?"
+        if lemmatize_for_bm25(probe) == probe:
+            raise RuntimeError(
+                "mem0's lemmatiser is a passthrough, so its keyword channel is "
+                "off; install mem0ai[nlp] before measuring mem0")
+
     def ingest(self, conversation_id, turns):
+        self._assert_lemmatiser()
         import shutil
         shutil.rmtree(f"{WORK}/mem0-qdrant", ignore_errors=True)
         config = json.loads(json.dumps(self.config))
