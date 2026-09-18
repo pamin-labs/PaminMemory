@@ -207,30 +207,84 @@ question about any gain is whether it came from the thing you changed:
   consecutive turns linked, so the graph channel can reach the rest of an
   exchange. Still no model on the write path.
 
+mem0 and MemPalace each get two arms for the same reason, so that neither side
+is alone in being allowed a wider shortlist.
+
+### The shortlist every arm actually got
+
+One column has to come before the results, because getting it wrong invalidates
+a comparison silently. mem0's search keyword is `top_k`, not `limit`, and it
+defaults to 20; unknown keywords go into `**kwargs` and are dropped without an
+error. The first run of these arms passed `limit`, so **both mem0 arms ran at
+20** — the narrow one wider than it claimed, the wide one narrower. Every one of
+the 199 questions returned exactly 20 passages, which is how it was caught. The
+arm now passes `top_k` and checks the count it gets back, the way the MemPalace
+arm checks that it embedded through the shared endpoint.
+
+The figures below are from that first run and are labelled with the shortlist
+each arm was actually at, not the one it was asked for.
+
+| arm | shortlist asked | shortlist received |
+| --- | --- | --- |
+| `pamin`, `pamin-ledger`, MemPalace, BM25 | 10 | 10 |
+| `pamin-wide`, MemPalace at 30 | 30 | 30 |
+| mem0 | 10 | **20** |
+| mem0 at `limit 30` | 30 | **20** |
+
 ### Accuracy
 
-| arm | accuracy | against `pamin` |
-| --- | --- | --- |
-| BM25, no memory system | 0.427 | |
-| `pamin` | 0.518 | |
-| `pamin-ledger` | 0.523 | +0.005, **p = 1.00** |
-| `pamin-wide` | **0.628** | +0.110, **p = 0.002** |
-| mem0 | 0.603 | |
-| mem0 at `limit 30` | 0.598 | |
+| arm | shortlist | accuracy | against `pamin` |
+| --- | --- | --- | --- |
+| BM25, no memory system | 10 | 0.427 | |
+| `pamin` | 10 | 0.518 | |
+| `pamin-ledger` | 10 | 0.523 | +0.005, **p = 1.00** |
+| MemPalace | 10 | 0.558 | |
+| mem0 | 20 | 0.603 | |
+| mem0, second run | 20 | 0.598 | |
+| MemPalace at 30 | 30 | 0.623 | |
+| `pamin-wide` | 30 | **0.628** | +0.110, **p = 0.002** |
 
 Paired McNemar on the discordant questions, which is the test that matters
 when every arm answers the same set:
 
 | | this one right | that one right | p |
 | --- | --- | --- | --- |
-| `pamin-wide` vs `pamin` | 35 | 13 | **0.002** |
-| `pamin` vs BM25 | 42 | 24 | **0.036** |
+| `pamin-wide` vs BM25 | 52 | 12 | **0.0000** |
+| MemPalace at 30 vs BM25 | 56 | 17 | **0.0000** |
+| mem0 vs BM25 | 54 | 19 | **0.0001** |
+| `pamin-wide` vs `pamin` | 35 | 13 | **0.0021** |
+| MemPalace at 30 vs `pamin` | 39 | 18 | **0.0075** |
+| `pamin` vs BM25 | 42 | 24 | **0.0356** |
+| mem0 vs `pamin` | 40 | 23 | **0.0430** |
+| MemPalace at 30 vs MemPalace | 26 | 13 | 0.053 |
+| `pamin-wide` vs MemPalace | 35 | 21 | 0.081 |
 | `pamin-wide` vs mem0 | 31 | 26 | 0.597 |
-| `pamin-wide` vs mem0 at `limit 30` | 26 | 32 | 0.512 |
+| `pamin-wide` vs MemPalace at 30 | 31 | 30 | 1.000 |
 | `pamin-ledger` vs `pamin` | 21 | 20 | 1.000 |
-| mem0 at `limit 30` vs mem0 | 20 | 21 | 1.000 |
+| mem0 second run vs mem0 | 20 | 21 | 1.000 |
 
-**Three findings, and two of them are negative.**
+**Four findings, and two of them are negative.**
+
+**There is a noise floor, and it is large.** The last row is not a comparison
+between two configurations. Both mem0 arms ran at the same shortlist, on the
+same data, with the same settings — it is the same experiment twice. The totals
+differ by 0.005, which looks like reassuring stability, but **41 of the 199
+questions changed answer between the two runs**. About a fifth of the benchmark
+is not repeatable for an arm whose write path distils conversations with a
+model, because the distillation is not the same twice. That number is the scale
+against which every other gap on this page has to be read, and two of them do
+not survive it.
+
+This project has no such floor on the write side: there is no model there, so
+`pamin-wide` reads a store that `pamin` built, byte for byte. That is a
+property worth having, but it is a property of reproducibility, not of accuracy.
+
+Two things are being separated here and only one of them is mem0's. Identical
+mem0 runs flip 41 questions, which is run-to-run variance. But `pamin` against
+`pamin-ledger` — both deterministic — also flips 41, from a configuration change
+worth 0.005. So LOCOMO at this size churns about a fifth of its questions under
+almost any perturbation, and a net difference of five or ten questions is inside
+that whoever produces it.
 
 **The ledger bought nothing.** Twenty-one questions it got right that the flat
 arm missed, twenty the other way. Not "a small gain" — no gain. It does not
@@ -246,27 +300,42 @@ benchmark that asks what changed rather than what happened.
 the floor.** That is the largest single retrieval gain in this repository and
 it is a configuration change.
 
-**Against mem0 the result is a tie, at both shortlists.** It is worth being
-precise about why the tie is the honest reading rather than the win: widening
-only our own arm produced an apparent lead, and widening mem0's too made the
-difference vanish into noise. The prediction written down before running that
-control — that mem0 would also gain and pull ahead — was wrong in both halves:
-it did not gain at all.
+**Against both other systems the result is a tie.** `pamin-wide` against mem0
+is 31 to 26, p = 0.597; against MemPalace at the same shortlist it is 31 to 30,
+p = 1.000. Fifty-odd questions disagree and the net is five, then one — the
+churn described above with no direction in it. Neither is evidence of anything.
 
-By question type, the two systems are not close anywhere; they are opposite:
+Two earlier readings of this comparison were wrong and are withdrawn. The first
+was a prediction, that mem0 would gain from a wider shortlist and pull ahead;
+the second was the conclusion drawn when it did not move, that the widening was
+worthless to it. Both were about an arm that never widened. What the pair
+actually measures is repeatability, and it is the more useful of the two.
 
-| | BM25 | `pamin` | `pamin-ledger` | `pamin-wide` | mem0 | mem0 `30` |
-| --- | --- | --- | --- | --- | --- | --- |
-| multi-hop | 0.241 | 0.517 | 0.483 | 0.586 | **0.690** | 0.621 |
-| temporal | 0.324 | 0.412 | 0.500 | 0.529 | 0.676 | **0.765** |
-| open-domain | 0.222 | 0.333 | 0.222 | 0.222 | **0.333** | 0.222 |
-| single-hop | 0.682 | 0.718 | 0.706 | **0.824** | 0.765 | 0.765 |
-| adversarial | 0.167 | 0.238 | 0.262 | **0.429** | 0.214 | 0.190 |
+The one comparison that was never confounded is `pamin` against mem0 at what
+mem0 really ran: 23 to 40 against us, p = 0.043, with mem0 holding twice the
+shortlist. Read as written that is a real loss; read as a like-for-like it is
+not a comparison at all. It is the reason the wide arms exist.
 
-mem0 leads temporal by twenty-four points; this project leads adversarial —
-questions whose answer is implied rather than stated — by the same margin. The
-totals tie because those cancel, which is a different fact from "the systems
-perform alike" and should not be reported as one.
+By question type the three systems are not close anywhere; they are opposite:
+
+| | BM25 | `pamin` | `pamin-ledger` | MemPalace | mem0 | mem0 (2nd) | MP 30 | `pamin-wide` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| multi-hop | 0.241 | 0.517 | 0.483 | **0.724** | 0.690 | 0.621 | 0.690 | 0.586 |
+| temporal | 0.324 | 0.412 | 0.500 | 0.382 | 0.676 | **0.765** | 0.382 | 0.529 |
+| open-domain | 0.222 | **0.333** | 0.222 | 0.111 | **0.333** | 0.222 | 0.222 | 0.222 |
+| single-hop | 0.682 | 0.718 | 0.706 | 0.753 | 0.765 | 0.765 | **0.835** | 0.824 |
+| adversarial | 0.167 | 0.238 | 0.262 | 0.286 | 0.214 | 0.190 | **0.429** | **0.429** |
+
+Two splits are wide enough to clear the floor. mem0 leads **temporal** by
+fifteen to twenty-four points over every arm here; this project and MemPalace
+lead **adversarial** — questions whose answer is implied rather than stated — by
+about the same over mem0, which is what distilling a conversation into rewritten
+facts costs you when the question is about what was never said. The totals tie
+because those cancel, which is a different fact from "the systems perform alike"
+and should not be reported as one.
+
+Nine open-domain questions is too few to say anything, and it is listed only so
+the column is not quietly dropped.
 
 ### What each arm spends
 
@@ -281,7 +350,7 @@ Accuracy is half of a claim that says "less". The other half:
 | MemPalace at 30 | 20 | 476 | 5,133 | 30 |
 | mem0 | **272** | 3,999 | **676** | 20 |
 
-Ten conversations, about 4,900 turns. Prompt tokens are counted with
+Ten conversations, 5,882 turns. Prompt tokens are counted with
 `cl100k_base` — not the model's own tokenizer, so the absolute figures are
 approximate, but every arm is counted the same way and what this needs is the
 ratio.
@@ -314,7 +383,11 @@ Resident memory as PSS over each arm's own process tree, one conversation:
 | --- | --- | --- | --- |
 | BM25 | 16 MB | — | nowhere; no model |
 | `pamin` | **2,088 MB** | 13 MB | inside its own server, so inside this figure |
+| MemPalace | 29 MB | 1 MB | **outside**, 1,145 MB wherever it runs |
 | mem0 | 177 MB | 2 MB | **outside**, 1,145 MB wherever it runs |
+
+One conversation means `conv-26`, 419 turns — the second smallest of the ten,
+so these are not the figures for a mean-sized one.
 
 PSS rather than RSS because PostgreSQL's backends share one pool of buffers
 and RSS charges it to each of them — 326 MB summed as RSS against 78 MB as
@@ -333,7 +406,15 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   intervals gained nothing, and that is a fact about this benchmark as much as
   about the feature. It is not evidence the feature works, and it is not
   evidence it does not.
-- **Nothing about scale.** Ten conversations, about 500 turns each.
+- **Nothing about mem0 at a shortlist of its own choosing.** Both its arms
+  ran at 20 because of the dropped keyword above. Re-running them at 10 and 30
+  costs another $27.83 and about an hour of model time, because the arm clears
+  its store before each conversation and so cannot reuse the one it built.
+- **Nothing about any difference smaller than the noise floor.** Forty-one of
+  199 questions moved between two identical mem0 runs. Anything at that scale
+  here is unmeasured, not measured-as-equal — the two are different claims and
+  only the first is supported.
+- **Nothing about scale.** Ten conversations, 5,882 turns, 588 on average.
 - **Nothing that travels between machines except accuracy, calls and tokens.**
   Latency, resident memory and wall-clock are properties of four shared cores.
 
