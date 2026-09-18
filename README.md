@@ -6,7 +6,7 @@ Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistant
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Status](#status).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
 
 ## What It Does
 
@@ -446,13 +446,12 @@ What was measured, how, and the conclusions that reversed on measurement are in
 [docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
 source of truth if it and this page ever disagree.
 
-## Status
+## Scope
 
-This is an early foundation, not a finished product.
-
-**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; an optional cross-encoder pass that reranks what no lexical channel found; the relationship graph, derived and asserted, with bi-temporal edge versions; the outbox, so a write records what the index owes it in the same transaction, and the cascade that pays it; rebuilding the index from PostgreSQL; a resident server that holds the database, the index and the model, so a command pays for none of them; an evaluation harness that settles the defaults this used to guess at, against this project's own corpus and two external retrieval benchmarks; and a comparison harness that runs this project against other memory systems on one shared model and one shared embedder.
-
-**Not built yet:** source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface.
+Everything the architecture above describes is built; what has been measured,
+and what has not, is stated in [Measured](#measured). Not built yet: source
+ingestion and page trees; curated notes and the session brief; passive
+optimization and forgetting; the MCP surface.
 
 ## Development
 
