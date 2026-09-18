@@ -190,6 +190,153 @@ runs against the fp32 weights the published figure used. No measurement of that
 delta was found, and it is the single experiment that would explain part of the
 gap rather than gesturing at it.
 
+## What running it actually showed
+
+LOCOMO, 199 questions drawn stratified from ten conversations, every arm
+answering the same questions with the same Sonnet and embedding with the same
+BGE-M3 ONNX file. The harness is in [benchmarks/](../benchmarks); the
+conditions it holds fixed, and how each is asserted, are in its README.
+
+Three of the arms are this project at different settings, because the first
+question about any gain is whether it came from the thing you changed:
+
+- **`pamin`** — `pamin import` and `pamin search` at the default `--limit 10`.
+- **`pamin-wide`** — the same, at `--limit 30`. Nothing else differs, so what
+  separates it from `pamin` is the size of the shortlist and nothing else.
+- **`pamin-ledger`** — each session imported under its own `--valid-from` and
+  consecutive turns linked, so the graph channel can reach the rest of an
+  exchange. Still no model on the write path.
+
+### Accuracy
+
+| arm | accuracy | against `pamin` |
+| --- | --- | --- |
+| BM25, no memory system | 0.427 | |
+| `pamin` | 0.518 | |
+| `pamin-ledger` | 0.523 | +0.005, **p = 1.00** |
+| `pamin-wide` | **0.628** | +0.110, **p = 0.002** |
+| mem0 | 0.603 | |
+| mem0 at `limit 30` | 0.598 | |
+
+Paired McNemar on the discordant questions, which is the test that matters
+when every arm answers the same set:
+
+| | this one right | that one right | p |
+| --- | --- | --- | --- |
+| `pamin-wide` vs `pamin` | 35 | 13 | **0.002** |
+| `pamin` vs BM25 | 42 | 24 | **0.036** |
+| `pamin-wide` vs mem0 | 31 | 26 | 0.597 |
+| `pamin-wide` vs mem0 at `limit 30` | 26 | 32 | 0.512 |
+| `pamin-ledger` vs `pamin` | 21 | 20 | 1.000 |
+| mem0 at `limit 30` vs mem0 | 20 | 21 | 1.000 |
+
+**Three findings, and two of them are negative.**
+
+**The ledger bought nothing.** Twenty-one questions it got right that the flat
+arm missed, twenty the other way. Not "a small gain" — no gain. It does not
+rescue the category it was built for either: temporal goes 0.412 to 0.500,
+which sounds like something until the wide arm reaches 0.529 with no validity
+intervals and no edges at all. Either this benchmark does not ask the question
+a ledger answers — LOCOMO asks when something happened, not whether a fact was
+revised — or the idea is weaker than the design assumes. Those two are not
+distinguished by anything measured here, and distinguishing them needs a
+benchmark that asks what changed rather than what happened.
+
+**The shortlist was worth eleven points, and the default was leaving them on
+the floor.** That is the largest single retrieval gain in this repository and
+it is a configuration change.
+
+**Against mem0 the result is a tie, at both shortlists.** It is worth being
+precise about why the tie is the honest reading rather than the win: widening
+only our own arm produced an apparent lead, and widening mem0's too made the
+difference vanish into noise. The prediction written down before running that
+control — that mem0 would also gain and pull ahead — was wrong in both halves:
+it did not gain at all.
+
+By question type, the two systems are not close anywhere; they are opposite:
+
+| | BM25 | `pamin` | `pamin-ledger` | `pamin-wide` | mem0 | mem0 `30` |
+| --- | --- | --- | --- | --- | --- | --- |
+| multi-hop | 0.241 | 0.517 | 0.483 | 0.586 | **0.690** | 0.621 |
+| temporal | 0.324 | 0.412 | 0.500 | 0.529 | 0.676 | **0.765** |
+| open-domain | 0.222 | 0.333 | 0.222 | 0.222 | **0.333** | 0.222 |
+| single-hop | 0.682 | 0.718 | 0.706 | **0.824** | 0.765 | 0.765 |
+| adversarial | 0.167 | 0.238 | 0.262 | **0.429** | 0.214 | 0.190 |
+
+mem0 leads temporal by twenty-four points; this project leads adversarial —
+questions whose answer is implied rather than stated — by the same margin. The
+totals tie because those cancel, which is a different fact from "the systems
+perform alike" and should not be reported as one.
+
+### What each arm spends
+
+Accuracy is half of a claim that says "less". The other half:
+
+| arm | write: LLM calls | write: seconds | query: prompt tokens | passages |
+| --- | --- | --- | --- | --- |
+| BM25 | 0 | 0 | 547 | 10 |
+| `pamin` | **0** | 292 | 557 | 10 |
+| `pamin-wide` | **0** | — | 1,511 | 30 |
+| MemPalace | 21 | 462 | 1,756 | 10 |
+| MemPalace at 30 | 20 | 476 | 5,133 | 30 |
+| mem0 | **272** | 3,999 | **676** | 20 |
+
+Ten conversations, about 4,900 turns. Prompt tokens are counted with
+`cl100k_base` — not the model's own tokenizer, so the absolute figures are
+approximate, but every arm is counted the same way and what this needs is the
+ratio.
+
+**The two halves point in opposite directions, and that is the whole result.**
+mem0 spends 272 model calls and an hour of model time putting ten
+conversations in, which `pamin` does in five minutes with none. But mem0
+stores rewritten facts, so what it hands the reader afterwards is compact —
+676 tokens a question against `pamin-wide`'s 1,511. One arm pays once; the
+other pays on every question, forever.
+
+So there is a crossing point, and it is worth stating rather than leaving each
+side to quote its favourite half. `pamin-wide` costs 835 more prompt tokens a
+question than mem0. Against mem0's write side — $27.83 as reported, less
+roughly $9 of per-call overhead this environment adds to every call, so about
+$19 of marginal cost — and Sonnet's list input price, the two meet at roughly
+seven and a half thousand questions across those ten conversations, or about
+750 questions asked of one conversation's memory.
+
+That estimate rests on two assumptions, both stated so they can be attacked:
+the overhead subtraction, and list pricing. What does not rest on either is
+the shape — a one-time cost against a per-question one — and which side each
+system is on.
+
+### Memory and disk
+
+Resident memory as PSS over each arm's own process tree, one conversation:
+
+| arm | resident | on disk | where the embedder lives |
+| --- | --- | --- | --- |
+| BM25 | 16 MB | — | nowhere; no model |
+| `pamin` | **2,088 MB** | 13 MB | inside its own server, so inside this figure |
+| mem0 | 177 MB | 2 MB | **outside**, 1,145 MB wherever it runs |
+
+PSS rather than RSS because PostgreSQL's backends share one pool of buffers
+and RSS charges it to each of them — 326 MB summed as RSS against 78 MB as
+PSS, for the same ten processes. The `pamin` figure includes that cluster.
+
+The embedder column is an architectural difference, not an accounting one, and
+folding it into a single number would hide it. `pamin` loads BGE-M3 into its
+own process. mem0 calls out for embeddings — here to the shared endpoint, in
+its default deployment to a hosted API. So mem0 running its embedder locally
+is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
+177 MB locally plus a bill.
+
+### What this does not establish
+
+- **Nothing about the ledger.** The only arm that used versions and validity
+  intervals gained nothing, and that is a fact about this benchmark as much as
+  about the feature. It is not evidence the feature works, and it is not
+  evidence it does not.
+- **Nothing about scale.** Ten conversations, about 500 turns each.
+- **Nothing that travels between machines except accuracy, calls and tokens.**
+  Latency, resident memory and wall-clock are properties of four shared cores.
+
 ## Keeping this current
 
 This page goes stale faster than anything else in the repository: mem0's own
