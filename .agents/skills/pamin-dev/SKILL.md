@@ -286,16 +286,35 @@ quantity as `nDCG@10`, and not placeable on the same axis. Several headline
 figures in that field have been audited by competitors and did not survive.
 
 The harness that runs those comparisons is in [benchmarks/](../../../benchmarks),
-along with what it holds fixed and how each of those is asserted. Four rules
+along with what it holds fixed and how each of those is asserted. Six rules
 come out of building it, and each cost a run to learn.
 
 **Open the other side's budget before claiming a win.** Raising `--limit` from
 ten to thirty moved this project's LOCOMO accuracy by eleven points — a real
 and significant gain, and for a while it read as beating mem0. It was not, and
-the reason is that only one arm had been widened. Given the same shortlist,
-mem0 did not move at all (p = 1.0, twenty questions each way), and the two end
-up statistically indistinguishable. Any knob you turn for your own arm, turn
-for theirs, and report what happened when you did.
+the reason is that only one arm had been widened. Any knob you turn for your
+own arm, turn for theirs, and report what happened when you did.
+
+**Turning the knob is not the same as the knob turning.** The wide mem0 arm was
+built to obey that rule and did not: mem0's keyword is `top_k`, not `limit`, it
+defaults to 20, and unknown keywords land in `**kwargs` and are discarded
+without an error. Both mem0 arms therefore ran at 20 — the narrow one wider
+than it claimed, the wide one narrower — and the conclusion drawn from them,
+that a wider shortlist was worth nothing to mem0, was about an arm that never
+widened. Nothing failed; the numbers were plausible; only counting what came
+back caught it. So an arm asserts the setting it reports, from the result and
+not from the call: the shortlist arm checks how many passages it received, the
+same way the MemPalace arm checks that it embedded through the shared endpoint.
+A comparison is a set of premises, and an unasserted premise is a guess.
+
+**Run one arm twice before comparing two.** The accident above left two
+identical mem0 runs, which turned out to be the most informative pair on the
+page: totals 0.603 and 0.598, but 41 of 199 questions answered differently.
+Any arm whose write path puts a model in the loop disagrees with itself, and
+LOCOMO at this size churns about a fifth of its questions under almost any
+perturbation — a deterministic configuration change worth 0.005 moved the same
+41. A net of five or ten questions is inside that. Spend one run on the same
+arm twice, before spending ten on arms whose differences you cannot read.
 
 **Cost is half the claim.** A project whose pitch is "less" cannot check that
 pitch with an accuracy table. Measure what each arm spends: calls to a model
