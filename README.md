@@ -23,12 +23,22 @@ the same model and embedding through the same endpoint. The full tables,
 including the two conditions that were measured wrongly the first time, are
 under [Measured](#measured).
 
-**On answer accuracy the three systems tie, and this page will not claim
-otherwise.** At a matched shortlist of thirty passages: 0.628 here, 0.623 for
-MemPalace, 0.583 for mem0, and no pair of them separates statistically. Anyone
-selling you a memory system on a few points of LOCOMO is selling you noise —
-mem0 run twice at identical settings scores 0.603 and 0.598 while answering 41
-of the same 199 questions differently.
+**On answer accuracy it matches both of them.** At a matched shortlist of
+thirty passages: 0.628 here, 0.623 for MemPalace, 0.583 for mem0, and no pair
+separates statistically. That is the claim — parity with the systems this
+category is named after, reached by a design that spends nothing to get there.
+
+It is worth being clear about why parity is stated rather than a lead. Every
+headline in this field is self-reported under undisclosed conditions: mem0's
+own published LOCOMO figure moved from 66.88 to 92.5 within a year with no
+bridging methodology, and an independent analysis of the standard LOCOMO
+harness found its judge accepting 63% of intentionally wrong answers. Against
+that, a few points either way is not a result. The measurement here puts all
+three arms under one reader, one judge and one embedder, and publishes the
+noise floor beside them: mem0 run twice at identical settings scores 0.603 and
+0.598 while answering 41 of the same 199 questions differently. A checkable tie
+is a stronger statement than an unverifiable win, and it is the one this page
+can defend.
 
 The differences that are real are architectural, and they follow from one
 choice: **no language model runs on the write path.**
@@ -41,6 +51,7 @@ choice: **no language model runs on the write path.**
 | embedding requests to a service you must run | **0**, in-process | 6,335 |
 | same corpus written twice | **byte-identical** | 41 of 199 answers change |
 | questions whose answer is implied, not stated | **0.429** | 0.190 |
+| query latency, neither side spawning a process | **29 ms** | 94 ms |
 
 A system that asks a model to decide what a conversation *means* before storing
 it pays for that on every ingest, cannot reproduce its own store, and cannot
