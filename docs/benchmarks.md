@@ -21,10 +21,24 @@ output and a second LLM grades the answers.
 | Letta ([blog][letta]) | LoCoMo | 74.0% with plain files + grep | No extraction step | Framework |
 | Memobase ([repo][memobase]) | LOCOMO | 75.78% | Yes — profile extraction | API |
 | Cognee ([site][cognee]) | BEAM | 0.79 against 0.73 prior | Yes — LLM graph construction | API |
-| MemPalace ([repo][mempalace]) | LongMemEval | R@5 96.6%, **NDCG@10 0.889** | No | Local |
+| MemPalace ([repo][mempalace]) | LongMemEval | R@5 96.6%, **NDCG@10 0.889** | Not in the mode it publishes; **yes by default** | Local |
 | Supermemory ([site][supermemory]) | — | "#1", no figures published | Yes | API |
 
 Every one of these is self-reported.
+
+**One of those "No"s needs a footnote, because this page measured the opposite.**
+MemPalace's headline is "96.6% R@5 **raw** — zero API calls", and raw is real:
+`mempalace init --no-llm` runs heuristics only. But it is not the default. As of
+3.10.0 the CLI says so itself — `--llm` is "DEPRECATED — LLM-assisted entity
+refinement is now ON by default ... pass `--no-llm` to opt out". The arm here
+ran the default and measured 20 model calls and $1.15 to ingest ten
+conversations. Both statements are true of different configurations, and a
+table with one column for "LLM on write path" cannot hold that, so the column
+now says which.
+
+Worth stating what this is not: the arm did not switch an LLM on. It passed
+`--accept-external-llm`, which only waives the consent prompt that fires when
+one is already configured.
 
 ## Why these are not comparable to our numbers
 
@@ -255,6 +269,15 @@ a hybrid retriever turned off, announced on one log line and nowhere else.
 Both are the same rule: an arm asserts every premise it reports, and opening
 the other side's budget covers the extras its own documentation installs, not
 only its settings.
+
+MemPalace was then audited the same way, and comes back clean. Its nine
+optional extras are hardware backends (`coreml`, `gpu`, `dml`), alternative
+vector stores (`milvus`, `pgvector`), binary document readers (`extract`, and
+this corpus is Markdown), dev tooling, and `spellcheck`. The last was the only
+candidate -- `autocorrect` is indeed not installed -- but the module that uses
+it is `normalize`, which converts message transcripts, and the searcher never
+imports it. Nothing MemPalace ships behind an extra gates a retrieval channel
+the way mem0's `[nlp]` gated its keyword side.
 
 The re-measurement ingests once per conversation and queries that store at both
 shortlists. mem0 clears its store before each conversation, so running two arms
@@ -637,9 +660,11 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   would pick. The re-run corrects two ways it was handicapped; there may be a
   third nobody has looked for, and the way to find one is to read its
   documentation rather than its behaviour.
-- **Nothing about MemPalace re-measured.** Only mem0 was run again. MemPalace's
-  arms have not been checked for an equivalent missing extra, and until they are
-  the possibility that they are also handicapped stays open.
+- **Nothing about MemPalace with its LLM off.** Its arms ran MemPalace's
+  default, which since 3.10.0 refines entities with a model. The mode it
+  publishes, `--no-llm`, is the closest architectural peer to this project --
+  genuinely nothing on the write path -- and has not been run. Whether the
+  20 calls it spends are buying accuracy is therefore unmeasured.
 - **Nothing about any difference smaller than the noise floor.** Forty-one of
   199 questions moved between two identical mem0 runs. Anything at that scale
   here is unmeasured, not measured-as-equal — the two are different claims and
