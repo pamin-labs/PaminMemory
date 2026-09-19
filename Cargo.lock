@@ -1871,6 +1871,7 @@ dependencies = [
  "pamin-store",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "time",
  "tokio",
