@@ -385,23 +385,59 @@ paid that bill twice.
 
 **The query side, paid on every question:**
 
-| arm | passages | context bytes | prompt tokens | recall latency |
-| --- | --- | --- | --- | --- |
-| BM25 | 10 | 1,728 | 547 | < 1 ms |
-| `pamin` | 10 | 1,736 | 557 | 170 ms |
-| `pamin-ledger` | 10 | 1,741 | ~557 | 108 ms |
-| mem0 | 10 | 1,403 | ~384 | 106 ms |
-| MemPalace | 10 | 7,475 | 1,756 | 830 ms |
-| `pamin-wide` | 30 | 5,154 | **1,511** | 159 ms |
-| mem0 | 30 | 4,224 | **~1,017** | 108 ms |
-| MemPalace | 30 | 22,350 | 5,133 | 924 ms |
+| arm | passages | context bytes | prompt tokens |
+| --- | --- | --- | --- |
+| BM25 | 10 | 1,728 | 547 |
+| `pamin` | 10 | 1,736 | 557 |
+| `pamin-ledger` | 10 | 1,741 | ~557 |
+| mem0 | 10 | 1,403 | ~384 |
+| MemPalace | 10 | 7,475 | 1,756 |
+| `pamin-wide` | 30 | 5,154 | **1,511** |
+| mem0 | 30 | 4,224 | **~1,017** |
+| MemPalace | 30 | 22,350 | 5,133 |
 
 Context bytes are measured. Prompt tokens are counted with `cl100k_base` — not
 the model's own tokenizer, so absolute figures are approximate, and every arm is
 counted the same way because what this needs is the ratio. The four marked `~`
 are not counted at all: they are derived from the measured bytes at mem0's own
-ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s. Latency is a
-property of this container and does not travel.
+ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s.
+
+Latency is deliberately absent from that table. The accuracy run records a
+`recall_seconds`, and it is not a comparison: it timed this project through
+`su ubuntu -c "pamin ... search ..."` — two process spawns and a socket round
+trip — and timed mem0 as an in-process library call, while ten arms, an
+embedding endpoint and a PostgreSQL cluster shared four cores. It reported
+170 ms against mem0's 106 and the obvious reading of that is wrong.
+
+### Latency, timed at the same layer
+
+Re-measured with [benchmarks/latency.py](../benchmarks/latency.py): every arm at
+the boundary an application actually calls, every unit warmed first, nothing
+else on the machine, and each arm run a second time last to show the order is
+not in the number. Same 199 questions, same corpus.
+
+| path | p50 | p95 |
+| --- | --- | --- |
+| this project, socket round trip | **29 ms** | 44 ms |
+| this project, one CLI invocation | 43 ms | 64 ms |
+| this project, that CLI behind `su` — *what the accuracy run timed* | 48 ms | 65 ms |
+| mem0, in-process library call | **94 ms** | 128 ms |
+| *of which* mem0's embedding HTTP call | *20 ms* | *22 ms* |
+
+Like for like — neither side spawning a process — this project answers in 29 ms
+against mem0's 94, and it is still ahead at 43 ms paying a full fork and exec
+for every query. Widening to thirty passages costs nothing measurable at this
+corpus size: 28 ms and 42 ms.
+
+Two things that reversal is not. It is not `su`: that costs 5 ms, and the whole
+CLI invocation costs 13 ms more than the socket. The 170 ms came from
+contention and cold indexes — the accuracy run queried each conversation's
+project as it reached it, and measured under everything else that was running.
+And it is not a claim that mem0 is slow: 94 ms on a 5 MB store is reasonable
+work, and 20 ms of it is an HTTP round trip to an embedding endpoint on the
+same machine. That last line is the architectural difference rather than a
+measurement artifact — mem0 must reach an endpoint to embed each query, and a
+deployment pointing at a hosted API pays a network instead of a loopback.
 
 **The two halves point in opposite directions, and that is the whole result.**
 mem0 spends 272 model calls and an hour of model time putting ten conversations
@@ -480,6 +516,8 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
 - **Nothing about scale.** Ten conversations, 5,882 turns, 588 on average.
 - **Nothing that travels between machines except accuracy, calls and tokens.**
   Latency, resident memory and wall-clock are properties of four shared cores.
+  The latency figures above are a ratio measured under one condition, not a
+  number to quote on other hardware.
 
 ## Keeping this current
 
