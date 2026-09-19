@@ -30,6 +30,24 @@ import resources
 
 SHIM = os.environ.get("SHIM_URL", "http://127.0.0.1:8088/v1")
 
+# Set when more than one run shares this machine and this endpoint.
+#
+# The write-side cost columns are differences of a counter the endpoint keeps
+# for everybody, and the timings are of a machine somebody else is also using.
+# Under a second run they measure the pair, not the arm: an ingest that called
+# no model at all came back reporting fourteen calls, which is the one number
+# on this page that has to be zero.
+#
+# Stamped on every row rather than remembered in a comment, because the file
+# outlives the shell that produced it.
+SHARED = os.environ.get("BENCH_SHARED_ENDPOINT") == "1"
+
+# What a shared endpoint and a shared machine make unreadable. Everything
+# else -- the verdict, the prompt size, the bytes on disk -- is the arm's own.
+CONTENDED = ("ingest_seconds", "ingest_llm_calls", "ingest_llm_seconds",
+             "ingest_embedded", "ingest_cost_usd", "peak_pss_mb",
+             "recall_seconds")
+
 
 def machine():
     """Stamped on every result, because half of them do not travel.
@@ -173,6 +191,7 @@ def main():
                 "store_mb": resources.dir_mb(getattr(arm, "store_path", None)) - disk_before,
                 "peak_pss_mb": max(sampler.samples) if sampler.samples else None,
                 "turns": count,
+                "cost_measurable": not SHARED,
             }
             print(f"  {name} {unit}: {count} turns in {seconds:.0f}s | "
                   f"{cost['ingest_llm_calls']} LLM calls, "
@@ -287,6 +306,21 @@ def summarise(rows, mode):
                 line += (f"{statistics.mean(r['correct'] for r in group):>16.3f}"
                          if group else f"{'-':>16}")
             print(line)
+
+    if any(r.get("cost_measurable") is False for r in rows):
+        print("\n=== what one unit costs ===")
+        print("  Not from this run. It shared the machine and the model "
+              "endpoint with another,")
+        print(f"  so {', '.join(CONTENDED)} measure the pair rather "
+              f"than the arm.")
+        print(f"  {'arm':<20}{'store MB':>10}{'prompt tokens':>15}{'retrieved':>11}")
+        for arm in sorted(by_arm):
+            group = by_arm[arm]
+            print(f"  {arm:<20}"
+                  f"{statistics.median(per_unit(arm, 'store_mb')):>10.0f}"
+                  f"{statistics.median(r.get('prompt_tokens', 0) for r in group):>15.0f}"
+                  f"{statistics.median(r.get('retrieved', 0) for r in group):>11.0f}")
+        return
 
     print("\n=== what one unit costs to ingest ===")
     print(f"  {'arm':<16}{'seconds':>9}{'LLM':>6}{'LLM s':>8}{'embedded':>10}"
