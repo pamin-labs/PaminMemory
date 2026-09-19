@@ -53,14 +53,27 @@ Five reasons, any one of which is disqualifying:
    446 questions, 22.5% of the set -- while instructing the model never to
    abstain.
 
-   An earlier version of this page said those 446 questions have a refusal for
-   their only correct answer. Reading the file says otherwise: all 446 carry an
-   `adversarial_answer` rather than an `answer`, and the value is a substantive
-   answer -- "Sweden", "researching adoption agencies" -- in every case but two.
-   What makes them adversarial is that the answer is implied rather than stated,
-   not that it is absent. Dropping them still removes a fifth of the benchmark
-   and the hardest fifth; it does not remove an abstention test, because there
-   is not one to remove.
+   This page has described that category wrongly twice. It first said the 446
+   questions have a refusal for their only correct answer; all 446 carry an
+   `adversarial_answer` rather than an `answer`, and the value is substantive
+   in every case but two. It then said the answer is implied rather than
+   stated, which is also wrong.
+
+   Following each question to the turn its own `evidence` field names: **332 of
+   the 446, 74%, attribute to one speaker something the other speaker said**,
+   and the key gives that other speaker's content as correct.
+
+   | question | answer key | the turn it cites |
+   | --- | --- | --- |
+   | What country is **Melanie's** grandma from? | Sweden | *Caroline*: "a gift from my grandma in my home country, Sweden" |
+   | What instrument does **Caroline** play? | clarinet and violin | *Melanie*: "Yeah, I play clarinet!" |
+   | Did **Caroline** make the black and white bowl? | Yes | *Melanie*: "I made this bowl in my class" |
+
+   So the category rewards a pipeline that ignores attribution and penalises
+   one that answers "no record of that" -- which, for the question as asked, is
+   the better answer. Dropping it still removes a fifth of the benchmark, but
+   what it removes is not an abstention test and not a hardness test; it is a
+   test of whether a system will answer about the wrong person.
 
 So: we cannot say this project beats mem0, and we cannot say it loses. The
 quantities do not overlap. What is sayable is architectural — no LLM on the
@@ -351,14 +364,33 @@ two independent runs, which is what makes them worth stating at all.
 0.735 against this project's best of 0.529. It scored 0.676 and 0.765 in the
 earlier pair too, so this is not the churn.
 
-**Adversarial is this project's and MemPalace's**, 0.429 against mem0's 0.143
-and 0.190 — and 0.214 and 0.190 in the earlier pair. These are the questions
-whose answer is implied rather than stated, and losing them is what distilling
-a conversation into rewritten facts costs: what was never said is not in the
-distillate to retrieve.
+**Adversarial goes to this project and MemPalace, 0.429 against mem0's 0.143
+and 0.190 — and it should not be counted as a win.** Seventy-four per cent of
+that category asks about the wrong speaker, as set out at the top of this page,
+and the answer key rewards replying with the other speaker's content anyway.
+Splitting the forty-two sampled questions on exactly that:
 
-The totals tie because those two cancel, which is a different fact from "the
-systems perform alike" and should not be reported as one.
+| | n | `pamin-wide` | MemPalace 30 | mem0 30 |
+| --- | --- | --- | --- | --- |
+| the question names the wrong speaker | 33 | 0.485 | 0.485 | 0.242 |
+| the question names the right speaker | 9 | 0.222 | 0.222 | 0.000 |
+
+Four fifths of the category is the first row, and what separates the arms there
+is that mem0 answers "no record of that" and is marked wrong for it. mem0
+distils facts against a `user_id` and filters by it, so a question about
+Melanie does not reach Caroline's memories. That is the behaviour a memory
+product should have. Returning raw turns and letting the reader answer from
+whichever one matched is the behaviour this project has, and here it scores
+higher.
+
+The nine questions that name the right speaker are the ones that would have
+said something, and nine is too few to say it. So this category is reported and
+then set aside: it is not evidence for this project, and the earlier reading of
+it — that losing it is what distilling a conversation costs — is withdrawn.
+
+That leaves one split that survives scrutiny, and it is mem0's. The totals tie
+because temporal and adversarial cancel — but only one of those two is a real
+difference between the systems, and it is not this project's.
 
 Nine open-domain questions is too few to say anything, and it is listed only so
 the column is not quietly dropped.
