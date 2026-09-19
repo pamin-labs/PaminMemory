@@ -271,13 +271,13 @@ ranking internals it has no way to evaluate.
 
 | | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|
-| `off` | nothing | 39 ms | — | — |
-| `fast` | 113 MB | 204 ms | **+0.0375** | −0.0062 |
-| `accurate` | 570 MB | 508 ms | **+0.0458** | +0.0022 |
+| `off` | nothing | 53 ms | — | — |
+| `fast` | 113 MB | 264 ms | **+0.0381** | −0.0053 |
+| `accurate` | 570 MB | 1001 ms | **+0.0448** | +0.0017 |
 
-`fast` is the default, on latency: its pass costs 165 ms against `accurate`'s
-469. `accurate` scores better on both groups, so a workspace that can afford
-half a second a search should ask for it. A workspace whose memories are all in
+`fast` is the default, on latency: its pass costs 211 ms against `accurate`'s
+948. `accurate` scores better on both groups, so a workspace that can afford a
+second a search should ask for it. A workspace whose memories are all in
 one language should set `off` — only candidates the lexical channels missed are
 reranked, and those are overwhelmingly the ones written in another language.
 
