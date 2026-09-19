@@ -118,9 +118,9 @@ tells you how much to trust the hit:
 
 ```json
 "why": [
-  { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, "contribution": 0.0227 },
-  { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.0909 },
-  { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.0833 },
+  { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
+  { "kind": "channel", "channel": "vector", "rank": 1 },
+  { "kind": "channel", "channel": "graph", "rank": 2 },
   { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
 ]
 ```

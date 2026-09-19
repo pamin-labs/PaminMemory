@@ -2,7 +2,9 @@
 
 Every command takes `--json`. The usual caller is an agent parsing output rather
 than a person reading it, so the text form is a convenience and the JSON form is
-the contract.
+the contract — and what that contract leaves out is deliberate. Nothing carries
+an identifier no command accepts, and nothing restates a number the reader can
+compute from what is already there.
 
 The examples below are real output from a workspace built by the writes in
 [Getting started](#getting-started), captured rather than composed.
@@ -14,7 +16,12 @@ The examples below are real output from a workspace built by the writes in
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
-| `--json` | | off | Emit JSON instead of text |
+| `--json` | | off | Emit JSON instead of text, on one line |
+| `--pretty` | | off | Indent that JSON. Requires `--json` |
+
+The JSON is compact because the usual caller pays for every token of it, and
+indenting a ten-hit search costs about a thousand of them. `--pretty` is for
+the person who has piped it to a terminal.
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
@@ -251,8 +258,8 @@ memory matches, not how current it is.
 Retrieves across every recall channel and explains the result.
 
 Results are topics, at what each says now. A topic rewritten fourteen times is
-one result and not fourteen, and the `topic_state` and `version` a hit reports
-are its current ones. Earlier versions are read rather than ranked: `pamin read
+one result and not fourteen, and the `version` a hit reports is its current
+one. Earlier versions are read rather than ranked: `pamin read
 --version-offset` reaches them, and `pamin grep` reaches the evidence behind
 them, including what the filter never promoted.
 
@@ -327,10 +334,12 @@ $ pamin search "how do we deploy" --limit 3
         lexical_ngram#2 vector#2 graph#3 rollback_plan --mentions-> deployment_pipeline (1hop)
 ```
 
-The JSON carries the same trace in full:
+The JSON carries the same trace, shown here with `--pretty` because it is being
+read by a person. Without it the same result is one line and about a third of
+the tokens:
 
 ```console
-$ pamin search "how do we deploy" --limit 1 --json
+$ pamin search "how do we deploy" --limit 1 --json --pretty
 {
   "query": "how do we deploy",
   "hits": [
@@ -341,15 +350,12 @@ $ pamin search "how do we deploy" --limit 1 --json
       "content": "the deployment pipeline now runs on argo cd",
       "score": 0.1969697,
       "why": [
-        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, "contribution": 0.022727273 },
-        { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
-        { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
+        { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
+        { "kind": "channel", "channel": "vector", "rank": 1 },
+        { "kind": "channel", "channel": "graph", "rank": 2 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline", "edge": "depends_on", "derivation": "explicit" }
       ],
-      "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9",
-      "recorded_at": "2026-03-04T09:12:44.325845Z",
-      "valid_from": null,
-      "valid_to": null
+      "recorded_at": "2026-03-04T09:12:44.325845Z"
     }
   ]
 }
@@ -360,7 +366,11 @@ $ pamin search "how do we deploy" --limit 1 --json
 Three kinds of entry, and they answer different questions.
 
 **`channel`** — this result appeared in that channel at that rank, and
-contributed `weight / (10 + rank)` to the score. There are four channels:
+contributed `weight / (10 + rank)` to the score. Neither the weight nor the
+contribution is sent: the weight is the constant in the table below and the
+contribution follows from it and the rank, and ten hits of both cost about
+seven hundred tokens to restate what the reader already has. There are four
+channels:
 
 | Channel | What it matches | Weight |
 | --- | --- | --- |

@@ -1,7 +1,7 @@
 //! `pamin search` — retrieve memories, with the reasoning attached.
 
 use anyhow::Result;
-use pamin_core::Why;
+use pamin_core::{Channel, Derivation, EdgeKind, Modifier, Why};
 use pamin_index::{Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
@@ -48,23 +48,81 @@ pub struct Args {
     pub rerank: String,
 }
 
+/// One entry of the trace, as a caller sees it.
+///
+/// [`Why`] also carries `weight` and `contribution`, and `docs/cli.md` prints
+/// both as things the reader works out: weight is a constant per channel, and
+/// contribution is `weight / (10 + rank)`. Ten hits of them cost about seven
+/// hundred tokens of somebody's context window to restate what they already
+/// know, so the command layer leaves them out.
+///
+/// A separate type rather than `#[serde(skip)]` on the core one. Skipping
+/// would make the field deserialize as zero on the far side of the socket,
+/// and a number that is quietly wrong is a worse price than the tokens.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Trace {
+    Channel {
+        channel: Channel,
+        rank: u32,
+    },
+    Modifier {
+        modifier: Modifier,
+        factor: f32,
+    },
+    Path {
+        from: String,
+        via: String,
+        hops: u8,
+        asserted_from: String,
+        asserted_to: String,
+        edge: EdgeKind,
+        derivation: Derivation,
+    },
+}
+
+impl From<Why> for Trace {
+    fn from(why: Why) -> Self {
+        match why {
+            Why::Channel { channel, rank, .. } => Self::Channel { channel, rank },
+            Why::Modifier { modifier, factor } => Self::Modifier { modifier, factor },
+            Why::Path {
+                from,
+                via,
+                hops,
+                asserted_from,
+                asserted_to,
+                edge,
+                derivation,
+            } => Self::Path {
+                from,
+                via,
+                hops,
+                asserted_from,
+                asserted_to,
+                edge,
+                derivation,
+            },
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Hit {
     /// What to pass to `pamin read` to see this topic's other versions.
+    ///
+    /// The name, and not the state's identifier. Search ranks topics and
+    /// returns the current state of each, and no command anywhere takes a
+    /// state id as an argument -- so one on every hit was two hundred and
+    /// eighty tokens of a context window that nothing could spend.
     topic: String,
-    /// The state the topic stands for now. Search ranks topics, so this is
-    /// always the current one; `pamin read --version-offset` reaches earlier
-    /// versions.
-    topic_state: String,
     version: u32,
     content: String,
     score: f32,
     /// The rank this result held in each channel it appeared in, and every
     /// modifier applied afterwards. An agent can audit its own retrieval from
     /// this without trusting the ranking.
-    why: Vec<Why>,
-    /// The byte range in the source this state came from.
-    source_span: String,
+    why: Vec<Trace>,
     /// When this state was recorded, RFC 3339.
     ///
     /// Ranking says how well a memory matches, not how current it is, and an
@@ -79,8 +137,10 @@ struct Hit {
     /// backdated, which is every import that carries `--valid-from`, and an
     /// agent handed only the recording time reads the import order instead of
     /// the timeline.
+    #[serde(skip_serializing_if = "Option::is_none")]
     valid_from: Option<String>,
     /// When it stops holding, RFC 3339, absent when open.
+    #[serde(skip_serializing_if = "Option::is_none")]
     valid_to: Option<String>,
 }
 
@@ -113,12 +173,10 @@ pub async fn execute(
             .into_iter()
             .map(|hit| Hit {
                 topic: hit.topic,
-                topic_state: hit.state.id.to_string(),
                 version: hit.state.version,
                 content: hit.state.content,
                 score: hit.result.score,
-                why: hit.result.why,
-                source_span: hit.state.source_span_id.to_string(),
+                why: hit.result.why.into_iter().map(Trace::from).collect(),
                 recorded_at: validity::render(hit.state.recorded_at),
                 valid_from: hit.state.validity.from.map(validity::render),
                 valid_to: hit.state.validity.to.map(validity::render),
@@ -153,15 +211,15 @@ pub fn render(results: &Results) -> String {
 
 /// Renders the trace as one line, so the reason a result is here is visible
 /// without asking for JSON.
-fn describe(why: &[Why]) -> String {
+fn describe(why: &[Trace]) -> String {
     why.iter()
         .map(|entry| match entry {
-            Why::Channel { channel, rank, .. } => format!("{}#{rank}", channel.as_str()),
-            Why::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
+            Trace::Channel { channel, rank } => format!("{}#{rank}", channel.as_str()),
+            Trace::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
             // The arrow is drawn the way the edge was asserted, so it reads
             // the same whichever end the walk reached it from. `from` is the
             // seed the walk began at, which is a different fact and is kept.
-            Why::Path {
+            Trace::Path {
                 from,
                 via,
                 hops,

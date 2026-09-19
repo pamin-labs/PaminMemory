@@ -971,9 +971,27 @@ fn results_explain_where_they_came_from(cli: &Cli) {
     modifiers.dedup();
     assert_eq!(applied, modifiers.len(), "a modifier was applied twice");
 
+    // The span a state came from is cited by `read`, one per claim, rather
+    // than by every hit of every search: no command accepts a span id, so ten
+    // of them per query cost a caller tokens for something it cannot spend.
+    let cited = cli.json(&["read", hit["topic"].as_str().expect("a topic name")]);
     assert!(
-        !hit["source_span"].as_str().unwrap_or_default().is_empty(),
-        "every hit must cite the span it came from"
+        !cited["source_span"].as_str().unwrap_or_default().is_empty(),
+        "a state must cite the span it came from"
+    );
+
+    // What a caller can work out for itself is not sent. Weight is a constant
+    // per channel and contribution is weight / (10 + rank), both printed in
+    // docs/cli.md, and ten hits of them is about seven hundred tokens.
+    for entry in why {
+        assert!(
+            entry.get("weight").is_none() && entry.get("contribution").is_none(),
+            "the trace should not restate what the reader can derive: {entry}"
+        );
+    }
+    assert!(
+        hit.get("topic_state").is_none(),
+        "a state id nothing accepts as an argument should not be on every hit"
     );
 }
 

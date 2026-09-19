@@ -43,8 +43,19 @@ pub struct Read {
     /// from "when it held" -- see Two kinds of time in docs/cli.md.
     observed_at: String,
     /// The asserted truth interval. Both open unless a writer bounded them.
+    #[serde(skip_serializing_if = "Option::is_none")]
     valid_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     valid_to: Option<String>,
+    /// The byte range in the source this state was derived from.
+    ///
+    /// Moved here from `pamin search`, which put one on every hit. Ten of them
+    /// cost a caller two hundred and eighty tokens to carry an identifier no
+    /// command accepts -- and `read` did not carry it at all, so the claim
+    /// that every state traces back to bytes in a source had no surface on the
+    /// command line. One per read is where it is affordable and where somebody
+    /// auditing a single claim is already looking.
+    source_span: String,
 }
 
 /// Reads the topic and returns what was found, rendering nothing.
@@ -83,6 +94,7 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Rea
         observed_at: validity::render(state.observed_at),
         valid_from: state.validity.from.map(validity::render),
         valid_to: state.validity.to.map(validity::render),
+        source_span: state.source_span_id.to_string(),
     };
 
     Ok(result)
