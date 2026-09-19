@@ -438,6 +438,17 @@ condition is asserted are in [benchmarks/](benchmarks); the full tables,
 including two conditions that were measured wrongly the first time and what
 they invalidated, are in [docs/benchmarks.md](docs/benchmarks.md).
 
+**Superseded facts**, on LongMemEval's 70 knowledge-update questions that have
+a replaced value to get wrong, scored three ways rather than two — the value
+that holds, the value it replaced, or neither. Answering with a fact you were
+told had stopped being true is a different failure from answering with nothing,
+and accuracy alone cannot tell them apart. The ledger cuts that failure from
+28.6% to 10.0% (p = 0.0005), and writing the interval without showing it to the
+reader changes nothing at all (p = 1.00) — the timeline has to reach the
+caller, which is why `pamin search` reports it. What it does not do is beat
+writing the date into the passage text, a free alternative that needs no
+columns: 0.900 against 0.814 is p = 0.0703, and that stays on the page too.
+
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
