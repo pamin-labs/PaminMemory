@@ -18,48 +18,62 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 ## Where This Differs
 
-Measured against mem0 and MemPalace on LOCOMO, every arm reading and judged by
-the same model and embedding through the same endpoint. The full tables,
-including the two conditions that were measured wrongly the first time, are
-under [Measured](#measured).
+**LOCOMO accuracy matching mem0 and MemPalace — with zero model calls on the
+write path, zero cost to ingest, and a store that rebuilds itself byte for
+byte.**
 
-**On answer accuracy it matches both of them.** At a matched shortlist of
-thirty passages: 0.628 here, 0.623 for MemPalace, 0.583 for mem0, and no pair
-separates statistically. That is the claim — parity with the systems this
-category is named after, reached by a design that spends nothing to get there.
+Measured head to head: every arm answering the same 199 questions, read and
+judged by the same model, embedding through the same endpoint. Reproducible
+from this repository with the commands in [benchmarks/](benchmarks).
 
-It is worth being clear about why parity is stated rather than a lead. Every
-headline in this field is self-reported under undisclosed conditions: mem0's
-own published LOCOMO figure moved from 66.88 to 92.5 within a year with no
-bridging methodology, and an independent analysis of the standard LOCOMO
-harness found its judge accepting 63% of intentionally wrong answers. Against
-that, a few points either way is not a result. The measurement here puts all
-three arms under one reader, one judge and one embedder, and publishes the
-noise floor beside them: mem0 run twice at identical settings scores 0.603 and
-0.598 while answering 41 of the same 199 questions differently. A checkable tie
-is a stronger statement than an unverifiable win, and it is the one this page
-can defend.
+| LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
+| --- | --- | --- | --- |
+| **this project** | **0.628** | **0 calls, $0, 356 s** | **28 ms** |
+| MemPalace | 0.623 | 20 calls, $1.15, 520 s | 63 ms |
+| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 90 ms |
 
-The differences that are real are architectural, and they follow from one
-choice: **no language model runs on the write path.**
+No pair of those accuracies separates statistically. That is the claim, and it
+is deliberately a tie: **parity with the systems this category is named after,
+from a design that spends nothing to reach it.**
+
+### Why these numbers are lower than the ones on everyone's website
+
+mem0 advertises 92.5 on LOCOMO. Under this harness it scores 0.583. Zep
+advertises 94.7%. Neither is lying and neither figure is wrong — LOCOMO's score
+is produced by a reader model turning passages into an answer and a judge
+grading it, and changing either moves the result by tens of points before the
+memory system is involved at all. Zep's own table shows 63.8% against 71.2% for
+the same retrieval, read by a smaller and a larger model.
+
+So an absolute LOCOMO number means nothing across harnesses, and this page does
+not publish one to be compared against a website. It publishes three arms under
+one reader, one judge and one embedder, and the noise floor beside them: mem0
+run twice at identical settings scores 0.603 and 0.598 while answering 41 of
+the same 199 questions differently. An independent analysis of the standard
+LOCOMO harness found its judge accepting 63% of intentionally wrong answers.
+
+A tie anyone can re-run is worth more than a lead nobody can check, and it is
+the one claim here that survives someone checking it.
+
+### What the parity is bought with
+
+Everything that separates these systems follows from one choice: **no language
+model runs on the write path.**
 
 | | this project | MemPalace | mem0 |
 | --- | --- | --- | --- |
-| model calls to ingest 10 conversations | **0** | 20 | 272 |
-| cost of that ingest | **$0** | $1.15 | $27.77 |
-| time to ingest them | **356 s** | 520 s | 4,121 s |
 | embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
 | same corpus written twice | **byte-identical** | LLM on the write path | 41 of 199 answers change |
 | prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
-| retrieval call, thirty passages | **28 ms** | 63 ms | 90 ms |
 
-Read the last row with the one that belongs beside it: a model reading those
-passages takes about five seconds and does not care whether it was handed five
-hundred tokens or five thousand, so end to end the three systems are
-indistinguishable and retrieval is around one per cent of the wait. The
-retrieval figure counts where a memory system feeds an agent's own context and
-adds its latency to a call that was happening anyway. It is reported here
-because it is true, not because anyone would feel it behind a reader.
+Two of the headline figures need a sentence each. **Retrieval at 28 ms against
+90 ms is real and mostly invisible**: a model reading those passages takes
+about five seconds and does not care whether it was handed five hundred tokens
+or five thousand, so end to end the three are indistinguishable and retrieval
+is about one per cent of the wait. Where it counts is a memory system feeding
+an agent's own context, adding its latency to a call that was happening anyway.
+**Ingest at 356 s against 4,121 s is the one nothing hides** — an hour of
+difference is an hour.
 
 A system that asks a model to decide what a conversation *means* before storing
 it pays for that on every ingest, cannot reproduce its own store, and cannot
