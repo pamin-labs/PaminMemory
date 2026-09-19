@@ -1,5 +1,7 @@
 ---
 name: pamin-dev
+metadata:
+  internal: true
 description: How to measure and how to keep claims true when working on PaminMemory itself. Use this skill whenever you are about to benchmark something, quote a latency or an accuracy figure, tune or justify a constant, add or change an evaluation harness, or write a number into a README, ADR, code comment or PR description. Also use it before opening a PR that touches docs, and whenever you notice documentation that might describe behaviour the code has since changed. Reach for it on phrases like measure, benchmark, how fast is, how much better, tune, sweep, is it worth it, or regression — and when a repository claim and the code appear to disagree.
 ---
 
