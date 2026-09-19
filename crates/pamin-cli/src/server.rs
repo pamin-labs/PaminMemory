@@ -28,6 +28,17 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
     let path = socket_path(workspace);
     std::fs::create_dir_all(workspace.root())?;
 
+    // Before anything opens an index, and before the socket exists: a server
+    // that has to be restarted to serve its own corpus is worse than one that
+    // takes a moment longer to start.
+    match raise_open_file_limit() {
+        Ok((before, after)) if after > before => {
+            tracing::info!(before, after, "raised the open-file limit")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
+    }
+
     // Before the socket exists, so a client that connects finds a server that
     // can answer rather than one still starting the database.
     let session = Arc::new(Session::open(workspace, Connections::Resident).await?);
@@ -81,6 +92,39 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
                 Err(error) => tracing::warn!(%error, "connection failed"),
             }
         });
+    }
+}
+
+/// Raises the open-file limit to what this process is already allowed.
+///
+/// A projection index keeps one file per segment, and a search reads across
+/// all of them: 131,924 documents is 2,111 segment files and 2,733 descriptors
+/// held at once, against the 1,024 a Linux process is given by default. The
+/// server does not degrade at that boundary, it fails the search outright with
+/// `Too many open files` -- and the corpus that does it is an ordinary one.
+///
+/// The soft limit is the process's to raise, up to the hard limit, with no
+/// privilege: this asks for what the kernel has already agreed to. Beyond the
+/// hard limit is the operator's to grant, so failing here is logged rather
+/// than fatal -- a smaller index still serves, and refusing to start would
+/// take away the case that works.
+fn raise_open_file_limit() -> Result<(u64, u64)> {
+    // SAFETY: both calls write only through the pointer given, which is a
+    // local of exactly the type they expect.
+    unsafe {
+        let mut limit = std::mem::zeroed::<libc::rlimit>();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return Err(std::io::Error::last_os_error()).context("reading the open-file limit");
+        }
+        let before = limit.rlim_cur;
+        if limit.rlim_cur >= limit.rlim_max {
+            return Ok((before, before));
+        }
+        limit.rlim_cur = limit.rlim_max;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+            return Err(std::io::Error::last_os_error()).context("raising the open-file limit");
+        }
+        Ok((before as u64, limit.rlim_max as u64))
     }
 }
 
@@ -283,4 +327,79 @@ fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
 /// Where this workspace's socket lives.
 pub fn socket_path(workspace: &Workspace) -> PathBuf {
     workspace.root().join(SOCKET)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The process's current soft and hard open-file limits.
+    fn limits() -> (u64, u64) {
+        // SAFETY: writes only through the pointer given, to a local of the
+        // type the call expects.
+        unsafe {
+            let mut limit = std::mem::zeroed::<libc::rlimit>();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+            (limit.rlim_cur as u64, limit.rlim_max as u64)
+        }
+    }
+
+    fn set_soft(soft: u64, hard: u64) {
+        // SAFETY: reads only through the pointer given, from a local of the
+        // type the call expects.
+        unsafe {
+            let limit = libc::rlimit {
+                rlim_cur: soft as libc::rlim_t,
+                rlim_max: hard as libc::rlim_t,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+        }
+    }
+
+    /// The reproduction, at the mechanism rather than at the corpus.
+    ///
+    /// Indexing 131,924 documents to find out takes half an hour and four
+    /// gigabytes; what actually failed was a search running under a soft limit
+    /// of 1,024 while the kernel would have allowed twenty times that. This
+    /// lowers the limit, asks the server's startup to raise it, and checks the
+    /// process is really running under the higher one afterwards.
+    ///
+    /// The limit is process-wide, so it is put back. Every other test in this
+    /// crate is a pure function over strings, so none of them is holding
+    /// descriptors while this runs.
+    #[test]
+    fn the_server_takes_the_open_file_limit_the_kernel_already_allows() {
+        let (original, hard) = limits();
+        // A box whose hard limit is this low has nothing to raise, and the
+        // no-op is covered by the test below.
+        if hard <= 512 {
+            return;
+        }
+
+        set_soft(512, hard);
+        let (before, after) = raise_open_file_limit().expect("raising within the hard limit");
+        assert_eq!(before, 512, "reports the limit it found");
+        assert_eq!(after, hard, "takes everything the hard limit allows");
+        assert_eq!(
+            limits().0,
+            hard,
+            "the process is running under the raised limit, not merely told about it"
+        );
+
+        set_soft(original, hard);
+    }
+
+    /// Already at the ceiling is not a failure, and must not be reported as a
+    /// raise: the startup logs one only when the number actually moved.
+    #[test]
+    fn a_limit_already_at_the_ceiling_is_left_alone() {
+        let (original, hard) = limits();
+
+        set_soft(hard, hard);
+        let (before, after) = raise_open_file_limit().expect("a no-op still succeeds");
+        assert_eq!(before, hard);
+        assert_eq!(after, hard);
+
+        set_soft(original, hard);
+    }
 }
