@@ -395,8 +395,17 @@ class MemPalace:
         return out.stdout
 
     def ingest(self, conversation_id, turns):
+        self.palace = f"{self.store_path}/{conversation_id}"
+        return self._ingest_into(conversation_id, turns, llm=True)
+
+    def _ingest_into(self, conversation_id, turns, llm):
+        """Mine the conversation, with or without the LLM refinement pass.
+
+        `llm=True` is MemPalace's own default; `--no-llm` is the mode its
+        published figure is measured in. Both go through here so the only
+        difference between the arms is that flag.
+        """
         import shutil
-        self.palace = f"{WORK}/mp-palace/{conversation_id}"
         source = f"{WORK}/mp-source/{conversation_id}"
         shutil.rmtree(self.palace, ignore_errors=True)
         shutil.rmtree(source, ignore_errors=True)
@@ -411,12 +420,17 @@ class MemPalace:
                 for t in group:
                     f.write(f"**{t['speaker']}**: {t['text']}\n\n")
 
+        init = ["init", source, "--yes"]
+        init += (["--llm-provider", "openai-compat", "--llm-endpoint", SHIM,
+                  "--llm-model", "sonnet", "--llm-api-key", "shim",
+                  # Waives the consent prompt for an LLM already configured;
+                  # it does not switch one on.
+                  "--accept-external-llm"]
+                 if llm else ["--no-llm"])
+
         before = shim_stats().get("embed_texts", 0)
         started = time.time()
-        self._run(["init", source, "--yes",
-                   "--llm-provider", "openai-compat",
-                   "--llm-endpoint", SHIM, "--llm-model", "sonnet",
-                   "--llm-api-key", "shim", "--accept-external-llm"])
+        self._run(init)
         self._run(["mine", source])
         elapsed = time.time() - started
 
@@ -455,6 +469,48 @@ class MemPalaceWide(MemPalace):
     LIMIT = 30
 
 
+class MemPalaceRaw(MemPalace):
+    """MemPalace in the mode it publishes: `init --no-llm`, heuristics only.
+
+    Its headline is "96.6% R@5 raw -- zero API calls", and raw is real. It is
+    not the default: since 3.10.0 the CLI deprecates `--llm` because
+    "LLM-assisted entity refinement is now ON by default", and the default arm
+    measured 20 model calls and $1.15 to ingest ten conversations.
+
+    That makes this the arm with the same architectural commitment as this
+    project -- nothing on the write path decides what a conversation means --
+    and the only one that answers whether those 20 calls buy accuracy.
+
+    Its own palace, so the default arm's stores survive beside it.
+    """
+
+    name = "mempalace-raw"
+    store_path = f"{WORK}/mp-palace-raw"
+    LIMIT = None          # falls back to TOP_K
+
+    def ingest(self, conversation_id, turns):
+        self.palace = f"{self.store_path}/{conversation_id}"
+        before = shim_stats()
+        elapsed, count = self._ingest_into(conversation_id, turns, llm=False)
+        after = shim_stats()
+
+        # The premise, and the whole point of this arm: no model ran. An arm
+        # named `raw` that quietly used one would be the default arm twice.
+        calls = after.get("calls", 0) - before.get("calls", 0)
+        if calls:
+            raise RuntimeError(
+                f"mempalace-raw made {calls} model calls during ingest; "
+                "--no-llm did not take, and this arm is the default one")
+        return elapsed, count
+
+
+class MemPalaceRawWide(MemPalaceRaw):
+    """The raw mode at the wider shortlist, matching the other pairs."""
+
+    name = "mempalace-raw-wide"
+    LIMIT = 30
+
+
 class Mem0Wide(Mem0):
     """mem0 at the same shortlist the wide pamin arm uses.
 
@@ -476,4 +532,6 @@ ARMS = {
     "mem0-wide": Mem0Wide,
     "mempalace": MemPalace,
     "mempalace-wide": MemPalaceWide,
+    "mempalace-raw": MemPalaceRaw,
+    "mempalace-raw-wide": MemPalaceRawWide,
 }
