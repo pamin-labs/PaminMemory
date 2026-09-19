@@ -639,12 +639,31 @@ MemPalace is the like-for-like peer, and it ties:
 | ten passages | 0.520 | **0.571** | 25 / 35 | 0.245 |
 | thirty passages | **0.631** | 0.606 | 32 / 27 | 0.603 |
 
-So "no language model on the write path" is an architecture this project
-shares rather than owns, and at equal shortlists it buys equal accuracy in
-someone else's implementation too. What remains specific to this project,
-measured against that peer, is narrower and should be stated as such: a store
-that reproduces itself byte for byte, a prompt 3.4x more compact at thirty
-passages (1,511 tokens against 5,138), and retrieval at 28 ms against 63 ms.
+**What this does and does not take away from this project.** It shows that an
+LLM-free write path is not unique: MemPalace has one too, and at equal
+shortlists it reaches equal accuracy with it. It does not show that the
+property is unremarkable. Of the seven systems in the table at the top of this
+page, **six put a model on the write path by default** — mem0, Zep/Graphiti,
+Memobase, Cognee, Supermemory, and MemPalace itself. The seventh, Letta, is a
+framework over plain files and grep rather than a store with retrieval
+channels.
+
+And the difference between MemPalace and this project on that axis is the
+difference between a flag and an architecture. MemPalace's LLM-free mode is
+`init --no-llm`; install it and follow its quickstart and you get the model,
+20 calls and $1.15 for ten conversations. This project has no model on the
+write path in any mode, so there is no configuration in which it costs
+anything to ingest and none in which two ingests of the same corpus disagree.
+
+A property shared with one competitor's opt-in mode, and with no one else's
+default, is still a differentiator. What the tie does remove is the right to
+claim the property buys *accuracy* — it does not, in either implementation.
+What it buys is measured elsewhere on this page: $0 against $27.77 to ingest,
+a store that reproduces itself byte for byte, and no embedding service to run.
+
+Against MemPalace specifically, with both write paths equally model-free, what
+is left is a prompt 3.4x more compact at thirty passages (1,511 tokens against
+5,138) and retrieval at 28 ms against 63 ms.
 
 One question of the 199 is missing from the wide raw arm — MemPalace's
 re-ingest of the largest conversation stopped responding on the fill-in pass —

@@ -83,12 +83,18 @@ ten points over the lexical baseline, with no model called at any stage.**
 ### What the parity is bought with
 
 Everything that separates these systems follows from one choice: **no language
-model runs on the write path.**
+model runs on the write path.** Of the seven memory systems surveyed in
+[docs/benchmarks.md](docs/benchmarks.md), six run one by default. MemPalace can
+be told not to, with `init --no-llm`, and measured that way it reaches the same
+accuracy as this project — so the property is not unique, and it does not buy
+accuracy. What it buys is everything in the table below, and here it is the
+architecture rather than a flag: there is no mode in which this project puts a
+model on its write path.
 
 | | this project | MemPalace | mem0 |
 | --- | --- | --- | --- |
 | embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
-| same corpus written twice | **byte-identical** | LLM on the write path | 41 of 199 answers change |
+| same corpus written twice | **byte-identical** | LLM on the write path by default | 41 of 199 answers change |
 | prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
 
 Two of the headline figures need a sentence each. **Retrieval at 28 ms against
