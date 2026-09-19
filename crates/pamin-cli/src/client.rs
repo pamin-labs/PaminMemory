@@ -124,6 +124,9 @@ const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
     std::fs::create_dir_all(workspace.root())?;
     let lock = workspace.root().join(SPAWN_LOCK);
+    // Held only by the caller that wins the race to start one; the losers wait
+    // on the socket and have nothing to watch exit.
+    let mut spawned: Option<std::process::Child> = None;
 
     // `create_new` is `O_EXCL`: exactly one caller wins, and the losers fall
     // through to waiting. Not an advisory lock in the database, because the
@@ -156,11 +159,14 @@ async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
             .stderr(std::process::Stdio::from(log))
             .spawn();
 
-        if let Err(error) = started {
-            // Release the lock, or every later command in this workspace waits
-            // out the timeout for a server nobody is starting.
-            let _ = std::fs::remove_file(&lock);
-            return Err(error).context("starting the server");
+        match started {
+            Err(error) => {
+                // Release the lock, or every later command in this workspace
+                // waits out the timeout for a server nobody is starting.
+                let _ = std::fs::remove_file(&lock);
+                return Err(error).context("starting the server");
+            }
+            Ok(child) => spawned = Some(child),
         }
     }
 
@@ -168,6 +174,16 @@ async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
     let listening = loop {
         if UnixStream::connect(path).await.is_ok() {
             break true;
+        }
+        // A server we started and that has already exited is never going to
+        // listen, and the whole timeout spent waiting for it teaches nobody
+        // anything. Only the process that spawned it can see this; a caller
+        // that lost the race to start one still waits, because the winner's
+        // server may yet come up.
+        if let Some(child) = spawned.as_mut()
+            && matches!(child.try_wait(), Ok(Some(_)))
+        {
+            break false;
         }
         if Instant::now() >= deadline {
             break false;
@@ -180,14 +196,71 @@ async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
     }
 
     if !listening {
-        bail!(
-            "waited {}s for a server to listen at {}",
-            STARTUP.as_secs(),
-            path.display()
-        );
+        // The server writes its own failure to the log and exits, so without
+        // this the caller waits out the timeout and is told only that nothing
+        // turned up -- which describes the symptom and never the cause. The
+        // most common cause is the least guessable: PostgreSQL's `initdb`
+        // refuses to run as root, so a container that runs as root, which is
+        // most of them, fails here every time.
+        let reason = server_log_tail(workspace);
+        let gave_up = if spawned.is_some_and(|mut c| matches!(c.try_wait(), Ok(Some(_)))) {
+            "the server exited before it listened at".to_string()
+        } else {
+            format!("waited {}s for a server to listen at", STARTUP.as_secs())
+        };
+        bail!("{} {}{}", gave_up, path.display(), reason);
     }
 
     Ok(())
+}
+
+/// The last few meaningful lines the server wrote before giving up.
+///
+/// Rendered as part of the timeout error rather than left for the reader to
+/// find, because a caller who does not already know `serve.log` exists has no
+/// way to get from the timeout to the reason.
+fn server_log_tail(workspace: &Workspace) -> String {
+    let path = workspace.root().join(crate::protocol::SERVER_LOG);
+    match std::fs::read_to_string(&path) {
+        Ok(log) => diagnose(&log, &path),
+        Err(_) => String::new(),
+    }
+}
+
+/// Formats the log into the diagnosis, separately from reading it so the part
+/// that decides what a reader is shown can be tested without a server.
+fn diagnose(log: &str, path: &Path) -> String {
+    // Backtraces are most of the file and none of the explanation.
+    let lines: Vec<&str> = log
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("at ")
+                && !line.starts_with("note:")
+                && !line.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && *line != "Stack backtrace:"
+        })
+        .collect();
+
+    let tail: Vec<&str> = lines.iter().rev().take(4).rev().copied().collect();
+    if tail.is_empty() {
+        return String::new();
+    }
+
+    let mut out = format!("\n\nthe server logged, in {}:\n", path.display());
+    for line in tail {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    if log.contains("cannot be run as root") {
+        out.push_str(
+            "\nPostgreSQL will not run as root. Run pamin as an unprivileged \
+             user, which in a container means adding one and switching to it.\n",
+        );
+    }
+    out
 }
 
 /// Asks a server to stop, and waits for its socket to go.
@@ -213,4 +286,68 @@ async fn stop_and_wait(path: &Path) -> Result<()> {
 
     let _ = std::fs::remove_file(path);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diagnose;
+    use std::path::Path;
+
+    /// What `initdb` actually writes when a container runs as root, wrapped in
+    /// the backtrace the server prints around it. The reason is four lines
+    /// into a forty-line file, which is why the timeout used to say nothing.
+    const ROOT_FAILURE: &str = r#"
+Error: opening the workspace
+
+Caused by:
+    Command error: stdout=; stderr=initdb: error: cannot be run as root
+    initdb: hint: Please log in (using, e.g., "su") as the (unprivileged) user that will own the server process.
+
+Stack backtrace:
+   0: <unknown>
+   1: <unknown>
+   8: __libc_start_call_main
+             at ./csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+"#;
+
+    #[test]
+    fn the_diagnosis_carries_the_reason_and_not_the_backtrace() {
+        let out = diagnose(ROOT_FAILURE, Path::new("/w/serve.log"));
+
+        assert!(out.contains("cannot be run as root"), "{out}");
+        assert!(
+            out.contains("/w/serve.log"),
+            "the reader has to be able to go look: {out}"
+        );
+        // A backtrace is most of the file and none of the explanation.
+        assert!(!out.contains("Stack backtrace"), "{out}");
+        assert!(!out.contains("libc_start_call_main"), "{out}");
+        assert!(!out.contains("note: Some details"), "{out}");
+    }
+
+    #[test]
+    fn running_as_root_gets_told_what_to_do_about_it() {
+        let out = diagnose(ROOT_FAILURE, Path::new("/w/serve.log"));
+        assert!(
+            out.contains("unprivileged"),
+            "the cause is useless without the remedy: {out}"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_failure_gets_no_root_advice() {
+        let out = diagnose(
+            "Error: address already in use\nCaused by:\n    EADDRINUSE\n",
+            Path::new("/w/serve.log"),
+        );
+        assert!(out.contains("EADDRINUSE"), "{out}");
+        assert!(!out.contains("unprivileged"), "{out}");
+    }
+
+    #[test]
+    fn an_empty_or_missing_log_adds_nothing() {
+        assert_eq!(diagnose("", Path::new("/w/serve.log")), "");
+        assert_eq!(diagnose("\n  \n", Path::new("/w/serve.log")), "");
+    }
 }

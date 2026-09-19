@@ -6,6 +6,7 @@ use pamin_index::{Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
 
+use crate::command::validity;
 use crate::session::Session;
 use pamin_engine::Depths;
 
@@ -64,6 +65,12 @@ struct Hit {
     why: Vec<Why>,
     /// The byte range in the source this state came from.
     source_span: String,
+    /// When this state was recorded, RFC 3339.
+    ///
+    /// Ranking says how well a memory matches, not how current it is, and an
+    /// agent assembling context needs both. Carried here so judging staleness
+    /// does not cost a `read` per hit.
+    recorded_at: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -101,6 +108,7 @@ pub async fn execute(
                 score: hit.result.score,
                 why: hit.result.why,
                 source_span: hit.state.source_span_id.to_string(),
+                recorded_at: validity::render(hit.state.recorded_at),
             })
             .collect(),
     };
@@ -137,17 +145,23 @@ fn describe(why: &[Why]) -> String {
         .map(|entry| match entry {
             Why::Channel { channel, rank, .. } => format!("{}#{rank}", channel.as_str()),
             Why::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
+            // The arrow is drawn the way the edge was asserted, so it reads
+            // the same whichever end the walk reached it from. `from` is the
+            // seed the walk began at, which is a different fact and is kept.
             Why::Path {
                 from,
                 via,
                 hops,
+                asserted_from,
+                asserted_to,
                 edge,
                 ..
             } => {
+                let arrow = format!("{asserted_from} --{}-> {asserted_to}", edge.as_str());
                 if from == via {
-                    format!("from {from} --{}-> ({hops}hop)", edge.as_str())
+                    format!("{arrow} ({hops}hop)")
                 } else {
-                    format!("from {from} via {via} --{}-> ({hops}hop)", edge.as_str())
+                    format!("from {from} via {via}: {arrow} ({hops}hop)")
                 }
             }
         })
