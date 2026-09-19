@@ -36,6 +36,7 @@ than a convention.
 | The corpus is actually there | Every query returns nothing, quickly, and a full latency table is the cost of searching an empty index | The project is discovered, its size asserted against the documents claimed, and one real query asserted to return hits |
 | One server, not two | Two copies of a model resident, and a measurement that dies of memory | Wait on the socket, then assert the process count is exactly one |
 | Cells do not share queries | A repeated query is answered from cache in microseconds and reported as search latency | Every cell draws a disjoint slice, and asserts its own p50 is above a floor no forward pass can beat |
+| The shortlist an arm reports | A library takes the size under a different keyword, drops the one you passed into `**kwargs`, and serves its own default to both the narrow arm and the wide one | Each arm counts the passages it received and fails if there are more than it asked for |
 
 ## Running it
 
@@ -55,6 +56,15 @@ python3 benchmarks/run.py --dataset locomo --mode cost --arms ...
 Third-party systems each install into their own virtualenv. Installing one of
 them into the shared environment moved `protobuf` past the ceiling another
 declares, while that other one was being measured.
+
+**Install each one the way its own documentation does, optional extras
+included.** `pip install mem0ai` leaves out `mem0ai[nlp]`, and without it
+mem0's `lemmatize_for_bm25` returns its input unchanged -- so every memory is
+stored with an unlemmatised keyword field and every query is matched against
+one, which turns off half of a hybrid retriever. It reports this on a log line
+and nowhere else. A default install is not the same as the system, and
+measuring a competitor with part of it disabled is not a measurement of that
+competitor.
 
 ## Where you run this changes which numbers mean anything
 

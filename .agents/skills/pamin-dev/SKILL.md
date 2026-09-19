@@ -163,6 +163,20 @@ retrieval. They were wrong about the box.
   remaining output still in a block buffer. Detach it, force line buffering,
   and write to a file — `setsid`, `stdbuf -oL`, `> log 2>&1` — so a death shows
   where it died instead of looking like a short run.
+- **The machine, which may not stay.** This container is reclaimed without
+  warning; six times in three hours during one comparison, each time taking
+  every background process with it including the watchdog written to restart
+  the run. Two things together survive that and neither alone does: a
+  checkpoint after every unit of work, so a restart costs the unit in flight
+  rather than the run, and a timer *outside* the container to start it again.
+  A laptop has neither problem, which is the argument for moving long runs to
+  one — but keep the checkpointing, because a run that cannot resume is a run
+  nobody repeats.
+- **The package manager.** Installing a third-party system into the shared
+  environment moved `protobuf` past the ceiling another one declares, while
+  that other one was being measured. It survived, by luck, because it had
+  already imported what it needed. Each third-party system gets its own
+  virtualenv, and nothing is installed while a measurement is running.
 
 ## A number without its corpus is a claim, not a measurement
 
@@ -270,6 +284,100 @@ category publishes LLM-judge accuracy on conversational QA, which measures a
 retrieval stage plus a reader model plus a judge, compounded — not the same
 quantity as `nDCG@10`, and not placeable on the same axis. Several headline
 figures in that field have been audited by competitors and did not survive.
+
+The harness that runs those comparisons is in [benchmarks/](../../../benchmarks),
+along with what it holds fixed and how each of those is asserted. Nine rules
+come out of building it, and each cost a run to learn.
+
+**Open the other side's budget before claiming a win.** Raising `--limit` from
+ten to thirty moved this project's LOCOMO accuracy by eleven points — a real
+and significant gain, and for a while it read as beating mem0. It was not, and
+the reason is that only one arm had been widened. Any knob you turn for your
+own arm, turn for theirs, and report what happened when you did.
+
+**Turning the knob is not the same as the knob turning.** The wide mem0 arm was
+built to obey that rule and did not: mem0's keyword is `top_k`, not `limit`, it
+defaults to 20, and unknown keywords land in `**kwargs` and are discarded
+without an error. Both mem0 arms therefore ran at 20 — the narrow one wider
+than it claimed, the wide one narrower — and the conclusion drawn from them,
+that a wider shortlist was worth nothing to mem0, was about an arm that never
+widened. Nothing failed; the numbers were plausible; only counting what came
+back caught it. So an arm asserts the setting it reports, from the result and
+not from the call: the shortlist arm checks how many passages it received, the
+same way the MemPalace arm checks that it embedded through the shared endpoint.
+A comparison is a set of premises, and an unasserted premise is a guess.
+
+**Run one arm twice before comparing two.** The accident above left two
+identical mem0 runs, which turned out to be the most informative pair on the
+page: totals 0.603 and 0.598, but 41 of 199 questions answered differently.
+Any arm whose write path puts a model in the loop disagrees with itself, and
+LOCOMO at this size churns about a fifth of its questions under almost any
+perturbation — a deterministic configuration change worth 0.005 moved the same
+41. A net of five or ten questions is inside that. Spend one run on the same
+arm twice, before spending ten on arms whose differences you cannot read.
+
+**Install the other side the way its own documentation does.** mem0's BM25
+channel lemmatises on both sides -- every memory stores a `text_lemmatized`
+field, every query is lemmatised before the keyword search -- and that path
+needs the `mem0ai[nlp]` extra, which a plain install does not bring. Without
+it `lemmatize_for_bm25` returns its input unchanged and half of a hybrid
+retriever is off, announced on one log line and nowhere else. Every mem0
+figure taken before this was found was taken in that state. A default install
+is not the same as the system: read what extras the other side's own
+instructions install, and have the arm refuse to run when one is missing.
+
+**Time the same layer on both sides, or do not report time.** The accuracy run
+recorded a `recall_seconds` per question and it looked like a latency column.
+It was not one: this project was timed through `su ubuntu -c "pamin ... search
+..."` -- two process spawns and a socket round trip -- and mem0 as an
+in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
+cluster shared four cores. It read 170 ms against 106 and the obvious
+conclusion was the opposite of the truth. Timed at the boundary each system's
+callers actually use, with nothing else running, it is 29 ms against 94. A
+latency number needs its own harness, because the three things it depends on --
+the layer, warmth and quiet -- are exactly the three an accuracy run cannot
+hold still. And warm every unit before timing anything, not the first one: an
+early draft of that harness warmed one conversation of ten, timed the socket
+arm first, and reported it at three times the CLI it is faster than. Run each
+arm again last; two passes that disagree mean the order is in the number.
+
+**A category you win is the one to read the items of.** LOCOMO's adversarial
+split went to this project and MemPalace, 0.429 against mem0's 0.190, and it
+was written up twice as a property worth having before anyone followed a
+question to the turn its own `evidence` field names. Doing that: 332 of the 446
+attribute to one speaker something the *other* speaker said, and the key gives
+that other speaker's content as correct. "What country is Melanie's grandma
+from?" is keyed to Sweden; the evidence is Caroline saying "my grandma in my
+home country, Sweden". The category rewards ignoring attribution. mem0 answers
+"no record of that" and is marked wrong for the better answer.
+
+The lesson is not about LOCOMO. A split where this project leads is the one
+where the temptation to stop reading is strongest, and this category was
+described wrongly twice in this repository before it was described wrongly in
+its favour. So: open the items, follow the evidence field, and ask what
+behaviour a high score is actually rewarding. If the answer is a behaviour you
+would call a bug in a bug report, the score is not a result.
+
+**Cost is half the claim.** A project whose pitch is "less" cannot check that
+pitch with an accuracy table. Measure what each arm spends: calls to a model
+on the write path, tokens in the prompt it hands the reader, bytes it stores,
+memory it holds. The two halves point opposite ways here — one arm pays a
+model once at write time and hands the reader less afterwards; the other pays
+nothing at write time and hands the reader more, every question, forever — so
+a comparison that reports one half reports the wrong system as cheaper.
+
+**Count tokens with a tokenizer you name, not with what the runtime reports.**
+This environment's CLI reports a prompt of any size as a constant plus
+`cache_creation_input_tokens`, and its delta for a 3,623-character string was
+1.9x what any tokenizer gives for it. Absolute token figures here are
+therefore approximate and say so; the ratio between arms, counted the same way
+on both sides, is what the comparison actually needs.
+
+**An arm that rewrites what it stores cannot be scored on retrieval.** mem0
+extracts facts, so its memories belong to no turn and cannot be mapped back to
+gold sessions. The harness refuses rather than inventing a mapping. Say which
+metric an arm is eligible for before running it, not after the numbers look
+strange.
 
 That page also records the one comparison that is honest and cheap
 (LongMemEval's retrieval-only stage, scored with Recall@k and NDCG@k, no LLM

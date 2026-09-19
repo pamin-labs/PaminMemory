@@ -274,6 +274,7 @@ class Mem0:
     name = "mem0"
     store_path = f"{WORK}/mem0-qdrant"
     holder = None          # qdrant runs inside this process
+    LIMIT = None           # falls back to TOP_K
 
     def __init__(self):
         from mem0 import Memory
@@ -293,7 +294,24 @@ class Mem0:
                                         "on_disk": True}},
         }
 
+
+    # mem0's BM25 channel lemmatises on both sides -- every memory is stored
+    # with a `text_lemmatized` field and every query is lemmatised before the
+    # keyword search. Without the `nlp` extra `lemmatize_for_bm25` returns its
+    # input unchanged and that whole channel degrades, silently, on a log line
+    # this harness would never see. Comparing against a competitor with half
+    # its retrieval turned off is not a comparison, so the arm checks.
+    @staticmethod
+    def _assert_lemmatiser():
+        from mem0.utils.lemmatization import lemmatize_for_bm25
+        probe = "Where did the dogs go running?"
+        if lemmatize_for_bm25(probe) == probe:
+            raise RuntimeError(
+                "mem0's lemmatiser is a passthrough, so its keyword channel is "
+                "off; install mem0ai[nlp] before measuring mem0")
+
     def ingest(self, conversation_id, turns):
+        self._assert_lemmatiser()
         import shutil
         shutil.rmtree(f"{WORK}/mem0-qdrant", ignore_errors=True)
         config = json.loads(json.dumps(self.config))
@@ -319,10 +337,21 @@ class Mem0:
         return time.time() - started, len(turns)
 
     def recall(self, question):
+        # The keyword is `top_k`, not `limit`, and it has a default of 20.
+        # mem0 collects unknown keywords into **kwargs and drops them, so a
+        # misnamed shortlist is not an error -- it is a silent fall back to
+        # that default. An arm that cannot see this is not measuring the
+        # shortlist it says it is, so the arm checks what it got back.
+        want = self.LIMIT or TOP_K
         found = self.memory.search(
-            question, filters={"user_id": self.user}, limit=TOP_K)
+            question, filters={"user_id": self.user}, top_k=want)
         results = found.get("results", found) if isinstance(found, dict) else found
-        return [r.get("memory", "") for r in results]
+        memories = [r.get("memory", "") for r in results]
+        if len(memories) > want:
+            raise RuntimeError(
+                f"mem0 returned {len(memories)} results for top_k={want}; "
+                "this arm is not at the shortlist it reports")
+        return memories
 
 
 class MemPalace:
@@ -436,12 +465,6 @@ class Mem0Wide(Mem0):
 
     name = "mem0-wide"
     LIMIT = 30
-
-    def recall(self, question):
-        found = self.memory.search(
-            question, filters={"user_id": self.user}, limit=self.LIMIT)
-        results = found.get("results", found) if isinstance(found, dict) else found
-        return [r.get("memory", "") for r in results]
 
 
 ARMS = {
