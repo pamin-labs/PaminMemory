@@ -347,7 +347,9 @@ $ pamin search "how do we deploy" --limit 1 --json
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline", "edge": "depends_on", "derivation": "explicit" }
       ],
       "source_span": "da96fe78-8e1b-48c9-abad-78abf104e9f9",
-      "recorded_at": "2026-03-04T09:12:44.325845Z"
+      "recorded_at": "2026-03-04T09:12:44.325845Z",
+      "valid_from": null,
+      "valid_to": null
     }
   ]
 }
@@ -605,6 +607,15 @@ or by writing a new version. This is about us.
 
 `neighbors --at <rfc3339>` asks the first question; `neighbors` with no `--at`
 asks the second.
+
+`search --json` carries both on every hit, as `valid_from`/`valid_to` and
+`recorded_at`, so an agent deciding which of two contradicting memories to
+believe does not pay a `read` per result. Reach for the first pair. Recording
+time is almost never the answer: everything written in one `pamin import`
+shares it to within milliseconds, so ordering by it recovers the order the file
+was fed in rather than the order the facts became true. The bounds are `null`
+when the writer stated none, which is the ordinary case and is not the same as
+a claim that stopped holding.
 
 Two cases look like they need a third kind of end date, and do not:
 
