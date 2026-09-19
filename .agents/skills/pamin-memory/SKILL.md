@@ -1,6 +1,6 @@
 ---
 name: pamin-memory
-description: Use the `pamin` CLI as durable memory — record what you learn, retrieve it later, and follow the relationships between facts. Use this skill whenever `pamin` is available and you need to remember something across turns or sessions, recall what was decided or observed earlier, look up a fact you were told before, trace how a fact changed, or find the exact text behind a claim. Reach for it whenever the user says remember this, what did we decide, what do we know about X, look it up, or refers to earlier work you cannot see in the current context — even when they never name pamin. Also use it before answering from assumption on a project that has a pamin workspace: check memory first.
+description: "Use the `pamin` CLI as durable memory — record what you learn, retrieve it later, and follow the relationships between facts. Use this skill whenever `pamin` is available and you need to remember something across turns or sessions, recall what was decided or observed earlier, look up a fact you were told before, trace how a fact changed, or find the exact text behind a claim. Reach for it whenever the user says remember this, what did we decide, what do we know about X, look it up, or refers to earlier work you cannot see in the current context — even when they never name pamin. Also use it before answering from assumption on a project that has a pamin workspace: check memory first."
 ---
 
 # Using Påmin Memory
