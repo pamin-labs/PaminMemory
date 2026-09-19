@@ -179,6 +179,39 @@ instrument with a documented 63% false-accept rate against an answer key that is
 6.4% wrong, and would require instructing the model never to say "I don't know"
 — which is the opposite of what this project is for.
 
+**A supersession test built out of LongMemEval's `knowledge-update` category.**
+This one was designed and then abandoned on its own premise check, which is
+worth recording because the category looks like exactly the benchmark this
+project's ledger needs.
+
+All 78 of those questions carry exactly two gold sessions, dated, and the shape
+is right: one session says "a personal best of 27:12", a later one says
+"hoping to beat my personal best of 25:50", and the answer is 25:50. That
+invites a metric costing nothing to run -- does the system rank the revision
+above the value it superseded? -- and no reader or judge is needed for it.
+
+It needs a label saying which of the two sessions holds the current value, and
+the data does not support deriving one. Taking the answer's distinguishing
+tokens, its numbers where it has them:
+
+| where the current value appears | of 78 |
+| --- | --- |
+| only in the newer gold session | 26 (33%) |
+| **in both gold sessions** | **39 (50%)** |
+| only in the older gold session | 5 (6%) |
+| in neither | 8 (10%) |
+
+Half the time the current value is stated in both sessions, so "the newer one
+is the revision" is not a label, it is a guess that would be wrong often enough
+to produce whatever result was wanted. Constructing the labels needs a model
+reading each pair, which makes the metric neither free nor independent of an
+instrument -- and a labelling pass would itself need validating before anything
+measured against it meant anything.
+
+So the ledger still has no benchmark, and this is now a specific gap rather
+than a vague one: what is missing is a corpus where supersession is annotated,
+not inferred.
+
 ## Reference points on MIRACL, and the traps around them
 
 This project reports nDCG@10 on MIRACL's Swahili dev split, so the numbers a
