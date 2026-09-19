@@ -126,6 +126,12 @@ def main():
     where = machine()
 
     for name in args.arms.split(","):
+        # Five in a row is not bad luck, it is a broken setup, and the run
+        # that taught this lesson is the one where a concurrent `cargo build`
+        # replaced the binary under an arm: every ingest failed, each was
+        # caught and skipped, and the run reported success with no rows in it.
+        # A harness that cannot fail cannot be trusted when it passes.
+        consecutive = 0
         for entry in entries:
             unit = dataset.unit_id(entry)
             wanted = {qid for qid, _qa, _ref
@@ -145,7 +151,13 @@ def main():
             except Exception as error:
                 sampler.stop.set()
                 print(f"  {name} {unit}: INGEST FAILED: {error}", flush=True)
+                consecutive += 1
+                if consecutive >= 5:
+                    raise SystemExit(
+                        f"{name} failed to ingest {consecutive} units in a row; "
+                        f"the last said: {error}")
                 continue
+            consecutive = 0
             sampler.stop.set()
             sampler.join(timeout=5)
             after = arms_module.shim_stats()
