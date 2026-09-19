@@ -608,6 +608,48 @@ overhead subtraction, and list pricing. What does not rest on either is the
 shape — a one-time cost against a per-question one — and which side each system
 is on.
 
+### MemPalace with its LLM off, which is the mode it publishes
+
+MemPalace's default refines entities with a model; `init --no-llm`, the mode
+its 96.6% is measured in, does not. That makes the second one the only
+third-party arm here with the same architectural commitment as this project --
+nothing on the write path decides what a conversation means -- and the only
+thing that can say whether the 20 calls the default spends buy anything.
+
+Both modes, both shortlists, the same 198 paired questions. The arm asserts its
+own premise: zero model calls during ingest, because an arm named `raw` that
+quietly used one would be the default measured twice.
+
+| MemPalace | accuracy @10 | accuracy @30 | ingest | model calls | cost |
+| --- | --- | --- | --- | --- | --- |
+| default, LLM refinement on | 0.561 | **0.626** | 545 s | 20 | $1.15 |
+| `--no-llm`, as published | **0.571** | 0.606 | **219 s** | **0** | **$0** |
+
+**The 20 calls buy nothing measurable.** At ten passages the raw mode is
+*ahead* — 8 questions to 10 discordant, p = 0.81. At thirty the default is
+ahead by 17 to 13, p = 0.58. Neither separates, the two modes embed the same
+1,668 texts and hand the reader the same number of tokens, and turning the
+model off makes ingest two and a half times faster and free.
+
+**And it is bad news for one of this project's claims.** With its model off,
+MemPalace is the like-for-like peer, and it ties:
+
+| same shortlist | this project | MemPalace `--no-llm` | discordant | p |
+| --- | --- | --- | --- | --- |
+| ten passages | 0.520 | **0.571** | 25 / 35 | 0.245 |
+| thirty passages | **0.631** | 0.606 | 32 / 27 | 0.603 |
+
+So "no language model on the write path" is an architecture this project
+shares rather than owns, and at equal shortlists it buys equal accuracy in
+someone else's implementation too. What remains specific to this project,
+measured against that peer, is narrower and should be stated as such: a store
+that reproduces itself byte for byte, a prompt 3.4x more compact at thirty
+passages (1,511 tokens against 5,138), and retrieval at 28 ms against 63 ms.
+
+One question of the 199 is missing from the wide raw arm — MemPalace's
+re-ingest of the largest conversation stopped responding on the fill-in pass —
+so every figure in this section is over the 198 both arms answered.
+
 ### LongMemEval: the published metric is saturated
 
 LOCOMO scores depend on which model reads the passages and which grades them,
@@ -693,11 +735,9 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   would pick. The re-run corrects two ways it was handicapped; there may be a
   third nobody has looked for, and the way to find one is to read its
   documentation rather than its behaviour.
-- **Nothing about MemPalace with its LLM off.** Its arms ran MemPalace's
-  default, which since 3.10.0 refines entities with a model. The mode it
-  publishes, `--no-llm`, is the closest architectural peer to this project --
-  genuinely nothing on the write path -- and has not been run. Whether the
-  20 calls it spends are buying accuracy is therefore unmeasured.
+- **Nothing about a third system with no model on its write path.** MemPalace
+  answers that question for itself, below, and answers it against this project
+  too. Nothing else here does.
 - **Nothing about any difference smaller than the noise floor.** Forty-one of
   199 questions moved between two identical mem0 runs. Anything at that scale
   here is unmeasured, not measured-as-equal — the two are different claims and

@@ -82,10 +82,20 @@ def tokens_in(text):
 
 
 def load(rows_path):
+    """Rows already written, and the questions they cover.
+
+    Keyed per question, not per unit. Keying per unit is what this did first,
+    and it loses work silently: a conversation interrupted after its tenth
+    answer had written rows, so it counted as done, and the other ten were
+    never retried. The run then reported success with a hole in it -- one arm
+    came back with 182 of 199 answers and nothing said so.
+
+    The resume key has to be as fine as the thing being written.
+    """
     if not os.path.exists(rows_path):
         return [], set()
     rows = [json.loads(line) for line in open(rows_path) if line.strip()]
-    return rows, {(r["arm"], r["unit"]) for r in rows}
+    return rows, {(r["arm"], r["unit"], r.get("question_id")) for r in rows}
 
 
 def main():
@@ -117,7 +127,9 @@ def main():
     for name in args.arms.split(","):
         for entry in entries:
             unit = dataset.unit_id(entry)
-            if (name, unit) in done:
+            wanted = {qid for qid, _qa, _ref
+                      in dataset.questions(entry, args.questions)} or {None}
+            if all((name, unit, qid) in done for qid in wanted):
                 continue
             arm = arms_module.ARMS[name]()
             turns = dataset.turns_of(entry)
@@ -153,18 +165,23 @@ def main():
                   f"{cost['ingest_llm_calls']} LLM calls, "
                   f"{cost['ingest_embedded']} embedded", flush=True)
 
-            for row in measure(dataset, arm, entry, args, cost, where, name, unit):
+            for row in measure(dataset, arm, entry, args, cost, where, name,
+                               unit, done):
                 sink.write(json.dumps(row, ensure_ascii=False) + "\n")
                 sink.flush()
                 os.fsync(sink.fileno())
                 rows.append(row)
-            done.add((name, unit))
+                done.add((name, unit, row.get("question_id")))
     sink.close()
     summarise(rows, args.mode)
 
 
-def measure(dataset, arm, entry, args, cost, where, name, unit):
-    """One row per question, whatever the dataset and the mode."""
+def measure(dataset, arm, entry, args, cost, where, name, unit, done):
+    """One row per question, whatever the dataset and the mode.
+
+    Skips the questions already in `done`, so a unit interrupted partway
+    through is finished rather than abandoned.
+    """
     if dataset.NAME == "longmemeval":
         # Session-level retrieval needs the identity of what came back, not
         # its text, and only an arm that stores the original turns can give
@@ -172,6 +189,8 @@ def measure(dataset, arm, entry, args, cost, where, name, unit):
         # its memories belong to no turn -- cannot be scored this way at all,
         # and says so rather than being scored against a mapping invented
         # here.
+        if (name, unit, None) in done:
+            return
         if not hasattr(arm, "recall_ids"):
             raise SystemExit(
                 f"{name} stores rewritten memories rather than the turns it was "
@@ -187,6 +206,8 @@ def measure(dataset, arm, entry, args, cost, where, name, unit):
         return
 
     for qid, qa, reference in dataset.questions(entry, args.questions):
+        if (name, unit, qid) in done:
+            continue
         started = time.time()
         passages = arm.recall(qa["question"])
         elapsed = time.time() - started
