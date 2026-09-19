@@ -5,6 +5,7 @@ use pamin_core::VersionOffset;
 use pamin_store::repository;
 use serde::{Deserialize, Serialize};
 
+use crate::command::validity;
 use crate::session::Session;
 
 #[derive(clap::Args, Serialize, Deserialize)]
@@ -30,6 +31,20 @@ pub struct Read {
     oldest_version: u32,
     latest_version: u32,
     available_versions: u32,
+    /// When this version was recorded, RFC 3339.
+    ///
+    /// Comparing it across versions is the only way to answer "when did this
+    /// change", which the ledger has always known and no read surface said.
+    recorded_at: String,
+    /// When the source claims the fact was true, RFC 3339.
+    ///
+    /// The other timeline. Equal to `recorded_at` unless a writer stated
+    /// otherwise, and the pair is what keeps "when we believed it" separate
+    /// from "when it held" -- see Two kinds of time in docs/cli.md.
+    observed_at: String,
+    /// The asserted truth interval. Both open unless a writer bounded them.
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 }
 
 /// Reads the topic and returns what was found, rendering nothing.
@@ -64,6 +79,10 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Rea
         oldest_version: resolved.oldest_version,
         latest_version: resolved.latest_version,
         available_versions: resolved.available_versions,
+        recorded_at: validity::render(state.recorded_at),
+        observed_at: validity::render(state.observed_at),
+        valid_from: state.validity.from.map(validity::render),
+        valid_to: state.validity.to.map(validity::render),
     };
 
     Ok(result)
@@ -77,11 +96,12 @@ pub fn render(result: &Read) -> String {
         "historical"
     };
     format!(
-        "{} v{} ({marker}, {} of {} versions)\n\n{}",
+        "{} v{} ({marker}, {} of {} versions, recorded {})\n\n{}",
         result.topic,
         result.version,
         result.actual_version_offset,
         result.available_versions,
+        result.recorded_at,
         result.content
     )
 }

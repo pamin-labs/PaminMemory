@@ -67,6 +67,7 @@ async fn the_ledger_holds_its_promises() {
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
+    an_edge_reads_the_same_direction_from_either_end(&database).await;
 
     drop(database);
 }
@@ -2165,5 +2166,156 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
     assert!(
         reached.iter().any(|neighbor| neighbor.topic == argo),
         "what the memory said before is still true of before: {reached:?}"
+    );
+}
+
+/// The walk is undirected, so an edge is reached from both ends. What it says
+/// about itself must not depend on which end the walk started at, and that has
+/// to hold past the first hop, where the arrival's `via` is no longer the seed.
+///
+/// Before `Neighbor::outbound` existed the only direction an arrival carried
+/// was the traversal's, so every edge printed as pointing away from wherever
+/// the walk happened to be standing. On this fixture that is wrong for three of
+/// the four edges from at least one seed, and the failure is not visible from a
+/// single walk -- each answer looks coherent on its own and contradicts the
+/// others.
+///
+/// The fixture mixes directions deliberately:
+///
+/// ```text
+///   rota  --depends_on-->  pipeline  <--depends_on--  scheduler
+///                              |
+///                          part_of
+///                              v
+///                          platform  --supersedes-->  legacy
+/// ```
+///
+/// Two edges point into `pipeline` and one out of it, so a walk seeded there
+/// meets both orientations in the same hop; `platform` and `legacy` put a
+/// second and third hop behind it.
+async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "direction")
+        .await
+        .expect("ensure project");
+
+    let mut id = std::collections::HashMap::new();
+    for name in ["rota", "pipeline", "scheduler", "platform", "legacy"] {
+        let topic =
+            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+        write_state(
+            database,
+            project.id,
+            topic.id,
+            &format!("direction-{name}"),
+            &format!("a durable claim about {name}"),
+        )
+        .await;
+        id.insert(name, topic.id);
+    }
+
+    let edges = [
+        ("rota", "pipeline", EdgeKind::DependsOn),
+        ("scheduler", "pipeline", EdgeKind::DependsOn),
+        ("pipeline", "platform", EdgeKind::PartOf),
+        ("platform", "legacy", EdgeKind::Supersedes),
+    ];
+    for (from, to, kind) in edges {
+        graph::assert_edge(
+            database.pool(),
+            project.id,
+            id[from],
+            id[to],
+            &EdgeClaim::explicit(kind),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{from} -> {to}: {e}"));
+    }
+
+    // What each arrival claims the edge is, resolved to a pair of endpoints.
+    let ends = |n: &graph::Neighbor| {
+        if n.outbound {
+            (n.via, n.topic)
+        } else {
+            (n.topic, n.via)
+        }
+    };
+
+    // Every seed, to the full depth of the component. Each walk meets a
+    // different subset of the edges, and from a different side.
+    let mut seen: std::collections::HashMap<(uuid::Uuid, uuid::Uuid), EdgeKind> =
+        std::collections::HashMap::new();
+    for seed in ["rota", "pipeline", "scheduler", "platform", "legacy"] {
+        let reached = graph::expand(
+            database.pool(),
+            project.id,
+            &[id[seed]],
+            &Expansion::to_depth(4),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("expand from {seed}: {e}"));
+
+        assert!(
+            reached.iter().any(|n| n.hops > 1),
+            "the walk from {seed} should reach past one hop, or it tests nothing"
+        );
+
+        for neighbour in &reached {
+            let (from, to) = ends(neighbour);
+            let key = (from.0.min(to.0), from.0.max(to.0));
+            // Whichever seed met this edge first fixes what it claims; every
+            // later walk must agree, orientation included.
+            if let Some(kind) = seen.insert(key, neighbour.kind) {
+                assert_eq!(
+                    kind, neighbour.kind,
+                    "walking from {seed} changed what kind of edge this is"
+                );
+            }
+            let expected = edges
+                .iter()
+                .find(|(f, t, _)| (id[f], id[t]) == (from, to))
+                .map(|(f, t, k)| (*f, *t, *k));
+            assert!(
+                expected.is_some(),
+                "walking from {seed} reported an edge {from:?} -> {to:?} that was \
+                 never asserted; the reverse of it probably was"
+            );
+            assert_eq!(
+                expected.unwrap().2,
+                neighbour.kind,
+                "walking from {seed}, the edge kind does not match the assertion"
+            );
+        }
+    }
+    assert_eq!(seen.len(), edges.len(), "every edge should have been met");
+
+    // The case a caller actually asks: what depends on the pipeline. Both
+    // answers are one hop away and the edges point opposite ways, so reading
+    // direction off the traversal returns the pipeline depending on them.
+    let around_pipeline = graph::expand(
+        database.pool(),
+        project.id,
+        &[id["pipeline"]],
+        &Expansion::to_depth(1),
+    )
+    .await
+    .expect("expand from pipeline");
+
+    let mut dependents: Vec<_> = around_pipeline
+        .iter()
+        .filter(|n| n.kind == EdgeKind::DependsOn && ends(n).1 == id["pipeline"])
+        .map(|n| ends(n).0)
+        .collect();
+    dependents.sort();
+    let mut expected = vec![id["rota"], id["scheduler"]];
+    expected.sort();
+    assert_eq!(
+        dependents, expected,
+        "rota and scheduler depend on the pipeline; the pipeline depends on neither"
+    );
+    assert!(
+        around_pipeline
+            .iter()
+            .any(|n| n.kind == EdgeKind::PartOf && ends(n) == (id["pipeline"], id["platform"])),
+        "and the one edge that does point away from the pipeline still does"
     );
 }
