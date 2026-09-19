@@ -6,7 +6,7 @@ Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistant
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Status](#status).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
 
 ## What It Does
 
@@ -15,6 +15,106 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 - Combines lexical matching, semantic recall, relationship structure, and a reranking pass over what the lexical channels missed.
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
+
+## Where This Differs
+
+**LOCOMO accuracy matching mem0 and MemPalace — with zero model calls on the
+write path, zero cost to ingest, and a store that rebuilds itself byte for
+byte.**
+
+Measured head to head: every arm answering the same 199 questions, read and
+judged by the same model, embedding through the same endpoint. Reproducible
+from this repository with the commands in [benchmarks/](benchmarks).
+
+| LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
+| --- | --- | --- | --- |
+| **this project** | **0.628** | **0 calls, $0, 356 s** | **28 ms** |
+| MemPalace | 0.623 | 20 calls, $1.15, 520 s | 63 ms |
+| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 90 ms |
+
+No pair of those accuracies separates statistically. That is the claim, and it
+is deliberately a tie: **parity with the systems this category is named after,
+from a design that spends nothing to reach it.**
+
+### Why these numbers are lower than the ones on everyone's website
+
+mem0 advertises 92.5 on LOCOMO. Under this harness it scores 0.583. Zep
+advertises 94.7%. Neither is lying and neither figure is wrong — LOCOMO's score
+is produced by a reader model turning passages into an answer and a judge
+grading it, and changing either moves the result by tens of points before the
+memory system is involved at all. Zep's own table shows 63.8% against 71.2% for
+the same retrieval, read by a smaller and a larger model.
+
+So an absolute LOCOMO number means nothing across harnesses, and this page does
+not publish one to be compared against a website. It publishes three arms under
+one reader, one judge and one embedder, and the noise floor beside them: mem0
+run twice at identical settings scores 0.603 and 0.598 while answering 41 of
+the same 199 questions differently. An independent analysis of the standard
+LOCOMO harness found its judge accepting 63% of intentionally wrong answers.
+
+A tie anyone can re-run is worth more than a lead nobody can check, and it is
+the one claim here that survives someone checking it.
+
+### The one absolute number, and why it is not the one they publish
+
+LOCOMO scores move with the reader, so nothing above is quoted against a
+website. LongMemEval's retrieval stage has no reader and no judge — it asks
+whether the gold session is in the top k — so it is the one figure here that
+can sit beside a published one. MemPalace publishes **96.6% R@5** on it.
+
+| LongMemEval session retrieval, no model anywhere | BM25 | this project |
+| --- | --- | --- |
+| R@5, as the field defines it — gold session in the top five | 96.6% | 98.3% |
+| R@10 | 98.3% | **100%** |
+| **R@5 strict — *every* gold session in the top five** | 79.7% | **89.8%** |
+
+Read the first row and then discard it. **A plain BM25 keyword search, with no
+memory system of any kind, scores 96.6% — the published headline, to the
+digit.** Fifty candidate sessions and "is the gold one in the top five" does
+not separate an architecture from `grep`; five of the benchmark's six question
+types are at a perfect score for BM25 alone. Being 1.7 points above keyword
+search there is not a product claim, and it is not made here.
+
+The row that means something is the last one. Thirty-five of these 59 questions
+have more than one gold session, and requiring all of them is the difference
+between finding the evidence and finding *some* of it: **79.7% against 89.8%,
+ten points over the lexical baseline, with no model called at any stage.**
+
+### What the parity is bought with
+
+Everything that separates these systems follows from one choice: **no language
+model runs on the write path.**
+
+| | this project | MemPalace | mem0 |
+| --- | --- | --- | --- |
+| embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
+| same corpus written twice | **byte-identical** | LLM on the write path | 41 of 199 answers change |
+| prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
+
+Two of the headline figures need a sentence each. **Retrieval at 28 ms against
+90 ms is real and mostly invisible**: a model reading those passages takes
+about five seconds and does not care whether it was handed five hundred tokens
+or five thousand, so end to end the three are indistinguishable and retrieval
+is about one per cent of the wait. Where it counts is a memory system feeding
+an agent's own context, adding its latency to a call that was happening anyway.
+**Ingest at 356 s against 4,121 s is the one nothing hides** — an hour of
+difference is an hour.
+
+A system that asks a model to decide what a conversation *means* before storing
+it pays for that on every ingest, cannot reproduce its own store, and cannot
+return what the model chose not to write down. A system that stores the
+evidence pays instead on every query, in the prompt it hands back. The two
+cross at roughly **1,900 questions asked of a single conversation's memory**;
+below that this is cheaper, and at LOCOMO's own density of twenty questions it
+is cheaper by a factor of 31.
+
+**Where this is behind.** mem0 leads temporal questions by about twenty points
+(0.735 against 0.529) — reproducibly, across independent runs. It also hands
+the reader fewer tokens, 1,017 against 1,511, because rewritten facts are
+shorter than the passages they came from; that costs nothing in time here but
+it is real money at volume. And holding the embedding model in-process costs
+about 2 GB resident where a system calling out to an endpoint holds 177 MB and
+a bill.
 
 ## Quickstart
 
@@ -58,22 +158,71 @@ pamin write --topic deploy "部署流水线运行在持续集成上面"
 pamin search "how is the code deployed"   # finds it
 ```
 
-## Stack
+## Architecture
 
-Two engines, each doing what it is best at:
+The design rests on one separation: **an authority that is written to, and a
+projection that is read from.** PostgreSQL holds every fact the system is
+accountable for. The retrieval index holds nothing that PostgreSQL cannot
+reproduce.
 
 ```text
-PostgreSQL   authority: evidence, the version ledger, bi-temporal validity,
-             the outbox, transactions and concurrency control
-zvec         projection: BM25 full-text and dense vectors, in-process,
-             rebuildable from PostgreSQL at any time
+                    write                              read
+                      │                                  │
+          ┌───────────▼───────────┐          ┌───────────▼───────────┐
+          │  AUTHORITY            │          │  PROJECTION           │
+          │  PostgreSQL           │          │  zvec, in-process     │
+          │                       │          │                       │
+          │  · raw evidence and   │  outbox  │  · segmented lexical  │
+          │    source spans       │ ───────► │  · n-gram lexical     │
+          │  · bi-temporal        │  cascade │  · dense vectors      │
+          │    version ledger     │          │                       │
+          │  · relationship graph │          │  derived: losing it   │
+          │  · the outbox         │          │  costs a reindex,     │
+          └───────────────────────┘          │  not a migration      │
+                      │                      └───────────┬───────────┘
+                      │  graph channel                   │  three channels
+                      └──────────────┬───────────────────┘
+                                     ▼
+                        reciprocal rank fusion, in our layer
+                                     ▼
+                        optional cross-encoder rerank
+                                     ▼
+                        results, each carrying why it is here
 ```
 
-PostgreSQL is bundled rather than something you install. The projection index holds nothing PostgreSQL cannot reproduce, so `pamin reindex` rebuilds it from scratch — which is also what keeps the retrieval engine replaceable.
+**A bi-temporal version ledger, not a key-value store.** Every memory carries
+both when a fact was true and when the system learned it — application time and
+system time, the two period dimensions SQL:2011 names. Superseding a fact
+writes a new version and closes the old one's validity rather than overwriting
+it, and deletion is a closed interval rather than a `DELETE`. That is what lets
+current, stale, contradicted and historical be distinguished instead of
+conflated, and it is why a question about what was believed last March has an
+answer.
 
-Embeddings run locally through ONNX Runtime. The default install makes no network call at query time and needs no API key.
+**Evidence is preserved, never rewritten.** Nothing on the write path asks a
+language model to decide what a conversation "means". Raw content and its
+source spans stay as they arrived; the sensory filter records *why* something
+was held back without discarding it. This is an architectural commitment with
+measurable consequences, listed under
+[Against the other memory systems](#measured): no cost and no external service
+on ingest, a store that is byte-identical when the same corpus is written
+twice, and answers that survive questions whose evidence was never stated
+outright.
 
-Retrieval draws on four channels — segmented lexical, n-gram lexical, vector, and the relationship graph — and fuses them here rather than inside the index, so every result can report the rank it held in each channel:
+**A transactional outbox instead of dual writes.** A write records, in the same
+transaction that stores the evidence, what the projection now owes it. A
+cascade worker settles that debt afterwards. The index can therefore lag, fail
+or be thrown away entirely without the authority ever being wrong — and
+`pamin reindex` rebuilds it from PostgreSQL, which is also what keeps the
+retrieval engine a replaceable component rather than a permanent commitment.
+
+**Four recall channels, fused above the index rather than inside it.**
+Segmented lexical, n-gram lexical, dense vector, and the relationship graph.
+The first three come from the projection; the fourth lives in PostgreSQL, where
+the index cannot see it. Letting the index pre-fuse its own three would produce
+a list that then had to be fused again — weighting its members twice and losing
+the rank each held in each channel. Fusing once, above both, is what makes the
+result explainable:
 
 ```bash
 $ pamin search "deployment pipeline" --json | jq '.hits[0].why'
@@ -83,9 +232,30 @@ $ pamin search "deployment pipeline" --json | jq '.hits[0].why'
   { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, ... } ]
 ```
 
-The graph is why fusion has to happen here. It lives in PostgreSQL, where the index cannot see it, so letting the index pre-fuse its own three channels would produce a list that had to be fused again — weighting its members twice and losing the per-channel ranks.
+Every hit reports the rank it held in each channel and the graph path that
+reached it. There is no step at which a score becomes unattributable.
 
-Design decisions and their trade-offs are recorded in [docs/adr/](docs/adr/).
+**A cross-encoder pass, tiered.** Over the fused shortlist, `off`, `fast`
+(default) and `accurate` trade latency for quality on a curve that is measured
+rather than assumed — the figures, including one that had to be corrected
+twice, are under [Measured](#measured).
+
+**Everything local.** Embeddings run in-process through ONNX Runtime;
+PostgreSQL is bundled rather than something you install. A default install
+makes no network call at query time and needs no API key.
+
+### Crate layout
+
+| crate | responsibility |
+| --- | --- |
+| `pamin-core` | domain model, ledger semantics, fusion. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
+| `pamin-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
+| `pamin-index` | the projection: multilingual segmentation, lexical and vector channels. |
+| `pamin-engine` | the only crate that holds both, and therefore the only place they can drift. Sits above `pamin-core` so index types never reach the domain layer. |
+| `pamin-cli` | the command surface, and the resident server behind it. |
+
+Design decisions, their trade-offs, and the ones that reversed when measured
+are recorded in [docs/adr/](docs/adr/).
 
 ## Relationships
 
@@ -233,13 +403,16 @@ distillation performed by a model is not the same twice. This project has no
 such floor on the write side, because there is no model there: the `--limit 30`
 row above reads a store the `--limit 10` row built, byte for byte.
 
-Two question types do clear that floor, and both reproduce across independent
-runs. mem0 leads **temporal** questions by about twenty points, 0.735 against
-0.529. This project and MemPalace lead **adversarial** questions — the ones
-whose answer is implied rather than stated — by about the same, 0.429 against
-0.190. That is what rewriting a conversation into facts costs: what was never
-said is not in the rewrite to find. The totals tie because these cancel, which
-is not the same as the systems performing alike.
+Two question types clear that floor and only one of them is a real difference
+between the systems. **mem0 leads temporal questions by about twenty points**,
+0.735 against 0.529, reproducibly. This project and MemPalace lead
+**adversarial** questions by about the same — and that one is withdrawn rather
+than claimed: 74% of that category asks about the wrong speaker, and the answer
+key rewards replying with the other speaker's content. mem0 answers "no record
+of that", which for the question as asked is the better answer, and is marked
+wrong for it. Scoring high there means ignoring who said what, which is a
+defect in a memory product. The totals tie because the two cancel; only one of
+the two is worth anything.
 
 **The difference is on the bill.** This project puts ten conversations in with
 no model calls, no cost and no external service, in 356 seconds; mem0 takes 272
@@ -335,13 +508,12 @@ What was measured, how, and the conclusions that reversed on measurement are in
 [docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
 source of truth if it and this page ever disagree.
 
-## Status
+## Scope
 
-This is an early foundation, not a finished product.
-
-**Working:** the version ledger with bi-temporal fields and soft deletes; bundled PostgreSQL; the sensory filter, which records why content was held without ever discarding evidence; multilingual segmentation and language detection; all four recall channels with reciprocal rank fusion and explainable results; an optional cross-encoder pass that reranks what no lexical channel found; the relationship graph, derived and asserted, with bi-temporal edge versions; the outbox, so a write records what the index owes it in the same transaction, and the cascade that pays it; rebuilding the index from PostgreSQL; a resident server that holds the database, the index and the model, so a command pays for none of them; an evaluation harness that settles the defaults this used to guess at, against this project's own corpus and two external retrieval benchmarks; and a comparison harness that runs this project against other memory systems on one shared model and one shared embedder.
-
-**Not built yet:** source ingestion and page trees; curated notes and the session brief; passive optimization and forgetting; the MCP surface.
+Everything the architecture above describes is built; what has been measured,
+and what has not, is stated in [Measured](#measured). Not built yet: source
+ingestion and page trees; curated notes and the session brief; passive
+optimization and forgetting; the MCP surface.
 
 ## Development
 
