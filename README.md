@@ -148,28 +148,128 @@ and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later; v1–v3
 report 0.786 and were corrected). The 0.7359 above was re-run and reproduced
 exactly before being placed here.
 
-**Latency**, through a warm resident server at the default `accuracy` profile:
+**Retrieval on a memory benchmark.** LongMemEval-S, 59 of its 500 questions
+drawn stratified by type, with the abstention questions dropped because their
+correct answer is a refusal and the benchmark's own scorer drops them too. Each
+question carries its own haystack of about fifty sessions and five hundred
+turns; turns are indexed individually and rolled up to the session that
+contains them. `recall_all@k` requires every gold session inside the top k;
+`ndcg_any@k` counts any gold session as relevant. A plain BM25 over the same
+turns, the same roll-up and the same cut runs beside it, because a retrieval
+number without a lexical baseline says nothing about retrieval:
 
-| operation | corpus | median |
+| LongMemEval-S, session level, 59 questions | BM25 | this project |
 | --- | --- | --- |
-| a write | short memories, small workspace | 32 ms |
-| a search | small workspace | 32 ms |
-| a search, reranker included | 13,014 documents | 204 ms |
-| the same search, `--rerank off` | 13,014 documents | 39 ms |
+| recall_all@5 | 0.7966 | 0.8983 |
+| ndcg_any@10 | 0.8898 | 0.9202 |
+
+The total is not the result. Split by question type it is:
+
+| recall_all@5, by question type | n | BM25 | this project |
+| --- | --- | --- | --- |
+| multi-session | 15 | 0.467 | **0.867** |
+| temporal-reasoning | 16 | 0.750 | 0.750 |
+| knowledge-update | 9 | 1.000 | 1.000 |
+| single-session-user | 8 | 1.000 | 1.000 |
+| single-session-assistant | 7 | 1.000 | 1.000 |
+| single-session-preference | 4 | 1.000 | 1.000 |
+
+Four channels, rank fusion and a cross-encoder beat a plain lexical baseline on
+one of the six question types. On four of the others BM25 already scores
+perfectly, so those rows measure the benchmark and not any system. On the
+sixth the two are not merely close: across all sixteen temporal-reasoning
+questions they reach the same verdict question for question and fail on the
+same four. Nothing in the stack bought anything there.
+
+The win is real where it is real. multi-session is the type whose evidence is
+spread over several sessions with no single one matching the question well, and
+there this is forty points of recall@5 above lexical retrieval — with no
+question anywhere in the set where it scores below BM25.
+
+Three things this is not. It is not evidence about temporal reasoning: the
+haystack was loaded as one memory per turn, so no topic ever had a second
+version and the validity columns were never populated — the ledger this project
+is built around was not in the measurement at all, and the retrieval that was
+measured performs exactly as a lexical baseline does. It is not comparable to
+the retrieval tables in the LongMemEval paper, which are computed on
+LongMemEval-M, where each haystack holds roughly ten times as many sessions.
+And recall@50 is omitted because the haystack holds about fifty sessions, so it
+would be near one by construction.
+
+Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
+all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
+
+**Latency**, what one `pamin search` costs against a warm resident server at
+the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
+exec, connect to the socket, and back — run serially over forty distinct
+queries, reported as the median of them:
+
+| corpus | `--rerank off` | `fast` (default) | `accurate` |
+| --- | --- | --- | --- |
+| XQuAD-R, 13,014 documents | 77 ms | 251 ms | 1241 ms |
+| MIRACL Swahili dev, 131,924 documents | 142 ms | 472 ms | 1675 ms |
+
+Seventeen to nineteen of those milliseconds are the invocation rather than the
+search: `pamin --help` against the same workspace costs that much. It is
+measured separately rather than subtracted, because a caller pays it either
+way.
+
+A write is 32 ms, most of it the `fsync` a durable append owes. That figure is
+from the write-path measurement in the ADR and was not re-taken in this sweep.
 
 Measured on 4 vCPU (Intel Xeon @ 2.80GHz, no SMT), 15 GB RAM, Ubuntu 24.04,
-rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. Median of
-three runs.
+rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. The
+queries in each cell are disjoint from every other cell's, because a repeated
+query is answered from a cache in microseconds and would be reported here as
+search latency.
 
 `--rerank accurate` scores higher than the default on every corpus measured and
-costs 469 ms instead of 165 for its pass; `fast` is the default on that latency
-difference alone, which is a judgement rather than a result.
+its pass costs about four and a half times `fast`'s; `fast` is the default on
+that latency difference alone, which is a judgement rather than a result.
 
 Two things these numbers are not. Four cores is where the embedding model and
 the reranker contend, so a machine with cores to spare will not look like this
 — published figures for a reranker of this size are a few milliseconds per
 candidate against the ten measured here. And the write figure is for short
 memories: a forward pass scales with length, so longer content costs more.
+
+**Throughput, and where it stops.** The same sweep at one, eight and
+thirty-two concurrent callers, `fast` being the default:
+
+| corpus | tier | 1 | 8 | 32 | ceiling |
+| --- | --- | --- | --- | --- | --- |
+| XQuAD-R, 13,014 | `off` | 13.1 q/s | 19.5 | 20.7 | **~21 q/s** |
+| | `fast` | 3.5 q/s | 4.7 | 4.2 | **~4.7 q/s at eight** |
+| | `accurate` | 0.8 q/s | 0.9 | 1.0 | **~1 q/s** |
+| MIRACL, 131,924 | `off` | 6.5 q/s | 10.3 | 10.6 | **~11 q/s** |
+| | `fast` | 2.0 q/s | 2.4 | 2.4 | **~2.4 q/s** |
+| | `accurate` | 0.6 q/s | 0.6 | 0.6 | **~0.6 q/s** |
+
+Read it as a ceiling rather than a score. Four cores saturate at eight
+concurrent callers and the rest is queueing: on the default tier, thirty-two
+callers get *less* throughput than eight (4.2 against 4.7) and wait twenty-one
+times longer than one does — p50 goes from 251 ms to 5.4 s. Nothing here
+scales by adding callers. Adding cores is the lever; this measurement does not
+say by how much.
+
+**What a server holds.** Resident memory after all three tiers have run, which
+is when the embedding model and both rerankers are loaded at once:
+
+| corpus | server RSS | index on disk | workspace |
+| --- | --- | --- | --- |
+| XQuAD-R, 13,014 documents | 3.6 GB | 119 MB | 2.1 GB |
+| MIRACL, 131,924 documents | 7.2 GB | 1.1 GB | 2.2 GB |
+
+Seven gigabytes for a hundred and thirty thousand documents is the number to
+plan around, and it is why two workspaces do not fit on a sixteen-gigabyte
+machine at this corpus size. A workspace that never asks for `accurate` never
+loads the 570 MB reranker; `--rerank off` never loads either.
+
+**Above this, nothing is measured.** The largest corpus here is 131,924
+documents. A million and beyond is untested — not projected, not extrapolated,
+untested — and the descriptor count is the first thing that would break: this
+index is 2,111 segment files and a search holds 2,733 descriptors open, which
+already exceeds the 1,024 a Linux process is given by default.
 
 What was measured, how, and the conclusions that reversed on measurement are in
 [docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
