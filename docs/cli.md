@@ -270,8 +270,10 @@ an order the channels got wrong, and what makes it cost a forward pass for
 every candidate it looks at. Only the candidates no lexical channel found are
 reordered, and only into the positions they already hold — so a memory that
 shares words with your query comes back where it was, whatever the reranker
-thought of it. The same-language column above is unchanged for that reason
-rather than by luck.
+thought of it. That is why the same-language column moves by thousandths rather
+than by the hundredths the cross-lingual column moves. It does not hold the
+column still: a same-language answer the lexical channels happened to miss is
+an unlexical candidate like any other, and reordering can carry it down.
 
 That also means a workspace whose memories are all in one language gains
 almost nothing here and should set `off`: the candidates the lexical channels
@@ -298,11 +300,11 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.2197  deployment_pipeline v2  the deployment pipeline now runs on argo cd
+0.1970  deployment_pipeline v2  the deployment pipeline now runs on argo cd
         lexical_ngram#1 vector#1 graph#2 from oncall_rota --depends_on-> (1hop)
-0.2063  oncall_rota v1  the oncall rota rotates every monday morning
+0.1871  oncall_rota v1  the oncall rota rotates every monday morning
         lexical_ngram#3 vector#3 graph#1 from deployment_pipeline --depends_on-> (1hop)
-0.2019  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
+0.1811  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
         lexical_ngram#2 vector#2 graph#3 from deployment_pipeline --mentions-> (1hop)
 ```
 
@@ -318,9 +320,9 @@ $ pamin search "how do we deploy" --limit 1 --json
       "topic_state": "4d6c7768-11ee-4322-a76a-37e1f9e96a76",
       "version": 2,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.21969697,
+      "score": 0.1969697,
       "why": [
-        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.5, "contribution": 0.045454547 },
+        { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, "contribution": 0.022727273 },
         { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.09090909 },
         { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.083333336 },
         { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
@@ -340,8 +342,8 @@ contributed `weight / (10 + rank)` to the score. There are four channels:
 
 | Channel | What it matches | Weight |
 | --- | --- | --- |
-| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.5 |
-| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.5 |
+| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.25 |
+| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.25 |
 | `vector` | Meaning, across languages | 1.0 |
 | `graph` | Topics connected to what the other channels found | 1.0 |
 
@@ -349,7 +351,7 @@ Ranks travel between channels; scores do not. A BM25 score and a cosine distance
 are not comparable quantities, so fusion combines the ranks rather than
 pretending the scores share a scale.
 
-The two lexical channels carry half weight because they are nearly the same
+The two lexical channels carry a quarter weight each because they are nearly the same
 channel: both match the literal text, one over segmented words and one over
 character n-grams, so they agree with each other far more often than either
 agrees with the vector or graph channel. At full weight that agreement counts

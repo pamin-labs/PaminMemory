@@ -6,13 +6,13 @@ Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistant
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early days.** What is here runs end to end and is worth trying, but parts of the system described below are not built yet. See [Status](#status).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Status](#status).
 
 ## What It Does
 
 - Preserves raw evidence and source spans as the authority behind memory.
 - Tracks versioned memories so current, stale, contradicted, and historical facts can be separated.
-- Combines page/tree structure, semantic recall, lexical matching, temporal relationships, and reranking.
+- Combines lexical matching, semantic recall, relationship structure, and a reranking pass over what the lexical channels missed.
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
 
@@ -41,7 +41,7 @@ Every command takes `--json`, because the usual caller is an agent parsing outpu
 pamin search "deployment" --json
 ```
 
-`pamin stop` shuts the local database down. It is deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
+`pamin stop` shuts down the local database and the resident server. Both are deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
 `pamin grep` searches the evidence itself — verbatim, unranked, and including content the filter held and no index ever saw.
 
@@ -77,11 +77,10 @@ Retrieval draws on four channels — segmented lexical, n-gram lexical, vector, 
 
 ```bash
 $ pamin search "deployment pipeline" --json | jq '.hits[0].why'
-[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1, ... },
-  { "kind": "channel", "channel": "vector",        "rank": 2, ... },
-  { "kind": "channel", "channel": "graph",         "rank": 1, ... },
-  { "kind": "path", "via": "oncall_rota", "hops": 1, "edge": "depends_on", ... },
-  { "kind": "modifier", "modifier": "importance",  "factor": 1.0 } ]
+[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, ... },
+  { "kind": "channel", "channel": "vector",        "rank": 2, "weight": 1.0,  ... },
+  { "kind": "channel", "channel": "graph",         "rank": 1, "weight": 1.0,  ... },
+  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, ... } ]
 ```
 
 The graph is why fusion has to happen here. It lives in PostgreSQL, where the index cannot see it, so letting the index pre-fuse its own three channels would produce a list that had to be fused again — weighting its members twice and losing the per-channel ranks.
@@ -104,6 +103,77 @@ pamin link oncall_rota deployment_pipeline --kind depends_on
 ```
 
 Edges are versioned the way memories are. Changing one closes the old version and appends a new one, `unlink` retracts a claim without erasing that it was made, and every edge carries its own validity interval — so "what did we think depended on this, back then" has an answer.
+
+## Measured
+
+Every figure below comes from `pamin search` and `pamin write` themselves, not
+from the model or the index underneath them, because the gap between those two
+is where this project's numbers have been wrong before.
+
+**Retrieval quality**, at the shipped defaults, median of three runs:
+
+| corpus | group | nDCG@10 | recall@50 |
+| --- | --- | --- | --- |
+| MIRACL Swahili dev — 131,924 real passages, 482 queries, 5,092 human judgements | one language throughout | 0.7359 | 0.9494 |
+| XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6097 | 0.8864 |
+| XQuAD-R | query and answer in the same language | 0.7971 | 0.9630 |
+
+Both corpora are fetched rather than vendored, and the harness that drives them
+is in the repository: `cargo test -p pamin-engine --test crosslingual -- --ignored`.
+
+**What those MIRACL figures are worth, against published results on the same
+corpus, the same dev split and the same qrels:**
+
+| MIRACL Swahili dev, 131,924 passages | nDCG@10 | what it is |
+| --- | --- | --- |
+| Pyserini BM25 baseline | 0.3826 | lexical only |
+| this project, `--rerank off` | 0.7158 | four channels fused |
+| this project, `fast` (default) | **0.7359** | fused, then a cross-encoder |
+| this project, `accurate` | 0.7654 | fused, then a larger cross-encoder |
+| BGE-M3, published | 0.787 | dense retrieval alone |
+
+Read that last row carefully, because it is the honest reading: **a whole
+retrieval stack here scores below a single dense retriever** — and it is the
+same model, an int8 export of BGE-M3. Two differences are known and neither is
+measured: the published figure is fp32, and MIRACL's own training split is in
+BGE-M3's fine-tuning data, where this runs zero-shot. Neither excuses the gap;
+they are where to look for it.
+
+What the table does establish is the distance from the lexical baseline a
+memory system would otherwise ship with, on a low-resource language, on four
+CPU cores with no GPU anywhere.
+
+Sources: [Pyserini MIRACL v1.0 regressions](https://github.com/castorini/pyserini/blob/master/docs/experiments-miracl-v1.0.md)
+and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later; v1–v3
+report 0.786 and were corrected). The 0.7359 above was re-run and reproduced
+exactly before being placed here.
+
+**Latency**, through a warm resident server at the default `accuracy` profile:
+
+| operation | corpus | median |
+| --- | --- | --- |
+| a write | short memories, small workspace | 32 ms |
+| a search | small workspace | 32 ms |
+| a search, reranker included | 13,014 documents | 204 ms |
+| the same search, `--rerank off` | 13,014 documents | 39 ms |
+
+Measured on 4 vCPU (Intel Xeon @ 2.80GHz, no SMT), 15 GB RAM, Ubuntu 24.04,
+rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. Median of
+three runs.
+
+`--rerank accurate` scores higher than the default on every corpus measured and
+costs 469 ms instead of 165 for its pass; `fast` is the default on that latency
+difference alone, which is a judgement rather than a result.
+
+Two things these numbers are not. Four cores is where the embedding model and
+the reranker contend, so a machine with cores to spare will not look like this
+— published figures for a reranker of this size are a few milliseconds per
+candidate against the ten measured here. And the write figure is for short
+memories: a forward pass scales with length, so longer content costs more.
+
+What was measured, how, and the conclusions that reversed on measurement are in
+[docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
+source of truth if it and this page ever disagree.
 
 ## Status
 

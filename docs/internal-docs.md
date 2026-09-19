@@ -2,7 +2,7 @@
 
 This repository includes an optional private submodule at `internal-docs`.
 
-The submodule points to `Pamin-Labs/InternalDocs`, which contains private planning, strategy, and research notes for Pamin Labs maintainers. It is not required to build, test, or use the public PaminMemory project.
+The submodule points to `Pamin-Labs/InternalDocs`, which contains private planning, strategy, and research notes for Påmin Labs maintainers. It is not required to build, test, or use the public PaminMemory project.
 
 ## Public Users
 
