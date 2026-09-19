@@ -241,8 +241,87 @@ sets of 20 to 30 scenarios each, with a **marker-free invariant** worth copying:
 the stale and current versions of a fact must be textually identical except for
 the changed value, with no "old", "new" or "current" framing to key on.
 
-So the ledger's benchmark is no longer missing, it is unrun, and what it needs
-is a reader and a judge rather than a new corpus.
+So the ledger's benchmark needed a reader and a judge rather than a new corpus.
+
+### What it said
+
+Five arms over the 70 questions, differing in one thing: where the date lives.
+Nothing else moves between them -- same corpus, same reader, same judge, same
+shortlist of ten.
+
+| arm | where the date is | current | **stale** | neither |
+| --- | --- | ---: | ---: | ---: |
+| `bm25` | nowhere | 0.586 | **0.357** | 0.057 |
+| `pamin` | nowhere | 0.700 | **0.286** | 0.014 |
+| `pamin-dated` | in the passage text | 0.814 | **0.157** | 0.029 |
+| `pamin-valid` | in the ledger, not shown to the reader | 0.700 | **0.286** | 0.014 |
+| `pamin-valid-read` | in the ledger, shown to the reader | **0.900** | **0.100** | 0.000 |
+
+McNemar on the discordant pairs, which is the only part of 70 questions that
+carries information:
+
+| A vs B | discordant | A only | B only | p |
+| --- | ---: | ---: | ---: | ---: |
+| `pamin` vs `bm25` | 24 | 16 | 8 | 0.1516 |
+| `pamin-dated` vs `pamin` | 18 | 13 | 5 | 0.0963 |
+| `pamin-valid` vs `pamin` | 8 | 4 | 4 | 1.0000 |
+| `pamin-valid-read` vs `pamin` | 16 | 15 | 1 | 0.0005 |
+| `pamin-valid-read` vs `pamin-valid` | 18 | 16 | 2 | 0.0013 |
+| `pamin-valid-read` vs `pamin-dated` | 8 | 7 | 1 | 0.0703 |
+
+**Writing the interval and not showing it is worth exactly nothing.**
+`pamin-valid` imports every session under its own `--valid-from`, refuses to
+run if the dates did not land, and scores 0.700 against the flat arm's 0.700 on
+four discordant questions each way. The ledger had the timeline the whole time;
+the reader could not see it, and a memory that cannot be read from is a column.
+
+**Showing it cuts the stale rate by 65%**, from 0.286 to 0.100, against the
+flat arm (p = 0.0005) and against writing it without showing it (p = 0.0013).
+The `neither` column goes to zero, so this is not accuracy bought by refusing
+to answer: the same questions are answered, with the value that still holds.
+
+    Q: how many postcards have I collected?
+    pamin             "17"                 stale
+    pamin-valid       "17 new postcards."  stale
+    pamin-valid-read  "25"                 current
+
+**It is not established to beat writing the date into the passage.** 0.900
+against `pamin-dated`'s 0.814 is eight questions of difference, seven of them
+one way, and p = 0.0703. That is the comparison the ledger has to win to be
+worth its columns, and on this corpus it does not clear the line. What can be
+said is narrower than it looks in the first table: the read path is worth a
+great deal over doing nothing, and no better than a date prefix as far as
+anything here can tell.
+
+The two also cost differently, in opposite directions. One import per session
+leaves one source span per session, so `pamin-valid` stores 62 MB where the
+flat arm stores 20 and `pamin-dated` stores 21 -- three times the disk. The
+prompt goes the other way: the interval as a field is 2,490 tokens where the
+date as prose is 2,657, six per cent cheaper to ask.
+
+### What this run does not establish
+
+- **Nothing about write-side cost.** Two arms ran beside each other to halve
+  the wall clock, sharing the machine and the model endpoint, so the LLM
+  counters and the timings describe the pair. Every row says so. The bytes on
+  disk, the prompt sizes and the verdicts are unaffected and are what is
+  reported above.
+- **Nothing about a floor of zero.** BM25 with no dates anywhere answers 0.586
+  of these correctly, which is better than choosing between two values at
+  random. Something other than recency separates them -- the later session is
+  often simply more on topic. Every arm sits on that floor, so the comparison
+  between them holds, but "0.900" is not 0.900 above nothing.
+- **Nothing about MemStrata's marker-free invariant.** Whether these pairs
+  satisfy it cannot be settled by scanning for words like "now" or "actually":
+  57% of the later gold sessions contain one and, read individually, they are
+  incidental -- "new restaurants", "been there before". Establishing it would
+  need a judgement per pair, which is a labelling pass this has not done.
+- **Nothing about supersession as the ledger models it.** A topic here is a
+  turn, so no two memories share an identity and nothing supersedes anything:
+  what is measured is valid time on independent records. `pamin` cannot infer
+  that two turns are versions of one fact, because inferring it is a model on
+  the write path and there is none. An agent that assigns topics gets the
+  supersession chain; a raw transcript does not.
 
 [supersede]: https://arxiv.org/abs/2606.27472
 [memstrata]: https://arxiv.org/abs/2606.26511
@@ -780,10 +859,12 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
 
 ### What this does not establish
 
-- **Nothing about the ledger.** The only arm that used versions and validity
-  intervals gained nothing, and that is a fact about this benchmark as much as
-  about the feature. It is not evidence the feature works, and it is not
-  evidence it does not.
+- **Nothing about the ledger.** The only arm here that used versions and
+  validity intervals gained nothing, and that is a fact about LOCOMO as much as
+  about the feature: this benchmark asks when something happened, not whether a
+  fact was replaced. What the ledger is for is measured on its own corpus in
+  [What it said](#what-it-said), where the same machinery moves the stale rate
+  from 0.286 to 0.100 -- once the reader can see it.
 - **Nothing about mem0's own defaults.** It is measured here with the shortlist
   and the extras this comparison chose for it, not the configuration its authors
   would pick. The re-run corrects two ways it was handicapped; there may be a
