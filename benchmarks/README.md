@@ -16,6 +16,8 @@ benchmarks/
   datasets/
     locomo.py        LOCOMO: conversations, and LLM-judged question answering
     longmemeval.py   LongMemEval: per-question haystacks, and retrieval metrics
+    supersession.py  LongMemEval's knowledge-update questions, judged three
+                     ways: the value that holds, the value it replaced, neither
   run.py             pick a dataset, pick arms, run
   results/           one directory per dataset; every row carries its machine
 ```
@@ -47,11 +49,28 @@ python3 benchmarks/shim.py 8088 &
 # 2. a comparison
 python3 benchmarks/run.py --dataset locomo \
     --arms bm25,pamin,pamin-wide,mem0,mempalace \
-    --conversations 10 --questions 20
+    --units 10 --questions 20
 
 # 3. what it costs, without answering anything
 python3 benchmarks/run.py --dataset locomo --mode cost --arms ...
+
+# 4. whether an answer is the fact that still holds
+python3 benchmarks/run.py --dataset supersession \
+    --arms bm25,pamin,pamin-dated,pamin-valid,pamin-valid-read \
+    --units 70 --questions 1
 ```
+
+`--units` is conversations on LOCOMO and questions on the other two, because a
+LongMemEval question carries its own haystack. This file said
+`--conversations` for a while; no such flag exists.
+
+Two runs at once halve the wall clock -- the reader and the judge are network
+waits, and the machine is idle through them -- and make four of the cost
+columns describe the pair rather than the arm. Set `BENCH_SHARED_ENDPOINT=1`
+when you do it. Every row then says so and the summary prints what survived
+instead of a table that looks the same as a clean one. The arm that caught this
+was one with no model on its write path reporting fourteen LLM calls, all of
+them the other run's.
 
 Third-party systems each install into their own virtualenv. Installing one of
 them into the shared environment moved `protobuf` past the ceiling another
