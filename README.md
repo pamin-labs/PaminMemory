@@ -55,6 +55,31 @@ LOCOMO harness found its judge accepting 63% of intentionally wrong answers.
 A tie anyone can re-run is worth more than a lead nobody can check, and it is
 the one claim here that survives someone checking it.
 
+### The one absolute number, and why it is not the one they publish
+
+LOCOMO scores move with the reader, so nothing above is quoted against a
+website. LongMemEval's retrieval stage has no reader and no judge — it asks
+whether the gold session is in the top k — so it is the one figure here that
+can sit beside a published one. MemPalace publishes **96.6% R@5** on it.
+
+| LongMemEval session retrieval, no model anywhere | BM25 | this project |
+| --- | --- | --- |
+| R@5, as the field defines it — gold session in the top five | 96.6% | 98.3% |
+| R@10 | 98.3% | **100%** |
+| **R@5 strict — *every* gold session in the top five** | 79.7% | **89.8%** |
+
+Read the first row and then discard it. **A plain BM25 keyword search, with no
+memory system of any kind, scores 96.6% — the published headline, to the
+digit.** Fifty candidate sessions and "is the gold one in the top five" does
+not separate an architecture from `grep`; five of the benchmark's six question
+types are at a perfect score for BM25 alone. Being 1.7 points above keyword
+search there is not a product claim, and it is not made here.
+
+The row that means something is the last one. Thirty-five of these 59 questions
+have more than one gold session, and requiring all of them is the difference
+between finding the evidence and finding *some* of it: **79.7% against 89.8%,
+ten points over the lexical baseline, with no model called at any stage.**
+
 ### What the parity is bought with
 
 Everything that separates these systems follows from one choice: **no language
