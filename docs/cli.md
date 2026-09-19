@@ -736,6 +736,15 @@ loaded an embedding model before it did any work of its own.
 to watch it. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
 
+One server serves many projects, and it keeps the sixteen most recently used
+indexes open; the seventeenth closes the one nobody has touched for longest.
+Sixteen is a count of file descriptors, which is what the bound was built for,
+and not a budget in bytes, which is what actually runs out: an open index costs
+about 100 MB on `speed` and about 205 MB on the default `accuracy`, so sixteen
+of them is 1.6 GB or 3.3 GB depending on a flag. On a machine where that is too
+much, `PAMIN_OPEN_INDEXES` sets a smaller number. Lowering it costs nothing but
+a reopen when a query lands on a project that has fallen out.
+
 `PAMIN_NO_SERVER=1` runs everything in the calling process, as it did before.
 The results are identical — it is the same code either way — so this is for
 debugging the server itself, and for a caller that would rather have one process
