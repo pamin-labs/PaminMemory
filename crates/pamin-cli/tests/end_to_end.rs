@@ -1112,6 +1112,38 @@ fn a_write_can_state_when_its_claim_holds(cli: &Cli) {
         "2025-11-01T00:00:00Z",
     ]);
     assert!(error.contains("--valid-to must be after"), "got {error:?}");
+
+    // And a searcher has to see it. `search` carried `recorded_at` so that
+    // judging staleness would not cost a `read` per hit, but recording time
+    // is the wrong timeline for that judgement: everything imported in one
+    // pass shares it, so it recovers the import order and calls that the
+    // history. The interval the writer asserted is the one that says which of
+    // two matching memories has been overtaken.
+    let hit = cli.json(&[
+        "search",
+        "winter timetable evening departures",
+        "--limit",
+        "5",
+    ])["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["topic"] == "winter_timetable")
+        .cloned()
+        .expect("the topic just written is findable");
+    assert_eq!(hit["valid_from"], "2025-11-01T00:00:00Z");
+    assert_eq!(hit["valid_to"], "2026-03-01T00:00:00Z");
+
+    // Open on a topic nobody bounded, rather than filled in from the clock.
+    let unbounded = cli.json(&["search", "argo deployment pipeline", "--limit", "5"])["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["topic"] == "deploy_en")
+        .cloned()
+        .expect("deploy_en is findable");
+    assert!(unbounded["valid_from"].is_null());
+    assert!(unbounded["valid_to"].is_null());
 }
 
 fn the_index_rebuilds_from_postgres(cli: &Cli) {
