@@ -181,6 +181,51 @@ def shim_embed_count():
         return 0
 
 
+def reader_curve(repeats=12):
+    """What the reader costs, against how much context it is handed.
+
+    Retrieval latency is one term of what a caller waits for, and on its own
+    it answers the wrong question. The other term is the model call that reads
+    the passages, and the arms differ most in how many tokens they hand it --
+    557 for this project at ten passages, ~1,017 for mem0 at thirty, 1,511 for
+    this project at thirty, 5,133 for MemPalace at thirty. If that term
+    dominates, a sixty-millisecond difference in retrieval is not a difference
+    anyone experiences.
+
+    The filler is real retrieved text rather than a repeated token, so the
+    prefill is not unrepresentatively compressible.
+    """
+    import tiktoken
+    import urllib.request
+
+    enc = tiktoken.get_encoding("cl100k_base")
+    rows = [json.loads(line) for line in open(f"{WORK}/compare5.jsonl")]
+    corpus = " ".join(r["question"] + " " + r["reference"] for r in rows)
+    tokens = enc.encode(corpus)
+
+    sizes = {"557  (pamin @10)": 557, "1017 (mem0 @30)": 1017,
+             "1511 (pamin @30)": 1511, "5133 (MemPalace @30)": 5133}
+    print(f"reader calls, {repeats} at each size\n", flush=True)
+    for label, size in sizes.items():
+        prompt = (f"Retrieved records:\n{enc.decode(tokens[:max(1, size - 40)])}"
+                  "\n\nQuestion: what is the first word of the records?\n"
+                  "Answer in as few words as possible.")
+        times = []
+        for _ in range(repeats):
+            body = json.dumps({"model": "sonnet",
+                               "messages": [{"role": "user",
+                                             "content": prompt}]}).encode()
+            request = urllib.request.Request(
+                f"{SHIM}/chat/completions", data=body,
+                headers={"Content-Type": "application/json"})
+            started = time.perf_counter()
+            urllib.request.urlopen(request, timeout=600).read()
+            times.append(time.perf_counter() - started)
+        print(f"{label:<24} actual={len(enc.encode(prompt)):>5} tok  "
+              f"median={statistics.median(times):6.2f} s  "
+              f"min={min(times):6.2f} s  max={max(times):6.2f} s", flush=True)
+
+
 def timed(arm, work, limit):
     """One pass over the work, returning the times and the hits it saw."""
     times, hits = [], 0
@@ -259,6 +304,9 @@ def main():
         measure(PaminSocket(), work, args.limit)
     if "pamin-cli" in wanted:
         measure(PaminCli(), work, args.limit)
+    if "reader" in wanted:
+        reader_curve()
+        return
     if "mempalace" in wanted:
         measure(MemPalace(), [(p.replace("locomor1conv", "conv-"), q)
                               for p, q in work], args.limit)
