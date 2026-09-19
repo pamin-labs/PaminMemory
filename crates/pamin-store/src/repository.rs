@@ -1039,6 +1039,37 @@ pub async fn all_topics(executor: impl PgExecutor<'_>, project: ProjectId) -> Re
         .collect())
 }
 
+/// The topics written most recently, newest first.
+///
+/// Bounded, and ordered by an index rather than by sorting the project: the
+/// caller wants to know what is here, and a caller that wanted all of it would
+/// be asking for something no context window can hold anyway.
+pub async fn recent_topics(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    limit: u32,
+) -> Result<Vec<Topic>> {
+    let rows = sqlx::query(
+        "SELECT id, name, path, created_at FROM topics
+         WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2",
+    )
+    .bind(project.0)
+    .bind(i64::from(limit))
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Topic {
+            id: row.get::<uuid::Uuid, _>("id").into(),
+            project_id: project,
+            name: row.get("name"),
+            path: row.get("path"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
 /// How many topics a project holds.
 ///
 /// The projection is keyed by topic, so this is how many documents it will

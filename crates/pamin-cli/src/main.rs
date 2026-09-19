@@ -84,6 +84,9 @@ enum Command {
     /// List the topics connected to one, without ranking them.
     Neighbors(command::neighbors::Args),
 
+    /// Find the topics already here, by what they are called or what they hold.
+    Topics(command::topics::Args),
+
     /// Rebuild the projection index from PostgreSQL.
     Reindex(command::reindex::Args),
 
@@ -138,6 +141,7 @@ async fn main() -> Result<()> {
         Command::Link(args) => protocol::Call::Link(args),
         Command::Unlink(args) => protocol::Call::Unlink(args),
         Command::Neighbors(args) => protocol::Call::Neighbors(args),
+        Command::Topics(args) => protocol::Call::Topics(args),
         Command::Reindex(args) => protocol::Call::Reindex(args),
         Command::Cascade(args) => protocol::Call::Cascade(args),
         Command::Stop => protocol::Call::Stop,
@@ -236,6 +240,10 @@ async fn run_here(
             let result = command::neighbors::execute(&session, project, args).await?;
             format.emit(&result, || command::neighbors::render(&result));
         }
+        protocol::Call::Topics(args) => {
+            let result = command::topics::execute(&session, project, profile, args).await?;
+            format.emit(&result, || command::topics::render(&result));
+        }
         protocol::Call::Reindex(args) => {
             let result = command::reindex::execute(&session, project, profile, args).await?;
             format.emit(&result, || command::reindex::render(&result));
@@ -304,6 +312,10 @@ fn render(
         protocol::Call::Neighbors(_) => {
             let result: command::neighbors::Neighborhood = parse(value, "neighbors")?;
             format.emit(&result, || command::neighbors::render(&result));
+        }
+        protocol::Call::Topics(_) => {
+            let result: command::topics::Topics = parse(value, "topics")?;
+            format.emit(&result, || command::topics::render(&result));
         }
         protocol::Call::Reindex(_) => {
             let result: command::reindex::Reindexed = parse(value, "reindex")?;
