@@ -153,6 +153,27 @@ pamin search "deployment" --json
 
 Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
 
+## Teaching An Agent To Use It
+
+The CLI is the whole interface, so an agent needs to know when reaching for it
+beats answering from what it already has. That judgement ships as a skill:
+
+```bash
+npx skills add pamin-labs/PaminMemory --skill pamin-memory
+```
+
+It installs to `./.agents/skills/pamin-memory` and symlinks into the paths the
+individual agents read, so one install covers Claude Code, Codex, Cline, Amp and
+the rest. `npx skills add pamin-labs/PaminMemory --list` shows what is there
+before you take it.
+
+The skill is about judgement rather than syntax — which of `search`, `read`,
+`grep` and `neighbors` answers which kind of question, how to read the `why`
+trace on a result, and the traps around the evidence filter. It is the only
+skill this repository publishes. There is a second one for people working on
+PaminMemory itself, about measurement discipline, and it is marked internal so
+it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
+
 ## Any Language
 
 Evidence is stored exactly as it arrives and is never translated. Translation would put a model on the write path, and it would break exact matching: after translation your own words no longer find your own memory.
