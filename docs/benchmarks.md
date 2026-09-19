@@ -208,9 +208,44 @@ reading each pair, which makes the metric neither free nor independent of an
 instrument -- and a labelling pass would itself need validating before anything
 measured against it meant anything.
 
-So the ledger still has no benchmark, and this is now a specific gap rather
-than a vague one: what is missing is a corpus where supersession is annotated,
-not inferred.
+What that rules out is a *retrieval-level* metric read off this data for free.
+It does not rule out the category, and an earlier version of this section said
+it did, which was too strong.
+
+The way to use it is at the answer level, and [Supersede][supersede] does
+exactly that on exactly these 78 questions: score what the system finally
+answers as **current**, **stale**, or **neither**, and report the stale rate
+rather than only accuracy. No retrieval label is needed, because the
+superseded value is a string the answer either contains or does not.
+
+Two findings from that work decide the design here, and both point away from
+building a corpus:
+
+- **Synthetic supersession saturates.** Its authors built a procedural
+  generator of templated supersession timelines first and abandoned it --
+  "synthetic templated supersession is therefore saturated" -- and moved to
+  real conversational data where the updates are implicit and paraphrased. A
+  corpus this project generated for its own ledger would land in the same
+  place, and would additionally be a corpus this project designed.
+- **The gap it measures is the one the ledger claims.** Replacing an agent's
+  full context with a bounded self-maintained memory drops knowledge-update
+  accuracy from 92% to 77% on a frontier model. That is the failure a version
+  ledger exists to prevent, measured by someone else, on data neither of us
+  wrote.
+
+[MemStrata][memstrata] is the other prior art to read before running anything:
+same thesis as this project's ledger, stated more strongly -- a deterministic
+`(subject, relation, object)` supersession rule that "retrieval-augmented
+generation cannot match by construction" -- evaluated on four evolving-knowledge
+sets of 20 to 30 scenarios each, with a **marker-free invariant** worth copying:
+the stale and current versions of a fact must be textually identical except for
+the changed value, with no "old", "new" or "current" framing to key on.
+
+So the ledger's benchmark is no longer missing, it is unrun, and what it needs
+is a reader and a judge rather than a new corpus.
+
+[supersede]: https://arxiv.org/abs/2606.27472
+[memstrata]: https://arxiv.org/abs/2606.26511
 
 ## Reference points on MIRACL, and the traps around them
 
@@ -639,12 +674,31 @@ MemPalace is the like-for-like peer, and it ties:
 | ten passages | 0.520 | **0.571** | 25 / 35 | 0.245 |
 | thirty passages | **0.631** | 0.606 | 32 / 27 | 0.603 |
 
-So "no language model on the write path" is an architecture this project
-shares rather than owns, and at equal shortlists it buys equal accuracy in
-someone else's implementation too. What remains specific to this project,
-measured against that peer, is narrower and should be stated as such: a store
-that reproduces itself byte for byte, a prompt 3.4x more compact at thirty
-passages (1,511 tokens against 5,138), and retrieval at 28 ms against 63 ms.
+**What this does and does not take away from this project.** It shows that an
+LLM-free write path is not unique: MemPalace has one too, and at equal
+shortlists it reaches equal accuracy with it. It does not show that the
+property is unremarkable. Of the seven systems in the table at the top of this
+page, **six put a model on the write path by default** — mem0, Zep/Graphiti,
+Memobase, Cognee, Supermemory, and MemPalace itself. The seventh, Letta, is a
+framework over plain files and grep rather than a store with retrieval
+channels.
+
+And the difference between MemPalace and this project on that axis is the
+difference between a flag and an architecture. MemPalace's LLM-free mode is
+`init --no-llm`; install it and follow its quickstart and you get the model,
+20 calls and $1.15 for ten conversations. This project has no model on the
+write path in any mode, so there is no configuration in which it costs
+anything to ingest and none in which two ingests of the same corpus disagree.
+
+A property shared with one competitor's opt-in mode, and with no one else's
+default, is still a differentiator. What the tie does remove is the right to
+claim the property buys *accuracy* — it does not, in either implementation.
+What it buys is measured elsewhere on this page: $0 against $27.77 to ingest,
+a store that reproduces itself byte for byte, and no embedding service to run.
+
+Against MemPalace specifically, with both write paths equally model-free, what
+is left is a prompt 3.4x more compact at thirty passages (1,511 tokens against
+5,138) and retrieval at 28 ms against 63 ms.
 
 One question of the 199 is missing from the wide raw arm — MemPalace's
 re-ingest of the largest conversation stopped responding on the fill-in pass —
