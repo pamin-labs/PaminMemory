@@ -71,6 +71,17 @@ struct Hit {
     /// agent assembling context needs both. Carried here so judging staleness
     /// does not cost a `read` per hit.
     recorded_at: String,
+    /// When the claim starts holding, RFC 3339, absent when open.
+    ///
+    /// The other half of what `recorded_at` is here for, and the half that
+    /// answers the question actually asked of a memory: not when we were told
+    /// a thing, but when it was true. The two disagree whenever a source is
+    /// backdated, which is every import that carries `--valid-from`, and an
+    /// agent handed only the recording time reads the import order instead of
+    /// the timeline.
+    valid_from: Option<String>,
+    /// When it stops holding, RFC 3339, absent when open.
+    valid_to: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -109,6 +120,8 @@ pub async fn execute(
                 why: hit.result.why,
                 source_span: hit.state.source_span_id.to_string(),
                 recorded_at: validity::render(hit.state.recorded_at),
+                valid_from: hit.state.validity.from.map(validity::render),
+                valid_to: hit.state.validity.to.map(validity::render),
             })
             .collect(),
     };
