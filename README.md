@@ -43,15 +43,24 @@ can defend.
 The differences that are real are architectural, and they follow from one
 choice: **no language model runs on the write path.**
 
-| | this project | mem0 |
-| --- | --- | --- |
-| model calls to ingest 10 conversations | **0** | 272 |
-| cost of that ingest | **$0** | $27.77 |
-| time | **356 s** | 4,121 s |
-| embedding requests to a service you must run | **0**, in-process | 6,335 |
-| same corpus written twice | **byte-identical** | 41 of 199 answers change |
-| questions whose answer is implied, not stated | **0.429** | 0.190 |
-| query latency, neither side spawning a process | **29 ms** | 94 ms |
+| | this project | MemPalace | mem0 |
+| --- | --- | --- | --- |
+| model calls to ingest 10 conversations | **0** | 20 | 272 |
+| cost of that ingest | **$0** | $1.15 | $27.77 |
+| time to ingest them | **356 s** | 520 s | 4,121 s |
+| embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
+| same corpus written twice | **byte-identical** | LLM on the write path | 41 of 199 answers change |
+| questions whose answer is implied, not stated | **0.429** | **0.429** | 0.190 |
+| prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
+| retrieval call, thirty passages | **28 ms** | 63 ms | 90 ms |
+
+Read the last row with the one that belongs beside it: a model reading those
+passages takes about five seconds and does not care whether it was handed five
+hundred tokens or five thousand, so end to end the three systems are
+indistinguishable and retrieval is around one per cent of the wait. The
+retrieval figure counts where a memory system feeds an agent's own context and
+adds its latency to a call that was happening anyway. It is reported here
+because it is true, not because anyone would feel it behind a reader.
 
 A system that asks a model to decide what a conversation *means* before storing
 it pays for that on every ingest, cannot reproduce its own store, and cannot
@@ -62,11 +71,12 @@ below that this is cheaper, and at LOCOMO's own density of twenty questions it
 is cheaper by a factor of 31.
 
 **Where this is behind.** mem0 leads temporal questions by about twenty points
-(0.735 against 0.529) — reproducibly, across independent runs. Holding the
-embedding model in-process costs about 2 GB resident where a system calling out
-to an endpoint holds 177 MB and a bill. And at thirty passages this hands the
-reader 1,511 prompt tokens against mem0's 1,017, because passages are longer
-than rewritten facts.
+(0.735 against 0.529) — reproducibly, across independent runs. It also hands
+the reader fewer tokens, 1,017 against 1,511, because rewritten facts are
+shorter than the passages they came from; that costs nothing in time here but
+it is real money at volume. And holding the embedding model in-process costs
+about 2 GB resident where a system calling out to an endpoint holds 177 MB and
+a bill.
 
 ## Quickstart
 
