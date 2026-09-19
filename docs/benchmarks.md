@@ -98,6 +98,14 @@ writing:
   embeddings — the benchmark path imports almost nothing from the library it
   is named after. An independent reimplementation with none of its code scored
   93.8% R@5. Where the architecture is used it scores *worse*.
+
+  There is a simpler problem with that figure, measured here rather than cited.
+  MemPalace's own benchmark doc defines R@5 as whether the labelled session is
+  inside the top five. Run a plain BM25 keyword search over the same haystacks,
+  with no memory system of any kind, and it scores **96.6%** — the published
+  headline, to the digit. The metric is saturated: about fifty candidate
+  sessions, and "is the gold one in the top five" is not a question that
+  separates anything. See [what running it showed](#longmemeval-the-published-metric-is-saturated).
 - **Letta's result is the one to take seriously**: a plain filesystem agent with
   grep and semantic search scored 74.0%, beating mem0's graph variant at 68.5%.
   If a filesystem wins, the benchmark is measuring context management rather
@@ -543,6 +551,55 @@ That estimate rests on two assumptions, both stated so they can be attacked: the
 overhead subtraction, and list pricing. What does not rest on either is the
 shape — a one-time cost against a per-question one — and which side each system
 is on.
+
+### LongMemEval: the published metric is saturated
+
+LOCOMO scores depend on which model reads the passages and which grades them,
+which is why nothing on this page compares an absolute LOCOMO number with a
+competitor's. LongMemEval's retrieval stage has no such problem: it asks
+whether the gold session is in the top k, and no model generates or judges
+anything. It is the one figure here that could sit beside a published one.
+
+So it was measured at the definition the field publishes — MemPalace's
+benchmark doc defines R@5 as whether the labelled session is inside the top
+five — and at the stricter one this page has been reporting. 59 questions drawn
+stratified from LongMemEval-S's 500, a proportional sample of the same six
+types; 35 of them carry more than one gold session, which is why the two
+metrics differ at all.
+
+| session retrieval, no model anywhere | BM25 | this project |
+| --- | --- | --- |
+| `recall_any@5` — **the published metric** | **0.9661** | 0.9831 |
+| `recall_any@10` | 0.9831 | 1.0000 |
+| `recall_all@5` — every gold session in the top five | 0.7966 | **0.8983** |
+
+**The headline metric is saturated, and this is the finding.** A plain BM25
+keyword search with no memory system of any kind reaches 0.9661 — MemPalace's
+published 96.6%, to the digit. Fifty candidate sessions and "is the gold one in
+the top five" does not separate a memory architecture from `grep`. This
+project's 0.9831 is one question better than keyword search out of 59, and
+quoting it as a competitive number would be quoting the benchmark.
+
+What separates them is the strict metric, where the question is whether *all*
+the evidence was found: 0.7966 against 0.8983, ten points. Split by type, the
+loose metric is at a ceiling everywhere except one:
+
+| `recall_any@5` | n | BM25 | this project |
+| --- | --- | --- | --- |
+| knowledge-update | 9 | 1.000 | 1.000 |
+| multi-session | 15 | 1.000 | 1.000 |
+| single-session-user | 8 | 1.000 | 1.000 |
+| single-session-assistant | 7 | 1.000 | 1.000 |
+| single-session-preference | 4 | 1.000 | 1.000 |
+| temporal-reasoning | 16 | 0.875 | 0.938 |
+
+Five of six types are solved by keyword search. Any system reporting a single
+R@5 over all six is reporting five ceilings and one real number.
+
+Reproduce with `python3 benchmarks/longmemeval_recall.py`. It rebuilds the
+corpus from the LongMemEval file rather than the per-question ndjson the
+original run wrote, and the check on that rebuild is BM25's `recall_all@5`,
+which comes back 0.7966 exactly as first recorded.
 
 ### Memory and disk
 
