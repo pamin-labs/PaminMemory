@@ -44,6 +44,13 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Indent the JSON, for a person reading it rather than a parser.
+    ///
+    /// Off by default: the usual caller is an agent paying for every token of
+    /// whitespace, and indenting a ten-hit search costs it about a thousand.
+    #[arg(long, global = true, requires = "json")]
+    pretty: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -108,7 +115,7 @@ async fn main() -> Result<()> {
         Some(path) => Workspace::at(path),
         None => Workspace::discover()?,
     };
-    let format = output::Format::from_json_flag(cli.json);
+    let format = output::Format::from_flags(cli.json, cli.pretty);
     let profile = Profile::parse(&cli.profile)
         .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
 
