@@ -21,10 +21,24 @@ output and a second LLM grades the answers.
 | Letta ([blog][letta]) | LoCoMo | 74.0% with plain files + grep | No extraction step | Framework |
 | Memobase ([repo][memobase]) | LOCOMO | 75.78% | Yes — profile extraction | API |
 | Cognee ([site][cognee]) | BEAM | 0.79 against 0.73 prior | Yes — LLM graph construction | API |
-| MemPalace ([repo][mempalace]) | LongMemEval | R@5 96.6%, **NDCG@10 0.889** | No | Local |
+| MemPalace ([repo][mempalace]) | LongMemEval | R@5 96.6%, **NDCG@10 0.889** | Not in the mode it publishes; **yes by default** | Local |
 | Supermemory ([site][supermemory]) | — | "#1", no figures published | Yes | API |
 
 Every one of these is self-reported.
+
+**One of those "No"s needs a footnote, because this page measured the opposite.**
+MemPalace's headline is "96.6% R@5 **raw** — zero API calls", and raw is real:
+`mempalace init --no-llm` runs heuristics only. But it is not the default. As of
+3.10.0 the CLI says so itself — `--llm` is "DEPRECATED — LLM-assisted entity
+refinement is now ON by default ... pass `--no-llm` to opt out". The arm here
+ran the default and measured 20 model calls and $1.15 to ingest ten
+conversations. Both statements are true of different configurations, and a
+table with one column for "LLM on write path" cannot hold that, so the column
+now says which.
+
+Worth stating what this is not: the arm did not switch an LLM on. It passed
+`--accept-external-llm`, which only waives the consent prompt that fires when
+one is already configured.
 
 ## Why these are not comparable to our numbers
 
@@ -165,6 +179,39 @@ instrument with a documented 63% false-accept rate against an answer key that is
 6.4% wrong, and would require instructing the model never to say "I don't know"
 — which is the opposite of what this project is for.
 
+**A supersession test built out of LongMemEval's `knowledge-update` category.**
+This one was designed and then abandoned on its own premise check, which is
+worth recording because the category looks like exactly the benchmark this
+project's ledger needs.
+
+All 78 of those questions carry exactly two gold sessions, dated, and the shape
+is right: one session says "a personal best of 27:12", a later one says
+"hoping to beat my personal best of 25:50", and the answer is 25:50. That
+invites a metric costing nothing to run -- does the system rank the revision
+above the value it superseded? -- and no reader or judge is needed for it.
+
+It needs a label saying which of the two sessions holds the current value, and
+the data does not support deriving one. Taking the answer's distinguishing
+tokens, its numbers where it has them:
+
+| where the current value appears | of 78 |
+| --- | --- |
+| only in the newer gold session | 26 (33%) |
+| **in both gold sessions** | **39 (50%)** |
+| only in the older gold session | 5 (6%) |
+| in neither | 8 (10%) |
+
+Half the time the current value is stated in both sessions, so "the newer one
+is the revision" is not a label, it is a guess that would be wrong often enough
+to produce whatever result was wanted. Constructing the labels needs a model
+reading each pair, which makes the metric neither free nor independent of an
+instrument -- and a labelling pass would itself need validating before anything
+measured against it meant anything.
+
+So the ledger still has no benchmark, and this is now a specific gap rather
+than a vague one: what is missing is a corpus where supersession is annotated,
+not inferred.
+
 ## Reference points on MIRACL, and the traps around them
 
 This project reports nDCG@10 on MIRACL's Swahili dev split, so the numbers a
@@ -255,6 +302,15 @@ a hybrid retriever turned off, announced on one log line and nowhere else.
 Both are the same rule: an arm asserts every premise it reports, and opening
 the other side's budget covers the extras its own documentation installs, not
 only its settings.
+
+MemPalace was then audited the same way, and comes back clean. Its nine
+optional extras are hardware backends (`coreml`, `gpu`, `dml`), alternative
+vector stores (`milvus`, `pgvector`), binary document readers (`extract`, and
+this corpus is Markdown), dev tooling, and `spellcheck`. The last was the only
+candidate -- `autocorrect` is indeed not installed -- but the module that uses
+it is `normalize`, which converts message transcripts, and the searcher never
+imports it. Nothing MemPalace ships behind an extra gates a retrieval channel
+the way mem0's `[nlp]` gated its keyword side.
 
 The re-measurement ingests once per conversation and queries that store at both
 shortlists. mem0 clears its store before each conversation, so running two arms
@@ -637,9 +693,11 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   would pick. The re-run corrects two ways it was handicapped; there may be a
   third nobody has looked for, and the way to find one is to read its
   documentation rather than its behaviour.
-- **Nothing about MemPalace re-measured.** Only mem0 was run again. MemPalace's
-  arms have not been checked for an equivalent missing extra, and until they are
-  the possibility that they are also handicapped stays open.
+- **Nothing about MemPalace with its LLM off.** Its arms ran MemPalace's
+  default, which since 3.10.0 refines entities with a model. The mode it
+  publishes, `--no-llm`, is the closest architectural peer to this project --
+  genuinely nothing on the write path -- and has not been run. Whether the
+  20 calls it spends are buying accuracy is therefore unmeasured.
 - **Nothing about any difference smaller than the noise floor.** Forty-one of
   199 questions moved between two identical mem0 runs. Anything at that scale
   here is unmeasured, not measured-as-equal — the two are different claims and
