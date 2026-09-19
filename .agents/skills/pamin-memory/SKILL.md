@@ -34,6 +34,13 @@ That content is still recoverable with `grep`. It is not a memory.
 
 Two consequences worth holding onto:
 
+**Before writing to a name you invented, ask what is already here.** `pamin
+topics <what it is about>` answers by name and by content and says which found
+what. `deployment_pipeline` and `deploy_pipeline` are two memories that never
+meet again, and nothing will ever tell you it happened. With no query it lists
+the most recent, with the total, which is the fastest way to see what a
+workspace is about.
+
 - **A held write creates no topic.** Write to a new name, have it held, and the
   name stays unknown to `read`, `neighbors` and the graph. Check `promoted` in
   the JSON rather than assuming the topic now exists.

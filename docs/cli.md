@@ -538,6 +538,51 @@ asserted to hold at that instant, which is how a question about the past avoids
 relationships that were only claimed later. `--depth` accepts 0 to 4, for the
 reason given under [`pamin search`](#pamin-search).
 
+## `pamin topics`
+
+Every other read command needs a topic name to start from. This is how you get
+one.
+
+```console
+$ pamin topics --limit 4
+recent    secret_rotation
+recent    build_cache
+recent    access_review
+recent    alert_thresholds
+
+Showing 4 of 12 topics
+```
+
+The total is there because the page without it means nothing: four of twelve is
+most of the story, four of nine thousand is a sample and you should be asking a
+narrower question.
+
+With a query it answers twice over and says which route found what, because the
+two fail differently:
+
+```console
+$ pamin topics "deployment pipeline" --limit 4
+both      deployment_pipeline
+content   oncall_rota
+content   secret_rotation
+content   rollback_plan
+```
+
+**`name`** — the topic is called that. Exact on the segmenter's whole tokens, so
+`deployment pipeline` reaches `deployment_pipeline` and `deploy pipeline` does
+not. This is the route that finds a topic nobody has written much about yet.
+
+**`content`** — a memory under that topic matches. Forgiving, and the route that
+catches a half-remembered name: `deploy pipeline` finds `deployment_pipeline`
+here even though the name index will not.
+
+**`both`** — each found it, which is the strongest signal that this is the topic
+you meant.
+
+Reach for this before writing to a name you invented. `deployment_pipeline` and
+`deploy_pipeline` are two memories that never meet again, and nothing will ever
+tell you that happened.
+
 ## `pamin grep`
 
 Finds an exact string in the evidence. No pattern matching, no tokenizer, no

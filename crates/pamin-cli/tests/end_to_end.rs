@@ -352,6 +352,7 @@ fn a_workspace_serves_memories_in_any_language() {
     an_english_query_reaches_memories_written_elsewhere(&cli);
     the_ledger_keeps_history_and_the_filter_keeps_evidence(&cli);
     a_write_can_state_when_its_claim_holds(&cli);
+    topics_are_findable_before_you_know_their_names(&cli);
     the_index_rebuilds_from_postgres(&cli);
     a_profile_change_is_refused_rather_than_silently_wrong(&cli);
 }
@@ -1162,6 +1163,48 @@ fn a_write_can_state_when_its_claim_holds(cli: &Cli) {
         .expect("deploy_en is findable");
     assert!(unbounded["valid_from"].is_null());
     assert!(unbounded["valid_to"].is_null());
+}
+
+fn topics_are_findable_before_you_know_their_names(cli: &Cli) {
+    // Every other read command needs a name to start from, and an agent
+    // resuming work has none. Without this it writes to whatever name occurs
+    // to it, and one memory becomes two that never meet again.
+    let listed = cli.json(&["topics", "--limit", "3"]);
+    let total = listed["total"].as_u64().expect("a total");
+    assert!(total >= MEMORIES.len() as u64, "every write made a topic");
+    assert_eq!(
+        listed["topics"].as_array().expect("topics").len(),
+        3,
+        "the page is bounded by --limit, and the total says how much is behind it"
+    );
+
+    // The two routes fail differently, which is why both are reported. The
+    // name index is exact on the segmenter's whole tokens; the content
+    // channels are forgiving. A caller shown one route cannot tell an absence
+    // from a miss.
+    let found = |query: &str, how: &str| -> Vec<String> {
+        cli.json(&["topics", query, "--limit", "8"])["topics"]
+            .as_array()
+            .expect("topics")
+            .iter()
+            .filter(|entry| entry["how"] == how || entry["how"] == "both")
+            .filter_map(|entry| entry["topic"].as_str().map(str::to_string))
+            .collect()
+    };
+
+    assert!(
+        found("deployment pipeline", "name").contains(&"deployment_pipeline".to_string()),
+        "the whole name, in words, reaches the topic through the name index"
+    );
+    assert!(
+        !found("deploy pipeline", "name").contains(&"deployment_pipeline".to_string()),
+        "the name index matches whole tokens: `deploy` is not `deployment`, and \
+         claiming otherwise is what this asserts against"
+    );
+    assert!(
+        found("deploy pipeline", "content").contains(&"deployment_pipeline".to_string()),
+        "and the forgiving route is the one that catches a half-remembered name"
+    );
 }
 
 fn the_index_rebuilds_from_postgres(cli: &Cli) {
