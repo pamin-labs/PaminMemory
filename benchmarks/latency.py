@@ -127,6 +127,60 @@ class Mem0:
         return results
 
 
+class MemPalace:
+    """MemPalace's own search call, in its own virtualenv.
+
+    Run this arm with that virtualenv's interpreter -- `mp-venv/bin/python
+    benchmarks/latency.py --arms mempalace` -- because the reason MemPalace
+    has one is that installing it beside mem0 moves `protobuf` past the
+    ceiling mem0 declares.
+
+    The accuracy run reaches MemPalace by spawning that interpreter per query,
+    which is a Python start and a package import on top of the search. Timed
+    here at the call itself, the way an application embedding it would.
+    """
+
+    name = "mempalace (in-process)"
+
+    def __init__(self):
+        os.environ.setdefault("MEMPALACE_EMBEDDING_MODEL", "openai-compat")
+        os.environ.setdefault("MEMPALACE_EMBEDDING_API_URL",
+                              SHIM.rsplit("/v1", 1)[0])
+        os.environ.setdefault("MEMPALACE_EMBEDDING_API_MODEL", "bge-m3")
+        from mempalace import searcher
+        self.searcher = searcher
+        self.before = shim_embed_count()
+
+    def search(self, project, query, limit):
+        # `searcher.search` is the renderer the CLI calls: it prints and
+        # returns nothing. `search_memories` is the retrieval, and it is the
+        # layer the other arms are timed at.
+        found = self.searcher.search_memories(
+            query, f"{WORK}/mp-palace/{project}", n_results=limit)
+        return found.get("results", [])
+
+    def check_premise(self):
+        """The same premise its ingest arm asserts: one shared embedder.
+
+        The provider switch fails silently, and an arm that quietly used its
+        own 384-dimension model would be timing a different system.
+        """
+        if shim_embed_count() - self.before <= 0:
+            raise SystemExit(
+                "mempalace embedded nothing through the shared endpoint, so it "
+                "used its own model; this would be timing a different embedder")
+
+
+def shim_embed_count():
+    import urllib.request
+    try:
+        with urllib.request.urlopen(SHIM.rsplit("/v1", 1)[0] + "/stats",
+                                    timeout=5) as r:
+            return json.load(r).get("embed_texts", 0)
+    except Exception:
+        return 0
+
+
 def timed(arm, work, limit):
     """One pass over the work, returning the times and the hits it saw."""
     times, hits = [], 0
@@ -156,6 +210,9 @@ def measure(arm, work, limit):
         query = next(q for p, q in work if p == project)
         for _ in range(3):
             arm.search(project, query, limit)
+
+    if hasattr(arm, "check_premise"):
+        arm.check_premise()
 
     times, hits = timed(arm, work, limit)
     if hits == 0:
@@ -202,6 +259,9 @@ def main():
         measure(PaminSocket(), work, args.limit)
     if "pamin-cli" in wanted:
         measure(PaminCli(), work, args.limit)
+    if "mempalace" in wanted:
+        measure(MemPalace(), [(p.replace("locomor1conv", "conv-"), q)
+                              for p, q in work], args.limit)
     if "mem0" in wanted:
         if not mem0_work:
             raise SystemExit("--mem0-collection must name a surviving "
