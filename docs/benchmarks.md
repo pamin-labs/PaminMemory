@@ -208,9 +208,44 @@ reading each pair, which makes the metric neither free nor independent of an
 instrument -- and a labelling pass would itself need validating before anything
 measured against it meant anything.
 
-So the ledger still has no benchmark, and this is now a specific gap rather
-than a vague one: what is missing is a corpus where supersession is annotated,
-not inferred.
+What that rules out is a *retrieval-level* metric read off this data for free.
+It does not rule out the category, and an earlier version of this section said
+it did, which was too strong.
+
+The way to use it is at the answer level, and [Supersede][supersede] does
+exactly that on exactly these 78 questions: score what the system finally
+answers as **current**, **stale**, or **neither**, and report the stale rate
+rather than only accuracy. No retrieval label is needed, because the
+superseded value is a string the answer either contains or does not.
+
+Two findings from that work decide the design here, and both point away from
+building a corpus:
+
+- **Synthetic supersession saturates.** Its authors built a procedural
+  generator of templated supersession timelines first and abandoned it --
+  "synthetic templated supersession is therefore saturated" -- and moved to
+  real conversational data where the updates are implicit and paraphrased. A
+  corpus this project generated for its own ledger would land in the same
+  place, and would additionally be a corpus this project designed.
+- **The gap it measures is the one the ledger claims.** Replacing an agent's
+  full context with a bounded self-maintained memory drops knowledge-update
+  accuracy from 92% to 77% on a frontier model. That is the failure a version
+  ledger exists to prevent, measured by someone else, on data neither of us
+  wrote.
+
+[MemStrata][memstrata] is the other prior art to read before running anything:
+same thesis as this project's ledger, stated more strongly -- a deterministic
+`(subject, relation, object)` supersession rule that "retrieval-augmented
+generation cannot match by construction" -- evaluated on four evolving-knowledge
+sets of 20 to 30 scenarios each, with a **marker-free invariant** worth copying:
+the stale and current versions of a fact must be textually identical except for
+the changed value, with no "old", "new" or "current" framing to key on.
+
+So the ledger's benchmark is no longer missing, it is unrun, and what it needs
+is a reader and a judge rather than a new corpus.
+
+[supersede]: https://arxiv.org/abs/2606.27472
+[memstrata]: https://arxiv.org/abs/2606.26511
 
 ## Reference points on MIRACL, and the traps around them
 
