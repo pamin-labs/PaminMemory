@@ -416,28 +416,70 @@ the boundary an application actually calls, every unit warmed first, nothing
 else on the machine, and each arm run a second time last to show the order is
 not in the number. Same 199 questions, same corpus.
 
-| path | p50 | p95 |
-| --- | --- | --- |
-| this project, socket round trip | **29 ms** | 44 ms |
-| this project, one CLI invocation | 43 ms | 64 ms |
-| this project, that CLI behind `su` — *what the accuracy run timed* | 48 ms | 65 ms |
-| mem0, in-process library call | **94 ms** | 128 ms |
-| *of which* mem0's embedding HTTP call | *20 ms* | *22 ms* |
+| retrieval call | p50 @10 | p50 @30 | p95 @30 |
+| --- | --- | --- | --- |
+| this project, socket round trip | **29 ms** | **28 ms** | 46 ms |
+| MemPalace, `search_memories` | 41 ms | 63 ms | 84 ms |
+| mem0, `search` | 94 ms | 90 ms | 114 ms |
+| this project, one CLI invocation | 43 ms | 42 ms | 61 ms |
+| this project, that CLI behind `su` — *what the accuracy run timed* | 48 ms | 48 ms | 66 ms |
+| *of which* mem0's embedding HTTP call | *20 ms* | *20 ms* | *22 ms* |
 
-Like for like — neither side spawning a process — this project answers in 29 ms
-against mem0's 94, and it is still ahead at 43 ms paying a full fork and exec
-for every query. Widening to thirty passages costs nothing measurable at this
-corpus size: 28 ms and 42 ms.
+Two of the three figures the accuracy run produced were wrong, and in opposite
+directions. It reported 170 ms here and 830 ms for MemPalace: this project was
+timed behind a `su` and a CLI process, MemPalace behind a Python interpreter
+starting and a package importing per query. Correcting both narrows this
+project's lead over MemPalace from twenty-eight fold to 1.4. `su` is 5 ms of
+the original figure and the process spawn 13; the rest was contention and cold
+indexes.
 
-Two things that reversal is not. It is not `su`: that costs 5 ms, and the whole
-CLI invocation costs 13 ms more than the socket. The 170 ms came from
-contention and cold indexes — the accuracy run queried each conversation's
-project as it reached it, and measured under everything else that was running.
-And it is not a claim that mem0 is slow: 94 ms on a 5 MB store is reasonable
-work, and 20 ms of it is an HTTP round trip to an embedding endpoint on the
-same machine. That last line is the architectural difference rather than a
-measurement artifact — mem0 must reach an endpoint to embed each query, and a
-deployment pointing at a hosted API pays a network instead of a loopback.
+One property does survive the correction and is worth naming: widening from
+ten passages to thirty costs this project nothing measurable (29 to 28 ms)
+where it costs MemPalace half as much again (41 to 63 ms).
+
+### But retrieval is not what a caller waits for
+
+Retrieval latency answers the wrong question on its own. What an agent waits
+for is retrieval **plus** the model call that reads the passages, and that is
+the term the arms differ on most — 557 tokens here at ten passages against
+5,133 for MemPalace at thirty. So the reader was measured across that whole
+range, twelve calls at each size:
+
+| context handed to the reader | reader call, median |
+| --- | --- |
+| 541 tokens | 5.62 s |
+| 1,001 tokens | 5.28 s |
+| 1,495 tokens | 5.20 s |
+| 5,117 tokens | 4.86 s |
+
+It does not move. Nine times the context, and the median falls rather than
+rises — which is noise, and the point: across the range these systems actually
+produce, the reader costs about five seconds regardless.
+
+**So end to end, with a model reading the results, the three systems are
+indistinguishable.** Retrieval is roughly one per cent of the wait, and a
+sixty-millisecond difference is not something a user experiences:
+
+| arm, thirty passages | retrieval | reader | total | retrieval's share |
+| --- | --- | --- | --- | --- |
+| this project | 28 ms | ~5.2 s | ~5.2 s | 0.5% |
+| MemPalace | 63 ms | ~4.9 s | ~5.0 s | 1.3% |
+| mem0 | 90 ms | ~5.3 s | ~5.4 s | 1.7% |
+
+That does not make the retrieval figures pointless; it says where they count.
+A memory system feeding an agent's own context adds its retrieval latency to a
+call that was happening anyway, and there 29 ms against 94 ms is the entire
+marginal cost. Where a separate reader stands between the memory and the
+answer, it is not.
+
+Two limits on the reader figure. It is a CLI against a hosted API, so its five
+second floor is process start and network rather than prefill — a local reader
+would shift the balance back toward retrieval. And it says nothing about
+prompts an order of magnitude larger, where prefill does dominate.
+
+The one latency that is not swamped is on the other side: 356 s to ingest ten
+conversations here against 4,121 s for mem0. Nothing hides a difference of an
+hour.
 
 **The two halves point in opposite directions, and that is the whole result.**
 mem0 spends 272 model calls and an hour of model time putting ten conversations
