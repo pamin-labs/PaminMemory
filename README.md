@@ -50,7 +50,6 @@ choice: **no language model runs on the write path.**
 | time to ingest them | **356 s** | 520 s | 4,121 s |
 | embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
 | same corpus written twice | **byte-identical** | LLM on the write path | 41 of 199 answers change |
-| questions whose answer is implied, not stated | **0.429** | **0.429** | 0.190 |
 | prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
 | retrieval call, thirty passages | **28 ms** | 63 ms | 90 ms |
 
@@ -365,13 +364,16 @@ distillation performed by a model is not the same twice. This project has no
 such floor on the write side, because there is no model there: the `--limit 30`
 row above reads a store the `--limit 10` row built, byte for byte.
 
-Two question types do clear that floor, and both reproduce across independent
-runs. mem0 leads **temporal** questions by about twenty points, 0.735 against
-0.529. This project and MemPalace lead **adversarial** questions — the ones
-whose answer is implied rather than stated — by about the same, 0.429 against
-0.190. That is what rewriting a conversation into facts costs: what was never
-said is not in the rewrite to find. The totals tie because these cancel, which
-is not the same as the systems performing alike.
+Two question types clear that floor and only one of them is a real difference
+between the systems. **mem0 leads temporal questions by about twenty points**,
+0.735 against 0.529, reproducibly. This project and MemPalace lead
+**adversarial** questions by about the same — and that one is withdrawn rather
+than claimed: 74% of that category asks about the wrong speaker, and the answer
+key rewards replying with the other speaker's content. mem0 answers "no record
+of that", which for the question as asked is the better answer, and is marked
+wrong for it. Scoring high there means ignoring who said what, which is a
+defect in a memory product. The totals tie because the two cancel; only one of
+the two is worth anything.
 
 **The difference is on the bill.** This project puts ten conversations in with
 no model calls, no cost and no external service, in 356 seconds; mem0 takes 272
