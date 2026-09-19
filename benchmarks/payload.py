@@ -20,6 +20,37 @@ shapes that quietly disagreed about what was retrieved would produce a
 difference in accuracy that had nothing to do with the fields.
 
     python3 benchmarks/payload.py --units 70 --out /tmp/payload.jsonl
+
+What it said, over all 70:
+
+    shape      n  current   stale  neither   prompt  answer  seconds
+    full      70    0.843   0.143    0.014     5148       2     6.53
+    trim      70    0.871   0.129    0.000     3322       2     6.17
+
+    McNemar over 70 paired questions: full only 5, trim only 7, p = 0.7744
+
+The trimmed shape costs 35% fewer prompt tokens and is indistinguishable on
+every other axis. It is nominally ahead on all of them, and nobody should read
+anything into that: twelve discordant questions out of seventy is a coin the
+wrong way up twice. What the run can support is the negative -- there is no
+sign of a cost -- and seventy questions would not detect a two-point one.
+
+Two things this does not say, and the second is a warning about the harness
+rather than a result:
+
+  The seconds are not a clean measurement. The endpoint is shared and the
+  machine is not idle, which is why the shapes are compared on tokens and
+  verdicts and the timing is printed rather than concluded from.
+
+  **Both arms are contaminated by ingest order, equally.** The payload carries
+  `recorded_at`, and this harness imports a haystack in file order. The
+  haystacks are not in date order -- none of the 70 are -- but the two gold
+  sessions are, in 69 of 70, so the recording time happens to sort the pair
+  that matters. That is why both arms here score far above the 0.700 the same
+  retrieval scores when the reader is handed bare contents, and it is an
+  accident of how LongMemEval lays its answer sessions out. It cancels in the
+  comparison, which is what this file is for, and it would not cancel in a
+  claim about how well `pamin` answers -- so no such claim is made from it.
 """
 import argparse
 import collections
@@ -147,8 +178,13 @@ def summarise(rows):
         return
     full = {r["unit"]: r for r in by["full"]}
     trim_ = {r["unit"]: r for r in by["trim"]}
-    only_full = sum(full[u]["correct"] and not trim_[u]["correct"] for u in paired)
-    only_trim = sum(trim_[u]["correct"] and not full[u]["correct"] for u in paired)
+    # `correct` is a float, so these have to be counted as predicates rather
+    # than summed as they come: `1.0 and True` is `True` and `0.0 and True` is
+    # `0.0`, and a total that mixes them is a float that `math.comb` refuses.
+    only_full = sum(1 for u in paired
+                    if full[u]["correct"] == 1 and trim_[u]["correct"] == 0)
+    only_trim = sum(1 for u in paired
+                    if trim_[u]["correct"] == 1 and full[u]["correct"] == 0)
     import math
     n = only_full + only_trim
     p = 1.0 if n == 0 else min(1.0, 2 * sum(math.comb(n, k)
