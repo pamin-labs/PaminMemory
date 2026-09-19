@@ -286,7 +286,7 @@ quantity as `nDCG@10`, and not placeable on the same axis. Several headline
 figures in that field have been audited by competitors and did not survive.
 
 The harness that runs those comparisons is in [benchmarks/](../../../benchmarks),
-along with what it holds fixed and how each of those is asserted. Eight rules
+along with what it holds fixed and how each of those is asserted. Nine rules
 come out of building it, and each cost a run to learn.
 
 **Open the other side's budget before claiming a win.** Raising `--limit` from
@@ -340,6 +340,23 @@ hold still. And warm every unit before timing anything, not the first one: an
 early draft of that harness warmed one conversation of ten, timed the socket
 arm first, and reported it at three times the CLI it is faster than. Run each
 arm again last; two passes that disagree mean the order is in the number.
+
+**A category you win is the one to read the items of.** LOCOMO's adversarial
+split went to this project and MemPalace, 0.429 against mem0's 0.190, and it
+was written up twice as a property worth having before anyone followed a
+question to the turn its own `evidence` field names. Doing that: 332 of the 446
+attribute to one speaker something the *other* speaker said, and the key gives
+that other speaker's content as correct. "What country is Melanie's grandma
+from?" is keyed to Sweden; the evidence is Caroline saying "my grandma in my
+home country, Sweden". The category rewards ignoring attribution. mem0 answers
+"no record of that" and is marked wrong for the better answer.
+
+The lesson is not about LOCOMO. A split where this project leads is the one
+where the temptation to stop reading is strongest, and this category was
+described wrongly twice in this repository before it was described wrongly in
+its favour. So: open the items, follow the evidence field, and ask what
+behaviour a high score is actually rewarding. If the answer is a behaviour you
+would call a bug in a bug report, the score is not a result.
 
 **Cost is half the claim.** A project whose pitch is "less" cannot check that
 pitch with an accuracy table. Measure what each arm spends: calls to a model
