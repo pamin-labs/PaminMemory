@@ -286,7 +286,7 @@ quantity as `nDCG@10`, and not placeable on the same axis. Several headline
 figures in that field have been audited by competitors and did not survive.
 
 The harness that runs those comparisons is in [benchmarks/](../../../benchmarks),
-along with what it holds fixed and how each of those is asserted. Seven rules
+along with what it holds fixed and how each of those is asserted. Eight rules
 come out of building it, and each cost a run to learn.
 
 **Open the other side's budget before claiming a win.** Raising `--limit` from
@@ -325,6 +325,21 @@ retriever is off, announced on one log line and nowhere else. Every mem0
 figure taken before this was found was taken in that state. A default install
 is not the same as the system: read what extras the other side's own
 instructions install, and have the arm refuse to run when one is missing.
+
+**Time the same layer on both sides, or do not report time.** The accuracy run
+recorded a `recall_seconds` per question and it looked like a latency column.
+It was not one: this project was timed through `su ubuntu -c "pamin ... search
+..."` -- two process spawns and a socket round trip -- and mem0 as an
+in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
+cluster shared four cores. It read 170 ms against 106 and the obvious
+conclusion was the opposite of the truth. Timed at the boundary each system's
+callers actually use, with nothing else running, it is 29 ms against 94. A
+latency number needs its own harness, because the three things it depends on --
+the layer, warmth and quiet -- are exactly the three an accuracy run cannot
+hold still. And warm every unit before timing anything, not the first one: an
+early draft of that harness warmed one conversation of ten, timed the socket
+arm first, and reported it at three times the CLI it is faster than. Run each
+arm again last; two passes that disagree mean the order is in the number.
 
 **Cost is half the claim.** A project whose pitch is "less" cannot check that
 pitch with an accuracy table. Measure what each arm spends: calls to a model
