@@ -6,10 +6,23 @@ reader to turn retrieved passages into an answer and a judge to decide whether
 that answer means what the reference means -- both the same model for every
 arm, or the comparison measures the models.
 
-The adversarial category is kept. An earlier reading of this dataset had it as
-questions whose only correct answer is a refusal; reading the file says
-otherwise, and 444 of its 446 carry a substantive `adversarial_answer`. What
-makes them adversarial is that the answer is implied rather than stated.
+The adversarial category is kept, and what it measures has been read wrongly
+twice. It is not a set of questions whose only correct answer is a refusal:
+444 of its 446 carry a substantive `adversarial_answer`. Nor is it questions
+whose answer is implied rather than stated -- that was the second reading and
+it is also wrong. Following each question to the turn its own `evidence` field
+names, **332 of the 446 (74%) attribute to one speaker something the other
+speaker said**, and the answer key gives that other speaker's content as
+correct.
+
+    Q: "What country is Melanie's grandma from?"   key: "Sweden"
+    evidence D4:3 -- Caroline: "...a gift from my grandma in my home
+                      country, Sweden."
+
+So the category rewards a pipeline that ignores who said what, and penalises
+one that answers "no record of that" -- which for the question as asked is the
+better answer. Scoring well here is not evidence of a property worth having,
+and a result on this category should be reported with that attached.
 """
 import collections
 import random
