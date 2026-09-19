@@ -100,7 +100,8 @@ def load(rows_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default="locomo", choices=["locomo", "longmemeval"])
+    parser.add_argument("--dataset", default="locomo",
+                        choices=["locomo", "longmemeval", "supersession"])
     parser.add_argument("--arms", default="bm25,pamin")
     parser.add_argument("--mode", default="quality", choices=["quality", "cost"])
     parser.add_argument("--units", type=int, default=10,
@@ -220,8 +221,13 @@ def measure(dataset, arm, entry, args, cost, where, name, unit, done):
         if args.mode == "quality":
             predicted = chat(prompt) if passages else ""
             row["predicted"] = predicted
-            row["correct"] = (dataset.judged(chat, qa["question"], reference, predicted)
-                              if passages else 0.0)
+            verdict = (dataset.judged(chat, qa["question"], reference, predicted)
+                       if passages else 0.0)
+            # A judge may return more than a score. Supersession needs three
+            # outcomes rather than two, because answering with the fact that
+            # was replaced and answering with nothing are different failures
+            # and a single `correct` column cannot tell them apart.
+            row.update(verdict if isinstance(verdict, dict) else {"correct": verdict})
         yield row
 
 
@@ -244,6 +250,20 @@ def summarise(rows, mode):
             group = by_arm[arm]
             print(f"  {arm:<16}{len(group):>5}"
                   f"{statistics.mean(r['correct'] for r in group):>10.3f}")
+
+        if any("verdict" in r for r in rows):
+            print("\n=== which answer came back ===")
+            kinds = ["current", "stale", "neither", "unparsed"]
+            print(f"  {'arm':<20}" + "".join(f"{k:>10}" for k in kinds))
+            for arm in sorted(by_arm):
+                group = [r for r in by_arm[arm] if "verdict" in r]
+                if not group:
+                    continue
+                line = f"  {arm:<20}"
+                for kind in kinds:
+                    share = sum(r["verdict"] == kind for r in group) / len(group)
+                    line += f"{share:>10.3f}"
+                print(line + f"   n={len(group)}")
 
         print("\n=== by label ===")
         arms = sorted(by_arm)
