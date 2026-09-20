@@ -352,6 +352,7 @@ fn a_workspace_serves_memories_in_any_language() {
     an_english_query_reaches_memories_written_elsewhere(&cli);
     the_ledger_keeps_history_and_the_filter_keeps_evidence(&cli);
     a_write_can_state_when_its_claim_holds(&cli);
+    topics_are_findable_before_you_know_their_names(&cli);
     the_index_rebuilds_from_postgres(&cli);
     a_profile_change_is_refused_rather_than_silently_wrong(&cli);
 }
@@ -971,9 +972,27 @@ fn results_explain_where_they_came_from(cli: &Cli) {
     modifiers.dedup();
     assert_eq!(applied, modifiers.len(), "a modifier was applied twice");
 
+    // The span a state came from is cited by `read`, one per claim, rather
+    // than by every hit of every search: no command accepts a span id, so ten
+    // of them per query cost a caller tokens for something it cannot spend.
+    let cited = cli.json(&["read", hit["topic"].as_str().expect("a topic name")]);
     assert!(
-        !hit["source_span"].as_str().unwrap_or_default().is_empty(),
-        "every hit must cite the span it came from"
+        !cited["source_span"].as_str().unwrap_or_default().is_empty(),
+        "a state must cite the span it came from"
+    );
+
+    // What a caller can work out for itself is not sent. Weight is a constant
+    // per channel and contribution is weight / (10 + rank), both printed in
+    // docs/cli.md, and ten hits of them is about seven hundred tokens.
+    for entry in why {
+        assert!(
+            entry.get("weight").is_none() && entry.get("contribution").is_none(),
+            "the trace should not restate what the reader can derive: {entry}"
+        );
+    }
+    assert!(
+        hit.get("topic_state").is_none(),
+        "a state id nothing accepts as an argument should not be on every hit"
     );
 }
 
@@ -1112,6 +1131,80 @@ fn a_write_can_state_when_its_claim_holds(cli: &Cli) {
         "2025-11-01T00:00:00Z",
     ]);
     assert!(error.contains("--valid-to must be after"), "got {error:?}");
+
+    // And a searcher has to see it. `search` carried `recorded_at` so that
+    // judging staleness would not cost a `read` per hit, but recording time
+    // is the wrong timeline for that judgement: everything imported in one
+    // pass shares it, so it recovers the import order and calls that the
+    // history. The interval the writer asserted is the one that says which of
+    // two matching memories has been overtaken.
+    let hit = cli.json(&[
+        "search",
+        "winter timetable evening departures",
+        "--limit",
+        "5",
+    ])["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["topic"] == "winter_timetable")
+        .cloned()
+        .expect("the topic just written is findable");
+    assert_eq!(hit["valid_from"], "2025-11-01T00:00:00Z");
+    assert_eq!(hit["valid_to"], "2026-03-01T00:00:00Z");
+
+    // Open on a topic nobody bounded, rather than filled in from the clock.
+    let unbounded = cli.json(&["search", "argo deployment pipeline", "--limit", "5"])["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["topic"] == "deploy_en")
+        .cloned()
+        .expect("deploy_en is findable");
+    assert!(unbounded["valid_from"].is_null());
+    assert!(unbounded["valid_to"].is_null());
+}
+
+fn topics_are_findable_before_you_know_their_names(cli: &Cli) {
+    // Every other read command needs a name to start from, and an agent
+    // resuming work has none. Without this it writes to whatever name occurs
+    // to it, and one memory becomes two that never meet again.
+    let listed = cli.json(&["topics", "--limit", "3"]);
+    let total = listed["total"].as_u64().expect("a total");
+    assert!(total >= MEMORIES.len() as u64, "every write made a topic");
+    assert_eq!(
+        listed["topics"].as_array().expect("topics").len(),
+        3,
+        "the page is bounded by --limit, and the total says how much is behind it"
+    );
+
+    // The two routes fail differently, which is why both are reported. The
+    // name index is exact on the segmenter's whole tokens; the content
+    // channels are forgiving. A caller shown one route cannot tell an absence
+    // from a miss.
+    let found = |query: &str, how: &str| -> Vec<String> {
+        cli.json(&["topics", query, "--limit", "8"])["topics"]
+            .as_array()
+            .expect("topics")
+            .iter()
+            .filter(|entry| entry["how"] == how || entry["how"] == "both")
+            .filter_map(|entry| entry["topic"].as_str().map(str::to_string))
+            .collect()
+    };
+
+    assert!(
+        found("deployment pipeline", "name").contains(&"deployment_pipeline".to_string()),
+        "the whole name, in words, reaches the topic through the name index"
+    );
+    assert!(
+        !found("deploy pipeline", "name").contains(&"deployment_pipeline".to_string()),
+        "the name index matches whole tokens: `deploy` is not `deployment`, and \
+         claiming otherwise is what this asserts against"
+    );
+    assert!(
+        found("deploy pipeline", "content").contains(&"deployment_pipeline".to_string()),
+        "and the forgiving route is the one that catches a half-remembered name"
+    );
 }
 
 fn the_index_rebuilds_from_postgres(cli: &Cli) {

@@ -284,6 +284,9 @@ async fn answer(session: &Session, request: Request) -> Result<Payload> {
         Call::Link(args) => json(command::link::execute(session, &project, args).await?)?,
         Call::Unlink(args) => json(command::unlink::execute(session, &project, args).await?)?,
         Call::Neighbors(args) => json(command::neighbors::execute(session, &project, args).await?)?,
+        Call::Topics(args) => {
+            json(command::topics::execute(session, &project, profile, args).await?)?
+        }
         Call::Reindex(args) => {
             json(command::reindex::execute(session, &project, profile, args).await?)?
         }

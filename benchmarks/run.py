@@ -30,6 +30,24 @@ import resources
 
 SHIM = os.environ.get("SHIM_URL", "http://127.0.0.1:8088/v1")
 
+# Set when more than one run shares this machine and this endpoint.
+#
+# The write-side cost columns are differences of a counter the endpoint keeps
+# for everybody, and the timings are of a machine somebody else is also using.
+# Under a second run they measure the pair, not the arm: an ingest that called
+# no model at all came back reporting fourteen calls, which is the one number
+# on this page that has to be zero.
+#
+# Stamped on every row rather than remembered in a comment, because the file
+# outlives the shell that produced it.
+SHARED = os.environ.get("BENCH_SHARED_ENDPOINT") == "1"
+
+# What a shared endpoint and a shared machine make unreadable. Everything
+# else -- the verdict, the prompt size, the bytes on disk -- is the arm's own.
+CONTENDED = ("ingest_seconds", "ingest_llm_calls", "ingest_llm_seconds",
+             "ingest_embedded", "ingest_cost_usd", "peak_pss_mb",
+             "recall_seconds")
+
 
 def machine():
     """Stamped on every result, because half of them do not travel.
@@ -100,7 +118,8 @@ def load(rows_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default="locomo", choices=["locomo", "longmemeval"])
+    parser.add_argument("--dataset", default="locomo",
+                        choices=["locomo", "longmemeval", "supersession"])
     parser.add_argument("--arms", default="bm25,pamin")
     parser.add_argument("--mode", default="quality", choices=["quality", "cost"])
     parser.add_argument("--units", type=int, default=10,
@@ -125,6 +144,12 @@ def main():
     where = machine()
 
     for name in args.arms.split(","):
+        # Five in a row is not bad luck, it is a broken setup, and the run
+        # that taught this lesson is the one where a concurrent `cargo build`
+        # replaced the binary under an arm: every ingest failed, each was
+        # caught and skipped, and the run reported success with no rows in it.
+        # A harness that cannot fail cannot be trusted when it passes.
+        consecutive = 0
         for entry in entries:
             unit = dataset.unit_id(entry)
             wanted = {qid for qid, _qa, _ref
@@ -144,7 +169,13 @@ def main():
             except Exception as error:
                 sampler.stop.set()
                 print(f"  {name} {unit}: INGEST FAILED: {error}", flush=True)
+                consecutive += 1
+                if consecutive >= 5:
+                    raise SystemExit(
+                        f"{name} failed to ingest {consecutive} units in a row; "
+                        f"the last said: {error}")
                 continue
+            consecutive = 0
             sampler.stop.set()
             sampler.join(timeout=5)
             after = arms_module.shim_stats()
@@ -160,6 +191,7 @@ def main():
                 "store_mb": resources.dir_mb(getattr(arm, "store_path", None)) - disk_before,
                 "peak_pss_mb": max(sampler.samples) if sampler.samples else None,
                 "turns": count,
+                "cost_measurable": not SHARED,
             }
             print(f"  {name} {unit}: {count} turns in {seconds:.0f}s | "
                   f"{cost['ingest_llm_calls']} LLM calls, "
@@ -220,8 +252,13 @@ def measure(dataset, arm, entry, args, cost, where, name, unit, done):
         if args.mode == "quality":
             predicted = chat(prompt) if passages else ""
             row["predicted"] = predicted
-            row["correct"] = (dataset.judged(chat, qa["question"], reference, predicted)
-                              if passages else 0.0)
+            verdict = (dataset.judged(chat, qa["question"], reference, predicted)
+                       if passages else 0.0)
+            # A judge may return more than a score. Supersession needs three
+            # outcomes rather than two, because answering with the fact that
+            # was replaced and answering with nothing are different failures
+            # and a single `correct` column cannot tell them apart.
+            row.update(verdict if isinstance(verdict, dict) else {"correct": verdict})
         yield row
 
 
@@ -245,6 +282,20 @@ def summarise(rows, mode):
             print(f"  {arm:<16}{len(group):>5}"
                   f"{statistics.mean(r['correct'] for r in group):>10.3f}")
 
+        if any("verdict" in r for r in rows):
+            print("\n=== which answer came back ===")
+            kinds = ["current", "stale", "neither", "unparsed"]
+            print(f"  {'arm':<20}" + "".join(f"{k:>10}" for k in kinds))
+            for arm in sorted(by_arm):
+                group = [r for r in by_arm[arm] if "verdict" in r]
+                if not group:
+                    continue
+                line = f"  {arm:<20}"
+                for kind in kinds:
+                    share = sum(r["verdict"] == kind for r in group) / len(group)
+                    line += f"{share:>10.3f}"
+                print(line + f"   n={len(group)}")
+
         print("\n=== by label ===")
         arms = sorted(by_arm)
         print(f"  {'label':<26}" + "".join(f"{a:>16}" for a in arms))
@@ -255,6 +306,21 @@ def summarise(rows, mode):
                 line += (f"{statistics.mean(r['correct'] for r in group):>16.3f}"
                          if group else f"{'-':>16}")
             print(line)
+
+    if any(r.get("cost_measurable") is False for r in rows):
+        print("\n=== what one unit costs ===")
+        print("  Not from this run. It shared the machine and the model "
+              "endpoint with another,")
+        print(f"  so {', '.join(CONTENDED)} measure the pair rather "
+              f"than the arm.")
+        print(f"  {'arm':<20}{'store MB':>10}{'prompt tokens':>15}{'retrieved':>11}")
+        for arm in sorted(by_arm):
+            group = by_arm[arm]
+            print(f"  {arm:<20}"
+                  f"{statistics.median(per_unit(arm, 'store_mb')):>10.0f}"
+                  f"{statistics.median(r.get('prompt_tokens', 0) for r in group):>15.0f}"
+                  f"{statistics.median(r.get('retrieved', 0) for r in group):>11.0f}")
+        return
 
     print("\n=== what one unit costs to ingest ===")
     print(f"  {'arm':<16}{'seconds':>9}{'LLM':>6}{'LLM s':>8}{'embedded':>10}"

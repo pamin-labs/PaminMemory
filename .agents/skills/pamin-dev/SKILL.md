@@ -1,5 +1,7 @@
 ---
 name: pamin-dev
+metadata:
+  internal: true
 description: How to measure and how to keep claims true when working on PaminMemory itself. Use this skill whenever you are about to benchmark something, quote a latency or an accuracy figure, tune or justify a constant, add or change an evaluation harness, or write a number into a README, ADR, code comment or PR description. Also use it before opening a PR that touches docs, and whenever you notice documentation that might describe behaviour the code has since changed. Reach for it on phrases like measure, benchmark, how fast is, how much better, tune, sweep, is it worth it, or regression — and when a repository claim and the code appear to disagree.
 ---
 
@@ -78,6 +80,64 @@ The same question applies to any test. "Would this assertion have failed before
 the fix?" If not, it is decoration. Known trap: verifying "after drain the index
 has it" also passes on code with no queue at all — proving the outbox is worth
 anything requires interrupting between commit and execution.
+
+## A shared endpoint makes cost a property of the pair
+
+Two arms were run at once because the reader and the judge are network waits
+and the machine is idle through them. It halved the wall clock and made four of
+the cost columns describe both runs instead of one: the write-side counters are
+differences of a counter the model endpoint keeps for every caller, and the
+timings are of a machine somebody else is using.
+
+The number that caught it is the one that had to be right. An arm with no model
+on its write path — the claim the whole comparison rests on — reported fourteen
+LLM calls for one ingest, every one of them the other run's reader and judge.
+
+So: **a run that shares the endpoint or the machine says so on every row it
+writes**, and the summary prints what survived rather than a table that looks
+the same as a clean one. Bytes on disk, prompt sizes and verdicts are the arm's
+own; calls, seconds and resident memory are not. Put it on the rows, not in a
+comment: the file outlives the shell that produced it, and whoever plots it
+next will not have read the comment.
+
+## A harness that cannot fail cannot be trusted when it passes
+
+A `cargo build` running beside a benchmark replaced the binary an arm was
+invoking. All seventy of that arm's ingests failed with `No such file or
+directory`, each was caught and skipped, and the run printed its summary and
+exited zero with no rows in it.
+
+That is the same shape as the resume defect that came before it — a
+conversation interrupted after its tenth answer counted as done, so a run came
+back with 182 of 199 answers and nothing said so.
+
+So: **a failure the harness absorbs is a failure nobody sees.** Five
+consecutive failures in one arm is not bad luck; stop and name the arm and the
+last error. And keep the harness's own tools off the thing being measured —
+that binary now lives in a copy the build cannot touch.
+
+## A timing gate has to pass two questions, not one
+
+A test was added to stop the write path from paying for the size of the
+project. Three versions of it were wrong, each in a way that looked fine:
+
+**Would it have failed before the fix?** The first version timed one `write`
+and its cascade. The drain is a hundred milliseconds of embedding, so the
+defect — worth a hundred more — moved the total by a factor of 1.7, under a
+bound loose enough to survive a shared runner. Measure the operation that had
+the problem, not the one that contains it.
+
+**Is it stable?** The second version timed one derivation. Two runs of
+identical code gave 1.65x and 3.17x, and the second failed. Fifty samples, and
+the ratio taken on the *fastest*: noise only ever adds, so the quickest sample
+is the closest any of them gets to the work. Medians moved 0.58/1.02/1.57 where
+minima moved 1.10/1.29/1.11.
+
+**Is the setup lying?** The third version bulk-loaded twenty thousand rows and
+never ran `ANALYZE`. With no statistics the planner ignored the index that
+exists for exactly that query, and the product looked like it still scaled with
+the project. What scaled was the harness. A setup that skips the normal path
+has to restore what the normal path would have left behind.
 
 ## Where a harness lives
 

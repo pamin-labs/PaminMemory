@@ -19,6 +19,10 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 pamin-store = { workspace = true }
+# For the scale tests only, which build a project's topics in bulk rather than
+# one round trip at a time. Already in the tree as `pamin-store`'s driver, so
+# this adds no lockfile entry.
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

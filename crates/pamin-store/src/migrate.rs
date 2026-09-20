@@ -57,6 +57,11 @@ fn migrations() -> Vec<Migration> {
             "one_document_per_topic",
             include_str!("../migrations/V7__one_document_per_topic.sql"),
         ),
+        migration(
+            8,
+            "topics_by_recency",
+            include_str!("../migrations/V8__topics_by_recency.sql"),
+        ),
     ]
 }
 

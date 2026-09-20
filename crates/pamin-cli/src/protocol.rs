@@ -71,6 +71,7 @@ pub enum Call {
     Link(command::link::Args),
     Unlink(command::unlink::Args),
     Neighbors(command::neighbors::Args),
+    Topics(command::topics::Args),
     Reindex(command::reindex::Args),
     Cascade(command::cascade::Args),
     /// Stop the database, and the server answering this. The one call a client
@@ -91,6 +92,7 @@ impl Call {
             Self::Link(_) => "link",
             Self::Unlink(_) => "unlink",
             Self::Neighbors(_) => "neighbors",
+            Self::Topics(_) => "topics",
             Self::Reindex(_) => "reindex",
             Self::Cascade(_) => "cascade",
             Self::Stop => "stop",

@@ -153,6 +153,27 @@ pamin search "deployment" --json
 
 Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
 
+## Teaching An Agent To Use It
+
+The CLI is the whole interface, so an agent needs to know when reaching for it
+beats answering from what it already has. That judgement ships as a skill:
+
+```bash
+npx skills add pamin-labs/PaminMemory --skill pamin-memory
+```
+
+It installs to `./.agents/skills/pamin-memory` and symlinks into the paths the
+individual agents read, so one install covers Claude Code, Codex, Cline, Amp and
+the rest. `npx skills add pamin-labs/PaminMemory --list` shows what is there
+before you take it.
+
+The skill is about judgement rather than syntax — which of `search`, `read`,
+`grep` and `neighbors` answers which kind of question, how to read the `why`
+trace on a result, and the traps around the evidence filter. It is the only
+skill this repository publishes. There is a second one for people working on
+PaminMemory itself, about measurement discipline, and it is marked internal so
+it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
+
 ## Any Language
 
 Evidence is stored exactly as it arrives and is never translated. Translation would put a model on the write path, and it would break exact matching: after translation your own words no longer find your own memory.
@@ -437,6 +458,17 @@ its figures would rise — was wrong. The arms, what is held fixed and how each
 condition is asserted are in [benchmarks/](benchmarks); the full tables,
 including two conditions that were measured wrongly the first time and what
 they invalidated, are in [docs/benchmarks.md](docs/benchmarks.md).
+
+**Superseded facts**, on LongMemEval's 70 knowledge-update questions that have
+a replaced value to get wrong, scored three ways rather than two — the value
+that holds, the value it replaced, or neither. Answering with a fact you were
+told had stopped being true is a different failure from answering with nothing,
+and accuracy alone cannot tell them apart. The ledger cuts that failure from
+28.6% to 10.0% (p = 0.0005), and writing the interval without showing it to the
+reader changes nothing at all (p = 1.00) — the timeline has to reach the
+caller, which is why `pamin search` reports it. What it does not do is beat
+writing the date into the passage text, a free alternative that needs no
+columns: 0.900 against 0.814 is p = 0.0703, and that stays on the page too.
 
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,

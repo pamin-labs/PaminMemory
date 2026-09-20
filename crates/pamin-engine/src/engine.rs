@@ -746,6 +746,36 @@ impl Engine {
             .count())
     }
 
+    /// Topics whose own name appears in this text.
+    ///
+    /// The other half of "which topic should this go under". `search` answers
+    /// it by content, so it finds a topic only when something written under it
+    /// matches; this asks the name index, so a topic nobody has written much
+    /// about is still findable by what it is called.
+    ///
+    /// Exact on the segmenter's tokens, not a prefix and not a stem: every run
+    /// of words in the text is looked up whole, so `deployment pipeline` finds
+    /// `deployment_pipeline` and `deploy pipeline` does not. That is the same
+    /// question `derive_mentions` asks of a memory, answered against the same
+    /// index, and it is deliberately the strict half of this pair -- the
+    /// forgiving half is the content search beside it.
+    pub async fn topics_named_like(&self, text: &str, limit: u32) -> Result<Vec<String>> {
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(text), widest));
+        let candidates =
+            repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
+        let mut named: Vec<String> =
+            repository::topics_by_id(self.database.pool(), self.project, &candidates)
+                .await?
+                .into_iter()
+                .map(|(_, name, _)| name)
+                .take(limit as usize)
+                .collect();
+        named.sort_unstable();
+        named.dedup();
+        Ok(named)
+    }
+
     /// Links a newly created topic to memories that already named it.
     ///
     /// Without it an edge would appear only when one of those older memories

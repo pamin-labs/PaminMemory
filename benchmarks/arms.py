@@ -268,6 +268,141 @@ class PaminLedger:
         return [h["content"] for h in json.loads(out)["hits"]]
 
 
+def project_for(kind, unit):
+    """A workspace name unique to an arm family, a run, and a unit.
+
+    The older arms spell this inline with a literal `locomo` prefix. Left
+    alone: their names are what published projects were built under, and
+    renaming them would silently rebuild rather than reuse.
+    """
+    tag = os.environ.get("RUN_TAG", "r1")
+    return kind + tag + re.sub(r"[^a-z0-9]", "", unit.lower())[:26]
+
+
+class PaminDated(Pamin):
+    """The flat arm with the date folded into each passage.
+
+    The cheap way to let a reader tell which of two contradicting memories
+    came later, and the thing a ledger has to beat to be worth its columns.
+    LOCOMO's adapter does this for every arm; the supersession adapter does it
+    for none, so that this arm and `pamin` differ by the date and nothing
+    else.
+    """
+
+    name = "pamin-dated"
+
+    def ingest(self, conversation_id, turns):
+        self.project = project_for("sdated", conversation_id)
+        path = f"{WORK}/ndjson/{self.project}.ndjson"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        undated = 0
+        with open(path, "w") as f:
+            for t in turns:
+                undated += not t["when"]
+                f.write(json.dumps({
+                    "topic": re.sub(r"[^A-Za-z0-9_]", "_", t["id"]),
+                    "content": f"[{t['when']}] {t['record']}",
+                }, ensure_ascii=False) + "\n")
+        os.chmod(path, 0o644)
+        if undated:
+            raise RuntimeError(
+                f"{undated} of {len(turns)} turns carried no date; this arm is "
+                f"the dated one and has nothing to compare against `pamin`")
+
+        started = time.time()
+        self._run(self.project, ["import", "--from", path])
+        self._run(self.project, ["cascade", "drain"])
+        return time.time() - started, len(turns)
+
+
+class PaminValid(Pamin):
+    """Each session imported under its own `--valid-from`, and nothing else.
+
+    The write half of the ledger's answer to supersession. `recall` does not
+    pass the interval on, which is the point: this arm asks whether writing
+    the timeline down is worth anything to a reader that never sees it.
+    """
+
+    name = "pamin-valid"
+    SURFACE = False
+    KIND = "svalid"
+
+    def ingest(self, conversation_id, turns):
+        self.project = project_for(self.KIND, conversation_id)
+        by_session = collections.defaultdict(list)
+        for t in turns:
+            by_session[t["session"]].append(t)
+
+        started = time.time()
+        dated = 0
+        for session in sorted(by_session):
+            group = by_session[session]
+            path = f"{WORK}/ndjson/{self.project}-{session}.ndjson"
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                for t in group:
+                    f.write(json.dumps({
+                        "topic": re.sub(r"[^A-Za-z0-9_]", "_", t["id"]),
+                        "content": t["record"],
+                    }, ensure_ascii=False) + "\n")
+            os.chmod(path, 0o644)
+
+            # One import per session, because `--valid-from` is a property of
+            # the call and not of a line: a single import for the whole
+            # haystack could carry one date, which is the flat arm.
+            args = ["import", "--from", path]
+            if group[0]["when"]:
+                args += ["--valid-from", group[0]["when"]]
+                dated += 1
+            self._run(self.project, args)
+
+        self._run(self.project, ["cascade", "drain"])
+        if dated != len(by_session):
+            raise RuntimeError(
+                f"{dated} of {len(by_session)} sessions carried a date; this arm "
+                f"is not testing valid time if the dates did not land")
+        return time.time() - started, len(turns)
+
+    def recall(self, question):
+        out = self._run(self.project,
+                        ["search", question, "--limit", str(TOP_K), "--json"])
+        hits = json.loads(out)["hits"]
+        missing = [h["topic"] for h in hits if not h.get("valid_from")]
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} of {len(hits)} hits came back with no interval, "
+                f"e.g. {missing[:3]}; every import in this arm set one, so either "
+                f"the project is the flat arm's or `search` stopped carrying it")
+        if not self.SURFACE:
+            return [h["content"] for h in hits]
+        return [f"[{h['valid_from']}] {h['content']}" for h in hits]
+
+
+class PaminValidRead(PaminValid):
+    """The same projects, with the interval passed on to the reader.
+
+    Reuses what `pamin-valid` built rather than building it again, the way
+    `pamin-wide` reuses the flat arm's: the two differ by one line of the
+    recall path, and rebuilding would only buy a second measurement of the
+    same ingest.
+    """
+
+    name = "pamin-valid-read"
+    SURFACE = True
+
+    def ingest(self, conversation_id, turns):
+        self.project = project_for(self.KIND, conversation_id)
+        started = time.time()
+        out = self._run(self.project,
+                        ["search", "anything", "--limit", "1", "--json"])
+        if not json.loads(out)["hits"]:
+            raise RuntimeError(
+                f"{self.project} is empty; this arm reuses what `pamin-valid` "
+                f"built and cannot build it")
+        # Not an ingest measurement, and not reported as one.
+        return time.time() - started, len(turns)
+
+
 class Mem0:
     """mem0's own pipeline, with its LLM and embedder pointed at the shim."""
 
@@ -528,6 +663,9 @@ ARMS = {
     "pamin": Pamin,
     "pamin-wide": PaminWide,
     "pamin-ledger": PaminLedger,
+    "pamin-dated": PaminDated,
+    "pamin-valid": PaminValid,
+    "pamin-valid-read": PaminValidRead,
     "mem0": Mem0,
     "mem0-wide": Mem0Wide,
     "mempalace": MemPalace,
