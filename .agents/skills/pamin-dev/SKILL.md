@@ -139,6 +139,30 @@ exists for exactly that query, and the product looked like it still scaled with
 the project. What scaled was the harness. A setup that skips the normal path
 has to restore what the normal path would have left behind.
 
+## A harness that cannot produce a published figure is not the source of it
+
+The latency table had six rows and the harness had four arms. Two of them --
+the CLI behind `su`, and the embedding call inside it -- had been measured some
+other way and could not be reproduced from the repository at all. Nobody
+noticed, because a table does not say which of its rows its own harness can
+make.
+
+That is the same gap as a run that saves nothing, one level up, and it showed
+up in the same week as two more of its family: a table whose rows went from a
+terminal into a document with no artifact behind them, and two published
+figures held by no committed summary -- one of them sitting in a raw file the
+summariser already opened for a different purpose.
+
+So the rule has three parts, and the third is the one that gets skipped:
+
+1. every published figure comes from a harness in this repository,
+2. that harness writes its rows to a file, and
+3. **every row of the published table is one the harness can produce.**
+
+The check is mechanical and takes a minute. Put the published table beside the
+harness's arm list and the committed summary, and make the three agree. A row
+that only one of them knows about is a row nobody can re-run.
+
 ## Where a harness lives
 
 Two kinds, two homes, and the rule is about what the harness asserts:
@@ -183,7 +207,16 @@ will compile it and may fail the `-D warnings` gate on scratch code.
 - **Do not touch git while a background harness runs.** `git add -A` picks up
   whatever it is holding.
 - **Three runs, take the median.** If the spread exceeds about 10%, add rounds
-  rather than picking a number.
+  rather than picking a number. This rule is cheap to write down and easy to
+  skip, and skipping it is how the latency table came to be published from one
+  run. Re-run a day later on a quieter machine, every row moved -- between
+  -24% and +1%, in both directions, and by more than some of the differences
+  the table reported. The row containing no product code at all, one embedding
+  call to a local endpoint, moved the most. A figure from a single run is a
+  point estimate with no spread attached, and **the cheapest way to learn its
+  spread is to run the harness again rather than to run it more carefully.**
+  Neither re-run this taught the lesson on changed a conclusion; both changed
+  how tightly one could be stated.
 - **Check for shared state between configurations.** The cache-eviction bug was
   configuration *N* poisoning configuration *N+1*.
 - **Write the prediction down before you look.** Predictions in this repository
