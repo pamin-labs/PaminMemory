@@ -29,9 +29,9 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
-| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **28 ms** |
-| MemPalace | 0.623 | 20 calls, $1.15, 520 s | 63 ms |
-| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 90 ms |
+| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **25.7 ms** |
+| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 49.6 ms |
+| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 85.3 ms |
 
 No pair of those accuracies separates statistically. That is the claim, and it
 is deliberately a tie: **parity with the systems this category is named after,
