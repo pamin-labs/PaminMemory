@@ -356,8 +356,9 @@ queries, reported as the median of them:
 Seventeen to nineteen of those milliseconds are the invocation rather than the
 search — `pamin --help` against the same workspace costs that much — and it is
 measured rather than subtracted, because a caller pays it either way. A write
-is 32 ms, most of it the `fsync` a durable append owes; that figure comes from
-the ADR's write-path measurement and was not re-taken here.
+is 30.1 ms, most of it the `fsync` a durable append owes — measured over 2,400
+memories and published in [docs/cli.md](docs/cli.md), not re-taken in this
+sweep.
 
 Measured on 4 vCPU (Intel Xeon @ 2.80 GHz, no SMT), 15 GB RAM, release build,
 embeddings on CPU through ONNX Runtime, with every cell's queries disjoint from
