@@ -651,6 +651,13 @@ the most metadata: the envelope column says what a context window pays and the
 ratio says how much of that is not memory, and the two order the arms
 differently.
 
+One of the three has two caller surfaces and the row names which was measured:
+an application embedding MemPalace gets this dict, while its CLI prints a
+shorter rendering of the same results, so a shell user pays less than 4,560.
+The library call is the one measured, because it is the boundary the latency
+table below also times. `pamin` is the other way round — the CLI is the
+surface, and its socket protocol carries the same fields.
+
 BM25 has no row because it is this harness's own loop rather than a system with
 a response, and neither does the 30-result half of the table above: every arm
 here is at ten. The figure quoted here before — 1,255 tokens for `pamin`'s ten
