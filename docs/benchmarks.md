@@ -293,6 +293,50 @@ said is narrower than it looks in the first table: the read path is worth a
 great deal over doing nothing, and no better than a date prefix as far as
 anything here can tell.
 
+### The same question, asked with a sharper instrument
+
+That last comparison was close enough to be worth one more run. The obvious
+suspect was the reader: one sample per arm makes each question a single
+Bernoulli draw, and a question the two arms genuinely disagree about can land
+concordant by luck, which loses a discordant pair and with it the only
+information McNemar uses. So [benchmarks/power.py](../benchmarks/power.py)
+re-ran the three built arms reading each question **five times** and taking the
+majority, on a binary carrying the trimmed JSON, with retrieval captured once
+per arm and replayed to all five reads so they differ only in the model's own
+sampling.
+
+| arm | current | **stale** | neither | reads agreed | unanimous |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `pamin-dated` | 0.814 | **0.157** | 0.029 | 0.929 | 55 of 70 |
+| `pamin-valid` | 0.700 | **0.286** | 0.014 | 0.943 | 56 of 70 |
+| `pamin-valid-read` | **0.900** | **0.100** | 0.000 | 0.943 | 57 of 70 |
+
+**Every total and the decisive p value come out exactly as the first run
+reported them**, 7 to 1 at p = 0.0703 again. The per-question verdicts do not
+-- 60, 64 and 68 of 70 match -- so these are two runs that sum to the same
+numbers, not one run reproduced.
+
+**The suspect was innocent, which is the result.** Reader noise was never the
+limit: 55 to 57 of the 70 questions are unanimous across five reads, and the
+discordant count did not move. The eight pairs are the arms disagreeing, not
+the reader failing to repeat itself. What limits this comparison is 70
+questions, and **one more discordant pair in the same direction would settle
+it** -- 8 to 1 on nine pairs is p = 0.0391. LongMemEval-S has 78
+knowledge-update questions and 70 of them qualify, so there is no ninth pair to
+be had here. Settling it needs a corpus with more of them, not a better
+instrument.
+
+**The other thing this run added says the gap is not purely presentation.**
+`pamin-dated` writes the date into the *indexed* content, so it can retrieve
+different passages rather than merely show the reader more -- and the first run
+stored a count of hits rather than which ones, so nobody could check. Measured:
+the two arms' retrieved sets overlap by a median of 0.90, and **only 16 of 70
+questions return the same set to both.** Part of the 0.900 against 0.814 is
+therefore retrieval and not presentation, and this page cannot say how much.
+What it can say is that three of the seven pairs that go to `pamin-valid-read`
+sit at overlap 1.00, where the two arms read the same passages and nothing but
+what the reader was shown can have moved them.
+
 The two also cost differently, in opposite directions. One import per session
 leaves one source span per session, so `pamin-valid` stores 62 MB where the
 flat arm stores 20 and `pamin-dated` stores 21 -- three times the disk. The

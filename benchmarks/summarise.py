@@ -84,6 +84,16 @@ SUPERSESSION_PAIRS = [("pamin", "bm25"), ("pamin-dated", "pamin"),
 
 VERDICTS = ["current", "stale", "neither", "unparsed"]
 
+# The re-run that reads each question five times. Its own file, not folded in
+# with the three above: it answers the same questions with a different
+# instrument and on a different binary, so averaging the two would destroy the
+# one thing worth knowing, which is whether they agree.
+POWER_FILE = "power/power.jsonl"
+POWER_ARMS = ["pamin-dated", "pamin-valid", "pamin-valid-read"]
+POWER_PAIRS = [("pamin-valid-read", "pamin-dated"),
+               ("pamin-valid-read", "pamin-valid"),
+               ("pamin-valid", "pamin-dated")]
+
 
 def read_rows(raw, name):
     path = os.path.join(raw, name)
@@ -556,6 +566,125 @@ def supersession(raw, by_file):
     }
 
 
+def supersession_power(raw, by_file, first_run):
+    """The same 70 questions, read five times each, majority verdict.
+
+    The first run left `pamin-valid-read` 0.900 against `pamin-dated` 0.814 at
+    p = 0.0703 on eight discordant pairs. This re-run exists to find out
+    whether that was the reader being noisy, so the two things it adds are the
+    two the first run could not report: how often five reads of one question
+    agree, and how much of each arm's retrieved set the other arm also
+    retrieved.
+
+    Both answers are recorded whichever way they came out, and they came out
+    against the hypothesis this run was built on.
+    """
+    rows = by_file[POWER_FILE]
+    by_arm = collections.defaultdict(dict)
+    for row in rows:
+        by_arm[row["arm"]][row["unit"]] = row
+
+    arms = {}
+    for name in POWER_ARMS:
+        group = list(by_arm[name].values())
+        counted = collections.Counter(r["verdict"] for r in group)
+        spread = collections.Counter(r["agreement"] for r in group)
+        arms[name] = {
+            "rows": len(group),
+            **{kind: round(counted[kind] / len(group), 4) for kind in VERDICTS},
+            "reads_agreed_mean": round(
+                statistics.mean(r["agreement"] for r in group), 4),
+            "unanimous": spread[1.0],
+            "agreement_spread": {str(k): v for k, v in sorted(spread.items(),
+                                                              reverse=True)},
+        }
+
+    a, b = "pamin-valid-read", "pamin-dated"
+    shared = sorted(set(by_arm[a]) & set(by_arm[b]))
+    overlap = [len(set(by_arm[a][u]["topics"]) & set(by_arm[b][u]["topics"]))
+               / max(1, len(by_arm[a][u]["topics"])) for u in shared]
+
+    # Where the two arms disagree, with how much of the retrieval they shared.
+    # A flip at overlap 1.00 is presentation and nothing else; a flip below it
+    # could be either, and the page cannot tell which.
+    discordant = []
+    for u in shared:
+        first, second = by_arm[a][u], by_arm[b][u]
+        if correct(first) != correct(second):
+            discordant.append({
+                "unit": u, "won": a if correct(first) else b,
+                f"{a}_verdict": first["verdict"],
+                f"{a}_reads_agreed": first["agreement"],
+                f"{b}_verdict": second["verdict"],
+                f"{b}_reads_agreed": second["agreement"],
+                "retrieved_overlap": round(
+                    len(set(first["topics"]) & set(second["topics"]))
+                    / max(1, len(first["topics"])), 2)})
+
+    agreed = {}
+    for name in POWER_ARMS:
+        before = {r["unit"]: r["verdict"] for r in first_run
+                  if r["arm"] == name}
+        both = sorted(set(before) & set(by_arm[name]))
+        same = sum(1 for u in both if before[u] == by_arm[name][u]["verdict"])
+        agreed[name] = {"identical_verdicts": same, "of": len(both),
+                        "rate": round(same / len(both), 4) if both else None}
+
+    return {
+        "table": "supersession, re-measured with five reads and a majority "
+                 "verdict",
+        "published_in": "docs/benchmarks.md, 'What it said'",
+        "question": "is `pamin-valid-read` better than `pamin-dated`, or was "
+                    "the first run's p = 0.0703 a reader that could not answer "
+                    "the same question twice",
+        "dataset": {"name": "longmemeval-knowledge-update",
+                    "questions": len(by_arm[a]),
+                    "reads_per_question": 5,
+                    "sampling": "the same 70 questions the first run used"},
+        "scoring": "five reads of one captured retrieval, each judged current, "
+                   "stale or neither; the arm's verdict is the majority, and a "
+                   "tie resolves to the least favourable of the tied verdicts.",
+        **stamped(rows, "these rows carry no machine."),
+        "sources": [source(raw, POWER_FILE, len(rows))],
+        "arms": arms,
+        "mcnemar": [dict({"a": x, "b": y},
+                         **paired(by_arm, x, y,
+                                  lambda r: r["verdict"] == "current"))
+                    for x, y in POWER_PAIRS],
+        "retrieved_overlap": {
+            "of": f"{a} against {b}",
+            "median": round(statistics.median(overlap), 4),
+            "mean": round(statistics.mean(overlap), 4),
+            "min": round(min(overlap), 4),
+            "identical_sets": sum(1 for x in overlap if x == 1.0),
+            "questions": len(overlap)},
+        "discordant_pairs": discordant,
+        "against_the_first_run": agreed,
+        "notes": [
+            "The three arm totals and the decisive p value come out exactly as "
+            "the first run reported them -- 0.814, 0.700, 0.900 and 7 to 1 at "
+            "p = 0.0703. The per-question verdicts do not, so this is two runs "
+            "that happen to sum to the same numbers rather than one run "
+            "reproduced.",
+            "Reader noise was not the limit. 55 to 57 of the 70 questions are "
+            "unanimous across five reads, and the discordant count did not "
+            "move, so the eight pairs are the arms disagreeing rather than the "
+            "reader being unable to repeat itself. What limits this comparison "
+            "is 70 questions.",
+            "One more discordant pair in the same direction would settle it: "
+            "8 to 1 on nine pairs is p = 0.0391. LongMemEval-S has 78 "
+            "knowledge-update questions and 70 of them qualify, so there is no "
+            "ninth pair to be had from this corpus.",
+            "The retrieval confound is real and partial. `pamin-dated` writes "
+            "the date into the indexed content, and only 16 of 70 questions "
+            "return the same topic set to both arms, so part of the gap is "
+            "retrieval rather than presentation. Three of the seven pairs that "
+            "go to `pamin-valid-read` are at overlap 1.00, where nothing but "
+            "what the reader was shown can have moved.",
+        ],
+    }
+
+
 def longmemeval_retrieval(raw, pamin_rows, recorded):
     """Session retrieval, at the loose metric the field publishes and a strict one.
 
@@ -637,7 +766,8 @@ def main():
 
     results = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
     by_file = {name: read_rows(args.raw, name)
-               for name in LOCOMO_FILES + SUPERSESSION_FILES + ["raw.jsonl"]}
+               for name in LOCOMO_FILES + SUPERSESSION_FILES
+               + [POWER_FILE, "raw.jsonl"]}
 
     cost_run = read_json(args.raw, "tokencost.json")
 
@@ -651,6 +781,11 @@ def main():
           locomo_mempalace_no_llm(args.raw, by_file, cost_run))
     write(os.path.join(results, "longmemeval", "summary-supersession.json"),
           supersession(args.raw, by_file))
+    write(os.path.join(results, "longmemeval",
+                       "summary-supersession-power.json"),
+          supersession_power(
+              args.raw, by_file,
+              [r for name in SUPERSESSION_FILES for r in by_file[name]]))
     write(os.path.join(results, "longmemeval", "summary-session-retrieval.json"),
           longmemeval_retrieval(
               args.raw, read_rows(args.raw, "lme_pamin.jsonl"),
