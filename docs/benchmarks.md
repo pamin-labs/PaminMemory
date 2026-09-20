@@ -644,7 +644,7 @@ same eight questions that column reads 610, 394 and 2,128, in line with the
 So between 55% and 81% of what a caller pays to read one of these answers is
 not the memory. Two caveats travel with that. `pamin` already prints compact
 JSON while the other two are objects the caller serialises — compacting those
-saves 6 to 8 per cent, and the harness reports that floor beside each arm. And
+saves 8 to 9 per cent, and the harness reports that floor beside each arm. And
 MemPalace returns whole conversation blocks, so it has the largest envelope and
 the smallest share of packaging, while mem0 returns the least text wrapped in
 the most metadata: the envelope column says what a context window pays and the
