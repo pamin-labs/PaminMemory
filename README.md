@@ -29,9 +29,9 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
-| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **25.7 ms** |
-| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 49.6 ms |
-| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 85.3 ms |
+| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **26.1 ms** |
+| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 79.7 ms |
+| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 105.6 ms |
 
 No pair of those accuracies separates statistically. That is the claim, and it
 is deliberately a tie: **parity with the systems this category is named after,
@@ -94,15 +94,30 @@ model on its write path.
 
 | | Påmin Memory | MemPalace | mem0 |
 | --- | --- | --- | --- |
-| embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
+| texts embedded to ingest ten conversations | 5,882 | **1,668** | 6,335 |
+| of those, requests to a separate process | **0**, in-process | 1,668 | 6,335 |
 | same corpus written twice | **byte-identical** | LLM on the write path by default | 41 of 199 answers change |
 | prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
 
-Two of the headline figures need a sentence each. **Retrieval at 25.7 ms
-against 85.3 ms is real and mostly invisible**: a model reading those passages
-takes about five and a half seconds and does not care whether it was handed
-five hundred tokens or five thousand, so end to end the three are
-indistinguishable and retrieval is one per cent of the wait or less. Where it counts is a memory system feeding
+Those first two rows used to be one row reading "embedding requests to a
+service you must run: 0". Both halves of that were wrong. **Påmin Memory does
+not embed nothing** — it embeds every turn it stores, 5,882 of them, more than
+MemPalace and about as many as mem0, because the other two distil first and it
+does not. And **the service is not one you must run**: all three can point at a
+local embedder, which is exactly what this benchmark does — the same BGE-M3,
+through the same endpoint, for all three. So the cost of these embeddings is
+CPU in every case, and what the second row measures is not a bill but where the
+embedder lives: inside the process that holds the index, or across a socket.
+
+Two of the headline figures need a sentence each. **Retrieval at 26.1 ms
+against 105.6 ms is real and mostly invisible**: a model reading those passages
+takes about six seconds and does not care whether it was handed five hundred
+tokens or five thousand, so end to end the three are indistinguishable and
+retrieval is under two per cent of the wait. A quarter of the other two arms'
+figures is an embedding call over HTTP that this harness serves, and that call
+moved 70% between two runs two hours apart, so read the gap as architecture
+rather than as a stopwatch reading —
+[docs/benchmarks.md](docs/benchmarks.md) has both halves. Where it counts is a memory system feeding
 an agent's own context, adding its latency to a call that was happening anyway.
 **Ingest at 356 s against 4,121 s is the one nothing hides** — an hour of
 difference is an hour.
@@ -231,7 +246,7 @@ under [benchmarks/results/](benchmarks/results).
 | --- | --- | --- |
 | retrieval, one language | nDCG@10 **0.7359** | MIRACL Swahili dev, 131,924 passages |
 | retrieval, query and answer in different languages | nDCG@10 0.6097 | XQuAD-R, 13,014 sentences |
-| one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
+| one `pamin search` over a socket | **26.1 ms** | LOCOMO, `fast` reranking |
 | one `pamin search` as a whole CLI invocation | 251 ms | XQuAD-R, `fast` reranking |
 | one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
 | resident, one project | 2,088 MB | model and index inside the server |
