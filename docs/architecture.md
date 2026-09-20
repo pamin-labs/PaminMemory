@@ -74,8 +74,9 @@ reached it. There is no step at which a score becomes unattributable.
 
 **A cross-encoder pass, tiered.** Over the fused shortlist, `off`, `fast`
 (default) and `accurate` trade latency for quality on a curve that is measured
-rather than assumed — the figures, including one that had to be corrected
-twice, are in [benchmarks.md](benchmarks.md).
+rather than assumed — the figures are in [cli.md](cli.md), and the one that had
+to be corrected twice, along with why, is in
+[the ADR](adr/0001-tech-selection.md).
 
 **Everything local.** Embeddings run in-process through ONNX Runtime;
 PostgreSQL is bundled rather than something you install. A default install

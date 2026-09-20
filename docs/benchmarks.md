@@ -31,7 +31,7 @@ MemPalace's headline is "96.6% R@5 **raw** — zero API calls", and raw is real:
 `mempalace init --no-llm` runs heuristics only. But it is not the default. As of
 3.10.0 the CLI says so itself — `--llm` is "DEPRECATED — LLM-assisted entity
 refinement is now ON by default ... pass `--no-llm` to opt out". The arm here
-ran the default and measured 20 model calls and $1.15 to ingest ten
+ran the default and measured 20 model calls and about a dollar to ingest ten
 conversations. Both statements are true of different configurations, and a
 table with one column for "LLM on write path" cannot hold that, so the column
 now says which.
@@ -144,7 +144,8 @@ actually measured.
 
 ### Running it
 
-Not yet run here. The shape it would take:
+Run, and reported in [what running it showed](#longmemeval-the-published-metric-is-saturated) further down this page.
+The shape it takes:
 
 1. Fetch LongMemEval-S from [its repository][longmemeval]. Fetch rather than
    vendor, the way `crosslingual.rs` fetches XQuAD-R — licence, and size.
@@ -629,7 +630,7 @@ conversations and 5,882 turns.
 | BM25 | 0 | 0 | $0 | 0 | 0 MB |
 | `pamin` | **0** | **0** | **$0** | 0, in-process | **156 MB** |
 | `pamin-ledger` | **0** | **0** | **$0** | 0, in-process | **370 MB** |
-| MemPalace | 20 | 286 | $1.15 | 1,668 | <1 MB |
+| MemPalace | 20 | 298 | ~$1 | 1,668 | <1 MB |
 | mem0 | **272** | **3,913** | **$27.77** | 6,335 | 5 MB |
 
 **Two of those numbers were wrong until an audit of the committed summaries
@@ -899,14 +900,15 @@ quietly used one would be the default measured twice.
 
 | MemPalace | accuracy @10 | accuracy @30 | ingest | model calls | cost |
 | --- | --- | --- | --- | --- | --- |
-| default, LLM refinement on | 0.561 | **0.626** | 545 s | 20 | $1.15 |
+| default, LLM refinement on | 0.561 | **0.626** | 500–545 s | 20 | ~$1 |
 | `--no-llm`, as published | **0.571** | 0.606 | **219 s** | **0** | **$0** |
 
 **The 20 calls buy nothing measurable.** At ten passages the raw mode is
 *ahead* — 8 questions to 10 discordant, p = 0.81. At thirty the default is
 ahead by 17 to 13, p = 0.58. Neither separates, the two modes embed the same
 1,668 texts and hand the reader the same number of tokens, and turning the
-model off makes ingest two and a half times faster and free.
+model off makes ingest 2.3 to 2.5 times faster and free -- a range rather
+than a figure for the same reason the ingest column is one.
 
 **And it is bad news for one of Påmin Memory's claims.** With its model off,
 MemPalace is the like-for-like peer, and it ties:
@@ -928,7 +930,7 @@ channels.
 And the difference between MemPalace and Påmin Memory on that axis is the
 difference between a flag and an architecture. MemPalace's LLM-free mode is
 `init --no-llm`; install it and follow its quickstart and you get the model,
-20 calls and $1.15 for ten conversations. Påmin Memory has no model on the
+20 calls and about a dollar for ten conversations. Påmin Memory has no model on the
 write path in any mode, so there is no configuration in which it costs
 anything to ingest and none in which two ingests of the same corpus disagree.
 
@@ -940,7 +942,7 @@ a store that reproduces itself byte for byte, and no embedding service to run.
 
 Against MemPalace specifically, with both write paths equally model-free, what
 is left is a prompt 3.4x more compact at thirty passages (1,511 tokens against
-5,138) and retrieval at 25.7 ms against 49.6 ms.
+5,133) and retrieval at 25.7 ms against 49.6 ms.
 
 One question of the 199 is missing from the wide raw arm — MemPalace's
 re-ingest of the largest conversation stopped responding on the fill-in pass —
