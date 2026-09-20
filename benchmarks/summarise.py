@@ -317,6 +317,12 @@ def locomo_cost(raw, by_file, cost_run, memcost, memcost_fresh):
             "embedded_texts": total(units, "ingest_embed_texts"),
             "cost_usd": billed(units),
             "cost_usd_cost_run": cost_run_usd(cost_run, name),
+            # The cost run counted its own calls, and they do not always agree
+            # with the accuracy run's rows: MemPalace is 21 here and 20 there
+            # for what is the same ingest. The page cites the pair, so both
+            # sides of it belong in the artifact.
+            "llm_calls_cost_run": (cost_run.get(name, {})
+                                   .get("write", {}).get("llm_calls")),
             "store_mb": total(units, "store_mb"),
             "units_ingested_more_than_once": reingested,
         }
@@ -805,6 +811,15 @@ def longmemeval_retrieval(raw, pamin_rows, recorded):
             "recall_all@5": {"note": "every gold session in the top five",
                              "bm25": rebuilt["bm25"]["all@5"],
                              "pamin": rebuilt["pamin"]["all@5"]},
+            # Stored per question by the original run rather than rebuilt, so
+            # unlike the rows above it this one is a recorded measurement and
+            # not a re-ranking. The README publishes it and nothing here
+            # carried it, which left one published figure with no artifact.
+            "ndcg_any@10": {"note": "recorded by the original run, not rebuilt",
+                            **{side: round(
+                                sum(recorded[r["question_id"]][side]
+                                    ["ndcg_any@10"] for r in pamin_rows) / n, 4)
+                               for side in ("bm25", "pamin")}},
         },
         "recall_any@5_by_type": rebuilt["by_type"],
         "rebuild_check": {
