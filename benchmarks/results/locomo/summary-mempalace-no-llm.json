@@ -1,0 +1,141 @@
+{
+  "table": "MemPalace with its LLM off, which is the mode it publishes",
+  "published_in": "docs/benchmarks.md, 'MemPalace with its LLM off'",
+  "dataset": {
+    "name": "locomo",
+    "conversations": 10,
+    "questions": 198,
+    "turns": 5882,
+    "questions_note": "one short of the set the other LOCOMO tables use: MemPalace's re-ingest of the largest conversation stopped responding on the fill-in pass, so `mempalace-raw-wide` never answered it, and every arm here is scored over the questions all six answered."
+  },
+  "machine": {
+    "cores": 4,
+    "host": "vm",
+    "memory_gb": 16,
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39"
+  },
+  "machine_note": "from raw.jsonl, which carries it. The four arms drawn from compare.jsonl, compare2.jsonl and compare4.jsonl carry none; they ran on the same container, but the rows do not say so.",
+  "sources": [
+    {
+      "file": "raw.jsonl",
+      "rows": 397,
+      "mtime_utc": "2026-09-19T04:28:06Z"
+    },
+    {
+      "file": "compare4.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T13:47:42Z"
+    },
+    {
+      "file": "compare.jsonl",
+      "rows": 597,
+      "mtime_utc": "2026-09-17T16:38:25Z"
+    },
+    {
+      "file": "compare2.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T01:29:37Z"
+    }
+  ],
+  "arms": {
+    "mempalace": {
+      "mode": "default, LLM entity refinement on",
+      "shortlist": 10,
+      "accuracy": 0.5606
+    },
+    "mempalace-wide": {
+      "mode": "default, LLM entity refinement on",
+      "shortlist": 30,
+      "accuracy": 0.6263
+    },
+    "mempalace-raw": {
+      "mode": "init --no-llm, as published",
+      "shortlist": 10,
+      "accuracy": 0.5707
+    },
+    "mempalace-raw-wide": {
+      "mode": "init --no-llm, as published",
+      "shortlist": 30,
+      "accuracy": 0.6061
+    },
+    "pamin": {
+      "mode": "no model on the write path in any mode",
+      "shortlist": 10,
+      "accuracy": 0.5202
+    },
+    "pamin-wide": {
+      "mode": "no model on the write path in any mode",
+      "shortlist": 30,
+      "accuracy": 0.6313
+    }
+  },
+  "ingest": {
+    "mempalace": {
+      "conversations": 10,
+      "ingest_seconds": 545.2,
+      "llm_calls": 20,
+      "cost_usd": null,
+      "cost_usd_cost_run": 1.1533,
+      "embedded_texts": 1668
+    },
+    "mempalace-wide": {
+      "conversations": 10,
+      "ingest_seconds": 501.7,
+      "llm_calls": 20,
+      "cost_usd": null,
+      "cost_usd_cost_run": 0.3797,
+      "embedded_texts": 1668
+    },
+    "mempalace-raw": {
+      "conversations": 10,
+      "ingest_seconds": 219.1,
+      "llm_calls": 0,
+      "cost_usd": 0.0,
+      "cost_usd_cost_run": null,
+      "embedded_texts": 1668
+    },
+    "mempalace-raw-wide": {
+      "conversations": 10,
+      "ingest_seconds": 226.0,
+      "llm_calls": 0,
+      "cost_usd": 0.0,
+      "cost_usd_cost_run": null,
+      "embedded_texts": 1668
+    }
+  },
+  "ingest_note": "the default mode's rows predate the cost counter, so `cost_usd` is null for it and `cost_usd_cost_run` carries the separate cost-mode run's figure instead. The raw mode needs neither: it made no model calls, so there is no bill to record.",
+  "mcnemar": [
+    {
+      "a": "mempalace-raw",
+      "b": "mempalace",
+      "discordant": 18,
+      "a_only": 10,
+      "b_only": 8,
+      "p": 0.8145
+    },
+    {
+      "a": "mempalace-raw-wide",
+      "b": "mempalace-wide",
+      "discordant": 30,
+      "a_only": 13,
+      "b_only": 17,
+      "p": 0.5847
+    },
+    {
+      "a": "pamin",
+      "b": "mempalace-raw",
+      "discordant": 60,
+      "a_only": 25,
+      "b_only": 35,
+      "p": 0.2451
+    },
+    {
+      "a": "pamin-wide",
+      "b": "mempalace-raw-wide",
+      "discordant": 59,
+      "a_only": 32,
+      "b_only": 27,
+      "p": 0.6029
+    }
+  ]
+}
