@@ -29,6 +29,7 @@ disagree mean the order is in the number.
 import argparse
 import json
 import os
+import shlex
 import socket
 import statistics
 import subprocess
@@ -38,6 +39,10 @@ import time
 WORK = os.environ.get("BENCH_WORK", "/tmp/bench")
 PAMIN_HOME = os.environ.get("BENCH_PAMIN_HOME", f"{WORK}/pamin-home")
 PAMIN = os.environ.get("BENCH_PAMIN_BIN", "pamin")
+# The workspace keeps PostgreSQL at mode 700, so the `su` arm has to
+# become the user that owns it. Same default and same variable as
+# `arms.py`, because the two have to agree about who runs the command.
+RUNAS = os.environ.get("BENCH_USER", "ubuntu")
 SHIM = os.environ.get("SHIM_URL", "http://127.0.0.1:8088/v1")
 SOCKET = f"{PAMIN_HOME}/pamin.sock"
 
@@ -98,6 +103,62 @@ class PaminCli:
         if out.returncode != 0:
             raise RuntimeError(out.stderr[-300:])
         return json.loads(out.stdout)["hits"]
+
+
+class PaminSu:
+    """The CLI behind `su`, which is the layer the accuracy run timed.
+
+    Not a layer anyone would choose: the harness runs as root and the
+    workspace's PostgreSQL data directory is mode 700, so every `pamin` call in
+    the accuracy run went through a `su`. That run reported 170 ms and the
+    obvious reading of it was that this project was slower than mem0. This arm
+    exists to price the difference rather than assert it, and it is the row
+    that explains the other one.
+    """
+
+    name = "pamin (CLI behind su)"
+
+    def search(self, project, query, limit):
+        out = subprocess.run(
+            ["su", RUNAS, "-c",
+             f"PAMIN_HOME={shlex.quote(PAMIN_HOME)} {shlex.quote(PAMIN)} "
+             f"--project {shlex.quote(project)} search {shlex.quote(query)} "
+             f"--limit {limit} --json"],
+            capture_output=True, text=True, timeout=600)
+        if out.returncode != 0:
+            raise RuntimeError(out.stderr[-300:])
+        return json.loads(out.stdout)["hits"]
+
+
+class Embedding:
+    """One embedding call to the shared endpoint, which every arm but this
+    project's pays inside its own search.
+
+    mem0 and MemPalace embed the query over HTTP; this project embeds it in the
+    process that holds the index. So this is not a memory system's latency at
+    all -- it is the floor under the two that call out, reported separately so
+    the difference between them and this project can be read as the part that
+    is architecture rather than the part that is code.
+    """
+
+    name = "of which, one embedding HTTP call"
+
+    def search(self, project, query, limit):
+        import urllib.request
+        body = json.dumps({"model": "bge-m3", "input": query}).encode()
+        request = urllib.request.Request(
+            SHIM.rstrip("/") + "/embeddings", data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer shim-serves-no-key-needed"})
+        with urllib.request.urlopen(request, timeout=600) as r:
+            got = json.load(r)
+        # The premise, per call rather than once: an endpoint that answered
+        # with an error body would be timed as a very fast embedder.
+        vector = got["data"][0]["embedding"]
+        if len(vector) != 1024:
+            raise RuntimeError(f"the endpoint returned {len(vector)} "
+                               "dimensions, so this is not the shared embedder")
+        return vector
 
 
 class Mem0:
@@ -221,7 +282,17 @@ def reader_curve(repeats=12):
             started = time.perf_counter()
             urllib.request.urlopen(request, timeout=600).read()
             times.append(time.perf_counter() - started)
-        print(f"{label:<24} actual={len(enc.encode(prompt)):>5} tok  "
+        actual = len(enc.encode(prompt))
+        # Seconds rather than milliseconds, and no p95: twelve calls to a
+        # hosted model give a median worth reading and a tail that is the
+        # provider's queue rather than anything about context length.
+        ROWS.append({"arm": f"reader, {label.split()[0]} tokens of context",
+                     "limit": None, "n": len(times),
+                     "prompt_tokens": actual,
+                     "p50_ms": round(statistics.median(times) * 1000, 1),
+                     "min_ms": round(min(times) * 1000, 1),
+                     "max_ms": round(max(times) * 1000, 1)})
+        print(f"{label:<24} actual={actual:>5} tok  "
               f"median={statistics.median(times):6.2f} s  "
               f"min={min(times):6.2f} s  max={max(times):6.2f} s", flush=True)
 
@@ -320,9 +391,12 @@ def main():
         measure(PaminSocket(), work, args.limit)
     if "pamin-cli" in wanted:
         measure(PaminCli(), work, args.limit)
+    if "pamin-su" in wanted:
+        measure(PaminSu(), work, args.limit)
+    if "embedding" in wanted:
+        measure(Embedding(), work, args.limit)
     if "reader" in wanted:
         reader_curve()
-        return
     if "mempalace" in wanted:
         measure(MemPalace(), [(p.replace("locomor1conv", "conv-"), q)
                               for p, q in work], args.limit)

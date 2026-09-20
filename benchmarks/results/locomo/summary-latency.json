@@ -1,0 +1,141 @@
+{
+  "table": "latency, timed at the same layer on every arm",
+  "published_in": "docs/benchmarks.md, 'Latency, timed at the same layer'",
+  "corpus": "LOCOMO, the same ten conversations and 199 questions the accuracy run uses, rebuilt for this run because the workspace that held them was lost with its PostgreSQL data directory",
+  "method": "every arm at the boundary an application calls, every unit warmed three times before anything is timed, and each arm run a second time last -- two passes that disagree by more than half the median print a warning, and none did.",
+  "machine": {
+    "cores": 4,
+    "host": "vm",
+    "memory_gb": 16,
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39"
+  },
+  "sources": [
+    {
+      "file": "lat/latency.jsonl",
+      "rows": 16,
+      "mtime_utc": "2026-09-20T10:21:31Z"
+    }
+  ],
+  "retrieval": {
+    "pamin (socket)": {
+      "at_10": {
+        "n": 199,
+        "p50_ms": 25.7,
+        "p95_ms": 42.3,
+        "mean_ms": 27.1
+      },
+      "at_30": {
+        "n": 199,
+        "p50_ms": 25.7,
+        "p95_ms": 39.8,
+        "mean_ms": 26.5
+      }
+    },
+    "pamin (CLI)": {
+      "at_10": {
+        "n": 199,
+        "p50_ms": 37.1,
+        "p95_ms": 52.8,
+        "mean_ms": 38.2
+      },
+      "at_30": {
+        "n": 199,
+        "p50_ms": 40.3,
+        "p95_ms": 59.4,
+        "mean_ms": 41.3
+      }
+    },
+    "pamin (CLI behind su)": {
+      "at_10": {
+        "n": 199,
+        "p50_ms": 41.8,
+        "p95_ms": 58.6,
+        "mean_ms": 42.7
+      },
+      "at_30": {
+        "n": 199,
+        "p50_ms": 41.9,
+        "p95_ms": 57.9,
+        "mean_ms": 42.6
+      }
+    },
+    "of which, one embedding HTTP call": {
+      "at_10": {
+        "n": 199,
+        "p50_ms": 15.2,
+        "p95_ms": 18.4,
+        "mean_ms": 15.4
+      },
+      "at_30": {
+        "n": 199,
+        "p50_ms": 14.5,
+        "p95_ms": 18.8,
+        "mean_ms": 14.9
+      }
+    },
+    "mempalace (in-process)": {
+      "at_10": {
+        "n": 199,
+        "p50_ms": 39.5,
+        "p95_ms": 68.2,
+        "mean_ms": 43.5
+      },
+      "at_30": {
+        "n": 199,
+        "p50_ms": 49.6,
+        "p95_ms": 74.1,
+        "mean_ms": 53.2
+      }
+    },
+    "mem0 (in-process)": {
+      "at_10": {
+        "n": 20,
+        "p50_ms": 95.3,
+        "p95_ms": 131.4,
+        "mean_ms": 92.7
+      },
+      "at_30": {
+        "n": 20,
+        "p50_ms": 85.3,
+        "p95_ms": 116.8,
+        "mean_ms": 82.4
+      }
+    }
+  },
+  "reader": [
+    {
+      "prompt_tokens": 541,
+      "calls": 12,
+      "median_seconds": 6.17,
+      "min_seconds": 5.54,
+      "max_seconds": 167.36
+    },
+    {
+      "prompt_tokens": 1001,
+      "calls": 12,
+      "median_seconds": 5.99,
+      "min_seconds": 4.89,
+      "max_seconds": 7.07
+    },
+    {
+      "prompt_tokens": 1495,
+      "calls": 12,
+      "median_seconds": 5.2,
+      "min_seconds": 4.89,
+      "max_seconds": 6.3
+    },
+    {
+      "prompt_tokens": 5117,
+      "calls": 12,
+      "median_seconds": 5.57,
+      "min_seconds": 4.92,
+      "max_seconds": 6.86
+    }
+  ],
+  "notes": [
+    "`mem0 (in-process)` is 20 questions where every other arm is 199. mem0 clears its vector store before each conversation, so only the last one ingested can be re-timed, and its row is one conversation's questions. The previously published table had the same limitation and did not say so.",
+    "`of which, one embedding HTTP call` is not a memory system. It is one call to the shared endpoint, which mem0 and MemPalace pay inside every search and this project does not, because it holds the model in the process that holds the index. It is the floor under the two arms that call out.",
+    "Read the ordering and the ratios, not the milliseconds. Against the run this replaces, every row moved between -24% and +1%, in both directions and by more than some of the differences the table reports. Two reasons are known and neither is code: the store was rebuilt for this run, so its index has a different segment count, and the row with no product code in it at all -- the embedding call -- moved the most.",
+    "The reader curve is 12 calls a size to a hosted model. One call at the smallest size took 167 s, which is the provider's queue and not the context length; it is why the median is what the page quotes and the maximum is recorded here rather than there."
+  ]
+}
