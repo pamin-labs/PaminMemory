@@ -1,0 +1,85 @@
+{
+  "table": "LongMemEval-S session retrieval, no model anywhere",
+  "published_in": "docs/benchmarks.md, 'LongMemEval: the published metric is saturated'",
+  "dataset": {
+    "name": "longmemeval-s",
+    "questions": 59,
+    "questions_with_more_than_one_gold_session": 35,
+    "sampling": "stratified from LongMemEval-S's 500, proportional over the same six types"
+  },
+  "scoring": "is the labelled session in the top k. No reader and no judge, which is what makes this the one figure here that can sit beside a published one.",
+  "machine": null,
+  "machine_note": "lme_pamin.jsonl predates the `machine` object. The BM25 column is not a recorded row at all -- it is re-ranked by longmemeval_recall.py, so it is a property of whichever machine regenerated this file, which for a metric with no timing in it changes nothing.",
+  "sources": [
+    {
+      "file": "lme_pamin.jsonl",
+      "rows": 59,
+      "mtime_utc": "2026-09-17T07:31:07Z"
+    },
+    {
+      "file": "lme_bm25.json",
+      "rows": 59,
+      "mtime_utc": "2026-09-17T07:31:23Z"
+    }
+  ],
+  "metrics": {
+    "recall_any@5": {
+      "note": "the metric the field publishes",
+      "bm25": 0.9661,
+      "pamin": 0.9831
+    },
+    "recall_any@10": {
+      "bm25": 0.9831,
+      "pamin": 1.0
+    },
+    "recall_all@5": {
+      "note": "every gold session in the top five",
+      "bm25": 0.7966,
+      "pamin": 0.8983
+    }
+  },
+  "recall_any@5_by_type": {
+    "knowledge-update": {
+      "questions": 9,
+      "bm25": 1.0,
+      "pamin": 1.0
+    },
+    "multi-session": {
+      "questions": 15,
+      "bm25": 1.0,
+      "pamin": 1.0
+    },
+    "single-session-assistant": {
+      "questions": 7,
+      "bm25": 1.0,
+      "pamin": 1.0
+    },
+    "single-session-preference": {
+      "questions": 4,
+      "bm25": 1.0,
+      "pamin": 1.0
+    },
+    "single-session-user": {
+      "questions": 8,
+      "bm25": 1.0,
+      "pamin": 1.0
+    },
+    "temporal-reasoning": {
+      "questions": 16,
+      "bm25": 0.875,
+      "pamin": 0.9375
+    }
+  },
+  "rebuild_check": {
+    "metric": "recall_all@5",
+    "as_recorded_in_lme_bm25_json": {
+      "bm25": 0.7966,
+      "pamin": 0.8983
+    },
+    "as_rebuilt": {
+      "bm25": 0.7966,
+      "pamin": 0.8983
+    },
+    "note": "the per-question ndjson the original BM25 run wrote is gone, so the baseline is re-ranked from the LongMemEval file. This is the metric both computed; if the two rows ever part, the rebuild is ranking a different corpus."
+  }
+}
