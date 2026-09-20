@@ -1,0 +1,137 @@
+{
+  "table": "supersession: is the answer the value that still holds",
+  "published_in": "docs/benchmarks.md, 'What it said'",
+  "dataset": {
+    "name": "longmemeval-knowledge-update",
+    "questions": 70,
+    "turns": 34239,
+    "sampling": "LongMemEval-S's knowledge-update category; each question carries its own haystack, and each arm answers all of them"
+  },
+  "scoring": "an LLM judge reads the answer and returns one of current, stale or neither -- the value that holds, the value it replaced, or something else. `current` is what `correct` counts.",
+  "machine": {
+    "cores": 4,
+    "host": "vm",
+    "memory_gb": 16,
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39"
+  },
+  "sources": [
+    {
+      "file": "sup/sup.jsonl",
+      "rows": 140,
+      "mtime_utc": "2026-09-19T11:02:31Z"
+    },
+    {
+      "file": "sup/sup2.jsonl",
+      "rows": 70,
+      "mtime_utc": "2026-09-19T10:58:12Z"
+    },
+    {
+      "file": "sup/sup3.jsonl",
+      "rows": 140,
+      "mtime_utc": "2026-09-19T13:05:47Z"
+    }
+  ],
+  "arms": {
+    "bm25": {
+      "rows": 70,
+      "current": 0.5857,
+      "stale": 0.3571,
+      "neither": 0.0571,
+      "unparsed": 0.0,
+      "prompt_tokens_median": 2144.5,
+      "store_mb_median": 0.0
+    },
+    "pamin": {
+      "rows": 70,
+      "current": 0.7,
+      "stale": 0.2857,
+      "neither": 0.0143,
+      "unparsed": 0.0,
+      "prompt_tokens_median": 2339.5,
+      "store_mb_median": 20.0
+    },
+    "pamin-dated": {
+      "rows": 70,
+      "current": 0.8143,
+      "stale": 0.1571,
+      "neither": 0.0286,
+      "unparsed": 0.0,
+      "prompt_tokens_median": 2657.0,
+      "store_mb_median": 21.0
+    },
+    "pamin-valid": {
+      "rows": 70,
+      "current": 0.7,
+      "stale": 0.2857,
+      "neither": 0.0143,
+      "unparsed": 0.0,
+      "prompt_tokens_median": 2339.5,
+      "store_mb_median": 62.0
+    },
+    "pamin-valid-read": {
+      "rows": 70,
+      "current": 0.9,
+      "stale": 0.1,
+      "neither": 0.0,
+      "unparsed": 0.0,
+      "prompt_tokens_median": 2489.5,
+      "store_mb_median": 0.0
+    }
+  },
+  "arm_notes": [
+    "The arms differ in one thing: where the date lives. `bm25` and `pamin` have none, `pamin-dated` puts it in the passage text, `pamin-valid` puts it in the ledger without showing the reader, `pamin-valid-read` shows it.",
+    "Two arms ran beside each other to halve the wall clock, sharing the machine and the endpoint, so the timings and the LLM counters describe the pair. The verdicts, the prompt sizes and the bytes are unaffected, which is why only those are reported here.",
+    "`store_mb_median` is the disk one question's haystack adds. `pamin-valid-read` reads the store `pamin-valid` built, so its figure is a re-open and not a second write."
+  ],
+  "mcnemar": [
+    {
+      "a": "pamin",
+      "b": "bm25",
+      "discordant": 24,
+      "a_only": 16,
+      "b_only": 8,
+      "p": 0.1516
+    },
+    {
+      "a": "pamin-dated",
+      "b": "pamin",
+      "discordant": 18,
+      "a_only": 13,
+      "b_only": 5,
+      "p": 0.0963
+    },
+    {
+      "a": "pamin-valid",
+      "b": "pamin",
+      "discordant": 8,
+      "a_only": 4,
+      "b_only": 4,
+      "p": 1.0
+    },
+    {
+      "a": "pamin-valid-read",
+      "b": "pamin",
+      "discordant": 16,
+      "a_only": 15,
+      "b_only": 1,
+      "p": 0.0005
+    },
+    {
+      "a": "pamin-valid-read",
+      "b": "pamin-valid",
+      "discordant": 18,
+      "a_only": 16,
+      "b_only": 2,
+      "p": 0.0013
+    },
+    {
+      "a": "pamin-valid-read",
+      "b": "pamin-dated",
+      "discordant": 8,
+      "a_only": 7,
+      "b_only": 1,
+      "p": 0.0703
+    }
+  ],
+  "mcnemar_note": "on `current`, not on the stale rate, because a question that moved from stale to neither is not the gain this is testing for."
+}

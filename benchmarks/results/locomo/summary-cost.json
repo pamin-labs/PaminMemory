@@ -1,0 +1,236 @@
+{
+  "table": "what each LOCOMO arm spends, on the write side and per question",
+  "published_in": "docs/benchmarks.md, 'What each arm spends' and 'Memory and disk'",
+  "dataset": {
+    "name": "locomo",
+    "conversations": 10,
+    "questions": 199,
+    "turns": 5882
+  },
+  "machine": null,
+  "machine_note": "these rows predate the `machine` object. Everything in this file except the call counts, the token counts and the bytes is a property of the box it ran on, so without a machine those columns cannot be compared with a reading from anywhere else.",
+  "sources": [
+    {
+      "file": "compare.jsonl",
+      "rows": 597,
+      "mtime_utc": "2026-09-17T16:38:25Z"
+    },
+    {
+      "file": "compare2.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T01:29:37Z"
+    },
+    {
+      "file": "compare3.jsonl",
+      "rows": 199,
+      "mtime_utc": "2026-09-18T04:54:36Z"
+    },
+    {
+      "file": "compare4.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T13:47:42Z"
+    },
+    {
+      "file": "compare5.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T16:30:32Z"
+    },
+    {
+      "file": "tokencost.json",
+      "rows": 6,
+      "mtime_utc": "2026-09-18T09:35:37Z"
+    },
+    {
+      "file": "memcost.json",
+      "rows": 3,
+      "mtime_utc": "2026-09-17T16:43:59Z"
+    },
+    {
+      "file": "memcost-pamin-fresh.json",
+      "rows": 1,
+      "mtime_utc": "2026-09-17T16:47:32Z"
+    }
+  ],
+  "write": {
+    "bm25": {
+      "conversations": 10,
+      "ingest_seconds": 0.0,
+      "llm_calls": 0,
+      "llm_seconds": 0.0,
+      "embedded_texts": 0,
+      "cost_usd": 0.0,
+      "cost_usd_cost_run": 0.0,
+      "store_mb": 0,
+      "units_ingested_more_than_once": 0
+    },
+    "pamin": {
+      "conversations": 10,
+      "ingest_seconds": 355.7,
+      "llm_calls": 0,
+      "llm_seconds": 0.0,
+      "embedded_texts": 0,
+      "cost_usd": 0.0,
+      "cost_usd_cost_run": 0.0,
+      "store_mb": 156,
+      "units_ingested_more_than_once": 0
+    },
+    "pamin-ledger": {
+      "conversations": 10,
+      "ingest_seconds": 421.3,
+      "llm_calls": 0,
+      "llm_seconds": 0.0,
+      "embedded_texts": 0,
+      "cost_usd": 0.0,
+      "cost_usd_cost_run": null,
+      "store_mb": 370,
+      "units_ingested_more_than_once": 0
+    },
+    "mem0-k10": {
+      "conversations": 10,
+      "ingest_seconds": 4120.8,
+      "llm_calls": 272,
+      "llm_seconds": 3913.2,
+      "embedded_texts": 6335,
+      "cost_usd": 27.769,
+      "cost_usd_cost_run": null,
+      "store_mb": 5,
+      "units_ingested_more_than_once": 0
+    },
+    "mempalace": {
+      "conversations": 10,
+      "ingest_seconds": 545.2,
+      "llm_calls": 20,
+      "llm_seconds": 298.3,
+      "embedded_texts": 1668,
+      "cost_usd": null,
+      "cost_usd_cost_run": 1.1533,
+      "store_mb": 0,
+      "units_ingested_more_than_once": 7
+    },
+    "mem0-k30": {
+      "conversations": 10,
+      "ingest_seconds": 4120.8,
+      "llm_calls": 272,
+      "llm_seconds": 3913.2,
+      "embedded_texts": 6335,
+      "cost_usd": 27.769,
+      "cost_usd_cost_run": null,
+      "store_mb": 5,
+      "units_ingested_more_than_once": 0
+    },
+    "mempalace-wide": {
+      "conversations": 10,
+      "ingest_seconds": 501.7,
+      "llm_calls": 20,
+      "llm_seconds": 305.2,
+      "embedded_texts": 1668,
+      "cost_usd": null,
+      "cost_usd_cost_run": 0.3797,
+      "store_mb": 0,
+      "units_ingested_more_than_once": 5
+    },
+    "pamin-wide": {
+      "conversations": 10,
+      "ingest_seconds": 16.3,
+      "llm_calls": 0,
+      "llm_seconds": 0.0,
+      "embedded_texts": 0,
+      "cost_usd": 0.0,
+      "cost_usd_cost_run": 0.0,
+      "store_mb": -2,
+      "units_ingested_more_than_once": 0
+    }
+  },
+  "write_notes": [
+    "`pamin-wide` reads the store `pamin` built and `mem0-k30` shares `mem0-k10`'s ingest, so their rows are a re-open rather than a second write. `mempalace-wide` did re-ingest.",
+    "Two cost columns because there are two runs. `cost_usd` is the accuracy run's own counter and is null for the arms whose rows predate it. `cost_usd_cost_run` is the separate cost-mode run in tokencost.json over the same ten conversations, and it is where the MemPalace figure on the page comes from. The two MemPalace arms made the same twenty-odd calls and that run billed them $1.1533 and $0.3797, so it is not stable to within a factor of three and should not be quoted to the cent.",
+    "`store_mb` is the sum over all ten conversations of what each ingest added. The one-conversation figure is a different measurement and is under `resident_and_disk`.",
+    "Ingest seconds and model seconds were taken while a second run shared the machine and the endpoint, so they describe the pair. The call counts, the embedded-text counts and the bytes are not affected."
+  ],
+  "query": {
+    "bm25": {
+      "questions": 199,
+      "passages": 10,
+      "context_bytes_mean": 1727.7,
+      "prompt_tokens_median": 547
+    },
+    "pamin": {
+      "questions": 199,
+      "passages": 10,
+      "context_bytes_mean": 1736.1,
+      "prompt_tokens_median": 557
+    },
+    "pamin-ledger": {
+      "questions": 199,
+      "passages": 10,
+      "context_bytes_mean": 1740.5,
+      "prompt_tokens_median": null
+    },
+    "mem0-k10": {
+      "questions": 199,
+      "passages": 10,
+      "context_bytes_mean": 1403.3,
+      "prompt_tokens_median": null
+    },
+    "mempalace": {
+      "questions": 199,
+      "passages": 10,
+      "context_bytes_mean": 7474.5,
+      "prompt_tokens_median": 1756
+    },
+    "mem0-k30": {
+      "questions": 199,
+      "passages": 30,
+      "context_bytes_mean": 4224.2,
+      "prompt_tokens_median": null
+    },
+    "mempalace-wide": {
+      "questions": 199,
+      "passages": 30,
+      "context_bytes_mean": 22350.5,
+      "prompt_tokens_median": 5133
+    },
+    "pamin-wide": {
+      "questions": 199,
+      "passages": 30,
+      "context_bytes_mean": 5154.2,
+      "prompt_tokens_median": 1511
+    }
+  },
+  "query_notes": [
+    "Context bytes are the mean of the passage contents each arm returned, measured on every question.",
+    "Prompt tokens are `cl100k_base` over the reader prompt, the same template for every arm, and come from the separate cost-mode run in tokencost.json. They are null for the three arms that run never covered: `pamin-ledger`, and mem0 at either shortlist. tokencost.json does hold a `mem0` entry, but at 20 passages -- it is the withdrawn arm, so it is not reused for either of the corrected ones."
+  ],
+  "resident_and_disk": {
+    "unit": "conv-26, 419 turns, the second smallest of the ten",
+    "metric": "PSS over the arm's own process tree, because PostgreSQL's backends share one buffer pool and RSS charges it to each of them",
+    "arms": {
+      "bm25": {
+        "resident_pss_mb": 16,
+        "store_mb": 0,
+        "embedder_resident_mb": 1155,
+        "source": "memcost.json"
+      },
+      "pamin": {
+        "resident_pss_mb": 2088,
+        "store_mb": 13,
+        "embedder_resident_mb": 1156,
+        "source": "memcost-pamin-fresh.json",
+        "note": "a workspace created for this measurement. memcost.json holds a second reading of `pamin` over a workspace that already held other corpora: 3,748 MB resting, 11 MB added."
+      },
+      "mem0": {
+        "resident_pss_mb": 177,
+        "store_mb": 2,
+        "embedder_resident_mb": 1145,
+        "source": "memcost.json"
+      },
+      "mempalace": {
+        "resident_pss_mb": null,
+        "store_mb": null,
+        "embedder_resident_mb": null,
+        "source": null,
+        "note": "memcost.py was never run against MemPalace, so there is no PSS reading of it here."
+      }
+    }
+  }
+}
