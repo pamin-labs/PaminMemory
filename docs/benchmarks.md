@@ -610,11 +610,7 @@ Prompt tokens here are the **passage contents**, wrapped in this harness's
 reader template — the same template for every arm, so the column is a ratio
 between what each system hands back and not a bill anyone actually pays. A real
 caller pipes its memory system's output into a context window, envelope and
-all, and every one of these has an envelope: for `pamin search --json` that is
-1,255 tokens for ten hits against the 557 of contents alone, [measured after
-the JSON was trimmed](../benchmarks/payload.py). The other two arms' envelopes
-have not been measured, so this table deliberately compares the one thing that
-can be compared the same way for all four.
+all, and every one of these has an envelope.
 
 Context bytes are measured. Prompt tokens are counted with `cl100k_base` — not
 the model's own tokenizer, so absolute figures are approximate, and every arm is
@@ -622,10 +618,64 @@ counted the same way because what this needs is the ratio. The four marked `~`
 are not counted at all: they are derived from the measured bytes at mem0's own
 ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s.
 
-Latency is deliberately absent from that table. The accuracy run records a
-`recall_seconds`, and it is not a comparison: it timed Påmin Memory through
-`su ubuntu -c "pamin ... search ..."` — two process spawns and a socket round
-trip — and timed mem0 as an in-process library call, while ten arms, an
+### The envelope, which is what a caller actually pipes
+
+Measured with [benchmarks/envelope.py](../benchmarks/envelope.py), one level
+below the `recall()` the table above uses: the bytes `pamin search --json`
+writes to stdout, the dict mem0's `Memory.search` returns, the dict MemPalace's
+`searcher.search_memories` returns — each serialised the way a caller would put
+it in a prompt, and counted with the same `cl100k_base`.
+
+| what a caller receives | envelope | contents | ratio | not the memory |
+| --- | --- | --- | --- | --- |
+| `pamin search --limit 10 --json` | 1,316 | 532 | 2.4× | 59% |
+| mem0 `Memory.search(top_k=10)` | 1,675 | 320 | 5.2× | 81% |
+| MemPalace `search_memories(n_results=10)` | 4,560 | 2,051 | 2.2× | 55% |
+
+Medians over eight questions of one conversation — LOCOMO's `conv-50`, 568
+turns — each arm answering out of the store its own ingest built, and each
+returning ten results, which the harness asserts across arms rather than
+assumes: an envelope over five hits and an envelope over ten are not the same
+measurement. `contents` is the bare passage text carried inside each envelope,
+so these ratios are not the ratio to the reader-wrapped column above; on the
+same eight questions that column reads 610, 394 and 2,128, in line with the
+557, ~384 and 1,756 there, which are medians over ten conversations.
+
+Every column is a median taken independently, the ratio included, so dividing
+one median by another does not reproduce it: `pamin`'s ratio is the median of
+eight per-query ratios, 2.43, where 1,316 over 532 is 2.47. The per-query ratio
+is the one reported because it is the quantity a caller experiences on a query,
+and the last column is derived from it rather than from the two medians beside
+it.
+
+So between 55% and 81% of what a caller pays to read one of these answers is
+not the memory. Two caveats travel with that. `pamin` already prints compact
+JSON while the other two are objects the caller serialises — compacting those
+saves 8 to 9 per cent, and the harness reports that floor beside each arm. And
+MemPalace returns whole conversation blocks, so it has the largest envelope and
+the smallest share of packaging, while mem0 returns the least text wrapped in
+the most metadata: the envelope column says what a context window pays and the
+ratio says how much of that is not memory, and the two order the arms
+differently.
+
+One of the three has two caller surfaces and the row names which was measured:
+an application embedding MemPalace gets this dict, while its CLI prints a
+shorter rendering of the same results, so a shell user pays less than 4,560.
+The library call is the one measured, because it is the boundary the latency
+table below also times. `pamin` is the other way round — the CLI is the
+surface, and its socket protocol carries the same fields.
+
+BM25 has no row because it is this harness's own loop rather than a system with
+a response, and neither does the 30-result half of the table above: every arm
+here is at ten. The figure quoted here before — 1,255 tokens for `pamin`'s ten
+hits — carried no corpus; 1,316 is the same quantity with one stated, on a
+binary carrying the trimmed JSON, which the arm asserts by failing when a
+retired field comes back.
+
+Latency is deliberately absent from both of those tables. The accuracy run
+records a `recall_seconds`, and it is not a comparison: it timed Påmin Memory
+through `su ubuntu -c "pamin ... search ..."` — two process spawns and a socket
+round trip — and timed mem0 as an in-process library call, while ten arms, an
 embedding endpoint and a PostgreSQL cluster shared four cores. It reported
 170 ms against mem0's 106 and the obvious reading of that is wrong.
 
