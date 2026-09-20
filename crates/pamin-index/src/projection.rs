@@ -180,7 +180,7 @@ const TARGET_SEGMENTS: u64 = 4;
 ///
 /// A sealed segment has one graph built over it, once, and that build is a
 /// background job. Building is superlinear -- 8.1 s at ten thousand documents,
-/// 124 s at fifty thousand, 314 s at a hundred thousand -- so the size at which
+/// 124 s at fifty thousand, 325.8 s at a hundred thousand -- so the size at which
 /// a build stops being a background job and starts being an outage is what caps
 /// this. A quarter of a million extrapolates to about twenty minutes, which is
 /// the most that should ever be owed to one segment.
