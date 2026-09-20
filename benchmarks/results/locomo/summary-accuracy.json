@@ -1,0 +1,286 @@
+{
+  "table": "LOCOMO question answering, judged accuracy",
+  "published_in": "docs/benchmarks.md, 'What running it actually showed'",
+  "dataset": {
+    "name": "locomo",
+    "conversations": 10,
+    "questions": 199,
+    "turns": 5882,
+    "sampling": "stratified over the ten conversations; every arm answers the same questions"
+  },
+  "scoring": "an LLM reader answers from the arm's passages and an LLM judge grades the answer; both are the same model for every arm",
+  "machine": null,
+  "machine_note": "these rows predate the `machine` object run.py now stamps on every one. The run log records the container benchmarks/README.md describes, but nothing in the rows themselves proves it, so no machine is claimed here.",
+  "sources": [
+    {
+      "file": "compare.jsonl",
+      "rows": 597,
+      "mtime_utc": "2026-09-17T16:38:25Z"
+    },
+    {
+      "file": "compare2.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T01:29:37Z"
+    },
+    {
+      "file": "compare3.jsonl",
+      "rows": 199,
+      "mtime_utc": "2026-09-18T04:54:36Z"
+    },
+    {
+      "file": "compare4.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T13:47:42Z"
+    },
+    {
+      "file": "compare5.jsonl",
+      "rows": 398,
+      "mtime_utc": "2026-09-18T16:30:32Z"
+    }
+  ],
+  "arms": {
+    "bm25": {
+      "rows": 199,
+      "shortlist": 10,
+      "accuracy": 0.4271,
+      "asked_for": 10
+    },
+    "pamin": {
+      "rows": 199,
+      "shortlist": 10,
+      "accuracy": 0.5176,
+      "asked_for": 10
+    },
+    "pamin-ledger": {
+      "rows": 199,
+      "shortlist": 10,
+      "accuracy": 0.5226,
+      "asked_for": 10
+    },
+    "mem0-k10": {
+      "rows": 199,
+      "shortlist": 10,
+      "accuracy": 0.5377,
+      "asked_for": 10
+    },
+    "mempalace": {
+      "rows": 199,
+      "shortlist": 10,
+      "accuracy": 0.5578,
+      "asked_for": 10
+    },
+    "mem0-k30": {
+      "rows": 199,
+      "shortlist": 30,
+      "accuracy": 0.5829,
+      "asked_for": 30
+    },
+    "mempalace-wide": {
+      "rows": 199,
+      "shortlist": 30,
+      "accuracy": 0.6231,
+      "asked_for": 30
+    },
+    "pamin-wide": {
+      "rows": 199,
+      "shortlist": 30,
+      "accuracy": 0.6281,
+      "asked_for": 30
+    }
+  },
+  "withdrawn": {
+    "mem0": {
+      "rows": 199,
+      "shortlist": 20,
+      "accuracy": 0.603,
+      "asked_for": 10,
+      "superseded_because": "mem0's search keyword is `top_k`, not `limit`; the unknown keyword went into **kwargs and the arm ran at mem0's own default of 20 passages. `mem0ai[nlp]` was also missing, so its BM25 channel lemmatised nothing. Superseded by mem0-k10."
+    },
+    "mem0-wide": {
+      "rows": 199,
+      "shortlist": 20,
+      "accuracy": 0.598,
+      "asked_for": 30,
+      "superseded_because": "the same two faults, so this arm also ran at 20 passages rather than the 30 it asked for. Superseded by mem0-k30."
+    }
+  },
+  "by_question_type": {
+    "adversarial": {
+      "questions": 42,
+      "bm25": 0.1667,
+      "pamin": 0.2381,
+      "pamin-ledger": 0.2619,
+      "mem0-k10": 0.1429,
+      "mempalace": 0.2857,
+      "mem0-k30": 0.1905,
+      "mempalace-wide": 0.4286,
+      "pamin-wide": 0.4286
+    },
+    "multi-hop": {
+      "questions": 29,
+      "bm25": 0.2414,
+      "pamin": 0.5172,
+      "pamin-ledger": 0.4828,
+      "mem0-k10": 0.4828,
+      "mempalace": 0.7241,
+      "mem0-k30": 0.6552,
+      "mempalace-wide": 0.6897,
+      "pamin-wide": 0.5862
+    },
+    "open-domain": {
+      "questions": 9,
+      "bm25": 0.2222,
+      "pamin": 0.3333,
+      "pamin-ledger": 0.2222,
+      "mem0-k10": 0.2222,
+      "mempalace": 0.1111,
+      "mem0-k30": 0.2222,
+      "mempalace-wide": 0.2222,
+      "pamin-wide": 0.2222
+    },
+    "single-hop": {
+      "questions": 85,
+      "bm25": 0.6824,
+      "pamin": 0.7176,
+      "pamin-ledger": 0.7059,
+      "mem0-k10": 0.7176,
+      "mempalace": 0.7529,
+      "mem0-k30": 0.7294,
+      "mempalace-wide": 0.8353,
+      "pamin-wide": 0.8235
+    },
+    "temporal": {
+      "questions": 34,
+      "bm25": 0.3235,
+      "pamin": 0.4118,
+      "pamin-ledger": 0.5,
+      "mem0-k10": 0.7059,
+      "mempalace": 0.3824,
+      "mem0-k30": 0.7353,
+      "mempalace-wide": 0.3824,
+      "pamin-wide": 0.5294
+    }
+  },
+  "mcnemar": [
+    {
+      "a": "pamin-wide",
+      "b": "bm25",
+      "discordant": 64,
+      "a_only": 52,
+      "b_only": 12,
+      "p": 0.0
+    },
+    {
+      "a": "mempalace-wide",
+      "b": "bm25",
+      "discordant": 73,
+      "a_only": 56,
+      "b_only": 17,
+      "p": 0.0
+    },
+    {
+      "a": "mem0-k30",
+      "b": "bm25",
+      "discordant": 69,
+      "a_only": 50,
+      "b_only": 19,
+      "p": 0.0002
+    },
+    {
+      "a": "pamin-wide",
+      "b": "pamin",
+      "discordant": 48,
+      "a_only": 35,
+      "b_only": 13,
+      "p": 0.0021
+    },
+    {
+      "a": "mempalace-wide",
+      "b": "pamin",
+      "discordant": 57,
+      "a_only": 39,
+      "b_only": 18,
+      "p": 0.0075
+    },
+    {
+      "a": "pamin",
+      "b": "bm25",
+      "discordant": 66,
+      "a_only": 42,
+      "b_only": 24,
+      "p": 0.0356
+    },
+    {
+      "a": "pamin-wide",
+      "b": "mem0-k10",
+      "discordant": 62,
+      "a_only": 40,
+      "b_only": 22,
+      "p": 0.03
+    },
+    {
+      "a": "pamin-wide",
+      "b": "mem0-k30",
+      "discordant": 57,
+      "a_only": 33,
+      "b_only": 24,
+      "p": 0.2892
+    },
+    {
+      "a": "pamin-wide",
+      "b": "mempalace-wide",
+      "discordant": 61,
+      "a_only": 31,
+      "b_only": 30,
+      "p": 1.0
+    },
+    {
+      "a": "mempalace-wide",
+      "b": "mem0-k30",
+      "discordant": 68,
+      "a_only": 38,
+      "b_only": 30,
+      "p": 0.3961
+    },
+    {
+      "a": "pamin",
+      "b": "mem0-k10",
+      "discordant": 64,
+      "a_only": 30,
+      "b_only": 34,
+      "p": 0.708
+    },
+    {
+      "a": "pamin",
+      "b": "mempalace",
+      "discordant": 64,
+      "a_only": 28,
+      "b_only": 36,
+      "p": 0.3817
+    },
+    {
+      "a": "pamin-ledger",
+      "b": "pamin",
+      "discordant": 41,
+      "a_only": 21,
+      "b_only": 20,
+      "p": 1.0
+    },
+    {
+      "a": "mem0-k30",
+      "b": "mem0-k10",
+      "discordant": 33,
+      "a_only": 21,
+      "b_only": 12,
+      "p": 0.1628
+    },
+    {
+      "a": "mem0",
+      "b": "mem0-wide",
+      "discordant": 41,
+      "a_only": 21,
+      "b_only": 20,
+      "p": 1.0
+    }
+  ]
+}

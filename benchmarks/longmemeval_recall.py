@@ -56,54 +56,91 @@ class BM25:
         return out
 
 
-rows = [json.loads(l) for l in open("/tmp/bench/lme_pamin.jsonl") if l.strip()]
-by_id = {x["question_id"]: x for x in json.load(open(DATA))}
-print(f"{len(rows)} questions\n", flush=True)
+def hit(gold, ranked, whole):
+    """Is the gold session in this cut -- all of them, or any of them."""
+    return 1.0 if (gold <= set(ranked) if whole else gold & set(ranked)) else 0.0
 
-bm_any5 = bm_all5 = bm_any10 = 0.0
-pm_any5 = pm_all5 = 0.0
-by_type = collections.defaultdict(lambda: [0.0, 0.0, 0])
 
-for r in rows:
-    entry = by_id[r["question_id"]]
-    gold = set(entry["answer_session_ids"])
+def rebuild(rows, data_path=DATA):
+    """Both metrics for both sides, over the questions `rows` covers.
 
-    topics, texts = [], []
-    for sid, session in zip(entry["haystack_session_ids"], entry["haystack_sessions"]):
-        for i, turn in enumerate(session):
-            content = (turn.get("content") or "").strip()
-            if content:
-                topics.append(sid)
-                texts.append(content)
+    Returned rather than printed so that benchmarks/summarise.py can write the
+    same figures into the committed summary. Two copies of a retriever drift,
+    and then a printed table and a committed file disagree and neither is
+    wrong.
+    """
+    by_id = {x["question_id"]: x for x in json.load(open(data_path))}
+    bm = {"any@5": 0.0, "any@10": 0.0, "all@5": 0.0}
+    pm = {"any@5": 0.0, "any@10": 0.0, "all@5": 0.0}
+    by_type = collections.defaultdict(lambda: [0.0, 0.0, 0])
+    multi_gold = 0
 
-    order = sorted(zip(topics, BM25(texts).scores(entry["question"])),
-                   key=lambda p: -p[1])
-    sessions, seen = [], set()
-    for sid, _ in order:
-        if sid not in seen:
-            seen.add(sid)
-            sessions.append(sid)
+    for r in rows:
+        entry = by_id[r["question_id"]]
+        gold = set(entry["answer_session_ids"])
+        multi_gold += 1 if len(gold) > 1 else 0
 
-    bm_any5 += 1.0 if gold & set(sessions[:5]) else 0.0
-    bm_any10 += 1.0 if gold & set(sessions[:10]) else 0.0
-    bm_all5 += 1.0 if gold <= set(sessions[:5]) else 0.0
+        topics, texts = [], []
+        for sid, session in zip(entry["haystack_session_ids"],
+                                entry["haystack_sessions"]):
+            for turn in session:
+                content = (turn.get("content") or "").strip()
+                if content:
+                    topics.append(sid)
+                    texts.append(content)
 
-    pa = 1.0 if gold & set(r["ranked_top10"][:5]) else 0.0
-    pm_any5 += pa
-    pm_all5 += 1.0 if gold <= set(r["ranked_top10"][:5]) else 0.0
-    t = by_type[r["question_type"]]
-    t[0] += 1.0 if gold & set(sessions[:5]) else 0.0
-    t[1] += pa
-    t[2] += 1
+        order = sorted(zip(topics, BM25(texts).scores(entry["question"])),
+                       key=lambda p: -p[1])
+        sessions, seen = [], set()
+        for sid, _ in order:
+            if sid not in seen:
+                seen.add(sid)
+                sessions.append(sid)
 
-n = len(rows)
-print(f"{'metric':<28}{'BM25':>9}{'pamin':>9}")
-print(f"{'recall_any@5  (their R@5)':<28}{bm_any5/n:>9.4f}{pm_any5/n:>9.4f}")
-print(f"{'recall_any@10':<28}{bm_any10/n:>9.4f}{1.0:>9.4f}")
-print(f"{'recall_all@5':<28}{bm_all5/n:>9.4f}{pm_all5/n:>9.4f}")
-print(f"\n  (the earlier run put BM25 recall_all@5 at 0.7966 -- this rebuild "
-      f"gives {bm_all5/n:.4f})")
-print("\nrecall_any@5 by question type:")
-for t in sorted(by_type):
-    b, p, c = by_type[t]
-    print(f"  {t:<28} n={c:>2}   BM25 {b/c:.3f}   pamin {p/c:.3f}")
+        # Every cell measured, including the ones that come to 1.0. This
+        # printed `any@10` for pamin as the literal 1.0, which is what it
+        # comes to and is still not a measurement of anything -- and a
+        # committed summary built on a literal is worse than no summary.
+        ranked = r["ranked_top10"]
+        for metric, cut, whole in (("any@5", 5, False), ("any@10", 10, False),
+                                   ("all@5", 5, True)):
+            bm[metric] += hit(gold, sessions[:cut], whole)
+            pm[metric] += hit(gold, ranked[:cut], whole)
+
+        t = by_type[r["question_type"]]
+        t[0] += hit(gold, sessions[:5], False)
+        t[1] += hit(gold, ranked[:5], False)
+        t[2] += 1
+
+    n = len(rows)
+    return {
+        "questions": n,
+        "multi_gold": multi_gold,
+        "bm25": {k: round(v / n, 4) for k, v in bm.items()},
+        "pamin": {k: round(v / n, 4) for k, v in pm.items()},
+        "by_type": {t: {"questions": c, "bm25": round(b / c, 4),
+                        "pamin": round(p / c, 4)}
+                    for t, (b, p, c) in sorted(by_type.items())},
+    }
+
+
+def main():
+    rows = [json.loads(l) for l in open("/tmp/bench/lme_pamin.jsonl") if l.strip()]
+    print(f"{len(rows)} questions\n", flush=True)
+    out = rebuild(rows)
+    bm, pm = out["bm25"], out["pamin"]
+
+    print(f"{'metric':<28}{'BM25':>9}{'pamin':>9}")
+    print(f"{'recall_any@5  (their R@5)':<28}{bm['any@5']:>9.4f}{pm['any@5']:>9.4f}")
+    print(f"{'recall_any@10':<28}{bm['any@10']:>9.4f}{pm['any@10']:>9.4f}")
+    print(f"{'recall_all@5':<28}{bm['all@5']:>9.4f}{pm['all@5']:>9.4f}")
+    print(f"\n  (the earlier run put BM25 recall_all@5 at 0.7966 -- this rebuild "
+          f"gives {bm['all@5']:.4f})")
+    print("\nrecall_any@5 by question type:")
+    for t, split in out["by_type"].items():
+        print(f"  {t:<28} n={split['questions']:>2}   "
+              f"BM25 {split['bm25']:.3f}   pamin {split['pamin']:.3f}")
+
+
+if __name__ == "__main__":
+    main()

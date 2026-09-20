@@ -583,15 +583,36 @@ conversations and 5,882 turns.
 | arm | LLM calls | model seconds | cost | texts embedded | on disk |
 | --- | --- | --- | --- | --- | --- |
 | BM25 | 0 | 0 | $0 | 0 | 0 MB |
-| `pamin` | **0** | **0** | **$0** | 0, in-process | 13 MB |
-| `pamin-ledger` | **0** | **0** | **$0** | 0, in-process | — |
-| MemPalace | 20 | 286 | $1.15 | 1,668 | 1 MB |
+| `pamin` | **0** | **0** | **$0** | 0, in-process | **156 MB** |
+| `pamin-ledger` | **0** | **0** | **$0** | 0, in-process | **370 MB** |
+| MemPalace | 20 | 286 | $1.15 | 1,668 | <1 MB |
 | mem0 | **272** | **3,913** | **$27.77** | 6,335 | 5 MB |
 
-Ingest wall-clock: 356 s for `pamin`, 520 s for MemPalace, 4,121 s for mem0.
-mem0's figure covers one ingest serving both of its shortlists — it clears its
-store before each conversation, so measuring its two arms separately would have
-paid that bill twice.
+**Two of those numbers were wrong until an audit of the committed summaries
+caught them, and both were wrong in this project's favour.** The `on disk`
+column is the sum over all ten conversations, and `pamin`'s cell carried 13 MB
+— which is one conversation, `conv-26`, taken from the resource run below. The
+ten-conversation figure is 156 MB, twelve times larger and the right order of
+magnitude for an arm that stores every turn verbatim plus a vector index;
+`pamin-ledger`, which leaves one source span per session, is 370 MB against
+mem0's 5. **Keeping the whole transcript costs about thirty times the disk of
+storing rewritten facts**, and that is the trade the column exists to show.
+MemPalace's cell rounds to zero on every conversation.
+
+Ingest wall-clock: 356 s for `pamin`, **500 to 545 s** for MemPalace, 4,121 s
+for mem0. MemPalace gets a range rather than a figure because seven of its ten
+conversations were ingested twice by a resumed run, so a per-conversation sum
+depends on which of the two rows is taken — 500.0 s picking the first, 545.2 s
+picking the last. The 520 s this page carried is neither; it is what iterating
+the question ids in sorted order happens to land on, which is a property of a
+script rather than of the system. mem0's figure covers one ingest serving both
+of its shortlists — it clears its store before each conversation, so measuring
+its two arms separately would have paid that bill twice.
+
+MemPalace's `$1.15` is what the cost run billed the narrow arm. The same run
+bills the wide arm **$0.38** for what is the same ingest — 1,668 texts either
+way, 20 calls against 21 — so that figure is not stable to within a factor of
+three and should be read as "about a dollar, and cheap", not as a measurement.
 
 **The query side, paid on every question:**
 
@@ -616,7 +637,13 @@ Context bytes are measured. Prompt tokens are counted with `cl100k_base` — not
 the model's own tokenizer, so absolute figures are approximate, and every arm is
 counted the same way because what this needs is the ratio. The four marked `~`
 are not counted at all: they are derived from the measured bytes at mem0's own
-ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s.
+ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s. **The
+derivation as stated does not reproduce the cells** — 1,403 bytes over 4.46 is
+315, not 384, and 4,224 over 4.46 is 947, not 1,017. The gap is the reader
+template itself, about 70 tokens, which the measured cells include and a bare
+bytes-per-token conversion does not. So the rule is bytes over 4.46 plus the
+template, and these four cells are estimates of a total rather than of a
+payload.
 
 ### The envelope, which is what a caller actually pipes
 
@@ -706,6 +733,16 @@ indexes.
 One property does survive the correction and is worth naming: widening from
 ten passages to thirty costs Påmin Memory nothing measurable (29 to 28 ms)
 where it costs MemPalace half as much again (41 to 63 ms).
+
+**This is the one table on this page with no committed artifact behind it.**
+The harness printed its rows and wrote none, so the figures went from a
+terminal into this document and cannot be rechecked against anything. They are
+kept because they were measured and nothing suggests they are wrong, and
+flagged because "measured" and "checkable" are not the same claim and this page
+is built on the difference. `latency.py` now takes `--out` and appends a row
+per arm, like every other harness here; the table is replaced by a run that
+leaves one behind. The same is true of the reader curve below and the
+end-to-end table derived from it.
 
 ### But retrieval is not what a caller waits for
 
@@ -900,11 +937,18 @@ Resident memory as PSS over each arm's own process tree, one conversation:
 | --- | --- | --- | --- |
 | BM25 | 16 MB | — | nowhere; no model |
 | `pamin` | **2,088 MB** | 13 MB | inside its own server, so inside this figure |
-| MemPalace | 29 MB | 1 MB | **outside**, 1,145 MB wherever it runs |
+| MemPalace | 29 MB* | <1 MB | **outside**, 1,145 MB wherever it runs |
 | mem0 | 177 MB | 2 MB | **outside**, 1,145 MB wherever it runs |
 
 One conversation means `conv-26`, 419 turns — the second smallest of the ten,
 so these are not the figures for a mean-sized one.
+
+\* **MemPalace's row is not the same quantity as the other three.** The
+resource harness was never run against it; 29 MB is the maximum of an
+`holder_rss_mb` column recorded during the accuracy run, which is RSS over a
+different process tree. It is kept because it is the only evidence there is and
+the order of magnitude is the point, and marked because RSS and PSS are not
+comparable and the note below is about exactly that difference.
 
 PSS rather than RSS because PostgreSQL's backends share one pool of buffers
 and RSS charges it to each of them — 326 MB summed as RSS against 78 MB as

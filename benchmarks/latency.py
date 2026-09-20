@@ -237,8 +237,21 @@ def timed(arm, work, limit):
     return times, hits
 
 
-def report(name, times):
+# Every row this run produces, kept so `--out` can write them.
+#
+# It printed and nothing else for the whole run that produced the published
+# latency table, so that table has no artifact behind it: the numbers went from
+# a terminal into a document and cannot be rechecked. Every other harness here
+# writes rows. This one now does too.
+ROWS = []
+
+
+def report(name, times, limit=None):
     quantile = lambda p: statistics.quantiles(sorted(times), n=100)[p - 1] * 1000
+    ROWS.append({"arm": name, "limit": limit, "n": len(times),
+                 "p50_ms": round(statistics.median(times) * 1000, 1),
+                 "p95_ms": round(quantile(95), 1),
+                 "mean_ms": round(statistics.mean(times) * 1000, 1)})
     print(f"{name:<34} n={len(times):>4}  "
           f"p50={statistics.median(times) * 1000:7.1f} ms  "
           f"p95={quantile(95):7.1f} ms  "
@@ -263,11 +276,11 @@ def measure(arm, work, limit):
     if hits == 0:
         raise SystemExit(f"{arm.name} returned nothing for every query; "
                          "this is the cost of searching an empty store")
-    report(arm.name, times)
+    report(arm.name, times, limit)
     again, _ = timed(arm, work, limit)
     drift = abs(statistics.median(again) - statistics.median(times))
     if drift > 0.5 * statistics.median(times):
-        report(f"  {arm.name}, repeated last", again)
+        report(f"  {arm.name}, repeated last", again, limit)
         print("  ^ the two runs disagree; the order is in this number",
               flush=True)
     return times
@@ -276,6 +289,9 @@ def measure(arm, work, limit):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--out", default=None,
+                        help="append one JSONL row per arm; without it the "
+                             "run leaves no evidence behind")
     parser.add_argument("--arms", default="pamin-socket,pamin-cli")
     parser.add_argument("--mem0-collection", default="",
                         help="a surviving mem0 collection, e.g. conv_50; mem0 "
@@ -315,6 +331,16 @@ def main():
             raise SystemExit("--mem0-collection must name a surviving "
                              "collection for the mem0 arm")
         measure(Mem0(args.mem0_collection), mem0_work, args.limit)
+
+    if args.out:
+        import run as run_module
+        where = run_module.machine()
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+        with open(args.out, "a") as sink:
+            for row in ROWS:
+                sink.write(json.dumps({**row, "machine": where,
+                                       "mode": "latency"}) + "\n")
+        print(f"\n{len(ROWS)} rows appended to {args.out}", flush=True)
 
 
 if __name__ == "__main__":
