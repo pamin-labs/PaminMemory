@@ -37,7 +37,7 @@ the error rather than silently mixing two spaces.
 | `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms |
 
 The default is the largest model because quantized weights make it the smallest
-download and because the gap it closes is the one this project is about: on the
+download and because the gap it closes is the one Påmin Memory is about: on the
 evaluation corpus it roughly doubles cross-lingual retrieval against
 `balanced`, matches it on same-language queries, and costs nine milliseconds.
 `balanced` is kept for those nine milliseconds and for projects already indexed
@@ -66,7 +66,7 @@ Initialized project default in /home/you/.pamin
 configuration. The server is left running between commands so an agent invoking
 the CLI repeatedly does not pay startup each time; `pamin stop` shuts it down.
 
-**It will not run as root.** That is PostgreSQL's rule, not this project's:
+**It will not run as root.** That is PostgreSQL's rule, not Påmin Memory's:
 `initdb` refuses, so the bundled cluster cannot be created or started by a root
 user. It matters because containers run as root by default, which makes this
 the first thing many people hit. Add an unprivileged user and run as that one.
