@@ -235,10 +235,14 @@ $ pamin read deployment_pipeline --version-offset 1 --json
   "available_versions": 2,
   "recorded_at": "2026-03-04T09:12:44.098121Z",
   "observed_at": "2026-03-04T09:12:44.092905Z",
-  "valid_from": null,
-  "valid_to": null
+  "source_span": "4c570553-5eeb-4b4f-804c-339738c1a632"
 }
 ```
+
+`valid_from` and `valid_to` are absent here rather than null: a memory written
+without an interval carries none, and the fields appear only when it has one.
+`source_span` is the evidence this version was promoted from, and `pamin grep`
+is what reads it.
 
 An offset past the oldest surviving version clamps rather than failing, and
 `actual_version_offset` reports how far the read actually reached. A caller
@@ -335,8 +339,9 @@ $ pamin search "how do we deploy" --limit 3
 ```
 
 The JSON carries the same trace, shown here with `--pretty` because it is being
-read by a person. Without it the same result is one line and about a third of
-the tokens:
+read by a person. Without it the same result is one line and 151 tokens against
+249, which is what indentation costs on a hit this size -- roughly a third off,
+and more on a fuller result because the saving is per line:
 
 ```console
 $ pamin search "how do we deploy" --limit 1 --json --pretty
@@ -345,15 +350,35 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
   "hits": [
     {
       "topic": "deployment_pipeline",
-      "topic_state": "4d6c7768-11ee-4322-a76a-37e1f9e96a76",
       "version": 2,
       "content": "the deployment pipeline now runs on argo cd",
       "score": 0.1969697,
       "why": [
-        { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
-        { "kind": "channel", "channel": "vector", "rank": 1 },
-        { "kind": "channel", "channel": "graph", "rank": 2 },
-        { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline", "edge": "depends_on", "derivation": "explicit" }
+        {
+          "kind": "channel",
+          "channel": "lexical_ngram",
+          "rank": 1
+        },
+        {
+          "kind": "channel",
+          "channel": "vector",
+          "rank": 1
+        },
+        {
+          "kind": "channel",
+          "channel": "graph",
+          "rank": 2
+        },
+        {
+          "kind": "path",
+          "from": "oncall_rota",
+          "via": "oncall_rota",
+          "hops": 1,
+          "asserted_from": "oncall_rota",
+          "asserted_to": "deployment_pipeline",
+          "edge": "depends_on",
+          "derivation": "explicit"
+        }
       ],
       "recorded_at": "2026-03-04T09:12:44.325845Z"
     }
