@@ -162,29 +162,48 @@ class Embedding:
 
 
 class Mem0:
-    """mem0's own library call, which is the boundary its users call."""
+    """mem0's own library call, which is the boundary its users call.
+
+    One client per conversation, because mem0 stores each in its own qdrant
+    collection. Until `BENCH_MEM0_KEEP` existed the accuracy harness emptied
+    the directory before each ingest, so only the last conversation survived a
+    run and this arm could be timed over one conversation's twenty questions
+    where every other arm had 199. It takes whichever collections are present.
+    """
 
     name = "mem0 (in-process)"
 
-    def __init__(self, collection):
+    def __init__(self, collections):
         os.environ["OPENAI_API_KEY"] = "shim-serves-no-key-needed"
         os.environ["OPENAI_BASE_URL"] = SHIM
         from mem0 import Memory
-        self.memory = Memory.from_config({
-            "llm": {"provider": "openai", "config": {"model": "sonnet"}},
-            "embedder": {"provider": "openai",
-                         "config": {"model": "bge-m3", "embedding_dims": 1024}},
-            "vector_store": {"provider": "qdrant",
-                             "config": {"path": f"{WORK}/mem0-qdrant",
-                                        "embedding_model_dims": 1024,
-                                        "on_disk": True,
-                                        "collection_name": collection}},
-        })
+        self.clients = {
+            name: Memory.from_config({
+                "llm": {"provider": "openai", "config": {"model": "sonnet"}},
+                "embedder": {"provider": "openai",
+                             "config": {"model": "bge-m3",
+                                        "embedding_dims": 1024}},
+                "vector_store": {"provider": "qdrant",
+                                 "config": {"path": f"{WORK}/mem0-qdrant",
+                                            "embedding_model_dims": 1024,
+                                            "on_disk": True,
+                                            "collection_name": name}},
+            })
+            for name in sorted(collections)
+        }
+        self.conversations = len(self.clients)
 
     def search(self, project, query, limit):
-        found = self.memory.search(query, filters={"user_id": project},
-                                   top_k=limit)
+        found = self.clients[project.replace("-", "_")].search(
+            query, filters={"user_id": project}, top_k=limit)
         results = found.get("results", found) if isinstance(found, dict) else found
+        # The premise, per query: an arm answering out of a collection that was
+        # never ingested returns an empty list very quickly, which is the
+        # cheapest possible latency and the least honest one.
+        if not results:
+            raise RuntimeError(
+                f"mem0 returned nothing for {project}; that collection is "
+                "empty, so this would be timing the cost of searching nothing")
         return results
 
 
@@ -365,9 +384,10 @@ def main():
                              "run leaves no evidence behind")
     parser.add_argument("--arms", default="pamin-socket,pamin-cli")
     parser.add_argument("--mem0-collection", default="",
-                        help="a surviving mem0 collection, e.g. conv_50; mem0 "
-                             "clears its store per conversation, so only the "
-                             "last one ingested can be re-timed")
+                        help="time mem0 over this one collection, e.g. "
+                             "conv_50. Without it the arm takes every "
+                             "conversation, which needs a store ingested "
+                             "under BENCH_MEM0_KEEP=1")
     args = parser.parse_args()
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -379,7 +399,7 @@ def main():
         project = "locomor1" + "".join(c for c in cid.lower() if c.isalnum())[:26]
         for _qid, qa, _reference in locomo.questions(entry, per_unit=20):
             work.append((project, qa["question"]))
-            if args.mem0_collection and \
+            if not args.mem0_collection or \
                     args.mem0_collection == cid.replace("-", "_"):
                 mem0_work.append((cid, qa["question"]))
 
@@ -402,9 +422,10 @@ def main():
                               for p, q in work], args.limit)
     if "mem0" in wanted:
         if not mem0_work:
-            raise SystemExit("--mem0-collection must name a surviving "
-                             "collection for the mem0 arm")
-        measure(Mem0(args.mem0_collection), mem0_work, args.limit)
+            raise SystemExit("--mem0-collection names no conversation in this "
+                             "dataset, so the mem0 arm has nothing to time")
+        measure(Mem0({c.replace("-", "_") for c, _ in mem0_work}),
+                mem0_work, args.limit)
 
     if args.out:
         import run as run_module
