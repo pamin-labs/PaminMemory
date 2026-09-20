@@ -445,10 +445,21 @@ class Mem0:
                 "mem0's lemmatiser is a passthrough, so its keyword channel is "
                 "off; install mem0ai[nlp] before measuring mem0")
 
+    # Each conversation gets its own qdrant collection, and the directory
+    # holding them is emptied before each one so that `store_mb` is that
+    # conversation's own bytes rather than a running total. The cost of that
+    # is that only the last conversation survives a run, which is why the
+    # latency table's mem0 row was twenty questions where every other arm was
+    # 199. `BENCH_MEM0_KEEP` opts out: the collections are already named per
+    # conversation and retrieval is already filtered by `user_id`, so keeping
+    # them costs nothing but the disk and the accounting.
+    KEEP = os.environ.get("BENCH_MEM0_KEEP") == "1"
+
     def ingest(self, conversation_id, turns):
         self._assert_lemmatiser()
         import shutil
-        shutil.rmtree(f"{WORK}/mem0-qdrant", ignore_errors=True)
+        if not self.KEEP:
+            shutil.rmtree(f"{WORK}/mem0-qdrant", ignore_errors=True)
         config = json.loads(json.dumps(self.config))
         config["vector_store"]["config"]["collection_name"] = re.sub(
             r"[^a-z0-9_]", "_", conversation_id.lower())
