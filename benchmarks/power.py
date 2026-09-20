@@ -30,6 +30,40 @@ Retrieval is captured once per arm and replayed to the reader, so the five
 reads see identical context and differ only in the model's own sampling.
 
     python3 benchmarks/power.py --units 70 --reads 5 --out /tmp/power.jsonl
+
+What it said, over all 70:
+
+    arm                    n  current   stale  neither  reads agreed
+    pamin-dated           70    0.814   0.157    0.029         0.929
+    pamin-valid           70    0.700   0.286    0.014         0.943
+    pamin-valid-read      70    0.900   0.100    0.000         0.943
+
+    pamin-valid-read vs pamin-dated, 70 paired questions:
+      pamin-valid-read only 7, pamin-dated only 1, p = 0.0703
+
+    retrieved-set overlap between them: median 0.90, min 0.60
+
+Every total and the decisive p value come out exactly as the first run
+reported them. The per-question verdicts do not -- 60, 64 and 68 of 70 match
+-- so these are two runs that sum to the same numbers rather than one run
+reproduced.
+
+**The suspect was innocent, and that is the finding.** Reader noise was never
+what limited this: 55 to 57 of the 70 questions are unanimous across five
+reads, and the discordant count did not move at all. The eight pairs are the
+arms disagreeing rather than the reader failing to repeat itself, so what
+limits the comparison is 70 questions. One more discordant pair the same way
+would settle it -- 8 to 1 on nine pairs is p = 0.0391 -- and LongMemEval-S has
+78 knowledge-update questions with 70 of them qualifying, so there is no ninth
+pair here. A sharper instrument was the wrong fix; more questions is the only
+one, and this corpus has none left.
+
+The retrieval check came out against the page as it was written. The two arms
+overlap by a median of 0.90 and only 16 of 70 questions return the same set to
+both, so part of 0.900 against 0.814 is retrieval rather than presentation.
+Three of the seven pairs favouring `pamin-valid-read` are at overlap 1.00,
+where nothing but what the reader saw can have moved them, so the presentation
+effect is real -- it just cannot claim the whole gap.
 """
 import argparse
 import collections

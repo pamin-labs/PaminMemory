@@ -1,0 +1,202 @@
+{
+  "table": "supersession, re-measured with five reads and a majority verdict",
+  "published_in": "docs/benchmarks.md, 'What it said'",
+  "question": "is `pamin-valid-read` better than `pamin-dated`, or was the first run's p = 0.0703 a reader that could not answer the same question twice",
+  "dataset": {
+    "name": "longmemeval-knowledge-update",
+    "questions": 70,
+    "reads_per_question": 5,
+    "sampling": "the same 70 questions the first run used"
+  },
+  "scoring": "five reads of one captured retrieval, each judged current, stale or neither; the arm's verdict is the majority, and a tie resolves to the least favourable of the tied verdicts.",
+  "machine": {
+    "cores": 4,
+    "host": "vm",
+    "memory_gb": 16,
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39"
+  },
+  "sources": [
+    {
+      "file": "power/power.jsonl",
+      "rows": 210,
+      "mtime_utc": "2026-09-20T06:37:25Z"
+    }
+  ],
+  "arms": {
+    "pamin-dated": {
+      "rows": 70,
+      "current": 0.8143,
+      "stale": 0.1571,
+      "neither": 0.0286,
+      "unparsed": 0.0,
+      "reads_agreed_mean": 0.9286,
+      "unanimous": 55,
+      "agreement_spread": {
+        "1.0": 55,
+        "0.8": 7,
+        "0.6": 6,
+        "0.4": 2
+      }
+    },
+    "pamin-valid": {
+      "rows": 70,
+      "current": 0.7,
+      "stale": 0.2857,
+      "neither": 0.0143,
+      "unparsed": 0.0,
+      "reads_agreed_mean": 0.9429,
+      "unanimous": 56,
+      "agreement_spread": {
+        "1.0": 56,
+        "0.8": 8,
+        "0.6": 6
+      }
+    },
+    "pamin-valid-read": {
+      "rows": 70,
+      "current": 0.9,
+      "stale": 0.1,
+      "neither": 0.0,
+      "unparsed": 0.0,
+      "reads_agreed_mean": 0.9429,
+      "unanimous": 57,
+      "agreement_spread": {
+        "1.0": 57,
+        "0.8": 7,
+        "0.6": 5,
+        "0.4": 1
+      }
+    }
+  },
+  "mcnemar": [
+    {
+      "a": "pamin-valid-read",
+      "b": "pamin-dated",
+      "discordant": 8,
+      "a_only": 7,
+      "b_only": 1,
+      "p": 0.0703
+    },
+    {
+      "a": "pamin-valid-read",
+      "b": "pamin-valid",
+      "discordant": 16,
+      "a_only": 15,
+      "b_only": 1,
+      "p": 0.0005
+    },
+    {
+      "a": "pamin-valid",
+      "b": "pamin-dated",
+      "discordant": 18,
+      "a_only": 5,
+      "b_only": 13,
+      "p": 0.0963
+    }
+  ],
+  "retrieved_overlap": {
+    "of": "pamin-valid-read against pamin-dated",
+    "median": 0.9,
+    "mean": 0.8857,
+    "min": 0.6,
+    "identical_sets": 16,
+    "questions": 70
+  },
+  "discordant_pairs": [
+    {
+      "unit": "0977f2af",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 0.8,
+      "pamin-dated_verdict": "neither",
+      "pamin-dated_reads_agreed": 1.0,
+      "retrieved_overlap": 0.6
+    },
+    {
+      "unit": "0f05491a",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 0.6,
+      "pamin-dated_verdict": "neither",
+      "pamin-dated_reads_agreed": 0.4,
+      "retrieved_overlap": 1.0
+    },
+    {
+      "unit": "18bc8abd",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 1.0,
+      "pamin-dated_verdict": "stale",
+      "pamin-dated_reads_agreed": 0.8,
+      "retrieved_overlap": 1.0
+    },
+    {
+      "unit": "6071bd76",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 0.6,
+      "pamin-dated_verdict": "stale",
+      "pamin-dated_reads_agreed": 0.6,
+      "retrieved_overlap": 1.0
+    },
+    {
+      "unit": "7e974930",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 0.8,
+      "pamin-dated_verdict": "stale",
+      "pamin-dated_reads_agreed": 0.8,
+      "retrieved_overlap": 0.8
+    },
+    {
+      "unit": "852ce960",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 1.0,
+      "pamin-dated_verdict": "stale",
+      "pamin-dated_reads_agreed": 1.0,
+      "retrieved_overlap": 0.9
+    },
+    {
+      "unit": "c4ea545c",
+      "won": "pamin-valid-read",
+      "pamin-valid-read_verdict": "current",
+      "pamin-valid-read_reads_agreed": 1.0,
+      "pamin-dated_verdict": "stale",
+      "pamin-dated_reads_agreed": 0.4,
+      "retrieved_overlap": 0.9
+    },
+    {
+      "unit": "d7c942c3",
+      "won": "pamin-dated",
+      "pamin-valid-read_verdict": "stale",
+      "pamin-valid-read_reads_agreed": 0.4,
+      "pamin-dated_verdict": "current",
+      "pamin-dated_reads_agreed": 0.6,
+      "retrieved_overlap": 0.9
+    }
+  ],
+  "against_the_first_run": {
+    "pamin-dated": {
+      "identical_verdicts": 60,
+      "of": 70,
+      "rate": 0.8571
+    },
+    "pamin-valid": {
+      "identical_verdicts": 64,
+      "of": 70,
+      "rate": 0.9143
+    },
+    "pamin-valid-read": {
+      "identical_verdicts": 68,
+      "of": 70,
+      "rate": 0.9714
+    }
+  },
+  "notes": [
+    "The three arm totals and the decisive p value come out exactly as the first run reported them -- 0.814, 0.700, 0.900 and 7 to 1 at p = 0.0703. The per-question verdicts do not, so this is two runs that happen to sum to the same numbers rather than one run reproduced.",
+    "Reader noise was not the limit. 55 to 57 of the 70 questions are unanimous across five reads, and the discordant count did not move, so the eight pairs are the arms disagreeing rather than the reader being unable to repeat itself. What limits this comparison is 70 questions.",
+    "One more discordant pair in the same direction would settle it: 8 to 1 on nine pairs is p = 0.0391. LongMemEval-S has 78 knowledge-update questions and 70 of them qualify, so there is no ninth pair to be had from this corpus.",
+    "The retrieval confound is real and partial. `pamin-dated` writes the date into the indexed content, and only 16 of 70 questions return the same topic set to both arms, so part of the gap is retrieval rather than presentation. Three of the seven pairs that go to `pamin-valid-read` are at overlap 1.00, where nothing but what the reader was shown can have moved."
+  ]
+}
