@@ -666,9 +666,9 @@ binary carrying the trimmed JSON, which the arm asserts by failing when a
 retired field comes back.
 
 Latency is deliberately absent from both of those tables. The accuracy run
-records a `recall_seconds`, and it is not a comparison: it timed Påmin Memory through
-`su ubuntu -c "pamin ... search ..."` — two process spawns and a socket round
-trip — and timed mem0 as an in-process library call, while ten arms, an
+records a `recall_seconds`, and it is not a comparison: it timed Påmin Memory
+through `su ubuntu -c "pamin ... search ..."` — two process spawns and a socket
+round trip — and timed mem0 as an in-process library call, while ten arms, an
 embedding endpoint and a PostgreSQL cluster shared four cores. It reported
 170 ms against mem0's 106 and the obvious reading of that is wrong.
 
