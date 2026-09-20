@@ -43,17 +43,54 @@ pub struct Session {
 
 /// How many indexes stay open at once.
 ///
-/// An open index is not free and does not become free by being idle: measured
-/// on the smallest profile, each one holds 27 file descriptors and about 100 MB
-/// resident. Against the 1024-descriptor limit a process usually starts with,
-/// that runs out at the thirty-seventh project -- which is what happened, with
-/// the engine refusing to create its lexical indexer, before there was a bound
-/// here at all.
-///
-/// Sixteen leaves both quantities a wide margin and is large enough that a
-/// server round-robining a working set keeps it. The seventeenth project
+/// An open index is not free and does not become free by being idle. It holds
+/// 27 file descriptors, which is why the bound exists: against the
+/// 1024-descriptor limit a process usually starts with, an unbounded server
+/// ran out at the thirty-seventh project and the engine refused to create its
+/// lexical indexer. Sixteen leaves that a wide margin and is large enough that
+/// a server round-robining a working set keeps it; the seventeenth project
 /// closes the one nobody has touched for longest rather than failing.
+///
+/// The descriptors are the only quantity this number bounds, and they are not
+/// the one that hurts. Memory is, and it does not follow the count:
+///
+/// | profile    | per index | sixteen of them |
+/// | ---------- | --------- | --------------- |
+/// | `speed`    | ~100 MB   | ~1.6 GB         |
+/// | `accuracy` | ~205 MB   | ~3.3 GB         |
+///
+/// The second row was measured the hard way. Two benchmark servers on the
+/// shipping profile reached 5.6 GB resident apiece -- sixteen indexes on top
+/// of a 2.3 GB floor of model and runtime -- and the kernel killed both. The
+/// figure the paragraph above used to quote, 100 MB, was the smallest
+/// profile's, and nothing said so.
+///
+/// A count cannot be made to mean bytes here: what an index costs depends on
+/// the profile, the quantization, and how much has been written, and this
+/// process learns the last of those only by opening it. So the number stays a
+/// count, and [`OPEN_INDEXES_VAR`] lets whoever knows their machine say a
+/// smaller one. Sizing it from a memory budget is [ADR 0001]'s hot-set
+/// residency work, which is where it belongs.
 const OPEN_INDEXES: usize = 16;
+
+/// Overrides [`OPEN_INDEXES`], for a machine too small for the default.
+///
+/// Read once, at open. A value that is not a positive number is ignored rather
+/// than refused: this is a tuning knob on a long-running process, and failing
+/// to start over a typo in an environment variable is the worse failure.
+const OPEN_INDEXES_VAR: &str = "PAMIN_OPEN_INDEXES";
+
+fn open_indexes() -> usize {
+    parse_open_indexes(std::env::var(OPEN_INDEXES_VAR).ok().as_deref())
+}
+
+/// Split from the lookup so it can be tested without setting a variable the
+/// rest of the process shares.
+fn parse_open_indexes(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(OPEN_INDEXES)
+}
 
 impl Session {
     /// Connects, migrates, and holds the result.
@@ -68,7 +105,7 @@ impl Session {
             database: Database::open(workspace, connections).await?,
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
-            engines: Registry::with_capacity(OPEN_INDEXES),
+            engines: Registry::with_capacity(open_indexes()),
         })
     }
 
@@ -166,5 +203,30 @@ impl Session {
                 )
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OPEN_INDEXES, parse_open_indexes};
+
+    #[test]
+    fn a_smaller_machine_can_ask_for_fewer_open_indexes() {
+        assert_eq!(parse_open_indexes(Some("4")), 4);
+        assert_eq!(parse_open_indexes(Some("  4 ")), 4);
+    }
+
+    #[test]
+    fn anything_that_is_not_a_count_leaves_the_default_alone() {
+        // Zero would evict whatever was just opened, and a long-running server
+        // that refuses to start over a typo in an environment variable has
+        // failed worse than one that ignores it.
+        for raw in [None, Some(""), Some("0"), Some("-1"), Some("lots")] {
+            assert_eq!(
+                parse_open_indexes(raw),
+                OPEN_INDEXES,
+                "{raw:?} should not have changed the bound"
+            );
+        }
     }
 }

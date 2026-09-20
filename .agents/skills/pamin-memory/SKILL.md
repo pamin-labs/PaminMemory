@@ -1,6 +1,6 @@
 ---
 name: pamin-memory
-description: Use the `pamin` CLI as durable memory — record what you learn, retrieve it later, and follow the relationships between facts. Use this skill whenever `pamin` is available and you need to remember something across turns or sessions, recall what was decided or observed earlier, look up a fact you were told before, trace how a fact changed, or find the exact text behind a claim. Reach for it whenever the user says remember this, what did we decide, what do we know about X, look it up, or refers to earlier work you cannot see in the current context — even when they never name pamin. Also use it before answering from assumption on a project that has a pamin workspace: check memory first.
+description: "Use the `pamin` CLI as durable memory — record what you learn, retrieve it later, and follow the relationships between facts. Use this skill whenever `pamin` is available and you need to remember something across turns or sessions, recall what was decided or observed earlier, look up a fact you were told before, trace how a fact changed, or find the exact text behind a claim. Reach for it whenever the user says remember this, what did we decide, what do we know about X, look it up, or refers to earlier work you cannot see in the current context — even when they never name pamin. Also use it before answering from assumption on a project that has a pamin workspace: check memory first."
 ---
 
 # Using Påmin Memory
@@ -33,6 +33,13 @@ Held in evidence only: content was too short to carry a durable claim
 That content is still recoverable with `grep`. It is not a memory.
 
 Two consequences worth holding onto:
+
+**Before writing to a name you invented, ask what is already here.** `pamin
+topics <what it is about>` answers by name and by content and says which found
+what. `deployment_pipeline` and `deploy_pipeline` are two memories that never
+meet again, and nothing will ever tell you it happened. With no query it lists
+the most recent, with the total, which is the fastest way to see what a
+workspace is about.
 
 - **A held write creates no topic.** Write to a new name, have it held, and the
   name stays unknown to `read`, `neighbors` and the graph. Check `promoted` in
@@ -118,9 +125,9 @@ tells you how much to trust the hit:
 
 ```json
 "why": [
-  { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, "contribution": 0.0227 },
-  { "kind": "channel", "channel": "vector", "rank": 1, "weight": 1.0, "contribution": 0.0909 },
-  { "kind": "channel", "channel": "graph", "rank": 2, "weight": 1.0, "contribution": 0.0833 },
+  { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
+  { "kind": "channel", "channel": "vector", "rank": 1 },
+  { "kind": "channel", "channel": "graph", "rank": 2 },
   { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
 ]
 ```
