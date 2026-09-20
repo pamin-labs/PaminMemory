@@ -164,11 +164,15 @@ class Embedding:
 class Mem0:
     """mem0's own library call, which is the boundary its users call.
 
-    One client per conversation, because mem0 stores each in its own qdrant
-    collection. Until `BENCH_MEM0_KEEP` existed the accuracy harness emptied
-    the directory before each ingest, so only the last conversation survived a
-    run and this arm could be timed over one conversation's twenty questions
-    where every other arm had 199. It takes whichever collections are present.
+    One client, switching collection per query, because a local qdrant allows
+    exactly one client per storage folder -- ten clients over one directory is
+    a `RuntimeError`, not ten clients. `collection_name` is a plain attribute
+    its search reads, so this is the same call mem0 would make itself.
+
+    Until `BENCH_MEM0_KEEP` existed the accuracy harness emptied that folder
+    before each ingest, so only the last conversation survived a run and this
+    arm could be timed over one conversation's twenty questions where every
+    other arm had 199.
     """
 
     name = "mem0 (in-process)"
@@ -177,29 +181,33 @@ class Mem0:
         os.environ["OPENAI_API_KEY"] = "shim-serves-no-key-needed"
         os.environ["OPENAI_BASE_URL"] = SHIM
         from mem0 import Memory
-        self.clients = {
-            name: Memory.from_config({
-                "llm": {"provider": "openai", "config": {"model": "sonnet"}},
-                "embedder": {"provider": "openai",
-                             "config": {"model": "bge-m3",
-                                        "embedding_dims": 1024}},
-                "vector_store": {"provider": "qdrant",
-                                 "config": {"path": f"{WORK}/mem0-qdrant",
-                                            "embedding_model_dims": 1024,
-                                            "on_disk": True,
-                                            "collection_name": name}},
-            })
-            for name in sorted(collections)
-        }
-        self.conversations = len(self.clients)
+        self.collections = sorted(collections)
+        self.memory = Memory.from_config({
+            "llm": {"provider": "openai", "config": {"model": "sonnet"}},
+            "embedder": {"provider": "openai",
+                         "config": {"model": "bge-m3", "embedding_dims": 1024}},
+            "vector_store": {"provider": "qdrant",
+                             "config": {"path": f"{WORK}/mem0-qdrant",
+                                        "embedding_model_dims": 1024,
+                                        "on_disk": True,
+                                        "collection_name": self.collections[0]}},
+        })
+        present = {c.name for c in
+                   self.memory.vector_store.client.get_collections().collections}
+        missing = [c for c in self.collections if c not in present]
+        if missing:
+            raise SystemExit(
+                f"these mem0 collections are not in the store: {missing}. "
+                "Ingest with BENCH_MEM0_KEEP=1 to keep all of them.")
 
     def search(self, project, query, limit):
-        found = self.clients[project.replace("-", "_")].search(
-            query, filters={"user_id": project}, top_k=limit)
+        self.memory.vector_store.collection_name = project.replace("-", "_")
+        found = self.memory.search(query, filters={"user_id": project},
+                                   top_k=limit)
         results = found.get("results", found) if isinstance(found, dict) else found
-        # The premise, per query: an arm answering out of a collection that was
-        # never ingested returns an empty list very quickly, which is the
-        # cheapest possible latency and the least honest one.
+        # The premise, per query: a collection that was never ingested answers
+        # with an empty list very quickly, which is the cheapest possible
+        # latency and the least honest one.
         if not results:
             raise RuntimeError(
                 f"mem0 returned nothing for {project}; that collection is "

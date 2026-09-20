@@ -735,27 +735,38 @@ def latency(raw, rows):
         "retrieval": retrieval,
         "reader": sorted(reader, key=lambda r: r["prompt_tokens"]),
         "notes": [
-            "`mem0 (in-process)` is 20 questions where every other arm is 199. "
-            "mem0 clears its vector store before each conversation, so only "
-            "the last one ingested can be re-timed, and its row is one "
-            "conversation's questions. The previously published table had the "
-            "same limitation and did not say so.",
+            "Every arm is 199 questions. mem0's row used to be 20: not because "
+            "mem0 clears its store per conversation, which is what the page "
+            "said, but because this harness emptied the qdrant directory "
+            "before each ingest so that `store_mb` would be one "
+            "conversation's bytes. `BENCH_MEM0_KEEP=1` keeps all ten.",
             "`of which, one embedding HTTP call` is not a memory system. It is "
             "one call to the shared endpoint, which mem0 and MemPalace pay "
             "inside every search and this project does not, because it holds "
             "the model in the process that holds the index. It is the floor "
             "under the two arms that call out.",
-            "Read the ordering and the ratios, not the milliseconds. Against "
-            "the run this replaces, every row moved between -24% and +1%, in "
-            "both directions and by more than some of the differences the "
-            "table reports. Two reasons are known and neither is code: the "
-            "store was rebuilt for this run, so its index has a different "
-            "segment count, and the row with no product code in it at all -- "
-            "the embedding call -- moved the most.",
-            "The reader curve is 12 calls a size to a hosted model. One call "
-            "at the smallest size took 167 s, which is the provider's queue "
-            "and not the context length; it is why the median is what the "
-            "page quotes and the maximum is recorded here rather than there.",
+            "What is stable here and what is not, measured rather than "
+            "guessed. Against a run two hours earlier on the same box, the "
+            "three arms that do not embed over HTTP moved 2%: socket 25.7 to "
+            "26.2, CLI 37.1 to 38.0, su 41.8 to 42.7. The embedding call moved "
+            "70%, 15.2 to 25.8, with no product code in it at all, and "
+            "MemPalace -- which pays that call inside its own search -- moved "
+            "91%, 39.5 to 75.4. So this project's own path reproduces to a few "
+            "per cent and the gap between it and the two arms that embed over "
+            "HTTP does not: a quarter of MemPalace's figure and a quarter of "
+            "mem0's is an endpoint this harness runs, whose latency varied by "
+            "70% in two hours. Read the embedding row as part of theirs.",
+            "`--rerank fast` on the socket arm, which is the shipped default. "
+            "The server was warm: a first pass on a freshly started server "
+            "measured 123.4 ms against a repeat of 25.8, the harness's own "
+            "drift guard caught it, and the run was taken again rather than "
+            "the faster half of it being kept.",
+            "The reader curve is 12 calls a size to a hosted model, and the "
+            "median is what the page quotes because the tail belongs to the "
+            "provider's queue rather than to the context length -- an earlier "
+            "run of the same four sizes had one call take 167 s. The minimum "
+            "and maximum are recorded here so that tail is visible without "
+            "being published as a property of context length.",
         ],
     }
 
