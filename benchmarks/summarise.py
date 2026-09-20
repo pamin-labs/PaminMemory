@@ -90,6 +90,11 @@ VERDICTS = ["current", "stale", "neither", "unparsed"]
 # one thing worth knowing, which is whether they agree.
 POWER_FILE = "power/power.jsonl"
 POWER_ARMS = ["pamin-dated", "pamin-valid", "pamin-valid-read"]
+
+# The latency harness's rows. It printed and saved nothing until it was given
+# `--out`, which is why the table it produced sat on the page for a day with
+# no artifact behind it.
+LATENCY_FILE = "lat/latency.jsonl"
 POWER_PAIRS = [("pamin-valid-read", "pamin-dated"),
                ("pamin-valid-read", "pamin-valid"),
                ("pamin-valid", "pamin-dated")]
@@ -685,6 +690,70 @@ def supersession_power(raw, by_file, first_run):
     }
 
 
+def latency(raw, rows):
+    """Query latency per arm per shortlist, and the reader curve beside it.
+
+    Retrieval and the reader go in one summary because the point of the pair
+    is the comparison between them: a sixty-millisecond difference in
+    retrieval is not a difference anyone experiences if the reader takes five
+    seconds either way, and reporting the first without the second is how this
+    page used to overstate what retrieval latency buys.
+    """
+    retrieval, reader = {}, []
+    for row in rows:
+        if row["arm"].startswith("reader, "):
+            reader.append({"prompt_tokens": row["prompt_tokens"],
+                           "calls": row["n"],
+                           "median_seconds": round(row["p50_ms"] / 1000, 2),
+                           "min_seconds": round(row["min_ms"] / 1000, 2),
+                           "max_seconds": round(row["max_ms"] / 1000, 2)})
+            continue
+        arm = retrieval.setdefault(row["arm"], {})
+        arm[f"at_{row['limit']}"] = {"n": row["n"], "p50_ms": row["p50_ms"],
+                                     "p95_ms": row["p95_ms"],
+                                     "mean_ms": row["mean_ms"]}
+
+    return {
+        "table": "latency, timed at the same layer on every arm",
+        "published_in": "docs/benchmarks.md, 'Latency, timed at the same layer'",
+        "corpus": "LOCOMO, the same ten conversations and 199 questions the "
+                  "accuracy run uses, rebuilt for this run because the "
+                  "workspace that held them was lost with its PostgreSQL data "
+                  "directory",
+        "method": "every arm at the boundary an application calls, every unit "
+                  "warmed three times before anything is timed, and each arm "
+                  "run a second time last -- two passes that disagree by more "
+                  "than half the median print a warning, and none did.",
+        **stamped(rows, "these rows carry no machine."),
+        "sources": [source(raw, LATENCY_FILE, len(rows))],
+        "retrieval": retrieval,
+        "reader": sorted(reader, key=lambda r: r["prompt_tokens"]),
+        "notes": [
+            "`mem0 (in-process)` is 20 questions where every other arm is 199. "
+            "mem0 clears its vector store before each conversation, so only "
+            "the last one ingested can be re-timed, and its row is one "
+            "conversation's questions. The previously published table had the "
+            "same limitation and did not say so.",
+            "`of which, one embedding HTTP call` is not a memory system. It is "
+            "one call to the shared endpoint, which mem0 and MemPalace pay "
+            "inside every search and this project does not, because it holds "
+            "the model in the process that holds the index. It is the floor "
+            "under the two arms that call out.",
+            "Read the ordering and the ratios, not the milliseconds. Against "
+            "the run this replaces, every row moved between -24% and +1%, in "
+            "both directions and by more than some of the differences the "
+            "table reports. Two reasons are known and neither is code: the "
+            "store was rebuilt for this run, so its index has a different "
+            "segment count, and the row with no product code in it at all -- "
+            "the embedding call -- moved the most.",
+            "The reader curve is 12 calls a size to a hosted model. One call "
+            "at the smallest size took 167 s, which is the provider's queue "
+            "and not the context length; it is why the median is what the "
+            "page quotes and the maximum is recorded here rather than there.",
+        ],
+    }
+
+
 def longmemeval_retrieval(raw, pamin_rows, recorded):
     """Session retrieval, at the loose metric the field publishes and a strict one.
 
@@ -786,6 +855,8 @@ def main():
           supersession_power(
               args.raw, by_file,
               [r for name in SUPERSESSION_FILES for r in by_file[name]]))
+    write(os.path.join(results, "locomo", "summary-latency.json"),
+          latency(args.raw, read_rows(args.raw, LATENCY_FILE)))
     write(os.path.join(results, "longmemeval", "summary-session-retrieval.json"),
           longmemeval_retrieval(
               args.raw, read_rows(args.raw, "lme_pamin.jsonl"),

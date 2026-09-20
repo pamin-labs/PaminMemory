@@ -757,36 +757,53 @@ the boundary an application actually calls, every unit warmed first, nothing
 else on the machine, and each arm run a second time last to show the order is
 not in the number. Same 199 questions, same corpus.
 
-| retrieval call | p50 @10 | p50 @30 | p95 @30 |
-| --- | --- | --- | --- |
-| Påmin Memory, socket round trip | **29 ms** | **28 ms** | 46 ms |
-| MemPalace, `search_memories` | 41 ms | 63 ms | 84 ms |
-| mem0, `search` | 94 ms | 90 ms | 114 ms |
-| Påmin Memory, one CLI invocation | 43 ms | 42 ms | 61 ms |
-| Påmin Memory, that CLI behind `su` — *what the accuracy run timed* | 48 ms | 48 ms | 66 ms |
-| *of which* mem0's embedding HTTP call | *20 ms* | *20 ms* | *22 ms* |
+| retrieval call | p50 @10 | p50 @30 | p95 @30 | n |
+| --- | --- | --- | --- | --- |
+| Påmin Memory, socket round trip | **25.7 ms** | **25.7 ms** | 39.8 ms | 199 |
+| MemPalace, `search_memories` | 39.5 ms | 49.6 ms | 74.1 ms | 199 |
+| mem0, `search` | 95.3 ms | 85.3 ms | 116.8 ms | **20** |
+| Påmin Memory, one CLI invocation | 37.1 ms | 40.3 ms | 59.4 ms | 199 |
+| Påmin Memory, that CLI behind `su` — *what the accuracy run timed* | 41.8 ms | 41.9 ms | 57.9 ms | 199 |
+| *of which* one embedding HTTP call | *15.2 ms* | *14.5 ms* | *18.8 ms* | 199 |
 
 Two of the three figures the accuracy run produced were wrong, and in opposite
 directions. It reported 170 ms here and 830 ms for MemPalace: Påmin Memory was
 timed behind a `su` and a CLI process, MemPalace behind a Python interpreter
 starting and a package importing per query. Correcting both narrows this
-project's lead over MemPalace from twenty-eight fold to 1.4. `su` is 5 ms of
-the original figure and the process spawn 13; the rest was contention and cold
-indexes.
+project's lead over MemPalace from twenty-eight fold to **1.5** at ten passages
+and 1.9 at thirty. Of the 170 ms, `su` is 4.7 and the process spawn 11.4; the
+rest was contention and cold indexes.
 
 One property does survive the correction and is worth naming: widening from
-ten passages to thirty costs Påmin Memory nothing measurable (29 to 28 ms)
-where it costs MemPalace half as much again (41 to 63 ms).
+ten passages to thirty costs Påmin Memory nothing measurable (25.7 to 25.7 ms)
+where it costs MemPalace a quarter again (39.5 to 49.6 ms).
 
-**This is the one table on this page with no committed artifact behind it.**
-The harness printed its rows and wrote none, so the figures went from a
-terminal into this document and cannot be rechecked against anything. They are
-kept because they were measured and nothing suggests they are wrong, and
-flagged because "measured" and "checkable" are not the same claim and this page
-is built on the difference. `latency.py` now takes `--out` and appends a row
-per arm, like every other harness here; the table is replaced by a run that
-leaves one behind. The same is true of the reader curve below and the
-end-to-end table derived from it.
+**Read the ordering and the ratios here, not the milliseconds.** This table
+replaces one taken a day earlier that had no artifact behind it — the harness
+printed its rows and saved none — and re-running it moved every row, between
+−24% and +1%, in both directions and by more than some of the differences the
+table reports. Two reasons are known and neither is this project getting
+faster: the store was rebuilt for this run, so its index carries a different
+segment count, and the row with no product code in it at all — one embedding
+call to a local endpoint — moved the most, from 20 ms to 15. So the noise floor
+between two runs on this box is of the same order as the gaps being reported,
+and what survives it is the shape: the socket arm is the fastest thing here, it
+does not care about the shortlist, and mem0 is three to four times its cost
+because it embeds over HTTP where this project embeds in the process that holds
+the index.
+
+The `n` column is there because one row is not like the others. **mem0's row is
+20 questions where every other arm is 199**: it clears its vector store before
+each conversation, so only the last one ingested can be re-timed. The table
+this replaces had exactly the same limitation and did not say so.
+
+Two of these rows had no arm in the harness at all until this run — the `su`
+row and the embedding row were measured some other way and could not be
+reproduced from the repository. They are arms now. The embedding row also
+changed meaning slightly and the wording follows it: it used to read "of which
+mem0's embedding HTTP call", and it is now one call to the shared endpoint
+measured on its own, which is the floor under both arms that embed over HTTP
+rather than a component attributed to one of them.
 
 ### But retrieval is not what a caller waits for
 
@@ -798,14 +815,19 @@ range, twelve calls at each size:
 
 | context handed to the reader | reader call, median |
 | --- | --- |
-| 541 tokens | 5.62 s |
-| 1,001 tokens | 5.28 s |
+| 541 tokens | 6.17 s |
+| 1,001 tokens | 5.99 s |
 | 1,495 tokens | 5.20 s |
-| 5,117 tokens | 4.86 s |
+| 5,117 tokens | 5.57 s |
 
-It does not move. Nine times the context, and the median falls rather than
-rises — which is noise, and the point: across the range these systems actually
-produce, the reader costs about five seconds regardless.
+It does not move. Nine times the context, and the median does not rise — the
+largest context is faster than the smallest, which is noise and is the point:
+across the range these systems actually produce, the reader costs about five
+and a half seconds regardless. The run this replaces gave 5.62 / 5.28 / 5.20 /
+4.86 over the same four sizes, also not rising, so the conclusion survives a
+second run while none of the four numbers does. One call at the smallest size
+took 167 s; that is the provider's queue rather than the context length, which
+is why the median is quoted and the maximum lives in the committed summary.
 
 **So end to end, with a model reading the results, the three systems are
 indistinguishable.** Retrieval is roughly one per cent of the wait, and a
@@ -813,14 +835,14 @@ sixty-millisecond difference is not something a user experiences:
 
 | arm, thirty passages | retrieval | reader | total | retrieval's share |
 | --- | --- | --- | --- | --- |
-| Påmin Memory | 28 ms | ~5.2 s | ~5.2 s | 0.5% |
-| MemPalace | 63 ms | ~4.9 s | ~5.0 s | 1.3% |
-| mem0 | 90 ms | ~5.3 s | ~5.4 s | 1.7% |
+| Påmin Memory | 25.7 ms | ~5.2 s | ~5.2 s | 0.5% |
+| MemPalace | 49.6 ms | ~5.6 s | ~5.6 s | 0.9% |
+| mem0 | 85.3 ms | ~6.0 s | ~6.1 s | 1.4% |
 
 That does not make the retrieval figures pointless; it says where they count.
 A memory system feeding an agent's own context adds its retrieval latency to a
-call that was happening anyway, and there 29 ms against 94 ms is the entire
-marginal cost. Where a separate reader stands between the memory and the
+call that was happening anyway, and there 25.7 ms against 95.3 ms is the
+entire marginal cost. Where a separate reader stands between the memory and the
 answer, it is not.
 
 Two limits on the reader figure. It is a CLI against a hosted API, so its five
@@ -918,7 +940,7 @@ a store that reproduces itself byte for byte, and no embedding service to run.
 
 Against MemPalace specifically, with both write paths equally model-free, what
 is left is a prompt 3.4x more compact at thirty passages (1,511 tokens against
-5,138) and retrieval at 28 ms against 63 ms.
+5,138) and retrieval at 25.7 ms against 49.6 ms.
 
 One question of the 199 is missing from the wide raw arm — MemPalace's
 re-ingest of the largest conversation stopped responding on the fill-in pass —
