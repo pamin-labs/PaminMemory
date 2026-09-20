@@ -19,7 +19,8 @@ benchmarks/
     supersession.py  LongMemEval's knowledge-update questions, judged three
                      ways: the value that holds, the value it replaced, neither
   run.py             pick a dataset, pick arms, run
-  results/           one directory per dataset; every row carries its machine
+  summarise.py       raw rows in, the committed summaries out
+  results/           one directory per dataset; only summaries are committed
 ```
 
 Adding a benchmark is adding a loader. It is deliberately not a directory per
@@ -132,5 +133,40 @@ about it shaped this harness and would not shape a laptop:
   first thing worth running on a larger machine, and the descriptor count is
   the first thing likely to break.
 
-Every file under `results/` records the machine it came from. A row without one
-is not a measurement.
+## What is committed under `results/`, and how to regenerate it
+
+A run writes one row per arm per question, continuously, into
+`results/<dataset>/`. Those rows are the evidence and they stay out of git:
+they are too many to review in a diff, and a run in progress is still writing
+them. What is committed is one `summary-*.json` per table in
+[docs/benchmarks.md](../docs/benchmarks.md), so that a reader of that page has
+an artifact to check it against rather than a promise:
+
+```
+results/
+  locomo/
+    summary-accuracy.json          judged accuracy, by question type, McNemar
+    summary-cost.json              write side, query side, resident and disk
+    summary-mempalace-no-llm.json  MemPalace's published mode against its default
+  longmemeval/
+    summary-session-retrieval.json  recall@k, no reader and no judge
+    summary-supersession.json       current, stale or neither, over 70 questions
+```
+
+Regenerate them from a run's raw rows with:
+
+```sh
+python3 benchmarks/summarise.py /path/to/raw
+```
+
+It recomputes every figure from the rows rather than copying one from the page,
+so a disagreement between the two shows up as a diff. It needs the LongMemEval
+corpus as well, because the BM25 baseline in the retrieval table was never
+stored per question and has to be re-ranked; `longmemeval_recall.py` does that
+and `summarise.py` imports it rather than keeping a second copy of a retriever.
+
+Each summary records the machine it came from, and a row without one is not a
+measurement. The first LOCOMO and LongMemEval runs predate the field, so the
+summaries built from them say `"machine": null` and say why in the same object:
+an unverifiable row should not be dressed up as a verified one, and the run log
+is not the row.
