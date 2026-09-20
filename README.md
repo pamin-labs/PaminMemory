@@ -2,9 +2,10 @@
 
 # Påmin Memory
 
-Påmin Memory (Pamin Memory) is universal memory for AI agents, coding assistants, research tools, and knowledge-heavy applications.
+**[memory.paminlabs.com](https://memory.paminlabs.com)** · universal memory for
+AI agents, coding assistants, research tools, and knowledge-heavy applications.
 
-It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, PaminMemory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
+It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, Påmin Memory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
 > **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
 
@@ -28,7 +29,7 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
-| **this project** | **0.628** | **0 calls, $0, 356 s** | **28 ms** |
+| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **28 ms** |
 | MemPalace | 0.623 | 20 calls, $1.15, 520 s | 63 ms |
 | mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 90 ms |
 
@@ -62,7 +63,7 @@ website. LongMemEval's retrieval stage has no reader and no judge — it asks
 whether the gold session is in the top k — so it is the one figure here that
 can sit beside a published one. MemPalace publishes **96.6% R@5** on it.
 
-| LongMemEval session retrieval, no model anywhere | BM25 | this project |
+| LongMemEval session retrieval, no model anywhere | BM25 | Påmin Memory |
 | --- | --- | --- |
 | R@5, as the field defines it — gold session in the top five | 96.6% | 98.3% |
 | R@10 | 98.3% | **100%** |
@@ -86,12 +87,12 @@ Everything that separates these systems follows from one choice: **no language
 model runs on the write path.** Of the seven memory systems surveyed in
 [docs/benchmarks.md](docs/benchmarks.md), six run one by default. MemPalace can
 be told not to, with `init --no-llm`, and measured that way it reaches the same
-accuracy as this project — so the property is not unique, and it does not buy
+accuracy as Påmin Memory — so the property is not unique, and it does not buy
 accuracy. What it buys is everything in the table below, and here it is the
-architecture rather than a flag: there is no mode in which this project puts a
+architecture rather than a flag: there is no mode in which Påmin Memory puts a
 model on its write path.
 
-| | this project | MemPalace | mem0 |
+| | Påmin Memory | MemPalace | mem0 |
 | --- | --- | --- | --- |
 | embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
 | same corpus written twice | **byte-identical** | LLM on the write path by default | 41 of 199 answers change |
@@ -171,7 +172,7 @@ The skill is about judgement rather than syntax — which of `search`, `read`,
 `grep` and `neighbors` answers which kind of question, how to read the `why`
 trace on a result, and the traps around the evidence filter. It is the only
 skill this repository publishes. There is a second one for people working on
-PaminMemory itself, about measurement discipline, and it is marked internal so
+Påmin Memory itself, about measurement discipline, and it is marked internal so
 it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
 
 ## Any Language
@@ -187,102 +188,17 @@ pamin search "how is the code deployed"   # finds it
 
 ## Architecture
 
-The design rests on one separation: **an authority that is written to, and a
+One separation carries the design: **an authority that is written to, and a
 projection that is read from.** PostgreSQL holds every fact the system is
-accountable for. The retrieval index holds nothing that PostgreSQL cannot
-reproduce.
+accountable for — raw evidence, the bi-temporal ledger, the relationship graph.
+The retrieval index holds nothing PostgreSQL cannot reproduce, so losing it
+costs a reindex rather than a migration.
 
-```text
-                    write                              read
-                      │                                  │
-          ┌───────────▼───────────┐          ┌───────────▼───────────┐
-          │  AUTHORITY            │          │  PROJECTION           │
-          │  PostgreSQL           │          │  zvec, in-process     │
-          │                       │          │                       │
-          │  · raw evidence and   │  outbox  │  · segmented lexical  │
-          │    source spans       │ ───────► │  · n-gram lexical     │
-          │  · bi-temporal        │  cascade │  · dense vectors      │
-          │    version ledger     │          │                       │
-          │  · relationship graph │          │  derived: losing it   │
-          │  · the outbox         │          │  costs a reindex,     │
-          └───────────────────────┘          │  not a migration      │
-                      │                      └───────────┬───────────┘
-                      │  graph channel                   │  three channels
-                      └──────────────┬───────────────────┘
-                                     ▼
-                        reciprocal rank fusion, in our layer
-                                     ▼
-                        optional cross-encoder rerank
-                                     ▼
-                        results, each carrying why it is here
-```
-
-**A bi-temporal version ledger, not a key-value store.** Every memory carries
-both when a fact was true and when the system learned it — application time and
-system time, the two period dimensions SQL:2011 names. Superseding a fact
-writes a new version and closes the old one's validity rather than overwriting
-it, and deletion is a closed interval rather than a `DELETE`. That is what lets
-current, stale, contradicted and historical be distinguished instead of
-conflated, and it is why a question about what was believed last March has an
-answer.
-
-**Evidence is preserved, never rewritten.** Nothing on the write path asks a
-language model to decide what a conversation "means". Raw content and its
-source spans stay as they arrived; the sensory filter records *why* something
-was held back without discarding it. This is an architectural commitment with
-measurable consequences, listed under
-[Against the other memory systems](#measured): no cost and no external service
-on ingest, a store that is byte-identical when the same corpus is written
-twice, and answers that survive questions whose evidence was never stated
-outright.
-
-**A transactional outbox instead of dual writes.** A write records, in the same
-transaction that stores the evidence, what the projection now owes it. A
-cascade worker settles that debt afterwards. The index can therefore lag, fail
-or be thrown away entirely without the authority ever being wrong — and
-`pamin reindex` rebuilds it from PostgreSQL, which is also what keeps the
-retrieval engine a replaceable component rather than a permanent commitment.
-
-**Four recall channels, fused above the index rather than inside it.**
-Segmented lexical, n-gram lexical, dense vector, and the relationship graph.
-The first three come from the projection; the fourth lives in PostgreSQL, where
-the index cannot see it. Letting the index pre-fuse its own three would produce
-a list that then had to be fused again — weighting its members twice and losing
-the rank each held in each channel. Fusing once, above both, is what makes the
-result explainable:
-
-```bash
-$ pamin search "deployment pipeline" --json | jq '.hits[0].why'
-[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1, "weight": 0.25, ... },
-  { "kind": "channel", "channel": "vector",        "rank": 2, "weight": 1.0,  ... },
-  { "kind": "channel", "channel": "graph",         "rank": 1, "weight": 1.0,  ... },
-  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, ... } ]
-```
-
-Every hit reports the rank it held in each channel and the graph path that
-reached it. There is no step at which a score becomes unattributable.
-
-**A cross-encoder pass, tiered.** Over the fused shortlist, `off`, `fast`
-(default) and `accurate` trade latency for quality on a curve that is measured
-rather than assumed — the figures, including one that had to be corrected
-twice, are under [Measured](#measured).
-
-**Everything local.** Embeddings run in-process through ONNX Runtime;
-PostgreSQL is bundled rather than something you install. A default install
-makes no network call at query time and needs no API key.
-
-### Crate layout
-
-| crate | responsibility |
-| --- | --- |
-| `pamin-core` | domain model, ledger semantics, fusion. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
-| `pamin-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
-| `pamin-index` | the projection: multilingual segmentation, lexical and vector channels. |
-| `pamin-engine` | the only crate that holds both, and therefore the only place they can drift. Sits above `pamin-core` so index types never reach the domain layer. |
-| `pamin-cli` | the command surface, and the resident server behind it. |
-
-Design decisions, their trade-offs, and the ones that reversed when measured
-are recorded in [docs/adr/](docs/adr/).
+[docs/architecture.md](docs/architecture.md) has the diagram and the pieces
+behind it: the ledger, the transactional outbox, the four recall channels and
+how they are fused, the tiered cross-encoder, and what runs locally. The
+decisions, their trade-offs, and the ones that reversed when they were
+measured, are in [docs/adr/](docs/adr/).
 
 ## Relationships
 
@@ -305,7 +221,7 @@ Edges are versioned the way memories are. Changing one closes the old version an
 
 Every figure below comes from `pamin search` and `pamin write` themselves, not
 from the model or the index underneath them, because the gap between those two
-is where this project's numbers have been wrong before.
+is where Påmin Memory's numbers have been wrong before.
 
 **Retrieval quality**, at the shipped defaults, median of three runs:
 
@@ -324,45 +240,38 @@ corpus, the same dev split and the same qrels:**
 | MIRACL Swahili dev, 131,924 passages | nDCG@10 | what it is |
 | --- | --- | --- |
 | Pyserini BM25 baseline | 0.3826 | lexical only |
-| this project, `--rerank off` | 0.7158 | four channels fused |
-| this project, `fast` (default) | **0.7359** | fused, then a cross-encoder |
-| this project, `accurate` | 0.7654 | fused, then a larger cross-encoder |
+| Påmin Memory, `--rerank off` | 0.7158 | four channels fused |
+| Påmin Memory, `fast` (default) | **0.7359** | fused, then a cross-encoder |
+| Påmin Memory, `accurate` | 0.7654 | fused, then a larger cross-encoder |
 | BGE-M3, published | 0.787 | dense retrieval alone |
 
-Read that last row carefully, because it is the honest reading: **a whole
-retrieval stack here scores below a single dense retriever** — and it is the
-same model, an int8 export of BGE-M3. Two differences are known and neither is
-measured: the published figure is fp32, and MIRACL's own training split is in
-BGE-M3's fine-tuning data, where this runs zero-shot. Neither excuses the gap;
-they are where to look for it.
-
-What the table does establish is the distance from the lexical baseline a
-memory system would otherwise ship with, on a low-resource language, on four
-CPU cores with no GPU anywhere.
+Read the last row carefully, because it is the honest reading: **a whole
+retrieval stack here scores below a single dense retriever** — the same model,
+as an int8 export. Two differences are known and neither is measured: the
+published figure is fp32, and MIRACL's training split is in BGE-M3's
+fine-tuning data where this runs zero-shot. Neither excuses the gap; they are
+where to look for it. What the table does establish is the distance from the
+lexical baseline a memory system would otherwise ship with, on a low-resource
+language, on four CPU cores with no GPU anywhere.
 
 Sources: [Pyserini MIRACL v1.0 regressions](https://github.com/castorini/pyserini/blob/master/docs/experiments-miracl-v1.0.md)
-and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later; v1–v3
-report 0.786 and were corrected). The 0.7359 above was re-run and reproduced
-exactly before being placed here.
+and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later). The
+0.7359 was re-run and reproduced exactly before being placed here.
 
 **Retrieval on a memory benchmark.** LongMemEval-S, 59 of its 500 questions
-drawn stratified by type, with the abstention questions dropped because their
-correct answer is a refusal and the benchmark's own scorer drops them too. Each
-question carries its own haystack of about fifty sessions and five hundred
-turns; turns are indexed individually and rolled up to the session that
-contains them. `recall_all@k` requires every gold session inside the top k;
-`ndcg_any@k` counts any gold session as relevant. A plain BM25 over the same
-turns, the same roll-up and the same cut runs beside it, because a retrieval
-number without a lexical baseline says nothing about retrieval:
+drawn stratified by type, scored at the session level against a plain BM25 over
+the same turns — because a retrieval number without a lexical baseline says
+nothing about retrieval. Method and definitions in
+[docs/benchmarks.md](docs/benchmarks.md):
 
-| LongMemEval-S, session level, 59 questions | BM25 | this project |
+| LongMemEval-S, session level, 59 questions | BM25 | Påmin Memory |
 | --- | --- | --- |
 | recall_all@5 | 0.7966 | 0.8983 |
 | ndcg_any@10 | 0.8898 | 0.9202 |
 
 The total is not the result. Split by question type it is:
 
-| recall_all@5, by question type | n | BM25 | this project |
+| recall_all@5, by question type | n | BM25 | Påmin Memory |
 | --- | --- | --- | --- |
 | multi-session | 15 | 0.467 | **0.867** |
 | temporal-reasoning | 16 | 0.750 | 0.750 |
@@ -372,20 +281,17 @@ The total is not the result. Split by question type it is:
 | single-session-preference | 4 | 1.000 | 1.000 |
 
 Four channels, rank fusion and a cross-encoder beat a plain lexical baseline on
-one of the six question types. On four of the others BM25 already scores
-perfectly, so those rows measure the benchmark and not any system. On the
-sixth the two are not merely close: across all sixteen temporal-reasoning
-questions they reach the same verdict question for question and fail on the
-same four. Nothing in the stack bought anything there.
-
-The win is real where it is real. multi-session is the type whose evidence is
-spread over several sessions with no single one matching the question well, and
-there this is forty points of recall@5 above lexical retrieval — with no
-question anywhere in the set where it scores below BM25.
+**one** of the six types. Four of the others are already perfect for BM25, so
+those rows measure the benchmark and not any system; on the sixth the two agree
+question for question and fail on the same four. The win is real where it is
+real: multi-session is the type whose evidence is spread across sessions with
+no single one matching the question well, and there this is forty points of
+recall@5 above lexical retrieval, with no question anywhere in the set where it
+scores below BM25.
 
 Three things this is not. It is not evidence about temporal reasoning: the
 haystack was loaded as one memory per turn, so no topic ever had a second
-version and the validity columns were never populated — the ledger this project
+version and the validity columns were never populated — the ledger Påmin Memory
 is built around was not in the measurement at all, and the retrieval that was
 measured performs exactly as a lexical baseline does. It is not comparable to
 the retrieval tables in the LongMemEval paper, which are computed on
@@ -396,68 +302,35 @@ would be near one by construction.
 Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
 all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
 
-**Against the other memory systems.** LOCOMO, ten conversations and 5,882
-turns, 199 questions drawn stratified and answered by every arm. One model
-reads the retrieved passages and one judges the answer, the same model for
-everyone; every arm embeds with the same BGE-M3 file, through one endpoint that
-counts what each of them asks for. A comparison where the arms use different
-models measures the models.
+**Against the other memory systems.** The head-to-head table is at the top of
+this README, under [Where This Differs](#where-this-differs); the arms, what is
+held fixed, how each condition is asserted, and the full per-category tables
+are in [docs/benchmarks.md](docs/benchmarks.md). Three things about it belong
+here rather than there:
 
-| LOCOMO, 199 questions | passages | accuracy | write: model calls | write: cost |
-| --- | --- | --- | --- | --- |
-| BM25, no memory system | 10 | 0.427 | 0 | $0 |
-| this project | 10 | 0.518 | **0** | **$0** |
-| mem0 | 10 | 0.538 | 272 | $27.77 |
-| MemPalace | 10 | 0.558 | 20 | $0.38 – $1.15 |
-| mem0 | 30 | 0.583 | 272 | $27.77 |
-| MemPalace | 30 | 0.623 | 20 | $0.38 – $1.15 |
-| this project, `--limit 30` | 30 | **0.628** | **0** | **$0** |
+**It is a tie, and reporting it as a win would be wrong.** At thirty passages
+the three systems are 0.628, 0.623 and 0.583, and paired McNemar separates no
+pair of them — p = 0.289, 1.000 and 0.396. Being first by five thousandths is
+not being ahead.
 
-mem0's two rows share one ingest, so its write bill is paid once for both.
-MemPalace's rows are two separate ingests of the same conversations, which cost
-$1.15 and $0.38 — the same twenty calls, priced differently by prompt caching,
-which is why its cell is a range and not a figure.
+**There is a floor under those comparisons, and it is worth more than they
+are.** Running mem0 twice at the same settings on the same data gives 0.603 and
+0.598 — but **41 of the 199 questions change answer between the two runs**. A
+distillation performed by a model is not the same twice. Påmin Memory has no
+such floor on the write side, because there is no model there: its thirty-passage
+row reads a store the ten-passage row built, byte for byte.
 
-**On accuracy this is a tie, and reporting it as a win would be wrong.** At
-thirty passages the three systems are 0.628, 0.623 and 0.583, and paired
-McNemar separates no pair of them — p = 0.289, 1.000 and 0.396. At ten
-passages, likewise. Being first by five thousandths is not being ahead.
+**One of the two categories where a gap appears is withdrawn rather than
+claimed.** Påmin Memory and MemPalace lead **adversarial** questions, and 74% of
+that category asks about the wrong speaker while the answer key rewards
+replying with the other speaker's content. mem0 answers "no record of that",
+which for the question as asked is better, and is marked wrong for it. Scoring
+high there means ignoring who said what, which is a defect in a memory product.
 
-There is a floor under those comparisons, and it is worth more than they are.
-Running mem0 twice at the same settings on the same data gives 0.603 and 0.598
-— but **41 of the 199 questions change answer between the two runs**. A
-distillation performed by a model is not the same twice. This project has no
-such floor on the write side, because there is no model there: the `--limit 30`
-row above reads a store the `--limit 10` row built, byte for byte.
-
-Two question types clear that floor and only one of them is a real difference
-between the systems. **mem0 leads temporal questions by about twenty points**,
-0.735 against 0.529, reproducibly. This project and MemPalace lead
-**adversarial** questions by about the same — and that one is withdrawn rather
-than claimed: 74% of that category asks about the wrong speaker, and the answer
-key rewards replying with the other speaker's content. mem0 answers "no record
-of that", which for the question as asked is the better answer, and is marked
-wrong for it. Scoring high there means ignoring who said what, which is a
-defect in a memory product. The totals tie because the two cancel; only one of
-the two is worth anything.
-
-**The difference is on the bill.** This project puts ten conversations in with
-no model calls, no cost and no external service, in 356 seconds; mem0 takes 272
-calls, $27.77 and 4,121 seconds, and 6,335 embedding requests to an endpoint it
-does not host. What mem0 buys with that is a smaller prompt afterwards — about
-1,017 tokens a question against 1,511 here, since it hands back rewritten facts
-rather than passages. So one side pays once and the other pays forever, and
-they cross at roughly **1,900 questions asked of a single conversation's
-memory**. At LOCOMO's own density of twenty questions, the totals are $0.09
-against $2.84.
-
-Two findings here are negative and stay on the page: the version ledger this
-project is built around bought nothing on this benchmark (p = 1.00), and a
-prediction written down before re-running mem0 with its full retriever — that
-its figures would rise — was wrong. The arms, what is held fixed and how each
-condition is asserted are in [benchmarks/](benchmarks); the full tables,
-including two conditions that were measured wrongly the first time and what
-they invalidated, are in [docs/benchmarks.md](docs/benchmarks.md).
+Two findings on that page are negative and stay there: the version ledger this
+project is built around bought nothing on LOCOMO (p = 1.00), and a prediction
+written down before re-running mem0 with its full retriever — that its figures
+would rise — was wrong.
 
 **Superseded facts**, on LongMemEval's 70 knowledge-update questions that have
 a replaced value to get wrong, scored three ways rather than two — the value
@@ -481,28 +354,18 @@ queries, reported as the median of them:
 | MIRACL Swahili dev, 131,924 documents | 142 ms | 472 ms | 1675 ms |
 
 Seventeen to nineteen of those milliseconds are the invocation rather than the
-search: `pamin --help` against the same workspace costs that much. It is
-measured separately rather than subtracted, because a caller pays it either
-way.
+search — `pamin --help` against the same workspace costs that much — and it is
+measured rather than subtracted, because a caller pays it either way. A write
+is 32 ms, most of it the `fsync` a durable append owes; that figure comes from
+the ADR's write-path measurement and was not re-taken here.
 
-A write is 32 ms, most of it the `fsync` a durable append owes. That figure is
-from the write-path measurement in the ADR and was not re-taken in this sweep.
-
-Measured on 4 vCPU (Intel Xeon @ 2.80GHz, no SMT), 15 GB RAM, Ubuntu 24.04,
-rustc 1.98.1, release build, embeddings on CPU through ONNX Runtime. The
-queries in each cell are disjoint from every other cell's, because a repeated
-query is answered from a cache in microseconds and would be reported here as
-search latency.
-
-`--rerank accurate` scores higher than the default on every corpus measured and
-its pass costs about four and a half times `fast`'s; `fast` is the default on
-that latency difference alone, which is a judgement rather than a result.
-
-Two things these numbers are not. Four cores is where the embedding model and
-the reranker contend, so a machine with cores to spare will not look like this
-— published figures for a reranker of this size are a few milliseconds per
-candidate against the ten measured here. And the write figure is for short
-memories: a forward pass scales with length, so longer content costs more.
+Measured on 4 vCPU (Intel Xeon @ 2.80 GHz, no SMT), 15 GB RAM, release build,
+embeddings on CPU through ONNX Runtime, with every cell's queries disjoint from
+every other's so that no figure is a cache hit. `accurate` scores higher on
+every corpus measured and costs about four and a half times `fast`; `fast` is
+the default on that difference alone, which is a judgement and not a result.
+Four cores is where the embedding model and the reranker contend, so a machine
+with cores to spare will not look like this.
 
 **Throughput, and where it stops.** The same sweep at one, eight and
 thirty-two concurrent callers, `fast` being the default:
@@ -516,12 +379,11 @@ thirty-two concurrent callers, `fast` being the default:
 | | `fast` | 2.0 q/s | 2.4 | 2.4 | **~2.4 q/s** |
 | | `accurate` | 0.6 q/s | 0.6 | 0.6 | **~0.6 q/s** |
 
-Read it as a ceiling rather than a score. Four cores saturate at eight
-concurrent callers and the rest is queueing: on the default tier, thirty-two
-callers get *less* throughput than eight (4.2 against 4.7) and wait twenty-one
-times longer than one does — p50 goes from 251 ms to 5.4 s. Nothing here
-scales by adding callers. Adding cores is the lever; this measurement does not
-say by how much.
+Read it as a ceiling, not a score. Four cores saturate at eight concurrent
+callers and the rest is queueing: at thirty-two the default tier gets *less*
+throughput than at eight (4.2 against 4.7) and waits twenty-one times longer —
+p50 from 251 ms to 5.4 s. Nothing here scales by adding callers; adding cores
+is the lever, and this measurement does not say by how much.
 
 **What a server holds.** Resident memory after all three tiers have run, which
 is when the embedding model and both rerankers are loaded at once:
