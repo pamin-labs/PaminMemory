@@ -74,7 +74,7 @@ PostgreSQL is bundled rather than brought by the user. `pamin init` provisions a
 - It appears only in `pamin-index`, behind the `Projection` trait; `zvec` types must not reach `pamin-core`. Both halves are checked rather than reviewed: the trait is what `pamin-engine` holds, and `ci/budget.py` fails the build if the engine becomes reachable from a crate outside `pamin-index`, `pamin-engine`, and `pamin-cli`.
 - The index is fully rebuildable from PostgreSQL, and `pamin reindex` is delivered and tested alongside it. A breaking upgrade is therefore a reindex, not a migration.
 
-LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer coverage available, but its Rust crate is pre-1.0 and pulls roughly sixty direct dependencies including Arrow and DataFusion, which is exactly the build cost this project is trying to avoid. Qdrant Edge runs in-process with on-device BM25, but its API is documented as beta.
+LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer coverage available, but its Rust crate is pre-1.0 and pulls roughly sixty direct dependencies including Arrow and DataFusion, which is exactly the build cost Påmin Memory is trying to avoid. Qdrant Edge runs in-process with on-device BM25, but its API is documented as beta.
 
 ### Fusion stays in our layer
 
@@ -86,7 +86,7 @@ Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in o
 
 `k = 10`, not the customary 60, and the two lexical channels carry a quarter weight each. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights their agreement with each other is counted as two votes against the vector and graph channels' one each.
 
-The weight was swept across both evaluation corpora — the one written for this project and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
+The weight was swept across both evaluation corpora — the one written for Påmin Memory and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
 
 The ideal weight is not the same for every query — near zero when a query and its answer are in different languages, and a half when they are not. One constant serves both by compromise, and making it a function of the query was tried.
 
@@ -100,9 +100,9 @@ The signal was the lexical channels themselves. They match on shared tokens, so 
 | 0.25 | 0.00 | 0.7181 | 0.9821 | 0.5759 | 0.7895 |
 | 0.50 | 0.00 | 0.6444 | 0.9708 | 0.4649 | 0.8145 |
 
-No setting clears the bar the reranker had to clear — cross-lingual up, same-language not down. The one cell that clears it on this project's corpus, `0.25 / 0.50`, buys 0.0011 there, which on 137 queries is one of them, and on XQuAD-R the same setting costs 0.0033 of same-language for 0.0028 of cross-lingual. It fails in two separate ways, and both are worth recording.
+No setting clears the bar the reranker had to clear — cross-lingual up, same-language not down. The one cell that clears it on Påmin Memory's corpus, `0.25 / 0.50`, buys 0.0011 there, which on 137 queries is one of them, and on XQuAD-R the same setting costs 0.0033 of same-language for 0.0028 of cross-lingual. It fails in two separate ways, and both are worth recording.
 
-**Cross-language lexical hits are not noise.** If they were, removing them could only help the cross-lingual group; on this project's corpus it falls, 0.7223 to 0.7181. What a query shares with an answer in another language is proper nouns, numbers and borrowed technical terms — which is signal, and the only lexical signal that crosses a language boundary at all.
+**Cross-language lexical hits are not noise.** If they were, removing them could only help the cross-lingual group; on Påmin Memory's corpus it falls, 0.7223 to 0.7181. What a query shares with an answer in another language is proper nouns, numbers and borrowed technical terms — which is signal, and the only lexical signal that crosses a language boundary at all.
 
 **A query's language cannot be read off its own lexical hits.** Same-language ranking falls at every setting on XQuAD-R, and it should not move at all if the rule only ever fired across a boundary. That corpus isolates the cause: every sentence in it carries the dataset's own language label, so the candidate side is ground truth and the inference is the only thing left to be wrong. It is wrong often enough to cost more than the rule buys, and it is worst exactly where the rule was aimed — eleven parallel translations of one passage give the ten wrong languages ten chances to outweigh the right one.
 
@@ -168,7 +168,7 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 | Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On, by default** |
 | Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off, until the binding exposes rotation** |
 
-Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on this project's evaluation corpus against the full-precision 0.6720.
+Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720.
 
 Stored vectors are float32. The original reasoning was about cost and benefit — a workspace of low millions of vectors makes the compression worth little, and the deterministic reranker has no cross-encoder to recover the accuracy it costs. At the scale this store now targets that reasoning would have expired, so the trade was measured rather than assumed.
 
@@ -188,7 +188,7 @@ What it does change is when the disk-resident path stops being optional. Serving
 
 ### Segment size is the whole vector-maintenance policy
 
-A vector index needs a rule for when to build a graph, and the obvious form of that rule is a threshold: build once some number of documents are unindexed. This project shipped one — a hundred thousand — and it never fired, because a project reaching a hundred thousand unindexed documents is not the case that needs the graph. A threshold is a constant asked to be right at every size.
+A vector index needs a rule for when to build a graph, and the obvious form of that rule is a threshold: build once some number of documents are unindexed. Påmin Memory shipped one — a hundred thousand — and it never fired, because a project reaching a hundred thousand unindexed documents is not the case that needs the graph. A threshold is a constant asked to be right at every size.
 
 The engine makes one number do the job instead. Documents land in the segment being written and are searched by scanning it; the segment seals at a configured size, and only a sealed segment gets a graph. So the size decides both what a query scans and what a build costs, and there is no separate question of when to build — the answer is "whenever a segment sealed without one".
 
@@ -218,13 +218,13 @@ The embedding model is a profile, not a constant:
 
 BGE-M3 is the default, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
 
-`multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and the one this project ships reorders only the candidates the lexical channels missed. It is not there to rescue a weaker embedding across the board, and cannot be relied on to. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
+`multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and the one Påmin Memory ships reorders only the candidates the lexical channels missed. It is not there to rescue a weaker embedding across the board, and cannot be relied on to. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
 
 ### A cross-encoder reranker, once the opportunity was real
 
-An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on this project's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
+An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on Påmin Memory's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
 
 On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between rank 10 and rank 50, across 1,088 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
 
@@ -297,7 +297,7 @@ The published answers to this latency all change the architecture instead, and b
 | Precomputed document layers (PreTTR, arXiv 2004.14255) | ~6x on this shape: twelve layers over a ten-token query and a hundred-token memory is 1320 layer-tokens; caching the memory's first eleven layers makes it 220. 151 ms becomes roughly 25. Storage is hot set x tokens x width: 384 MB for ten thousand memories | An export split into two halves. It is an export-time job, not runtime graph surgery — `ort` selects only among declared graph outputs and no ONNX graph-editing crate is in the tree | A split export of `mmarco-mMiniLMv2` exists **and** the score cache's hit rate shows the hot set is actually small, which is the same evidence that decides whether it is worth its storage |
 | Late interaction (ColBERT) | Moves the cost to write time, where the cascade already runs a forward pass per memory; query time becomes MaxSim. At 64–128 dimensions int8 that is 6.4–12.8 KB a memory, the same order as the vector index | No usable model. `colbert-xm` is MIT and multilingual but has no ONNX export; the exports that exist are English-only; the multilingual one with an export is CC-BY-NC-4.0. BGE-M3's own ColBERT head is 1024-dimensional, 100 KB a memory int8, ten times the whole index | An ONNX export of `colbert-xm` exists and measures competitively cross-lingual |
 
-Both routes rest on premises this project has not measured — that the hot set is small, that write-time cost is cheap — and the triggers are written to test the premise before the work.
+Both routes rest on premises Påmin Memory has not measured — that the hot set is small, that write-time cost is cheap — and the triggers are written to test the premise before the work.
 
 Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path both tiers take.
 
@@ -343,7 +343,7 @@ The trigger is therefore two-part, and the second part is the one that matters:
 Compaction is already outside this lock, on the strength of #614, which did ship
 in 0.7.0: Optimize is a brief exclusive seal, a long phase holding no schema
 lock, and a brief exclusive commit. That is the one part of the engine's
-concurrency this project relies on today.
+concurrency Påmin Memory relies on today.
 
 **And on four cores the lock is not what is stopping concurrent search anyway.**
 That was measured before planning anything around it, because the cost of the
