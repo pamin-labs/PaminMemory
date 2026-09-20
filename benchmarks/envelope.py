@@ -93,7 +93,7 @@ Conditions of the run this file's table was taken under:
 
 `pamin` prints compact JSON, so its envelope and its compact floor are the
 same number; the other two are dicts, and a caller that serialises them
-tightly saves 6 to 8 per cent. Every number here is bare passage text against
+tightly saves 8 to 9 per cent. Every number here is bare passage text against
 the whole response. The reader-wrapped prompt the cost table publishes is a
 little more -- 610, 394 and 2,128 on these eight questions -- and lines up
 with that table's 557, ~384 and 1,756, which were medians over ten
