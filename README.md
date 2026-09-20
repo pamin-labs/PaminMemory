@@ -98,11 +98,11 @@ model on its write path.
 | same corpus written twice | **byte-identical** | LLM on the write path by default | 41 of 199 answers change |
 | prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
 
-Two of the headline figures need a sentence each. **Retrieval at 28 ms against
-90 ms is real and mostly invisible**: a model reading those passages takes
-about five seconds and does not care whether it was handed five hundred tokens
-or five thousand, so end to end the three are indistinguishable and retrieval
-is about one per cent of the wait. Where it counts is a memory system feeding
+Two of the headline figures need a sentence each. **Retrieval at 25.7 ms
+against 85.3 ms is real and mostly invisible**: a model reading those passages
+takes about five and a half seconds and does not care whether it was handed
+five hundred tokens or five thousand, so end to end the three are
+indistinguishable and retrieval is one per cent of the wait or less. Where it counts is a memory system feeding
 an agent's own context, adding its latency to a call that was happening anyway.
 **Ingest at 356 s against 4,121 s is the one nothing hides** — an hour of
 difference is an hour.
@@ -363,8 +363,9 @@ sweep.
 Measured on 4 vCPU (Intel Xeon @ 2.80 GHz, no SMT), 15 GB RAM, release build,
 embeddings on CPU through ONNX Runtime, with every cell's queries disjoint from
 every other's so that no figure is a cache hit. `accurate` scores higher on
-every corpus measured and costs about four and a half times `fast`; `fast` is
-the default on that difference alone, which is a judgement and not a result.
+every corpus measured and costs 3.5 to 4.9 times `fast` on the two corpora in
+that table; `fast` is the default on that difference alone, which is a
+judgement and not a result.
 Four cores is where the embedding model and the reranker contend, so a machine
 with cores to spare will not look like this.
 
