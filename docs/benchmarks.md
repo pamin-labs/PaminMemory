@@ -641,6 +641,13 @@ so these ratios are not the ratio to the reader-wrapped column above; on the
 same eight questions that column reads 610, 394 and 2,128, in line with the
 557, ~384 and 1,756 there, which are medians over ten conversations.
 
+Every column is a median taken independently, the ratio included, so dividing
+one median by another does not reproduce it: `pamin`'s ratio is the median of
+eight per-query ratios, 2.43, where 1,316 over 532 is 2.47. The per-query ratio
+is the one reported because it is the quantity a caller experiences on a query,
+and the last column is derived from it rather than from the two medians beside
+it.
+
 So between 55% and 81% of what a caller pays to read one of these answers is
 not the memory. Two caveats travel with that. `pamin` already prints compact
 JSON while the other two are objects the caller serialises — compacting those
