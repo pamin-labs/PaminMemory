@@ -1,6 +1,6 @@
 # Benchmarking against the field
 
-How to produce a number that someone outside this project recognises, and why
+How to produce a number that someone outside Påmin Memory recognises, and why
 the obvious comparison does not work.
 
 Everything below was gathered from primary sources in September 2026. Each
@@ -89,7 +89,7 @@ Five reasons, any one of which is disqualifying:
    what it removes is not an abstention test and not a hardness test; it is a
    test of whether a system will answer about the wrong person.
 
-So: we cannot say this project beats mem0, and we cannot say it loses. The
+So: we cannot say Påmin Memory beats mem0, and we cannot say it loses. The
 quantities do not overlap. What is sayable is architectural — no LLM on the
 write path, none at query time, local-first — plus one observation: **nobody in
 this category publishes a retrieval-quality number that can be checked**, and
@@ -129,7 +129,7 @@ writing:
 
 **LongMemEval has a retrieval-only stage**, scored with Recall@k and NDCG@k by
 `print_retrieval_metrics.py`, with no LLM anywhere. That is the same metric
-family this project already reports.
+family Påmin Memory already reports.
 
 Reference points to compare against, from the LongMemEval paper (Stella V5
 1.5B, K=V+fact):
@@ -177,7 +177,7 @@ The dollar cost is not the reason to decline. The reason is that the resulting
 number would depend on which reader model was picked, would be graded by an
 instrument with a documented 63% false-accept rate against an answer key that is
 6.4% wrong, and would require instructing the model never to say "I don't know"
-— which is the opposite of what this project is for.
+— which is the opposite of what Påmin Memory is for.
 
 **A supersession test built out of LongMemEval's `knowledge-update` category.**
 This one was designed and then abandoned on its own premise check, which is
@@ -225,8 +225,8 @@ building a corpus:
   generator of templated supersession timelines first and abandoned it --
   "synthetic templated supersession is therefore saturated" -- and moved to
   real conversational data where the updates are implicit and paraphrased. A
-  corpus this project generated for its own ledger would land in the same
-  place, and would additionally be a corpus this project designed.
+  corpus Påmin Memory generated for its own ledger would land in the same
+  place, and would additionally be a corpus Påmin Memory designed.
 - **The gap it measures is the one the ledger claims.** Replacing an agent's
   full context with a bounded self-maintained memory drops knowledge-update
   accuracy from 92% to 77% on a frontier model. That is the failure a version
@@ -234,7 +234,7 @@ building a corpus:
   wrote.
 
 [MemStrata][memstrata] is the other prior art to read before running anything:
-same thesis as this project's ledger, stated more strongly -- a deterministic
+same thesis as Påmin Memory's ledger, stated more strongly -- a deterministic
 `(subject, relation, object)` supersession rule that "retrieval-augmented
 generation cannot match by construction" -- evaluated on four evolving-knowledge
 sets of 20 to 30 scenarios each, with a **marker-free invariant** worth copying:
@@ -328,7 +328,7 @@ date as prose is 2,657, six per cent cheaper to ask.
 
 ## Reference points on MIRACL, and the traps around them
 
-This project reports nDCG@10 on MIRACL's Swahili dev split, so the numbers a
+Påmin Memory reports nDCG@10 on MIRACL's Swahili dev split, so the numbers a
 reader will reach for to interpret it are collected here, each traced to a
 primary source. Every figure below is over the same 131,924-passage corpus and
 the same `miracl-v1.0-sw` dev qrels, verified rather than assumed: the corpus
@@ -362,12 +362,12 @@ Four things that will bite anyone quoting these:
   documents per query from three retrievers — a pooled subset, not 131,924
   passages. Confirm the variant before using the number.
 
-And one ceiling that applies to every row including this project's: MIRACL's
+And one ceiling that applies to every row including Påmin Memory's: MIRACL's
 judgements come from pooling a 2022 ensemble's top ten. Anything relevant that
 no pooled system surfaced counts as a miss for every system scored afterwards.
 It does not break comparisons between the rows; it caps all of them together.
 
-**What is not established**: the quality cost of the int8 export this project
+**What is not established**: the quality cost of the int8 export Påmin Memory
 runs against the fp32 weights the published figure used. No measurement of that
 delta was found, and it is the single experiment that would explain part of the
 gap rather than gesturing at it.
@@ -379,7 +379,7 @@ answering the same questions with the same Sonnet and embedding with the same
 BGE-M3 ONNX file. The harness is in [benchmarks/](../benchmarks); the
 conditions it holds fixed, and how each is asserted, are in its README.
 
-Three of the arms are this project at different settings, because the first
+Three of the arms are Påmin Memory at different settings, because the first
 question about any gain is whether it came from the thing you changed:
 
 - **`pamin`** — `pamin import` and `pamin search` at the default `--limit 10`.
@@ -481,7 +481,7 @@ ten questions is inside it whoever produces it. That accident is the most useful
 pair on this page, and the rule from it is to run one arm twice before comparing
 two.
 
-This project has no such floor on the write side: there is no model there, so
+Påmin Memory has no such floor on the write side: there is no model there, so
 `pamin-wide` reads a store that `pamin` built, byte for byte. That is a property
 of reproducibility, not of accuracy, but it is the reason only one side of this
 comparison has to be run twice to be believed.
@@ -514,7 +514,7 @@ it is a configuration change.
 33 to 24 against mem0 (p = 0.289), 31 to 30 against MemPalace (p = 1.000), and
 MemPalace against mem0 38 to 30 (p = 0.396). At ten passages: MemPalace 0.558,
 mem0 0.538, `pamin` 0.518, and again nothing separates. Fifty-odd questions
-disagree in each pair and the nets are inside the floor above. This project is
+disagree in each pair and the nets are inside the floor above. Påmin Memory is
 numerically first at thirty passages, which is not the same as being ahead and
 is not reported as one.
 
@@ -539,10 +539,10 @@ Two splits are wide enough to clear the floor, and both reproduce across mem0's
 two independent runs, which is what makes them worth stating at all.
 
 **Temporal is mem0's**, by about twenty points at either shortlist: 0.706 and
-0.735 against this project's best of 0.529. It scored 0.676 and 0.765 in the
+0.735 against Påmin Memory's best of 0.529. It scored 0.676 and 0.765 in the
 earlier pair too, so this is not the churn.
 
-**Adversarial goes to this project and MemPalace, 0.429 against mem0's 0.143
+**Adversarial goes to Påmin Memory and MemPalace, 0.429 against mem0's 0.143
 and 0.190 — and it should not be counted as a win.** Seventy-four per cent of
 that category asks about the wrong speaker, as set out at the top of this page,
 and the answer key rewards replying with the other speaker's content anyway.
@@ -558,17 +558,17 @@ is that mem0 answers "no record of that" and is marked wrong for it. mem0
 distils facts against a `user_id` and filters by it, so a question about
 Melanie does not reach Caroline's memories. That is the behaviour a memory
 product should have. Returning raw turns and letting the reader answer from
-whichever one matched is the behaviour this project has, and here it scores
+whichever one matched is the behaviour Påmin Memory has, and here it scores
 higher.
 
 The nine questions that name the right speaker are the ones that would have
 said something, and nine is too few to say it. So this category is reported and
-then set aside: it is not evidence for this project, and the earlier reading of
+then set aside: it is not evidence for Påmin Memory, and the earlier reading of
 it — that losing it is what distilling a conversation costs — is withdrawn.
 
 That leaves one split that survives scrutiny, and it is mem0's. The totals tie
 because temporal and adversarial cancel — but only one of those two is a real
-difference between the systems, and it is not this project's.
+difference between the systems, and it is not Påmin Memory's.
 
 Nine open-domain questions is too few to say anything, and it is listed only so
 the column is not quietly dropped.
@@ -606,6 +606,16 @@ paid that bill twice.
 | mem0 | 30 | 4,224 | **~1,017** |
 | MemPalace | 30 | 22,350 | 5,133 |
 
+Prompt tokens here are the **passage contents**, wrapped in this harness's
+reader template — the same template for every arm, so the column is a ratio
+between what each system hands back and not a bill anyone actually pays. A real
+caller pipes its memory system's output into a context window, envelope and
+all, and every one of these has an envelope: for `pamin search --json` that is
+1,255 tokens for ten hits against the 557 of contents alone, [measured after
+the JSON was trimmed](../benchmarks/payload.py). The other two arms' envelopes
+have not been measured, so this table deliberately compares the one thing that
+can be compared the same way for all four.
+
 Context bytes are measured. Prompt tokens are counted with `cl100k_base` — not
 the model's own tokenizer, so absolute figures are approximate, and every arm is
 counted the same way because what this needs is the ratio. The four marked `~`
@@ -613,7 +623,7 @@ are not counted at all: they are derived from the measured bytes at mem0's own
 ratio of 4.46 bytes per token, and `pamin-ledger`'s from `pamin`'s.
 
 Latency is deliberately absent from that table. The accuracy run records a
-`recall_seconds`, and it is not a comparison: it timed this project through
+`recall_seconds`, and it is not a comparison: it timed Påmin Memory through
 `su ubuntu -c "pamin ... search ..."` — two process spawns and a socket round
 trip — and timed mem0 as an in-process library call, while ten arms, an
 embedding endpoint and a PostgreSQL cluster shared four cores. It reported
@@ -628,15 +638,15 @@ not in the number. Same 199 questions, same corpus.
 
 | retrieval call | p50 @10 | p50 @30 | p95 @30 |
 | --- | --- | --- | --- |
-| this project, socket round trip | **29 ms** | **28 ms** | 46 ms |
+| Påmin Memory, socket round trip | **29 ms** | **28 ms** | 46 ms |
 | MemPalace, `search_memories` | 41 ms | 63 ms | 84 ms |
 | mem0, `search` | 94 ms | 90 ms | 114 ms |
-| this project, one CLI invocation | 43 ms | 42 ms | 61 ms |
-| this project, that CLI behind `su` — *what the accuracy run timed* | 48 ms | 48 ms | 66 ms |
+| Påmin Memory, one CLI invocation | 43 ms | 42 ms | 61 ms |
+| Påmin Memory, that CLI behind `su` — *what the accuracy run timed* | 48 ms | 48 ms | 66 ms |
 | *of which* mem0's embedding HTTP call | *20 ms* | *20 ms* | *22 ms* |
 
 Two of the three figures the accuracy run produced were wrong, and in opposite
-directions. It reported 170 ms here and 830 ms for MemPalace: this project was
+directions. It reported 170 ms here and 830 ms for MemPalace: Påmin Memory was
 timed behind a `su` and a CLI process, MemPalace behind a Python interpreter
 starting and a package importing per query. Correcting both narrows this
 project's lead over MemPalace from twenty-eight fold to 1.4. `su` is 5 ms of
@@ -644,7 +654,7 @@ the original figure and the process spawn 13; the rest was contention and cold
 indexes.
 
 One property does survive the correction and is worth naming: widening from
-ten passages to thirty costs this project nothing measurable (29 to 28 ms)
+ten passages to thirty costs Påmin Memory nothing measurable (29 to 28 ms)
 where it costs MemPalace half as much again (41 to 63 ms).
 
 ### But retrieval is not what a caller waits for
@@ -672,7 +682,7 @@ sixty-millisecond difference is not something a user experiences:
 
 | arm, thirty passages | retrieval | reader | total | retrieval's share |
 | --- | --- | --- | --- | --- |
-| this project | 28 ms | ~5.2 s | ~5.2 s | 0.5% |
+| Påmin Memory | 28 ms | ~5.2 s | ~5.2 s | 0.5% |
 | MemPalace | 63 ms | ~4.9 s | ~5.0 s | 1.3% |
 | mem0 | 90 ms | ~5.3 s | ~5.4 s | 1.7% |
 
@@ -710,7 +720,7 @@ about $19 of marginal cost — and Sonnet's list input price:
 | ten passages each | 3,600 – 5,400 questions per conversation |
 
 An earlier version of this section put the crossing at about 750 questions. That
-figure compared this project's thirty passages against mem0's twenty, which was
+figure compared Påmin Memory's thirty passages against mem0's twenty, which was
 the shortlist bug, and so charged this side for context the other was not
 carrying.
 
@@ -726,7 +736,7 @@ is on.
 
 MemPalace's default refines entities with a model; `init --no-llm`, the mode
 its 96.6% is measured in, does not. That makes the second one the only
-third-party arm here with the same architectural commitment as this project --
+third-party arm here with the same architectural commitment as Påmin Memory --
 nothing on the write path decides what a conversation means -- and the only
 thing that can say whether the 20 calls the default spends buy anything.
 
@@ -745,15 +755,15 @@ ahead by 17 to 13, p = 0.58. Neither separates, the two modes embed the same
 1,668 texts and hand the reader the same number of tokens, and turning the
 model off makes ingest two and a half times faster and free.
 
-**And it is bad news for one of this project's claims.** With its model off,
+**And it is bad news for one of Påmin Memory's claims.** With its model off,
 MemPalace is the like-for-like peer, and it ties:
 
-| same shortlist | this project | MemPalace `--no-llm` | discordant | p |
+| same shortlist | Påmin Memory | MemPalace `--no-llm` | discordant | p |
 | --- | --- | --- | --- | --- |
 | ten passages | 0.520 | **0.571** | 25 / 35 | 0.245 |
 | thirty passages | **0.631** | 0.606 | 32 / 27 | 0.603 |
 
-**What this does and does not take away from this project.** It shows that an
+**What this does and does not take away from Påmin Memory.** It shows that an
 LLM-free write path is not unique: MemPalace has one too, and at equal
 shortlists it reaches equal accuracy with it. It does not show that the
 property is unremarkable. Of the seven systems in the table at the top of this
@@ -762,10 +772,10 @@ Memobase, Cognee, Supermemory, and MemPalace itself. The seventh, Letta, is a
 framework over plain files and grep rather than a store with retrieval
 channels.
 
-And the difference between MemPalace and this project on that axis is the
+And the difference between MemPalace and Påmin Memory on that axis is the
 difference between a flag and an architecture. MemPalace's LLM-free mode is
 `init --no-llm`; install it and follow its quickstart and you get the model,
-20 calls and $1.15 for ten conversations. This project has no model on the
+20 calls and $1.15 for ten conversations. Påmin Memory has no model on the
 write path in any mode, so there is no configuration in which it costs
 anything to ingest and none in which two ingests of the same corpus disagree.
 
@@ -798,7 +808,7 @@ stratified from LongMemEval-S's 500, a proportional sample of the same six
 types; 35 of them carry more than one gold session, which is why the two
 metrics differ at all.
 
-| session retrieval, no model anywhere | BM25 | this project |
+| session retrieval, no model anywhere | BM25 | Påmin Memory |
 | --- | --- | --- |
 | `recall_any@5` — **the published metric** | **0.9661** | 0.9831 |
 | `recall_any@10` | 0.9831 | 1.0000 |
@@ -815,7 +825,7 @@ What separates them is the strict metric, where the question is whether *all*
 the evidence was found: 0.7966 against 0.8983, ten points. Split by type, the
 loose metric is at a ceiling everywhere except one:
 
-| `recall_any@5` | n | BM25 | this project |
+| `recall_any@5` | n | BM25 | Påmin Memory |
 | --- | --- | --- | --- |
 | knowledge-update | 9 | 1.000 | 1.000 |
 | multi-session | 15 | 1.000 | 1.000 |
@@ -871,7 +881,7 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   third nobody has looked for, and the way to find one is to read its
   documentation rather than its behaviour.
 - **Nothing about a third system with no model on its write path.** MemPalace
-  answers that question for itself, below, and answers it against this project
+  answers that question for itself, below, and answers it against Påmin Memory
   too. Nothing else here does.
 - **Nothing about any difference smaller than the noise floor.** Forty-one of
   199 questions moved between two identical mem0 runs. Anything at that scale
@@ -893,7 +903,7 @@ methodology. When refreshing it:
 - Check whether an audit has appeared since. The audits are more informative
   than the claims.
 - Do not add a number to the README from this page. The README carries figures
-  this project measured itself; these are other people's claims about other
+  Påmin Memory measured itself; these are other people's claims about other
   people's software, and they belong behind this explanation of why they do not
   line up.
 
