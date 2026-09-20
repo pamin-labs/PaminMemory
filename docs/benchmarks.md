@@ -734,6 +734,16 @@ One property does survive the correction and is worth naming: widening from
 ten passages to thirty costs Påmin Memory nothing measurable (29 to 28 ms)
 where it costs MemPalace half as much again (41 to 63 ms).
 
+**This is the one table on this page with no committed artifact behind it.**
+The harness printed its rows and wrote none, so the figures went from a
+terminal into this document and cannot be rechecked against anything. They are
+kept because they were measured and nothing suggests they are wrong, and
+flagged because "measured" and "checkable" are not the same claim and this page
+is built on the difference. `latency.py` now takes `--out` and appends a row
+per arm, like every other harness here; the table is replaced by a run that
+leaves one behind. The same is true of the reader curve below and the
+end-to-end table derived from it.
+
 ### But retrieval is not what a caller waits for
 
 Retrieval latency answers the wrong question on its own. What an agent waits
