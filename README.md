@@ -29,9 +29,9 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
-| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **25.7 ms** |
-| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 49.6 ms |
-| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 85.3 ms |
+| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **26.1 ms** |
+| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 79.7 ms |
+| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 105.6 ms |
 
 No pair of those accuracies separates statistically. That is the claim, and it
 is deliberately a tie: **parity with the systems this category is named after,
@@ -94,15 +94,30 @@ model on its write path.
 
 | | Påmin Memory | MemPalace | mem0 |
 | --- | --- | --- | --- |
-| embedding requests to a service you must run | **0**, in-process | 1,668 | 6,335 |
+| texts embedded to ingest ten conversations | 5,882 | **1,668** | 6,335 |
+| of those, requests to a separate process | **0**, in-process | 1,668 | 6,335 |
 | same corpus written twice | **byte-identical** | LLM on the write path by default | 41 of 199 answers change |
 | prompt tokens handed back, thirty passages | 1,511 | 5,133 | **~1,017** |
 
-Two of the headline figures need a sentence each. **Retrieval at 25.7 ms
-against 85.3 ms is real and mostly invisible**: a model reading those passages
-takes about five and a half seconds and does not care whether it was handed
-five hundred tokens or five thousand, so end to end the three are
-indistinguishable and retrieval is one per cent of the wait or less. Where it counts is a memory system feeding
+Those first two rows used to be one row reading "embedding requests to a
+service you must run: 0". Both halves of that were wrong. **Påmin Memory does
+not embed nothing** — it embeds every turn it stores, 5,882 of them, more than
+MemPalace and about as many as mem0, because the other two distil first and it
+does not. And **the service is not one you must run**: all three can point at a
+local embedder, which is exactly what this benchmark does — the same BGE-M3,
+through the same endpoint, for all three. So the cost of these embeddings is
+CPU in every case, and what the second row measures is not a bill but where the
+embedder lives: inside the process that holds the index, or across a socket.
+
+Two of the headline figures need a sentence each. **Retrieval at 26.1 ms
+against 105.6 ms is real and mostly invisible**: a model reading those passages
+takes about six seconds and does not care whether it was handed five hundred
+tokens or five thousand, so end to end the three are indistinguishable and
+retrieval is under two per cent of the wait. A quarter of the other two arms'
+figures is an embedding call over HTTP that this harness serves, and that call
+moved 70% between two runs two hours apart, so read the gap as architecture
+rather than as a stopwatch reading —
+[docs/benchmarks.md](docs/benchmarks.md) has both halves. Where it counts is a memory system feeding
 an agent's own context, adding its latency to a call that was happening anyway.
 **Ingest at 356 s against 4,121 s is the one nothing hides** — an hour of
 difference is an hour.
@@ -219,94 +234,28 @@ Edges are versioned the way memories are. Changing one closes the old version an
 
 ## Measured
 
-Every figure below comes from `pamin search` and `pamin write` themselves, not
-from the model or the index underneath them, because the gap between those two
-is where Påmin Memory's numbers have been wrong before.
+Every figure comes from `pamin search` and `pamin write` themselves rather than
+from the model or the index underneath them, on four cores. **The numbers and
+the conditions they were taken under are in
+[docs/measured.md](docs/measured.md)**; the comparison against other memory
+systems, and what it holds fixed, is in
+[docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
+under [benchmarks/results/](benchmarks/results).
 
-**Retrieval quality**, at the shipped defaults, median of three runs:
-
-| corpus | group | nDCG@10 | recall@50 |
-| --- | --- | --- | --- |
-| MIRACL Swahili dev — 131,924 real passages, 482 queries, 5,092 human judgements | one language throughout | 0.7359 | 0.9494 |
-| XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6097 | 0.8864 |
-| XQuAD-R | query and answer in the same language | 0.7971 | 0.9630 |
-
-Both corpora are fetched rather than vendored, and the harness that drives them
-is in the repository: `cargo test -p pamin-engine --test crosslingual -- --ignored`.
-
-**What those MIRACL figures are worth, against published results on the same
-corpus, the same dev split and the same qrels:**
-
-| MIRACL Swahili dev, 131,924 passages | nDCG@10 | what it is |
+| | | measured on |
 | --- | --- | --- |
-| Pyserini BM25 baseline | 0.3826 | lexical only |
-| Påmin Memory, `--rerank off` | 0.7158 | four channels fused |
-| Påmin Memory, `fast` (default) | **0.7359** | fused, then a cross-encoder |
-| Påmin Memory, `accurate` | 0.7654 | fused, then a larger cross-encoder |
-| BGE-M3, published | 0.787 | dense retrieval alone |
+| retrieval, one language | nDCG@10 **0.7359** | MIRACL Swahili dev, 131,924 passages |
+| retrieval, query and answer in different languages | nDCG@10 0.6097 | XQuAD-R, 13,014 sentences |
+| one `pamin search` over a socket | **26.1 ms** | LOCOMO, `fast` reranking |
+| one `pamin search` as a whole CLI invocation | 251 ms | XQuAD-R, `fast` reranking |
+| one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
+| resident, one project | 2,088 MB | model and index inside the server |
 
-Read the last row carefully, because it is the honest reading: **a whole
-retrieval stack here scores below a single dense retriever** — the same model,
-as an int8 export. Two differences are known and neither is measured: the
-published figure is fp32, and MIRACL's training split is in BGE-M3's
-fine-tuning data where this runs zero-shot. Neither excuses the gap; they are
-where to look for it. What the table does establish is the distance from the
-lexical baseline a memory system would otherwise ship with, on a low-resource
-language, on four CPU cores with no GPU anywhere.
+Latency is a corpus and a tier before it is a number, which is why every row
+above names both and why the matrix is on the other page.
 
-Sources: [Pyserini MIRACL v1.0 regressions](https://github.com/castorini/pyserini/blob/master/docs/experiments-miracl-v1.0.md)
-and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later). The
-0.7359 was re-run and reproduced exactly before being placed here.
-
-**Retrieval on a memory benchmark.** LongMemEval-S, 59 of its 500 questions
-drawn stratified by type, scored at the session level against a plain BM25 over
-the same turns — because a retrieval number without a lexical baseline says
-nothing about retrieval. Method and definitions in
-[docs/benchmarks.md](docs/benchmarks.md):
-
-| LongMemEval-S, session level, 59 questions | BM25 | Påmin Memory |
-| --- | --- | --- |
-| recall_all@5 | 0.7966 | 0.8983 |
-| ndcg_any@10 | 0.8898 | 0.9202 |
-
-The total is not the result. Split by question type it is:
-
-| recall_all@5, by question type | n | BM25 | Påmin Memory |
-| --- | --- | --- | --- |
-| multi-session | 15 | 0.467 | **0.867** |
-| temporal-reasoning | 16 | 0.750 | 0.750 |
-| knowledge-update | 9 | 1.000 | 1.000 |
-| single-session-user | 8 | 1.000 | 1.000 |
-| single-session-assistant | 7 | 1.000 | 1.000 |
-| single-session-preference | 4 | 1.000 | 1.000 |
-
-Four channels, rank fusion and a cross-encoder beat a plain lexical baseline on
-**one** of the six types. Four of the others are already perfect for BM25, so
-those rows measure the benchmark and not any system; on the sixth the two agree
-question for question and fail on the same four. The win is real where it is
-real: multi-session is the type whose evidence is spread across sessions with
-no single one matching the question well, and there this is forty points of
-recall@5 above lexical retrieval, with no question anywhere in the set where it
-scores below BM25.
-
-Three things this is not. It is not evidence about temporal reasoning: the
-haystack was loaded as one memory per turn, so no topic ever had a second
-version and the validity columns were never populated — the ledger Påmin Memory
-is built around was not in the measurement at all, and the retrieval that was
-measured performs exactly as a lexical baseline does. It is not comparable to
-the retrieval tables in the LongMemEval paper, which are computed on
-LongMemEval-M, where each haystack holds roughly ten times as many sessions.
-And recall@50 is omitted because the haystack holds about fifty sessions, so it
-would be near one by construction.
-
-Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
-all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
-
-**Against the other memory systems.** The head-to-head table is at the top of
-this README, under [Where This Differs](#where-this-differs); the arms, what is
-held fixed, how each condition is asserted, and the full per-category tables
-are in [docs/benchmarks.md](docs/benchmarks.md). Three things about it belong
-here rather than there:
+Three findings belong in the summary rather than only in the detail, because
+each of them cuts against this project:
 
 **It is a tie, and reporting it as a win would be wrong.** At thirty passages
 the three systems are 0.628, 0.623 and 0.583, and paired McNemar separates no
@@ -317,8 +266,8 @@ not being ahead.
 are.** Running mem0 twice at the same settings on the same data gives 0.603 and
 0.598 — but **41 of the 199 questions change answer between the two runs**. A
 distillation performed by a model is not the same twice. Påmin Memory has no
-such floor on the write side, because there is no model there: its thirty-passage
-row reads a store the ten-passage row built, byte for byte.
+such floor on the write side, because there is no model there: its
+thirty-passage row reads a store the ten-passage row built, byte for byte.
 
 **One of the two categories where a gap appears is withdrawn rather than
 claimed.** Påmin Memory and MemPalace lead **adversarial** questions, and 74% of
@@ -327,88 +276,17 @@ replying with the other speaker's content. mem0 answers "no record of that",
 which for the question as asked is better, and is marked wrong for it. Scoring
 high there means ignoring who said what, which is a defect in a memory product.
 
-Two findings on that page are negative and stay there: the version ledger this
-project is built around bought nothing on LOCOMO (p = 1.00), and a prediction
-written down before re-running mem0 with its full retriever — that its figures
-would rise — was wrong.
-
-**Superseded facts**, on LongMemEval's 70 knowledge-update questions that have
-a replaced value to get wrong, scored three ways rather than two — the value
-that holds, the value it replaced, or neither. Answering with a fact you were
-told had stopped being true is a different failure from answering with nothing,
-and accuracy alone cannot tell them apart. The ledger cuts that failure from
-28.6% to 10.0% (p = 0.0005), and writing the interval without showing it to the
-reader changes nothing at all (p = 1.00) — the timeline has to reach the
-caller, which is why `pamin search` reports it. What it does not do is beat
-writing the date into the passage text, a free alternative that needs no
-columns: 0.900 against 0.814 is p = 0.0703, and that stays on the page too.
-
-**Latency**, what one `pamin search` costs against a warm resident server at
-the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
-exec, connect to the socket, and back — run serially over forty distinct
-queries, reported as the median of them:
-
-| corpus | `--rerank off` | `fast` (default) | `accurate` |
-| --- | --- | --- | --- |
-| XQuAD-R, 13,014 documents | 77 ms | 251 ms | 1241 ms |
-| MIRACL Swahili dev, 131,924 documents | 142 ms | 472 ms | 1675 ms |
-
-Seventeen to nineteen of those milliseconds are the invocation rather than the
-search — `pamin --help` against the same workspace costs that much — and it is
-measured rather than subtracted, because a caller pays it either way. A write
-is 30.1 ms, most of it the `fsync` a durable append owes — measured over 2,400
-memories and published in [docs/cli.md](docs/cli.md), not re-taken in this
-sweep.
-
-Measured on 4 vCPU (Intel Xeon @ 2.80 GHz, no SMT), 15 GB RAM, release build,
-embeddings on CPU through ONNX Runtime, with every cell's queries disjoint from
-every other's so that no figure is a cache hit. `accurate` scores higher on
-every corpus measured and costs 3.5 to 4.9 times `fast` on the two corpora in
-that table; `fast` is the default on that difference alone, which is a
-judgement and not a result.
-Four cores is where the embedding model and the reranker contend, so a machine
-with cores to spare will not look like this.
-
-**Throughput, and where it stops.** The same sweep at one, eight and
-thirty-two concurrent callers, `fast` being the default:
-
-| corpus | tier | 1 | 8 | 32 | ceiling |
-| --- | --- | --- | --- | --- | --- |
-| XQuAD-R, 13,014 | `off` | 13.1 q/s | 19.5 | 20.7 | **~21 q/s** |
-| | `fast` | 3.5 q/s | 4.7 | 4.2 | **~4.7 q/s at eight** |
-| | `accurate` | 0.8 q/s | 0.9 | 1.0 | **~1 q/s** |
-| MIRACL, 131,924 | `off` | 6.5 q/s | 10.3 | 10.6 | **~11 q/s** |
-| | `fast` | 2.0 q/s | 2.4 | 2.4 | **~2.4 q/s** |
-| | `accurate` | 0.6 q/s | 0.6 | 0.6 | **~0.6 q/s** |
-
-Read it as a ceiling, not a score. Four cores saturate at eight concurrent
-callers and the rest is queueing: at thirty-two the default tier gets *less*
-throughput than at eight (4.2 against 4.7) and waits twenty-one times longer —
-p50 from 251 ms to 5.4 s. Nothing here scales by adding callers; adding cores
-is the lever, and this measurement does not say by how much.
-
-**What a server holds.** Resident memory after all three tiers have run, which
-is when the embedding model and both rerankers are loaded at once:
-
-| corpus | server RSS | index on disk | workspace |
-| --- | --- | --- | --- |
-| XQuAD-R, 13,014 documents | 3.6 GB | 119 MB | 2.1 GB |
-| MIRACL, 131,924 documents | 7.2 GB | 1.1 GB | 2.2 GB |
-
-Seven gigabytes for a hundred and thirty thousand documents is the number to
-plan around, and it is why two workspaces do not fit on a sixteen-gigabyte
-machine at this corpus size. A workspace that never asks for `accurate` never
-loads the 570 MB reranker; `--rerank off` never loads either.
+Two more are negative and stay published. The version ledger this project is
+built around bought nothing on LOCOMO (p = 1.00). Where it does win — cutting
+answers-with-a-superseded-fact from 28.6% to 10.0% on LongMemEval's
+knowledge-update questions, p = 0.0005 — it is **not established to beat
+writing the date into the passage text**, a free alternative that needs no
+columns: 0.900 against 0.814 is p = 0.0703, and re-running it with five reads a
+question returned the same p.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
-untested — and the descriptor count is the first thing that would break: this
-index is 2,111 segment files and a search holds 2,733 descriptors open, which
-already exceeds the 1,024 a Linux process is given by default.
-
-What was measured, how, and the conclusions that reversed on measurement are in
-[docs/adr/0001-tech-selection.md](docs/adr/0001-tech-selection.md), which is the
-source of truth if it and this page ever disagree.
+untested.
 
 ## Scope
 

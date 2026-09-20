@@ -139,6 +139,30 @@ exists for exactly that query, and the product looked like it still scaled with
 the project. What scaled was the harness. A setup that skips the normal path
 has to restore what the normal path would have left behind.
 
+## A harness that cannot produce a published figure is not the source of it
+
+The latency table had six rows and the harness had four arms. Two of them --
+the CLI behind `su`, and the embedding call inside it -- had been measured some
+other way and could not be reproduced from the repository at all. Nobody
+noticed, because a table does not say which of its rows its own harness can
+make.
+
+That is the same gap as a run that saves nothing, one level up, and it showed
+up in the same week as two more of its family: a table whose rows went from a
+terminal into a document with no artifact behind them, and two published
+figures held by no committed summary -- one of them sitting in a raw file the
+summariser already opened for a different purpose.
+
+So the rule has three parts, and the third is the one that gets skipped:
+
+1. every published figure comes from a harness in this repository,
+2. that harness writes its rows to a file, and
+3. **every row of the published table is one the harness can produce.**
+
+The check is mechanical and takes a minute. Put the published table beside the
+harness's arm list and the committed summary, and make the three agree. A row
+that only one of them knows about is a row nobody can re-run.
+
 ## Where a harness lives
 
 Two kinds, two homes, and the rule is about what the harness asserts:
@@ -183,7 +207,16 @@ will compile it and may fail the `-D warnings` gate on scratch code.
 - **Do not touch git while a background harness runs.** `git add -A` picks up
   whatever it is holding.
 - **Three runs, take the median.** If the spread exceeds about 10%, add rounds
-  rather than picking a number.
+  rather than picking a number. This rule is cheap to write down and easy to
+  skip, and skipping it is how the latency table came to be published from one
+  run. Re-run a day later on a quieter machine, every row moved -- between
+  -24% and +1%, in both directions, and by more than some of the differences
+  the table reported. The row containing no product code at all, one embedding
+  call to a local endpoint, moved the most. A figure from a single run is a
+  point estimate with no spread attached, and **the cheapest way to learn its
+  spread is to run the harness again rather than to run it more carefully.**
+  Neither re-run this taught the lesson on changed a conclusion; both changed
+  how tightly one could be stated.
 - **Check for shared state between configurations.** The cache-eviction bug was
   configuration *N* poisoning configuration *N+1*.
 - **Write the prediction down before you look.** Predictions in this repository
@@ -393,7 +426,7 @@ It was not one: Påmin Memory was timed through `su ubuntu -c "pamin ... search
 in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
 cluster shared four cores. It read 170 ms against 106 and the obvious
 conclusion was the opposite of the truth. Timed at the boundary each system's
-callers actually use, with nothing else running, it is 25.7 ms against 95.3. A
+callers actually use, with nothing else running, it is 26.1 ms against 105.6. A
 latency number needs its own harness, because the three things it depends on --
 the layer, warmth and quiet -- are exactly the three an accuracy run cannot
 hold still. And warm every unit before timing anything, not the first one: an
@@ -417,6 +450,27 @@ described wrongly twice in this repository before it was described wrongly in
 its favour. So: open the items, follow the evidence field, and ask what
 behaviour a high score is actually rewarding. If the answer is a behaviour you
 would call a bug in a bug report, the score is not a result.
+
+**A claim about a competitor may be a claim about your own harness.** Three of
+this page's statements about other systems turned out to be statements about
+the code driving them. "mem0 clears its vector store before each conversation"
+was `arms.Mem0.ingest` calling `shutil.rmtree`, for a reason of its own -- so
+that `store_mb` is one conversation's bytes -- and the cost, that only the last
+conversation survives a run, was published as mem0's behaviour and left one
+latency row at twenty questions where every other was 199. "Embedding requests
+to a service you must run: 0" was the shim's HTTP counter under a heading that
+said texts embedded; measured properly this project embeds 5,882 of them,
+more than MemPalace. And mem0 logs `Error parsing extraction response` and
+carries on, which the harness never looked at, so a thinner store would have
+been timed without anyone knowing.
+
+The general form: **when a harness drives someone else's system, every choice
+it makes about how to drive it can end up published as a property of them.**
+The check is one question per comparative claim -- *is this in their code or in
+ours?* -- and the answer is a file and a line. A claim you cannot point at a
+line for has not been checked. This is a different failure from not giving the
+other side a fair configuration, which is the rule above: here the
+configuration is fair and it is being described as theirs.
 
 **Cost is half the claim.** A project whose pitch is "less" cannot check that
 pitch with an accuracy table. Measure what each arm spends: calls to a model

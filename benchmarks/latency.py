@@ -162,14 +162,26 @@ class Embedding:
 
 
 class Mem0:
-    """mem0's own library call, which is the boundary its users call."""
+    """mem0's own library call, which is the boundary its users call.
+
+    One client, switching collection per query, because a local qdrant allows
+    exactly one client per storage folder -- ten clients over one directory is
+    a `RuntimeError`, not ten clients. `collection_name` is a plain attribute
+    its search reads, so this is the same call mem0 would make itself.
+
+    Until `BENCH_MEM0_KEEP` existed the accuracy harness emptied that folder
+    before each ingest, so only the last conversation survived a run and this
+    arm could be timed over one conversation's twenty questions where every
+    other arm had 199.
+    """
 
     name = "mem0 (in-process)"
 
-    def __init__(self, collection):
+    def __init__(self, collections):
         os.environ["OPENAI_API_KEY"] = "shim-serves-no-key-needed"
         os.environ["OPENAI_BASE_URL"] = SHIM
         from mem0 import Memory
+        self.collections = sorted(collections)
         self.memory = Memory.from_config({
             "llm": {"provider": "openai", "config": {"model": "sonnet"}},
             "embedder": {"provider": "openai",
@@ -178,13 +190,28 @@ class Mem0:
                              "config": {"path": f"{WORK}/mem0-qdrant",
                                         "embedding_model_dims": 1024,
                                         "on_disk": True,
-                                        "collection_name": collection}},
+                                        "collection_name": self.collections[0]}},
         })
+        present = {c.name for c in
+                   self.memory.vector_store.client.get_collections().collections}
+        missing = [c for c in self.collections if c not in present]
+        if missing:
+            raise SystemExit(
+                f"these mem0 collections are not in the store: {missing}. "
+                "Ingest with BENCH_MEM0_KEEP=1 to keep all of them.")
 
     def search(self, project, query, limit):
+        self.memory.vector_store.collection_name = project.replace("-", "_")
         found = self.memory.search(query, filters={"user_id": project},
                                    top_k=limit)
         results = found.get("results", found) if isinstance(found, dict) else found
+        # The premise, per query: a collection that was never ingested answers
+        # with an empty list very quickly, which is the cheapest possible
+        # latency and the least honest one.
+        if not results:
+            raise RuntimeError(
+                f"mem0 returned nothing for {project}; that collection is "
+                "empty, so this would be timing the cost of searching nothing")
         return results
 
 
@@ -365,9 +392,10 @@ def main():
                              "run leaves no evidence behind")
     parser.add_argument("--arms", default="pamin-socket,pamin-cli")
     parser.add_argument("--mem0-collection", default="",
-                        help="a surviving mem0 collection, e.g. conv_50; mem0 "
-                             "clears its store per conversation, so only the "
-                             "last one ingested can be re-timed")
+                        help="time mem0 over this one collection, e.g. "
+                             "conv_50. Without it the arm takes every "
+                             "conversation, which needs a store ingested "
+                             "under BENCH_MEM0_KEEP=1")
     args = parser.parse_args()
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -379,7 +407,7 @@ def main():
         project = "locomor1" + "".join(c for c in cid.lower() if c.isalnum())[:26]
         for _qid, qa, _reference in locomo.questions(entry, per_unit=20):
             work.append((project, qa["question"]))
-            if args.mem0_collection and \
+            if not args.mem0_collection or \
                     args.mem0_collection == cid.replace("-", "_"):
                 mem0_work.append((cid, qa["question"]))
 
@@ -402,9 +430,10 @@ def main():
                               for p, q in work], args.limit)
     if "mem0" in wanted:
         if not mem0_work:
-            raise SystemExit("--mem0-collection must name a surviving "
-                             "collection for the mem0 arm")
-        measure(Mem0(args.mem0_collection), mem0_work, args.limit)
+            raise SystemExit("--mem0-collection names no conversation in this "
+                             "dataset, so the mem0 arm has nothing to time")
+        measure(Mem0({c.replace("-", "_") for c, _ in mem0_work}),
+                mem0_work, args.limit)
 
     if args.out:
         import run as run_module

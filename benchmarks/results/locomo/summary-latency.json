@@ -13,92 +13,92 @@
     {
       "file": "lat/latency.jsonl",
       "rows": 16,
-      "mtime_utc": "2026-09-20T10:21:31Z"
+      "mtime_utc": "2026-09-20T12:39:50Z"
     }
   ],
   "retrieval": {
     "pamin (socket)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 25.7,
-        "p95_ms": 42.3,
+        "p50_ms": 26.2,
+        "p95_ms": 43.6,
         "mean_ms": 27.1
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 25.7,
-        "p95_ms": 39.8,
-        "mean_ms": 26.5
+        "p50_ms": 26.1,
+        "p95_ms": 42.8,
+        "mean_ms": 27.3
       }
     },
     "pamin (CLI)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 37.1,
-        "p95_ms": 52.8,
-        "mean_ms": 38.2
+        "p50_ms": 38.0,
+        "p95_ms": 55.3,
+        "mean_ms": 38.3
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 40.3,
-        "p95_ms": 59.4,
-        "mean_ms": 41.3
+        "p50_ms": 37.2,
+        "p95_ms": 52.2,
+        "mean_ms": 37.6
       }
     },
     "pamin (CLI behind su)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 41.8,
-        "p95_ms": 58.6,
-        "mean_ms": 42.7
+        "p50_ms": 42.7,
+        "p95_ms": 59.6,
+        "mean_ms": 43.7
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 41.9,
-        "p95_ms": 57.9,
-        "mean_ms": 42.6
+        "p50_ms": 41.8,
+        "p95_ms": 59.5,
+        "mean_ms": 42.8
       }
     },
     "of which, one embedding HTTP call": {
       "at_10": {
         "n": 199,
-        "p50_ms": 15.2,
-        "p95_ms": 18.4,
-        "mean_ms": 15.4
+        "p50_ms": 25.8,
+        "p95_ms": 55.0,
+        "mean_ms": 29.6
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 14.5,
-        "p95_ms": 18.8,
-        "mean_ms": 14.9
+        "p50_ms": 26.4,
+        "p95_ms": 45.6,
+        "mean_ms": 28.6
       }
     },
     "mempalace (in-process)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 39.5,
-        "p95_ms": 68.2,
-        "mean_ms": 43.5
+        "p50_ms": 75.4,
+        "p95_ms": 105.8,
+        "mean_ms": 75.4
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 49.6,
-        "p95_ms": 74.1,
-        "mean_ms": 53.2
+        "p50_ms": 79.7,
+        "p95_ms": 110.0,
+        "mean_ms": 79.5
       }
     },
     "mem0 (in-process)": {
       "at_10": {
-        "n": 20,
-        "p50_ms": 95.3,
-        "p95_ms": 131.4,
-        "mean_ms": 92.7
+        "n": 199,
+        "p50_ms": 103.4,
+        "p95_ms": 152.1,
+        "mean_ms": 105.7
       },
       "at_30": {
-        "n": 20,
-        "p50_ms": 85.3,
-        "p95_ms": 116.8,
-        "mean_ms": 82.4
+        "n": 199,
+        "p50_ms": 105.6,
+        "p95_ms": 155.9,
+        "mean_ms": 107.1
       }
     }
   },
@@ -106,36 +106,37 @@
     {
       "prompt_tokens": 541,
       "calls": 12,
-      "median_seconds": 6.17,
-      "min_seconds": 5.54,
-      "max_seconds": 167.36
+      "median_seconds": 6.57,
+      "min_seconds": 5.01,
+      "max_seconds": 8.83
     },
     {
       "prompt_tokens": 1001,
       "calls": 12,
-      "median_seconds": 5.99,
-      "min_seconds": 4.89,
-      "max_seconds": 7.07
+      "median_seconds": 5.61,
+      "min_seconds": 4.99,
+      "max_seconds": 6.57
     },
     {
       "prompt_tokens": 1495,
       "calls": 12,
-      "median_seconds": 5.2,
-      "min_seconds": 4.89,
-      "max_seconds": 6.3
+      "median_seconds": 6.3,
+      "min_seconds": 5.56,
+      "max_seconds": 6.58
     },
     {
       "prompt_tokens": 5117,
       "calls": 12,
-      "median_seconds": 5.57,
-      "min_seconds": 4.92,
-      "max_seconds": 6.86
+      "median_seconds": 6.15,
+      "min_seconds": 5.24,
+      "max_seconds": 7.38
     }
   ],
   "notes": [
-    "`mem0 (in-process)` is 20 questions where every other arm is 199. mem0 clears its vector store before each conversation, so only the last one ingested can be re-timed, and its row is one conversation's questions. The previously published table had the same limitation and did not say so.",
+    "Every arm is 199 questions. mem0's row used to be 20: not because mem0 clears its store per conversation, which is what the page said, but because this harness emptied the qdrant directory before each ingest so that `store_mb` would be one conversation's bytes. `BENCH_MEM0_KEEP=1` keeps all ten.",
     "`of which, one embedding HTTP call` is not a memory system. It is one call to the shared endpoint, which mem0 and MemPalace pay inside every search and this project does not, because it holds the model in the process that holds the index. It is the floor under the two arms that call out.",
-    "Read the ordering and the ratios, not the milliseconds. Against the run this replaces, every row moved between -24% and +1%, in both directions and by more than some of the differences the table reports. Two reasons are known and neither is code: the store was rebuilt for this run, so its index has a different segment count, and the row with no product code in it at all -- the embedding call -- moved the most.",
-    "The reader curve is 12 calls a size to a hosted model. One call at the smallest size took 167 s, which is the provider's queue and not the context length; it is why the median is what the page quotes and the maximum is recorded here rather than there."
+    "What is stable here and what is not, measured rather than guessed. Against a run two hours earlier on the same box, the three arms that do not embed over HTTP moved 2%: socket 25.7 to 26.2, CLI 37.1 to 38.0, su 41.8 to 42.7. The embedding call moved 70%, 15.2 to 25.8, with no product code in it at all, and MemPalace -- which pays that call inside its own search -- moved 91%, 39.5 to 75.4. So this project's own path reproduces to a few per cent and the gap between it and the two arms that embed over HTTP does not: a quarter of MemPalace's figure and a quarter of mem0's is an endpoint this harness runs, whose latency varied by 70% in two hours. Read the embedding row as part of theirs.",
+    "`--rerank fast` on the socket arm, which is the shipped default. The server was warm: a first pass on a freshly started server measured 123.4 ms against a repeat of 25.8, the harness's own drift guard caught it, and the run was taken again rather than the faster half of it being kept.",
+    "The reader curve is 12 calls a size to a hosted model, and the median is what the page quotes because the tail belongs to the provider's queue rather than to the context length -- an earlier run of the same four sizes had one call take 167 s. The minimum and maximum are recorded here so that tail is visible without being published as a property of context length."
   ]
 }
