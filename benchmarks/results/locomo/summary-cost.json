@@ -60,6 +60,7 @@
       "embedded_texts": 0,
       "cost_usd": 0.0,
       "cost_usd_cost_run": 0.0,
+      "llm_calls_cost_run": 0,
       "store_mb": 0,
       "units_ingested_more_than_once": 0
     },
@@ -71,6 +72,7 @@
       "embedded_texts": 0,
       "cost_usd": 0.0,
       "cost_usd_cost_run": 0.0,
+      "llm_calls_cost_run": 0,
       "store_mb": 156,
       "units_ingested_more_than_once": 0
     },
@@ -82,6 +84,7 @@
       "embedded_texts": 0,
       "cost_usd": 0.0,
       "cost_usd_cost_run": null,
+      "llm_calls_cost_run": null,
       "store_mb": 370,
       "units_ingested_more_than_once": 0
     },
@@ -93,6 +96,7 @@
       "embedded_texts": 6335,
       "cost_usd": 27.769,
       "cost_usd_cost_run": null,
+      "llm_calls_cost_run": null,
       "store_mb": 5,
       "units_ingested_more_than_once": 0
     },
@@ -104,6 +108,7 @@
       "embedded_texts": 1668,
       "cost_usd": null,
       "cost_usd_cost_run": 1.1533,
+      "llm_calls_cost_run": 21,
       "store_mb": 0,
       "units_ingested_more_than_once": 7
     },
@@ -115,6 +120,7 @@
       "embedded_texts": 6335,
       "cost_usd": 27.769,
       "cost_usd_cost_run": null,
+      "llm_calls_cost_run": null,
       "store_mb": 5,
       "units_ingested_more_than_once": 0
     },
@@ -126,6 +132,7 @@
       "embedded_texts": 1668,
       "cost_usd": null,
       "cost_usd_cost_run": 0.3797,
+      "llm_calls_cost_run": 20,
       "store_mb": 0,
       "units_ingested_more_than_once": 5
     },
@@ -137,6 +144,7 @@
       "embedded_texts": 0,
       "cost_usd": 0.0,
       "cost_usd_cost_run": 0.0,
+      "llm_calls_cost_run": 0,
       "store_mb": -2,
       "units_ingested_more_than_once": 0
     }

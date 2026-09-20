@@ -21,6 +21,13 @@ benchmarks/
   run.py             pick a dataset, pick arms, run
   summarise.py       raw rows in, the committed summaries out
   results/           one directory per dataset; only summaries are committed
+
+  latency.py            query latency at the same layer on every arm, and what
+                        the reader costs against how much context it is handed
+  envelope.py           what a caller pays for a whole response, not its contents
+  power.py              the supersession question again, five reads a question
+  payload.py            whether trimming the JSON costs the reader any accuracy
+  longmemeval_recall.py the BM25 baseline, re-ranked rather than stored
 ```
 
 Adding a benchmark is adding a loader. It is deliberately not a directory per
@@ -147,10 +154,12 @@ results/
   locomo/
     summary-accuracy.json          judged accuracy, by question type, McNemar
     summary-cost.json              write side, query side, resident and disk
+    summary-latency.json           retrieval per arm per shortlist, and the reader
     summary-mempalace-no-llm.json  MemPalace's published mode against its default
   longmemeval/
-    summary-session-retrieval.json  recall@k, no reader and no judge
-    summary-supersession.json       current, stale or neither, over 70 questions
+    summary-session-retrieval.json   recall@k, no reader and no judge
+    summary-supersession.json        current, stale or neither, over 70 questions
+    summary-supersession-power.json  the same 70, read five times each
 ```
 
 Regenerate them from a run's raw rows with:

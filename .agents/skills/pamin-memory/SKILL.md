@@ -151,9 +151,9 @@ that two topics really are related the way it claims.
 
 | | cost | when |
 | --- | --- | --- |
-| `off` | 39 ms | Every memory is in one language — the pass is nearly free of benefit there |
-| `fast` (default) | 204 ms | Mixed languages, ordinary latency budget |
-| `accurate` | 508 ms | Mixed languages, and half a second a search is affordable |
+| `off` | 53 ms | Every memory is in one language — the pass is nearly free of benefit there |
+| `fast` (default) | 264 ms | Mixed languages, ordinary latency budget |
+| `accurate` | 1001 ms | Mixed languages, and a second a search is affordable |
 
 `accurate` scores better than `fast` on every corpus measured; `fast` is the
 default purely on latency. Only candidates that no lexical channel found are

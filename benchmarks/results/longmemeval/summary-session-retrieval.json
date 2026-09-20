@@ -36,6 +36,11 @@
       "note": "every gold session in the top five",
       "bm25": 0.7966,
       "pamin": 0.8983
+    },
+    "ndcg_any@10": {
+      "note": "recorded by the original run, not rebuilt",
+      "bm25": 0.8898,
+      "pamin": 0.9202
     }
   },
   "recall_any@5_by_type": {

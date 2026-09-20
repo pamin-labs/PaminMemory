@@ -610,7 +610,7 @@ class MemPalaceRaw(MemPalace):
     Its headline is "96.6% R@5 raw -- zero API calls", and raw is real. It is
     not the default: since 3.10.0 the CLI deprecates `--llm` because
     "LLM-assisted entity refinement is now ON by default", and the default arm
-    measured 20 model calls and $1.15 to ingest ten conversations.
+    measured 20 model calls and about a dollar to ingest ten conversations.
 
     That makes this the arm with the same architectural commitment as this
     project -- nothing on the write path decides what a conversation means --
