@@ -2,10 +2,10 @@
 name: pamin-dev
 metadata:
   internal: true
-description: How to measure and how to keep claims true when working on PaminMemory itself. Use this skill whenever you are about to benchmark something, quote a latency or an accuracy figure, tune or justify a constant, add or change an evaluation harness, or write a number into a README, ADR, code comment or PR description. Also use it before opening a PR that touches docs, and whenever you notice documentation that might describe behaviour the code has since changed. Reach for it on phrases like measure, benchmark, how fast is, how much better, tune, sweep, is it worth it, or regression — and when a repository claim and the code appear to disagree.
+description: How to measure and how to keep claims true when working on Påmin Memory itself. Use this skill whenever you are about to benchmark something, quote a latency or an accuracy figure, tune or justify a constant, add or change an evaluation harness, or write a number into a README, ADR, code comment or PR description. Also use it before opening a PR that touches docs, and whenever you notice documentation that might describe behaviour the code has since changed. Reach for it on phrases like measure, benchmark, how fast is, how much better, tune, sweep, is it worth it, or regression — and when a repository claim and the code appear to disagree.
 ---
 
-# Measuring PaminMemory, and keeping its claims true
+# Measuring Påmin Memory, and keeping its claims true
 
 This repository has been wrong about its own numbers more than once, and each
 time the mistake was the same shape: a number was measured somewhere other than
@@ -350,7 +350,7 @@ along with what it holds fixed and how each of those is asserted. Nine rules
 come out of building it, and each cost a run to learn.
 
 **Open the other side's budget before claiming a win.** Raising `--limit` from
-ten to thirty moved this project's LOCOMO accuracy by eleven points — a real
+ten to thirty moved Påmin Memory's LOCOMO accuracy by eleven points — a real
 and significant gain, and for a while it read as beating mem0. It was not, and
 the reason is that only one arm had been widened. Any knob you turn for your
 own arm, turn for theirs, and report what happened when you did.
@@ -388,7 +388,7 @@ instructions install, and have the arm refuse to run when one is missing.
 
 **Time the same layer on both sides, or do not report time.** The accuracy run
 recorded a `recall_seconds` per question and it looked like a latency column.
-It was not one: this project was timed through `su ubuntu -c "pamin ... search
+It was not one: Påmin Memory was timed through `su ubuntu -c "pamin ... search
 ..."` -- two process spawns and a socket round trip -- and mem0 as an
 in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
 cluster shared four cores. It read 170 ms against 106 and the obvious
@@ -402,7 +402,7 @@ arm first, and reported it at three times the CLI it is faster than. Run each
 arm again last; two passes that disagree mean the order is in the number.
 
 **A category you win is the one to read the items of.** LOCOMO's adversarial
-split went to this project and MemPalace, 0.429 against mem0's 0.190, and it
+split went to Påmin Memory and MemPalace, 0.429 against mem0's 0.190, and it
 was written up twice as a property worth having before anyone followed a
 question to the turn its own `evidence` field names. Doing that: 332 of the 446
 attribute to one speaker something the *other* speaker said, and the key gives
@@ -411,7 +411,7 @@ from?" is keyed to Sweden; the evidence is Caroline saying "my grandma in my
 home country, Sweden". The category rewards ignoring attribution. mem0 answers
 "no record of that" and is marked wrong for the better answer.
 
-The lesson is not about LOCOMO. A split where this project leads is the one
+The lesson is not about LOCOMO. A split where Påmin Memory leads is the one
 where the temptation to stop reading is strongest, and this category was
 described wrongly twice in this repository before it was described wrongly in
 its favour. So: open the items, follow the evidence field, and ask what
