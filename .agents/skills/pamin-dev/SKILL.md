@@ -393,7 +393,7 @@ It was not one: Påmin Memory was timed through `su ubuntu -c "pamin ... search
 in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
 cluster shared four cores. It read 170 ms against 106 and the obvious
 conclusion was the opposite of the truth. Timed at the boundary each system's
-callers actually use, with nothing else running, it is 29 ms against 94. A
+callers actually use, with nothing else running, it is 25.7 ms against 95.3. A
 latency number needs its own harness, because the three things it depends on --
 the layer, warmth and quiet -- are exactly the three an accuracy run cannot
 hold still. And warm every unit before timing anything, not the first one: an
