@@ -19,6 +19,12 @@ pub enum IndexError {
     GrainMismatch { indexed: String, expected: String },
 
     #[error(
+        "this index stores its vectors as {indexed} and this build expects {requested}; \
+         run `pamin reindex` to rebuild it"
+    )]
+    VectorStorageMismatch { indexed: String, requested: String },
+
+    #[error(
         "this workspace has an index from before projects were separated; \
          run `pamin reindex` to rebuild it per project"
     )]
