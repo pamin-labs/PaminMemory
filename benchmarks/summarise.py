@@ -704,20 +704,42 @@ def latency(raw, rows):
     retrieval is not a difference anyone experiences if the reader takes five
     seconds either way, and reporting the first without the second is how this
     page used to overstate what retrieval latency buys.
+
+    Every cell is the median over rounds rather than one run's number. The
+    previous table was a single sitting, and that sitting was taken beside a
+    shell of this harness's own spin-looping on one of four cores -- which
+    cost the arms that embed over HTTP roughly double and cost this project's
+    own arm nothing, so the error was invisible in the row most likely to be
+    checked. Rounds are what makes that visible: the spread is published.
     """
-    retrieval, reader = {}, []
+    retrieval, reader, skipped = {}, {}, []
     for row in rows:
-        if row["arm"].startswith("reader, "):
-            reader.append({"prompt_tokens": row["prompt_tokens"],
-                           "calls": row["n"],
-                           "median_seconds": round(row["p50_ms"] / 1000, 2),
-                           "min_seconds": round(row["min_ms"] / 1000, 2),
-                           "max_seconds": round(row["max_ms"] / 1000, 2)})
+        if row["arm"].startswith("  "):   # a drift warning, not an arm
             continue
-        arm = retrieval.setdefault(row["arm"], {})
-        arm[f"at_{row['limit']}"] = {"n": row["n"], "p50_ms": row["p50_ms"],
-                                     "p95_ms": row["p95_ms"],
-                                     "mean_ms": row["mean_ms"]}
+        if row["arm"].startswith("reader, "):
+            reader.setdefault(row["prompt_tokens"], []).append(row)
+            continue
+        if row["n"] != 199:
+            skipped.append(f"{row['arm']} at {row['limit']}, n={row['n']}")
+            continue
+        retrieval.setdefault(row["arm"], {}).setdefault(row["limit"], []).append(row)
+
+    def over(got, key):
+        return round(statistics.median(g[key] for g in got), 1)
+
+    summarised = {}
+    for arm, limits in retrieval.items():
+        for limit, got in sorted(limits.items()):
+            p50 = [g["p50_ms"] for g in got]
+            median = statistics.median(p50)
+            summarised.setdefault(arm, {})[f"at_{limit}"] = {
+                "n": 199, "rounds": len(got),
+                "p50_ms": round(median, 1),
+                "p95_ms": over(got, "p95_ms"),
+                "mean_ms": over(got, "mean_ms"),
+                "p50_per_round": p50,
+                "spread": f"{(max(p50) - min(p50)) / median:.0%}",
+            }
 
     return {
         "table": "latency, timed at the same layer on every arm",
@@ -727,35 +749,65 @@ def latency(raw, rows):
                   "workspace that held them was lost with its PostgreSQL data "
                   "directory",
         "method": "every arm at the boundary an application calls, every unit "
-                  "warmed three times before anything is timed, and each arm "
-                  "run a second time last -- two passes that disagree by more "
-                  "than half the median print a warning, and none did.",
+                  "warmed three times before anything is timed, each arm run a "
+                  "second time last -- two passes that disagree by more than "
+                  "half the median print a warning, and none did -- and every "
+                  "published cell the median of at least three such rounds, "
+                  "with the per-round figures and the spread kept here.",
         **stamped(rows, "these rows carry no machine."),
         "sources": [source(raw, LATENCY_FILE, len(rows))],
-        "retrieval": retrieval,
-        "reader": sorted(reader, key=lambda r: r["prompt_tokens"]),
+        "rows_skipped": skipped,
+        "retrieval": summarised,
+        "reader": [{"prompt_tokens": tokens, "rounds": len(got),
+                    "calls": got[0]["n"],
+                    "median_seconds": round(statistics.median(
+                        g["p50_ms"] for g in got) / 1000, 2),
+                    "min_seconds": round(min(g["min_ms"] for g in got) / 1000, 2),
+                    "max_seconds": round(max(g["max_ms"] for g in got) / 1000, 2)}
+                   for tokens, got in sorted(reader.items())],
         "notes": [
+            "The single largest correction on this page, and it was ours. The "
+            "previous figures -- MemPalace 75.4/79.7 ms, mem0 103.4/105.6, the "
+            "embedding call 25.8 -- were measured beside a shell of this "
+            "session's left spin-looping on one of the box's four cores. On a "
+            "quiet box the same arms read 36.3/54.7, 62.9/64.6 and 14.6, so "
+            "this project's published lead over MemPalace was roughly double "
+            "what it is. The 12:39 rows are kept out of this summary and the "
+            "ratio they produced is withdrawn.",
+            "What made it hard to see: losing one of four cores cost the two "
+            "arms that embed their query over HTTP roughly double, and cost "
+            "this project's own socket arm nothing measurable -- 25.7, 26.2, "
+            "25.7 across quiet and noisy rounds alike. The arm a reader would "
+            "check first was the one arm the noise did not touch. Why the "
+            "in-process path is insensitive where the HTTP path is not has not "
+            "been established here and is not claimed.",
             "Every arm is 199 questions. mem0's row used to be 20: not because "
             "mem0 clears its store per conversation, which is what the page "
             "said, but because this harness emptied the qdrant directory "
             "before each ingest so that `store_mb` would be one "
-            "conversation's bytes. `BENCH_MEM0_KEEP=1` keeps all ten.",
+            "conversation's bytes. `BENCH_MEM0_KEEP=1` keeps all ten, and the "
+            "20-question rows that remain in the raw file are listed under "
+            "`rows_skipped` rather than averaged in.",
             "`of which, one embedding HTTP call` is not a memory system. It is "
             "one call to the shared endpoint, which mem0 and MemPalace pay "
             "inside every search and this project does not, because it holds "
-            "the model in the process that holds the index. It is the floor "
-            "under the two arms that call out.",
-            "What is stable here and what is not, measured rather than "
-            "guessed. Against a run two hours earlier on the same box, the "
-            "three arms that do not embed over HTTP moved 2%: socket 25.7 to "
-            "26.2, CLI 37.1 to 38.0, su 41.8 to 42.7. The embedding call moved "
-            "70%, 15.2 to 25.8, with no product code in it at all, and "
-            "MemPalace -- which pays that call inside its own search -- moved "
-            "91%, 39.5 to 75.4. So this project's own path reproduces to a few "
-            "per cent and the gap between it and the two arms that embed over "
-            "HTTP does not: a quarter of MemPalace's figure and a quarter of "
-            "mem0's is an endpoint this harness runs, whose latency varied by "
-            "70% in two hours. Read the embedding row as part of theirs.",
+            "the model in the process that holds the index. At 14.6 ms it is "
+            "40% of MemPalace's ten-passage figure and 23% of mem0's, and it "
+            "is the floor under both.",
+            "It is served from `embedder.py`, a process that holds one ONNX "
+            "session and spawns nothing, rather than from the shim that also "
+            "forks `claude -p` for chat. That process was built to test "
+            "whether contention with those forks explained the embedding "
+            "call's instability. It did not: the two endpoints measure the "
+            "same, 27.7 ms against 29.4 through urllib and 31.5 against 31.9 "
+            "through the OpenAI client. The instability was the spin loop.",
+            "Widening the shortlist from ten passages to thirty costs this "
+            "project nothing measurable (25.7 to 25.7) and mem0 nothing (62.9 "
+            "to 64.6), and costs MemPalace about half again -- +26%, +46%, "
+            "+64%, +52%, +52% over five rounds. An earlier version of this "
+            "page withdrew that claim on the strength of three noisy rounds; "
+            "it is reinstated on five quiet ones, as a median rather than as "
+            "a single figure.",
             "`--rerank fast` on the socket arm, which is the shipped default. "
             "The server was warm: a first pass on a freshly started server "
             "measured 123.4 ms against a repeat of 25.8, the harness's own "
@@ -763,10 +815,10 @@ def latency(raw, rows):
             "the faster half of it being kept.",
             "The reader curve is 12 calls a size to a hosted model, and the "
             "median is what the page quotes because the tail belongs to the "
-            "provider's queue rather than to the context length -- an earlier "
-            "run of the same four sizes had one call take 167 s. The minimum "
-            "and maximum are recorded here so that tail is visible without "
-            "being published as a property of context length.",
+            "provider's queue rather than to the context length -- one call "
+            "in these rounds took 167 s. The minimum and maximum are recorded "
+            "here so that tail is visible without being published as a "
+            "property of context length.",
         ],
     }
 

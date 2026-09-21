@@ -2,7 +2,7 @@
   "table": "latency, timed at the same layer on every arm",
   "published_in": "docs/benchmarks.md, 'Latency, timed at the same layer'",
   "corpus": "LOCOMO, the same ten conversations and 199 questions the accuracy run uses, rebuilt for this run because the workspace that held them was lost with its PostgreSQL data directory",
-  "method": "every arm at the boundary an application calls, every unit warmed three times before anything is timed, and each arm run a second time last -- two passes that disagree by more than half the median print a warning, and none did.",
+  "method": "every arm at the boundary an application calls, every unit warmed three times before anything is timed, each arm run a second time last -- two passes that disagree by more than half the median print a warning, and none did -- and every published cell the median of at least three such rounds, with the per-round figures and the spread kept here.",
   "machine": {
     "cores": 4,
     "host": "vm",
@@ -12,131 +12,230 @@
   "sources": [
     {
       "file": "lat/latency.jsonl",
-      "rows": 16,
-      "mtime_utc": "2026-09-20T12:39:50Z"
+      "rows": 50,
+      "mtime_utc": "2026-09-20T23:13:51Z"
     }
+  ],
+  "rows_skipped": [
+    "mem0 (in-process) at 10, n=20",
+    "mem0 (in-process) at 30, n=20"
   ],
   "retrieval": {
     "pamin (socket)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 26.2,
-        "p95_ms": 43.6,
-        "mean_ms": 27.1
+        "rounds": 3,
+        "p50_ms": 25.7,
+        "p95_ms": 42.3,
+        "mean_ms": 27.1,
+        "p50_per_round": [
+          25.7,
+          25.6,
+          26.0
+        ],
+        "spread": "2%"
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 26.1,
-        "p95_ms": 42.8,
-        "mean_ms": 27.3
+        "rounds": 3,
+        "p50_ms": 25.7,
+        "p95_ms": 41.0,
+        "mean_ms": 26.8,
+        "p50_per_round": [
+          25.7,
+          25.7,
+          27.2
+        ],
+        "spread": "6%"
       }
     },
     "pamin (CLI)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 38.0,
-        "p95_ms": 55.3,
-        "mean_ms": 38.3
+        "rounds": 3,
+        "p50_ms": 37.7,
+        "p95_ms": 53.2,
+        "mean_ms": 38.5,
+        "p50_per_round": [
+          37.1,
+          37.7,
+          37.8
+        ],
+        "spread": "2%"
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 37.2,
-        "p95_ms": 52.2,
-        "mean_ms": 37.6
+        "rounds": 3,
+        "p50_ms": 39.2,
+        "p95_ms": 55.1,
+        "mean_ms": 39.5,
+        "p50_per_round": [
+          40.3,
+          38.4,
+          39.2
+        ],
+        "spread": "5%"
       }
     },
     "pamin (CLI behind su)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 42.7,
-        "p95_ms": 59.6,
-        "mean_ms": 43.7
+        "rounds": 3,
+        "p50_ms": 41.8,
+        "p95_ms": 58.6,
+        "mean_ms": 42.7,
+        "p50_per_round": [
+          41.8,
+          43.5,
+          41.8
+        ],
+        "spread": "4%"
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 41.8,
-        "p95_ms": 59.5,
-        "mean_ms": 42.8
+        "rounds": 3,
+        "p50_ms": 42.4,
+        "p95_ms": 59.9,
+        "mean_ms": 43.5,
+        "p50_per_round": [
+          41.9,
+          42.4,
+          44.5
+        ],
+        "spread": "6%"
       }
     },
     "of which, one embedding HTTP call": {
       "at_10": {
         "n": 199,
-        "p50_ms": 25.8,
-        "p95_ms": 55.0,
-        "mean_ms": 29.6
+        "rounds": 3,
+        "p50_ms": 14.6,
+        "p95_ms": 18.3,
+        "mean_ms": 14.9,
+        "p50_per_round": [
+          15.2,
+          14.5,
+          14.6
+        ],
+        "spread": "5%"
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 26.4,
-        "p95_ms": 45.6,
-        "mean_ms": 28.6
+        "rounds": 3,
+        "p50_ms": 14.0,
+        "p95_ms": 17.7,
+        "mean_ms": 14.5,
+        "p50_per_round": [
+          14.5,
+          14.0,
+          13.7
+        ],
+        "spread": "6%"
       }
     },
     "mempalace (in-process)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 75.4,
-        "p95_ms": 105.8,
-        "mean_ms": 75.4
+        "rounds": 5,
+        "p50_ms": 36.3,
+        "p95_ms": 62.0,
+        "mean_ms": 39.9,
+        "p50_per_round": [
+          39.5,
+          36.6,
+          36.0,
+          36.3,
+          35.9
+        ],
+        "spread": "10%"
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 79.7,
-        "p95_ms": 110.0,
-        "mean_ms": 79.5
+        "rounds": 5,
+        "p50_ms": 54.7,
+        "p95_ms": 72.3,
+        "mean_ms": 55.6,
+        "p50_per_round": [
+          49.6,
+          53.5,
+          59.2,
+          55.1,
+          54.7
+        ],
+        "spread": "18%"
       }
     },
     "mem0 (in-process)": {
       "at_10": {
         "n": 199,
-        "p50_ms": 103.4,
-        "p95_ms": 152.1,
-        "mean_ms": 105.7
+        "rounds": 3,
+        "p50_ms": 62.9,
+        "p95_ms": 92.4,
+        "mean_ms": 66.1,
+        "p50_per_round": [
+          62.9,
+          65.0,
+          62.4
+        ],
+        "spread": "4%"
       },
       "at_30": {
         "n": 199,
-        "p50_ms": 105.6,
-        "p95_ms": 155.9,
-        "mean_ms": 107.1
+        "rounds": 3,
+        "p50_ms": 64.6,
+        "p95_ms": 94.1,
+        "mean_ms": 66.8,
+        "p50_per_round": [
+          64.6,
+          61.1,
+          65.4
+        ],
+        "spread": "7%"
       }
     }
   },
   "reader": [
     {
       "prompt_tokens": 541,
+      "rounds": 2,
       "calls": 12,
-      "median_seconds": 6.57,
-      "min_seconds": 5.01,
-      "max_seconds": 8.83
+      "median_seconds": 5.98,
+      "min_seconds": 5.21,
+      "max_seconds": 167.36
     },
     {
       "prompt_tokens": 1001,
+      "rounds": 2,
       "calls": 12,
-      "median_seconds": 5.61,
-      "min_seconds": 4.99,
-      "max_seconds": 6.57
+      "median_seconds": 5.29,
+      "min_seconds": 4.21,
+      "max_seconds": 7.07
     },
     {
       "prompt_tokens": 1495,
+      "rounds": 2,
       "calls": 12,
-      "median_seconds": 6.3,
-      "min_seconds": 5.56,
-      "max_seconds": 6.58
+      "median_seconds": 4.97,
+      "min_seconds": 4.47,
+      "max_seconds": 6.3
     },
     {
       "prompt_tokens": 5117,
+      "rounds": 2,
       "calls": 12,
-      "median_seconds": 6.15,
-      "min_seconds": 5.24,
-      "max_seconds": 7.38
+      "median_seconds": 5.13,
+      "min_seconds": 4.5,
+      "max_seconds": 6.86
     }
   ],
   "notes": [
-    "Every arm is 199 questions. mem0's row used to be 20: not because mem0 clears its store per conversation, which is what the page said, but because this harness emptied the qdrant directory before each ingest so that `store_mb` would be one conversation's bytes. `BENCH_MEM0_KEEP=1` keeps all ten.",
-    "`of which, one embedding HTTP call` is not a memory system. It is one call to the shared endpoint, which mem0 and MemPalace pay inside every search and this project does not, because it holds the model in the process that holds the index. It is the floor under the two arms that call out.",
-    "What is stable here and what is not, measured rather than guessed. Against a run two hours earlier on the same box, the three arms that do not embed over HTTP moved 2%: socket 25.7 to 26.2, CLI 37.1 to 38.0, su 41.8 to 42.7. The embedding call moved 70%, 15.2 to 25.8, with no product code in it at all, and MemPalace -- which pays that call inside its own search -- moved 91%, 39.5 to 75.4. So this project's own path reproduces to a few per cent and the gap between it and the two arms that embed over HTTP does not: a quarter of MemPalace's figure and a quarter of mem0's is an endpoint this harness runs, whose latency varied by 70% in two hours. Read the embedding row as part of theirs.",
+    "The single largest correction on this page, and it was ours. The previous figures -- MemPalace 75.4/79.7 ms, mem0 103.4/105.6, the embedding call 25.8 -- were measured beside a shell of this session's left spin-looping on one of the box's four cores. On a quiet box the same arms read 36.3/54.7, 62.9/64.6 and 14.6, so this project's published lead over MemPalace was roughly double what it is. The 12:39 rows are kept out of this summary and the ratio they produced is withdrawn.",
+    "What made it hard to see: losing one of four cores cost the two arms that embed their query over HTTP roughly double, and cost this project's own socket arm nothing measurable -- 25.7, 26.2, 25.7 across quiet and noisy rounds alike. The arm a reader would check first was the one arm the noise did not touch. Why the in-process path is insensitive where the HTTP path is not has not been established here and is not claimed.",
+    "Every arm is 199 questions. mem0's row used to be 20: not because mem0 clears its store per conversation, which is what the page said, but because this harness emptied the qdrant directory before each ingest so that `store_mb` would be one conversation's bytes. `BENCH_MEM0_KEEP=1` keeps all ten, and the 20-question rows that remain in the raw file are listed under `rows_skipped` rather than averaged in.",
+    "`of which, one embedding HTTP call` is not a memory system. It is one call to the shared endpoint, which mem0 and MemPalace pay inside every search and this project does not, because it holds the model in the process that holds the index. At 14.6 ms it is 40% of MemPalace's ten-passage figure and 23% of mem0's, and it is the floor under both.",
+    "It is served from `embedder.py`, a process that holds one ONNX session and spawns nothing, rather than from the shim that also forks `claude -p` for chat. That process was built to test whether contention with those forks explained the embedding call's instability. It did not: the two endpoints measure the same, 27.7 ms against 29.4 through urllib and 31.5 against 31.9 through the OpenAI client. The instability was the spin loop.",
+    "Widening the shortlist from ten passages to thirty costs this project nothing measurable (25.7 to 25.7) and mem0 nothing (62.9 to 64.6), and costs MemPalace about half again -- +26%, +46%, +64%, +52%, +52% over five rounds. An earlier version of this page withdrew that claim on the strength of three noisy rounds; it is reinstated on five quiet ones, as a median rather than as a single figure.",
     "`--rerank fast` on the socket arm, which is the shipped default. The server was warm: a first pass on a freshly started server measured 123.4 ms against a repeat of 25.8, the harness's own drift guard caught it, and the run was taken again rather than the faster half of it being kept.",
-    "The reader curve is 12 calls a size to a hosted model, and the median is what the page quotes because the tail belongs to the provider's queue rather than to the context length -- an earlier run of the same four sizes had one call take 167 s. The minimum and maximum are recorded here so that tail is visible without being published as a property of context length."
+    "The reader curve is 12 calls a size to a hosted model, and the median is what the page quotes because the tail belongs to the provider's queue rather than to the context length -- one call in these rounds took 167 s. The minimum and maximum are recorded here so that tail is visible without being published as a property of context length."
   ]
 }

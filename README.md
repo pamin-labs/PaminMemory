@@ -29,9 +29,9 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
-| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **26.1 ms** |
-| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 79.7 ms |
-| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 105.6 ms |
+| **Påmin Memory** | **0.628** | **0 calls, $0, 356 s** | **25.7 ms** |
+| MemPalace | 0.623 | 20 calls, ~$1, 500–545 s | 54.7 ms |
+| mem0 | 0.583 | 272 calls, $27.77, 4,121 s | 64.6 ms |
 
 No pair of those accuracies separates statistically. That is the claim, and it
 is deliberately a tie: **parity with the systems this category is named after,
@@ -109,14 +109,16 @@ through the same endpoint, for all three. So the cost of these embeddings is
 CPU in every case, and what the second row measures is not a bill but where the
 embedder lives: inside the process that holds the index, or across a socket.
 
-Two of the headline figures need a sentence each. **Retrieval at 26.1 ms
-against 105.6 ms is real and mostly invisible**: a model reading those passages
-takes about six seconds and does not care whether it was handed five hundred
+Two of the headline figures need a sentence each. **Retrieval at 25.7 ms
+against 64.6 ms is real and mostly invisible**: a model reading those passages
+takes about five seconds and does not care whether it was handed five hundred
 tokens or five thousand, so end to end the three are indistinguishable and
-retrieval is under two per cent of the wait. A quarter of the other two arms'
-figures is an embedding call over HTTP that this harness serves, and that call
-moved 70% between two runs two hours apart, so read the gap as architecture
-rather than as a stopwatch reading —
+retrieval is around one per cent of the wait. A quarter of mem0's figure and
+two fifths of MemPalace's is an embedding call over HTTP that this harness
+serves and they pay inside every search, so read the gap as architecture rather
+than as a stopwatch reading. These retrieval figures are also roughly half what
+this page carried a day earlier: the earlier ones were measured beside a spin
+loop of our own, and the correction runs against us —
 [docs/benchmarks.md](docs/benchmarks.md) has both halves. Where it counts is a memory system feeding
 an agent's own context, adding its latency to a call that was happening anyway.
 **Ingest at 356 s against 4,121 s is the one nothing hides** — an hour of
@@ -246,7 +248,7 @@ under [benchmarks/results/](benchmarks/results).
 | --- | --- | --- |
 | retrieval, one language | nDCG@10 **0.7359** | MIRACL Swahili dev, 131,924 passages |
 | retrieval, query and answer in different languages | nDCG@10 0.6097 | XQuAD-R, 13,014 sentences |
-| one `pamin search` over a socket | **26.1 ms** | LOCOMO, `fast` reranking |
+| one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
 | one `pamin search` as a whole CLI invocation | 251 ms | XQuAD-R, `fast` reranking |
 | one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
 | resident, one project | 2,088 MB | model and index inside the server |
