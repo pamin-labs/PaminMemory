@@ -376,6 +376,45 @@ pub async fn discard(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
     Ok(discarded.rows_affected())
 }
 
+/// How long a settled job is kept before it is deleted.
+///
+/// Long enough that `cascade status` can still show what a drain just did, and
+/// short enough that the queue does not become the largest thing in the
+/// database. It was: measured on a workspace of 13,014 documents, `index_jobs`
+/// held 39,043 rows, every one of them completed, at 14 MB of heap and 12 MB of
+/// indexes -- 26 MB, or 42% of a 62 MB database, none of it reachable work. The
+/// content those jobs indexed was 3.2 MB.
+const SETTLED_RETENTION: Duration = Duration::from_secs(60 * 60);
+
+/// Deletes settled jobs older than the retention window, and returns how many.
+///
+/// Rows used to be kept forever, and the reason was real: `enqueue` upserts on
+/// the idempotency key, so a completed row is *revived* by the next write to
+/// the same subject rather than joined by a second row saying the same thing.
+/// Deleting it is equivalent rather than a behaviour change -- the insert then
+/// takes the other branch and produces a row in the same state, since
+/// `completed_at`, `attempts` and the claim columns all start where the upsert
+/// would have reset them.
+///
+/// Only settled rows, so nothing in flight can be removed underneath a worker:
+/// a claimed job has `completed_at IS NULL`, which this never matches. That is
+/// also what keeps `complete`'s stale-claim check intact -- it compares the
+/// claim it holds, and this deletes no row that has one.
+pub async fn prune(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
+    let deleted = sqlx::query(
+        "DELETE FROM index_jobs
+          WHERE project_id = $1
+            AND completed_at IS NOT NULL
+            AND completed_at < $2",
+    )
+    .bind(project.0)
+    .bind(OffsetDateTime::now_utc() - SETTLED_RETENTION)
+    .execute(executor)
+    .await?;
+
+    Ok(deleted.rows_affected())
+}
+
 fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
     let payload: serde_json::Value = row.get("payload");
 
