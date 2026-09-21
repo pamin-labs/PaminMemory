@@ -433,6 +433,17 @@ pub fn model_idle() -> Duration {
 /// Overrides [`MODEL_IDLE`], in seconds.
 pub const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
 
+/// A memory's content hash, as the ledger stores it.
+///
+/// Part of what recording a memory means rather than a detail of the caller:
+/// the ledger uses it to recognise the same content arriving twice, so two
+/// callers computing it two ways would be two callers disagreeing about what
+/// the same memory is.
+fn content_hash(content: &str) -> String {
+    use sha2::Digest as _;
+    format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
+}
+
 impl Engine {
     /// Opens everything a search or a write needs.
     ///
@@ -703,6 +714,59 @@ impl Engine {
                 .upsert(state.topic_id, &state.content, &embedding)
         })?;
         Ok(())
+    }
+
+    /// Records one memory: the filter's verdict, its language, and one
+    /// transaction.
+    ///
+    /// Everything a memory costs except the index, which the outbox catches up
+    /// on afterwards. This is the write API, and it is here rather than in the
+    /// CLI because it *was* in the CLI:
+    /// `pamin-cli::command::write::record` was what `import` called too, so a
+    /// module of the command layer had become the only way to record a memory
+    /// correctly. The interfaces `README.md` lists as unbuilt would each have
+    /// had to call it or copy it, and copying it is how two callers start
+    /// recording memories by different rules.
+    ///
+    /// [`write`](Self::write) stays what it was and is what this calls: the
+    /// transaction, given a verdict somebody else reached. The difference
+    /// between the two is the whole of what this adds -- looking up what the
+    /// topic says now, judging the content against it, and detecting the
+    /// language.
+    pub async fn remember(
+        &self,
+        topic: &str,
+        content: &str,
+        validity: pamin_core::Validity,
+    ) -> Result<(pamin_core::Verdict, Recorded)> {
+        // Looked up rather than created: a write the filter holds should leave
+        // no trace on the retrieval surface, and an empty topic is a trace.
+        // Promotion is what creates one, inside the write transaction.
+        let current =
+            repository::current_content(self.database.pool(), self.project, topic).await?;
+        let verdict = pamin_core::SensoryFilter::default().judge(content, current.as_deref());
+
+        let (language, confidence) = match pamin_index::detect_language(content) {
+            Some((language, confidence)) => (Some(language), Some(confidence)),
+            None => (None, None),
+        };
+
+        let recorded = self
+            .write(&Write {
+                topic,
+                content,
+                content_hash: &content_hash(content),
+                verdict: verdict.decision,
+                reason: verdict.reason(),
+                promoted: verdict.is_promoted(),
+                language: language.as_deref(),
+                language_confidence: confidence,
+                observed_at: OffsetDateTime::now_utc(),
+                validity,
+            })
+            .await?;
+
+        Ok((verdict, recorded))
     }
 
     /// Records a memory: evidence, the span over it, and -- when the filter

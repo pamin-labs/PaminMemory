@@ -20,7 +20,7 @@ use pamin_index::Profile;
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
-use crate::command::write::{pays_for_upkeep, record};
+use crate::command::write::pays_for_upkeep;
 use crate::session::Session;
 
 /// How many memories to record between checks on the queue.
@@ -102,7 +102,9 @@ pub async fn execute(
     let mut lagging = false;
 
     for (index, memory) in memories.iter().enumerate() {
-        let (verdict, _) = record(&engine, &memory.topic, &memory.content, validity).await?;
+        let (verdict, _) = engine
+            .remember(&memory.topic, &memory.content, validity)
+            .await?;
         if verdict.is_promoted() {
             promoted += 1;
         }

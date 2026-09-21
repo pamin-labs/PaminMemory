@@ -16,6 +16,10 @@ time = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
+# For a memory's content hash, which `remember` computes because it is part of
+# what recording a memory means. Already in the tree as `pamin-cli`'s, so this
+# adds no lockfile entry.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 pamin-store = { workspace = true }
