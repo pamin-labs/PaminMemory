@@ -211,13 +211,61 @@ fn settings() -> HashMap<String, String> {
     ])
 }
 
+/// A PostgreSQL installation the caller is supplying, if there is one.
+///
+/// Without this the store always installs its own copy into the workspace,
+/// which is several hundred megabytes a workspace pays even on a machine that
+/// already has the right PostgreSQL. It is also the only way in: the archive
+/// is fetched from a GitHub release, so a network that cannot reach that
+/// release cannot run anything in this crate -- including every `--ignored`
+/// test, which is the only check this project has on its SQL.
+///
+/// Supplying one means the version requirement below is not consulted, so the
+/// caller owns that choice: `trust_installation_dir` is the engine's own word
+/// for it. A build other than the one the product ships with is fine for a
+/// pass-or-fail test and is **not** fine for a published figure -- a timing
+/// taken against a differently-compiled server is a timing of that server.
+/// Say which one was used beside any number taken this way.
+///
+/// The path is a prefix holding `bin/initdb` and `bin/pg_ctl`, which is what a
+/// distribution package installs (`/usr/lib/postgresql/17` on Debian and
+/// Ubuntu).
+fn supplied_installation() -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(std::env::var_os("PAMIN_POSTGRES_DIR")?);
+    path.join("bin").join("initdb").exists().then_some(path)
+}
+
+/// Where a supplied installation's cluster should put its socket, if one is
+/// supplied. See the note beside `unix_socket_directories`.
+fn supplied_socket_directory(workspace: &Workspace) -> Option<String> {
+    supplied_installation()?;
+    Some(
+        workspace
+            .postgres_data_dir()
+            .parent()?
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
 /// Installs if needed, starts the server, and leaves it running.
 async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
     std::fs::create_dir_all(workspace.root())?;
 
+    let supplied = supplied_installation();
+
+    // The password file and the data directory share a parent, and until a
+    // supplied installation was possible nothing had to say so: unpacking the
+    // archive into `postgres/install` created `postgres/` on the way past, and
+    // writing the password file next to it worked by that accident. Skipping
+    // the install removes the accident, and what surfaces is `initdb` failing
+    // with `No such file or directory` and nothing naming the directory.
+    std::fs::create_dir_all(workspace.postgres_data_dir())?;
+
     let mut settings = Settings {
         version: VersionReq::parse("=17.6.0").expect("valid version requirement"),
-        installation_dir: workspace.postgres_install_dir(),
+        trust_installation_dir: supplied.is_some(),
+        installation_dir: supplied.unwrap_or_else(|| workspace.postgres_install_dir()),
         data_dir: workspace.postgres_data_dir(),
         password_file: workspace.postgres_password_file(),
         // Not temporary: the cluster outlives the process that created it, so a
@@ -230,7 +278,27 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
         timeout: Some(Duration::from_secs(60)),
         // Passed to the server as it starts, so an already-initialised
         // workspace keeps whatever it was started with until `pamin stop`.
-        configuration: settings(),
+        configuration: {
+            let mut configuration = settings();
+            // A distribution compiles in its own socket directory --
+            // `/var/run/postgresql` on Debian and Ubuntu -- which belongs to
+            // that distribution's `postgres` user and not to whoever is
+            // running this. The server then starts, binds its port, and dies
+            // on `could not create lock file ... Permission denied`, which
+            // `pg_ctl` reports as the unhelpful "could not start server".
+            // Connections here are over TCP, so this only decides where the
+            // socket file lands, and the workspace is where everything else
+            // this cluster owns already lives.
+            //
+            // Only for a supplied installation: the bundled archive's
+            // compiled-in default is one this project has always relied on,
+            // and overriding it everywhere would put a socket path of the
+            // workspace's depth under PostgreSQL's 107-character limit.
+            if let Some(directory) = supplied_socket_directory(workspace) {
+                configuration.insert("unix_socket_directories".to_string(), directory);
+            }
+            configuration
+        },
         ..Settings::default()
     };
 

@@ -18,10 +18,23 @@ The examples below are real output from a workspace built by the writes in
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
+| | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
 the person who has piped it to a terminal.
+
+`PAMIN_POSTGRES_DIR` points at an installation prefix holding `bin/initdb` --
+`/usr/lib/postgresql/17` on Debian and Ubuntu, `$(brew --prefix
+postgresql@17)` on macOS. Unset, a workspace installs its own copy, which is
+the default because it is what makes `pamin` work with nothing else installed;
+set, that copy is not downloaded and not stored, which is several hundred
+megabytes a workspace does not spend. Two things to know before setting it.
+The version requirement is not checked -- you are vouching for the server, and
+the migrations expect PostgreSQL 17. And a figure measured against a server
+built by somebody else is a figure for that server: fine for checking
+behaviour, not interchangeable with the numbers in
+[measured.md](measured.md).
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
