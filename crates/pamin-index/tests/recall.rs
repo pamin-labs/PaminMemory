@@ -127,8 +127,22 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
     let (documents, queries) = corpus();
     let dir = tempfile::tempdir().expect("temp dir");
 
-    // Sized as the engine would size it for a project this big, so this
-    // measures the shape that ships rather than one segment holding everything.
+    // Sized as the engine would size it for a project this big -- which is
+    // the shape `pamin reindex` produces and **not** the shape a workspace
+    // that grew from empty has. A collection records its segment size at
+    // creation and a workspace is created before anything is written to it, so
+    // a grown project records `SMALLEST_SEGMENT` and holds 25 segments over
+    // these fifty thousand documents rather than four. Measured side by side,
+    // the difference is 10.6 ms a query and recall of 1.0000 against 0.9980 --
+    // so the grown shape is the slower one and the *more* accurate one, and
+    // this floor is not what protects it.
+    //
+    // Left as the rebuilt shape deliberately, because this test's subject is
+    // the graph parameters rather than the segmentation policy: a floor taken
+    // on 25 small graphs would be insensitive to the change it exists to
+    // catch, since smaller graphs recall better. What the comment must not do
+    // is call it the shape that ships, which is what it used to say. ADR 0001
+    // has the measurement and the open question.
     let index = ProjectionIndex::open(
         &dir.path().join("index"),
         &dir.path().join("legacy"),

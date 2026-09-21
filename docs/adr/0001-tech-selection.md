@@ -241,6 +241,66 @@ BGE-M3 is the default, reversing this decision's original position. That positio
 
 Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but requires GPU inference, which is incompatible with a default install that needs no API key and no GPU. It stays a profile, not a default.
 
+### The floor is the segment size, for every workspace that grows
+
+The section above ends by noting that a collection records its segment size at
+creation, so a project that has grown keeps the size it was created with until
+`pamin reindex` rebuilds it. That is true and it understates the case, because
+of what a collection is created *with*: nothing. A workspace is created before
+anything has been written to it, so `segment_documents` is asked about zero
+documents, is clamped to `SMALLEST_SEGMENT`, and records 2,000.
+
+**So for every workspace that grows from empty -- which is every workspace a
+user has -- the division by `TARGET_SEGMENTS` never runs.** The floor is the
+segment size, at every scale, and the four-segment target the table above was
+measured to support is reachable only through `reindex`, which is created
+knowing the count. What a project actually gets:
+
+| documents | segments, grown from empty | segments, after `reindex` |
+| --- | --- | --- |
+| 50,000 | 25 | 4 |
+| 131,924 | 66 | 4 |
+| 1,000,000 | 500 | 4 |
+
+And the floor's own comment says what it was chosen for -- *so a new and nearly
+empty project is one segment rather than a hundred tiny ones* -- which is a
+reason about the small case that silently became the value for the large one.
+
+Measured, both shapes over the same 50,000 documents on this machine:
+
+| created knowing | a segment holds | segments | recall@10 | a query |
+| --- | --- | --- | --- | --- |
+| nothing (grown) | 2,000 | 25 | 1.0000 | 33.9 ms |
+| 50,000 (`reindex`) | 12,500 | 4 | 0.9980 | 23.3 ms |
+
+**Twenty-one extra segments cost 10.6 ms a query, and recall does not pay for
+it** -- it is slightly better with the smaller graphs, which is the same
+direction `recall.rs`'s floor comment records. Extrapolating the 0.5 ms a
+segment this gives, a grown 131,924-document workspace pays about 31 ms of
+per-segment cost where a rebuilt one pays 2, and 31 ms is twice the entire
+retrieval row of the latency division below.
+
+It is also where the descriptors go. A segment is 79 files here, so 66
+segments is about 5,200 against the 1,024 a Linux process starts with -- which
+is how indexing MIRACL's Swahili split died with `Too many open files` 65
+minutes in, and why `raise_open_file_limit` moved out of the server and into
+every process.
+
+**Changing it on an open collection is not available, and the way it is not
+available is worth recording.** `CollectionSchema::set_max_doc_count_per_segment`
+exists, and on a schema read back from an open collection it returns `Ok`,
+reports the new value from that handle, and changes nothing: reopening the
+collection reports 2,000 again. That is the same shape as `enable_mmap` above
+-- a setter that is a no-op after creation and says so only by being ignored --
+so resegmenting means recreating the collection, which is what `pamin reindex`
+does.
+
+What to do about it is a live question rather than a decision recorded here.
+Raising the floor sets the de-facto segment size for a grown project and is one
+constant; it cannot help a workspace that already exists, and the `reindex`
+those need is hours on the default profile -- 131,924 passages measured at 576
+cascade jobs a minute, which is ten and a half of them.
+
 ### A cross-encoder reranker, once the opportunity was real
 
 An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on Påmin Memory's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
