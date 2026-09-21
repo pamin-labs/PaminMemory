@@ -8,6 +8,7 @@ pub mod link;
 pub mod neighbors;
 pub mod read;
 pub mod reindex;
+pub mod resolve;
 pub mod search;
 pub mod stop;
 pub mod topics;

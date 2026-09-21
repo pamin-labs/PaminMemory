@@ -4,13 +4,12 @@
 //! is relevant. This returns what is actually connected, which is a different
 //! question and the one to ask when the ranking is what you doubt.
 
-use anyhow::{Result, bail};
-use pamin_core::EdgeKind;
+use anyhow::Result;
 use pamin_store::graph::Expansion;
 use pamin_store::{graph, repository};
 use serde::{Deserialize, Serialize};
 
-use crate::command::validity;
+use crate::command::{resolve, validity};
 
 use crate::session::Session;
 
@@ -65,21 +64,12 @@ pub struct Neighborhood {
 }
 
 pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Neighborhood> {
-    let kinds = args
-        .kinds
-        .iter()
-        .map(|name| {
-            EdgeKind::parse(name)
-                .ok_or_else(|| anyhow::anyhow!("unknown relationship kind {name:?}"))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let kinds = resolve::edge_kinds(&args.kinds)?;
 
     let database = session.database();
     let project = session.project(project).await?;
 
-    let Some(topic) = repository::find_topic(database.pool(), project, &args.topic).await? else {
-        bail!("no topic named {}", args.topic);
-    };
+    let topic = resolve::topic(database, project, &args.topic).await?;
 
     let at = validity::parse(args.at.as_deref(), "--at")?;
     let neighbors = graph::expand(
