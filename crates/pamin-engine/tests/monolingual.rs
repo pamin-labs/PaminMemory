@@ -116,12 +116,27 @@ const DEFAULT_PROFILE: &str = "accuracy";
 /// would be reporting a number nobody else reports.
 const GROUP: &str = "swahili";
 
+/// What a topic's name is prefixed with, so it cannot occur in the corpus.
+///
+/// See [`Passage::docid`]: without it, 1,186 edges were derived from digits.
+const KEY: &str = "miracl-sw:";
+
 /// One passage, as indexed.
 struct Passage {
-    /// MIRACL's own document id, `article#paragraph`. Used as the topic name,
-    /// and deliberately unlike anything in the text: mention derivation looks
-    /// for topic names inside content, and passages that named each other
-    /// would measure the graph channel on relationships nobody asserted.
+    /// MIRACL's own document id, `article#paragraph`, behind a prefix.
+    ///
+    /// The prefix is the whole point and it was learned the hard way. Mention
+    /// derivation looks for topic names inside content, so a key that can
+    /// occur in prose measures the graph channel on relationships nobody
+    /// asserted -- which is what the cross-lingual harness's own comment warns
+    /// about, and which this copied and then ignored. A bare docid is
+    /// `2#0`, whose tokens are `2` and `0`, and across 131,924 Wikipedia
+    /// passages that matched: **1,186 edges, every one of them pointing at a
+    /// short docid** like `2#3` or `30#5`, manufactured out of digits.
+    ///
+    /// `miracl-sw:2#0` tokenizes to a four-token run that no prose contains.
+    /// The search arm asserts the result rather than trusting it: it fails if
+    /// the graph channel credits any hit.
     docid: String,
     /// Title and body, which is what MIRACL's own baselines index.
     text: String,
@@ -160,7 +175,7 @@ impl Corpus {
             }
             let document: serde_json::Value =
                 serde_json::from_str(line).expect("a corpus line is JSON");
-            let docid = document["docid"].as_str().expect("docid").to_string();
+            let docid = format!("{KEY}{}", document["docid"].as_str().expect("docid"));
             let title = document["title"].as_str().unwrap_or_default();
             let body = document["text"].as_str().unwrap_or_default();
             passages.push(Passage {
@@ -190,13 +205,11 @@ impl Corpus {
             else {
                 panic!("a judgement line has four fields: {line:?}");
             };
-            if grade.trim().parse::<i32>().unwrap_or(0) <= 0 || !indexed.contains(docid) {
+            let docid = format!("{KEY}{docid}");
+            if grade.trim().parse::<i32>().unwrap_or(0) <= 0 || !indexed.contains(docid.as_str()) {
                 continue;
             }
-            judged
-                .entry(qid.to_string())
-                .or_default()
-                .insert(docid.to_string());
+            judged.entry(qid.to_string()).or_default().insert(docid);
         }
 
         // A query whose every relevant passage was cut by the cap would score
