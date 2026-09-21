@@ -135,10 +135,19 @@ async fn edges_touching(database: &Database, project: ProjectId, frontier: &[uui
 #[tokio::test]
 #[ignore = "needs a real postgres cluster, and builds graphs with tens of thousands of edges"]
 async fn a_walk_stops_once_the_caller_has_enough() {
-    let workspace = Workspace::at("/tmp/pamin-ws");
+    // A path rather than a tempdir, because `initdb` is twenty seconds and
+    // this test's subject is milliseconds -- the cluster is worth reusing. The
+    // project inside it is not: the names below are fixed, so a second run on
+    // a reused project inserted `hub_left` twice and died on the unique
+    // constraint. This test could therefore be run once, which is the same
+    // defect as a guard that only covers the path it was written on.
+    let workspace = Workspace::at(
+        std::env::var("PAMIN_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
+    );
     let database = Database::open(&workspace, Connections::PerCommand)
         .await
         .expect("open the database");
+    let run = uuid::Uuid::new_v4();
 
     println!(
         "{:>7}  {:>8}  {:>9}  {:>12}  {:>10}  {:>9}  {:>9}  {:>8}",
@@ -146,7 +155,7 @@ async fn a_walk_stops_once_the_caller_has_enough() {
     );
 
     for spokes in [120usize, 1_000, 5_000, 20_000] {
-        let project = repository::ensure_project(database.pool(), &format!("hub-{spokes}"))
+        let project = repository::ensure_project(database.pool(), &format!("hub-{spokes}-{run}"))
             .await
             .expect("ensure project");
         let left = hubs(&database, project.id, spokes).await;
