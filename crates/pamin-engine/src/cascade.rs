@@ -118,7 +118,10 @@ impl Engine {
                 // rather than called: maintenance is per-project work, and the
                 // outbox is what makes one worker run it rather than every
                 // worker racing to. The next round claims it.
-                if drained.completed > 0 && !tidied && self.index_is_fragmented()? {
+                if drained.completed > 0
+                    && !tidied
+                    && (self.index_is_fragmented()? || self.vector_index_lags()?)
+                {
                     tidied = true;
                     jobs::enqueue(
                         self.database.pool(),
@@ -422,13 +425,32 @@ impl Engine {
     /// and twenty files, growing without bound, and a workspace used normally
     /// for a week died of `Too many open files`.
     ///
-    /// The graph needs no condition of its own any more. A segment seals after
-    /// thousands of writes and this fires every sixty or so, so by the time a
-    /// segment is due a graph the index has already been asked many times over
-    /// -- and asking when there is nothing to do costs 28 ms.
+    /// This condition is compaction's alone. It used to carry the graph as
+    /// well, on the argument that "a segment seals after thousands of writes
+    /// and this fires every sixty or so, so by the time a segment is due a
+    /// graph the index has already been asked many times over". That was true
+    /// when it was written and stopped being true in the same release that
+    /// moved the flush to the server: files then accumulate at about 0.045 a
+    /// write rather than two, so this fires roughly every five and a half
+    /// thousand writes instead of every sixty, and a project below that never
+    /// built a graph at all. See `vector_index_lags`.
     fn index_is_fragmented(&self) -> Result<bool> {
         let files = crate::engine::off_the_runtime(|| self.index().file_count())?;
         Ok(pamin_index::is_fragmented(files))
+    }
+
+    /// Whether enough documents sit outside the vector graph to build one.
+    ///
+    /// The graph's own condition, which it went a release without. Both
+    /// conditions queue the same job -- `optimize` compacts *and* builds -- so
+    /// this adds a reason to run it, not a second kind of maintenance.
+    fn vector_index_lags(&self) -> Result<bool> {
+        let (documents, completeness) =
+            crate::engine::off_the_runtime(|| -> Result<(u64, f32)> {
+                let index = self.index();
+                Ok((index.document_count()?, index.vector_index_completeness()?))
+            })?;
+        Ok(pamin_index::vector_index_lags(documents, completeness))
     }
 
     /// Compacts the index, and builds a graph over any segment that sealed.
