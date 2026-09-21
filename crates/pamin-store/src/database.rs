@@ -248,11 +248,91 @@ fn supplied_socket_directory(workspace: &Workspace) -> Option<String> {
     )
 }
 
+/// What a bundled installation carries that nothing here will ever read.
+///
+/// `lib/bitcode` is LLVM bitcode for every core extension, and PostgreSQL
+/// reads it in one situation only: inlining an extension's functions into a
+/// JIT-compiled plan. [`settings`] compiles `jit = off` into every cluster this
+/// project starts, for a reason that has nothing to do with disk -- every query
+/// here is a lookup by key or a bounded scan, so compilation is the slow part
+/// and there is nothing for it to pay back against -- so the directory is not a
+/// trade, it is weight the workspace carries for a code path it has closed.
+///
+/// `share/man` and `share/doc` are documentation for the client programs.
+/// Nothing on any path here shells out to one, and `man` does not read a page
+/// out of a workspace directory in any case.
+///
+/// It is 25 MB of bitcode and 1.2 MB of manual pages in PostgreSQL 17's Debian
+/// build, measured with `du`, which is the build available to measure from
+/// here. The archive this project unpacks is built elsewhere and may carry a
+/// different amount or none at all, so the removal reports what it reclaimed
+/// rather than claiming a figure.
+const UNREAD: &[&str] = &["lib/bitcode", "share/man", "share/doc"];
+
+/// Removes what a bundled installation will never read, and says how much.
+///
+/// `bundled` is the whole of the safety here. A caller who supplies
+/// `PAMIN_POSTGRES_DIR` is pointing at an installation shared with everything
+/// else on the machine, and a workspace deleting from it would be a workspace
+/// reaching outside itself -- so this does nothing at all in that case, and
+/// the flag is a parameter rather than a read of the environment so that the
+/// two cases can be written down as tests.
+///
+/// Best effort otherwise: a directory that will not go is logged and left,
+/// because the alternative is refusing to open a workspace over disk it did
+/// not need. Called after every `setup`, which makes it idempotent by way of
+/// `NotFound` on the second call; `setup` decides whether it has an install by
+/// the directory's name and its existence, never by its contents, so removing
+/// from inside one does not provoke a re-download.
+fn trim_unread(install: &std::path::Path, bundled: bool) -> u64 {
+    if !bundled {
+        return 0;
+    }
+
+    let mut reclaimed = 0;
+    for relative in UNREAD {
+        let path = install.join(relative);
+        let bytes = tree_bytes(&path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => reclaimed += bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::debug!(
+                path = %path.display(),
+                %error,
+                "leaving part of the installation this project does not read"
+            ),
+        }
+    }
+    reclaimed
+}
+
+/// How many bytes a directory tree holds, counting regular files only.
+///
+/// Zero for a path that is not there, which is the same answer as a path that
+/// is empty and is the answer [`trim_unread`] wants for both.
+fn tree_bytes(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+
+    entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => tree_bytes(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map(|data| data.len()).unwrap_or(0),
+            // A symlink is counted as nothing: its target is either inside this
+            // tree and counted there, or outside it and not this tree's bytes.
+            _ => 0,
+        })
+        .sum()
+}
+
 /// Installs if needed, starts the server, and leaves it running.
 async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
     std::fs::create_dir_all(workspace.root())?;
 
     let supplied = supplied_installation();
+    let bundled = supplied.is_none();
 
     // The password file and the data directory share a parent, and until a
     // supplied installation was possible nothing had to say so: unpacking the
@@ -312,6 +392,18 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
 
     let mut postgres = PostgreSQL::new(settings);
     postgres.setup().await?;
+
+    // After `setup`, because that is what resolves the installation directory
+    // and unpacks the archive into it, and before `start`, because a server
+    // reading one of these would be a server this deleted something under.
+    let reclaimed = trim_unread(&postgres.settings().installation_dir, bundled);
+    if reclaimed > 0 {
+        tracing::info!(
+            bytes = reclaimed,
+            "removed the parts of the installation this project does not read"
+        );
+    }
+
     postgres.start().await?;
 
     if !postgres.database_exists(DATABASE).await? {
@@ -420,7 +512,129 @@ const PROBE: Duration = Duration::from_secs(1);
 mod tests {
     use std::net::TcpListener;
 
-    use super::stale_pid_file;
+    use super::{UNREAD, stale_pid_file, trim_unread};
+
+    /// An installation tree shaped the way a PostgreSQL install is shaped.
+    ///
+    /// Every path this project does read is in it as well as every path it
+    /// does not, because the assertion worth making is not that the removal
+    /// removes -- it is that it leaves the server, the client and the
+    /// extensions the migrations create.
+    fn installation(root: &std::path::Path) -> u64 {
+        let mut unread = 0;
+        for (relative, bytes) in [
+            ("bin/postgres", 4096),
+            ("bin/initdb", 2048),
+            ("lib/libpq.so.5", 1024),
+            ("lib/postgresql/dict_snowball.so", 512),
+            ("share/extension/plpgsql.control", 256),
+            ("share/postgres.bki", 128),
+            ("share/timezonesets/Default", 64),
+        ] {
+            write(root, relative, bytes);
+        }
+        for relative in [
+            "lib/bitcode/postgres/utils/adt/numeric.bc",
+            "lib/bitcode/postgres/index.bc",
+            "share/man/man1/psql.1",
+            "share/doc/postgresql/html/index.html",
+        ] {
+            unread += write(root, relative, 8192);
+        }
+        unread
+    }
+
+    fn write(root: &std::path::Path, relative: &str, bytes: u64) -> u64 {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("a file has a parent"))
+            .expect("create the directory");
+        std::fs::write(&path, vec![0u8; bytes as usize]).expect("write the file");
+        bytes
+    }
+
+    /// The bytes every regular file under a path adds up to.
+    fn bytes_under(path: &std::path::Path) -> u64 {
+        super::tree_bytes(path)
+    }
+
+    /// What it removes, and -- the half that matters -- what it does not.
+    #[test]
+    fn trimming_takes_the_unread_directories_and_leaves_the_server() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        let unread = installation(root.path());
+        let before = bytes_under(root.path());
+
+        let reclaimed = trim_unread(root.path(), true);
+
+        assert_eq!(
+            reclaimed, unread,
+            "the removal reported {reclaimed} bytes and the unread directories held {unread}"
+        );
+        assert_eq!(
+            bytes_under(root.path()),
+            before - unread,
+            "the tree lost something other than the unread directories"
+        );
+        for relative in UNREAD {
+            assert!(
+                !root.path().join(relative).exists(),
+                "{relative} survived the removal"
+            );
+        }
+        for relative in [
+            "bin/postgres",
+            "bin/initdb",
+            "lib/libpq.so.5",
+            "lib/postgresql/dict_snowball.so",
+            "share/extension/plpgsql.control",
+            "share/postgres.bki",
+            "share/timezonesets/Default",
+        ] {
+            assert!(
+                root.path().join(relative).exists(),
+                "{relative} was removed, and the server needs it"
+            );
+        }
+    }
+
+    /// A second call has nothing to do and says so rather than failing.
+    ///
+    /// `setup` runs on every command, so this runs on every command too, and
+    /// the first one is the only one with anything to remove.
+    #[test]
+    fn trimming_twice_reclaims_nothing_the_second_time() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        let unread = installation(root.path());
+
+        assert_eq!(trim_unread(root.path(), true), unread);
+        assert_eq!(trim_unread(root.path(), true), 0);
+    }
+
+    /// An installation the caller supplied is left exactly as it was found.
+    ///
+    /// This is the assertion the whole guard exists for: `PAMIN_POSTGRES_DIR`
+    /// points at a system installation that other programs share, and a
+    /// workspace has no business deleting out of it.
+    #[test]
+    fn a_supplied_installation_is_not_trimmed() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        installation(root.path());
+        let before = bytes_under(root.path());
+
+        assert_eq!(trim_unread(root.path(), false), 0);
+
+        assert_eq!(
+            bytes_under(root.path()),
+            before,
+            "a supplied installation lost bytes"
+        );
+        for relative in UNREAD {
+            assert!(
+                root.path().join(relative).exists(),
+                "{relative} was removed from an installation this project does not own"
+            );
+        }
+    }
 
     /// Writes a lock file shaped the way PostgreSQL writes one.
     ///
