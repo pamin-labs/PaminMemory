@@ -110,6 +110,69 @@ And the trade the constant exists to avoid does not open up. Half weight with cr
 
 So the weight stays a constant and none of this was kept. What would change the answer is a different signal for the query's language — one that does not come from the channel it is being used to correct.
 
+### A third corpus, and the value the sweep never tried
+
+Everything above was settled on two corpora: the one written for Påmin Memory
+and XQuAD-R. Both have a property worth naming. Påmin Memory's own corpus has
+two of its three groups pinned at 1.000, so nothing can be observed to cost
+anything there; XQuAD-R is parallel translation whose questions are SQuAD's,
+built from the answer sentence's own words. Neither is a query anybody asked.
+
+MIRACL's Swahili dev split is: 131,924 Wikipedia passages, 482 questions people
+asked, 5,092 human relevance judgements, one language throughout. Swept the same
+way (`speed` profile, fusion only, no reranking, 482 queries a row):
+
+| lexical | k=5 | k=10 | k=20 | k=60 |
+| --- | --- | --- | --- | --- |
+| 0.000 | 0.6848 | 0.6848 | 0.6848 | 0.6848 |
+| **0.125** | **0.6885** | **0.6882** | 0.6821 | 0.6604 |
+| 0.250 | 0.6854 | 0.6826 | 0.6641 | 0.6282 |
+| 0.500 | 0.6713 | 0.6606 | 0.6414 | 0.5950 |
+| 1.000 | 0.5750 | 0.5676 | 0.5545 | 0.5263 |
+
+The `0.000` row is flat because `k` has nothing to do when one channel is left:
+the graph channel returns nothing on this corpus, which the harness asserts
+rather than assumes. That row is also **0.6848 to four decimals against the
+embedder compared exhaustively to every passage** — so the HNSW index over
+131,924 documents reproduces the brute-force scan, which is the check on the
+rest of the table.
+
+Two things follow, and the first is uncomfortable.
+
+**At the shipped setting, fusing four channels is net negative here.** `k=10`,
+lexical 0.25 scores 0.6826 against 0.6848 for the vector channel alone: −0.0022.
+Not large, and in the wrong direction for a layer whose purpose is to improve
+the ranking.
+
+**And a quarter was never compared against half of itself.** The sweep that
+settled it ran `1.00 / 0.50 / 0.25 / 0.00` — a quarter was the smallest non-zero
+value ever tried, and every argument above for it is an argument against zero.
+An eighth beats it on every group of all three corpora except one: +0.0056 here,
++0.0550 on Påmin Memory's cross-lingual group with the other two unmoved at
+their ceilings, +0.0377 on XQuAD-R cross-lingual, and −0.0501 on XQuAD-R
+same-language.
+
+That exception is the one measurement worth arguing with, because the same
+quantity is now measured twice on same-language queries and the two disagree by
+a factor of twenty: what the lexical pair is worth on questions asked in the
+answer's own language is **+0.0769 on XQuAD-R and +0.0034 on MIRACL**. The
+difference between those two corpora is that one's questions were written from
+the answer's own words. A benchmark can overstate a channel, and this is what it
+looks like when one does.
+
+**The bias in this run points the other way, which is why it is worth acting
+on.** These figures are the `speed` profile — multilingual-e5-small, 384
+dimensions — because `accuracy` is ten and a half hours of indexing for this
+corpus. A weaker dense channel leaves the lexical pair more to contribute, so
+fusion looks *better* here than it would on the shipped model. It is still net
+negative at the shipped weight.
+
+**The per-query rule is still not the lever.** `adapt 0.50-1.00` scores 0.6885,
+the best cell in the table — and the constant hiding inside it, an eighth held
+at every query, scores 0.6882. Three corpora now agree that the rule is worth
+between nothing and 0.009 over the constant it reduces to, while the constant
+itself is worth ten times that. It stays off.
+
 ### Three recall channels, not seven
 
 An earlier channel list had seven entries. Four were redundant, and two of those double-counted against modifiers the same design already applied after fusion:
