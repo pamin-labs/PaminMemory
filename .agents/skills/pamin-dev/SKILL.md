@@ -231,6 +231,21 @@ will compile it and may fail the `-D warnings` gate on scratch code.
 Five runs in one session died or lied, and not one of them was wrong about
 retrieval. They were wrong about the box.
 
+- **How you wait is a load.** The largest single correction this repository
+  has published to a competitor comparison was caused by the shell that was
+  waiting for the run. `until [ -f done ]; do :; done` is a busy loop: on four
+  cores it takes one of them, and the published table of MemPalace 75.4 ms and
+  mem0 103.4 ms was measured beside one, against 36.3 and 62.9 on a quiet box.
+  The lead over MemPalace was roughly half what the page claimed. Wait with
+  `sleep`, or with whatever the harness around you provides, and before a run
+  check what is already burning CPU -- a stray loop from an earlier task had
+  been running for eleven hours and 95 minutes of CPU time.
+- **A noise source that spares your own arm is the dangerous kind.** That loop
+  roughly doubled the two arms that embed their query over HTTP and moved this
+  project's in-process arm by nothing: 25.7, 26.2, 25.7 across quiet and noisy
+  rounds alike. Every consistency check that compared our arm across runs
+  passed. So an arm being stable is evidence about that arm and nothing else,
+  and "our number reproduces" is not a reason to trust the row beneath it.
 - **Memory, not just CPU.** A retrieval run was killed at question 6 of 59 by
   starting a second measurement beside it. The reasoning was "quality scores do
   not depend on CPU contention, so these can share the machine", which is true
@@ -426,7 +441,7 @@ It was not one: Påmin Memory was timed through `su ubuntu -c "pamin ... search
 in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
 cluster shared four cores. It read 170 ms against 106 and the obvious
 conclusion was the opposite of the truth. Timed at the boundary each system's
-callers actually use, with nothing else running, it is 26.1 ms against 105.6. A
+callers actually use, with nothing else running, it is 25.7 ms against 64.6. A
 latency number needs its own harness, because the three things it depends on --
 the layer, warmth and quiet -- are exactly the three an accuracy run cannot
 hold still. And warm every unit before timing anything, not the first one: an

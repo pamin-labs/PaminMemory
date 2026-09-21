@@ -11,6 +11,8 @@ says anything about memory systems.
 ```
 benchmarks/
   shim.py            an OpenAI-shaped endpoint over `claude -p`, chat and embeddings
+  embedder.py        the same embeddings from a process of their own, chat
+                     forwarded on, so arms keep one base URL
   arms.py            one class per memory system
   resources.py       memory and disk accounting
   datasets/
