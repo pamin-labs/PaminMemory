@@ -79,7 +79,7 @@ sqlx = { version = "0.9", default-features = false, features = [
     "json",
 ] }
 whatlang = "0.16"
-zvec-rust = "0.7"
+zvec-rust = "0.7.2"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
