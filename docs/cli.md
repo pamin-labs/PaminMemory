@@ -20,6 +20,7 @@ The examples below are real output from a workspace built by the writes in
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
+| | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -54,6 +55,18 @@ exactly the one that gets there, which is why this is a switch and not a
 constant. Two notes: it applies at `pamin stop` and the next start, like every
 cluster-level setting here; and with it off, a workspace it installed itself
 does not keep the 25 MB of LLVM bitcode that only inlining reads.
+
+`PAMIN_MODEL_IDLE` is how long `pamin serve` keeps a model and the indexes
+pinning it after nothing has asked for them. It is a memory setting and the
+trade is measured on both sides: on a 13,014-document project a server holding
+the embedder and the `fast` reranker is 2,263 MB resident and 88-101 MB once it
+has given them back, so half an hour of quiet returns about 2.2 GB -- and the
+first search afterwards takes 4,528 ms instead of 116, which is 88% of what a
+server starting from nothing costs. Thirty minutes is where that stops being a
+close call: an agent working in bursts does not wait half an hour between
+searches, and a server left running overnight pays it once. Lower it on a
+machine where memory is scarcer than four seconds; raise it if a search every
+few minutes is worth 2.2 GB to you.
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.

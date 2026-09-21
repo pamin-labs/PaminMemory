@@ -158,14 +158,11 @@ async fn maintain(session: Arc<Session>) {
     loop {
         tokio::time::sleep(UPKEEP).await;
 
-        // Before the per-project work rather than after, because it does not
-        // depend on any of it and the loop below can take a while over a
-        // registry full of projects. A tick that releases nothing walks at most
-        // three map entries.
-        let released = session.models().release_idle_rerankers();
-        if !released.is_empty() {
-            tracing::debug!(?released, "released rerankers nothing had asked for");
-        }
+        // After the per-project work rather than before: flushing is what
+        // turns a write's claim into a completion, and closing an index that
+        // still owes one would leave the claim to lapse and be replayed. The
+        // idle window is minutes and this loop runs every few seconds, so
+        // anything owed has been drained long before a project looks idle.
 
         // One engine at a time, and taken by key. Holding all of them for the
         // length of a sweep makes every one of them look busy to eviction,
@@ -188,8 +185,56 @@ async fn maintain(session: Arc<Session>) {
                 Err(error) => tracing::warn!(%error, "index upkeep failed"),
             }
         }
+
+        // The engines above are dropped by now, so a project that has gone
+        // quiet can be closed and the weights it was pinning given back.
+        let (engines, embedders, rerankers) = session.close_what_is_idle();
+        if !engines.is_empty() || !embedders.is_empty() || !rerankers.is_empty() {
+            tracing::debug!(
+                ?engines,
+                ?embedders,
+                ?rerankers,
+                "gave back what nothing had asked for"
+            );
+            trim_heap();
+        }
     }
 }
+
+/// Asks the allocator to hand back what the sweep just freed.
+///
+/// Dropping a model returns its pages to the C heap and not to the kernel, and
+/// the difference is a gigabyte. Measured on a server over the
+/// 13,014-document project: resident 2,263 MB after one `fast` search, 1,000
+/// MB once the idle sweep had released both models -- so 1,263 MB came back on
+/// its own and roughly a gigabyte of free heap stayed mapped. `malloc_trim`
+/// is what asks for that gigabyte.
+///
+/// Called only when the sweep released something, so a quiet server does not
+/// walk its arenas every five seconds for nothing. It is advisory: the
+/// allocator returns what it can and keeps what it cannot, and a return value
+/// of zero means it found nothing to give, which is not an error.
+///
+/// glibc only. Other libcs either do this themselves or do not offer it, and
+/// the fallback is the behaviour this had before -- which is why it is an
+/// empty function rather than a compile error.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn trim_heap() {
+    unsafe extern "C" {
+        /// glibc's own, declared here rather than through a crate: it is one
+        /// symbol, and `ci/budget.py` counts dependencies.
+        fn malloc_trim(pad: usize) -> i32;
+    }
+
+    // SAFETY: the call takes a byte count by value, returns a flag, and has no
+    // preconditions. What it touches is memory the allocator already considers
+    // free, so nothing safe Rust can observe changes.
+    let released = unsafe { malloc_trim(0) };
+    tracing::trace!(released, "asked the allocator for its free pages back");
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn trim_heap() {}
 
 /// Whether the connection asked the server to stop.
 enum Shutdown {
