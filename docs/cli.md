@@ -342,6 +342,15 @@ reranked, and those are overwhelmingly the ones written in another language.
 The model is fetched the first time a search asks for one, into the same cache
 as the embedding model.
 
+It costs memory while it is loaded, and more than its download suggests: on a
+13,014-document project a server serving `off` is 1,625 MB resident, and one
+`fast` search takes it to 2,007 or 2,271 MB -- so between 380 MB and 645 MB for
+a 130 MB model, the difference being the inference runtime's arenas rather than
+the weights. `pamin serve` gives it back after five minutes with nothing asking
+for that tier, which returns 368 to 380 MB of it to the operating system; the
+arena growth above that stays. A workspace that sets `off` never pays it at
+all, which is the other half of the reason a single-language workspace should.
+
 A reranker reads the query and a memory together, which is what lets it correct
 an order the channels got wrong, and what makes it cost a forward pass for
 every candidate it looks at. Only the candidates no lexical channel found are

@@ -117,6 +117,15 @@ impl Session {
         &self.workspace
     }
 
+    /// The models this process holds, for a caller that maintains them.
+    ///
+    /// Only the server has anything to do with this: giving weights back is
+    /// worth doing when the process stays, and a command that exits after one
+    /// search gives everything back by exiting.
+    pub fn models(&self) -> &Models {
+        &self.models
+    }
+
     /// The project row for this name, creating it if it is new.
     pub async fn project(&self, name: &str) -> Result<ProjectId> {
         let mut projects = self.projects.lock().await;

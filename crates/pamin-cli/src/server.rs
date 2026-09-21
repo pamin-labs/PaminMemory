@@ -158,6 +158,15 @@ async fn maintain(session: Arc<Session>) {
     loop {
         tokio::time::sleep(UPKEEP).await;
 
+        // Before the per-project work rather than after, because it does not
+        // depend on any of it and the loop below can take a while over a
+        // registry full of projects. A tick that releases nothing walks at most
+        // three map entries.
+        let released = session.models().release_idle_rerankers();
+        if !released.is_empty() {
+            tracing::debug!(?released, "released rerankers nothing had asked for");
+        }
+
         // One engine at a time, and taken by key. Holding all of them for the
         // length of a sweep makes every one of them look busy to eviction,
         // which then finds nothing to close and lets the registry grow past
