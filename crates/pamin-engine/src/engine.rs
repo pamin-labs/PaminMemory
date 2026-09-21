@@ -5,6 +5,7 @@
 //! place where the two can drift out of step.
 
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use pamin_core::{
@@ -221,8 +222,50 @@ pub struct Models {
     loaded: Arc<Mutex<std::collections::HashMap<Profile, Arc<Mutex<Embedder>>>>>,
     /// The same arrangement for rerankers, keyed by tier for the same reason:
     /// the tier is what decides which weights these are.
-    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Arc<Mutex<Reranker>>>>>,
+    ///
+    /// Each carries when it was last handed out, because unlike an embedder a
+    /// reranker can stop being wanted. Every search needs a query vector; a
+    /// reranker is a tier a caller chose once, and a workspace in one language
+    /// is told by `docs/cli.md` to choose `off`.
+    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held>>>,
 }
+
+/// A loaded reranker and when it was last handed out.
+type Held = (Instant, Arc<Mutex<Reranker>>);
+
+/// How long a reranker may sit unused before the process gives it back.
+///
+/// It is worth giving back because of what it costs while it sits there, and
+/// because the giving back was measured rather than assumed -- dropping a
+/// model frees it to the allocator, which is not the same as to the operating
+/// system. On a resident server over a 13,014-document project, four cores:
+///
+/// | | resident |
+/// | --- | --- |
+/// | serving `--rerank off` | 1,625-1,626 MB, stable to a megabyte |
+/// | after one `fast` search | 2,007 MB or 2,271 MB |
+/// | after this releases it | 1,627-1,903 MB |
+///
+/// **One `fast` search costs either about 380 MB or about 645 MB of resident
+/// memory for a 130 MB model cache**, and the bimodality is the runtime's
+/// arenas rather than the weights -- six samples over one fixed query pair,
+/// three at each value, so it is not the shortlist either. Releasing gives
+/// back 368 to 380 MB of it, three samples, consistently: the model's own
+/// footprint returns to the operating system and the arena growth above it
+/// does not. So this reclaims about 380 MB reliably and sometimes all 645,
+/// against a server that otherwise holds it for as long as it lives.
+///
+/// `accurate` is four and a half times the weights and was not measurable
+/// here, its download being unreachable from the machine this ran on.
+///
+/// Five minutes because the cost of being wrong is asymmetric. Evicting a
+/// reranker a caller wants again costs that caller one model load, about a
+/// second; keeping one nobody wants costs every other process on the machine
+/// 638 MB for as long as the server lives, which is meant to be a long time.
+///
+/// Only rerankers. An embedder is on the path of every search including the
+/// ones that do not rerank, so evicting one buys a reload rather than a saving.
+const RERANKER_IDLE: Duration = Duration::from_secs(5 * 60);
 
 impl Models {
     /// Reads and writes the weights a workspace caches.
@@ -265,14 +308,71 @@ impl Models {
             .lock()
             .expect("the reranker registry lock is poisoned");
 
-        if let Some(reranker) = rerankers.get(&tier) {
+        if let Some((last_used, reranker)) = rerankers.get_mut(&tier) {
+            *last_used = Instant::now();
             return Ok(Arc::clone(reranker));
         }
 
         let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
-        rerankers.insert(tier, Arc::clone(&reranker));
+        rerankers.insert(tier, (Instant::now(), Arc::clone(&reranker)));
         Ok(reranker)
     }
+
+    /// Gives back the rerankers nothing has asked for lately.
+    ///
+    /// For a resident process to call on a schedule; a command that exits
+    /// after one search has nothing to give back. Returns what it released, so
+    /// the caller can say so in a log rather than guess.
+    ///
+    /// A tier a search is *using* is never released, even if the last hand-out
+    /// was long enough ago -- a long rerank over a large shortlist is exactly
+    /// that case. Dropping the registry's handle while a search holds its own
+    /// would not free anything, it would only make the next search load a
+    /// second copy alongside the first, which is the opposite of the point.
+    pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
+        let mut rerankers = self
+            .rerankers
+            .lock()
+            .expect("the reranker registry lock is poisoned");
+
+        let now = Instant::now();
+        let idle: Vec<Rerank> = rerankers
+            .iter()
+            .filter(|(_, (last_used, reranker))| {
+                is_idle(*last_used, now, reranker_idle()) && Arc::strong_count(reranker) == 1
+            })
+            .map(|(tier, _)| *tier)
+            .collect();
+
+        for tier in &idle {
+            rerankers.remove(tier);
+        }
+        idle
+    }
+}
+
+/// Whether something last wanted at `last_used` has been unwanted long enough.
+///
+/// Its own function because it is the whole of the policy, and a policy inside
+/// a closure inside a lock is a policy with no test.
+fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
+    now.saturating_duration_since(last_used) >= idle
+}
+
+/// The idle window, or what [`RERANKER_IDLE`] says.
+///
+/// `PAMIN_RERANKER_IDLE`, in seconds. Deliberately undocumented, like the
+/// other windows a test needs to shorten: a caller has no way to evaluate it
+/// and the measured default is the answer for every workspace measured here.
+/// Zero is refused rather than honoured, because a zero window releases the
+/// reranker the tick after it loads and turns every search into a model load.
+fn reranker_idle() -> Duration {
+    std::env::var("PAMIN_RERANKER_IDLE")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(RERANKER_IDLE)
 }
 
 impl Engine {
@@ -1472,9 +1572,45 @@ fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
 
 #[cfg(test)]
 mod tests {
-    use super::{best_first, fused_for, runs_of_tokens};
+    use std::time::{Duration, Instant};
+
+    use super::{RERANKER_IDLE, best_first, fused_for, is_idle, runs_of_tokens};
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    /// A tier in use is not idle, however long ago it was handed out.
+    ///
+    /// The pair that matters: the window has to be reached, and reaching it is
+    /// not enough on its own -- the caller checks that nothing holds the model
+    /// as well, because dropping the registry's handle while a search holds
+    /// its own frees nothing and makes the next search load a second copy.
+    #[test]
+    fn a_reranker_is_idle_only_once_the_window_has_passed() {
+        let window = Duration::from_secs(300);
+        let now = Instant::now();
+        let handed_out = now - Duration::from_secs(299);
+
+        assert!(
+            !is_idle(handed_out, now, window),
+            "a reranker wanted a second ago was called idle"
+        );
+        assert!(
+            is_idle(handed_out - Duration::from_secs(2), now, window),
+            "a reranker nobody has wanted for five minutes was not called idle"
+        );
+    }
+
+    /// The clock going backwards releases nothing rather than everything.
+    ///
+    /// `Instant` is monotonic, so this is not a real clock but a real
+    /// arithmetic case: subtracting a later instant from an earlier one panics
+    /// on a plain subtraction, and saturating it to zero is what keeps a
+    /// reordering inside one tick from looking like five idle minutes.
+    #[test]
+    fn a_hand_out_in_the_future_is_not_idle() {
+        let now = Instant::now();
+        assert!(!is_idle(now + Duration::from_secs(600), now, RERANKER_IDLE));
+    }
 
     fn topic(byte: u8) -> TopicId {
         TopicId(uuid::Uuid::from_bytes([byte; 16]))
