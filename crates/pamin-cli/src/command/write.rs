@@ -66,10 +66,14 @@ pub async fn execute(
     // without having started a database.
     let validity = args.validity.parse()?;
 
-    let content = match args.content {
-        Some(content) => content,
-        None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
-    };
+    // Standard input is read by the front end, before dispatch, because the
+    // server has none -- `main::fill_from_stdin`. So this arm is not the
+    // fallback it reads as: on the in-process path the content is already
+    // here, and on the server path reading standard input would block the
+    // server on a descriptor nobody is going to write to.
+    let content = args
+        .content
+        .context("no content: pass it as an argument or on standard input")?;
 
     let engine = session.engine(project, profile).await?;
     let (verdict, recorded) = record(&engine, &args.topic, &content, validity).await?;

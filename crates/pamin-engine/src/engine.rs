@@ -644,14 +644,6 @@ impl Engine {
         })
     }
 
-    /// Returns the topic with this name, creating it if it does not exist.
-    pub async fn ensure_topic(&self, name: &str) -> Result<Topic> {
-        let mut connection = self.database.pool().acquire().await?;
-        let topic = repository::ensure_topic(&mut connection, self.project, name).await?;
-        self.record_name(&mut *connection, &topic).await?;
-        Ok(topic)
-    }
-
     /// Files a topic's name in the index that answers "who is named here".
     ///
     /// Tokenized here rather than in the store because the segmenter is what
@@ -852,17 +844,6 @@ impl Engine {
             .count())
     }
 
-    /// Recalls candidates from every channel and fuses them here.
-    ///
-    /// The retrieval engine can fuse its own two channels in one call, and that
-    /// path is deliberately not taken: fusing there would produce a list that
-    /// then had to be fused again with anything PostgreSQL contributes, and the
-    /// per-channel ranks each result reports would already be lost.
-    pub async fn search(&self, query: &str, limit: u32, depths: Depths) -> Result<Vec<SearchHit>> {
-        self.search_fused(query, limit, depths, Fusion::default())
-            .await
-    }
-
     /// Search, then reorder the head of the result with a cross-encoder.
     ///
     /// Only the candidates no lexical channel found, and only into the
@@ -968,8 +949,13 @@ impl Engine {
     /// Exists for the same reason [`Depths`] is a parameter: the constants
     /// fusion runs on were settled by measurement and are re-settled the same
     /// way, so the harness that measures them has to be able to vary them.
-    /// Callers that are not measuring want [`search`](Self::search), which is
-    /// this with what ships.
+    /// Callers that are not measuring want
+    /// [`search_reranked`](Self::search_reranked), which is what `pamin
+    /// search` calls. This used to name a third entry point, one stage
+    /// shorter than the shipped one, and both evaluation harnesses took it:
+    /// every retrieval figure this project published described a pipeline
+    /// that does not ship, and the reranker gains were about half again too
+    /// high. That method had no other caller and is gone.
     pub async fn search_fused(
         &self,
         query: &str,
