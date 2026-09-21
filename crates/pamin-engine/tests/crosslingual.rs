@@ -189,11 +189,19 @@ const DEFAULT_PROFILE: &str = "accuracy";
 
 /// Per group: the nDCG@10 and recall@50 floors for the embedding space.
 ///
-/// Floors under what was measured -- 0.6338 / 0.8951 cross-lingual and
-/// 0.6748 / 0.9563 same-language -- by roughly a tenth, which is wide enough
+/// Floors under what was measured -- 0.6335 / 0.8981 cross-lingual and
+/// 0.6787 / 0.9529 same-language -- by roughly a tenth, which is wide enough
 /// that ordinary variation does not trip them and narrow enough that a
 /// weaker model does. Floors, not targets: a run that beats one is not by
 /// itself a reason to raise it.
+///
+/// Re-taken on deterministic vectors. This arm calls `embed_passages`, and
+/// on the default profile a batch used to perturb every vector in it, so the
+/// figures here described embeddings the product no longer produces. They
+/// moved by less than this harness's own run-to-run spread -- the previous
+/// pair was 0.6338 / 0.8951 and 0.6748 / 0.9563 -- which is the finding
+/// rather than a reason to skip the re-run: the perturbation was systematic
+/// enough to leave the ranking alone, and that is why nothing caught it.
 const MODEL_FLOORS: &[(&str, f64, f64)] =
     &[("cross_lingual", 0.57, 0.80), ("same_language", 0.60, 0.86)];
 
