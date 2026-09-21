@@ -278,6 +278,61 @@ pub fn is_fragmented(files: u64) -> bool {
     files > MAX_FILES
 }
 
+/// How many documents may sit outside the vector graph before one is built.
+///
+/// `segment_documents` says the maintenance question has one answer --
+/// "whenever a segment has sealed without a graph" -- and the cascade asked it
+/// with the wrong instrument. It gated the graph on the file count alone
+/// (`is_fragmented`), and that was sound while every write flushed: files grew
+/// about two per write, so the budget was reached every sixty or so and a
+/// sealed segment never waited long for its graph. Once a write left the flush
+/// to the server that stopped being true -- 136 files after three thousand
+/// writes, against a budget of 256 -- so the trigger moved from every sixty
+/// writes to roughly every five and a half thousand, and a project below that
+/// had no graph at all. `cascade.rs` carried the old justification for another
+/// release; this is what replaced it.
+///
+/// The bound is on the *unindexed remainder* rather than on the project,
+/// because the remainder is what a query scans and is therefore the thing with
+/// a cost. An earlier attempt at this was a threshold on the project's size --
+/// a hundred thousand documents -- and it never fired, because how much has
+/// ever been written says nothing about how much is outside the graph.
+///
+/// The value is the crossover in `segment_documents`' own table, where a scan
+/// and a graph cost the same: 5.78 ms against 5.76 at twenty-five thousand
+/// documents. Below it the scan is the faster of the two and a build would be
+/// work spent to go slower, so waiting is right; above it the scan is what the
+/// graph exists to replace. So the remainder a query may scan is held at the
+/// point where scanning it stops being the cheaper thing, which is a cost
+/// rather than a size, and it is read off a measurement already in this file
+/// rather than chosen.
+const UNINDEXED_BUDGET: u64 = 25_000;
+
+/// Whether enough documents sit outside the vector graph to be worth building.
+///
+/// Takes the completeness rather than reading it, so the policy is testable
+/// without an index and the caller does the one FFI call it already makes.
+pub fn vector_index_lags(documents: u64, completeness: f32) -> bool {
+    let covered = (documents as f64 * f64::from(completeness.clamp(0.0, 1.0))) as u64;
+    documents.saturating_sub(covered) >= unindexed_budget()
+}
+
+/// The budget, or whatever a harness set it to.
+///
+/// Same shape and the same reason as `reranking::tuned`: the assertion worth
+/// having here is that a drain leaves a graph behind, and asserting it at the
+/// shipped budget would mean writing and embedding twenty-five thousand
+/// memories to see it. Unset means the constant, so nothing a user runs is
+/// affected. Undocumented on purpose -- it exists so a test does not have to
+/// edit the tree.
+fn unindexed_budget() -> u64 {
+    std::env::var("PAMIN_UNINDEXED_BUDGET")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(UNINDEXED_BUDGET)
+}
+
 const DOCUMENT_GRAIN: &str = "topic";
 
 /// How many neighbours each document keeps in the vector graph.
@@ -762,4 +817,53 @@ fn collect_ids(docs: Vec<Doc>) -> Vec<TopicId> {
         .filter_map(|pk| uuid::Uuid::parse_str(pk).ok())
         .map(TopicId::from)
         .collect()
+}
+
+#[cfg(test)]
+mod upkeep {
+    use super::{is_fragmented, vector_index_lags};
+
+    /// The two maintenance conditions, at the numbers a served workspace
+    /// actually reaches.
+    ///
+    /// This is the defect written down. `projection.rs` measured that three
+    /// thousand writes through a server leave 136 files, and 136 is inside the
+    /// 256-file budget -- so for a release the only condition that could queue
+    /// `optimize` was one that a served workspace does not trip, and the vector
+    /// channel answered from an exhaustive scan with nothing reporting it.
+    ///
+    /// Asserted together rather than apart, because either one alone passes on
+    /// the broken code: the point is that at one set of numbers the file
+    /// condition is silent and the graph condition is not.
+    #[test]
+    fn a_served_workspace_trips_the_graph_condition_and_not_the_file_one() {
+        // Measured, not chosen: the file count after three thousand writes
+        // that left their flush to the server.
+        assert!(
+            !is_fragmented(136),
+            "136 files is inside the budget, which is why this condition \
+             cannot be the graph's"
+        );
+        assert!(
+            vector_index_lags(30_000, 0.0),
+            "thirty thousand documents outside the graph has to queue a build"
+        );
+    }
+
+    /// Below the crossover, waiting is right rather than merely tolerable.
+    #[test]
+    fn a_remainder_cheaper_to_scan_than_to_index_waits() {
+        assert!(!vector_index_lags(1_000, 0.0));
+        assert!(!vector_index_lags(100_000, 0.9));
+        // The bound is on the remainder, not on the project: the size that
+        // never fired as a threshold is fully indexed here.
+        assert!(!vector_index_lags(1_000_000, 1.0));
+    }
+
+    /// A completeness outside 0.0..=1.0 must not read as a negative remainder.
+    #[test]
+    fn a_nonsense_completeness_does_not_wrap() {
+        assert!(vector_index_lags(30_000, -1.0));
+        assert!(!vector_index_lags(30_000, 2.0));
+    }
 }

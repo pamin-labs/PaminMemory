@@ -425,6 +425,33 @@ impl Engine {
         self.index.lock().expect("the index lock is poisoned")
     }
 
+    /// What share of this project's documents the vector graph covers.
+    ///
+    /// Public because it is the premise of every retrieval measurement taken
+    /// through this engine, and an unasserted premise is how a vector channel
+    /// came to answer from an exhaustive scan for a whole release while the
+    /// HNSW parameters it was configured with described a structure nothing
+    /// had built. A latency or recall figure taken below 1.0 here is a figure
+    /// for a different object, so a harness that cannot read this cannot say
+    /// what it measured.
+    pub fn vector_index_completeness(&self) -> Result<f32> {
+        Ok(off_the_runtime(|| {
+            self.index().vector_index_completeness()
+        })?)
+    }
+
+    /// How many documents this project's projection holds.
+    ///
+    /// Public for the same reason as
+    /// [`vector_index_completeness`](Self::vector_index_completeness), and it
+    /// is the half that stops the other one passing vacuously: an *empty*
+    /// projection reports a completeness of 1.0, because everything it holds
+    /// is indexed and it holds nothing. So "the graph covers everything" is
+    /// only a claim about a graph once something is in there.
+    pub fn indexed_documents(&self) -> Result<u64> {
+        Ok(off_the_runtime(|| self.index().document_count())?)
+    }
+
     /// How wide the widest topic name in this project is, in tokens.
     ///
     /// Read once and remembered. It is asked at the top of every search -- to
