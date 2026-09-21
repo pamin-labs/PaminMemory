@@ -118,6 +118,16 @@ impl Engine {
                 // rather than called: maintenance is per-project work, and the
                 // outbox is what makes one worker run it rather than every
                 // worker racing to. The next round claims it.
+                if drained.completed > 0 && !tidied {
+                    // The queue is not a log. Settled rows outlive their work
+                    // and used to outlive it forever, which made `index_jobs`
+                    // the largest thing in the database -- 26 MB of a 62 MB
+                    // workspace over 13,014 documents, none of it reachable.
+                    // Here rather than in the maintenance job because it is one
+                    // statement and it should not wait on a graph being due.
+                    jobs::prune(self.database.pool(), self.project).await?;
+                }
+
                 if drained.completed > 0
                     && !tidied
                     && (self.index_is_fragmented()? || self.vector_index_lags()?)
