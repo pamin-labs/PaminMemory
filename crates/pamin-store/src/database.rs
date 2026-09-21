@@ -196,9 +196,18 @@ fn settings() -> HashMap<String, String> {
         // the same, and the default is what talks the planner out of index
         // scans it should be choosing.
         ("random_page_cost".to_string(), "1.1".to_string()),
-        // Compiling a query pays off over seconds of execution. Every query
-        // here is a lookup by key or a bounded scan, so the compilation is the
-        // slow part and there is nothing for it to pay back against.
+        // Not a general optimisation switch: it is LLVM compilation of a
+        // query's expressions, and PostgreSQL only reaches for it above
+        // `jit_above_cost`, which is 100000. Nothing here comes near that.
+        // The hottest query on the read path -- hydrating 150 candidates'
+        // current states through `topics.current_state_id` -- plans at 84, and
+        // the widest thing this schema can do on a 13,014-topic project, every
+        // topic joined to its state, plans at 1313. Inlining, the only thing
+        // that reads `lib/bitcode`, starts at 500000. So `on` would not
+        // compile anything, `off` removes the check, and the two are the same
+        // query plan; this is the setting saying out loud which of those is
+        // deliberate. Measured with EXPLAIN on PostgreSQL 17, not argued from
+        // the shape of the queries, which is what this comment used to do.
         ("jit".to_string(), "off".to_string()),
         // Autovacuum waits for a fifth of a table to be dead rows. On a table
         // of a hundred million states that is twenty million, and until then
@@ -252,11 +261,13 @@ fn supplied_socket_directory(workspace: &Workspace) -> Option<String> {
 ///
 /// `lib/bitcode` is LLVM bitcode for every core extension, and PostgreSQL
 /// reads it in one situation only: inlining an extension's functions into a
-/// JIT-compiled plan. [`settings`] compiles `jit = off` into every cluster this
-/// project starts, for a reason that has nothing to do with disk -- every query
-/// here is a lookup by key or a bounded scan, so compilation is the slow part
-/// and there is nothing for it to pay back against -- so the directory is not a
-/// trade, it is weight the workspace carries for a code path it has closed.
+/// JIT-compiled plan. Two things have to be true at once for that to happen,
+/// and neither is. [`settings`] compiles `jit = off` into every cluster this
+/// project starts; and inlining needs a plan costing `jit_inline_above_cost`,
+/// 500000, where the hottest query on the read path plans at 84 and the widest
+/// query this schema can express on a 13,014-topic project plans at 1313. So
+/// the directory is not a trade against latency, it is weight a workspace
+/// carries for a code path it has closed and could not reach if it opened it.
 ///
 /// `share/man` and `share/doc` are documentation for the client programs.
 /// Nothing on any path here shells out to one, and `man` does not read a page
