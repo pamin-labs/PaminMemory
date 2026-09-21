@@ -265,16 +265,50 @@ impl Embedder {
     }
 
     /// One forward pass, whichever model this profile loaded.
+    ///
+    /// The joint export runs one text at a time, and that is a correctness
+    /// choice rather than an oversight. Measured on this export: a text's
+    /// vector changes when anything else shares its batch. Against the same
+    /// text embedded alone, a batch of two returns cosine 0.9816 with a
+    /// shorter neighbour and 0.9859 with a longer one, and the two neighbours
+    /// disagree with each other at 0.9805 -- on 1024 dimensions that is a
+    /// different vector, not a rounding difference. A batch of one is
+    /// identical to a single call, so it is the presence of a neighbour that
+    /// does it, not the batching API.
+    ///
+    /// It is not fastembed's Rust code: the tokenizer pads to the batch's
+    /// longest member, so a text that *is* the longest gets byte-identical
+    /// ids and mask either way, and the mask is passed to the session. Only
+    /// the batch dimension differs, so what changes the answer is the export
+    /// or the runtime's INT8 kernels. `speed` and `balanced` are unaffected --
+    /// both return byte-identical vectors batched or alone -- which is why
+    /// this is scoped to the joint model.
+    ///
+    /// What it costs is the batching win on this profile: thirty-two texts
+    /// together take 190 ms against 409 ms one at a time, so `reindex` is
+    /// roughly twice the wall clock here. What it buys is that a document's
+    /// vector does not depend on which other documents happened to be in
+    /// flight beside it -- so `reindex` and the cascade agree, and the same
+    /// corpus written twice indexes to the same thing.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let failed = |error| IndexError::Engine(format!("embedding text: {error}"));
         match &mut self.model {
-            Model::Text(model) => model.embed(texts, None),
+            Model::Text(model) => model.embed(texts, None).map_err(failed),
             // The sparse and ColBERT representations come back from the same
             // pass and are dropped here. They are not free -- the pass
             // computes them -- but neither is wanted, and no cheaper export of
             // this model's int8 weights exists.
-            Model::Joint(model) => model.embed(texts, None).map(|output| output.dense),
+            Model::Joint(model) => {
+                let mut vectors = Vec::with_capacity(texts.len());
+                for text in texts {
+                    let mut dense = model.embed(vec![text], None).map_err(failed)?.dense;
+                    vectors.push(dense.pop().ok_or_else(|| {
+                        IndexError::Engine("the joint export returned no dense vector".into())
+                    })?);
+                }
+                Ok(vectors)
+            }
         }
-        .map_err(|error| IndexError::Engine(format!("embedding text: {error}")))
     }
 }
 
