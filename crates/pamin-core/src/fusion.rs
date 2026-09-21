@@ -132,6 +132,10 @@ pub struct Fusion {
     /// Off whenever a caller sets a lexical weight by hand, so a sweep
     /// measures the constant it asked for.
     adaptive: bool,
+    /// What the lexical pair keeps at zero agreement, as a share of its weight.
+    agreement_floor: f32,
+    /// What it reaches at full agreement, as a share of its weight.
+    agreement_ceiling: f32,
 }
 
 impl Default for Fusion {
@@ -169,7 +173,13 @@ impl Default for Fusion {
                 (Channel::LexicalSegmented, LEXICAL_WEIGHT),
                 (Channel::LexicalNgram, LEXICAL_WEIGHT),
             ]),
-            adaptive: true,
+            agreement_floor: 0.0,
+            agreement_ceiling: 1.0,
+            // Off by default. It is worth a great deal on one group of one
+            // corpus and it takes the other group apart -- see
+            // `lexical_agreement`. A default has to be good for a user and
+            // good on every benchmark, and this is not that yet.
+            adaptive: false,
         }
     }
 }
@@ -185,6 +195,21 @@ impl Fusion {
         if channel.is_lexical() {
             self.adaptive = false;
         }
+        self
+    }
+
+    /// Scales the lexical weight by per-query agreement, between `floor` and
+    /// `ceiling` of the configured weight.
+    ///
+    /// Opt-in, and swept rather than argued. `floor` is what the lexical pair
+    /// keeps when it agrees with the vector channel about nothing, `ceiling`
+    /// what it reaches at full agreement; `with_adaptive(1.0, 1.0)` is the
+    /// constant, and `with_adaptive(0.0, 1.0)` is the unbounded form measured
+    /// below.
+    pub fn with_adaptive(mut self, floor: f32, ceiling: f32) -> Self {
+        self.adaptive = true;
+        self.agreement_floor = floor.clamp(0.0, 1.0);
+        self.agreement_ceiling = ceiling.clamp(0.0, 1.0).max(floor);
         self
     }
 
@@ -270,7 +295,11 @@ impl Fusion {
         let agreement = self
             .adaptive
             .then(|| Self::lexical_agreement(lists))
-            .flatten();
+            .flatten()
+            .map(|agreement| {
+                let span = self.agreement_ceiling - self.agreement_floor;
+                self.agreement_floor + span * agreement
+            });
 
         for list in lists {
             let weight = match agreement {
@@ -645,7 +674,7 @@ mod tests {
     #[test]
     fn full_agreement_leaves_the_lexical_pair_at_its_ceiling() {
         let shared = [id(1), id(2), id(3), id(4)];
-        let fused = Fusion::default().fuse(&[
+        let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
             ChannelResults::new(Channel::LexicalSegmented, shared.to_vec()),
             ChannelResults::new(Channel::Vector, shared.to_vec()),
         ]);
@@ -664,7 +693,7 @@ mod tests {
     fn no_agreement_takes_the_lexical_pair_out_of_the_vote() {
         let vector: Vec<_> = (1..=4).map(id).collect();
         let lexical: Vec<_> = (10..=13).map(id).collect();
-        let fused = Fusion::default().fuse(&[
+        let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
             ChannelResults::new(Channel::LexicalSegmented, lexical),
             ChannelResults::new(Channel::Vector, vector.clone()),
         ]);
@@ -696,7 +725,7 @@ mod tests {
     fn partial_agreement_scales_the_lexical_pair() {
         let vector: Vec<_> = (1..=4).map(id).collect();
         let lexical = vec![id(1), id(2), id(20), id(21)];
-        let fused = Fusion::default().fuse(&[
+        let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
             ChannelResults::new(Channel::LexicalSegmented, lexical),
             ChannelResults::new(Channel::Vector, vector),
         ]);
@@ -738,11 +767,55 @@ mod tests {
     /// rather than silently becoming zero.
     #[test]
     fn without_a_vector_channel_the_configured_weight_stands() {
-        let fused = Fusion::default().fuse(&[ChannelResults::new(
-            Channel::LexicalSegmented,
-            vec![id(1), id(2)],
-        )]);
+        let fused = Fusion::default()
+            .with_adaptive(0.0, 1.0)
+            .fuse(&[ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![id(1), id(2)],
+            )]);
 
         assert_eq!(lexical_weight_in(&fused[0]), LEXICAL_WEIGHT);
+    }
+
+    /// A floor keeps the lexical pair in the vote when agreement is low.
+    ///
+    /// The unbounded form took same-language ranking apart on XQuAD-R, so the
+    /// mapping has a floor and a ceiling and both are swept. This pins the
+    /// arithmetic, not the values.
+    #[test]
+    fn a_floor_keeps_the_lexical_pair_in_the_vote() {
+        let vector: Vec<_> = (1..=4).map(id).collect();
+        let lexical: Vec<_> = (10..=13).map(id).collect();
+        let fused = Fusion::default().with_adaptive(0.5, 1.0).fuse(&[
+            ChannelResults::new(Channel::LexicalSegmented, lexical),
+            ChannelResults::new(Channel::Vector, vector),
+        ]);
+
+        let lexical_hit = fused
+            .iter()
+            .find(|result| result.topic == id(10))
+            .expect("the lexical candidates are still returned");
+        assert!(
+            (lexical_weight_in(lexical_hit) - LEXICAL_WEIGHT * 0.5).abs() < 1e-6,
+            "zero agreement should land on the floor, not on zero"
+        );
+    }
+
+    /// And the constant is reachable through the same knob, so the sweep can
+    /// include it without a second code path.
+    #[test]
+    fn a_floor_equal_to_the_ceiling_is_the_constant() {
+        let vector: Vec<_> = (1..=4).map(id).collect();
+        let lexical: Vec<_> = (10..=13).map(id).collect();
+        let fused = Fusion::default().with_adaptive(1.0, 1.0).fuse(&[
+            ChannelResults::new(Channel::LexicalSegmented, lexical),
+            ChannelResults::new(Channel::Vector, vector),
+        ]);
+
+        let lexical_hit = fused
+            .iter()
+            .find(|result| result.topic == id(10))
+            .expect("the lexical candidates are still returned");
+        assert_eq!(lexical_weight_in(lexical_hit), LEXICAL_WEIGHT);
     }
 }
