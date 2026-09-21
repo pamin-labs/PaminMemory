@@ -19,6 +19,7 @@ The examples below are real output from a workspace built by the writes in
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
+| | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -35,6 +36,24 @@ the migrations expect PostgreSQL 17. And a figure measured against a server
 built by somebody else is a figure for that server: fine for checking
 behaviour, not interchangeable with the numbers in
 [measured.md](measured.md).
+
+`PAMIN_JIT=on` turns on PostgreSQL's LLVM compilation of query expressions.
+It is off by default because it is measurably unreachable at every size
+measured here, not because compiling is disliked: PostgreSQL only reaches for
+it above a plan cost of 100000, and on a 13,014-topic project the read path's
+hydration of fifty candidates plans at 84, the widest query the schema can
+state plans at 1313, and `pamin grep` plans at 56 because its `ORDER BY`
+matches an index and the scan stops early. The first of those does not grow
+with the project at all -- it is bounded by `--channel-depth`.
+
+One shape does grow. A `grep` for something the project barely contains has to
+walk its whole recency index, and that cost is linear: 995 at 15,224 stored
+versions, so roughly 65 for every thousand, reaching 100000 somewhere around a
+million and a half. A workspace an agent has been writing to for a year is
+exactly the one that gets there, which is why this is a switch and not a
+constant. Two notes: it applies at `pamin stop` and the next start, like every
+cluster-level setting here; and with it off, a workspace it installed itself
+does not keep the 25 MB of LLVM bitcode that only inlining reads.
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
