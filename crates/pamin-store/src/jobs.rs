@@ -90,10 +90,46 @@ pub async fn enqueue(
     kind: JobKind,
     subject: Option<uuid::Uuid>,
 ) -> Result<()> {
-    let key = match subject {
-        Some(subject) => format!("{kind}:{subject}"),
-        None => format!("{kind}:"),
-    };
+    // Through the batched form with one kind in it, so the statement -- and
+    // with it the idempotency key and the conflict behaviour a replay depends
+    // on -- has one definition rather than two that have to be kept equal.
+    enqueue_all(executor, project, &[kind], subject).await
+}
+
+/// Enqueues several kinds against one subject, in one round trip.
+///
+/// A promoted write owes three: the projection wants the memory indexed, the
+/// graph wants the names inside it resolved, and a topic nobody had written
+/// before wants the memories that already named it found. Three is the right
+/// number -- they are different work at different priorities, and merging them
+/// would make every rewrite of an existing topic pay for a scan it does not
+/// need -- but three [`enqueue`] calls inside the write transaction is three
+/// round trips for three rows, and the write is holding a transaction open
+/// across all of them.
+///
+/// Same rows, same conflict behaviour, same idempotency keys. `unnest` turns
+/// the arrays into rows so the statement stays `'static`, which is the same
+/// reason the rest of this crate writes its `IN` lists that way.
+pub async fn enqueue_all(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    kinds: &[JobKind],
+    subject: Option<uuid::Uuid>,
+) -> Result<()> {
+    if kinds.is_empty() {
+        return Ok(());
+    }
+
+    let ids: Vec<uuid::Uuid> = kinds.iter().map(|_| IndexJobId::new().0).collect();
+    let labels: Vec<String> = kinds.iter().map(|kind| kind.label().to_string()).collect();
+    let keys: Vec<String> = kinds
+        .iter()
+        .map(|kind| match subject {
+            Some(subject) => format!("{kind}:{subject}"),
+            None => format!("{kind}:"),
+        })
+        .collect();
+    let priorities: Vec<i32> = kinds.iter().map(|kind| priority(*kind)).collect();
     let payload = serde_json::json!({ "subject": subject });
     let now = OffsetDateTime::now_utc();
 
@@ -101,22 +137,24 @@ pub async fn enqueue(
         "INSERT INTO index_jobs
              (id, project_id, job_type, payload, idempotency_key,
               available_at, created_at, priority)
-         VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+         SELECT job.id, $1, job.label, $2, job.key, $3, $3, job.priority
+           FROM unnest($4::uuid[], $5::text[], $6::text[], $7::int[])
+                AS job(id, label, key, priority)
          ON CONFLICT (project_id, idempotency_key) DO UPDATE
              SET completed_at = NULL,
-                 available_at = $6,
+                 available_at = $3,
                  claimed_at   = NULL,
                  claimed_by   = NULL,
                  last_error   = NULL,
                  attempts     = 0",
     )
-    .bind(IndexJobId::new().0)
     .bind(project.0)
-    .bind(kind.label())
     .bind(&payload)
-    .bind(&key)
     .bind(now)
-    .bind(priority(kind))
+    .bind(&ids)
+    .bind(&labels)
+    .bind(&keys)
+    .bind(&priorities)
     .execute(executor)
     .await?;
 
