@@ -266,19 +266,33 @@ And the floor's own comment says what it was chosen for -- *so a new and nearly
 empty project is one segment rather than a hundred tiny ones* -- which is a
 reason about the small case that silently became the value for the large one.
 
-Measured, both shapes over the same 50,000 documents on this machine:
+Measured over the same 50,000 documents on this machine, four segment sizes:
 
-| created knowing | a segment holds | segments | recall@10 | a query |
+| a segment holds | segments | recall@10 | a query | build |
 | --- | --- | --- | --- | --- |
-| nothing (grown) | 2,000 | 25 | 1.0000 | 33.9 ms |
-| 50,000 (`reindex`) | 12,500 | 4 | 0.9980 | 23.3 ms |
+| 2,000 (what a grown project records) | 25 | 1.0000 | 39.8 ms | 52 s |
+| 12,500 (what `reindex` chooses) | 4 | 0.9980 | 16.9 ms | 129 s |
+| 25,000 | 2 | 0.9880 | 26.4 ms | 221 s |
+| 50,000 | 1 | 0.9510 | 16.6 ms | 415 s |
 
-**Twenty-one extra segments cost 10.6 ms a query, and recall does not pay for
-it** -- it is slightly better with the smaller graphs, which is the same
-direction `recall.rs`'s floor comment records. Extrapolating the 0.5 ms a
-segment this gives, a grown 131,924-document workspace pays about 31 ms of
-per-segment cost where a rebuilt one pays 2, and 31 ms is twice the entire
-retrieval row of the latency division below.
+**Twenty-five segments cost 2.4x a query against four, and recall does not pay
+for it** -- it is slightly better with the smaller graphs, which is the
+direction `recall.rs`'s floor comment records.
+
+**And the last two rows killed the obvious fix.** Raising `SMALLEST_SEGMENT`
+follows directly from the 0.36 ms-a-segment figure above, and it is wrong:
+recall falls monotonically as the segments grow, reaching 0.9510 at one
+segment, which is below `recall.rs`'s own 0.97 floor. Aiming at fewer segments
+than the policy wants trades accuracy away. A floor of 25,000 would have moved
+a fifty-thousand-document project from four segments to two and cost 0.010 of
+recall for nothing.
+
+One caveat on the latency column, because it matters for how much weight it
+carries: 26.4 ms for two segments sits above both one and four, which is not a
+shape anything physical would produce. These arms ran while a
+131,924-passage index build had the machine. The recall column is unaffected by
+that and the 25-segment latency reproduced across two runs; the middle rows'
+milliseconds should not be leaned on.
 
 It is also where the descriptors go. A segment is 79 files here, so 66
 segments is about 5,200 against the 1,024 a Linux process starts with -- which
