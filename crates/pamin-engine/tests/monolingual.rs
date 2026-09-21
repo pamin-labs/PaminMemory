@@ -612,6 +612,13 @@ fn search_ranks_real_passages() {
 }
 
 async fn search() {
+    // Not the CLI, so nothing has done this for us, and this corpus is the
+    // one that proved it matters: 131,924 passages is more segment files than
+    // the 1,024 descriptors a process starts with, and the first full run of
+    // this harness died 65 minutes in with RocksDB unable to append.
+    let (before, after) = pamin_index::raise_open_file_limit().expect("the open-file limit");
+    println!("  open files: {before} raised to {after}");
+
     let corpus = Corpus::load();
     let (named, profile) = profile();
     corpus.describe(&named);

@@ -1887,6 +1887,7 @@ dependencies = [
  "hf-hub",
  "icu_provider",
  "icu_segmenter",
+ "libc",
  "pamin-core",
  "serde",
  "tempfile",
