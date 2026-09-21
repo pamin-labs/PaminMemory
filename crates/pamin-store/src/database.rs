@@ -196,19 +196,7 @@ fn settings() -> HashMap<String, String> {
         // the same, and the default is what talks the planner out of index
         // scans it should be choosing.
         ("random_page_cost".to_string(), "1.1".to_string()),
-        // Not a general optimisation switch: it is LLVM compilation of a
-        // query's expressions, and PostgreSQL only reaches for it above
-        // `jit_above_cost`, which is 100000. Nothing here comes near that.
-        // The hottest query on the read path -- hydrating 150 candidates'
-        // current states through `topics.current_state_id` -- plans at 84, and
-        // the widest thing this schema can do on a 13,014-topic project, every
-        // topic joined to its state, plans at 1313. Inlining, the only thing
-        // that reads `lib/bitcode`, starts at 500000. So `on` would not
-        // compile anything, `off` removes the check, and the two are the same
-        // query plan; this is the setting saying out loud which of those is
-        // deliberate. Measured with EXPLAIN on PostgreSQL 17, not argued from
-        // the shape of the queries, which is what this comment used to do.
-        ("jit".to_string(), "off".to_string()),
+        ("jit".to_string(), jit().to_string()),
         // Autovacuum waits for a fifth of a table to be dead rows. On a table
         // of a hundred million states that is twenty million, and until then
         // every scan reads them. Two per cent is still rare enough to be
@@ -218,6 +206,46 @@ fn settings() -> HashMap<String, String> {
             "0.02".to_string(),
         ),
     ])
+}
+
+/// Whether the cluster compiles query expressions with LLVM.
+///
+/// Not a general optimisation switch, which is the first thing to know about
+/// it: PostgreSQL only reaches for JIT when a plan's cost exceeds
+/// `jit_above_cost`, 100000, and compiling below that makes a query slower
+/// rather than faster. Measured with EXPLAIN on PostgreSQL 17 against a
+/// 13,014-topic project, nothing here comes near it:
+///
+/// | query | plans at |
+/// | --- | --- |
+/// | the read path's hydration of 150 candidates' current states | 84 |
+/// | every topic joined to its current state, the widest this schema states | 1313 |
+/// | `pamin grep`, whose top node a matching `LIMIT` caps | 56 |
+///
+/// The first is bounded by `channel_depth` rather than by the project, so it
+/// does not grow at all, and the third is capped because the `ORDER BY`
+/// matches an index and the scan stops early. **One shape does grow**: a
+/// `grep` for something the project barely contains has to walk the whole
+/// recency index, and that cost is linear -- 995 at 15,224 source versions,
+/// about 65 for every thousand, which crosses 100000 somewhere around a
+/// million and a half. A workspace an agent has written to for a year is
+/// exactly the workspace that reaches it.
+///
+/// So this is a setting with a measured default rather than a constant, the
+/// same shape and the same reasoning as [`crate`]'s sibling knobs: the default
+/// is what is right for every size measured here, and a workspace large enough
+/// to have left that range can say so with `PAMIN_JIT=on` without waiting for
+/// this project to pick a threshold on its behalf. Anything other than `on` is
+/// `off`, because a cluster setting that will not parse is a cluster that will
+/// not start.
+///
+/// Turning it on also keeps `lib/bitcode` in a bundled installation, which
+/// inlining is the only reader of -- see [`UNREAD_WITHOUT_JIT`].
+fn jit() -> &'static str {
+    match std::env::var("PAMIN_JIT").as_deref() {
+        Ok("on" | "1" | "true") => "on",
+        _ => "off",
+    }
 }
 
 /// A PostgreSQL installation the caller is supplying, if there is one.
@@ -259,26 +287,32 @@ fn supplied_socket_directory(workspace: &Workspace) -> Option<String> {
 
 /// What a bundled installation carries that nothing here will ever read.
 ///
-/// `lib/bitcode` is LLVM bitcode for every core extension, and PostgreSQL
-/// reads it in one situation only: inlining an extension's functions into a
-/// JIT-compiled plan. Two things have to be true at once for that to happen,
-/// and neither is. [`settings`] compiles `jit = off` into every cluster this
-/// project starts; and inlining needs a plan costing `jit_inline_above_cost`,
-/// 500000, where the hottest query on the read path plans at 84 and the widest
-/// query this schema can express on a 13,014-topic project plans at 1313. So
-/// the directory is not a trade against latency, it is weight a workspace
-/// carries for a code path it has closed and could not reach if it opened it.
-///
 /// `share/man` and `share/doc` are documentation for the client programs.
 /// Nothing on any path here shells out to one, and `man` does not read a page
-/// out of a workspace directory in any case.
+/// out of a workspace directory in any case. 1.2 MB in PostgreSQL 17's Debian
+/// build.
+const UNREAD: &[&str] = &["share/man", "share/doc"];
+
+/// What a bundled installation carries that only JIT inlining reads.
 ///
-/// It is 25 MB of bitcode and 1.2 MB of manual pages in PostgreSQL 17's Debian
-/// build, measured with `du`, which is the build available to measure from
-/// here. The archive this project unpacks is built elsewhere and may carry a
-/// different amount or none at all, so the removal reports what it reclaimed
-/// rather than claiming a figure.
-const UNREAD: &[&str] = &["lib/bitcode", "share/man", "share/doc"];
+/// LLVM bitcode for every core extension, and PostgreSQL opens it in one
+/// situation: inlining an extension's functions into a JIT-compiled plan,
+/// which needs a plan costing `jit_inline_above_cost`, 500000. With [`jit`]
+/// off nothing compiles at all, so it is unreachable twice over -- and 25 MB
+/// in PostgreSQL 17's Debian build, which is a fifth of what a 13,014-document
+/// workspace's own data comes to.
+///
+/// Kept when `PAMIN_JIT=on`, because a workspace that asked for JIT asked for
+/// the fast form of it, and inlining with the bitcode missing is a silent
+/// downgrade rather than an error: PostgreSQL logs at `DEBUG1` and compiles
+/// without it. A silent downgrade is the worst of the three outcomes, so the
+/// choice is tied to the setting instead.
+///
+/// The 25 MB is `du` on the build reachable from here. The archive this
+/// project unpacks is built elsewhere and may carry a different amount, or
+/// none at all if it was built without LLVM, so the removal reports what it
+/// reclaimed rather than claiming a figure.
+const UNREAD_WITHOUT_JIT: &[&str] = &["lib/bitcode"];
 
 /// Removes what a bundled installation will never read, and says how much.
 ///
@@ -301,7 +335,13 @@ fn trim_unread(install: &std::path::Path, bundled: bool) -> u64 {
     }
 
     let mut reclaimed = 0;
-    for relative in UNREAD {
+    let conditional: &[&str] = if jit() == "off" {
+        UNREAD_WITHOUT_JIT
+    } else {
+        &[]
+    };
+    let unread = UNREAD.iter().chain(conditional);
+    for relative in unread {
         let path = install.join(relative);
         let bytes = tree_bytes(&path);
         match std::fs::remove_dir_all(&path) {
@@ -523,7 +563,7 @@ const PROBE: Duration = Duration::from_secs(1);
 mod tests {
     use std::net::TcpListener;
 
-    use super::{UNREAD, stale_pid_file, trim_unread};
+    use super::{UNREAD, UNREAD_WITHOUT_JIT, stale_pid_file, trim_unread};
 
     /// An installation tree shaped the way a PostgreSQL install is shaped.
     ///
@@ -571,6 +611,7 @@ mod tests {
     /// What it removes, and -- the half that matters -- what it does not.
     #[test]
     fn trimming_takes_the_unread_directories_and_leaves_the_server() {
+        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         let unread = installation(root.path());
         let before = bytes_under(root.path());
@@ -586,7 +627,7 @@ mod tests {
             before - unread,
             "the tree lost something other than the unread directories"
         );
-        for relative in UNREAD {
+        for relative in UNREAD.iter().chain(UNREAD_WITHOUT_JIT) {
             assert!(
                 !root.path().join(relative).exists(),
                 "{relative} survived the removal"
@@ -608,12 +649,53 @@ mod tests {
         }
     }
 
+    /// Asking for JIT keeps the bitcode inlining is the only reader of.
+    ///
+    /// The case this guards is not a crash: PostgreSQL logs at `DEBUG1` and
+    /// compiles without inlining, so a workspace that asked for JIT would
+    /// quietly get the slow form of it. Serialised with the other environment
+    /// reader in this module rather than run in parallel, because
+    /// `set_var` is process-wide.
+    #[test]
+    fn asking_for_jit_keeps_the_bitcode_inlining_reads() {
+        let _guard = ENVIRONMENT.lock().expect("the environment lock");
+        let root = tempfile::tempdir().expect("temp install dir");
+        installation(root.path());
+
+        // SAFETY: every reader of this variable in this module runs under the
+        // lock this test holds.
+        unsafe { std::env::set_var("PAMIN_JIT", "on") };
+        let reclaimed = trim_unread(root.path(), true);
+        unsafe { std::env::remove_var("PAMIN_JIT") };
+
+        for relative in UNREAD_WITHOUT_JIT {
+            assert!(
+                root.path().join(relative).exists(),
+                "{relative} was removed from a cluster that asked for JIT"
+            );
+        }
+        for relative in UNREAD {
+            assert!(
+                !root.path().join(relative).exists(),
+                "{relative} survived, and JIT has nothing to do with it"
+            );
+        }
+        assert!(
+            reclaimed > 0,
+            "the documentation was removed but nothing was reported"
+        );
+    }
+
+    /// Serialises the tests that read or write `PAMIN_JIT`.
+    static ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A second call has nothing to do and says so rather than failing.
     ///
     /// `setup` runs on every command, so this runs on every command too, and
     /// the first one is the only one with anything to remove.
     #[test]
     fn trimming_twice_reclaims_nothing_the_second_time() {
+        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         let unread = installation(root.path());
 
@@ -628,6 +710,7 @@ mod tests {
     /// workspace has no business deleting out of it.
     #[test]
     fn a_supplied_installation_is_not_trimmed() {
+        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         installation(root.path());
         let before = bytes_under(root.path());
@@ -639,7 +722,7 @@ mod tests {
             before,
             "a supplied installation lost bytes"
         );
-        for relative in UNREAD {
+        for relative in UNREAD.iter().chain(UNREAD_WITHOUT_JIT) {
             assert!(
                 root.path().join(relative).exists(),
                 "{relative} was removed from an installation this project does not own"

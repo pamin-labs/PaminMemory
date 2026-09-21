@@ -174,7 +174,10 @@ impl Corpus {
         }
         assert!(!passages.is_empty(), "the corpus is empty");
 
-        let indexed: HashSet<&str> = passages.iter().map(|passage| passage.docid.as_str()).collect();
+        let indexed: HashSet<&str> = passages
+            .iter()
+            .map(|passage| passage.docid.as_str())
+            .collect();
 
         // `qid \t Q0 \t docid \t relevance`, TREC's own shape. MIRACL judges
         // binary, so anything above zero is relevant.
@@ -642,11 +645,20 @@ async fn search() {
     let completeness = engine
         .vector_index_completeness()
         .expect("the vector index's completeness");
-    assert!(
-        completeness > 0.99,
-        "the vector graph covers {completeness:.4} of the corpus, so this would \
-         measure a full scan rather than the index the product serves"
-    );
+    println!("  the vector graph covers {completeness:.4} of the corpus");
+    if corpus.capped {
+        // Below the engine's unindexed-document budget the policy deliberately
+        // does not build a graph, because a scan of that many documents is the
+        // faster answer -- so a capped run measures a full scan and is honest
+        // about it, which is the other reason its numbers are not comparable.
+        println!("  a capped corpus is below the budget that builds one, so this is a scan\n");
+    } else {
+        assert!(
+            completeness > 0.99,
+            "the vector graph covers {completeness:.4} of the corpus, so this would \
+             measure a full scan rather than the index the product serves"
+        );
+    }
 
     if let Some(settings) = sweep() {
         println!("\n  setting                nDCG@{NDCG_AT}   recall@{RECALL_AT}");
