@@ -219,7 +219,7 @@ pub struct Engine {
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
-    loaded: Arc<Mutex<std::collections::HashMap<Profile, Arc<Mutex<Embedder>>>>>,
+    loaded: Arc<Mutex<std::collections::HashMap<Profile, Held<Embedder>>>>,
     /// The same arrangement for rerankers, keyed by tier for the same reason:
     /// the tier is what decides which weights these are.
     ///
@@ -227,13 +227,13 @@ pub struct Models {
     /// reranker can stop being wanted. Every search needs a query vector; a
     /// reranker is a tier a caller chose once, and a workspace in one language
     /// is told by `docs/cli.md` to choose `off`.
-    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held>>>,
+    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held<Reranker>>>>,
 }
 
-/// A loaded reranker and when it was last handed out.
-type Held = (Instant, Arc<Mutex<Reranker>>);
+/// A loaded model and when it was last handed out.
+type Held<T> = (Instant, Arc<Mutex<T>>);
 
-/// How long a reranker may sit unused before the process gives it back.
+/// How long a model may sit unused before the process gives it back.
 ///
 /// It is worth giving back because of what it costs while it sits there, and
 /// because the giving back was measured rather than assumed -- dropping a
@@ -258,14 +258,23 @@ type Held = (Instant, Arc<Mutex<Reranker>>);
 /// `accurate` is four and a half times the weights and was not measurable
 /// here, its download being unreachable from the machine this ran on.
 ///
-/// Five minutes because the cost of being wrong is asymmetric. Evicting a
-/// reranker a caller wants again costs that caller one model load, about a
-/// second; keeping one nobody wants costs every other process on the machine
-/// 638 MB for as long as the server lives, which is meant to be a long time.
+/// Thirty minutes, and the number moved once the other side of the trade was
+/// measured rather than guessed. Five was written here first, on the strength
+/// of "a caller pays about a second" -- **it is 4,528 ms**, median of three,
+/// against 116 ms for a warm search and 5,123 ms for a server starting from
+/// nothing. The sweep puts the next caller back to 88% of cold, so this is not
+/// a second of latency for a gigabyte, it is four and a half.
 ///
-/// Only rerankers. An embedder is on the path of every search including the
-/// ones that do not rerank, so evicting one buys a reload rather than a saving.
-const RERANKER_IDLE: Duration = Duration::from_secs(5 * 60);
+/// Thirty is where that trade stops being close. An agent working in bursts
+/// almost never waits half an hour between searches, so it almost never pays;
+/// a server left running overnight pays once and gives back 1.6 GB for the
+/// hours in between. Five minutes would have charged 4.5 seconds to anyone who
+/// stopped to read what they found.
+///
+/// One window for models and for the indexes that pin them, because the
+/// model dominates: reopening an index is part of the 4,528 ms and reloading
+/// the weights is most of it.
+const MODEL_IDLE: Duration = Duration::from_secs(30 * 60);
 
 impl Models {
     /// Reads and writes the weights a workspace caches.
@@ -289,12 +298,13 @@ impl Models {
             .lock()
             .expect("the model registry lock is poisoned");
 
-        if let Some(embedder) = loaded.get(&profile) {
+        if let Some((last_used, embedder)) = loaded.get_mut(&profile) {
+            *last_used = Instant::now();
             return Ok(Arc::clone(embedder));
         }
 
         let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
-        loaded.insert(profile, Arc::clone(&embedder));
+        loaded.insert(profile, (Instant::now(), Arc::clone(&embedder)));
         Ok(embedder)
     }
 
@@ -318,6 +328,51 @@ impl Models {
         Ok(reranker)
     }
 
+    /// Gives back the embedders no open engine is holding any more.
+    ///
+    /// **Costs 1.6 GB to hold and 29 MB not to.** Measured on a server over
+    /// the 13,014-document project, four cores: it is 29 MB resident having
+    /// answered a command that touches no model, 1,625 MB after the first
+    /// embedding, and 1,628 MB after five more -- so the whole of it is paid
+    /// when the weights load and inference adds nothing. A server that served
+    /// a burst this morning holds all of it for as long as it lives.
+    ///
+    /// Releasing it is only half the saving, and the half that does not show
+    /// up in `smaps` without the other. Dropping the model returns its pages
+    /// to the C heap rather than to the kernel: resident falls from 2,263 MB
+    /// to 1,000, and the gigabyte that stays is free heap the allocator is
+    /// holding. `server.rs` asks for that back with `malloc_trim`, after which
+    /// it is 88 to 101 MB over three runs -- 96% of it returned.
+    ///
+    /// The timestamp here is only a lower bound on idleness, and the strong
+    /// count is what makes this correct. An embedder is handed out when an
+    /// *engine* opens rather than per search, so a busy server can have a
+    /// last-used of hours ago -- but every engine holding one keeps the count
+    /// above one, so the release cannot take a model anything is using. What
+    /// actually decides this is therefore the engine registry closing its idle
+    /// entries first; this is the second half of that, and on its own it
+    /// releases nothing.
+    pub fn release_idle_embedders(&self) -> Vec<Profile> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .expect("the model registry lock is poisoned");
+
+        let now = Instant::now();
+        let idle: Vec<Profile> = loaded
+            .iter()
+            .filter(|(_, (last_used, embedder))| {
+                is_idle(*last_used, now, model_idle()) && Arc::strong_count(embedder) == 1
+            })
+            .map(|(profile, _)| *profile)
+            .collect();
+
+        for profile in &idle {
+            loaded.remove(profile);
+        }
+        idle
+    }
+
     /// Gives back the rerankers nothing has asked for lately.
     ///
     /// For a resident process to call on a schedule; a command that exits
@@ -339,7 +394,7 @@ impl Models {
         let idle: Vec<Rerank> = rerankers
             .iter()
             .filter(|(_, (last_used, reranker))| {
-                is_idle(*last_used, now, reranker_idle()) && Arc::strong_count(reranker) == 1
+                is_idle(*last_used, now, model_idle()) && Arc::strong_count(reranker) == 1
             })
             .map(|(tier, _)| *tier)
             .collect();
@@ -359,21 +414,24 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
     now.saturating_duration_since(last_used) >= idle
 }
 
-/// The idle window, or what [`RERANKER_IDLE`] says.
+/// The idle window, or what [`MODEL_IDLE`] says.
 ///
-/// `PAMIN_RERANKER_IDLE`, in seconds. Deliberately undocumented, like the
-/// other windows a test needs to shorten: a caller has no way to evaluate it
-/// and the measured default is the answer for every workspace measured here.
-/// Zero is refused rather than honoured, because a zero window releases the
-/// reranker the tick after it loads and turns every search into a model load.
-fn reranker_idle() -> Duration {
-    std::env::var("PAMIN_RERANKER_IDLE")
+/// `PAMIN_MODEL_IDLE`, in seconds, so that a machine where memory is scarcer
+/// than a second of latency can say so, and so that a test can shorten it to
+/// something it can wait out. Zero is ignored rather than honoured: a zero
+/// window releases a model the tick after it loads and turns every search into
+/// a model load.
+pub fn model_idle() -> Duration {
+    std::env::var(MODEL_IDLE_VAR)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|seconds| *seconds > 0)
         .map(Duration::from_secs)
-        .unwrap_or(RERANKER_IDLE)
+        .unwrap_or(MODEL_IDLE)
 }
+
+/// Overrides [`MODEL_IDLE`], in seconds.
+pub const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
 
 impl Engine {
     /// Opens everything a search or a write needs.
@@ -1574,18 +1632,18 @@ fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{RERANKER_IDLE, best_first, fused_for, is_idle, runs_of_tokens};
+    use super::{MODEL_IDLE, best_first, fused_for, is_idle, runs_of_tokens};
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
 
-    /// A tier in use is not idle, however long ago it was handed out.
+    /// A model in use is not idle, however long ago it was handed out.
     ///
     /// The pair that matters: the window has to be reached, and reaching it is
     /// not enough on its own -- the caller checks that nothing holds the model
     /// as well, because dropping the registry's handle while a search holds
     /// its own frees nothing and makes the next search load a second copy.
     #[test]
-    fn a_reranker_is_idle_only_once_the_window_has_passed() {
+    fn a_model_is_idle_only_once_the_window_has_passed() {
         let window = Duration::from_secs(300);
         let now = Instant::now();
         let handed_out = now - Duration::from_secs(299);
@@ -1609,7 +1667,7 @@ mod tests {
     #[test]
     fn a_hand_out_in_the_future_is_not_idle() {
         let now = Instant::now();
-        assert!(!is_idle(now + Duration::from_secs(600), now, RERANKER_IDLE));
+        assert!(!is_idle(now + Duration::from_secs(600), now, MODEL_IDLE));
     }
 
     fn topic(byte: u8) -> TopicId {
