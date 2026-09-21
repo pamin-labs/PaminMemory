@@ -299,6 +299,21 @@ ranking internals it has no way to evaluate.
 | `fast` | 113 MB | 264 ms | **+0.0381** | −0.0053 |
 | `accurate` | 570 MB | 1001 ms | **+0.0448** | +0.0017 |
 
+Measured on XQuAD-R's 13,014 sentences in eleven languages, through
+`Engine::search_reranked` — the call this command makes, one layer below the
+process it runs in. [measured.md](measured.md) reports the same corpus and
+tiers as whole CLI invocations, 77/251/1241 ms, and the difference between the
+two sets of figures is the invocation; neither is wrong and they are not
+interchangeable.
+
+What the `off` row is is worth knowing before reading the other two as
+overhead. Most of it is not retrieval either: the four channels, fusion and
+reading the states back are about 16 ms of it, and the rest is the forward
+pass that turns your query into a vector — 68 ms on this profile's model, on
+four cores, for a query the server has not been asked before. A resident
+server remembers a query's vector, so asking the same thing twice costs the
+16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
+
 `fast` is the default, on latency: its pass costs 211 ms against `accurate`'s
 948. `accurate` scores better on both groups, so a workspace that can afford a
 second a search should ask for it. A workspace whose memories are all in
