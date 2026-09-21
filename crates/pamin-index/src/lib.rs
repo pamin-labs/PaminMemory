@@ -15,7 +15,8 @@ pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Profile};
 pub use error::{IndexError, Result};
 pub use projection::{
-    Access, Projection, ProjectionIndex, is_fragmented, segment_documents, vector_index_lags,
+    Access, Projection, ProjectionIndex, Segmentation, VectorStorage, is_fragmented,
+    segment_documents, vector_index_lags,
 };
 pub use reranking::{Rerank, Reranker};
 pub use segmentation::{Segmenter, detect_language};

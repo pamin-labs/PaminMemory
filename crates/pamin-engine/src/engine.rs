@@ -617,6 +617,18 @@ impl Engine {
     /// projection reports a completeness of 1.0, because everything it holds
     /// is indexed and it holds nothing. So "the graph covers everything" is
     /// only a claim about a graph once something is in there.
+    /// How this project's index is segmented, against what the policy wants.
+    ///
+    /// Reported rather than acted on. Resegmenting means recreating the
+    /// collection -- `set_max_doc_count_per_segment` on an open one returns
+    /// `Ok` and changes nothing, which ADR 0001 records -- so the only thing
+    /// that fixes it is `pamin reindex`, and that is hours on a large project.
+    /// Doing hours of work because a diagnostic noticed something is not a
+    /// decision this should make for a caller.
+    pub fn segmentation(&self) -> Result<pamin_index::Segmentation> {
+        Ok(self.index().segmentation()?)
+    }
+
     pub fn indexed_documents(&self) -> Result<u64> {
         Ok(off_the_runtime(|| self.index().document_count())?)
     }
