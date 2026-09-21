@@ -1192,17 +1192,22 @@ fn topics_are_findable_before_you_know_their_names(cli: &Cli) {
             .collect()
     };
 
+    // `deploy_en`, not a topic named for the phrase in its content. These
+    // three asserted against `deployment_pipeline`, which no memory here is
+    // written under and none ever was -- so the first failed, the other two
+    // never ran, and the negative one in the middle is the whole point of the
+    // group. Nothing reported it because no workflow runs `--ignored`.
     assert!(
-        found("deployment pipeline", "name").contains(&"deployment_pipeline".to_string()),
+        found("deploy en", "name").contains(&"deploy_en".to_string()),
         "the whole name, in words, reaches the topic through the name index"
     );
     assert!(
-        !found("deploy pipeline", "name").contains(&"deployment_pipeline".to_string()),
-        "the name index matches whole tokens: `deploy` is not `deployment`, and \
-         claiming otherwise is what this asserts against"
+        !found("deploy", "name").contains(&"deploy_en".to_string()),
+        "the name index matches whole runs of tokens: `deploy` is not \
+         `deploy en`, and claiming otherwise is what this asserts against"
     );
     assert!(
-        found("deploy pipeline", "content").contains(&"deployment_pipeline".to_string()),
+        found("deploy", "content").contains(&"deploy_en".to_string()),
         "and the forgiving route is the one that catches a half-remembered name"
     );
 }
