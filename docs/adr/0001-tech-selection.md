@@ -320,6 +320,76 @@ Both routes rest on premises Påmin Memory has not measured — that the hot set
 
 Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path both tiers take.
 
+### Where a search's milliseconds go
+
+The tier table above prices reranking against a search with it off, and that
+left the other 53 ms undivided. Naming it mattered because the optimisation
+list was ordered against a figure that turned out not to exist: an earlier
+note in this repository put "about 50 ms of a CLI search that is not
+retrieval", derived by subtracting a socket measurement on one corpus from a
+whole-CLI measurement on another at a different rerank tier. Two corpora and
+two tiers cannot be subtracted, so that number was an artifact and is
+withdrawn.
+
+Measured instead with every arm on one corpus -- the 13,014-sentence XQuAD-R
+workspace, `profile accuracy`, one resident server, four cores and 15 GB:
+
+| Stage | Costs | Of a `fast` search |
+| --- | --- | --- |
+| The cross-encoder pass (`fast`) | 226 ms | 70% |
+| The query's own embedding | 68 ms | 21% |
+| Four channels, fusion, and reading the states back | 16 ms | 5% |
+| Being a process rather than a socket call | 13 ms | 4% |
+
+Each row is a difference between two arms that differ by one thing, and each
+is four independent samples of sixty queries, or three of thirty-six for the
+last. The reranking row reproduces the tier table's 211 ms from a different
+direction, which is the check on the method.
+
+Two of the arms need saying, because both are ways this measurement could
+have lied. The server remembers a query's vector and remembers each
+query-document score it has computed, so asking the same query twice measures
+a different thing from asking it once: a query the server has never seen costs
+85 ms with reranking off and 310 ms with `fast`, and the same query asked
+again costs 16 ms either way. Every "unseen" row here is unseen by
+construction -- disjoint halves of query sets drawn fresh from the corpus, no
+half reused across arms -- because the first attempt at this table reported
+16 ms for a cold query and was measuring its own warm-up. And the whole-CLI
+arm runs behind `sudo -u`, since the workspace's PostgreSQL directory is mode
+700; that costs 8 ms of somebody else's fork and exec, and it is subtracted
+rather than charged to the binary.
+
+These rows are not interchangeable with [measured.md](../measured.md)'s
+sweep, which reports 77 ms for a whole CLI search at `off` where this reports
+85 ms over a socket, and the difference goes the wrong way for a process to
+explain it. Two things differ and both are stated rather than resolved: this
+ran against a supplied PostgreSQL 17.11 instead of the pinned build, which
+[cli.md](../cli.md) already says disqualifies a figure from that table, and
+its queries are sentences drawn from the corpus at 40 to 160 characters where
+that sweep's are XQuAD-R's questions. The second is the likelier of the two,
+and it is the table's own point: if the query's embedding is most of an `off`
+search then an `off` search costs what the query is long, which is a property
+of the caller rather than of the corpus.
+
+**The ordering this gives is not the one the optimisation list had.** Cutting
+allocations out of the retrieval path -- tokenizing a query once instead of
+three times, handing out a query vector behind an `Arc` instead of cloning
+4 KB of it -- works on the 16 ms row, which is 5% of a search and already the
+smallest of the four. The 13 ms of process is smaller still, and 3.3 ms of it
+is the dynamic loader, so unlinking the 36.9 MB index library from a client
+that never touches the index would buy a few milliseconds for a second
+executable that both engineering budgets would stop seeing.
+
+What the table says instead is that a search is two forward passes and a
+little bookkeeping. Reranking is the largest, and the fusion section records
+that on this corpus its entire cross-lingual gain is paying back what fusing
+four channels gave away -- so the same change that stops the dilution is also
+the one that makes 70% of the latency optional, and accuracy and latency point
+the same way for once. The query's own embedding is the floor under
+`--rerank off`: 68 ms of XLM-RoBERTa-large on four cores, which no amount of
+work in this repository will make cheaper, and which a smaller profile would.
+That trade has not been measured and should not be guessed at here.
+
 ### The index lock, and what would actually lift it
 
 Every call into the projection goes through one exclusive lock. The engine
