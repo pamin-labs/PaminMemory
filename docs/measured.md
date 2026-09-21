@@ -19,8 +19,18 @@ under [benchmarks/results/](../benchmarks/results).
 | XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6097 | 0.8864 |
 | XQuAD-R | query and answer in the same language | 0.7971 | 0.9630 |
 
-Both corpora are fetched rather than vendored, and the harness that drives them
-is in the repository: `cargo test -p pamin-engine --test crosslingual -- --ignored`.
+Both corpora are fetched rather than vendored, and each has a harness in the
+repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
+XQuAD-R and `--test monolingual` for MIRACL.
+
+**The MIRACL rows on this page are older than the harness named beside them,
+and that has to be said rather than tidied away.** This page previously named
+one harness for both corpora, which was true of the XQuAD-R rows and false of
+the MIRACL ones: they came from a program that was never committed, so nothing
+in the repository could produce them, break them, or be trusted to notice.
+`monolingual.rs` exists to close that, and every MIRACL figure below is a
+target for it to reproduce until it has — at which point this paragraph goes
+and the figures carry floors, which they also do not have today.
 
 **What those MIRACL figures are worth, against published results on the same
 corpus, the same dev split and the same qrels:**
@@ -38,13 +48,28 @@ retrieval stack here scores below a single dense retriever** — the same model,
 as an int8 export. Two differences are known and neither is measured: the
 published figure is fp32, and MIRACL's training split is in BGE-M3's
 fine-tuning data where this runs zero-shot. Neither excuses the gap; they are
-where to look for it. What the table does establish is the distance from the
-lexical baseline a memory system would otherwise ship with, on a low-resource
-language, on four CPU cores with no GPU anywhere.
+where to look for it.
+
+**Since this was written, the other corpus answered where to look, and it is
+neither of those.** On XQuAD-R the embedder alone and the product run side by
+side in one harness, so their difference is the fusion layer's own effect, and
+it is −0.0635 on the cross-lingual group: fusing four channels dilutes a dense
+ranking, and the cross-encoder's +0.0374 is buying that back rather than adding
+to it. −0.071 here is the same order. That reading is an extrapolation from a
+corpus of parallel sentences until `monolingual.rs`'s model-alone arm runs
+here, which is the one arm this corpus has never had — see
+[ADR 0001](adr/0001-tech-selection.md).
+
+What the table does establish is the distance from the lexical baseline a
+memory system would otherwise ship with, on a low-resource language, on four
+CPU cores with no GPU anywhere.
 
 Sources: [Pyserini MIRACL v1.0 regressions](https://github.com/castorini/pyserini/blob/master/docs/experiments-miracl-v1.0.md)
 and [BGE-M3](https://arxiv.org/abs/2402.03216) Table 1 (v4 or later). The
-0.7359 was re-run and reproduced exactly before being placed here.
+0.7359 was re-run and reproduced exactly before being placed here -- by the
+program that is not in the repository, which is what the note above the first
+MIRACL table is about: reproduced twice by the same uncommitted thing is not
+the same as reproducible.
 
 **Retrieval on a memory benchmark.** LongMemEval-S, 59 of its 500 questions
 drawn stratified by type, scored at the session level against a plain BM25 over
@@ -102,7 +127,18 @@ queries, reported as the median of them:
 
 Seventeen to nineteen of those milliseconds are the invocation rather than the
 search — `pamin --help` against the same workspace costs that much — and it is
-measured rather than subtracted, because a caller pays it either way. A write
+measured rather than subtracted, because a caller pays it either way.
+
+**What the rest of an `off` search is spent on is not retrieval either**, and
+[ADR 0001](adr/0001-tech-selection.md) divides all four stages: on the XQuAD-R
+workspace the cross-encoder is 226 ms of a `fast` search, the query's own
+embedding 68, the four channels and fusion and reading the states back 16, and
+being a process rather than a socket call 13. That division was taken against a
+supplied PostgreSQL rather than the pinned build, so its absolute figures are
+not interchangeable with this table's -- and it disagrees with this table by
+more than a process, in the direction its queries were longer. What carries
+across is the shape: a search is two forward passes and a little bookkeeping,
+and the smallest of the four is the one the process costs. A write
 is 30.1 ms, most of it the `fsync` a durable append owes — measured over 2,400
 memories and published in [cli.md](cli.md), not re-taken in this
 sweep.

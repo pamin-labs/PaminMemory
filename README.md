@@ -256,7 +256,7 @@ under [benchmarks/results/](benchmarks/results).
 Latency is a corpus and a tier before it is a number, which is why every row
 above names both and why the matrix is on the other page.
 
-Three findings belong in the summary rather than only in the detail, because
+Four findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
 
 **It is a tie, and reporting it as a win would be wrong.** At thirty passages
@@ -285,6 +285,15 @@ knowledge-update questions, p = 0.0005 — it is **not established to beat
 writing the date into the passage text**, a free alternative that needs no
 columns: 0.900 against 0.814 is p = 0.0703, and re-running it with five reads a
 question returned the same p.
+
+**The MIRACL row above is older than the harness that will check it.** Every
+other figure on this page is produced by a test in this repository. That one
+was not: four pages quoted it and nothing in the tree could run it, because it
+came from a program that was never committed. The harness now exists — `cargo
+test -p pamin-engine --test monolingual -- --ignored` — and until it has
+reproduced the figure, the figure is a claim about a past run rather than
+something you can check. [measured.md](docs/measured.md) says which rows that
+covers.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,

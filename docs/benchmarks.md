@@ -380,6 +380,13 @@ the same `miracl-v1.0-sw` dev qrels, verified rather than assumed: the corpus
 file decompresses to exactly 131,924 lines, and the qrels hold 5,092 judgements
 over 482 queries, labels in {0, 1}, 910 positives, 1.89 per query.
 
+Those counts were checked by hand when this section was written and are now
+checked by the harness: `crates/pamin-engine/tests/monolingual.rs` loads the
+same three files and fails if the corpus is empty, if no query keeps a judged
+passage, or if the index does not hold every passage. Påmin Memory's own rows
+on this corpus predate that harness and have not yet been reproduced by it,
+which [measured.md](measured.md) states beside them.
+
 | | nDCG@10 | source |
 | --- | --- | --- |
 | Pyserini BM25 baseline | 0.3826 | [Pyserini MIRACL v1.0 regressions][pyserini] |
