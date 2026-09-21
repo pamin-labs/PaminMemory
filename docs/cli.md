@@ -21,6 +21,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
+| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -67,6 +68,23 @@ close call: an agent working in bursts does not wait half an hour between
 searches, and a server left running overnight pays it once. Lower it on a
 machine where memory is scarcer than four seconds; raise it if a search every
 few minutes is worth 2.2 GB to you.
+
+`PAMIN_INFERENCE_THREADS` is how many threads one forward pass may use.
+Unset, the inference library uses one per core, which is right for a single
+query and wrong for a server: measured on four cores with nothing shared,
+throughput *falls* as callers are added, 182 embeddings a second at one worker
+to 54 at eight, because the second caller finds the first caller's threads
+rather than an idle core. Splitting the cores between callers instead of
+between the layers of one pass is the other way to divide them, and which wins
+is a property of the machine rather than of this program -- so it is a setting
+whose default is what the library already did.
+
+A handful of other `PAMIN_*` variables exist and are deliberately not listed
+here: they shorten a window or a budget so a test can reach a case, and a
+caller has no way to evaluate them. They are named where they are read, and a
+unit test checks that everything *not* on that list appears in the table
+above, so a setting cannot be added without being documented or deliberately
+excluded.
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
