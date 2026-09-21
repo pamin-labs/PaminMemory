@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
-    ProjectId, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
+    ProjectId, SourceKind, TombstoneReason, Topic, TopicId, TopicState, TopicStateId, Validity,
+    Why,
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
@@ -189,17 +190,33 @@ pub struct Engine {
     /// to [`BACKFILL_CANDIDATES`] documents, and segmenting every topic name in
     /// the project. Every search on the project queued behind them.
     segmenter: Arc<pamin_index::segmentation::Segmenter>,
-    /// One model, and one caller into it at a time.
+    /// One model, and one caller into it at a time -- once anything wants one.
     ///
     /// Inference wants `&mut`, which is the only reason anything here ever
     /// needed `&mut self`. Putting it behind its own lock rather than the
     /// index's is what lets several searches read the index at once while one
     /// of them is embedding.
     ///
+    /// **Empty until something embeds, which is why `pamin link` can go
+    /// through this crate at all.** Loading was part of opening an engine, so
+    /// opening one cost 1,625 MB of resident memory and about four and a half
+    /// seconds -- and `read`, `grep`, `topics`, `link`, `unlink` and
+    /// `neighbors` reached around the engine into the store rather than pay it,
+    /// which is how `pamin-cli` came to hold both layers that
+    /// `docs/architecture.md` says only this crate holds. A command that never
+    /// embeds now never loads: a server serving those alone stays at 29 MB.
+    ///
     /// Shared with every other engine on the same profile, which is why it
-    /// arrives rather than being loaded here. Two projects are two indexes and
-    /// one model.
-    embedder: Arc<Mutex<Embedder>>,
+    /// comes from [`Models`] rather than being built here -- two projects are
+    /// two indexes and one model, and the registry is where two callers
+    /// arriving at a cold profile queue rather than both loading it. This cell
+    /// is a per-engine cache of that lookup, so a search does not take the
+    /// registry's lock to find what it already has.
+    embedder: std::sync::OnceLock<Arc<Mutex<Embedder>>>,
+    /// Which model this engine's index was built with, and therefore the only
+    /// one it may embed with. Held because the load is deferred and the
+    /// deferred load has to ask for the same profile the index recorded.
+    profile: Profile,
     /// Where a reranker comes from, if a search asks for one.
     ///
     /// The registry rather than a loaded model: most searches do not rerank,
@@ -526,7 +543,7 @@ impl Engine {
         // to be in hand before the index is opened.
         let documents = repository::topic_count(database.pool(), project.id).await?;
 
-        let (index, embedder) = off_the_runtime(|| {
+        let index = off_the_runtime(|| {
             if discard {
                 ProjectionIndex::discard(&dir)?;
                 // A rebuild is also the migration off the shared layout, which
@@ -535,11 +552,12 @@ impl Engine {
             }
 
             let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
-            let embedder = models.get(profile)?;
-            Ok::<_, pamin_index::IndexError>((
-                Arc::new(index) as Arc<dyn Projection + Send + Sync>,
-                embedder,
-            ))
+            // The model is not loaded here. It was, and that made opening an
+            // engine cost the weights -- see the `embedder` field. What is lost
+            // is that a cold profile's download used to surface at open rather
+            // than at the first embedding; what is gained is every command
+            // that does not embed.
+            Ok::<_, pamin_index::IndexError>(Arc::new(index) as Arc<dyn Projection + Send + Sync>)
         })?;
 
         Ok(Self {
@@ -553,7 +571,8 @@ impl Engine {
             widest_name: Arc::default(),
             unflushed: Arc::default(),
             index: Arc::new(Mutex::new(index)),
-            embedder,
+            embedder: std::sync::OnceLock::new(),
+            profile,
             models: models.clone(),
             project: project.id,
         })
@@ -700,9 +719,27 @@ impl Engine {
         Arc::clone(&self.index())
     }
 
-    /// The model. One caller at a time, because inference wants `&mut`.
-    pub(crate) fn embedding(&self) -> std::sync::MutexGuard<'_, Embedder> {
-        self.embedder.lock().expect("the embedder lock is poisoned")
+    /// The model, loading it the first time anything asks.
+    ///
+    /// One caller at a time, because inference wants `&mut`. Fallible now that
+    /// the load is deferred, and every caller is already inside
+    /// [`off_the_runtime`] -- which it has to be, since loading hundreds of
+    /// megabytes of weights is not something to do on the async runtime.
+    pub(crate) fn embedding(
+        &self,
+    ) -> std::result::Result<std::sync::MutexGuard<'_, Embedder>, pamin_index::IndexError> {
+        let held = match self.embedder.get() {
+            Some(held) => held,
+            None => {
+                // Loaded outside the cell's initializer because that cannot
+                // fail. Two callers racing here both ask the registry, which
+                // hands out the same model to both -- so the loser discards an
+                // `Arc` clone rather than a second copy of the weights.
+                let loaded = self.models.get(self.profile)?;
+                self.embedder.get_or_init(|| loaded)
+            }
+        };
+        Ok(held.lock().expect("the embedder lock is poisoned"))
     }
 
     /// Adds one topic state to the projection index, without flushing.
@@ -721,7 +758,7 @@ impl Engine {
     /// [`drain_cascade`]: Self::drain_cascade
     pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
         off_the_runtime(|| {
-            let embedding = self.embedding().embed_passage(&state.content)?;
+            let embedding = self.embedding()?.embed_passage(&state.content)?;
             self.index()
                 .upsert(state.topic_id, &state.content, &embedding)
         })?;
@@ -1000,6 +1037,79 @@ impl Engine {
     /// question `derive_mentions` asks of a memory, answered against the same
     /// index, and it is deliberately the strict half of this pair -- the
     /// forgiving half is the content search beside it.
+    /// Resolves a topic name, refusing to invent one.
+    ///
+    /// The refusal is the point and it had four copies in the command layer,
+    /// each with its own spelling of the same sentence. Asserting an edge to a
+    /// topic that does not exist is almost always a typo, and creating one
+    /// silently would leave an edge pointing at an empty identity that nothing
+    /// can ever resolve to a state.
+    pub async fn topic_named(&self, name: &str) -> Result<TopicId> {
+        match repository::find_topic(self.database.pool(), self.project, name).await? {
+            Some(topic) => Ok(topic.id),
+            None => anyhow::bail!("no topic named {name}"),
+        }
+    }
+
+    /// Asserts one edge between two topics named by a caller.
+    ///
+    /// Here rather than in the command layer because the resolution above and
+    /// the assertion below are one operation: a command that did them
+    /// separately is a command that can be given a name the next statement no
+    /// longer finds.
+    pub async fn link(&self, from: &str, to: &str, claim: &EdgeClaim) -> Result<graph::Assertion> {
+        let (from, to) = (self.topic_named(from).await?, self.topic_named(to).await?);
+        Ok(graph::assert_edge(self.database.pool(), self.project, from, to, claim).await?)
+    }
+
+    /// Retracts one edge between two topics named by a caller.
+    ///
+    /// `false` when nothing was open to retract. The rows stay either way, so
+    /// what was believed and when stays answerable.
+    pub async fn unlink(
+        &self,
+        from: &str,
+        to: &str,
+        kind: EdgeKind,
+        reason: TombstoneReason,
+    ) -> Result<bool> {
+        let (from, to) = (self.topic_named(from).await?, self.topic_named(to).await?);
+        Ok(graph::close_edge(self.database.pool(), self.project, from, to, kind, reason).await?)
+    }
+
+    /// Walks out from one topic, with every neighbour's name resolved.
+    ///
+    /// Names in one pass rather than one lookup each, because a walk over a
+    /// well-connected project can return every topic in it -- which is the
+    /// reason this belongs here rather than being assembled twice.
+    pub async fn neighborhood(
+        &self,
+        topic: &str,
+        expansion: &Expansion<'_>,
+    ) -> Result<Vec<(Neighbor, String)>> {
+        let seed = self.topic_named(topic).await?;
+        let neighbors =
+            graph::expand(self.database.pool(), self.project, &[seed], expansion).await?;
+
+        let names: std::collections::HashMap<_, _> =
+            repository::all_topics(self.database.pool(), self.project)
+                .await?
+                .into_iter()
+                .map(|topic| (topic.id, topic.name))
+                .collect();
+
+        Ok(neighbors
+            .into_iter()
+            .map(|neighbor| {
+                let name = names
+                    .get(&neighbor.topic)
+                    .cloned()
+                    .unwrap_or_else(|| neighbor.topic.0.to_string());
+                (neighbor, name)
+            })
+            .collect())
+    }
+
     pub async fn topics_named_like(&self, text: &str, limit: u32) -> Result<Vec<String>> {
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(text), widest));
@@ -1216,7 +1326,7 @@ impl Engine {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
-            let embedding = self.embedding().embed_query(query)?;
+            let embedding = self.embedding()?.embed_query(query)?;
             let index = self.index();
             Ok::<_, pamin_index::IndexError>(vec![
                 ChannelResults::new(
@@ -1431,7 +1541,7 @@ impl Engine {
             // and wanting the index. Holding both throughout also matches what
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
-            let mut embedder = self.embedding();
+            let mut embedder = self.embedding()?;
             let index = self.index();
 
             for batch in states.chunks(REINDEX_BATCH) {
