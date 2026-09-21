@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
-    ProjectId, SourceKind, TombstoneReason, Topic, TopicId, TopicState, TopicStateId, Validity,
-    Why,
+    ProjectId, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
@@ -1037,79 +1036,6 @@ impl Engine {
     /// question `derive_mentions` asks of a memory, answered against the same
     /// index, and it is deliberately the strict half of this pair -- the
     /// forgiving half is the content search beside it.
-    /// Resolves a topic name, refusing to invent one.
-    ///
-    /// The refusal is the point and it had four copies in the command layer,
-    /// each with its own spelling of the same sentence. Asserting an edge to a
-    /// topic that does not exist is almost always a typo, and creating one
-    /// silently would leave an edge pointing at an empty identity that nothing
-    /// can ever resolve to a state.
-    pub async fn topic_named(&self, name: &str) -> Result<TopicId> {
-        match repository::find_topic(self.database.pool(), self.project, name).await? {
-            Some(topic) => Ok(topic.id),
-            None => anyhow::bail!("no topic named {name}"),
-        }
-    }
-
-    /// Asserts one edge between two topics named by a caller.
-    ///
-    /// Here rather than in the command layer because the resolution above and
-    /// the assertion below are one operation: a command that did them
-    /// separately is a command that can be given a name the next statement no
-    /// longer finds.
-    pub async fn link(&self, from: &str, to: &str, claim: &EdgeClaim) -> Result<graph::Assertion> {
-        let (from, to) = (self.topic_named(from).await?, self.topic_named(to).await?);
-        Ok(graph::assert_edge(self.database.pool(), self.project, from, to, claim).await?)
-    }
-
-    /// Retracts one edge between two topics named by a caller.
-    ///
-    /// `false` when nothing was open to retract. The rows stay either way, so
-    /// what was believed and when stays answerable.
-    pub async fn unlink(
-        &self,
-        from: &str,
-        to: &str,
-        kind: EdgeKind,
-        reason: TombstoneReason,
-    ) -> Result<bool> {
-        let (from, to) = (self.topic_named(from).await?, self.topic_named(to).await?);
-        Ok(graph::close_edge(self.database.pool(), self.project, from, to, kind, reason).await?)
-    }
-
-    /// Walks out from one topic, with every neighbour's name resolved.
-    ///
-    /// Names in one pass rather than one lookup each, because a walk over a
-    /// well-connected project can return every topic in it -- which is the
-    /// reason this belongs here rather than being assembled twice.
-    pub async fn neighborhood(
-        &self,
-        topic: &str,
-        expansion: &Expansion<'_>,
-    ) -> Result<Vec<(Neighbor, String)>> {
-        let seed = self.topic_named(topic).await?;
-        let neighbors =
-            graph::expand(self.database.pool(), self.project, &[seed], expansion).await?;
-
-        let names: std::collections::HashMap<_, _> =
-            repository::all_topics(self.database.pool(), self.project)
-                .await?
-                .into_iter()
-                .map(|topic| (topic.id, topic.name))
-                .collect();
-
-        Ok(neighbors
-            .into_iter()
-            .map(|neighbor| {
-                let name = names
-                    .get(&neighbor.topic)
-                    .cloned()
-                    .unwrap_or_else(|| neighbor.topic.0.to_string());
-                (neighbor, name)
-            })
-            .collect())
-    }
-
     pub async fn topics_named_like(&self, text: &str, limit: u32) -> Result<Vec<String>> {
         let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(text), widest));

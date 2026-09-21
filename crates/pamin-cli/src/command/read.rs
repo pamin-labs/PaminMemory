@@ -5,7 +5,7 @@ use pamin_core::VersionOffset;
 use pamin_store::repository;
 use serde::{Deserialize, Serialize};
 
-use crate::command::validity;
+use crate::command::{resolve, validity};
 use crate::session::Session;
 
 #[derive(clap::Args, Serialize, Deserialize)]
@@ -67,9 +67,7 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Rea
     let database = session.database();
     let project = session.project(project).await?;
 
-    let Some(topic) = repository::find_topic(database.pool(), project, &args.topic).await? else {
-        bail!("no topic named {}", args.topic);
-    };
+    let topic = resolve::topic(database, project, &args.topic).await?;
 
     let versions = repository::topic_versions(database.pool(), topic.id).await?;
     let Some(resolved) = pamin_core::resolve(&versions, VersionOffset(args.version_offset)) else {

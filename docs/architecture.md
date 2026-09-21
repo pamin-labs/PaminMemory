@@ -89,8 +89,29 @@ makes no network call at query time and needs no API key.
 | `pamin-core` | domain model, ledger semantics, fusion. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
 | `pamin-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
 | `pamin-index` | the projection: multilingual segmentation, lexical and vector channels. |
-| `pamin-engine` | the only crate that holds both, and therefore the only place they can drift. Sits above `pamin-core` so index types never reach the domain layer. |
+| `pamin-engine` | where the two are composed, and where their drift is supposed to be visible. Sits above `pamin-core` so index types never reach the domain layer. It is **not** the only crate holding both, and the exception is named rather than left to be discovered: see below. |
 | `pamin-cli` | the command surface, and the resident server behind it. |
+
+`pamin-cli` reaches `pamin-store` directly for six commands -- `read`, `grep`,
+`topics` without a query, `link`, `unlink` and `neighbors` -- and the reason is
+cost. Opening an engine opens the projection index, measured at 489 MB resident
+and about 600 ms on a 13,014-document project, and none of those six touches
+the index. Going through the engine would make `pamin link` thirteen times
+slower than the store call it replaced.
+
+Half of that cost has been removed: the embedding model used to load when an
+engine opened, and now loads when something embeds, which took `cascade drain`
+from 4,892 ms and 1,564 MB to 679 ms and 489 MB. What is left is the index
+itself, and deferring that too is what would close the exception. It has not
+been done because it moves a blocking open under the lock this engine's own
+comments record wedging it for thirty-five minutes, which is not a change to
+make on the strength of a tidier diagram.
+
+Until then the reach-through lives in one module,
+`pamin-cli/src/command/resolve.rs`, which is where the two questions those
+commands ask -- a topic by name, a relationship kind by name -- are answered
+once. They had four and three copies respectively, which was four and three
+chances for one of them to start saying something else.
 
 Design decisions, their trade-offs, and the ones that reversed when measured
 are recorded in [adr/](adr/).
