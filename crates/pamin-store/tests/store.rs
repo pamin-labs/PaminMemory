@@ -39,7 +39,14 @@ macro_rules! committed {
 #[tokio::test]
 #[ignore = "downloads and starts a real postgres cluster"]
 async fn the_ledger_holds_its_promises() {
-    let workspace = Workspace::at("/tmp/pamin-ws");
+    // A fresh workspace, because one of the assertions below is that the
+    // database starts empty. This pointed at a fixed path, which made the
+    // premise true exactly once: a second run found the projects the first
+    // one left and failed before testing anything. Paying `initdb` is what
+    // buys a test that can be run twice, and every other harness in this
+    // workspace already pays it.
+    let home = tempfile::tempdir().expect("temp workspace");
+    let workspace = Workspace::at(home.path());
 
     let database = Database::open(&workspace, Connections::PerCommand)
         .await
