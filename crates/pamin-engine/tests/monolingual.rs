@@ -667,6 +667,34 @@ async fn search() {
         );
     }
 
+    // What makes skipping the graph jobs sound, asserted rather than argued.
+    // If a topic name ever did appear in this corpus's prose, the graph channel
+    // would credit a hit and this would fail -- which is the signal to drain
+    // the whole queue rather than the part a search needs.
+    let probe = engine
+        .search_fused(
+            &corpus.queries[0].text,
+            DEPTH as u32,
+            DEPTHS,
+            Fusion::default(),
+        )
+        .await
+        .expect("a probe search");
+    let credited_graph = probe.iter().flat_map(|hit| &hit.result.why).any(|why| {
+        matches!(
+            why,
+            pamin_core::Why::Channel {
+                channel: Channel::Graph,
+                ..
+            }
+        )
+    });
+    assert!(
+        !credited_graph,
+        "the graph channel credited a hit, so the graph jobs this run left owed \
+         would have changed these numbers"
+    );
+
     if let Some(settings) = sweep() {
         println!("\n  setting                nDCG@{NDCG_AT}   recall@{RECALL_AT}");
         println!("  ------------------------------------------------");
@@ -838,21 +866,55 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     if written > 0 {
         println!("  wrote {written} of {} passages", corpus.passages.len());
     }
+    // Drained until the index holds the whole corpus, rather than until the
+    // queue is empty. Those are different, and on this corpus the difference
+    // is hours.
+    //
+    // A promoted write owes three jobs and only one of them puts the memory in
+    // the index; the other two derive graph edges from topic names. The engine
+    // claims by priority, so indexing runs first -- and **on this corpus the
+    // graph can contribute nothing at all**, because MIRACL's topic names are
+    // its docids, `2#0` and the like, which do not appear in anyone's
+    // Wikipedia prose. Two hundred and sixty thousand jobs to derive edges
+    // from names no text contains is work whose result is provably empty here,
+    // and waiting it out would cost about three hours to change nothing.
+    //
+    // That is an assertion rather than an argument: the arm below fails if the
+    // graph channel ever credits a hit.
     let started = std::time::Instant::now();
-    let drained = engine
-        .drain_cascade(pamin_engine::Owed::Everything)
-        .await
-        .expect("drain the cascade");
-    assert_eq!(
-        drained.pending, 0,
-        "the corpus is not fully indexed: {} jobs still owed",
-        drained.pending
-    );
-    if written > 0 {
-        println!(
-            "  ran {} cascade jobs in {:.0}s",
-            drained.completed,
-            started.elapsed().as_secs_f64()
+    let mut completed = 0;
+    loop {
+        let drained = engine
+            .drain_cascade(pamin_engine::Owed::Everything)
+            .await
+            .expect("drain the cascade");
+        completed += drained.completed;
+
+        let indexed = engine.indexed_documents().expect("count the documents") as usize;
+        if indexed >= corpus.passages.len() {
+            break;
+        }
+        assert!(
+            drained.completed > 0 || drained.pending > 0,
+            "the index holds {indexed} of {} passages and the queue is empty, \
+             so nothing will ever finish it",
+            corpus.passages.len()
         );
+        if completed.is_multiple_of(20_000) {
+            println!(
+                "  indexed {indexed}/{} after {completed} jobs, {:.0} minutes",
+                corpus.passages.len(),
+                started.elapsed().as_secs_f64() / 60.0
+            );
+        }
     }
+
+    let owed = pamin_store::jobs::pending(engine.database.pool(), project)
+        .await
+        .expect("what the queue still owes");
+    println!(
+        "  indexed the whole corpus with {completed} jobs in {:.0} minutes; \
+         {owed} graph jobs left owed, which this corpus cannot use",
+        started.elapsed().as_secs_f64() / 60.0
+    );
 }
