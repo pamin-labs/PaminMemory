@@ -107,6 +107,18 @@ impl Assertion {
 /// an explicit assertion that a built string is safe.
 macro_rules! version_columns {
     () => {
+        version_columns!("")
+    };
+    // Qualified, for the one query that joins another table alongside. Written
+    // out rather than assembled from the unqualified list, because a macro that
+    // pastes a prefix onto a comma-separated string cannot be read at the call
+    // site and this is a list the reader has to be able to check.
+    ("v.") => {
+        "v.id, v.relationship_id, v.version, v.valid_from, v.valid_to, v.created_at, \
+         v.invalidated_at, v.supersedes, v.caused_by_topic_state, v.confidence, \
+         v.derivation, v.tombstone_reason"
+    };
+    ("") => {
         "id, relationship_id, version, valid_from, valid_to, created_at, \
          invalidated_at, supersedes, caused_by_topic_state, confidence, derivation, \
          tombstone_reason"
@@ -253,7 +265,14 @@ pub async fn assert_edge(
     to: TopicId,
     claim: &EdgeClaim,
 ) -> Result<Assertion> {
-    if let Some(unchanged) = already_asserted(pool, project, from, to, claim).await? {
+    // Through the batched read with one edge in it, so that "would this claim
+    // change anything" has one implementation. It had two, and the one on this
+    // path was the one no test measured.
+    if let Some(unchanged) = live_versions_of(pool, project, &[(from, to, claim.clone())])
+        .await?
+        .remove(&(from, to, claim.kind))
+        .filter(|version| claim.matches(version))
+    {
         return Ok(Assertion::Unchanged(unchanged));
     }
 
@@ -281,14 +300,24 @@ pub async fn assert_edges(
     // Answered outside the transaction, and for the common case that is the
     // whole call: rewriting a memory re-derives the edges it already had, and
     // an unchanged claim writes nothing, so no lock is needed to decide it.
+    //
+    // In one round trip rather than two per edge. This was a loop calling
+    // `already_asserted`, which is itself two queries -- find the identity,
+    // read its live version -- so a memory naming ten topics asked twenty
+    // questions to find out that the answer to all of them was "nothing to
+    // do". That is the case the transaction below is skipped for, so it was
+    // the cheap path paying the most.
+    let live = live_versions_of(pool, project, edges).await?;
     let mut asserted: Vec<Option<Assertion>> = Vec::with_capacity(edges.len());
     let mut pending = Vec::new();
     for (index, (from, to, claim)) in edges.iter().enumerate() {
-        let unchanged = already_asserted(pool, project, *from, *to, claim).await?;
+        let unchanged = live
+            .get(&(*from, *to, claim.kind))
+            .filter(|version| claim.matches(version));
         if unchanged.is_none() {
             pending.push(index);
         }
-        asserted.push(unchanged.map(Assertion::Unchanged));
+        asserted.push(unchanged.cloned().map(Assertion::Unchanged));
     }
 
     if !pending.is_empty() {
@@ -307,25 +336,70 @@ pub async fn assert_edges(
         .collect())
 }
 
-/// The live version of this edge when the claim would not change it.
+/// The live version of each of these edges that has one, in one round trip.
 ///
-/// A read, so it can run before any lock is taken. Racing it is harmless: the
-/// answer is that nothing needs writing, which is as true a moment later as it
-/// is a moment after a commit.
-async fn already_asserted(
-    pool: &PgPool,
+/// Keyed by the triple the caller asked about rather than by relationship id,
+/// because that is what the caller has; an edge with no identity yet, or an
+/// identity whose every version has been invalidated, is simply absent.
+///
+/// `DISTINCT ON` is what makes this one query instead of one per edge:
+/// `live_version` reads the newest surviving version of one relationship with
+/// an `ORDER BY ... LIMIT 1`, and the same order per relationship is exactly
+/// what `DISTINCT ON (r.id)` keeps.
+///
+/// The three arrays are unnested into rows rather than built into the SQL,
+/// which is what lets this stay a `'static` statement -- the driver takes one
+/// of those or an explicit assertion that a built string is safe, and building
+/// SQL from a caller's topic ids is the shape that assertion exists to
+/// discourage.
+async fn live_versions_of(
+    executor: impl PgExecutor<'_>,
     project: ProjectId,
-    from: TopicId,
-    to: TopicId,
-    claim: &EdgeClaim,
-) -> Result<Option<RelationshipVersion>> {
-    let Some(relationship) = find_relationship(pool, project, from, to, claim.kind).await? else {
-        return Ok(None);
-    };
+    edges: &[(TopicId, TopicId, EdgeClaim)],
+) -> Result<HashMap<(TopicId, TopicId, EdgeKind), RelationshipVersion>> {
+    if edges.is_empty() {
+        return Ok(HashMap::new());
+    }
 
-    Ok(live_version(pool, relationship.id)
-        .await?
-        .filter(|version| claim.matches(version)))
+    let from: Vec<uuid::Uuid> = edges.iter().map(|(from, _, _)| from.0).collect();
+    let to: Vec<uuid::Uuid> = edges.iter().map(|(_, to, _)| to.0).collect();
+    let kinds: Vec<String> = edges
+        .iter()
+        .map(|(_, _, claim)| claim.kind.label().to_string())
+        .collect();
+
+    let rows = sqlx::query(concat!(
+        "SELECT DISTINCT ON (r.id) r.from_topic, r.to_topic, r.kind, ",
+        version_columns!("v."),
+        " FROM unnest($2::uuid[], $3::uuid[], $4::text[]) AS wanted(from_topic, to_topic, kind)
+           JOIN relationships r
+             ON r.project_id = $1 AND r.from_topic = wanted.from_topic
+            AND r.to_topic = wanted.to_topic AND r.kind = wanted.kind
+           JOIN relationship_versions v
+             ON v.relationship_id = r.id AND v.invalidated_at IS NULL
+          ORDER BY r.id, v.version DESC"
+    ))
+    .bind(project.0)
+    .bind(&from)
+    .bind(&to)
+    .bind(&kinds)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let kind = EdgeKind::parse(row.get::<&str, _>("kind"))?;
+            Some((
+                (
+                    TopicId(row.get::<uuid::Uuid, _>("from_topic")),
+                    TopicId(row.get::<uuid::Uuid, _>("to_topic")),
+                    kind,
+                ),
+                row_to_version(row),
+            ))
+        })
+        .collect())
 }
 
 async fn assert_within(
