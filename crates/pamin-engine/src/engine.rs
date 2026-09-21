@@ -852,33 +852,21 @@ impl Engine {
             // the projection never hears of -- which is the failure an outbox
             // exists to make impossible, and the one a `tokio::spawn` here
             // would leave wide open.
-            jobs::enqueue(
-                &mut *transaction,
-                self.project,
-                JobKind::SyncTopicIndex,
-                Some(topic.id.0),
-            )
-            .await?;
-            jobs::enqueue(
-                &mut *transaction,
-                self.project,
-                JobKind::DeriveMentions,
-                Some(topic.id.0),
-            )
-            .await?;
-
-            // A topic that did not exist a moment ago may already be named by
-            // memories written before it. Finding them is a scan, so it is
-            // scheduled rather than paid for by whoever created the topic.
+            //
+            // All of them in one statement, because this is inside the write
+            // transaction: three rows is the right number of rows and was
+            // three round trips with the transaction held open across them.
+            //
+            // The third is for a topic that did not exist a moment ago, which
+            // may already be named by memories written before it. Finding them
+            // is a scan, so it is scheduled rather than paid for by whoever
+            // created the topic -- and it is skipped entirely for a rewrite,
+            // which is why the three cannot simply be one kind.
+            let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
             if existed.is_none() {
-                jobs::enqueue(
-                    &mut *transaction,
-                    self.project,
-                    JobKind::BackfillMentions,
-                    Some(topic.id.0),
-                )
-                .await?;
+                owed.push(JobKind::BackfillMentions);
             }
+            jobs::enqueue_all(&mut *transaction, self.project, &owed, Some(topic.id.0)).await?;
 
             Some(state)
         } else {
