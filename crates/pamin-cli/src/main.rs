@@ -113,6 +113,19 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Before anything opens an index, and for every command rather than for
+    // `serve` alone -- which is where this used to be, and the reason it moved.
+    // `PAMIN_NO_SERVER` runs the whole of a command in this process, and a
+    // command holding the descriptors a large index needs under the 1,024 a
+    // Linux process starts with does not degrade, it fails.
+    match pamin_index::raise_open_file_limit() {
+        Ok((before, after)) if after > before => {
+            tracing::info!(before, after, "raised the open-file limit")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
+    }
+
     let cli = Cli::parse();
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),

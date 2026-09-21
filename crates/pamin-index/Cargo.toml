@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# For the open-file limit. A projection index is what holds the descriptors,
+# so raising the limit belongs to this crate rather than to whoever opens one;
+# already in the tree as `pamin-cli`'s, so this adds no lockfile entry.
+libc = { workspace = true }
 pamin-core = { workspace = true }
 fastembed = { workspace = true }
 hf-hub = { workspace = true }

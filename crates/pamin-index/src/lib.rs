@@ -3,6 +3,7 @@
 //! Everything here is derived data. Losing it costs a reindex, not a migration,
 //! which is what makes a pre-1.0 index engine an acceptable dependency.
 
+mod descriptors;
 pub mod embedding;
 pub mod error;
 mod inference;
@@ -10,6 +11,7 @@ pub mod projection;
 pub mod reranking;
 pub mod segmentation;
 
+pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Profile};
 pub use error::{IndexError, Result};
 pub use projection::{
