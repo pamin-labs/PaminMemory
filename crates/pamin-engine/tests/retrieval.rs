@@ -239,21 +239,14 @@ async fn retrieval_quality_by_group() {
     write_corpus(&mut engine, &corpus).await;
 
     if let Some(settings) = sweep() {
-        println!("\n       k   lexical   cross nDCG@10   mono nDCG@10   lexical nDCG@10");
+        println!("\n  setting              cross nDCG@10   mono nDCG@10   lexical nDCG@10");
         println!("  --------------------------------------------------------------------");
-        for (k, weight) in settings {
+        for (label, fusion) in settings {
             let mut groups: BTreeMap<String, Scores> = BTreeMap::new();
             let mut ignored = Vec::new();
-            run(
-                &engine,
-                &queries,
-                fusion(k, weight),
-                &mut groups,
-                &mut ignored,
-            )
-            .await;
+            run(&engine, &queries, fusion, &mut groups, &mut ignored).await;
             println!(
-                "  {k:>6.0}   {weight:>7.2}   {:>13.4}   {:>12.4}   {:>15.4}",
+                "  {label:<20}   {:>13.4}   {:>12.4}   {:>15.4}",
                 groups["cross_lingual"].mean_ndcg(),
                 groups["monolingual"].mean_ndcg(),
                 groups["lexical"].mean_ndcg(),
@@ -359,20 +352,51 @@ const FLOORS: &[(&str, f64, f64)] = &[
     ("monolingual", 0.94, 0.98),
 ];
 
-/// The fusion settings to try when `SWEEP` is set, as (k, lexical weight).
+/// The fusion settings to try when `SWEEP` is set, each labelled as printed.
 ///
-/// The two numbers fusion has, and the pair this corpus settled once already.
-/// It is swept alongside the cross-lingual harness rather than alone, because
-/// a setting that suits one corpus and ruins the other is the outcome worth
-/// catching.
-fn sweep() -> Option<Vec<(f32, f32)>> {
-    std::env::var("SWEEP").ok()?;
-    Some(
-        [5.0, 10.0, 20.0, 60.0]
-            .into_iter()
-            .flat_map(|k| [0.0, 0.25, 0.5, 1.0].into_iter().map(move |w| (k, w)))
-            .collect(),
-    )
+/// First the two numbers fusion has, `k` and the lexical weight, which is the
+/// pair this corpus settled once already. It is swept alongside the
+/// cross-lingual harness rather than alone, because a setting that suits one
+/// corpus and ruins the other is the outcome worth catching.
+///
+/// Then the adaptive weight, which is not a third number but a rule: the
+/// lexical pair is worth `floor` of its weight on a query where no lexical
+/// channel returned anything the vector channel also returned, and reaches
+/// `ceiling` where they agree completely. **This corpus is where that rule has
+/// to be judged, and the cross-lingual harness is where it cannot be.** There
+/// the same 1,190 queries are scored twice, once with the same-language answer
+/// removed, so a query belongs to both groups at once and one per-query
+/// decision has to serve both; here the three groups are three different sets
+/// of queries, which is what a per-query rule needs in order to be right about
+/// one and wrong about another.
+fn sweep() -> Option<Vec<(String, Fusion)>> {
+    // `SWEEP=1` runs every row. Any other value keeps the rows whose label
+    // contains it, because a row costs a pass over the whole query set and
+    // re-checking one row should not cost twenty-four: `SWEEP=adapt` is the
+    // adaptive block, `SWEEP="k=10 "` one value of the rank constant.
+    let wanted = std::env::var("SWEEP").ok()?;
+    let filter = (wanted != "1").then_some(wanted);
+    let mut settings = Vec::new();
+    for k in [5.0, 10.0, 20.0, 60.0] {
+        for weight in [0.0, 0.125, 0.25, 0.5, 1.0] {
+            settings.push((format!("k={k:.0} lex {weight:.3}"), fusion(k, weight)));
+        }
+    }
+    // At `k = 10`, the shipped constant, so the rows differ from the shipped
+    // setting by the rule alone. `0.00..1.00` is the unbounded form; the others
+    // hold a floor under the lexical pair so that a query the lexical channels
+    // answered well is not decided by how much the vector channel agreed.
+    for (floor, ceiling) in [(0.0, 1.0), (0.25, 1.0), (0.5, 1.0), (0.5, 0.5)] {
+        settings.push((
+            format!("k=10 adapt {floor:.2}-{ceiling:.2}"),
+            Fusion::default().with_k(10.0).with_adaptive(floor, ceiling),
+        ));
+    }
+    if let Some(filter) = &filter {
+        settings.retain(|(label, _)| label.contains(filter.as_str()));
+        assert!(!settings.is_empty(), "SWEEP={filter:?} matched no row");
+    }
+    Some(settings)
 }
 
 fn fusion(k: f32, lexical: f32) -> Fusion {

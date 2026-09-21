@@ -605,20 +605,56 @@ fn assert_floors(named: &str, groups: &BTreeMap<String, Scores>, floors: &[(&str
     }
 }
 
-/// The fusion settings to try when `SWEEP` is set, as (k, lexical weight).
+/// The fusion settings to try when `SWEEP` is set, each labelled as printed.
 ///
-/// The two numbers fusion has. Both were settled on the corpus this project
-/// wrote, where the lexical pair carried signal for every query; this corpus
-/// is the first place they can be read against one where it carries signal for
-/// half of them and noise for the other half.
-fn sweep() -> Option<Vec<(f32, f32)>> {
-    std::env::var("SWEEP").ok()?;
-    Some(
-        [5.0, 10.0, 20.0, 60.0]
-            .into_iter()
-            .flat_map(|k| [0.0, 0.25, 0.5, 1.0].into_iter().map(move |w| (k, w)))
-            .collect(),
-    )
+/// First the two numbers fusion has. Both were settled on the corpus this
+/// project wrote, where the lexical pair carried signal for every query; this
+/// corpus is the first place they can be read against one where it carries
+/// signal for half of them and noise for the other half.
+///
+/// Then the adaptive weight, which scales the lexical pair by how much the
+/// channels agree rather than fixing it. **What this corpus can say about it
+/// is one-sided, and that has to be read off the rows rather than assumed.**
+/// Its two groups are the same 1,190 queries scored twice, once with the
+/// same-language answer struck out of the ranking, so one query is in both
+/// groups and one per-query decision has to serve both. A rule that helps the
+/// cross-lingual column here cannot be credited for telling the groups apart,
+/// because they are not apart. What the columns do decide is the thing worth
+/// deciding: whether a floor under the lexical pair is enough to hold the
+/// same-language column, which is where a constant weight of 0.25 earns its
+/// keep and where lowering it does the damage.
+fn sweep() -> Option<Vec<(String, Fusion)>> {
+    // `SWEEP=1` runs every row. Any other value keeps the rows whose label
+    // contains it, because a row costs a pass over the whole query set and
+    // re-checking one row should not cost twenty-four: `SWEEP=adapt` is the
+    // adaptive block, `SWEEP="k=10 "` one value of the rank constant.
+    let wanted = std::env::var("SWEEP").ok()?;
+    let filter = (wanted != "1").then_some(wanted);
+    let mut settings = Vec::new();
+    for k in [5.0, 10.0, 20.0, 60.0] {
+        for weight in [0.0, 0.125, 0.25, 0.5, 1.0] {
+            settings.push((
+                format!("k={k:.0} lex {weight:.3}"),
+                fusion(Some((k, weight))),
+            ));
+        }
+    }
+    // At `k = 10`, the shipped constant, so these differ from the shipped
+    // setting by the rule alone. `0.50-0.50` is a constant eighth of a weight
+    // dressed as the rule, and it is in the list on purpose: without it, a gain
+    // from the rule cannot be told apart from a gain from simply asking the
+    // lexical pair for less.
+    for (floor, ceiling) in [(0.0, 1.0), (0.25, 1.0), (0.5, 1.0), (0.5, 0.5)] {
+        settings.push((
+            format!("k=10 adapt {floor:.2}-{ceiling:.2}"),
+            Fusion::default().with_k(10.0).with_adaptive(floor, ceiling),
+        ));
+    }
+    if let Some(filter) = &filter {
+        settings.retain(|(label, _)| label.contains(filter.as_str()));
+        assert!(!settings.is_empty(), "SWEEP={filter:?} matched no row");
+    }
+    Some(settings)
 }
 
 /// The fusion a sweep step runs, or the shipped one.
@@ -855,13 +891,12 @@ async fn search_reaches_across_languages() {
     write_corpus(&engine, &corpus).await;
 
     if let Some(settings) = sweep() {
-        println!("\n       k   lexical   cross nDCG@10   same nDCG@10   cross recall@50");
+        println!("\n  setting              cross nDCG@10   same nDCG@10   cross recall@50");
         println!("  --------------------------------------------------------------------");
-        for setting in settings {
-            let groups = run(&engine, &queries, Route::Fused(fusion(Some(setting)))).await;
-            let (k, lexical) = setting;
+        for (label, fusion) in settings {
+            let groups = run(&engine, &queries, Route::Fused(fusion)).await;
             println!(
-                "  {k:>6.0}   {lexical:>7.2}   {:>13.4}   {:>12.4}   {:>15.4}",
+                "  {label:<20}   {:>13.4}   {:>12.4}   {:>15.4}",
                 groups["cross_lingual"].mean_ndcg(),
                 groups["same_language"].mean_ndcg(),
                 groups["cross_lingual"].mean_recall(),
