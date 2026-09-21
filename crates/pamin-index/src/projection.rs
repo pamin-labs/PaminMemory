@@ -19,7 +19,7 @@ use pamin_core::TopicId;
 use crate::embedding::Profile;
 use zvec_rust::{
     Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts,
-    FtsQueryParams, HnswQueryParams, IndexParams, MetricType, SearchQuery,
+    FtsQueryParams, HnswQueryParams, IndexParams, MetricType, QuantizeType, SearchQuery,
 };
 
 use crate::error::{IndexError, Result};
@@ -148,6 +148,11 @@ pub struct ProjectionIndex {
     collection: Collection,
     segmenter: Arc<Segmenter>,
     dir: std::path::PathBuf,
+    /// How this collection's vectors are stored, so a query's refiner flag
+    /// follows the index rather than the environment: reading the variable
+    /// again at query time would let a process that changed it mid-flight ask
+    /// for a refiner that is not there.
+    storage: VectorStorage,
 }
 
 /// What one document in this index stands for.
@@ -363,6 +368,128 @@ const DOCUMENT_GRAIN: &str = "topic";
 /// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
 /// configuration that needs the maximum at fifty thousand has nothing left at
 /// seven million.
+/// How the stored vectors are kept.
+///
+/// The vector field is the largest thing on disk: 64.2 MB of a 116 MB index
+/// over 13,014 documents, 55% of it, against 44.7 MB for both full-text fields
+/// and 7.4 MB for the identifier column. A 1024-dimensional fp32 vector is
+/// 4 KB a document and that is most of the 64.
+///
+/// `Fp32` -- no quantization -- until a sweep says otherwise, and the sweep is
+/// the point of this being a setting: [`PAMIN_VECTOR_STORAGE`] lets
+/// `crates/pamin-index/tests/recall.rs` measure a cell without a rebuild of
+/// the world, because the one thing reading the binding cannot answer is
+/// whether the refiner keeps a full-precision copy beside the quantized one --
+/// in which case quantizing costs disk rather than saving it.
+///
+/// ADR 0001 records a previous attempt at this returning recall@10 of 0.000
+/// with no error and no visible symptom, under the only configuration that
+/// existed then (`Int8`, before the binding exposed rotation). That is why the
+/// storage is recorded in the profile marker: an index built one way and read
+/// another is the silent-wrong-answer shape, and the marker turns it into a
+/// message naming `pamin reindex`.
+const VECTOR_STORAGE: VectorStorage = VectorStorage::Fp32;
+
+/// Overrides [`VECTOR_STORAGE`], for the sweep that settles it.
+///
+/// Deliberately undocumented: a caller has no way to evaluate it, and reading
+/// an index built under one value with another is exactly what the marker
+/// exists to refuse.
+const PAMIN_VECTOR_STORAGE: &str = "PAMIN_VECTOR_STORAGE";
+
+/// How a stored vector is kept, and what the marker records.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VectorStorage {
+    /// Four bytes a dimension, exactly what the model produced.
+    Fp32,
+    /// Two bytes a dimension.
+    Fp16,
+    /// One byte a dimension.
+    Int8,
+    /// Half a byte a dimension.
+    Int4,
+    /// A bit a dimension, with a rotation applied first so that the bits carry
+    /// comparable information -- which is the part the Rust binding did not
+    /// expose until 0.7.2, and the reason ADR 0001 deferred this.
+    Rabitq,
+}
+
+impl VectorStorage {
+    /// The label the profile marker carries.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fp32 => "fp32",
+            Self::Fp16 => "fp16",
+            Self::Int8 => "int8",
+            Self::Int4 => "int4",
+            Self::Rabitq => "rabitq",
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        match label.trim() {
+            "fp32" => Some(Self::Fp32),
+            "fp16" => Some(Self::Fp16),
+            "int8" => Some(Self::Int8),
+            "int4" => Some(Self::Int4),
+            "rabitq" => Some(Self::Rabitq),
+            _ => None,
+        }
+    }
+
+    fn quantize(self) -> Option<QuantizeType> {
+        match self {
+            Self::Fp32 => None,
+            Self::Fp16 => Some(QuantizeType::Fp16),
+            Self::Int8 => Some(QuantizeType::Int8),
+            Self::Int4 => Some(QuantizeType::Int4),
+            Self::Rabitq => Some(QuantizeType::Rabitq),
+        }
+    }
+
+    /// Whether a query should ask for the refiner.
+    ///
+    /// It rescores against a full-precision copy that exists only where the
+    /// stored vectors were quantized, and asking for one otherwise fails
+    /// outright rather than being ignored -- so this follows the storage rather
+    /// than being a setting of its own.
+    fn refines(self) -> bool {
+        self.quantize().is_some()
+    }
+
+    /// The index parameters for this storage.
+    fn index_params(self) -> Result<IndexParams> {
+        let Some(quantize) = self.quantize() else {
+            return Ok(IndexParams::hnsw(
+                MetricType::Cosine,
+                GRAPH_DEGREE,
+                GRAPH_EFFORT,
+            )?);
+        };
+
+        let mut params = IndexParams::hnsw_with_quantize(
+            MetricType::Cosine,
+            GRAPH_DEGREE,
+            GRAPH_EFFORT,
+            quantize,
+        )?;
+        // Off by the binding's own default, asserted by its own tests. It
+        // matters for the coarsest storages, where the bits have to be spread
+        // across dimensions that carry comparable information; it is harmless
+        // for the others, and enabling it uniformly keeps one code path.
+        params.set_quantizer_enable_rotate(true)?;
+        Ok(params)
+    }
+}
+
+/// The storage this process will build and read with.
+fn vector_storage() -> VectorStorage {
+    std::env::var(PAMIN_VECTOR_STORAGE)
+        .ok()
+        .and_then(|value| VectorStorage::parse(&value))
+        .unwrap_or(VECTOR_STORAGE)
+}
+
 const GRAPH_DEGREE: i32 = 32;
 
 /// How hard the build works to place each document in the graph.
@@ -409,10 +536,28 @@ impl ProjectionIndex {
 
         std::fs::create_dir_all(dir)?;
         let marker = dir.join("profile");
+        let storage = vector_storage();
         match std::fs::read_to_string(&marker) {
             Ok(recorded) => {
                 let recorded = recorded.trim();
-                let (model, grain) = recorded.split_once('\n').unwrap_or((recorded, ""));
+                let mut lines = recorded.lines();
+                let model = lines.next().unwrap_or_default();
+                let grain = lines.next().unwrap_or_default();
+                // A marker with no storage line was written before the storage
+                // could be anything but `fp32`, which is what it therefore is.
+                // The same shape as the grain line above, and for the same
+                // reason: an existing workspace must be told to reindex rather
+                // than fail to open.
+                let indexed_storage = lines
+                    .next()
+                    .and_then(VectorStorage::parse)
+                    .unwrap_or(VectorStorage::Fp32);
+                if indexed_storage != storage {
+                    return Err(IndexError::VectorStorageMismatch {
+                        indexed: indexed_storage.label().to_string(),
+                        requested: storage.label().to_string(),
+                    });
+                }
 
                 if model.trim() != profile.model_id() {
                     return Err(IndexError::ProfileMismatch {
@@ -435,7 +580,19 @@ impl ProjectionIndex {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::write(&marker, format!("{}\n{DOCUMENT_GRAIN}", profile.model_id()))?;
+                // What was actually built, not what was asked for. The two are
+                // the same today; they stop being the same the moment a
+                // storage needs a capability the machine may not have, and a
+                // marker recording the request would then be read as a
+                // description of the index -- ADR 0001's silent wrong answer.
+                std::fs::write(
+                    &marker,
+                    format!(
+                        "{}\n{DOCUMENT_GRAIN}\n{}",
+                        profile.model_id(),
+                        storage.label()
+                    ),
+                )?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -477,7 +634,7 @@ impl ProjectionIndex {
                 FIELD_VECTOR,
                 DataType::VectorFp32,
                 dimensions,
-                IndexParams::hnsw(MetricType::Cosine, GRAPH_DEGREE, GRAPH_EFFORT)?,
+                vector_storage().index_params()?,
             )
             .max_doc_count_per_segment(segment_documents(documents))
             .build()?;
@@ -503,6 +660,7 @@ impl ProjectionIndex {
             collection,
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
+            storage: vector_storage(),
         })
     }
 
@@ -649,11 +807,16 @@ impl Projection for ProjectionIndex {
         let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
         search.set_output_fields(&[FIELD_ID])?;
         search.set_include_vector(false)?;
-        // No radius bound, the graph rather than a linear scan, and no
-        // refiner: the refiner rescores against a full-precision copy that
-        // only exists when the stored vectors were quantized, and asking for
-        // one otherwise fails outright rather than being ignored.
-        search.set_hnsw_params(HnswQueryParams::new(SEARCH_EFFORT, 0.0, false, false))?;
+        // No radius bound and the graph rather than a linear scan. The refiner
+        // follows what the vectors were stored as, for the reason
+        // `VectorStorage::refines` gives: asking for one over unquantized
+        // vectors fails outright rather than being ignored.
+        search.set_hnsw_params(HnswQueryParams::new(
+            SEARCH_EFFORT,
+            0.0,
+            false,
+            self.storage.refines(),
+        ))?;
         Ok(collect_ids(self.collection.query(&search)?))
     }
 

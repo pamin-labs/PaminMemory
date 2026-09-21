@@ -364,6 +364,7 @@ mod tests {
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
         "PAMIN_UNINDEXED_BUDGET",
+        "PAMIN_VECTOR_STORAGE",
     ];
 
     /// Every setting the product reads is documented, or listed as not.
