@@ -267,11 +267,26 @@ impl Segmentation {
     /// Whether rebuilding would measurably help.
     ///
     /// Twice the target rather than any difference at all, because the target
-    /// is a floor as well as a ceiling: measured over fifty thousand
-    /// documents, four segments answer in 16.9 ms, twenty-five in 39.8 -- and
-    /// *two* in 26.4, worse than four. So fewer than wanted is not something
-    /// to report as fixable, and a couple more than wanted is not worth hours
-    /// of rebuilding. At twenty-five it is 2.4x a query.
+    /// is a floor as well as a ceiling. Measured over the same fifty thousand
+    /// documents, recall@10 against exact search:
+    ///
+    /// ```text
+    ///   segments   recall@10   a query   build
+    ///         25      1.0000    39.8 ms    52 s
+    ///          4      0.9980    16.9 ms   129 s
+    ///          2      0.9880    26.4 ms   221 s
+    ///          1      0.9510    16.6 ms   415 s
+    /// ```
+    ///
+    /// **The recall column is the one to read.** It falls monotonically as the
+    /// segments grow, reaching 0.9510 at one -- below `recall.rs`'s own 0.97
+    /// floor -- so aiming at fewer segments than the policy wants trades
+    /// accuracy away, and that is the reason this reports only an excess. The
+    /// latency column is not reliable at this resolution: 26.4 ms for two
+    /// segments sits above both one and four, which is not a shape anything
+    /// physical would produce, and these arms ran while a 131,924-passage
+    /// index build had the machine. What survives that is the 25-segment row,
+    /// which is 2.4x the four-segment one and reproduced across two runs.
     pub fn is_worth_rebuilding(&self) -> bool {
         self.segments() > 2 * self.wanted().max(1)
     }
@@ -1078,11 +1093,11 @@ mod upkeep {
 
     /// Fewer segments than wanted is not reported, because it is not better.
     ///
-    /// Measured over fifty thousand documents: four segments answer a query in
-    /// 16.9 ms, twenty-five in 39.8, and *two* in 26.4 -- worse than four. So
-    /// the target is a floor as well as a ceiling and a report that said
-    /// "fewer than four, rebuild" would be advising hours of work for a
-    /// regression.
+    /// Measured over fifty thousand documents, recall@10 falls monotonically
+    /// as the segments grow -- 1.0000 at twenty-five, 0.9980 at four, 0.9880
+    /// at two, 0.9510 at one, which is below `recall.rs`'s floor. So the
+    /// target is a floor as well as a ceiling, and a report that said "fewer
+    /// than four, rebuild" would be advising hours of work for a regression.
     #[test]
     fn fewer_segments_than_wanted_is_not_worth_rebuilding() {
         let coarse = Segmentation {
