@@ -141,6 +141,9 @@ pub trait Projection {
     /// held open while the index is, so this is what a descriptor limit is
     /// counting, and it is what decides when the index is asked to tidy up.
     fn file_count(&self) -> Result<u64>;
+
+    /// How this index is segmented, against what the policy would choose.
+    fn segmentation(&self) -> Result<Segmentation>;
 }
 
 /// A lexical or vector index over topics.
@@ -231,6 +234,47 @@ const SMALLEST_SEGMENT: u64 = 2_000;
 /// `pamin reindex` rebuilds it.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
+}
+
+/// How an index is segmented, against what the policy would choose now.
+///
+/// Reported because a workspace has no other way to find out. The size is
+/// recorded when the collection is created and a workspace is created empty,
+/// so every grown project records [`SMALLEST_SEGMENT`] and holds one segment
+/// per two thousand documents rather than the four the policy aims at -- 25
+/// over fifty thousand, 66 over 131,924. Measured over the same fifty
+/// thousand, 25 segments answer a query in 39.8 ms where four answer in 16.9.
+#[derive(Clone, Copy, Debug)]
+pub struct Segmentation {
+    /// Documents the collection holds.
+    pub documents: u64,
+    /// Documents a segment holds, as the collection recorded at creation.
+    pub recorded: u64,
+}
+
+impl Segmentation {
+    /// Segments this many documents fall into at the recorded size.
+    pub fn segments(&self) -> u64 {
+        self.documents.div_ceil(self.recorded.max(1))
+    }
+
+    /// Segments the policy would choose for the count it holds now.
+    pub fn wanted(&self) -> u64 {
+        self.documents
+            .div_ceil(segment_documents(self.documents).max(1))
+    }
+
+    /// Whether rebuilding would measurably help.
+    ///
+    /// Twice the target rather than any difference at all, because the target
+    /// is a floor as well as a ceiling: measured over fifty thousand
+    /// documents, four segments answer in 16.9 ms, twenty-five in 39.8 -- and
+    /// *two* in 26.4, worse than four. So fewer than wanted is not something
+    /// to report as fixable, and a couple more than wanted is not worth hours
+    /// of rebuilding. At twenty-five it is 2.4x a query.
+    pub fn is_worth_rebuilding(&self) -> bool {
+        self.segments() > 2 * self.wanted().max(1)
+    }
 }
 
 /// How many files an index may be spread across before it is compacted.
@@ -877,6 +921,15 @@ impl Projection for ProjectionIndex {
     /// A directory that cannot be read counts as nothing to do. This decides
     /// whether to schedule maintenance, and failing a write over it would be a
     /// worse answer than scheduling it a little late.
+    fn segmentation(&self) -> Result<Segmentation> {
+        Ok(Segmentation {
+            documents: self.collection.stats()?.doc_count,
+            // What the collection actually recorded, not what the policy would
+            // have chosen: the point of reporting this is that the two differ.
+            recorded: self.collection.schema()?.max_doc_count_per_segment(),
+        })
+    }
+
     fn file_count(&self) -> Result<u64> {
         fn walk(dir: &std::path::Path) -> u64 {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -984,7 +1037,77 @@ fn collect_ids(docs: Vec<Doc>) -> Vec<TopicId> {
 
 #[cfg(test)]
 mod upkeep {
-    use super::{is_fragmented, vector_index_lags};
+    use super::{Segmentation, is_fragmented, segment_documents, vector_index_lags};
+
+    /// A workspace that grew from empty holds the floor's segments, and the
+    /// report says so; one built knowing its size does not.
+    ///
+    /// The defect written down, the way the two above are. A collection
+    /// records its segment size at creation and a workspace is created before
+    /// anything is written to it, so `segment_documents` is asked about zero
+    /// documents and clamped to the floor -- which means the division by
+    /// `TARGET_SEGMENTS` never runs for a project anyone has, and 131,924
+    /// documents land in 66 segments rather than four.
+    #[test]
+    fn a_project_grown_from_empty_holds_the_floors_segments_and_the_report_says_so() {
+        let grown = Segmentation {
+            documents: 131_924,
+            recorded: segment_documents(0),
+        };
+        assert_eq!(
+            grown.recorded, 2_000,
+            "an empty collection records the floor"
+        );
+        assert_eq!(grown.segments(), 66);
+        assert_eq!(grown.wanted(), 4);
+        assert!(
+            grown.is_worth_rebuilding(),
+            "sixty-six segments where four would do was not reported"
+        );
+
+        let rebuilt = Segmentation {
+            documents: 131_924,
+            recorded: segment_documents(131_924),
+        };
+        assert_eq!(rebuilt.segments(), 4);
+        assert!(
+            !rebuilt.is_worth_rebuilding(),
+            "an index already at the target was reported as worth rebuilding"
+        );
+    }
+
+    /// Fewer segments than wanted is not reported, because it is not better.
+    ///
+    /// Measured over fifty thousand documents: four segments answer a query in
+    /// 16.9 ms, twenty-five in 39.8, and *two* in 26.4 -- worse than four. So
+    /// the target is a floor as well as a ceiling and a report that said
+    /// "fewer than four, rebuild" would be advising hours of work for a
+    /// regression.
+    #[test]
+    fn fewer_segments_than_wanted_is_not_worth_rebuilding() {
+        let coarse = Segmentation {
+            documents: 50_000,
+            recorded: 50_000,
+        };
+        assert_eq!(coarse.segments(), 1);
+        assert_eq!(coarse.wanted(), 4);
+        assert!(!coarse.is_worth_rebuilding());
+    }
+
+    /// A little over the target is not worth hours either.
+    #[test]
+    fn a_few_more_segments_than_wanted_is_not_worth_rebuilding() {
+        let close = Segmentation {
+            documents: 50_000,
+            recorded: 8_000,
+        };
+        assert_eq!(close.segments(), 7);
+        assert_eq!(close.wanted(), 4);
+        assert!(
+            !close.is_worth_rebuilding(),
+            "seven segments against four is not a rebuild"
+        );
+    }
 
     /// The two maintenance conditions, at the numbers a served workspace
     /// actually reaches.

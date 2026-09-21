@@ -56,6 +56,23 @@ pub struct Drained {
     failed: usize,
     /// Jobs still owed, including any not yet due.
     pending: i64,
+    /// Segments the index holds, and how many its own policy wants, when the
+    /// two differ enough to be worth a rebuild.
+    ///
+    /// Absent otherwise, so a healthy index says nothing. Here rather than in
+    /// a command of its own because whoever has just drained the cascade is
+    /// whoever cares what shape the index is in, and this is the only place
+    /// the answer was reachable from: a collection records its segment size
+    /// when it is created, a workspace is created empty, and nothing has ever
+    /// told anyone what that left them with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segments: Option<Segments>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Segments {
+    holds: u64,
+    wants: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -120,10 +137,19 @@ pub fn render_value(
         Command::Drain => {
             let result: Drained = serde_json::from_str(value.get())?;
             format.emit(&result, || {
-                format!(
+                let mut rendered = format!(
                     "Ran {} jobs, {} failed, {} still owed",
                     result.completed, result.failed, result.pending
-                )
+                );
+                if let Some(segments) = &result.segments {
+                    rendered.push_str(&format!(
+                        "\nThis index is spread over {} segments where {} would do, because it \
+                         recorded its segment size when it was empty. Searches pay for the \
+                         extra segments; `pamin reindex` rebuilds at the right size.",
+                        segments.holds, segments.wants
+                    ));
+                }
+                rendered
             });
         }
         Command::Failed => {
@@ -191,10 +217,15 @@ pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result
     let engine = session.engine(project, profile).await?;
     let drained = engine.drain_cascade(Owed::Everything).await?;
 
+    let shape = engine.segmentation()?;
     Ok(Drained {
         completed: drained.completed,
         failed: drained.failed,
         pending: drained.pending,
+        segments: shape.is_worth_rebuilding().then(|| Segments {
+            holds: shape.segments(),
+            wants: shape.wanted(),
+        }),
     })
 }
 
