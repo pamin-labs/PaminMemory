@@ -193,17 +193,29 @@ pub struct TopicState {
     pub signals: RetrievalSignals,
 }
 
-/// Per-state signals that feed post-fusion modifiers.
+/// Per-state signals read alongside a retrieved state.
 ///
-/// These are modifiers rather than recall channels. Recency and importance used
-/// to appear as candidate channels as well, which counted the same evidence
-/// twice: once when it was recalled and again when it was reranked.
+/// They were designed as post-fusion modifiers, and not as recall channels:
+/// recency and importance used to appear as candidate channels as well, which
+/// counted the same evidence twice, once when it was recalled and again when it
+/// was reranked.
+///
+/// **Nothing ranks on the first three any more, because nothing writes them.**
+/// `importance`, `worth_positive` and `worth_negative` are `DEFAULT 0` columns
+/// that the repository reads and no code path ever updates, so the modifiers
+/// that multiplied by them multiplied every result by exactly 1.0 on every
+/// search this project has ever run. The modifiers are gone; the columns stay,
+/// because they are the authority store's schema and dropping them is a
+/// migration rather than a ranking change. Restoring the feature means writing
+/// them first -- a modifier over a constant is not a ranking signal, it is a
+/// multiplication.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct RetrievalSignals {
+    /// Explicit importance. Never written; see the type's note.
     pub importance: f32,
-    /// Times this state co-occurred with a successful outcome.
+    /// Times this state co-occurred with a successful outcome. Never written.
     pub worth_positive: u32,
-    /// Times it co-occurred with a failed one.
+    /// Times it co-occurred with a failed one. Never written.
     pub worth_negative: u32,
     pub access_count: u32,
     pub last_accessed_at: Option<OffsetDateTime>,

@@ -539,14 +539,12 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 `derived_from` and `part_of` the direction *is* the claim, so it is stated
 rather than left to be inferred.
 
-**`modifier`** — a post-fusion adjustment, applied at most once each, and
-recorded only when it changed the result. `importance` and `worth` lift a
-result.
-
-The trace above has no `modifier` entry because none of them moved anything.
-`importance` and `worth` are read by the ranker and written by nothing yet, so
-today they are always one; a result that carries no `modifier` line is a result
-that ranked on its channels alone.
+There is no third kind of entry. There used to be a `modifier`, a post-fusion
+adjustment that lifted a result by its recorded `importance` and by the balance
+of outcomes it took part in. Both were read from columns nothing ever wrote, so
+each one multiplied every result by exactly 1.0 on every search anyone ran, and
+the adjustment was removed rather than left to look like a ranking signal.
+Every result ranks on its channels alone, which is what the trace says.
 
 ## Relationships
 

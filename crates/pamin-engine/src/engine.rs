@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use pamin_core::{
-    Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, Modifiers,
-    ProjectId, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
+    Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
+    SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
@@ -1341,9 +1341,7 @@ impl Engine {
         // resolves never reached the working set, so it is not ranked.
         fused.retain(|result| live.state(result.topic).is_some());
 
-        let modifiers = Modifiers::default();
         for result in &mut fused {
-            let state = live.state(result.topic).expect("retained above");
             if let Some(reached) = paths.get(&result.topic) {
                 let (asserted_from, asserted_to) = if reached.outbound {
                     (reached.via, reached.topic)
@@ -1360,10 +1358,11 @@ impl Engine {
                     derivation: reached.derivation,
                 });
             }
-            modifiers.apply(result, &state.signals);
         }
-        pamin_core::sort_results(&mut fused);
 
+        // No re-sort. `fuse` ordered these and nothing above changes a score --
+        // the path entry is an explanation of a position, not a reason to move
+        // one. Anything added here that does touch `score` has to sort again.
         Ok(fused
             .into_iter()
             .take(limit as usize)
