@@ -59,6 +59,49 @@ const SEGMENTED_WEIGHT: f32 = 0.125;
 /// sweepable, which it was not.
 const NGRAM_WEIGHT: f32 = 0.125;
 
+/// What the graph channel's rank is worth against the vector channel's.
+///
+/// **Measured, and the previous value was not.** Every unnamed channel
+/// defaults to 1.0, and the graph channel was simply never named -- so it
+/// voted as loudly as the dense channel on the strength of a hop. Nothing
+/// could see that, because all three evaluation corpora derived zero edges and
+/// a channel with no candidates has no weight worth arguing about.
+///
+/// The `relational` group in `pamin-engine/tests/corpus` ends that: ten pairs
+/// of memories whose answering half is named by a phrase the other half's
+/// prose contains, so mention derivation fires and the channel has something
+/// to walk. With eleven live edges in that project, fusion alone, nDCG@10:
+///
+///   weight   cross-lingual   lexical   monolingual   relational
+///     0.00          0.7903    1.0000        0.9940       0.5237
+///     0.15          0.7853    1.0000        0.9940       0.5517
+///     0.30          0.7746    1.0000        0.9940       0.6295
+///     0.50          0.7415    1.0000        0.9821       0.6583
+///     1.00          0.5109    0.9885        0.9246       0.6910
+///
+/// At 1.0 the channel costs **0.2794** on the cross-lingual group -- forty
+/// wins to nothing for removing it, `p = 0.0001` -- and 0.0694 on the
+/// monolingual group, against 0.1673 earned on the twenty queries written to
+/// favour it. It is net negative even counting the group built for it, and the
+/// whole search path at 1.0 fails this repository's own `monolingual` floor:
+/// 0.9246 against 0.9400.
+///
+/// Three tenths is the knee rather than a preference. From 0.15 to 0.30 the
+/// relational group gains 0.0778 and the cross-lingual group loses 0.0157;
+/// from 0.30 to 0.50 it gains 0.0288 and loses 0.0331. It is the last point
+/// where the channel's own group gains more than the others give up.
+///
+/// The number is not read off the four-group mean, and the reason is a bias
+/// this weight would otherwise be chosen by: the relational group is twenty
+/// queries written in this repository *to make the graph channel look useful*,
+/// and the other 137 were written before that intent existed. Weighting them
+/// equally would let the purpose-built group pick its own weight.
+///
+/// The only comparable published system (`arXiv:2609.01617`) weights its graph
+/// channel at 0.15 against a dense 0.50, which is the same order and was the
+/// prediction written before this sweep ran.
+const GRAPH_WEIGHT: f32 = 0.30;
+
 /// One line of the explanation attached to a result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -413,6 +456,7 @@ impl Default for Fusion {
             weights: BTreeMap::from([
                 (Channel::LexicalSegmented, SEGMENTED_WEIGHT),
                 (Channel::LexicalNgram, NGRAM_WEIGHT),
+                (Channel::Graph, GRAPH_WEIGHT),
             ]),
             // Off. The three corpora's accuracy floors are all standing on
             // constant weights, and a mechanism turned on before it is measured
@@ -808,13 +852,18 @@ mod tests {
         // the underlying scores were. That is the property that lets a BM25
         // score and a vector distance be combined at all.
         //
-        // The vector and graph channels, because the two lexical ones
-        // deliberately carry half weight. That says how much they duplicate
-        // each other, not that a rank means something different in each.
-        let fused = Fusion::default().fuse(&[
-            ChannelResults::unscored(Channel::Graph, vec![id(1)]),
-            ChannelResults::unscored(Channel::Vector, vec![id(2)]),
-        ]);
+        // Both weights set here rather than inherited, because every channel
+        // but the vector one now carries a measured weight -- the two lexical
+        // ones an eighth each and the graph channel three tenths. Those say
+        // what a channel is worth, not that a rank means something different
+        // inside it, and this test is about the second.
+        let fused = Fusion::default()
+            .with_weight(Channel::Graph, 1.0)
+            .with_weight(Channel::Vector, 1.0)
+            .fuse(&[
+                ChannelResults::unscored(Channel::Graph, vec![id(1)]),
+                ChannelResults::unscored(Channel::Vector, vec![id(2)]),
+            ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
     }
 
@@ -987,7 +1036,12 @@ mod tests {
                     .map(|(n, score)| Scored::new(id(n as u8 + 1), *score))
                     .collect(),
             )];
-            Fusion::default().fuse(&lists)[0].score
+            // Full weight, so what this reads is the declared scale and not
+            // the three tenths the channel is worth against the others.
+            Fusion::default()
+                .with_weight(Channel::Graph, 1.0)
+                .fuse(&lists)[0]
+                .score
         };
 
         // Three explicit one-hop assertions against three weak derived ones.
@@ -1037,8 +1091,10 @@ mod tests {
     #[test]
     fn a_calibrated_channel_with_nothing_to_separate_does_not_fall_back_to_rank() {
         let identical: Vec<Scored> = (1..=6).map(|n| Scored::new(id(n), 0.5)).collect();
-        let fused =
-            Fusion::default().fuse(&[ChannelResults::new(Channel::Graph, identical.clone())]);
+        // Full weight throughout, so this reads the declared scale rather than
+        // what the graph channel is worth against the others.
+        let graph = || Fusion::default().with_weight(Channel::Graph, 1.0);
+        let fused = graph().fuse(&[ChannelResults::new(Channel::Graph, identical.clone())]);
 
         let first = fused[0].score;
         assert!(
@@ -1048,12 +1104,12 @@ mod tests {
 
         // Where it ties is the middle of the band, because 0.5 is the middle
         // of the declared range -- not its top and not its bottom.
-        let strong = Fusion::default().fuse(&[ChannelResults::new(
+        let strong = graph().fuse(&[ChannelResults::new(
             Channel::Graph,
             (1..=6).map(|n| Scored::new(id(n), 1.0)).collect(),
         )])[0]
             .score;
-        let faint = Fusion::default().fuse(&[ChannelResults::new(
+        let faint = graph().fuse(&[ChannelResults::new(
             Channel::Graph,
             (1..=6).map(|n| Scored::new(id(n), 0.01)).collect(),
         )])[0]
