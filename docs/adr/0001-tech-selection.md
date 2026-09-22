@@ -334,16 +334,22 @@ of the four fused.
 so one pass carries the whole matrix of where each channel ranked what, and now
 of what it scored it too. Three findings, on three corpora:
 
-| | ours cross | XQuAD-R cross | XQuAD-R same |
+| channel, alone | ours cross | XQuAD-R cross | XQuAD-R same |
 | --- | --- | --- | --- |
-| all four fused | 0.7910 | 0.6077 | **0.7556** |
-| the vector channel alone | **0.8268** | **0.6335** | 0.6787 |
-| segmented BM25 alone | — | — | 0.7299 |
+| `lexical_segmented` | 0.1569 | 0.0366 | **0.7299** |
+| `lexical_ngram` | 0.0528 | 0.0106 | — |
+| `vector` | **0.8268** | **0.6335** | 0.6787 |
+| `graph` | 0.0000 | 0.0000 | 0.0000 |
+| all four fused | 0.7910 | 0.6077 | 0.7556 |
 
 **Fusing four channels ranks below one of them on cross-lingual queries**, and
 on the same-language queries of the same corpus the lexical channels earn their
-place outright. Removing either lexical channel significantly improves the
-cross-lingual group and significantly hurts the same-language one. The channels
+place outright. Leave-one-out, paired against all four: taking
+`lexical_segmented` away is **+0.0310** on this project's cross-lingual group
+(16 wins, 1 loss, p = 0.0011) and **+0.0158** on XQuAD-R's (496 wins, 30
+losses, p = 0.0001), while `lexical_ngram` is +0.0223 (13 / 1, p = 0.0173) and
++0.0110 (333 / 20, p = 0.0001). The same removal costs **−0.0442** on XQuAD-R's
+same-language group (14 wins, 275 losses) and −0.0073 on MIRACL (p = 0.0125). The channels
 are not weak. A global constant cannot tell the two cases apart — this is the
 weakest link the four-channel paper above names, arrived at independently.
 
@@ -362,6 +368,30 @@ there is a property of the corpus. This project's own corpus does have edges
 and still reports zero, and that part is unexplained: nothing here has
 established whether the walk reaches nothing relevant or reaches it at a rank
 that `weight / (k + rank)` places below the other channels' candidates.
+
+**And the combiner itself was never a recorded choice.** This record argues at
+length about `k` and about the channel weights. Both are parameters *of*
+reciprocal rank fusion. That fusing ranks rather than normalised scores was a
+decision at all appears nowhere, and it is the load-bearing one. Every
+2025–2026 result found goes the other way:
+
+| | what it measured | result |
+| --- | --- | --- |
+| [2606.04194](https://arxiv.org/html/2606.04194) (2026) | LoCoMo and LongMemEval-S, CPU, no training — this project's own benchmarks and constraints | z-score weighted fusion **Hit@1 0.752 against RRF's 0.718**, with a wide plateau in the mixing weight |
+| [2507.03761](https://arxiv.org/html/2507.03761v1) (2025) | ten fusion algorithms × six normalisers, four corpora | standardised scores with **CombMNZ highest on all four**; every rank-based and vote-based method below every score-based one |
+| [2603.28886](https://arxiv.org/html/2603.28886v1) (2026) | graph and vector channels, multi-hop QA | RRF's mean gain **not significant** where calibrated fusion's *smaller* mean gain is; ablation names normalisation the dominant factor |
+| [2604.01733](https://arxiv.org/html/2604.01733v1) (2026) | 23,088 queries, the only real sweep of `k` in the window | `k = 10` Recall@5 0.716 against `k = 60`'s 0.695 — the low constant wins, and nothing published derives one |
+
+Read together they say the knob this project tuned is the low-leverage one:
+`k` is worth one to three points and normalisation three to eight. `Combine`
+implements all three combiners, `Reciprocal` still ships, and the offline grid
+prices each of them with and without the confidence rule, because the two
+mechanisms answer different halves and a row that moved both could not say
+which half moved it. One prediction is written down in a unit test rather than
+here: CombMNZ multiplies by agreement, and agreement between a confident
+channel and a worthless one is exactly the failure measured on both
+cross-lingual groups above, so the combiner the systematic comparison ranks
+first should rank last on these corpora.
 
 **What that argues for, and what was built.** Not a normaliser: standardising a
 channel's candidates removes the units and not the quality, so a channel whose
