@@ -598,6 +598,35 @@ fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64) {
     println!("  {per_query_ms:.0} ms per query\n");
 }
 
+/// What the reranker did during a run, printed beside the scores.
+///
+/// A row of numbers nothing in this project had: how many candidates reached
+/// the model against how many were offered it, how long they were, and how
+/// often the score cache answered instead. Each of the three gates a decision
+/// recorded as deferred -- see [`pamin_index::Reranked`] -- and each was an
+/// inference from what the corpus is until this printed it.
+fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
+    let Some(counted) = engine.reranked(tier) else {
+        println!("  the {} tier was never loaded\n", tier.name());
+        return;
+    };
+    if counted.offered == 0 {
+        println!("  the {} tier scored nothing\n", tier.name());
+        return;
+    }
+    println!(
+        "  {}: {:.1} candidates a query reached the model of {:.1} offered, \
+         {:.0} characters each, longest {}, cache {:.1}% of {} lookups",
+        tier.name(),
+        counted.scored as f64 / queries as f64,
+        counted.offered as f64 / queries as f64,
+        counted.characters as f64 / counted.scored.max(1) as f64,
+        counted.longest,
+        100.0 * (counted.offered - counted.scored) as f64 / counted.offered as f64,
+        counted.offered,
+    );
+}
+
 /// Asserts the floors, unless this is a run of some other profile.
 fn assert_floors(named: &str, groups: &BTreeMap<String, Scores>, floors: &[(&str, f64, f64)]) {
     if named != DEFAULT_PROFILE {
@@ -960,6 +989,7 @@ async fn search_reaches_across_languages() {
                 &groups,
                 started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
             );
+            report_reranking(&engine, tier, queries.len());
         }
         return;
     }
@@ -971,6 +1001,7 @@ async fn search_reaches_across_languages() {
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
+    report_reranking(&engine, Rerank::default(), queries.len());
     assert_floors(&named, &groups, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker. Forty seconds against the four

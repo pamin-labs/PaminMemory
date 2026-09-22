@@ -13,6 +13,17 @@
 //! of memories is tens of gigabytes. So the cost is paid at query time or not
 //! at all.
 //!
+//! That arithmetic is right at millions and was quoted here as though it
+//! settled the question at any size, which it does not: 128-dimensional int8
+//! token vectors are about 67 MB over XQuAD-R's 13,014 sentences and 1.35 GB
+//! over MIRACL's 131,924 passages, against indexes of 119 MB and 1.1 GB. Two
+//! to three times the index is an argument, not a foreclosure. What actually
+//! rules late interaction out today is that no permissively-licensed
+//! multilingual model exists to do it with -- `jina-colbert-v2` is
+//! CC-BY-NC-4.0, `answerai-colbert-small-v1` is Apache-2.0 and English, and
+//! `colbert-xm` is MIT and selects a per-language adapter at runtime, which
+//! does not fit one static ONNX graph. See `docs/adr/0001-tech-selection.md`.
+//!
 //! ## What it is worth, measured
 //!
 //! On 13,014 sentences in eleven languages, reranking the fused shortlist:
@@ -115,7 +126,14 @@
 //! document's representation at index time, or moving to late interaction.
 //! Both trade the cost for storage proportional to documents times tokens times
 //! width, and both would mean shipping and maintaining a re-export of somebody
-//! else's weights split in two. Neither is ruled out; neither is here.
+//! else's weights split in two. Neither is ruled out; neither is here, and the
+//! storage is the smaller of the two obstacles -- see the module notes above
+//! for the sizes and for the licence wall that is the larger one.
+//!
+//! [`Reranker::counted`] is what would decide the first of them. The score
+//! cache's hit rate says whether the hot set is small enough for precomputing
+//! part of each document to pay for itself, and until it was exposed nothing
+//! in this project could read it.
 //!
 //! What is here is the one thing that can be kept: the score itself. A query
 //! and a memory score the same every time, so a resident server remembers them,
@@ -447,6 +465,44 @@ pub struct Reranker {
     model: TextRerank,
     tier: Rerank,
     scores: Scores,
+    lengths: Lengths,
+}
+
+/// How long the candidates that reached the model were.
+///
+/// Counted in characters because that is what the batching sort already uses
+/// and what can be counted without asking the tokenizer -- see the sort in
+/// [`Reranker::rank`] for why characters rather than bytes, and for the small
+/// factor that separates them from tokens.
+///
+/// Here because the cost of a cross-encoder rises with sequence length and
+/// nothing in this project had ever recorded the lengths it sees. `MAX_TOKENS`
+/// says the limit binds on passage-shaped corpora and not on sentence-shaped
+/// ones; that was an inference from what the corpora are, and this is what
+/// turns it into a measurement.
+#[derive(Default)]
+struct Lengths {
+    total: u64,
+    longest: usize,
+}
+
+/// What a reranker has been asked to do since it was loaded.
+///
+/// Per process and per tier, like the reranker itself, and never reset -- so
+/// on a resident server these are lifetime totals and in a harness they are
+/// the run.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Reranked {
+    /// Scores held in the cache.
+    pub remembered: usize,
+    /// Candidates handed to [`Reranker::rank`], cached or not.
+    pub offered: u64,
+    /// Candidates that reached the model, which is `offered` less cache hits.
+    pub scored: u64,
+    /// Characters across every candidate that reached the model.
+    pub characters: u64,
+    /// The longest single candidate that reached the model, in characters.
+    pub longest: usize,
 }
 
 impl Reranker {
@@ -503,6 +559,7 @@ impl Reranker {
             model,
             tier,
             scores: Scores::default(),
+            lengths: Lengths::default(),
         })
     }
 
@@ -561,6 +618,11 @@ impl Reranker {
                 .iter()
                 .map(|position| documents[*position])
                 .collect();
+            for document in &batch {
+                let characters = document.chars().count();
+                self.lengths.total += characters as u64;
+                self.lengths.longest = self.lengths.longest.max(characters);
+            }
             let scored = self
                 .model
                 .rerank(query, &batch, false, Some(self::batch()))
@@ -585,17 +647,29 @@ impl Reranker {
         Ok(ordered)
     }
 
-    /// How many scores are being remembered, and how often they are read.
+    /// What this reranker has been asked to do, and what it did.
     ///
-    /// Returns occupancy, hits and misses. The occupancy alone was the only
-    /// thing exposed before and it answers the wrong question: what the
-    /// deferred late-interaction decision turns on is the hit rate.
-    pub fn remembered(&self) -> (usize, u64, u64) {
-        (
-            self.scores.known.len(),
-            self.scores.hits,
-            self.scores.misses,
-        )
+    /// Exposed because three of the decisions this project has deferred turn
+    /// on these five numbers and none of them had a value. The cache's hit
+    /// rate is what says whether precomputing part of each document's
+    /// representation at index time would pay for its storage. `scored`
+    /// against `offered` is the size of the only lever proportional to the
+    /// whole of the reranker's cost -- how many pairs reach the model at all,
+    /// which is not the same as `DEPTH` and was never counted. And the lengths
+    /// say whether `MAX_TOKENS` binds, which decides whether truncation is a
+    /// lever or a rounding error on a given corpus.
+    ///
+    /// An accessor reporting occupancy alone came before this and answered
+    /// none of them: it says how much has been stored and nothing about how
+    /// often it is read.
+    pub fn counted(&self) -> Reranked {
+        Reranked {
+            remembered: self.scores.known.len(),
+            offered: self.scores.hits + self.scores.misses,
+            scored: self.scores.misses,
+            characters: self.lengths.total,
+            longest: self.lengths.longest,
+        }
     }
 }
 
