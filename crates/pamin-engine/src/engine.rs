@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
-    SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
+    Scored, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
@@ -63,6 +63,23 @@ const MENTION_CONFIDENCE: f32 = 0.5;
 /// still produces one result. Without a bound here, how far the walk reaches is
 /// decided by how many topics the other channels happened to surface.
 const MAX_SEEDS: usize = 64;
+
+/// What one more hop does to how strongly the graph vouches for a topic.
+///
+/// The graph channel is the one channel with no score against the query -- it
+/// reaches a topic across edges rather than matching it -- but it is not
+/// without a measure of quality. Every edge carries the confidence whoever or
+/// whatever asserted it, and every arrival carries how far the walk went. A
+/// topic one asserted edge away from something the query found is a stronger
+/// claim than one three derived edges away, and until now fusion could not tell
+/// those apart: both arrived as a position in a list and were scored `weight /
+/// (k + rank)` on that alone. The edge strength never entered fusion at all.
+///
+/// A half per hop, and it is a stated choice rather than a measured one. The
+/// walk stops at two hops by default, so the only comparison this constant
+/// decides is a one-hop arrival against a two-hop one at the same confidence,
+/// and halving is the plainest way to say that the second is worth less.
+const HOP_DECAY: f32 = 0.5;
 
 /// How many states a rebuild embeds and writes at a time.
 ///
@@ -1459,11 +1476,11 @@ impl Engine {
             if !resolves.contains(&neighbor.topic) {
                 continue;
             }
-            candidates.push(neighbor.topic);
+            candidates.push(Scored::new(neighbor.topic, path_strength(&neighbor)));
             paths.insert(neighbor.topic, neighbor);
         }
 
-        Ok((ChannelResults::unscored(Channel::Graph, candidates), paths))
+        Ok((ChannelResults::new(Channel::Graph, candidates), paths))
     }
 
     /// Rebuilds the projection index from the authority store.
@@ -1716,6 +1733,23 @@ fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
     ranked
 }
 
+/// How strongly the graph vouches for one arrival: edge confidence, per hop.
+///
+/// **This is the one channel whose score is not its sort key, and the
+/// disagreement is real rather than an oversight.** `graph::expand` orders its
+/// neighbours lexicographically -- fewest hops first, then most confident, then
+/// by identifier -- and no single number reproduces a lexicographic order:
+/// a two-hop arrival at confidence 0.9 scores above a one-hop arrival at
+/// confidence 0.3 here, while the walk ranks the one-hop first. Reordering the
+/// channel by this number instead would be a ranking change nothing can measure
+/// -- the graph channel contributes exactly 0.0000 to every group of all three
+/// evaluation corpora -- so the order stays as the walk made it, and this
+/// number answers the separate question fusion needs: how far this channel's
+/// best arrival stands above its own field.
+fn path_strength(neighbor: &Neighbor) -> f32 {
+    neighbor.confidence * HOP_DECAY.powi(i32::from(neighbor.hops.saturating_sub(1)))
+}
+
 /// Every contiguous run of up to `widest` tokens, as the name index stores them.
 ///
 /// The bound is what keeps this proportional to the text: without it the runs
@@ -1824,7 +1858,10 @@ fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{MODEL_IDLE, best_first, can_be_seen, fused_for, is_idle, runs_of_tokens};
+    use super::{
+        MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle, path_strength,
+        runs_of_tokens,
+    };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
 
@@ -2069,5 +2106,34 @@ mod tests {
         assert!(runs_of_tokens(&tokens, 0).is_empty());
         // Asking for more width than there is text is not an error.
         assert_eq!(runs_of_tokens(&tokens, 99).len(), 4 + 3 + 2 + 1);
+    }
+
+    /// A hop costs half, and an uncertain edge costs whatever it is uncertain by.
+    ///
+    /// The point is that these are now different numbers at all. Before, every
+    /// graph arrival reached fusion as a position in a list and nothing else,
+    /// so a topic one asserted edge from the query's own answer and a topic two
+    /// derived edges away were scored identically apart from which came first.
+    #[test]
+    fn the_graph_vouches_less_for_each_hop_it_took() {
+        let reached = |hops: u8, confidence: f32| Neighbor {
+            topic: TopicId(uuid::Uuid::from_bytes([1; 16])),
+            origin: TopicId(uuid::Uuid::from_bytes([2; 16])),
+            hops,
+            via: TopicId(uuid::Uuid::from_bytes([3; 16])),
+            kind: pamin_core::EdgeKind::RelatedTo,
+            derivation: pamin_core::Derivation::Deterministic,
+            confidence,
+            outbound: true,
+        };
+
+        assert_eq!(path_strength(&reached(1, 1.0)), 1.0, "a certain first hop");
+        assert_eq!(path_strength(&reached(2, 1.0)), 0.5, "one hop further");
+        assert_eq!(path_strength(&reached(3, 1.0)), 0.25, "and one further");
+        assert_eq!(
+            path_strength(&reached(1, 0.5)),
+            path_strength(&reached(2, 1.0)),
+            "half the confidence at one hop is one certain hop further away"
+        );
     }
 }
