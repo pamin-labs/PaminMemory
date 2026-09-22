@@ -544,7 +544,11 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
     let mut by_language: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut dense_by_language: BTreeMap<String, Scores> = BTreeMap::new();
     let mut lexical_agreement: Vec<f64> = Vec::new();
+    // Per channel: how many of its top ten are in the query's own language,
+    // and how many it returned there at all. See the table this prints.
+    let mut head: BTreeMap<Channel, (usize, usize)> = BTreeMap::new();
 
     // Every fusion setting worth pricing, scored from the same traces as the
     // rows above. One pass, the whole grid.
@@ -586,6 +590,34 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
                 .entry(format!("{group}/{}", query.language))
                 .or_default()
                 .absorb(scores);
+        }
+
+        // The same split for the vector channel alone, which is what the
+        // whole fusion loses to on this group. Without it the per-language
+        // table says where the fusion is weak and not where it is *worse than
+        // not fusing*, and those are different questions.
+        if let Some(vector) = each.get(&Channel::Vector) {
+            let mut one = BTreeMap::new();
+            score(&mut one, query, vector);
+            for (group, scores) in one {
+                dense_by_language
+                    .entry(format!("{group}/{}", query.language))
+                    .or_default()
+                    .absorb(scores);
+            }
+        }
+
+        // What language each channel puts in its own head. The candidate keys
+        // are `{language}:{paragraph}:{sentence}`, so this is read off the key
+        // rather than guessed from the text.
+        for (channel, ranking) in &each {
+            let entry = head.entry(*channel).or_insert((0, 0));
+            for key in ranking.iter().take(NDCG_AT) {
+                entry.1 += 1;
+                if key.split(':').next() == Some(query.language) {
+                    entry.0 += 1;
+                }
+            }
         }
 
         if let (Some(segmented), Some(ngram)) = (
@@ -645,15 +677,48 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         }
     }
 
-    println!("\n  per language, all four fused, {named}");
-    println!("  group and language     queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}");
-    println!("  ----------------------------------------------------------------");
+    // Per language, against the vector channel alone rather than against
+    // nothing. Fusing all four ranks below the vector channel by itself on
+    // the cross-lingual group, and the only question that decides whether the
+    // remedy is a global constant or a per-candidate rule is whether that
+    // deficit is spread across the eleven languages or concentrated in a few.
+    // A deficit concentrated in one script family would argue for a rule
+    // about scripts; one that is everywhere argues the mechanism is the
+    // arithmetic and not the languages.
+    println!("\n  per language, fused against the vector channel alone, {named}");
+    println!(
+        "  group and language     queries   nDCG@{NDCG_AT}   dense@{NDCG_AT}   fused-dense   recall@{RECALL_AT}"
+    );
+    println!("  --------------------------------------------------------------------------------");
     for (key, scores) in &by_language {
+        let dense = dense_by_language.get(key).map(Scores::mean_ndcg);
         println!(
-            "  {key:<20}   {:>7}   {:>7.4}   {:>9.4}",
+            "  {key:<20}   {:>7}   {:>7.4}   {:>7}   {:>11}   {:>9.4}",
             scores.queries,
             scores.mean_ndcg(),
+            dense.map_or_else(|| "--".into(), |it| format!("{it:.4}")),
+            dense.map_or_else(
+                || "--".into(),
+                |it| format!("{:+.4}", scores.mean_ndcg() - it)
+            ),
             scores.mean_recall()
+        );
+    }
+
+    // And what language each channel's own head is in. On the cross-lingual
+    // group the query's own language is *never* the answer -- the one gold
+    // sentence in it is removed from the ranking -- so a channel whose head is
+    // mostly the query's own language is spending its head on candidates that
+    // cannot be right, and it is the additive promotion of exactly those that
+    // `Fusion::needing_support` is a candidate remedy for.
+    println!("  what language each channel's top {NDCG_AT} is in, {named}");
+    println!("  channel                own language   of returned   share");
+    println!("  ----------------------------------------------------------");
+    for (channel, (own, total)) in &head {
+        println!(
+            "  {:<20}   {own:>12}   {total:>11}   {:>5.1}%",
+            format!("{channel:?}"),
+            100.0 * *own as f64 / *total.max(&1) as f64
         );
     }
 

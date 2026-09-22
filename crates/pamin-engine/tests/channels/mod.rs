@@ -326,6 +326,48 @@ pub fn variants() -> Vec<(String, Fusion)> {
         variants.push((format!("k {k:.0}"), Fusion::default().with_k(k)));
     }
 
+    // Requiring corroboration instead of cutting the weight. The weight rows
+    // above are a global constant that has to serve both groups of a corpus;
+    // these condition on the candidate, so they can in principle take the
+    // cross-lingual gain without the same-language cost. The graph channel is
+    // in the sweep because it is seeded from the other three and its weight of
+    // 1.0 -- equal to the vector channel's -- is the least justified constant
+    // in the default.
+    for (name, needy) in [
+        (
+            "lex",
+            vec![Channel::LexicalSegmented, Channel::LexicalNgram],
+        ),
+        ("seg", vec![Channel::LexicalSegmented]),
+        ("ngram", vec![Channel::LexicalNgram]),
+        ("graph", vec![Channel::Graph]),
+        (
+            "lex+graph",
+            vec![
+                Channel::LexicalSegmented,
+                Channel::LexicalNgram,
+                Channel::Graph,
+            ],
+        ),
+    ] {
+        variants.push((
+            format!("support {name}"),
+            Fusion::default().needing_support(needy.clone()),
+        ));
+        // And at full lexical weight, because if corroboration is what the
+        // eighth weight was standing in for then the eighth is now paying
+        // twice and the pair should be worth more than an eighth of a channel.
+        if name != "graph" {
+            variants.push((
+                format!("support {name} lex 1.0"),
+                Fusion::default()
+                    .needing_support(needy)
+                    .with_weight(Channel::LexicalSegmented, 1.0)
+                    .with_weight(Channel::LexicalNgram, 1.0),
+            ));
+        }
+    }
+
     variants
 }
 
