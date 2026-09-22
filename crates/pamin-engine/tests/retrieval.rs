@@ -130,6 +130,8 @@
 //! so their floors below catch a collapse and nothing subtler. Making them
 //! informative needs a larger corpus, not a different metric.
 
+mod statistics;
+
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
@@ -185,6 +187,13 @@ struct Scores {
     queries: usize,
     ndcg: f64,
     recall: f64,
+    /// Every query's own nDCG, in the order they were scored.
+    ///
+    /// Kept beside the running total because a mean cannot be tested and a
+    /// list can -- see [`statistics::compare`]. It matters most on this
+    /// corpus, where two of the three groups sit on their ceiling and a mean
+    /// therefore moves only when something quite unusual happens.
+    per_query: Vec<f64>,
 }
 
 impl Scores {
@@ -192,6 +201,7 @@ impl Scores {
         self.queries += 1;
         self.ndcg += ndcg;
         self.recall += recall;
+        self.per_query.push(ndcg);
     }
 
     fn mean_ndcg(&self) -> f64 {
@@ -250,6 +260,7 @@ async fn retrieval_quality_by_group() {
     if let Some(settings) = sweep() {
         println!("\n  setting              cross nDCG@10   mono nDCG@10   lexical nDCG@10");
         println!("  --------------------------------------------------------------------");
+        let mut measured: Vec<(String, BTreeMap<String, Scores>)> = Vec::new();
         for (label, fusion) in settings {
             let mut groups: BTreeMap<String, Scores> = BTreeMap::new();
             let mut ignored = Vec::new();
@@ -260,6 +271,30 @@ async fn retrieval_quality_by_group() {
                 groups["monolingual"].mean_ndcg(),
                 groups["lexical"].mean_ndcg(),
             );
+            measured.push((label, groups));
+        }
+
+        // Against the best cross-lingual row, query by query. This corpus has
+        // 43 cross-lingual queries, so a tenth of a point is four of them, and
+        // a table of means gives no way to see that.
+        if let Some((best, top)) = measured.iter().max_by(|left, right| {
+            left.1["cross_lingual"]
+                .mean_ndcg()
+                .total_cmp(&right.1["cross_lingual"].mean_ndcg())
+        }) {
+            println!("\n  against the best cross-lingual row, {best}:");
+            for (label, groups) in &measured {
+                if label == best {
+                    continue;
+                }
+                println!(
+                    "  {label:<20}   {}",
+                    statistics::compare(
+                        &top["cross_lingual"].per_query,
+                        &groups["cross_lingual"].per_query
+                    )
+                );
+            }
         }
         println!();
         return;

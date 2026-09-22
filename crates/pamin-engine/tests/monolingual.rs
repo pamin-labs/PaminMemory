@@ -759,6 +759,7 @@ async fn search() {
     if let Some(settings) = sweep() {
         println!("\n  setting                nDCG@{NDCG_AT}   recall@{RECALL_AT}");
         println!("  ------------------------------------------------");
+        let mut measured: Vec<(String, Scores)> = Vec::new();
         for (label, fusion) in settings {
             let scores = run(&engine, &corpus, Route::Fused(fusion)).await;
             println!(
@@ -766,6 +767,29 @@ async fn search() {
                 scores.mean_ndcg(),
                 scores.mean_recall()
             );
+            measured.push((label, scores));
+        }
+
+        // A sweep that prints only means says which row is highest and not
+        // whether it is distinguishable from the others -- and the rows here
+        // are separated by thousandths. The default lexical weight was moved on
+        // one such gap, so every row is now also priced against the best one,
+        // query by query. A winner that beats nothing significantly is a winner
+        // by luck of which queries the corpus happens to contain.
+        if let Some((best, top)) = measured
+            .iter()
+            .max_by(|left, right| left.1.mean_ndcg().total_cmp(&right.1.mean_ndcg()))
+        {
+            println!("\n  against the best row, {best}:");
+            for (label, scores) in &measured {
+                if label == best {
+                    continue;
+                }
+                println!(
+                    "  {label:<20}   {}",
+                    statistics::compare(&top.per_query, &scores.per_query)
+                );
+            }
         }
         println!();
         return;

@@ -976,6 +976,7 @@ async fn search_reaches_across_languages() {
     if let Some(settings) = sweep() {
         println!("\n  setting              cross nDCG@10   same nDCG@10   cross recall@50");
         println!("  --------------------------------------------------------------------");
+        let mut measured: Vec<(String, BTreeMap<String, Scores>)> = Vec::new();
         for (label, fusion) in settings {
             let groups = run(&engine, &queries, Route::Fused(fusion)).await;
             println!(
@@ -984,6 +985,42 @@ async fn search_reaches_across_languages() {
                 groups["same_language"].mean_ndcg(),
                 groups["cross_lingual"].mean_recall(),
             );
+            measured.push((label, groups));
+        }
+
+        // A sweep that prints only means says which row is highest and not
+        // whether it is distinguishable from the others. The rows here are
+        // separated by thousandths on one group and by tenths on the other, so
+        // the means are worth very different amounts in the two columns, and
+        // the table cannot show that. Priced against the best cross-lingual row,
+        // query by query, in both groups -- because the weight this sweep
+        // settles is the one that trades one group against the other.
+        if let Some((best, top)) = measured.iter().max_by(|left, right| {
+            left.1["cross_lingual"]
+                .mean_ndcg()
+                .total_cmp(&right.1["cross_lingual"].mean_ndcg())
+        }) {
+            println!("\n  against the best cross-lingual row, {best}:");
+            for (label, groups) in &measured {
+                if label == best {
+                    continue;
+                }
+                println!(
+                    "  {label:<20}   cross {}",
+                    statistics::compare(
+                        &top["cross_lingual"].per_query,
+                        &groups["cross_lingual"].per_query
+                    )
+                );
+                println!(
+                    "  {:<20}   same  {}",
+                    "",
+                    statistics::compare(
+                        &top["same_language"].per_query,
+                        &groups["same_language"].per_query
+                    )
+                );
+            }
         }
         println!();
         return;
