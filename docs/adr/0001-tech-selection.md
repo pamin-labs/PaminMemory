@@ -1335,6 +1335,66 @@ as the reason an off-the-shelf reranker loses. So it is a thing to watch for,
 not a thing to adopt, and it goes into the sweep the day one appears
 permissively licensed.
 
+### What a calibrated score would restructure, and why the cheap version comes first
+
+Everything above about a calibrated relevance probability is scattered through
+three sections as a thing that would be nice to have. It is worth stating once
+what it would actually change, because the answer is larger than a better
+reranker and the route to it turns out not to need a new model at all.
+
+**One constraint holds up the whole fusion design.** The four channels' scores
+are not commensurable — a BM25 score, a cosine similarity and a hop-decayed
+confidence are different quantities — so only their *ranks* can be combined.
+Everything else follows from that: reciprocal rank fusion's contribution range
+is narrow enough that a channel's *weight* decides against another channel's
+*position*, `Combine::Banded` exists to preserve exactly that band, its floor is
+`(k + 1) / (k + n)` for that reason, and `Combine::Standardised` lost
+cross-lingual recall through the floor when it broke the property. One
+constraint, one design.
+
+A calibrated `P(relevant | query, document)` removes the constraint rather than
+working around it, because such a number is comparable across channels, across
+queries and across corpora:
+
+| | today | with a calibrated score |
+| --- | --- | --- |
+| ordering | rank fusion combines incomparable evidence | sort by probability — **fusion collapses to recall**, and the weights and `k` leave the ordering path |
+| thresholding | not expressible, which is how the borrowed idea failed here | an absolute cut means something |
+| abstention | none at all | `max P < τ` and return nothing |
+| channel weights | hand-tuned, and fusion still ranks *below* the vector channel alone on cross-lingual queries | fit offline against the scorer's own labels, at **zero runtime cost** |
+| the graph channel | its `0.0000` cannot be interpreted | ask whether a graph-reached candidate scores above what its rank implies |
+
+**With one counterweight, and it is load-bearing.** A system can only score what
+it can afford to score: 16.9 ms a pair over fifty-one candidates is 860 ms, so
+any real pipeline scores a subset — and the moment it scores a subset it needs a
+rule for placing the unscored candidates among the scored ones. That is not a
+detail to settle later; it is the same question as whether the reranker's score
+should *join* the channels' evidence or *replace* it, and it is therefore the
+necessary shape of any partial-scoring architecture, calibrated or not.
+
+**And the cheap version comes first, because a cross-encoder can be calibrated
+too.** A temperature, Platt or isotonic fit on the tier already running —
+against held-out judgements — yields a calibrated probability from the model
+this project already pays 260 ms for. No new model, no new dependency, no
+647 MB download, and none of the per-question-shape temperature maintenance the
+alternative's own card describes.
+
+It is measurable offline from data already on disk, which it was not before
+`Why::Reranked` existed: **18,353 `(score, relevant?)` pairs over 1,190
+queries** come straight out of the trace, and Platt is a two-parameter fit. So
+the thing blocking every row of the table above was never the model. It was
+that the score was computed and thrown away.
+
+That ordering also improves the model question either way. If calibrating the
+shipped tier opens those doors, a purpose-trained calibrated judge becomes a
+candidate for a *better* one, measured against a calibrated baseline rather
+than against nothing. If it does not open them, a purpose-trained one very
+likely will not either — calibration is notoriously corpus-specific, and
+cross-corpus comparability is the exact property being bought. So the fit is
+made on one corpus and **the calibration error is reported on another**. A fit
+that does not transfer is a negative result worth publishing, and it would
+predict the same failure for anything calibrated per question shape.
+
 ### Optional GPU: measured against, not deferred
 
 Accelerating the reranker on a GPU was considered and is not being built, and the reason is not the size budget alone.
