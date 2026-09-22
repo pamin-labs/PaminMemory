@@ -266,9 +266,36 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 | | What it is | Measured cost | State |
 | --- | --- | --- | --- |
 | Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On, by default** |
-| Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off, until the binding exposes rotation** |
+| Stored vector INT8 | Output embeddings stored as int8 rather than float32 | No recall loss at all, half the query and half the build, **30% more disk** | **Off, because it is a disk loss** — see below |
 
 Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half.
+
+### Quantizing the stored vectors: measured, and it is the wrong lever
+
+This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
+
+`PAMIN_VECTOR_STORAGE` builds the projection's vector field five ways. Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
+
+| storage | recall@10 | per query | build | whole index |
+| --- | --- | --- | --- | --- |
+| **fp32, the default** | **0.9980** | **12.0 ms** | **88 s** | **225.9 MB** |
+| fp16 | 0.9980 | 10.9 ms | 82 s | 337.0 MB |
+| int8 | 0.9980 | 7.3 ms | 43 s | 292.6 MB |
+| int4 | 0.9990 | 9.3 ms | 45 s | 269.4 MB |
+| rabitq | — | — | — | refuses to train without a `raw_vector_provider` |
+
+**Quantizing cannot save disk here, because the refiner keeps the full-precision vectors.** Every quantized row carries the same 206.4 MB of raw vectors — 50,000 × 1024 × 4 bytes is 204.8 MB, so that column is the raw copy — and adds its codes on top. So the trade is not "smaller index for slightly worse recall"; it is **19% to 49% more disk for half the query time and half the build**, at no measured recall cost. That is a real trade and it is the opposite of the one this decision went looking for, so the default stays fp32 and the mechanism stays available to a workspace that would rather spend disk than milliseconds.
+
+The measurement could not be made by reading the code. Whether a refiner stores a second copy beside the codes is not visible from the binding's surface, and it is the whole answer.
+
+**And rotation, enabled here on reasoning, was destroying the index.** The parameter was set for every quantized storage because spreading the bits across dimensions that carry comparable information must help the coarse storages and could not hurt the others. The engine accepts it only for int8 and int4 — for anything else it refuses when the *segment* opens its vector field rather than when the parameters are built, so fp16 presented as a segment that would not take writes rather than as a rejected setting. And on the two storages that accept it, it is ruinous:
+
+| | recall@10 with rotation | without |
+| --- | --- | --- |
+| int8 | 0.0530 | 0.9980 |
+| int4 | 0.0580 | 0.9990 |
+
+Same bytes, same build time, same query time. This is the failure shape recorded above from the previous quantization attempt — an index returning plausible neighbours that are not the nearest ones, with no error anywhere — and it was reproduced here only because the harness reports recall rather than whether the calls succeeded. Rotation needs a fitted transform and nothing supplies one; the binding's RaBitQ path is explicit about it, refusing to train without a `raw_vector_provider` the binding does not expose. It is off, and `crates/pamin-index/tests/scratch_quantize.rs` is what would notice if it came back.
 
 **The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not fastembed's Rust code either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
 
@@ -501,6 +528,47 @@ The published answers to this latency all change the architecture instead, and b
 Both routes rest on premises Påmin Memory has not measured — that the hot set is small, that write-time cost is cheap — and the triggers are written to test the premise before the work. Re-checked 2026-09-20: one route's blocker dissolved and the other's did not, which is the reason to re-check a deferral rather than trust the note that created it.
 
 Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path both tiers take.
+
+### What the two shipped tiers are licensed under, and what was surveyed against them
+
+Licences were checked at the leaf and at the base, because a fine-tune's card can declare a licence its base does not permit.
+
+| tier | model | licence | base |
+| --- | --- | --- | --- |
+| `fast` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | `apache-2.0`, declared on the card | `nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large`, **no licence tag**; MiniLMv2 originates in `microsoft/unilm`, MIT |
+| `accurate` | `onnx-community/bge-reranker-v2-m3-ONNX` | **no licence tag** — its front matter is `library_name` and `base_model` and nothing else | `BAAI/bge-reranker-v2-m3`, `apache-2.0` |
+
+Both chains are defensible and neither is stated where it is shipped from. That is worth an upstream request or a self-controlled export; it is recorded here rather than left to be rediscovered.
+
+**The survey against them, and the reason none of it changed the default.** Every candidate below was checked for a readable permissive licence first, because a model that cannot be shipped does not need measuring.
+
+| candidate | licence | why not |
+| --- | --- | --- |
+| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `-v3.5`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial. Not measurable for a default |
+| `BAAI/bge-reranker-v2-gemma` | card says `apache-2.0`; base `google/gemma-2b` is `license: gemma`, gated | The Gemma rider follows the derivative — the same reason EmbeddingGemma was refused above |
+| `BAAI/bge-reranker-v2-minicpm-layerwise` | card says `apache-2.0`; base MiniCPM weights carry the General Model License with a commercial-authorization requirement | Painful, because its 8–40 selectable output layers are exactly the early-exit mechanism the latency problem wants |
+| `naver/splade-v3` family | CC-BY-NC-SA-4.0 | Non-commercial and share-alike. `Splade_PP_en_v1` is Apache-2.0 and English |
+| `Qwen/Qwen3-Reranker-0.6B` | `apache-2.0` — the cleanest licence and the best multilingual quality in the field | A decoder at roughly twenty times the compute-relevant parameters of `fast`. Estimated seconds a query on four cores; three to six times the `accurate` tier, which is already not an interactive budget |
+| `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | MIRACL 28.56. Not a multilingual reranker in the sense this product needs, whatever the language count says |
+| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. A plausible middle tier on long documents; not a path below 226 ms |
+| `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
+
+**Jev, and the shape of its claim.** TypeSafe's Jev is a decision model: text in, a number out, no token generation. It is API-only at $0.042 per million input tokens, so it cannot be part of an offline product whatever its quality. The open recreations do not rescue it. `openjev/openjev` is CC-BY-NC-4.0 and 27B parameters — 54 GB in fp16, and its own card measures about 80 ms **for one short decision on an H100 in fp8**, where this product scores twenty pairs in 226 ms on four CPU cores. `jaredpalmer/kev-0.8b` is Apache-2.0 at the adapter and base, tagged `language: en`, and its declared training data includes `Yelp/yelp_review_full`, whose terms grant academic use only.
+
+The speed claim is real and does not apply here. Parallel, evaluating Jev independently, states it plainly: *"The headline cost and speed comparisons are against autoregressive LLMs, not dedicated classifiers. Specialized classifiers will still often outperform Jev on cost and speed."* A cross-encoder is a dedicated classifier — one forward pass, no generation — so the thing Jev's design removes is a cost this product never paid. An independent multilingual evaluation (9,831 graded pairs, 164 Chinese and English queries) puts Jev's rerank at **+0.012 over BGE-M3 under its own labels and −0.028 under judge-independent labels**, and measures the circularity that separates them.
+
+What is worth taking from it is not the model. `jev-reranker`, a library wrapping the API, reports that a relevance *threshold* — dropping candidates rather than reordering all of them — removed about 92% of the candidates and scored higher than reordering them, 0.975 against 0.969 nDCG@10. That is a gate, and a gate needs no weights at all.
+
+### Optional GPU: measured against, not deferred
+
+Accelerating the reranker on a GPU was considered and is not being built, and the reason is not the size budget alone.
+
+- **CUDA is the only execution provider with a large win, and it cannot be shipped.** `libonnxruntime_providers_cuda.so` is 220–340 MB in official releases, against a 92 MB distribution, and it additionally requires the user to have installed a matching CUDA and cuDNN. Raising the budget does not fix the second half.
+- **On the machine a user actually has, the accelerator loses.** A comparable Rust stack on the same runtime measured CoreML turning 27 ms into 42 ms, because op coverage excludes the embedding lookup and mask arithmetic and the graph partitions fourteen ways. Apple's neural engine is fp16, so the int8 exports this project ships fall back to CPU per operation, silently, and a second fp16 export of every model would be needed to use it at all. Per-dispatch overhead is about 2.3 ms, against three dispatches per query at batch 8.
+- **DirectML on integrated graphics is documented as often slower than the CPU**, compiles shaders per input shape on first use, and is reported to return numerically divergent results on Intel integrated GPUs — which would make this project's own quality gates hardware-dependent.
+- **The work is the wrong shape.** Twenty short pairs and one query embedding are tiny batches, and a GPU's advantage is throughput. This project's bottleneck is 226 ms spent on queries that, by its own measurement, mostly do not need it: 84 of MIRACL's 482 queries have a relevant passage below rank 10 before reranking, and on XQuAD-R's same-language group reranking makes the ordering *worse*. Removing work beats moving it.
+
+Execution providers stay available as non-default cargo features for anyone building from source, and the shipped distribution stays CPU-only. If that is revisited, the thing to revisit first is loading a provider at runtime rather than linking one, which is what keeps a single binary inside a size budget.
 
 ### Where a search's milliseconds go
 
