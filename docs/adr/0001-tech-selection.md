@@ -337,21 +337,27 @@ of what it scored it too. Three findings, on three corpora:
 | channel, alone | ours cross | XQuAD-R cross | XQuAD-R same |
 | --- | --- | --- | --- |
 | `lexical_segmented` | 0.1569 | 0.0366 | **0.7299** |
-| `lexical_ngram` | 0.0528 | 0.0106 | — |
+| `lexical_ngram` | 0.0528 | 0.0106 | 0.5337 |
 | `vector` | **0.8268** | **0.6335** | 0.6787 |
-| `graph` | 0.0000 | 0.0000 | 0.0000 |
-| all four fused | 0.7910 | 0.6077 | 0.7556 |
+| `graph` | premise absent | premise absent | premise absent |
+| all four fused | 0.7985 | 0.6114 | 0.7829 |
 
 **Fusing four channels ranks below one of them on cross-lingual queries**, and
 on the same-language queries of the same corpus the lexical channels earn their
 place outright. Leave-one-out, paired against all four: taking
-`lexical_segmented` away is **+0.0310** on this project's cross-lingual group
-(16 wins, 1 loss, p = 0.0011) and **+0.0158** on XQuAD-R's (496 wins, 30
-losses, p = 0.0001), while `lexical_ngram` is +0.0223 (13 / 1, p = 0.0173) and
-+0.0110 (333 / 20, p = 0.0001). The same removal costs **−0.0442** on XQuAD-R's
-same-language group (14 wins, 275 losses) and −0.0073 on MIRACL (p = 0.0125). The channels
-are not weak. A global constant cannot tell the two cases apart — this is the
-weakest link the four-channel paper above names, arrived at independently.
+`lexical_segmented` away is **+0.0148** on this project's cross-lingual group
+(11 wins, 1 loss, p = 0.0148) and **+0.0128** on XQuAD-R's (397 wins, 25
+losses, p = 0.0001), while `lexical_ngram` is +0.0179 (15 / 1, p = 0.0189) and
++0.0094 (269 / 16, p = 0.0001). The same removals cost **−0.0523** and
+**−0.0361** on XQuAD-R's same-language group (16 wins to 231 and 9 to 155, both
+p = 0.0001). The channels are not weak. A global constant cannot tell the two
+cases apart — this is the weakest link the four-channel paper above names,
+arrived at independently.
+
+The figures in this paragraph and the table above it are the banded combiner's,
+retaken; see *The weight table was taken under rank fusion and never retaken*
+below for the rank-fusion figures these replace and for why the trade is better
+in both directions than it used to read.
 
 **The two lexical channels are not one channel.** Kendall tau-b between their
 rankings, over the candidates they share: 0.2816 on this project's own corpus,
@@ -583,6 +589,114 @@ the vector channel reported one constant and ordering by a constant asserts
 nothing. `collect_scored` now takes the orientation as a parameter, and no
 channel may report one score for every candidate. Nothing published before that
 fix had ever read a score.
+
+### One frontier, and the number that explains it
+
+Ninety-six fusion settings, scored offline from the traces of one XQuAD-R run
+over 1,190 queries, against the shipped weights. The point of reading them
+together rather than one sweep at a time is that **every single dial moves the
+two groups in opposite directions**, so no row can be read as an improvement
+and the only question that means anything is whether one dial trades better
+than another.
+
+**Why the trade is not a defect in this fusion.** The lexical channels' heads
+are in the query's own language:
+
+| channel | of its top ten, in the query's own language |
+| --- | --- |
+| `LexicalSegmented` | **90.7%** (10,705 of 11,805) |
+| `LexicalNgram` | **67.7%** (8,052 of 11,890) |
+| `Vector` | 18.8% (2,235 of 11,900) |
+
+Eleven languages, so 9.1% is what no preference at all would look like. On the
+cross-lingual group the query's own language **cannot be the answer** — the one
+gold sentence in it is deliberately removed from the ranking — and on the
+same-language group it is the *only* answer. So a dial that strengthens lexical
+matching must help one group by exactly the mechanism that hurts the other.
+That is a property of a parallel corpus scored two ways, not a property of rank
+fusion, and it is why the same trade appears in every mechanism tried:
+
+| dial | cross-lingual | same-language |
+| --- | --- | --- |
+| lexical weight 0 → 0.5 | 0.6335 → 0.5125 | 0.6787 → 0.8453 |
+| `k` 0 → 60 | 0.6185 → 0.5638 | 0.7710 → 0.8152 |
+| confidence spread 1 → 7 | 0.6114 → 0.6005 | 0.7829 → 0.8051 |
+| `Combine` rrf / band / zsum / zmnz | 0.6077 / 0.6114 / 0.6211 / 0.5727 | 0.7556 / 0.7829 / 0.7733 / 0.8257 |
+
+**What this says about the generic advice to raise `k`.** Published guidance on
+hybrid search suggests punishing a weak channel's mid-ranks by raising its `k`.
+Measured here, globally, `k` is monotone *downward* on cross-lingual nDCG@10:
+0.6185 at `k = 0`, 0.6114 at 10, 0.5638 at 60, the last at −0.0476 against the
+shipped setting with 33 wins to 658 losses. And a per-channel `k` would be the
+same dial as the weight rather than a new one — both scale what a weak
+channel's rank is worth — which the two curves confirm: plotted against each
+other in the two groups they lie on top of one another to within 0.015, and
+`k = 0` is the only point anywhere above the weight's own curve.
+
+**And the default is on the frontier.** Of the ninety-six settings, twenty-six
+are Pareto-optimal in the two groups. The shipped weights are not among them on
+nDCG alone — the standardised sum at a confidence spread of 5 beats them on
+both groups, 0.6134 against 0.6114 and 0.7925 against 0.7829 — but its
+cross-lingual `recall@50` is **0.7772 against 0.8962**, and nothing that
+survives the recall floor beats the shipped weights on both. That is the first
+time this project has been able to say the default is not merely untested.
+
+**Corroboration: it works, and it is the same suppression as the weight.** A
+rule was built and deleted here. `Fusion::needing_support` gave a channel's own
+last place, rather than what its rank was worth, to a candidate that no other
+channel had returned — a per-candidate condition rather than a per-query one,
+which was supposed to escape the trade above. At full lexical weight it is
+worth a great deal: cross-lingual nDCG 0.2648 → 0.4634 and `recall@50` 0.7919
+→ 0.8755, with the same-language group better as well. **At the shipped eighth
+weight it is a bit-identical no-op on both groups**, 0 wins and 0 losses over
+1,190 queries.
+
+The arithmetic says why. At an eighth an uncorroborated candidate is worth at
+most 0.0114 and this rule floors it at 0.0069 — a difference of 0.0045, which
+does not reorder a top ten. Corroboration and the weight are the same
+suppression applied to overlapping sets, and an eighth weight has already
+applied it to everything. Read as a frontier, every corroboration setting lies
+on the weight's own curve to within 0.0017. The code was removed; this is the
+finding.
+
+That also closes the published form of the idea — dropping a lexical candidate
+whose dense similarity falls below a threshold. It is the same suppression with
+a tuned constant in front of it, so it has the same ceiling, and it needs a
+score the vector channel does not compute for a candidate it did not return.
+
+**Two things are premise-absent rather than measured.** The graph channel's
+weight is identical in its effect from 0.0 to 1.0 — 0 wins, 0 losses, the same
+ranking — because this corpus has no edges, which the edge census prints
+directly. So the 0.15 the literature suggests is untested here, not rejected.
+And the per-language deficit is uniform rather than concentrated: all eleven
+languages are negative cross-lingually, from −0.0066 (de) to −0.0481 (zh), and
+all eleven positive on same-language, from +0.0486 (zh) to +0.1669 (th). There
+is no script family to write a rule about — including Thai and Hindi, which
+share a script with nothing else in the set — so the mechanism is not
+look-alike collision between related languages. It is that lexical matching
+retrieves the query's own language, and this benchmark defines that as wrong.
+
+### The weight table was taken under rank fusion and never retaken
+
+The sweep that justifies the eighth weight, reproduced in three documents and
+in `Fusion::default`'s own comment, was measured when `Combine::Reciprocal`
+shipped. `Combine::Banded` ships now, and the figures move. Retaken, same
+corpora, one run each:
+
+| | own cross-lingual | XQuAD-R cross-lingual | XQuAD-R same-language |
+| --- | --- | --- | --- |
+| vector channel alone | 0.8268 | 0.6335 | 0.6787 |
+| all four, rank fusion | 0.7910 | 0.6077 | 0.7556 |
+| all four, banded — **ships** | **0.7985** | **0.6114** | **0.7829** |
+
+So the deficit against the vector channel alone is −0.0283 on this project's
+own corpus (20 wins to 1, p = 0.0046) and **−0.0221** on XQuAD-R (481 wins to
+35, p = 0.0001), not the −0.0358 and −0.0258 the rank-fusion figures imply. And
+what the lexical channels are worth on the same-language group is **+0.1042**,
+not +0.0769. The trade is better in both directions than the documents say.
+
+Every quotation of 0.6077 as "all four fused" is therefore a rank-fusion figure
+labelled as the current one, and is corrected wherever it appears.
 
 ### What the 2025-2026 fusion literature says, and which of it applies here
 
