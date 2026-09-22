@@ -1210,6 +1210,51 @@ before the run: about two seconds of reranking, a search around 2.2 s** —
 coherent as an opt-in tier at 1.4 times `accurate`, and not a default at any
 accuracy.
 
+**A cost model, calibrated against a measurement, so the next size question is
+arithmetic.** Every rejection above rests on an estimate of what a model would
+cost here, and the estimates were made by ratio against `fast` without anything
+anchoring them. One measurement anchors them: `accurate` is 302M non-embedding
+parameters over a shortlist of about 770 tokens in 1423 ms, which is roughly
+**330 effective GFLOPS** on four cores at int8. A transformer's forward pass is
+about `2 × parameters × tokens`, and a reranker does one pass — it reads a score
+or a last-position logit and generates nothing — so the whole table follows:
+
+| | non-embedding | predicted reranking pass | |
+| --- | --- | --- | --- |
+| `fast` | 21.2M | 260 ms | **measured** |
+| Laya, mmBERT-base | 110.3M | ~510 ms at int8, ~1.5–2 s at its fp32-only export | |
+| `accurate` | 302M | 1423 ms | **measured; the anchor** |
+| `Qwen3-Reranker-0.6B` | ~440M | ~2.05 s | |
+| `openjev/openjev` | **27.4B** | **~128 s** | |
+
+The last row is why "just read a yes/no token" does not rescue a large decoder.
+Reading one position's logits still costs one full prefill over every weight, so
+27.4 billion of them is two orders of magnitude outside an interactive budget
+rather than a slow tier. That is a separate objection from its licence, its
+absence of any ONNX export, its 159 downloads, and the independent evaluation
+recorded above that puts the Jev line's reranking at **−0.028 under
+judge-independent labels**.
+
+**The same path makes Laya measurable, and the earlier rejection here was
+narrower than it read.** What `head_max_len` of 256 tokens rules out is the
+*listwise* framing — candidates as options, one softmax over the shortlist.
+*Pointwise* is a different shape and is the one the model natively has: the
+document goes in the state, within `max_len` of 1024, and only two short option
+labels go in the head budget. Its `noul` question type returns the probability of
+one of two options, with a per-option-bucket temperature and a confidence over a
+bounded answer space. `fastembed` cannot supply the marker positions and query
+type that graph wants; a raw session can.
+
+So Laya becomes an arm rather than a dismissal, and **what it is being measured
+for is not its ranking.** It is the calibrated, cross-query-comparable score
+nothing else here produces, which is the piece the fusion, abstention and
+reranker-gating questions all rest on. The risk to measure rather than assume is
+that it is an RL agent trained on typed schema decisions and has never been
+trained on query-document relevance, so any arm must report calibration —
+a reliability curve and expected calibration error — and not only nDCG. A
+well-calibrated mediocre judge is worth more here than an uncalibrated better
+one.
+
 **Laya is genuinely open and genuinely fast, and is the wrong shape twice
 over.** Its multilingual encoder is `jhu-clsp/mmBERT-base` — 22 layers at width
 768 with an `intermediate_size` of 1152, 110.3M non-embedding parameters, 5.2
