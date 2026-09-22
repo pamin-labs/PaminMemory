@@ -793,7 +793,10 @@ impl ProjectionIndex {
         // left every layer above unable to tell a channel that found the answer
         // from one that returned the least bad of fifty wrong documents. Reading
         // it costs one accessor per candidate on a result set already in memory.
-        Ok(collect_scored(self.collection.query(&search)?))
+        // BM25, where larger is already better.
+        Ok(collect_scored(self.collection.query(&search)?, |score| {
+            score
+        }))
     }
 
     /// Deletes the index directory so the next open starts empty.
@@ -915,7 +918,15 @@ impl Projection for ProjectionIndex {
             false,
             self.storage.refines(),
         ))?;
-        Ok(collect_scored(self.collection.query(&search)?))
+        // Cosine *distance*, which is what the engine reports for a cosine
+        // index: nearest is zero. `Scored` requires larger to be better,
+        // because everything above compares magnitudes -- summing a distance
+        // would sum this channel backwards and reading its confidence would
+        // read its worst candidate as its best. Cosine distance is
+        // `1 - similarity`, so this is the exact inverse and not a rescaling.
+        Ok(collect_scored(self.collection.query(&search)?, |score| {
+            1.0 - score
+        }))
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -1087,12 +1098,16 @@ fn jittered(wait: Duration) -> Duration {
 /// The key is a UUID this crate wrote, so an unparseable one means the index is
 /// corrupt in a way a single query cannot act on, and failing recall over it
 /// would take the whole search down for one bad row.
-fn collect_scored(docs: Vec<Doc>) -> Vec<Scored> {
+/// `orient` turns the engine's number into one where larger is better, which
+/// is what [`Scored`] requires of every channel. It is the identity for BM25
+/// and `1 - score` for a cosine index, and it is a parameter rather than a
+/// branch on the field so that adding a channel cannot forget it.
+fn collect_scored(docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
     docs.iter()
         .filter_map(|doc| {
             let pk = doc.get_pk()?;
             let topic = uuid::Uuid::parse_str(pk).ok()?;
-            Some(Scored::new(TopicId::from(topic), doc.get_score()))
+            Some(Scored::new(TopicId::from(topic), orient(doc.get_score())))
         })
         .collect()
 }
