@@ -1435,6 +1435,161 @@ made on one corpus and **the calibration error is reported on another**. A fit
 that does not transfer is a negative result worth publishing, and it would
 predict the same failure for anything calibrated per question shape.
 
+### Where the decision-model field is, and which of it a CPU can reach
+
+An independent leaderboard now exists for this class of model — the Jev
+Decision Index, 132,422 requests over 19 benchmarks in five areas, 31 open
+reproductions against the hosted target. It is the best external evidence this
+project has found on the question, and it is worth recording what it does and
+does not settle.
+
+**What it does not settle: whether this project's retrieval is better or worse
+than theirs.** Nothing has been run on both. The figures here are XQuAD-R and
+MIRACL; the figures there are BRIGHT and Amazon ESCI. Those are different
+corpora, so no comparison exists in either direction, and the honest position
+is that the question is open until one of their benchmarks is run here. That is
+why two of them are now on the backlog as corpora rather than as competitors.
+
+**What it does settle is the shape of the field, and it is narrower than it
+looks.** The category called *Retrieval & Classification* is four
+classification benchmarks — BANKING77, CLINC150, SGD and Amazon ESCI, all
+macro-F1 — and one retrieval benchmark, BRIGHT at nDCG@10. On the one that
+ranks documents, the whole field tops out at **0.1933** against a random
+baseline of 0.0448, with the hosted target at 0.1869. So a headline category
+score near 37 is mostly intent classification, and nothing in it establishes
+reranking quality for passage retrieval.
+
+**Every latency in it is one GPU.** Their methodology states it: "1 x NVIDIA
+RTX PRO 6000 (Blackwell Server Edition, 96 GB), one GPU per run", with the
+target itself over a hosted HTTPS API. There is not one CPU number in the
+suite. And the per-benchmark view shows what the aggregate medians are medians
+*of*: a single classification decision is 76 ms on ESCI and 267 ms on CLINC150
+— where the option count is 4 and 150 — while **BRIGHT, the one benchmark that
+ranks a candidate pool, is 1.95 s** for the fastest entrant and 502 ms for the
+quickest technique. Milliseconds per decision, seconds per ranked pool.
+
+#### Why none of the techniques transfer, enumerated rather than asserted
+
+Eight of the entrants are techniques rather than weights. Filtered to the
+retrieval category they are: autoregressive label-scoring (Jevfire, openvons,
+SemIf, mini-jev), text diffusion in a decision mode (both diffusiongemma
+ports), a GLiFormer encoder (`jeff`), and one RLCD fine-tune.
+
+**They all make token generation cheaper or more bounded, and this project
+generates no tokens.** Jevfire's own README is explicit about the baseline it
+beats: "Score labels; assemble the object in Python" against "Autoregressively
+emit the object", for 10.3x on a 27B model with 28 fields. A cross-encoder is
+already the first of those — one forward pass, a score head, the ranking
+assembled by the caller. The saving is against a cost this project never paid,
+which is the same structural point this record already makes about Jev against
+dedicated classifiers.
+
+**One of them points somewhere useful, which is worth more than the technique
+itself.** Jevfire's other saving is prefix reuse: independent fields sharing a
+prompt prefix are batched with the instruction cached. This project
+re-encodes the query 15.4 times per search, once per candidate, so prefix reuse
+would be exactly the right saving — and **a cross-encoder cannot have it.**
+Prefix caching needs causal attention, where the prefix's state does not depend
+on the suffix; a cross-encoder is bidirectional, and the query's representation
+depending on the document is the whole reason it beats a bi-encoder. So the
+saving is unreachable by construction in this architecture, and the
+architecture that does have it is **late interaction**, where query and
+document are encoded separately and meet only at scoring.
+
+#### What a CPU can actually reach, with the arithmetic shown
+
+The constraint is four cores and 15 GB, and it has two halves that this record
+previously conflated.
+
+**Memory is not the blocker for a 4B model, and an earlier claim here that it
+was is withdrawn.** At int8 a 4.02B model is about 4 GB of weights and at q4
+about 2 GB, against a server already resident at 3.6–7.2 GB. That fits on the
+smaller workspace. What genuinely does not fit is the mixture-of-experts
+entrants: 26B and 36B of weights must all be resident even though only 3–4B are
+active per token, so their compute is cheap and their footprint is two to three
+times the machine.
+
+**Latency is the blocker, and two independent estimates agree.** Against the
+anchor this record measures — 302M non-embedding parameters over 770 tokens in
+1423 ms, roughly 330 effective GFLOPS — a 4B pointwise reranker over 15.4
+candidates of about 100 tokens each is `2 × 4.02e9 × 1500 / 330e9`, about 36
+seconds. Independently, CPU prompt-processing throughput for a 4B model at q4
+on four cores is in the tens of tokens a second, which puts 1,500 tokens at 19
+to 38 seconds. Two methods, one order of magnitude. Not "cannot" in any
+physical sense; "can, at half a minute", which for an interactive memory search
+is the same answer.
+
+**Two things in this class are CPU-reachable, and both are measured rather than
+assumed to be good.** A purpose-trained 0.6B reranker — not a Jev-style
+decision model, which is why the leaderboard's sub-1B entrants failing at
+retrieval says nothing about it — is about 440M non-embedding, predicted near
+2 s, permissively licensed with a single-file quantized export already
+published. And late interaction moves the pass to write time entirely, where
+the cascade already runs a forward pass per memory, leaving query time as a
+dot product.
+
+#### Late interaction: the one candidate that removes the cost rather than moving it
+
+`lightonai/mLateOn` is Apache-2.0 on ModernBERT, and the export was checked
+rather than taken on trust. `model_int8.onnx` is 312 MB — smaller than the
+`accurate` tier's 571 MB — and the projection head is **not** folded into it:
+three `Dense` modules ship as separate weights, 768→1536, 1536→768 and
+768→128, all with identity activation and no bias, the first two residual. So
+using it means three matrix multiplies after the session, about 2.5M
+multiply-accumulates a token, which is nothing. Its `onnx_config.json` supplies
+the rest: `[Q] ` and `[D] ` prefixes at token ids 256000 and 256001, 128
+embedding dimensions, and no query expansion.
+
+The trade is the first one on this page that is genuinely four-axis:
+
+| | change |
+| --- | --- |
+| query latency | the 260 ms cross-encoder pass becomes **a dot product** — MaxSim over stored token embeddings, no model at query time |
+| write | one forward pass per memory, which the cascade already runs — but it cannot replace the pooled vector the HNSW index needs, so it is a second head or a second pass |
+| disk | 128 dimensions at int8 is 128 bytes a token, so 12.8 KB for a hundred-token memory: 167 MB on the evaluation corpus and **about 5.5 GB on a 425,916-row workspace, three times the whole database** |
+| licence | Apache-2.0, nine languages, on the 2025 architecture |
+
+**And the disk cost has a published answer, which is what makes the trade worth
+taking seriously**: ColBERTv2 and PLAID compress these embeddings to a centroid
+plus one or two bit residuals for roughly 20 to 30 times, which would put 5.5 GB
+at 200 to 400 MB — smaller than the duplicated column this project has already
+identified as removable. The compression is part of the same piece of work as
+the measurement, not a later optimisation.
+
+#### The two product rulings that narrow all of this
+
+**A hosted API is out**, on cost and on unpredictable latency, which is the
+same position the offline design already took for different reasons.
+
+**An optional local accelerator is in, and it is the revisit this record
+named.** The GPU section above rejected *linking* an execution provider and
+said plainly that what to reconsider first is loading one at runtime. That is
+what an optional, auto-detected accelerator is, and the size budget does not
+move because the provider is never bundled.
+
+What changes is the target rather than the argument. The old rejection measured
+accelerating the *small* models already shipped and found the win marginal or
+negative — 27 ms becoming 42 on CoreML, DirectML often slower than the CPU on
+integrated graphics. Those measurements stand. What they do not cover is a
+model class that cannot exist on the CPU at all.
+
+**The binding constraint is correctness, and it comes from this record's own
+strongest objection to GPUs: DirectML is reported to return numerically
+divergent results on Intel integrated graphics.** A path that orders results
+differently would mean two users getting different answers from one workspace,
+every accuracy gate passing on CPU while saying nothing about the other path,
+and bug reports that do not reproduce. So a provider is accepted only after a
+**startup self-check** — a committed fixture through both paths, compared, with
+any disagreement past a stated tolerance falling back to CPU permanently and
+saying so. That converts "quality depends on hardware" into "speed depends on
+hardware, output verified identical", and it is the answer to the objection
+rather than an override of it.
+
+Unmoved, and stated so it cannot drift: the default path is CPU-only, every
+gate is measured on CPU, and **every published figure stays a CPU figure** —
+otherwise the numbers on this page stop being product claims and become
+hardware claims.
+
 ### Optional GPU: measured against, not deferred
 
 Accelerating the reranker on a GPU was considered and is not being built, and the reason is not the size budget alone.
