@@ -82,7 +82,7 @@ LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer 
 
 The graph channel lives in PostgreSQL, where `zvec` cannot see it. Letting the engine pre-fuse the lexical and vector lists would produce an already-fused list that then has to be fused again with the graph list, double-weighting its members and destroying the contract that every result reports its rank in every channel it appeared in.
 
-Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer, followed by post-fusion modifiers. This is a correctness requirement, not a preference.
+Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer. This is a correctness requirement, not a preference.
 
 `k = 10`, not the customary 60, and the two lexical channels carry an eighth weight each — a quarter each until a third corpus was measured; the paragraphs below record the quarter as it was argued, and the section after them is what replaced it. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights the two of them cast two votes against the vector and graph channels' one each. That much holds. The stronger claim this record used to make alongside it — that the two are near enough one channel to share a weight — does not: Kendall tau-b between their rankings is 0.2816 on this project's own corpus, 0.3188 on XQuAD-R and 0.2973 on MIRACL. They are two channels that agree about a third of the time, sharing a field rather than a ranking, and the single constant they share has never been swept apart.
 
@@ -238,6 +238,15 @@ cross-language queries, where the measurement is unambiguous, and on the
 file-path and error-code matching the n-gram channel exists for, which no
 corpus here tests.
 
+**That last sentence was wrong, and the instrument is why.** A weight sweep
+moves both lexical channels at once. They are two channels, agreeing only about
+a third of the time, and moving them together lets one cancel the other -- so a
+sweep that separates nothing is not evidence that neither matters. Taking the
+segmented channel away on its own, which the leave-one-out diagnostic does,
+costs MIRACL significantly at p = 0.0125. The channel is measurable there. What
+was not measurable was a one-dimensional slice through a two-dimensional
+question, and the sentence above read a null result off the wrong instrument.
+
 **The adaptive rule is now visibly just a weaker constant.** Against the
 quarter on XQuAD-R, `adapt 0.00-1.00` scores +0.0618 cross-lingual and zero
 weight scores +0.0635; the four adaptive rows interpolate monotonically between
@@ -320,17 +329,62 @@ Which is a measurement this project has never taken. There is no figure
 anywhere for what any single channel is worth on its own. Every number here is
 of the four fused.
 
-**What would settle it**, in the order the cost says to do it: measure each
-channel alone, per corpus and per language; measure the rank correlation
-between the two lexical channels, because they run BM25 over the same text
-twice and RRF rewards their agreement as though it were independent
-confirmation; then compare RRF against a z-score-normalised weighted
-combination on all three corpora, reporting per-query wins and losses rather
-than means. Score normalisation within the candidate set is the cheap version
-and the one with direct evidence on this project's own corpora; normalising
-against a corpus-wide distribution is what the graph-channel paper actually
-did, and it costs a distribution that has to be maintained as memories are
-written — which that paper never had to pay, because its corpus was static.
+**What the diagnostic found.** Measuring each channel alone needed no new runs:
+`fuse` writes a trace line for every candidate of every channel at any weight,
+so one pass carries the whole matrix of where each channel ranked what, and now
+of what it scored it too. Three findings, on three corpora:
+
+| | ours cross | XQuAD-R cross | XQuAD-R same |
+| --- | --- | --- | --- |
+| all four fused | 0.7910 | 0.6077 | **0.7556** |
+| the vector channel alone | **0.8268** | **0.6335** | 0.6787 |
+| segmented BM25 alone | — | — | 0.7299 |
+
+**Fusing four channels ranks below one of them on cross-lingual queries**, and
+on the same-language queries of the same corpus the lexical channels earn their
+place outright. Removing either lexical channel significantly improves the
+cross-lingual group and significantly hurts the same-language one. The channels
+are not weak. A global constant cannot tell the two cases apart — this is the
+weakest link the four-channel paper above names, arrived at independently.
+
+**The two lexical channels are not one channel.** Kendall tau-b between their
+rankings, over the candidates they share: 0.2816 on this project's own corpus,
+0.3188 on XQuAD-R, 0.2973 on MIRACL. They agree about a third of the time. The
+premise that justified one shared weight is refuted, and every sweep this
+project ever ran moved both together, so no measurement distinguishes the two
+numbers at all.
+
+**The graph channel contributes exactly 0.0000** — in every group of all three
+corpora, so removing it changes no ranking anywhere. That is a weaker statement
+than it looks and is recorded as an observation rather than a verdict. Two of
+the corpora are sentence collections with no relationships to walk, so the zero
+there is a property of the corpus. This project's own corpus does have edges
+and still reports zero, and that part is unexplained: nothing here has
+established whether the walk reaches nothing relevant or reaches it at a rank
+that `weight / (k + rank)` places below the other channels' candidates.
+
+**What that argues for, and what was built.** Not a normaliser: standardising a
+channel's candidates removes the units and not the quality, so a channel whose
+fifty candidates are all worthless still maps its best one to about `z = +2`.
+Not cross-channel agreement either — that is the adaptive rule, measured and
+removed. What is left is how far a channel's best candidate stands above its
+own field, `(best - mean) / deviation` over that channel's own candidates:
+dimensionless, so a BM25 score and a cosine similarity become comparable, and
+readable from the candidates already in hand. That last part is the binding
+constraint. A normaliser against a corpus-wide distribution — what the
+graph-channel paper did — costs a histogram that has to be maintained as
+memories are written, which that paper never had to pay because its corpus was
+static, and which would make the mechanism wrong for a user the moment they
+wrote something.
+
+`Fusion::with_confidence` implements it and **is off by default because it has
+not been measured**. The three corpora's accuracy floors stand on constant
+weights. Its two constants, and the two lexical weights now that they are
+separable, are swept offline from one pass over each corpus — `channels::as_if`
+replays a run's trace through the shipped `fuse`, so a grid that used to cost
+thirteen minutes a row costs microseconds a row. Until that sweep is run and
+reported with per-query wins, losses and a bootstrap p, the mechanism is a
+hypothesis with an argument behind it and no number.
 
 ### Every accuracy figure here is a difference of means
 
@@ -380,7 +434,7 @@ the fusion weight above now says so.
 
 An earlier channel list had seven entries. Four were redundant, and two of those double-counted against modifiers the same design already applied after fusion:
 
-- **Temporal** and **pinned/important** were already post-fusion modifiers. Running them as channels as well counted the same signal twice. "Facts valid at time T" is a filter over other channels, not an independent recall source.
+- **Temporal** and **pinned/important** were to be expressed as post-fusion modifiers instead. Running them as channels as well would count the same signal twice. "Facts valid at time T" is a filter over other channels, not an independent recall source.
 - **Curated notes** and **page nodes** already enter the projection index. A separate channel queries the same data twice and splits one population into several, which dilutes results and forces the redundancy penalty to reason across populations.
 
 What remains:
@@ -388,10 +442,21 @@ What remains:
 ```text
 recall channels (3)   lexical, vector, graph
 document types        topic / span / page_node / note   (a filter)
-post-fusion modifiers recency, importance and worth, source quality,
-                      redundancy penalty
 agentic primitives    grep, read by id, navigate, typed query
 ```
+
+The post-fusion modifiers this list used to carry — recency, importance and
+worth, source quality, a redundancy penalty — are gone, and the reason is worth
+recording because it is not the reason the list was shortened. Importance and
+worth were implemented: `Modifiers::apply` multiplied every result by
+`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both are columns the
+repository reads and **no code path anywhere writes**, so both factors were
+exactly 1.0 on every search this project has ever run, and the trace lines for
+them were already suppressed on the grounds that they said nothing. A modifier
+over a constant is not a ranking signal; it is a multiplication. The columns
+stay, because they are the authority store's schema, and `RetrievalSignals` now
+says outright that nothing writes them — restoring the feature starts with a
+write path, not with a multiplier.
 
 The projection holds one document per topic, carrying what that topic says now.
 An earlier version of this decision held one per state, and that put a topic's

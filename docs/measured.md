@@ -127,7 +127,42 @@ been compared against anything smaller than itself.
 What that bought, where both arms are measured at the shipped default: on
 XQuAD-R **the whole stack now outranks the model it is built on**, 0.6480
 against the embedder's 0.6335 cross-lingual and 0.7495 against 0.6787
-same-language. It did not before. The MIRACL comparison above is not re-taken
+same-language. It did not before.
+
+**And the dilution is still there underneath, now located.** The channel
+diagnostic reads every channel's own ranking out of one fused run's trace, so
+it costs nothing to take and had never been taken. Fusion alone, at the weight
+that ships:
+
+| | ours cross | XQuAD-R cross | XQuAD-R same |
+| --- | --- | --- | --- |
+| all four channels fused | 0.7910 | 0.6077 | **0.7556** |
+| the vector channel alone | **0.8268** | **0.6335** | 0.6787 |
+| segmented BM25 alone | — | — | 0.7299 |
+
+Fusing four channels ranks below one of them on cross-lingual queries, on both
+corpora that have such a group — and on the same-language queries of the same
+corpus the lexical channels are worth having outright. Reranking buys the
+cross-lingual loss back, which is most of what the cross-encoder is being paid
+for. The channels are not weak; one global weight cannot tell the two cases
+apart.
+
+Two other things the diagnostic settled. The two lexical channels agree at
+Kendall tau-b 0.2816, 0.3188 and 0.2973 on the three corpora, so **they are not
+the near-duplicate pair this project described them as** and the single weight
+they share has never been swept apart. And the graph channel contributes
+**exactly 0.0000 in every group of all three corpora** — two of them have no
+relationships to walk, so that much is the corpus, but this project's own
+corpus does have edges and also reports zero, and that is unexplained rather
+than understood.
+
+`Fusion::with_confidence` is the answer built for it: each channel's weight
+scaled by how far its best candidate stands above its own field, which is
+dimensionless and readable from the candidates already in hand. **It is off by
+default and has no figure on this page, because it has not been measured.** The
+sweep is now cheap — one pass per corpus prices the whole grid offline — and
+until it is run and reported with per-query wins, losses and a p, there is
+nothing here to report. The MIRACL comparison above is not re-taken
 yet, for the ten hours named earlier, and on `speed` it carries a second
 finding worth stating early: once fusion stops diluting, the cross-encoder
 *costs* 0.0152 there — 0.6730 with it against 0.6882 without, for 226 ms a
