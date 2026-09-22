@@ -2017,6 +2017,50 @@ fn an_import_records_the_whole_file_or_none_of_it() {
     server.wait().expect("reaping the server");
 }
 
+/// Two memories under one topic keep the file's order, however they are run.
+///
+/// The invariant that makes importing several topics at once correct rather
+/// than merely faster. `Engine::remember` reads the topic's current content and
+/// judges the new memory against it, and one of the verdicts is `Restatement`.
+/// Two writes to one topic running at once both read the content from before
+/// either of them, so the second is judged against the wrong text and a
+/// restatement is promoted as though it said something new. No transaction
+/// catches that -- both commit, and both are correct writes of a decision made
+/// on stale input.
+///
+/// The file interleaves the repeat behind another topic, so an importer that
+/// kept the file's order and ran it straight through would pass this by
+/// accident. What has to hold is that the *second* line under `first` is
+/// judged against the *first* one whatever else is in flight.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn one_topic_is_recorded_in_the_files_order() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let file = cli.home().join("repeats.ndjson");
+    std::fs::write(
+        &file,
+        "{\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n\
+         {\"topic\": \"second\", \"content\": \"the oncall rota rotates on mondays\"}\n\
+         {\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n",
+    )
+    .expect("writing the file");
+
+    let imported = cli.json(&["import", "--from", file.to_str().expect("a path")]);
+    assert_eq!(imported["memories"], 3);
+    assert_eq!(
+        imported["promoted"], 2,
+        "the repeat under `first` was promoted, so it was judged against the \
+         content from before its own topic's earlier write: {imported}"
+    );
+    assert_eq!(imported["held"], 1);
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
 /// The real binary prints the licence notice before it fetches the weights.
 ///
 /// Ignored with the rest of the lifecycle tests, because a notice that does
