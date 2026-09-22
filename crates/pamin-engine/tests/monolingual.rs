@@ -70,6 +70,7 @@
 //! The dataset is not vendored. The corpus is Wikipedia text under
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
+mod channels;
 mod statistics;
 
 use std::collections::{HashMap, HashSet};
@@ -756,6 +757,15 @@ async fn search() {
          would have changed these numbers"
     );
 
+    // `CHANNELS` reports what each channel is worth on its own, and what the
+    // fused list looks like with each one taken away. One run, not four: the
+    // trace carries every channel's rank for every candidate, so the whole
+    // matrix comes out of a single pass. See `channels`.
+    if std::env::var("CHANNELS").is_ok() {
+        report_channels(&engine, &corpus, &named).await;
+        return;
+    }
+
     if let Some(settings) = sweep() {
         println!("\n  setting                nDCG@{NDCG_AT}   recall@{RECALL_AT}");
         println!("  ------------------------------------------------");
@@ -914,6 +924,112 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
         scores.add(&ranked, &query.relevant);
     }
     scores
+}
+
+/// The channel diagnostic: each one alone, each one removed, and how far the
+/// two lexical channels agree with each other.
+///
+/// `WIDE` rather than `DEPTH` because the point is an untruncated trace -- see
+/// [`channels`] for what a truncated one silently does to these numbers.
+async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
+    use pamin_core::Channel;
+    use std::collections::BTreeMap;
+
+    /// Past four times the channel depth, so `take(limit)` cannot bite.
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+
+    let shipped: BTreeMap<Channel, f32> = BTreeMap::from([
+        (Channel::LexicalSegmented, 0.125),
+        (Channel::LexicalNgram, 0.125),
+        (Channel::Vector, 1.0),
+        (Channel::Graph, 1.0),
+    ]);
+
+    let mut alone: BTreeMap<Channel, Scores> = BTreeMap::new();
+    let mut without: BTreeMap<Channel, Scores> = BTreeMap::new();
+    let mut whole = Scores::default();
+    let mut lexical_agreement: Vec<f64> = Vec::new();
+
+    for query in &corpus.queries {
+        let hits = engine
+            .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+            .await
+            .expect("search");
+
+        // Both premises, on every query rather than once: a trace that was
+        // truncated, or arithmetic that has drifted from the engine's, makes
+        // every number below wrong in a way that looks like a finding.
+        channels::enough_room(&hits, WIDE);
+        channels::same_as_the_engine(&hits, pamin_core::DEFAULT_K, &shipped);
+
+        let each = channels::each_alone(&hits);
+        for (channel, ranking) in &each {
+            alone
+                .entry(*channel)
+                .or_default()
+                .add(ranking, &query.relevant);
+        }
+
+        for missing in shipped.keys() {
+            let ranking = channels::refuse(&hits, pamin_core::DEFAULT_K, |channel| {
+                (channel != *missing)
+                    .then(|| shipped.get(&channel).copied())
+                    .flatten()
+            });
+            without
+                .entry(*missing)
+                .or_default()
+                .add(&ranking, &query.relevant);
+        }
+
+        whole.add(
+            &hits
+                .iter()
+                .map(|hit| hit.topic.clone())
+                .collect::<Vec<String>>(),
+            &query.relevant,
+        );
+
+        if let (Some(segmented), Some(ngram)) = (
+            each.get(&Channel::LexicalSegmented),
+            each.get(&Channel::LexicalNgram),
+        ) && let Some(tau) = channels::agreement(segmented, ngram)
+        {
+            lexical_agreement.push(tau);
+        }
+    }
+
+    println!("\n  each channel on its own, {named}");
+    println!("  channel               candidates   nDCG@{NDCG_AT}   recall@{RECALL_AT}");
+    println!("  ------------------------------------------------------------");
+    for (channel, scores) in &alone {
+        println!(
+            "  {:<20}   {:>10}   {:>7.4}   {:>9.4}",
+            format!("{channel:?}"),
+            scores.queries,
+            scores.mean_ndcg(),
+            scores.mean_recall()
+        );
+    }
+
+    println!(
+        "\n  all four fused: {:.4} nDCG@{NDCG_AT}",
+        whole.mean_ndcg()
+    );
+    println!("\n  with one channel taken away, against all four:");
+    for (channel, scores) in &without {
+        println!(
+            "  {:<20}   {}",
+            format!("{channel:?}"),
+            statistics::compare(&whole.per_query, &scores.per_query)
+        );
+    }
+
+    println!(
+        "\n  the two lexical channels agree at Kendall tau {:.4} over {} queries\n",
+        channels::mean(&lexical_agreement),
+        lexical_agreement.len()
+    );
 }
 
 /// Writes every passage that is not already a topic, then runs the queue.

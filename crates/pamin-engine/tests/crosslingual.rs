@@ -160,6 +160,7 @@
 //! the eleven, which is 1,190 queries covering every language and every
 //! question and takes a eleventh of the time.
 
+mod channels;
 mod statistics;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -588,6 +589,132 @@ fn score(groups: &mut BTreeMap<String, Scores>, query: &Query<'_>, ranked: &[Str
             .or_default()
             .add(&kept, &relevant);
     }
+}
+
+/// The channel diagnostic, plus the two things only this corpus can answer.
+///
+/// It has eleven languages and parallel sentences, so it is the only corpus
+/// here that can say what a channel is worth *per language*, and the only one
+/// where "did the reranker keep the query's own language on top" is a question
+/// with two possible answers.
+async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
+    use pamin_core::Channel;
+
+    /// Past four times the channel depth, so `take(limit)` cannot bite.
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+
+    let shipped: BTreeMap<Channel, f32> = BTreeMap::from([
+        (Channel::LexicalSegmented, 0.125),
+        (Channel::LexicalNgram, 0.125),
+        (Channel::Vector, 1.0),
+        (Channel::Graph, 1.0),
+    ]);
+
+    let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
+    let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
+    let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut by_language: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut lexical_agreement: Vec<f64> = Vec::new();
+
+    for query in queries {
+        let hits = engine
+            .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+            .await
+            .expect("search");
+
+        channels::enough_room(&hits, WIDE);
+        channels::same_as_the_engine(&hits, pamin_core::DEFAULT_K, &shipped);
+
+        let each = channels::each_alone(&hits);
+        for (channel, ranking) in &each {
+            score(alone.entry(*channel).or_default(), query, ranking);
+        }
+        for missing in shipped.keys() {
+            let ranking = channels::refuse(&hits, pamin_core::DEFAULT_K, |channel| {
+                (channel != *missing)
+                    .then(|| shipped.get(&channel).copied())
+                    .flatten()
+            });
+            score(without.entry(*missing).or_default(), query, &ranking);
+        }
+
+        let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        score(&mut whole, query, &ranked);
+
+        // The per-language table, on a key the two-group map does not use, so
+        // nothing that indexes that map by bare group name is disturbed.
+        let mut one = BTreeMap::new();
+        score(&mut one, query, &ranked);
+        for (group, scores) in one {
+            let entry: &mut Scores = by_language
+                .entry(format!("{group}/{}", query.language))
+                .or_default();
+            entry.queries += scores.queries;
+            entry.ndcg += scores.ndcg;
+            entry.recall += scores.recall;
+            entry.deep += scores.deep;
+            entry.with_work += scores.with_work;
+            entry.per_query.extend(scores.per_query);
+        }
+
+        if let (Some(segmented), Some(ngram)) = (
+            each.get(&Channel::LexicalSegmented),
+            each.get(&Channel::LexicalNgram),
+        ) && let Some(tau) = channels::agreement(segmented, ngram)
+        {
+            lexical_agreement.push(tau);
+        }
+    }
+
+    for group in GROUPS {
+        println!("\n  each channel on its own, {group}, {named}");
+        println!("  channel               queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}");
+        println!("  ---------------------------------------------------------------");
+        for (channel, groups) in &alone {
+            let scores = &groups[group];
+            println!(
+                "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+                format!("{channel:?}"),
+                scores.queries,
+                scores.mean_ndcg(),
+                scores.mean_recall()
+            );
+        }
+        println!(
+            "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+            "all four fused",
+            whole[group].queries,
+            whole[group].mean_ndcg(),
+            whole[group].mean_recall()
+        );
+
+        println!("\n  with one channel taken away, {group}:");
+        for (channel, groups) in &without {
+            println!(
+                "  {:<20}   {}",
+                format!("{channel:?}"),
+                statistics::compare(&whole[group].per_query, &groups[group].per_query)
+            );
+        }
+    }
+
+    println!("\n  per language, all four fused, {named}");
+    println!("  group and language     queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}");
+    println!("  ----------------------------------------------------------------");
+    for (key, scores) in &by_language {
+        println!(
+            "  {key:<20}   {:>7}   {:>7.4}   {:>9.4}",
+            scores.queries,
+            scores.mean_ndcg(),
+            scores.mean_recall()
+        );
+    }
+
+    println!(
+        "\n  the two lexical channels agree at Kendall tau {:.4} over {} queries\n",
+        channels::mean(&lexical_agreement),
+        lexical_agreement.len()
+    );
 }
 
 /// Prints the table this harness exists to produce.
@@ -1023,6 +1150,16 @@ async fn search_reaches_across_languages() {
             }
         }
         println!();
+        return;
+    }
+
+    // `CHANNELS` reports what each channel is worth on its own, what the fused
+    // list looks like with each one taken away, how far the two lexical
+    // channels agree with each other, and whether the reranker keeps a query's
+    // own language at the top. One run, not four: the trace carries every
+    // channel's rank for every candidate. See `channels`.
+    if std::env::var("CHANNELS").is_ok() {
+        report_channels(&engine, &queries, &named).await;
         return;
     }
 
