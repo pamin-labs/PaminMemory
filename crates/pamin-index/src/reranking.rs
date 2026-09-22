@@ -621,6 +621,29 @@ impl Scores {
     }
 }
 
+/// One candidate's place in the reranked order, and what the model scored it.
+///
+/// The score is here because the position alone cannot answer the question
+/// that decides whether to keep a candidate at all: a shortlist where the
+/// model put daylight between the second and the third is a different
+/// shortlist from one where it could barely separate them, and both look
+/// identical as an order. That is what the 2025 threshold result turns on --
+/// dropping candidates below a cut rather than reordering all of them -- and
+/// this project could not have measured it, because `rank` computed these
+/// scores and discarded them.
+///
+/// **Never comparable across queries.** A cross-encoder's logit is calibrated
+/// against nothing; it separates candidates within one shortlist and says
+/// nothing absolute. A cut expressed against the other candidates of the same
+/// query is expressible from this; a fixed threshold is not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ranked {
+    /// Index into the slice handed to [`Reranker::rank`].
+    pub position: usize,
+    /// The model's own score, larger being more relevant.
+    pub score: f32,
+}
+
 /// A loaded cross-encoder, and what it has already scored.
 pub struct Reranker {
     model: TextRerank,
@@ -734,7 +757,7 @@ impl Reranker {
     /// padded to its longest member and the caller's order is by relevance,
     /// which says nothing about length. The permutation is undone before the
     /// result is returned, so a caller sees positions into what it passed.
-    pub fn rank(&mut self, query: &str, documents: &[&str]) -> Result<Vec<usize>> {
+    pub fn rank(&mut self, query: &str, documents: &[&str]) -> Result<Vec<Ranked>> {
         if documents.is_empty() {
             return Ok(Vec::new());
         }
@@ -805,7 +828,18 @@ impl Reranker {
                 // shortlist ranks the same way twice.
                 .then_with(|| left.cmp(right))
         });
-        Ok(ordered)
+        Ok(ordered
+            .into_iter()
+            .map(|position| Ranked {
+                position,
+                // `None` is unreachable: every position is either a cache hit
+                // or went through the model above. Carried as the same
+                // sentinel the sort used rather than unwrapped, so a future
+                // early return cannot turn a missing score into a panic in a
+                // search.
+                score: scores[position].unwrap_or(f32::MIN),
+            })
+            .collect())
     }
 
     /// What this reranker has been asked to do, and what it did.

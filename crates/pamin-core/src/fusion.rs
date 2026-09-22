@@ -120,6 +120,26 @@ pub enum Why {
         edge: EdgeKind,
         derivation: Derivation,
     },
+    /// A reranker scored this result and put it where it is.
+    ///
+    /// Present only on the candidates that reached the model, which is the
+    /// part of a search's explanation that was missing: every channel wrote
+    /// down what it scored a candidate, and the one score that decided the
+    /// final order was computed and thrown away. A result with no entry of
+    /// this kind was not reranked -- either a lexical channel found it, or it
+    /// sat below the tier's depth -- and that distinction is readable from the
+    /// absence.
+    ///
+    /// **Never comparable across queries**, for the same reason the channel
+    /// score above is not: a cross-encoder's logit is calibrated against
+    /// nothing. It separates the candidates of one shortlist. A cut expressed
+    /// relative to the other candidates of the same query can be read off
+    /// this; a fixed absolute threshold cannot, and would behave differently
+    /// on every query.
+    Reranked {
+        /// The model's own score, larger being more relevant.
+        score: f32,
+    },
 }
 
 /// A fused result and the reasoning behind its position.
@@ -753,7 +773,11 @@ mod tests {
             .iter()
             .filter_map(|why| match why {
                 Why::Channel { channel, rank, .. } => Some((*channel, *rank)),
-                Why::Path { .. } => None,
+                // `fuse` writes neither: a path comes from the graph channel's
+                // own evidence and a rerank entry is added a stage later. Both
+                // are matched rather than caught by a wildcard, so adding a
+                // variant makes the compiler ask about this test.
+                Why::Path { .. } | Why::Reranked { .. } => None,
             })
             .collect();
 
@@ -1022,7 +1046,7 @@ mod tests {
             .iter()
             .find_map(|why| match why {
                 Why::Channel { weight, .. } => Some(*weight),
-                Why::Path { .. } => None,
+                Why::Path { .. } | Why::Reranked { .. } => None,
             })
             .expect("a channel entry");
         assert_eq!(

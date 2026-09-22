@@ -56,12 +56,26 @@ fn every_tier_puts_the_relevant_document_first() {
                 documents.len()
             );
             assert_eq!(
-                documents[ranked[0]],
+                documents[ranked[0].position],
                 relevant,
                 "the {} tier ranked the unrelated document first, given {documents:?} -- \
                  the export loads and scores, so this is a wiring question rather than a \
                  quality one",
                 tier.name()
+            );
+
+            // The order now carries the scores that produced it, so the
+            // stronger claim is available for free: the ordering follows a
+            // real separation rather than the stable tie-break. A model
+            // scoring both candidates identically would satisfy the assertion
+            // above by input order alone.
+            assert!(
+                ranked[0].score > ranked[1].score,
+                "the {} tier scored both documents the same ({} and {}), so the order \
+                 above came from the tie-break rather than from the model",
+                tier.name(),
+                ranked[0].score,
+                ranked[1].score
             );
         }
 
