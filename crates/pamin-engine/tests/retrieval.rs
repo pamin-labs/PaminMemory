@@ -529,21 +529,17 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
 /// cross-lingual harness rather than alone, because a setting that suits one
 /// corpus and ruins the other is the outcome worth catching.
 ///
-/// Then the adaptive weight, which is not a third number but a rule: the
-/// lexical pair is worth `floor` of its weight on a query where no lexical
-/// channel returned anything the vector channel also returned, and reaches
-/// `ceiling` where they agree completely. **This corpus is where that rule has
-/// to be judged, and the cross-lingual harness is where it cannot be.** There
-/// the same 1,190 queries are scored twice, once with the same-language answer
-/// removed, so a query belongs to both groups at once and one per-query
-/// decision has to serve both; here the three groups are three different sets
-/// of queries, which is what a per-query rule needs in order to be right about
-/// one and wrong about another.
+/// This is the corpus where a per-query rule could have been judged -- its three
+/// groups are three different sets of queries, where the cross-lingual harness
+/// scores one set twice. It is where the adaptive lexical weight was judged, and
+/// it did not survive: the rule interpolated monotonically between the two
+/// constants bounding it and never separated from them. The rows are gone with
+/// the rule.
 fn sweep() -> Option<Vec<(String, Fusion)>> {
     // `SWEEP=1` runs every row. Any other value keeps the rows whose label
     // contains it, because a row costs a pass over the whole query set and
-    // re-checking one row should not cost twenty-four: `SWEEP=adapt` is the
-    // adaptive block, `SWEEP="k=10 "` one value of the rank constant.
+    // re-checking one row should not cost twenty-four: `SWEEP="k=10 "` is one value of the
+    // rank constant.
     let wanted = std::env::var("SWEEP").ok()?;
     let filter = (wanted != "1").then_some(wanted);
     let mut settings = Vec::new();
@@ -551,16 +547,6 @@ fn sweep() -> Option<Vec<(String, Fusion)>> {
         for weight in [0.0, 0.125, 0.25, 0.5, 1.0] {
             settings.push((format!("k={k:.0} lex {weight:.3}"), fusion(k, weight)));
         }
-    }
-    // At `k = 10`, the shipped constant, so the rows differ from the shipped
-    // setting by the rule alone. `0.00..1.00` is the unbounded form; the others
-    // hold a floor under the lexical pair so that a query the lexical channels
-    // answered well is not decided by how much the vector channel agreed.
-    for (floor, ceiling) in [(0.0, 1.0), (0.25, 1.0), (0.5, 1.0), (0.5, 0.5)] {
-        settings.push((
-            format!("k=10 adapt {floor:.2}-{ceiling:.2}"),
-            Fusion::default().with_k(10.0).with_adaptive(floor, ceiling),
-        ));
     }
     if let Some(filter) = &filter {
         settings.retain(|(label, _)| label.contains(filter.as_str()));

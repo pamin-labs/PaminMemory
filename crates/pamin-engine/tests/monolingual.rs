@@ -880,15 +880,6 @@ fn sweep() -> Option<Vec<(String, Fusion)>> {
             ));
         }
     }
-    // `0.50-0.50` is a constant eighth of a weight wearing the rule's clothes,
-    // and it is here so that a gain from the rule cannot be mistaken for a
-    // gain from simply asking the lexical pair for less.
-    for (floor, ceiling) in [(0.0, 1.0), (0.25, 1.0), (0.5, 1.0), (0.5, 0.5)] {
-        settings.push((
-            format!("k=10 adapt {floor:.2}-{ceiling:.2}"),
-            Fusion::default().with_k(10.0).with_adaptive(floor, ceiling),
-        ));
-    }
     if let Some(filter) = &filter {
         settings.retain(|(label, _)| label.contains(filter.as_str()));
         assert!(!settings.is_empty(), "SWEEP={filter:?} matched no row");

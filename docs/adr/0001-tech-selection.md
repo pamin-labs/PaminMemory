@@ -245,6 +245,18 @@ the constants they are built from, group for group, with the same wins and
 losses. It was already off by default on the grounds that it bought almost
 nothing; the counts show there is no separate thing there to buy.
 
+**The rule has been removed, and what it disproves is load-bearing.** Its
+signal was cross-channel agreement: how much of the vector channel's list the
+lexical channels also returned. That is the cheap way to ask the question
+fusion actually needs answered — *is this channel worth listening to on this
+query* — and it is the only way that needs nothing plumbed, because ranks are
+all it reads. Measured across three corpora it is worth between +0.0003 and
++0.0085, which is to say nothing. So the cheap route is closed, not untried,
+and the remaining route is the channels' own scores: how far a channel's best
+candidate stands above its own field, which is legible in the score
+distribution and nowhere in the ranks. Those scores existed at the index layer
+all along and were being discarded before anything could read them.
+
 The MIRACL shipped-path cell at the quarter says `not taken` because it never
 was: the run that would have produced it died on an assertion the harness makes
 about its own graph channel, and by the time the harness was fixed the weight

@@ -798,22 +798,19 @@ fn assert_floors(named: &str, groups: &BTreeMap<String, Scores>, floors: &[(&str
 /// corpus is the first place they can be read against one where it carries
 /// signal for half of them and noise for the other half.
 ///
-/// Then the adaptive weight, which scales the lexical pair by how much the
-/// channels agree rather than fixing it. **What this corpus can say about it
-/// is one-sided, and that has to be read off the rows rather than assumed.**
-/// Its two groups are the same 1,190 queries scored twice, once with the
-/// same-language answer struck out of the ranking, so one query is in both
-/// groups and one per-query decision has to serve both. A rule that helps the
-/// cross-lingual column here cannot be credited for telling the groups apart,
-/// because they are not apart. What the columns do decide is the thing worth
-/// deciding: whether a floor under the lexical pair is enough to hold the
-/// same-language column, which is where a constant weight of 0.25 earns its
-/// keep and where lowering it does the damage.
+/// The adaptive block that used to follow is gone with the rule it measured:
+/// scaling the lexical pair by how far it agreed with the vector channel
+/// interpolated monotonically between the two constants it was bounded by, and
+/// the rows never separated from them. This corpus could never have settled it
+/// anyway -- its two groups are the same 1,190 queries scored twice, once with
+/// the same-language answer struck out of the ranking, so one per-query
+/// decision serves both groups and a rule cannot be credited with telling them
+/// apart.
 fn sweep() -> Option<Vec<(String, Fusion)>> {
     // `SWEEP=1` runs every row. Any other value keeps the rows whose label
     // contains it, because a row costs a pass over the whole query set and
-    // re-checking one row should not cost twenty-four: `SWEEP=adapt` is the
-    // adaptive block, `SWEEP="k=10 "` one value of the rank constant.
+    // re-checking one row should not cost twenty-four: `SWEEP="k=10 "` is one value of the
+    // rank constant.
     let wanted = std::env::var("SWEEP").ok()?;
     let filter = (wanted != "1").then_some(wanted);
     let mut settings = Vec::new();
@@ -824,17 +821,6 @@ fn sweep() -> Option<Vec<(String, Fusion)>> {
                 fusion(Some((k, weight))),
             ));
         }
-    }
-    // At `k = 10`, the shipped constant, so these differ from the shipped
-    // setting by the rule alone. `0.50-0.50` is a constant eighth of a weight
-    // dressed as the rule, and it is in the list on purpose: without it, a gain
-    // from the rule cannot be told apart from a gain from simply asking the
-    // lexical pair for less.
-    for (floor, ceiling) in [(0.0, 1.0), (0.25, 1.0), (0.5, 1.0), (0.5, 0.5)] {
-        settings.push((
-            format!("k=10 adapt {floor:.2}-{ceiling:.2}"),
-            Fusion::default().with_k(10.0).with_adaptive(floor, ceiling),
-        ));
     }
     if let Some(filter) = &filter {
         settings.retain(|(label, _)| label.contains(filter.as_str()));
