@@ -603,18 +603,25 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     /// Past four times the channel depth, so `take(limit)` cannot bite.
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
 
-    let shipped: BTreeMap<Channel, f32> = BTreeMap::from([
-        (Channel::LexicalSegmented, 0.125),
-        (Channel::LexicalNgram, 0.125),
-        (Channel::Vector, 1.0),
-        (Channel::Graph, 1.0),
-    ]);
+    /// Every channel, so leaving one out is asked of all four.
+    const CHANNELS: &[Channel] = &[
+        Channel::LexicalSegmented,
+        Channel::LexicalNgram,
+        Channel::Vector,
+        Channel::Graph,
+    ];
 
     let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
     let mut by_language: BTreeMap<String, Scores> = BTreeMap::new();
     let mut lexical_agreement: Vec<f64> = Vec::new();
+
+    // Every fusion setting worth pricing, scored from the same traces as the
+    // rows above. One pass, the whole grid.
+    let variants = channels::variants();
+    let mut offline: Vec<BTreeMap<String, Scores>> =
+        variants.iter().map(|_| BTreeMap::new()).collect();
 
     for query in queries {
         let hits = engine
@@ -623,23 +630,23 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .expect("search");
 
         channels::enough_room(&hits, WIDE);
-        channels::same_as_the_engine(&hits, pamin_core::DEFAULT_K, &shipped);
+        channels::same_as_the_engine(&hits, &Fusion::default());
 
         let each = channels::each_alone(&hits);
         for (channel, ranking) in &each {
             score(alone.entry(*channel).or_default(), query, ranking);
         }
-        for missing in shipped.keys() {
-            let ranking = channels::refuse(&hits, pamin_core::DEFAULT_K, |channel| {
-                (channel != *missing)
-                    .then(|| shipped.get(&channel).copied())
-                    .flatten()
-            });
+        for missing in CHANNELS {
+            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
             score(without.entry(*missing).or_default(), query, &ranking);
         }
 
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
         score(&mut whole, query, &ranked);
+
+        for ((_, fusion), into) in variants.iter().zip(&mut offline) {
+            score(into, query, &channels::as_if(&hits, fusion));
+        }
 
         // The per-language table, on a key the two-group map does not use, so
         // nothing that indexes that map by bare group name is disturbed.
@@ -694,6 +701,19 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
                 "  {:<20}   {}",
                 format!("{channel:?}"),
                 statistics::compare(&whole[group].per_query, &groups[group].per_query)
+            );
+        }
+    }
+
+    for group in GROUPS {
+        println!("\n  every fusion setting against the one that ships, {group}, {named}");
+        println!("  setting                        nDCG@{NDCG_AT}   against shipped");
+        println!("  ---------------------------------------------------------------------------");
+        for ((label, _), scores) in variants.iter().zip(&offline) {
+            println!(
+                "  {label:<28}   {:>7.4}   {}",
+                scores[group].mean_ndcg(),
+                statistics::compare(&whole[group].per_query, &scores[group].per_query)
             );
         }
     }

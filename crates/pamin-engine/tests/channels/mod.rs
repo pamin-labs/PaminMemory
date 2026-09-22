@@ -8,11 +8,21 @@
 //! for any channel. Every number it reports is of the four fused.
 //!
 //! It turns out not to need new runs. [`pamin_core::Fusion::fuse`] writes a
-//! `Why::Channel { channel, rank, .. }` for every candidate of every channel,
-//! unconditionally -- the weight changes the recorded contribution and not
-//! whether the line is written. So one fused run carries the complete matrix of
-//! "where did each channel rank each candidate", and every channel's own
-//! ordering can be read back out of it.
+//! `Why::Channel { channel, rank, score, .. }` for every candidate of every
+//! channel, unconditionally -- the weight changes the recorded contribution and
+//! not whether the line is written. So one fused run carries the complete matrix
+//! of "where did each channel rank each candidate, and what did it score it",
+//! and every channel's own list can be rebuilt exactly as the channel returned
+//! it.
+//!
+//! Which means the engine's own [`pamin_core::Fusion::fuse`] can be run again
+//! over the rebuilt lists, at any settings, without touching the corpus.
+//! [`replay`] rebuilds them and [`as_if`] fuses them, so **any fusion setting
+//! this project can express is measurable offline from one pass**: a
+//! leave-one-out, a weight grid, a confidence spread. A sweep row on XQuAD-R is
+//! thirteen minutes; an offline row is microseconds. And because it calls the
+//! shipped `fuse` rather than restating its arithmetic, there is nothing here
+//! that can drift away from what the product does.
 //!
 //! ## The two things that make this exact rather than approximate
 //!
@@ -26,17 +36,15 @@
 //! returned list was shorter than the limit, which is the only way to know the
 //! matrix is whole.
 //!
-//! **Leave-one-out has to mean absence, and it now does on both sides.** It
-//! used not to: `fuse` created an entry for every candidate of every channel
-//! before applying any weight, so the fused set was always the union and a
-//! candidate only a zero-weighted channel found landed at score 0.0, ordered
-//! against its peers by topic UUID. The head stayed clean -- any positive score
-//! beats zero -- but recall past the head counted candidates the surviving
-//! channels never proposed. `Fusion::without` says the thing outright now and
-//! `fuse` skips a channel weighted at zero, so the engine and [`refuse`] agree
-//! about what leaving a channel out means. [`refuse`] still takes a weight
-//! function returning `None` rather than `Some(0.0)`, because the two readings
-//! are equal in effect and only one of them says which was meant.
+//! **Leave-one-out has to mean absence, and it now does.** It used not to:
+//! `fuse` created an entry for every candidate of every channel before applying
+//! any weight, so the fused set was always the union and a candidate only a
+//! zero-weighted channel found landed at score 0.0, ordered against its peers by
+//! topic UUID. The head stayed clean -- any positive score beats zero -- but
+//! recall past the head counted candidates the surviving channels never
+//! proposed, placed by the accident of a UUID. `Fusion::without` says the thing
+//! outright now and `fuse` skips a channel weighted at zero, so leaving a
+//! channel out means the same thing here and in the product.
 //!
 //! ## What "the graph channel alone" cannot mean
 //!
@@ -48,9 +56,9 @@
 //! its authors meant, and saying so is more useful than printing a number that
 //! looks comparable and is not.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use pamin_core::{Channel, Why};
+use pamin_core::{Channel, ChannelResults, Fusion, Scored, TopicId, Why};
 use pamin_engine::SearchHit;
 
 /// Every channel that returned anything, and the order it returned it in.
@@ -84,56 +92,6 @@ pub fn each_alone(hits: &[SearchHit]) -> BTreeMap<Channel, Vec<String>> {
         .collect()
 }
 
-/// Re-fuses the recorded ranks, leaving out whatever the weights call absent.
-///
-/// `weight` returns `None` for a channel that was never asked and `Some(w)` for
-/// one that was. The difference matters and the engine cannot express it -- see
-/// the module notes.
-///
-/// This duplicates four lines of `Fusion::fuse`'s arithmetic, which is a thing
-/// that drifts. [`same_as_the_engine`] is the guard: it re-fuses with every
-/// channel at the weights the run used and requires the result to reproduce the
-/// engine's own ordering exactly. Nothing derived from `refuse` is worth
-/// reading unless that assertion holds.
-pub fn refuse(hits: &[SearchHit], k: f32, weight: impl Fn(Channel) -> Option<f32>) -> Vec<String> {
-    let mut scored: Vec<(f32, &str)> = hits
-        .iter()
-        .map(|hit| {
-            let score: f32 = hit
-                .result
-                .why
-                .iter()
-                .filter_map(|why| match why {
-                    Why::Channel { channel, rank, .. } => {
-                        weight(*channel).map(|weight| weight / (k + *rank as f32))
-                    }
-                    _ => None,
-                })
-                .sum();
-            (score, hit.topic.as_str())
-        })
-        // A candidate no surviving channel proposed is not in the list at all,
-        // which is the whole point of distinguishing absent from zero.
-        .filter(|(score, _)| *score > 0.0)
-        .collect();
-
-    // Score descending, then by name, mirroring `pamin_core::sort_results`'
-    // descending-score-then-identity. The engine breaks ties on `TopicId` and
-    // this breaks them on the name, which is why `same_as_the_engine` compares
-    // orderings on a run whose scores separate everything it ranks.
-    scored.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.cmp(right.1))
-    });
-    scored
-        .into_iter()
-        .map(|(_, topic)| topic.to_string())
-        .collect()
-}
-
 /// Asserts the returned list was not truncated, so the rank matrix is whole.
 ///
 /// Panics with the numbers rather than returning a bool, because every figure
@@ -149,81 +107,170 @@ pub fn enough_room(hits: &[SearchHit], limit: u32) {
     );
 }
 
-/// Asserts that re-fusing the recorded ranks reproduces what the engine ranked.
+/// Rebuilds each channel's ranked list, exactly as the channel returned it.
 ///
-/// The premise every leave-one-out number rests on. `weights` must be the ones
-/// the run was made with, and every channel present in the trace must appear in
-/// it -- a channel left out here is being called absent, which is the one thing
-/// this assertion cannot be asked to check.
-pub fn same_as_the_engine(hits: &[SearchHit], k: f32, weights: &BTreeMap<Channel, f32>) {
-    let present: BTreeSet<Channel> = hits
-        .iter()
-        .flat_map(|hit| &hit.result.why)
-        .filter_map(|why| match why {
-            Why::Channel { channel, .. } => Some(*channel),
-            _ => None,
-        })
-        .collect();
-    for channel in &present {
-        assert!(
-            weights.contains_key(channel),
-            "{channel:?} appears in the trace but not in the weights this check was given, so \
-             the check would be comparing a leave-one-out against the engine's full fusion"
-        );
+/// Read out of the trace rather than re-queried, which is what makes every
+/// offline variant free. Each `Why::Channel` line carries the channel, the rank
+/// that channel gave this candidate, and what it scored it, so a channel's list
+/// is those lines sorted by rank.
+///
+/// **Panics unless each channel's ranks are exactly `1..=n` with nothing
+/// missing.** `Fusion::fuse` takes position for rank, so a gap would compact and
+/// every rank after it would shift by one -- silently, and in a direction that
+/// looks like a slightly better ranking. A gap can only come from the engine
+/// dropping a candidate after fusion, which on these corpora it never does,
+/// because every indexed topic resolves to a live state. If that ever changes,
+/// this says so rather than returning a matrix that is off by one.
+pub fn replay(hits: &[SearchHit]) -> Vec<ChannelResults> {
+    let mut ranked: BTreeMap<Channel, Vec<(u32, Scored)>> = BTreeMap::new();
+    for hit in hits {
+        for why in &hit.result.why {
+            if let Why::Channel {
+                channel,
+                rank,
+                score,
+                ..
+            } = why
+            {
+                ranked.entry(*channel).or_default().push((
+                    *rank,
+                    Scored {
+                        topic: hit.result.topic,
+                        score: *score,
+                    },
+                ));
+            }
+        }
     }
 
+    ranked
+        .into_iter()
+        .map(|(channel, mut candidates)| {
+            candidates.sort_by_key(|(rank, _)| *rank);
+            for (position, (rank, _)) in candidates.iter().enumerate() {
+                assert_eq!(
+                    *rank as usize,
+                    position + 1,
+                    "{channel:?} is missing rank {}: the trace has a gap, so replaying it would \
+                     compact every rank after the gap and quietly improve the ranking",
+                    position + 1
+                );
+            }
+            ChannelResults::new(
+                channel,
+                candidates
+                    .into_iter()
+                    .map(|(_, candidate)| candidate)
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// The ranking these settings would have produced over the same candidates.
+///
+/// Calls the shipped [`Fusion::fuse`] on the rebuilt lists, so it is the
+/// engine's arithmetic and not a copy of it -- there is nothing here to drift.
+/// Names rather than identifiers, because that is what the scorers compare.
+pub fn as_if(hits: &[SearchHit], fusion: &Fusion) -> Vec<String> {
+    let named: BTreeMap<TopicId, &str> = hits
+        .iter()
+        .map(|hit| (hit.result.topic, hit.topic.as_str()))
+        .collect();
+
+    fusion
+        .fuse(&replay(hits))
+        .into_iter()
+        .map(|result| {
+            named
+                .get(&result.topic)
+                .unwrap_or_else(|| panic!("{:?} was fused from a trace it is not in", result.topic))
+                .to_string()
+        })
+        .collect()
+}
+
+/// Asserts the trace rebuilds into what the engine actually ranked.
+///
+/// The premise every offline number rests on, and now it checks the one thing
+/// that can go wrong. `as_if` runs the product's own `fuse`, so the arithmetic
+/// cannot disagree; what can disagree is the reconstruction -- a rank read
+/// wrong, a candidate dropped, a channel missed. Asserted position for position
+/// including ties, because both sides break ties the same way now: they are the
+/// same function.
+///
+/// `fusion` must be the settings the run was made with, or this is comparing a
+/// variant against the engine's default and will fail for the right reason
+/// stated wrongly.
+pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
     let engine: Vec<&str> = hits.iter().map(|hit| hit.topic.as_str()).collect();
-    let ours = refuse(hits, k, |channel| weights.get(&channel).copied());
+    let ours = as_if(hits, fusion);
 
     assert_eq!(
         ours.len(),
         engine.len(),
-        "re-fusing the trace produced {} results against the engine's {}",
+        "replaying the trace produced {} results against the engine's {}",
         ours.len(),
         engine.len()
     );
-    // Compared as a set of scores rather than position for position, because
-    // the two break ties differently -- the engine on `TopicId`, this on the
-    // name. Where scores separate the candidates the orders agree exactly;
-    // where they do not, neither order means anything.
     for (position, (ours, theirs)) in ours.iter().zip(&engine).enumerate() {
-        if ours != theirs {
-            let tied = tie_at(hits, k, weights, position);
-            assert!(
-                tied,
-                "re-fusing the trace put {ours:?} at position {position} where the engine put \
-                 {theirs:?}, and their scores differ -- the arithmetic here has drifted from \
-                 `Fusion::fuse`"
-            );
-        }
+        assert_eq!(
+            ours, theirs,
+            "replaying the trace put {ours:?} at position {position} where the engine put \
+             {theirs:?}, so the reconstruction is not the engine's own candidates"
+        );
     }
 }
 
-/// Whether the two candidates a position disagrees about scored the same.
-fn tie_at(hits: &[SearchHit], k: f32, weights: &BTreeMap<Channel, f32>, position: usize) -> bool {
-    let score = |topic: &str| -> f32 {
-        hits.iter()
-            .find(|hit| hit.topic == topic)
-            .map(|hit| {
-                hit.result
-                    .why
-                    .iter()
-                    .filter_map(|why| match why {
-                        Why::Channel { channel, rank, .. } => weights
-                            .get(channel)
-                            .map(|weight| weight / (k + *rank as f32)),
-                        _ => None,
-                    })
-                    .sum()
-            })
-            .unwrap_or(0.0)
-    };
+/// Every fusion setting worth pricing against the one that ships, labelled.
+///
+/// Offline, so the whole grid costs one pass over the corpus rather than one
+/// pass per row. That changes what is affordable: a row on XQuAD-R used to be
+/// thirteen minutes, which is why every sweep this project ever ran moved both
+/// lexical channels together and left the rank constant to a coarse handful.
+///
+/// Two grids, because there are two open questions and they are separate.
+///
+/// **The lexical weights, now separable.** Kendall tau-b between the two
+/// lexical channels is around 0.30 on all three corpora, so the premise that
+/// justified one shared constant is refuted, and no measurement anywhere
+/// distinguishes the two numbers. The grid crosses them, including an eighth
+/// against an eighth, which is what ships and must come back identical.
+///
+/// **The confidence spread and floor.** `spread` is coupled to how many
+/// candidates a channel proposes -- a standardised top score cannot exceed
+/// `sqrt(n - 1)`, so 7.00 is the ceiling at the fifty each channel returns
+/// here -- which is why the values run up to seven rather than stopping at the
+/// two a reader might expect from a z-score. `floor` is what a channel with no
+/// opinion keeps: zero silences it outright, and the rows above zero are there
+/// to say whether silencing is the part that works or whether merely
+/// discounting is enough.
+pub fn variants() -> Vec<(String, Fusion)> {
+    let mut variants = Vec::new();
 
-    let ours = refuse(hits, k, |channel| weights.get(&channel).copied());
-    match (ours.get(position), hits.get(position)) {
-        (Some(ours), Some(theirs)) => (score(ours) - score(&theirs.topic)).abs() < 1e-9,
-        _ => false,
+    for segmented in [0.0, 0.0625, 0.125, 0.25, 0.5] {
+        for ngram in [0.0, 0.0625, 0.125, 0.25, 0.5] {
+            variants.push((
+                format!("lex seg {segmented:.4} ngram {ngram:.4}"),
+                Fusion::default()
+                    .with_weight(Channel::LexicalSegmented, segmented)
+                    .with_weight(Channel::LexicalNgram, ngram),
+            ));
+        }
     }
+
+    // On the shipped weights, so a gain here is the confidence rule and not a
+    // smaller lexical weight wearing its name.
+    for spread in [1.0, 2.0, 3.0, 5.0, 7.0] {
+        for floor in [0.0, 0.25, 0.5] {
+            variants.push((
+                format!("conf spread {spread:.1} floor {floor:.2}"),
+                Fusion::default().with_confidence(spread, floor),
+            ));
+        }
+    }
+
+    variants
 }
 
 /// Kendall's tau-b between two channels' orderings.

@@ -415,17 +415,24 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
     /// Past four times the channel depth, so `take(limit)` cannot bite.
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
 
-    let shipped: BTreeMap<Channel, f32> = BTreeMap::from([
-        (Channel::LexicalSegmented, 0.125),
-        (Channel::LexicalNgram, 0.125),
-        (Channel::Vector, 1.0),
-        (Channel::Graph, 1.0),
-    ]);
+    /// Every channel, so leaving one out is asked of all four.
+    const CHANNELS: &[Channel] = &[
+        Channel::LexicalSegmented,
+        Channel::LexicalNgram,
+        Channel::Vector,
+        Channel::Graph,
+    ];
 
     let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
     let mut lexical_agreement: Vec<f64> = Vec::new();
+
+    // Every fusion setting worth pricing, scored from the same traces as the
+    // rows above. One pass, the whole grid.
+    let variants = channels::variants();
+    let mut offline: Vec<BTreeMap<String, Scores>> =
+        variants.iter().map(|_| BTreeMap::new()).collect();
 
     for query in queries {
         let hits = engine
@@ -434,7 +441,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
             .expect("search");
 
         channels::enough_room(&hits, WIDE);
-        channels::same_as_the_engine(&hits, pamin_core::DEFAULT_K, &shipped);
+        channels::same_as_the_engine(&hits, &Fusion::default());
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
         // A topic can appear through several of its states; the question is
@@ -458,18 +465,18 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         for (channel, ranking) in &each {
             note(alone.entry(*channel).or_default(), ranking);
         }
-        for missing in shipped.keys() {
-            let ranking = channels::refuse(&hits, pamin_core::DEFAULT_K, |channel| {
-                (channel != *missing)
-                    .then(|| shipped.get(&channel).copied())
-                    .flatten()
-            });
+        for missing in CHANNELS {
+            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
             note(without.entry(*missing).or_default(), &ranking);
         }
         note(
             &mut whole,
             &hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>(),
         );
+
+        for ((_, fusion), into) in variants.iter().zip(&mut offline) {
+            note(into, &channels::as_if(&hits, fusion));
+        }
 
         if let (Some(segmented), Some(ngram)) = (
             each.get(&Channel::LexicalSegmented),
@@ -509,6 +516,19 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
                 println!(
                     "  {:<20}   {}",
                     format!("{channel:?}"),
+                    statistics::compare(&whole[group].per_query, &scores.per_query)
+                );
+            }
+        }
+
+        println!("\n  every fusion setting against the one that ships, {group}");
+        println!("  setting                        nDCG@{NDCG_AT}   against shipped");
+        println!("  ---------------------------------------------------------------------------");
+        for ((label, _), scores) in variants.iter().zip(&offline) {
+            if let Some(scores) = scores.get(group) {
+                println!(
+                    "  {label:<28}   {:>7.4}   {}",
+                    scores.mean_ndcg(),
                     statistics::compare(&whole[group].per_query, &scores.per_query)
                 );
             }
