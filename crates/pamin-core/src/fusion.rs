@@ -7,7 +7,7 @@
 //! the graph list, weighting the pre-fused members twice, and it would erase the
 //! per-channel ranks that every result is required to be able to report.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -302,6 +302,9 @@ pub struct Fusion {
     weights: BTreeMap<Channel, f32>,
     /// How a channel's own scores scale its weight on this query, if at all.
     confidence: Option<Confidence>,
+    /// Channels that may keep a candidate in the list but may not promote it
+    /// without another channel having found it too.
+    needs_support: BTreeSet<Channel>,
 }
 
 /// How far a channel's best candidate has to stand above its own field to be
@@ -417,6 +420,8 @@ impl Default for Fusion {
             // constant weights, and a mechanism turned on before it is measured
             // is a mechanism nobody can price. See `with_confidence`.
             confidence: None,
+            // Empty, for the same reason. See `needing_support`.
+            needs_support: BTreeSet::new(),
         }
     }
 }
@@ -442,6 +447,58 @@ impl Fusion {
     /// by nothing but the accident of a UUID.
     pub fn without(self, channel: Channel) -> Self {
         self.with_weight(channel, 0.0)
+    }
+
+    /// These channels may keep a candidate in the list but may not promote it
+    /// on their own.
+    ///
+    /// **What this is for, and why it is not the weight.** Fusing all four
+    /// channels ranks below the vector channel by itself on the cross-lingual
+    /// group of two separate corpora -- 0.7910 against 0.8268 on this
+    /// project's own and 0.6077 against 0.6335 on XQuAD-R -- while the same
+    /// lexical channels are worth having on the same-language queries of the
+    /// same corpus. `arXiv:2508.01405` names that failure the *weakest link*
+    /// and gives a numerically similar example of its own, and its mechanism
+    /// is the one this project derived from its own arithmetic: contributions
+    /// **sum**. At `k = 10` a lexical first place is worth `0.125 / 11 =
+    /// 0.0114`, which cannot reach the head alone, but added to the vector
+    /// channel's fifteenth place at 0.04 it makes 0.051 and moves that
+    /// candidate to about eighth -- pushing the answer from eighth to ninth or
+    /// out of the ten. On a cross-lingual query the candidates it promotes
+    /// that way are the ones that are lexically similar and in the wrong
+    /// language.
+    ///
+    /// Lowering the weight is the dial that exists today and its optimum for
+    /// that group is **zero**: the offline grid gives +0.0283 (p = 0.0046) on
+    /// this project's own cross-lingual group, monotone in the weight. It is
+    /// refused because the same constant serves the same-language group, which
+    /// it costs -0.0501. One global number cannot separate two cases, and
+    /// raising `k` for the weak channel only shrinks the added term rather
+    /// than removing the addition.
+    ///
+    /// So condition on the *candidate* instead of on the query. A channel
+    /// named here contributes its own **last place** for a candidate that no
+    /// unnamed channel returned, rather than what its rank says. Last place is
+    /// what [`Combine::Banded`]'s floor already exists to protect: a candidate
+    /// that stays in the list cannot fall out of `recall@50`, and a candidate
+    /// at the bottom of a weak channel's band cannot be promoted into the head
+    /// by that channel alone. Corroborated candidates are untouched, which is
+    /// most of them on a same-language query, where the lexical channels and
+    /// the vector channel largely agree.
+    ///
+    /// **Why not the published form of this.** The obvious version tests the
+    /// candidate's dense similarity against a threshold and drops it below
+    /// one. That needs a score this engine does not have -- the vector channel
+    /// only scores the candidates it returned, so a lexical-only candidate has
+    /// no cosine to test -- and it needs a threshold, which is another
+    /// constant to tune per corpus. Membership needs neither.
+    ///
+    /// Nothing calls this yet. It is swept offline in
+    /// `crates/pamin-engine/tests/channels` before it is allowed a default,
+    /// the same way the weight was.
+    pub fn needing_support(mut self, channels: impl IntoIterator<Item = Channel>) -> Self {
+        self.needs_support = channels.into_iter().collect();
+        self
     }
 
     /// Scales every channel's weight by how sure that channel is on this query.
@@ -599,6 +656,23 @@ impl Fusion {
         let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
         let mut votes: BTreeMap<TopicId, u32> = BTreeMap::new();
 
+        // What the channels that stand on their own between them returned.
+        // Empty unless `needing_support` named something, and then this is the
+        // corroboration a named channel needs before its rank counts for more
+        // than its last place. Built from the same weight test the loop below
+        // applies, so a channel at zero weight cannot corroborate anything --
+        // it is not in this query's answer at all.
+        let supported: BTreeSet<TopicId> = if self.needs_support.is_empty() {
+            BTreeSet::new()
+        } else {
+            lists
+                .iter()
+                .filter(|list| !self.needs_support.contains(&list.channel))
+                .filter(|list| self.weight(list.channel) * self.how_sure(&list.candidates) != 0.0)
+                .flat_map(|list| list.candidates.iter().map(|candidate| candidate.topic))
+                .collect()
+        };
+
         for list in lists {
             let weight = self.weight(list.channel) * self.how_sure(&list.candidates);
 
@@ -617,9 +691,31 @@ impl Fusion {
             // fifty times the cost.
             let scaled = rescale(&list.candidates);
 
+            // This channel's own last place: the bottom of its band at its
+            // deepest rank. What an uncorroborated candidate is worth when
+            // this channel needs support, which is a floor rather than a
+            // removal so the candidate stays inside `recall@50`.
+            let unsupported = self.needs_support.contains(&list.channel).then(|| {
+                self.share(
+                    Scaled {
+                        standardised: scaled
+                            .iter()
+                            .filter_map(|it| it.standardised)
+                            .reduce(f32::min),
+                        within: scaled.iter().filter_map(|it| it.within).reduce(f32::min),
+                        of: scaled.first().map_or(0, |it| it.of),
+                    },
+                    list.candidates.len() as u32,
+                )
+            });
+
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
-                let contribution = weight * self.share(scaled[index], rank);
+                let share = match unsupported {
+                    Some(floor) if !supported.contains(&candidate.topic) => floor,
+                    _ => self.share(scaled[index], rank),
+                };
+                let contribution = weight * share;
                 *votes.entry(candidate.topic).or_insert(0) += 1;
                 let entry = accumulated
                     .entry(candidate.topic)
@@ -947,6 +1043,145 @@ mod tests {
             agreed,
             "and CombMNZ should follow the agreement, which is the whole disagreement"
         );
+    }
+
+    /// A channel that needs support keeps its finds and loses its promotions.
+    ///
+    /// The mechanism `needing_support` exists for, stated in the arithmetic it
+    /// changes rather than in prose. Three candidates, at `k = 10` over six:
+    ///
+    /// - `lexical_only`, first in the lexical channel and unknown to the
+    ///   vector channel. On a cross-lingual query this is the shape of the
+    ///   failure -- lexically similar, wrong language. Worth `0.0909`.
+    /// - `answer`, second in the vector channel and unknown to the lexical
+    ///   one. Worth `0.0852`, so the noise outranks it.
+    /// - `corroborated`, last in the vector channel and second in the lexical
+    ///   one, which is the additive promotion itself: `0.0625 + 0.0876`
+    ///   leads the whole fusion from the vector channel's worst place.
+    ///
+    /// Requiring support moves `lexical_only` to the lexical channel's own
+    /// last place, `0.0625`, which is below `answer` and above leaving the
+    /// list -- and leaves `corroborated` exactly as it was.
+    #[test]
+    fn a_channel_needing_support_keeps_its_finds_without_promoting_them() {
+        let answer = id(2);
+        let corroborated = id(6);
+        let lexical_only = id(7);
+        let lists = [
+            ChannelResults::new(
+                Channel::Vector,
+                (1..=6)
+                    .map(|n| Scored::new(id(n), (7 - n) as f32 / 6.0))
+                    .collect(),
+            ),
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![
+                    Scored::new(lexical_only, 1.00),
+                    Scored::new(corroborated, 0.90),
+                    Scored::new(id(8), 0.30),
+                    Scored::new(id(9), 0.25),
+                    Scored::new(id(10), 0.20),
+                    Scored::new(id(11), 0.15),
+                ],
+            ),
+        ];
+        // Full weight on both, so what changes is only the support rule and
+        // not the weight the rule is an alternative to.
+        let level = Fusion::default()
+            .with_weight(Channel::Vector, 1.0)
+            .with_weight(Channel::LexicalSegmented, 1.0);
+
+        let position = |results: &[FusedResult], topic| {
+            results
+                .iter()
+                .position(|result| result.topic == topic)
+                .expect("every candidate stays in the list")
+        };
+        let ungated = level.clone().fuse(&lists);
+        assert!(
+            position(&ungated, lexical_only) < position(&ungated, answer),
+            "the premise: ungated, a lexical-only candidate outranks the answer: {ungated:?}"
+        );
+
+        let gated = level
+            .needing_support([Channel::LexicalSegmented])
+            .fuse(&lists);
+        assert_eq!(
+            gated.len(),
+            ungated.len(),
+            "support is a floor, not a filter: the candidate set cannot shrink"
+        );
+        assert!(
+            position(&gated, answer) < position(&gated, lexical_only),
+            "requiring support should put the answer back above the noise: {gated:?}"
+        );
+
+        // And the rule reads membership, not rank: the corroborated candidate
+        // is second in the lexical list and keeps exactly what second place
+        // was worth, so this is not a weight cut wearing a different name.
+        let contribution = |results: &[FusedResult], topic| {
+            results
+                .iter()
+                .find(|result| result.topic == topic)
+                .expect("in the list")
+                .why
+                .iter()
+                .filter_map(|why| match why {
+                    Why::Channel {
+                        channel: Channel::LexicalSegmented,
+                        contribution,
+                        ..
+                    } => Some(*contribution),
+                    _ => None,
+                })
+                .sum::<f32>()
+        };
+        assert_eq!(
+            contribution(&gated, corroborated),
+            contribution(&ungated, corroborated),
+            "a corroborated candidate must be untouched"
+        );
+        assert!(
+            contribution(&gated, lexical_only) < contribution(&ungated, lexical_only),
+            "and an uncorroborated one must be worth less than its rank said"
+        );
+    }
+
+    /// Naming nothing changes nothing.
+    ///
+    /// The default has to be the shipped arithmetic exactly, because every
+    /// accuracy floor in this repository was taken under it.
+    #[test]
+    fn needing_support_from_nobody_is_the_shipped_fusion() {
+        let lists = [
+            ChannelResults::new(
+                Channel::Vector,
+                (1..=6)
+                    .map(|n| Scored::new(id(n), (7 - n) as f32 / 6.0))
+                    .collect(),
+            ),
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                (5..=10)
+                    .map(|n| Scored::new(id(n), 1.0 / n as f32))
+                    .collect(),
+            ),
+        ];
+        let shipped = Fusion::default();
+        let named: Vec<TopicId> = shipped
+            .clone()
+            .needing_support([])
+            .fuse(&lists)
+            .into_iter()
+            .map(|result| result.topic)
+            .collect();
+        let default: Vec<TopicId> = shipped
+            .fuse(&lists)
+            .into_iter()
+            .map(|result| result.topic)
+            .collect();
+        assert_eq!(named, default);
     }
 
     /// The banded combiner spans exactly what reciprocal rank fusion spans.
