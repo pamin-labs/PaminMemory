@@ -291,6 +291,17 @@ pub fn variants() -> Vec<(String, Fusion)> {
         }
     }
 
+    // Full weight, which the grid above stops short of. Without it the
+    // corroboration rows below have nothing in this run to be compared
+    // against, and comparing them to a figure from another run is the one
+    // thing this project's measurement discipline forbids.
+    variants.push((
+        "lex seg 1.0000 ngram 1.0000".to_string(),
+        Fusion::default()
+            .with_weight(Channel::LexicalSegmented, 1.0)
+            .with_weight(Channel::LexicalNgram, 1.0),
+    ));
+
     // On the shipped weights, so a gain here is the confidence rule and not a
     // smaller lexical weight wearing its name.
     for spread in [1.0, 2.0, 3.0, 5.0, 7.0] {
@@ -326,6 +337,25 @@ pub fn variants() -> Vec<(String, Fusion)> {
         variants.push((format!("k {k:.0}"), Fusion::default().with_k(k)));
     }
 
+    // `k` and the lexical weight against each other, because on a corpus with
+    // two groups every single-dial sweep above trades the two groups against
+    // one another and the question is whether any of them trades *better* than
+    // the others. A one-dimensional sweep cannot answer that: two dials that
+    // move both groups can still trace different curves, and the only reading
+    // that means anything is whether one curve lies above the other at equal
+    // cost. Read as a frontier, not as rows.
+    for k in [0.0, 2.0, 5.0, 10.0] {
+        for lexical in [0.0625, 0.125, 0.25, 0.5] {
+            variants.push((
+                format!("k {k:.0} lex {lexical:.4}"),
+                Fusion::default()
+                    .with_k(k)
+                    .with_weight(Channel::LexicalSegmented, lexical)
+                    .with_weight(Channel::LexicalNgram, lexical),
+            ));
+        }
+    }
+
     // The graph channel's weight, which has never been swept. It is the least
     // justified constant in the default: 1.0, equal to the vector channel's,
     // arrived at by nothing, while the only comparable published system
@@ -337,48 +367,6 @@ pub fn variants() -> Vec<(String, Fusion)> {
             format!("graph {graph:.2}"),
             Fusion::default().with_weight(Channel::Graph, graph),
         ));
-    }
-
-    // Requiring corroboration instead of cutting the weight. The weight rows
-    // above are a global constant that has to serve both groups of a corpus;
-    // these condition on the candidate, so they can in principle take the
-    // cross-lingual gain without the same-language cost. The graph channel is
-    // in the sweep because it is seeded from the other three and its weight of
-    // 1.0 -- equal to the vector channel's -- is the least justified constant
-    // in the default.
-    for (name, needy) in [
-        (
-            "lex",
-            vec![Channel::LexicalSegmented, Channel::LexicalNgram],
-        ),
-        ("seg", vec![Channel::LexicalSegmented]),
-        ("ngram", vec![Channel::LexicalNgram]),
-        ("graph", vec![Channel::Graph]),
-        (
-            "lex+graph",
-            vec![
-                Channel::LexicalSegmented,
-                Channel::LexicalNgram,
-                Channel::Graph,
-            ],
-        ),
-    ] {
-        variants.push((
-            format!("support {name}"),
-            Fusion::default().needing_support(needy.clone()),
-        ));
-        // And at full lexical weight, because if corroboration is what the
-        // eighth weight was standing in for then the eighth is now paying
-        // twice and the pair should be worth more than an eighth of a channel.
-        if name != "graph" {
-            variants.push((
-                format!("support {name} lex 1.0"),
-                Fusion::default()
-                    .needing_support(needy)
-                    .with_weight(Channel::LexicalSegmented, 1.0)
-                    .with_weight(Channel::LexicalNgram, 1.0),
-            ));
-        }
     }
 
     variants
