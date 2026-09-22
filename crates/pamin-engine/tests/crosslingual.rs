@@ -1125,7 +1125,25 @@ async fn search_reaches_across_languages() {
     // reorders what fusion produced, so a number for it has to come from the
     // same pipeline that produced the ordering.
     if std::env::var("TIERS").is_ok() {
-        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+        // Every tier that loads a model, plus `off` as the baseline the others
+        // are read against. `noncommercial` downloads CC-BY-NC-4.0 weights,
+        // which is a thing a measurement may do and a product may not without
+        // being asked -- the gate is on the command, and this is the harness
+        // that prices the tier the gate exists for.
+        let tiers = [
+            Rerank::Off,
+            Rerank::Fast,
+            Rerank::Balanced,
+            Rerank::Accurate,
+            Rerank::Noncommercial,
+        ];
+
+        // Kept so the tiers can be compared against each other with paired
+        // counts rather than by subtracting two means. `off` is the first,
+        // which is what every row is priced against.
+        let mut priced: Vec<(Rerank, BTreeMap<String, Scores>)> = Vec::new();
+
+        for tier in tiers {
             let started = std::time::Instant::now();
             let groups = run(&engine, &queries, Route::Shipped(tier)).await;
             report(
@@ -1134,6 +1152,23 @@ async fn search_reaches_across_languages() {
                 started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
             );
             report_reranking(&engine, tier, queries.len());
+            priced.push((tier, groups));
+        }
+
+        let (_, baseline) = &priced[0];
+        for group in GROUPS {
+            println!("\n  every tier against reranking off, {group}, {named}");
+            println!("  tier                 nDCG@{NDCG_AT}   recall@{RECALL_AT}   against off");
+            println!("  ---------------------------------------------------------------------");
+            for (tier, groups) in &priced[1..] {
+                println!(
+                    "  {:<18}   {:>7.4}   {:>9.4}   {}",
+                    tier.name(),
+                    groups[group].mean_ndcg(),
+                    groups[group].mean_recall(),
+                    statistics::compare(&baseline[group].per_query, &groups[group].per_query)
+                );
+            }
         }
         return;
     }
