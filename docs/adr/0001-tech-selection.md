@@ -361,13 +361,30 @@ project ever ran moved both together, so no measurement distinguishes the two
 numbers at all.
 
 **The graph channel contributes exactly 0.0000** — in every group of all three
-corpora, so removing it changes no ranking anywhere. That is a weaker statement
-than it looks and is recorded as an observation rather than a verdict. Two of
-the corpora are sentence collections with no relationships to walk, so the zero
-there is a property of the corpus. This project's own corpus does have edges
-and still reports zero, and that part is unexplained: nothing here has
-established whether the walk reaches nothing relevant or reaches it at a rank
-that `weight / (k + rank)` places below the other channels' candidates.
+corpora, so removing it changes no ranking anywhere. **It is not a measurement
+of the channel, and the earlier version of this paragraph got how far that goes
+wrong.** It said two of the corpora have no relationships to walk and that this
+project's own corpus "does have edges and still reports zero", leaving the
+latter as the interesting unexplained case. The own corpus has no edges either.
+
+The only edge kind the engine derives is `Mentions`, asserted where one memory's
+content contains another topic's *name* as a contiguous token run. Topic names
+in the own corpus are identifiers of the form `<subject>_<language>` —
+`deploy_pipeline_en` — which `name_sequence` opens into the three-token run
+`deploy pipeline en`, and no memory's prose contains that run. Simulating the
+derivation over all 210 memories against all 210 names, at every window width up
+to the widest name, yields **zero edges**; the two external corpora name their
+topics deliberately unlike their own text and say so in the harness, so theirs
+are empty by design.
+
+So all three zeros are one fact stated three times: **the graph channel has
+never been measured with a graph.** The harness now prints the live-edge census
+before these rows and labels the graph cell as premise-absent rather than
+letting a zero read as a figure. The nearest thing to real evidence is
+elsewhere: the LOCOMO `pamin-ledger` arm, where consecutive turns are linked
+explicitly, scored 0.523 against `pamin`'s 0.518 — twenty-one discordant
+questions against twenty, `p = 1.000`. One small sample, and it says the channel
+did not pay there. Nothing says whether it can.
 
 **And the combiner itself was never a recorded choice.** This record argues at
 length about `k` and about the channel weights. Both are parameters *of*

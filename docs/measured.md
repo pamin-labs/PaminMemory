@@ -160,10 +160,16 @@ Two other things the diagnostic settled. The two lexical channels agree at
 Kendall tau-b 0.2816, 0.3188 and 0.2973 on the three corpora, so **they are not
 the near-duplicate pair this project described them as** and the single weight
 they share has never been swept apart. And the graph channel contributes
-**exactly 0.0000 in every group of all three corpora** — two of them have no
-relationships to walk, so that much is the corpus, but this project's own
-corpus does have edges and also reports zero, and that is unexplained rather
-than understood.
+**exactly 0.0000 in every group of all three corpora**, which is not a
+measurement of the channel: **none of the three corpora has any edges.** The two
+external ones name their topics deliberately unlike their own text, which their
+harness states outright. The own corpus was recorded here as having edges, and
+does not: the only kind the engine derives is `Mentions`, asserted where one
+memory's content contains another topic's name as a contiguous token run, and
+this corpus names topics `<subject>_<language>` — a two-to-four token run that no
+memory's prose contains. Simulated over all 210 memories against all 210 names
+it yields zero. The harness now prints the edge census and marks the cell
+premise-absent instead of printing a zero that reads like a figure.
 
 ### What the fusion function itself is worth
 
