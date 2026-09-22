@@ -84,7 +84,7 @@ The graph channel lives in PostgreSQL, where `zvec` cannot see it. Letting the e
 
 Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer, followed by post-fusion modifiers. This is a correctness requirement, not a preference.
 
-`k = 10`, not the customary 60, and the two lexical channels carry a quarter weight each. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights their agreement with each other is counted as two votes against the vector and graph channels' one each.
+`k = 10`, not the customary 60, and the two lexical channels carry an eighth weight each — a quarter each until a third corpus was measured; the paragraphs below record the quarter as it was argued, and the section after them is what replaced it. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights their agreement with each other is counted as two votes against the vector and graph channels' one each.
 
 The weight was swept across both evaluation corpora — the one written for Påmin Memory and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
 
@@ -173,6 +173,43 @@ at every query, scores 0.6882. Three corpora now agree that the rule is worth
 between nothing and 0.009 over the constant it reduces to, while the constant
 itself is worth ten times that. It stays off.
 
+**The default is an eighth**, and what moved with it. Measured on each corpus's
+shipped path — `search_reranked` at the default tier, which is what `pamin
+search` calls — except where the row says otherwise:
+
+| | quarter | eighth |
+| --- | --- | --- |
+| Påmin Memory's corpus, cross-lingual | 0.7223 | **0.7773** |
+| Påmin Memory's corpus, monolingual / lexical | 0.9940 / 1.0000 | 0.9940 / 1.0000 |
+| XQuAD-R, cross-lingual | 0.6097 | **0.6480** |
+| XQuAD-R, same-language | 0.7971 | 0.7495 |
+| MIRACL sw, `speed`, fusion alone | 0.6826 | 0.6882 |
+| MIRACL sw, `speed`, default tier | not taken | 0.6730 |
+
+The XQuAD-R cross-lingual row is the one that answers the question this project
+started with. The embedding model alone scores 0.6335 there; at a quarter the
+whole stack scored 0.6097, **below the model it is built on**, and the
+cross-encoder was spending 226 ms a query buying back damage the fusion layer
+had done. At an eighth the stack scores 0.6480, above the model, with the same
+reranker.
+
+The MIRACL shipped-path cell at the quarter says `not taken` because it never
+was: the run that would have produced it died on an assertion the harness makes
+about its own graph channel, and by the time the harness was fixed the weight
+was the thing under test. The pair of MIRACL rows that do exist are both at the
+eighth, and they are enough for what follows.
+
+**And the reranker was servicing a debt, which those two rows price.** Once
+fusion stops diluting, the cross-encoder *costs* 0.0152 on MIRACL: 0.6730 with
+it against 0.6882 without. That corpus has one language and no parallel
+translations, so there is no cross-language confusion for a reranker to
+resolve; what it did on XQuAD-R was largely undo the lexical pair's
+misdirection there. The tier stays on by default because XQuAD-R still pays
++0.0403 for it and the LOCOMO and LongMemEval figures were taken with it, but
+the case for `--rerank off` on single-language corpora is now measured rather
+than speculative. The depth constant it uses was swept against the quarter's
+baseline and has not been re-swept — see `pamin_index::reranking::DEPTH`.
+
 ### Three recall channels, not seven
 
 An earlier channel list had seven entries. Four were redundant, and two of those double-counted against modifiers the same design already applied after fusion:
@@ -231,7 +268,7 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 | Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On, by default** |
 | Stored vector INT8 | Output embeddings stored as int8 rather than float32 | 1.5–3.5% loss, plus a calibration dataset | **Off, until the binding exposes rotation** |
 
-Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720.
+Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half.
 
 **The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not fastembed's Rust code either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
 
@@ -297,6 +334,12 @@ The embedding model is a profile, not a constant:
 | `speed` | `multilingual-e5-small` | 384 | 465 MB | 13 ms | — |
 | `balanced` | `multilingual-e5-base` | 768 | 1.1 GB | 26 ms | 0.3383 |
 | `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms | 0.6550 |
+
+The last column is a comparison between models and is frozen at the fusion of
+the day it was taken, `k = 10` with the lexical pair at half. The weight has
+been halved twice since; the default profile's own corpus figure is 0.7773
+today. The ordering the column exists to show does not move with it, because
+the weight applies to every row alike.
 
 BGE-M3 is the default, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
 

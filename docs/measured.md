@@ -11,20 +11,36 @@ in [benchmarks.md](benchmarks.md), along with what that comparison holds fixed
 and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
-**Retrieval quality**, at the shipped defaults, median of three runs:
+**Retrieval quality**, at the shipped defaults:
 
 | corpus | group | nDCG@10 | recall@50 |
 | --- | --- | --- | --- |
 | MIRACL Swahili dev — 131,924 real passages, 482 queries, 5,092 human judgements | one language throughout | 0.7359 | 0.9494 |
-| XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6097 | 0.8864 |
-| XQuAD-R | query and answer in the same language | 0.7971 | 0.9630 |
+| XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6480 | 0.8960 |
+| XQuAD-R | query and answer in the same language | 0.7495 | 0.9580 |
 
 Both corpora are fetched rather than vendored, and each has a harness in the
 repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
 XQuAD-R and `--test monolingual` for MIRACL.
 
-**The MIRACL rows on this page are older than the harness named beside them,
-and that has to be said rather than tidied away.** This page previously named
+**The MIRACL row is older than the harness named beside it and older than the
+fusion the product now ships**, and both have to be said rather than tidied
+away. The fusion weight that produced 0.7359 was halved after a sweep on this
+very corpus (below), so that row is not the current default's score either; the
+default profile needs about ten hours of index building on four cores before it
+can be re-taken, and until it is, the XQuAD-R rows are the only two on this
+page taken at the fusion that ships. On the `speed` profile, which can be built
+in an hour, the same corpus moved from 0.6826 to 0.6882 fused when the weight
+was halved. The same applies to the LOCOMO and LongMemEval figures further down
+and to every latency figure on this page: all were taken at the quarter, and
+the weight reorders results without changing which ones are retrieved, so the
+latency rows are unaffected and the quality rows are not yet re-taken.
+
+Each XQuAD-R row was reproduced identically to four decimals by a second run
+before being placed here, which is what this harness does: fixed corpus, fixed
+index, fixed model, a greedy pass.
+
+As for the harness named beside the MIRACL row: this page previously named
 one harness for both corpora, which was true of the XQuAD-R rows and false of
 the MIRACL ones: they came from a program that was never committed, so nothing
 in the repository could produce them, break them, or be trusted to notice.
@@ -44,21 +60,36 @@ corpus, the same dev split and the same qrels:**
 | BGE-M3, published | 0.787 | dense retrieval alone |
 
 Read the last row carefully, because it is the honest reading: **a whole
-retrieval stack here scores below a single dense retriever** — the same model,
+retrieval stack here scored below a single dense retriever** — the same model,
 as an int8 export. Two differences are known and neither is measured: the
 published figure is fp32, and MIRACL's training split is in BGE-M3's
 fine-tuning data where this runs zero-shot. Neither excuses the gap; they are
 where to look for it.
 
-**Since this was written, the other corpus answered where to look, and it is
-neither of those.** On XQuAD-R the embedder alone and the product run side by
-side in one harness, so their difference is the fusion layer's own effect, and
-it is −0.0635 on the cross-lingual group: fusing four channels dilutes a dense
-ranking, and the cross-encoder's +0.0374 is buying that back rather than adding
-to it. −0.071 here is the same order. That reading is an extrapolation from a
-corpus of parallel sentences until `monolingual.rs`'s model-alone arm runs
-here, which is the one arm this corpus has never had — see
-[ADR 0001](adr/0001-tech-selection.md).
+**Since this was written the cause was found, and it was none of those: the
+fusion layer was diluting the dense ranking.** On XQuAD-R the embedder alone
+and the product run side by side in one harness, so their difference is the
+fusion layer's own effect, and at the weight of the day it was −0.0616 on the
+cross-lingual group, with the cross-encoder's +0.0375 buying that back rather
+than adding to it.
+
+This corpus then arbitrated it. `monolingual.rs`'s model-alone arm is the arm
+MIRACL never had; it now runs, and on the `speed` profile the embedding space
+alone scores 0.6848 against 0.6826 for the four channels fused at the weight
+that used to ship — **the fused answer was worse than one of the things
+fused**. Halving the weight puts fusion ahead, 0.6882, and the sweep behind
+that number is in [ADR 0001](adr/0001-tech-selection.md): the quarter had never
+been compared against anything smaller than itself.
+
+What that bought, where both arms are measured at the shipped default: on
+XQuAD-R **the whole stack now outranks the model it is built on**, 0.6480
+against the embedder's 0.6335 cross-lingual and 0.7495 against 0.6787
+same-language. It did not before. The MIRACL comparison above is not re-taken
+yet, for the ten hours named earlier, and on `speed` it carries a second
+finding worth stating early: once fusion stops diluting, the cross-encoder
+*costs* 0.0152 there — 0.6730 with it against 0.6882 without, for 226 ms a
+query. Part of what the reranker was worth was undoing the fusion layer's own
+damage.
 
 What the table does establish is the distance from the lexical baseline a
 memory system would otherwise ship with, on a low-resource language, on four

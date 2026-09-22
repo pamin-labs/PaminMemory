@@ -247,7 +247,7 @@ under [benchmarks/results/](benchmarks/results).
 | | | measured on |
 | --- | --- | --- |
 | retrieval, one language | nDCG@10 **0.7359** | MIRACL Swahili dev, 131,924 passages |
-| retrieval, query and answer in different languages | nDCG@10 0.6097 | XQuAD-R, 13,014 sentences |
+| retrieval, query and answer in different languages | nDCG@10 0.6480 | XQuAD-R, 13,014 sentences |
 | one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
 | one `pamin search` as a whole CLI invocation | 251 ms | XQuAD-R, `fast` reranking |
 | one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
@@ -286,14 +286,17 @@ writing the date into the passage text**, a free alternative that needs no
 columns: 0.900 against 0.814 is p = 0.0703, and re-running it with five reads a
 question returned the same p.
 
-**The MIRACL row above is older than the harness that will check it.** Every
-other figure on this page is produced by a test in this repository. That one
-was not: four pages quoted it and nothing in the tree could run it, because it
-came from a program that was never committed. The harness now exists — `cargo
-test -p pamin-engine --test monolingual -- --ignored` — and until it has
-reproduced the figure, the figure is a claim about a past run rather than
-something you can check. [measured.md](docs/measured.md) says which rows that
-covers.
+**The MIRACL row above is older than the harness that will check it, and older
+than the fusion this now ships.** Every other figure on this page is produced by
+a test in this repository. That one was not: four pages quoted it and nothing in
+the tree could run it, because it came from a program that was never committed.
+The harness now exists — `cargo test -p pamin-engine --test monolingual --
+--ignored` — and the first thing it found was that on that corpus the four
+channels fused scored *below* the embedding model on its own. The fusion weight
+has been halved since, which puts fusion ahead there and takes the XQuAD-R row
+above past the model too, so until the row is re-taken it is a claim about a
+past run of a past configuration rather than something you can check.
+[measured.md](docs/measured.md) says which rows that covers.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,

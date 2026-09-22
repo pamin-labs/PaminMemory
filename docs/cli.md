@@ -486,8 +486,8 @@ channels:
 
 | Channel | What it matches | Weight |
 | --- | --- | --- |
-| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.25 |
-| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.25 |
+| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.125 |
+| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.125 |
 | `vector` | Meaning, across languages | 1.0 |
 | `graph` | Topics connected to what the other channels found | 1.0 |
 
@@ -495,12 +495,17 @@ Ranks travel between channels; scores do not. A BM25 score and a cosine distance
 are not comparable quantities, so fusion combines the ranks rather than
 pretending the scores share a scale.
 
-The two lexical channels carry a quarter weight each because they are nearly the same
-channel: both match the literal text, one over segmented words and one over
-character n-grams, so they agree with each other far more often than either
-agrees with the vector or graph channel. At full weight that agreement counts
-twice, and the wording outvotes the meaning on exactly the queries where they
-differ. The `10` is likewise measured here rather than taken from the rank
+The two lexical channels carry an eighth of a weight each because they are
+nearly the same channel: both match the literal text, one over segmented words
+and one over character n-grams, so they agree with each other far more often
+than either agrees with the vector or graph channel. At full weight that
+agreement counts twice, and the wording outvotes the meaning on exactly the
+queries where they differ. An eighth rather than the quarter that shipped
+before because on MIRACL Swahili — 482 questions people asked, judged by
+people — the quarter ranked *worse* than the vector channel by itself, and
+because the quarter had never been compared against anything smaller than
+itself. Three corpora and the sweep behind that are in
+[ADR 0001](adr/0001-tech-selection.md). The `10` is likewise measured here rather than taken from the rank
 fusion literature, which uses 60 for lists thousands of results deep; each
 channel proposes fifty, and 60 flattens fifty candidates to the point where
 being first says almost nothing.

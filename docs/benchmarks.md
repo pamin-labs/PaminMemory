@@ -7,6 +7,17 @@ Everything below was gathered from primary sources in September 2026. Each
 figure carries its source so it can be rechecked; this field moves fast and
 several of these numbers have already changed meaning once.
 
+**Every Påmin Memory retrieval figure on this page was taken with the lexical
+fusion weight at a quarter, which was halved to an eighth afterwards** on
+evidence from a third corpus — see [measured.md](measured.md) and
+[ADR 0001](adr/0001-tech-selection.md). The change reorders a fused list
+without changing which candidates are retrieved, so every latency figure here
+stands as taken and so does recall measured at the full fused depth. Anything
+decided by the order — nDCG, and a Recall@5 whose five the order picks — is
+not re-taken. The direction to expect is the one measured everywhere else:
+cross-language ranking up, and same-language ranking down only on questions
+written out of their answers' own wording.
+
 ## What the field publishes
 
 Agent-memory projects report **LLM-judge accuracy on conversational QA**:

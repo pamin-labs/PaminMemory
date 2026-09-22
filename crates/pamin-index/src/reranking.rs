@@ -214,6 +214,12 @@ pub enum Rerank {
 /// a tenth of what was recorded, for sixteen per cent more latency. There is
 /// no trade to make; twenty is simply where it stops.
 ///
+/// Taken when the lexical weight was a quarter. It is now an eighth, and the
+/// baseline this sweep measured against moved with it, 0.5722 to 0.6077: the
+/// reranker has less dilution to undo, so where the gain stops could have
+/// moved too. Re-running the five depths is five passes of the corpus, about
+/// three quarters of an hour, and it has not been done.
+///
 /// Same-language ranking falls monotonically with depth, which is the same
 /// effect the tier table describes: more candidates reranked means more of the
 /// ones the lexical channels missed being carried down.
@@ -542,7 +548,9 @@ impl Reranker {
         // it shared a tensor with. Cross-lingual nDCG@10 moved from 0.6097 to
         // 0.6091 when this changed -- the fourth decimal, and in the direction
         // nobody would choose, but it is a real signed change rather than
-        // noise. See `BATCH` for the same effect across batch sizes.
+        // noise. Both figures are at the lexical weight of the day, a quarter;
+        // the same path scores 0.6480 at the eighth that ships now. See `BATCH`
+        // for the same effect across batch sizes.
         let mut unscored: Vec<usize> = (0..documents.len())
             .filter(|position| scores[*position].is_none())
             .collect();
