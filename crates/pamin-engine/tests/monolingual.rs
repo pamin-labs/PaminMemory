@@ -71,6 +71,7 @@
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
 mod channels;
+mod scoring;
 mod statistics;
 
 use std::collections::{HashMap, HashSet};
@@ -97,11 +98,7 @@ const QRELS: &str = "https://huggingface.co/datasets/miracl/miracl/resolve/main/
 const CORPUS: &str = "https://huggingface.co/datasets/miracl/miracl-corpus/resolve/main/\
                       miracl-corpus-v1.0-sw/docs-0.jsonl.gz";
 
-/// Where nDCG is cut.
-const NDCG_AT: usize = 10;
-
-/// Where recall is cut.
-const RECALL_AT: usize = 50;
+use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// How deep a ranking is taken before scoring, so recall@50 can be reached.
 const DEPTH: usize = RECALL_AT + 1;
@@ -335,71 +332,6 @@ fn download(dir: &Path, name: &str, url: &str) {
 // Metrics
 // ---------------------------------------------------------------------------
 
-/// The running score over every query.
-#[derive(Default)]
-struct Scores {
-    queries: usize,
-    ndcg: f64,
-    recall: f64,
-    /// Relevant passages inside the shortlist but below rank ten -- the whole
-    /// space a second pass over the shortlist could still fix.
-    deep: usize,
-    /// Queries with at least one of those.
-    with_work: usize,
-    /// Every query's own nDCG, in the order they were scored.
-    ///
-    /// Kept beside the running total because a mean cannot be tested and a
-    /// list can. Two runs over the same queries in the same order pair up
-    /// entry by entry, which is what [`statistics::compare`] needs to say
-    /// whether a difference of means is a result -- see that module for why
-    /// this project stopped reporting the means alone.
-    per_query: Vec<f64>,
-}
-
-impl Scores {
-    fn add(&mut self, ranked: &[String], relevant: &HashSet<String>) {
-        let hit = |rank: usize| relevant.contains(&ranked[rank]);
-
-        let gained: f64 = (0..ranked.len().min(NDCG_AT))
-            .filter(|rank| hit(*rank))
-            .map(|rank| 1.0 / ((rank + 2) as f64).log2())
-            .sum();
-        let ideal: f64 = (0..relevant.len().min(NDCG_AT))
-            .map(|rank| 1.0 / ((rank + 2) as f64).log2())
-            .sum();
-
-        let found = (0..ranked.len().min(RECALL_AT))
-            .filter(|rank| hit(*rank))
-            .count();
-        let deep = (NDCG_AT..ranked.len().min(RECALL_AT))
-            .filter(|rank| hit(*rank))
-            .count();
-
-        let ndcg = if ideal == 0.0 { 0.0 } else { gained / ideal };
-
-        self.queries += 1;
-        self.ndcg += ndcg;
-        self.per_query.push(ndcg);
-        self.recall += found as f64 / relevant.len() as f64;
-        self.deep += deep;
-        self.with_work += usize::from(deep > 0);
-    }
-
-    fn mean_ndcg(&self) -> f64 {
-        if self.queries == 0 {
-            return 0.0;
-        }
-        self.ndcg / self.queries as f64
-    }
-
-    fn mean_recall(&self) -> f64 {
-        if self.queries == 0 {
-            return 0.0;
-        }
-        self.recall / self.queries as f64
-    }
-}
-
 fn report(title: &str, scores: &Scores, per_query_ms: f64) {
     println!("\n  {title}");
     println!(
@@ -529,7 +461,9 @@ fn the_model_ranks_real_passages() {
             .into_iter()
             .map(|(_, document)| corpus.passages[document].docid.clone())
             .collect();
-        scores.add(&ranked, &query.relevant);
+        scores.add(&ranked, query.relevant.len(), |topic| {
+            query.relevant.contains(topic)
+        });
     }
 
     report(
@@ -912,7 +846,9 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
         }
         .expect("search");
         let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
-        scores.add(&ranked, &query.relevant);
+        scores.add(&ranked, query.relevant.len(), |topic| {
+            query.relevant.contains(topic)
+        });
     }
     scores
 }
@@ -964,7 +900,9 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             alone
                 .entry(*channel)
                 .or_default()
-                .add(ranking, &query.relevant);
+                .add(ranking, query.relevant.len(), |topic| {
+                    query.relevant.contains(topic)
+                });
         }
 
         for missing in CHANNELS {
@@ -972,7 +910,9 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             without
                 .entry(*missing)
                 .or_default()
-                .add(&ranking, &query.relevant);
+                .add(&ranking, query.relevant.len(), |topic| {
+                    query.relevant.contains(topic)
+                });
         }
 
         whole.add(
@@ -980,11 +920,16 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
                 .iter()
                 .map(|hit| hit.topic.clone())
                 .collect::<Vec<String>>(),
-            &query.relevant,
+            query.relevant.len(),
+            |topic| query.relevant.contains(topic),
         );
 
         for ((_, fusion), into) in variants.iter().zip(&mut offline) {
-            into.add(&channels::as_if(&hits, fusion), &query.relevant);
+            into.add(
+                &channels::as_if(&hits, fusion),
+                query.relevant.len(),
+                |topic| query.relevant.contains(topic),
+            );
         }
 
         if let (Some(segmented), Some(ngram)) = (

@@ -131,6 +131,7 @@
 //! informative needs a larger corpus, not a different metric.
 
 mod channels;
+mod scoring;
 mod statistics;
 
 use std::collections::{BTreeMap, HashSet};
@@ -141,15 +142,14 @@ use pamin_engine::{Depths, Engine, Write};
 use pamin_index::{Access, Profile, Rerank};
 use pamin_store::Workspace;
 
-/// How many results the ranked metric looks at.
-const NDCG_AT: usize = 10;
-/// How many results the recall metric looks at.
-///
-/// Topics, not states. The index is keyed by topic state, so a topic with
-/// several versions occupies several results; the metric asks whether the
-/// topic was found, which means the search has to be given room for the
-/// duplicates before fifty distinct topics can come back.
-const RECALL_AT: usize = 50;
+use scoring::{NDCG_AT, RECALL_AT, Scores};
+
+// `RECALL_AT` counts topics, not states. The index is keyed by topic state, so
+// a topic with several versions occupies several results; the metric asks
+// whether the topic was found, which means the search has to be given room for
+// the duplicates before fifty distinct topics can come back -- hence
+// `SEARCH_LIMIT` below.
+
 /// How many results to ask for so that [`RECALL_AT`] distinct topics can fit.
 const SEARCH_LIMIT: u32 = RECALL_AT as u32 * 2;
 
@@ -180,44 +180,6 @@ struct Query {
     /// Topics that answer this query. Order does not matter; relevance is
     /// binary, because a hand-written corpus cannot honestly carry grades.
     relevant: Vec<String>,
-}
-
-/// One group's score.
-#[derive(Default)]
-struct Scores {
-    queries: usize,
-    ndcg: f64,
-    recall: f64,
-    /// Every query's own nDCG, in the order they were scored.
-    ///
-    /// Kept beside the running total because a mean cannot be tested and a
-    /// list can -- see [`statistics::compare`]. It matters most on this
-    /// corpus, where two of the three groups sit on their ceiling and a mean
-    /// therefore moves only when something quite unusual happens.
-    per_query: Vec<f64>,
-}
-
-impl Scores {
-    fn add(&mut self, ndcg: f64, recall: f64) {
-        self.queries += 1;
-        self.ndcg += ndcg;
-        self.recall += recall;
-        self.per_query.push(ndcg);
-    }
-
-    fn mean_ndcg(&self) -> f64 {
-        if self.queries == 0 {
-            return 0.0;
-        }
-        self.ndcg / self.queries as f64
-    }
-
-    fn mean_recall(&self) -> f64 {
-        if self.queries == 0 {
-            return 0.0;
-        }
-        self.recall / self.queries as f64
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -340,13 +302,11 @@ async fn retrieval_quality_by_group() {
         }
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
-        let ndcg = ndcg_at(&ranked, &relevant, NDCG_AT);
-        let recall = recall_at(&ranked, &relevant, RECALL_AT);
-
-        groups
-            .entry(query.group.clone())
-            .or_default()
-            .add(ndcg, recall);
+        let ndcg =
+            groups
+                .entry(query.group.clone())
+                .or_default()
+                .add(&ranked, relevant.len(), |topic| relevant.contains(topic));
         worst.push((
             ndcg,
             query.query.clone(),
@@ -455,10 +415,9 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
                     deduped.push(topic.clone());
                 }
             }
-            into.entry(query.group.clone()).or_default().add(
-                ndcg_at(&deduped, &relevant, NDCG_AT),
-                recall_at(&deduped, &relevant, RECALL_AT),
-            );
+            into.entry(query.group.clone())
+                .or_default()
+                .add(&deduped, relevant.len(), |topic| relevant.contains(topic));
         };
 
         let each = channels::each_alone(&hits);
@@ -605,13 +564,11 @@ async fn run(
         }
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
-        let ndcg = ndcg_at(&ranked, &relevant, NDCG_AT);
-        let recall = recall_at(&ranked, &relevant, RECALL_AT);
-
-        groups
-            .entry(query.group.clone())
-            .or_default()
-            .add(ndcg, recall);
+        let ndcg =
+            groups
+                .entry(query.group.clone())
+                .or_default()
+                .add(&ranked, relevant.len(), |topic| relevant.contains(topic));
         worst.push((
             ndcg,
             query.query.clone(),
@@ -673,47 +630,6 @@ async fn write_corpus(engine: &mut Engine, corpus: &[Memory]) {
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.len());
     }
-}
-
-/// Normalized discounted cumulative gain over binary relevance.
-///
-/// Binary because a hand-written corpus cannot honestly carry graded
-/// relevance: "this memory answers the query" is a judgement one author can
-/// make consistently, and "this one answers it 0.7 as well" is not.
-fn ndcg_at(ranked: &[String], relevant: &HashSet<&str>, k: usize) -> f64 {
-    let gained: f64 = ranked
-        .iter()
-        .take(k)
-        .enumerate()
-        .filter(|(_, topic)| relevant.contains(topic.as_str()))
-        .map(|(rank, _)| 1.0 / ((rank + 2) as f64).log2())
-        .sum();
-
-    // The best possible ordering puts every relevant topic first, so the ideal
-    // depends on how many there are rather than on what was returned.
-    let ideal: f64 = (0..relevant.len().min(k))
-        .map(|rank| 1.0 / ((rank + 2) as f64).log2())
-        .sum();
-
-    if ideal == 0.0 { 0.0 } else { gained / ideal }
-}
-
-/// The share of the relevant topics that appeared at all.
-///
-/// Reported next to nDCG because they fail differently, and a reranker can only
-/// fix one of them: nothing recovers a memory that was never returned.
-fn recall_at(ranked: &[String], relevant: &HashSet<&str>, k: usize) -> f64 {
-    if relevant.is_empty() {
-        return 0.0;
-    }
-
-    let found = ranked
-        .iter()
-        .take(k)
-        .filter(|topic| relevant.contains(topic.as_str()))
-        .count();
-
-    found as f64 / relevant.len() as f64
 }
 
 /// Prints the table this harness exists to produce.

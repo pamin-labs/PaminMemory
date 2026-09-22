@@ -161,6 +161,7 @@
 //! question and takes a eleventh of the time.
 
 mod channels;
+mod scoring;
 mod statistics;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -185,10 +186,7 @@ const LANGUAGES: [&str; 11] = [
 const SOURCE: &str =
     "https://raw.githubusercontent.com/google-research-datasets/lareqa/master/xquad-r";
 
-/// How many results the ranked metric looks at.
-const NDCG_AT: usize = 10;
-/// How many results the recall metric looks at.
-const RECALL_AT: usize = 50;
+use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
 /// One more than [`RECALL_AT`], because the cross-lingual group drops the
@@ -503,75 +501,6 @@ fn fetch(dir: &Path) {
 // Metrics
 // ---------------------------------------------------------------------------
 
-/// One group's running score.
-#[derive(Default)]
-struct Scores {
-    queries: usize,
-    ndcg: f64,
-    recall: f64,
-    /// Relevant sentences that came back inside the shortlist but below rank
-    /// ten -- everything a second pass over the shortlist could still fix.
-    deep: usize,
-    /// Queries with at least one of those.
-    with_work: usize,
-    /// Every query's own nDCG, in the order they were scored.
-    ///
-    /// Kept beside the running total because a mean cannot be tested and a
-    /// list can. Two runs over the same queries in the same order pair up
-    /// entry by entry, which is what [`statistics::compare`] needs to say
-    /// whether a difference of means is a result -- see that module for why
-    /// this project stopped reporting the means alone.
-    per_query: Vec<f64>,
-}
-
-impl Scores {
-    fn add(&mut self, ranked: &[String], relevant: &HashSet<&str>) {
-        let hit = |rank: usize| relevant.contains(ranked[rank].as_str());
-
-        let gained: f64 = (0..ranked.len().min(NDCG_AT))
-            .filter(|rank| hit(*rank))
-            .map(|rank| 1.0 / ((rank + 2) as f64).log2())
-            .sum();
-        let ideal: f64 = (0..relevant.len().min(NDCG_AT))
-            .map(|rank| 1.0 / ((rank + 2) as f64).log2())
-            .sum();
-
-        let found = (0..ranked.len().min(RECALL_AT))
-            .filter(|rank| hit(*rank))
-            .count();
-        let deep = (NDCG_AT..ranked.len().min(RECALL_AT))
-            .filter(|rank| hit(*rank))
-            .count();
-
-        let ndcg = if ideal == 0.0 { 0.0 } else { gained / ideal };
-
-        self.queries += 1;
-        self.ndcg += ndcg;
-        self.per_query.push(ndcg);
-        self.recall += if relevant.is_empty() {
-            0.0
-        } else {
-            found as f64 / relevant.len() as f64
-        };
-        self.deep += deep;
-        self.with_work += usize::from(deep > 0);
-    }
-
-    fn mean_ndcg(&self) -> f64 {
-        if self.queries == 0 {
-            return 0.0;
-        }
-        self.ndcg / self.queries as f64
-    }
-
-    fn mean_recall(&self) -> f64 {
-        if self.queries == 0 {
-            return 0.0;
-        }
-        self.recall / self.queries as f64
-    }
-}
-
 /// Scores one ranking into every group.
 fn score(groups: &mut BTreeMap<String, Scores>, query: &Query<'_>, ranked: &[String]) {
     for group in GROUPS {
@@ -587,7 +516,7 @@ fn score(groups: &mut BTreeMap<String, Scores>, query: &Query<'_>, ranked: &[Str
         groups
             .entry(group.to_string())
             .or_default()
-            .add(&kept, &relevant);
+            .add(&kept, relevant.len(), |topic| relevant.contains(topic));
     }
 }
 
@@ -653,15 +582,10 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         let mut one = BTreeMap::new();
         score(&mut one, query, &ranked);
         for (group, scores) in one {
-            let entry: &mut Scores = by_language
+            by_language
                 .entry(format!("{group}/{}", query.language))
-                .or_default();
-            entry.queries += scores.queries;
-            entry.ndcg += scores.ndcg;
-            entry.recall += scores.recall;
-            entry.deep += scores.deep;
-            entry.with_work += scores.with_work;
-            entry.per_query.extend(scores.per_query);
+                .or_default()
+                .absorb(scores);
         }
 
         if let (Some(segmented), Some(ngram)) = (
