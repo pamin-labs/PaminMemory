@@ -371,11 +371,33 @@ The only edge kind the engine derives is `Mentions`, asserted where one memory's
 content contains another topic's *name* as a contiguous token run. Topic names
 in the own corpus are identifiers of the form `<subject>_<language>` —
 `deploy_pipeline_en` — which `name_sequence` opens into the three-token run
-`deploy pipeline en`, and no memory's prose contains that run. Simulating the
-derivation over all 210 memories against all 210 names, at every window width up
-to the widest name, yields **zero edges**; the two external corpora name their
-topics deliberately unlike their own text and say so in the harness, so theirs
-are empty by design.
+`deploy pipeline en`, and no memory's prose contains that run. The harness now
+counts them: **`live edges in this project: 0`**, and the `Graph` row reads
+"returned nothing on any query" in all three groups, with leave-one-out at
+0W/0L across 43, 32 and 62 queries. The two external corpora name their topics
+deliberately unlike their own text and say so in their harness, so theirs are
+empty by design.
+
+**The experiment that would give the row a premise is sitting in the corpus
+unused.** Every one of the 43 cross-lingual queries has four or five relevant
+topics and they are always the same subject in different languages —
+`vpn_access_de`, `vpn_access_ja`, `vpn_access_th`, `vpn_access_zh`. That is a
+`same_as` relationship the dataset genuinely asserts, on the one group where
+fusion still ranks below the vector channel alone (0.7985 against 0.8268), with
+the vector channel's own `recall@50` at 0.9605 — so there is room for a hop to
+pull a missed sibling up.
+
+It will be reported as an **upper bound, not an estimate**, and the reason is
+worth stating before anybody runs it: those siblings *are* the judgement
+structure, so `same_as` edges over them restate the answer key as edges. What
+such an arm can establish is whether the mechanism works at all when the graph
+agrees with the judgements — which would catch a walk that reaches nothing, or
+one that ranks its arrivals below every other channel's candidates. It cannot
+say what a graph channel is worth on a real workspace, where somebody writing
+one policy in four languages would write one memory. The monolingual and lexical
+groups, whose relevant lists are single topics, should *lose* from the same
+edges, and that asymmetry is the case for deciding per query whether to walk at
+all.
 
 So all three zeros are one fact stated three times: **the graph channel has
 never been measured with a graph.** The harness now prints the live-edge census
