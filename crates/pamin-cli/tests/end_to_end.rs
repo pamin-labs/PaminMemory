@@ -2017,49 +2017,46 @@ fn an_import_records_the_whole_file_or_none_of_it() {
     server.wait().expect("reaping the server");
 }
 
-/// The non-commercial tier is refused by the real binary, before any download.
+/// The real binary prints the licence notice before it fetches the weights.
 ///
-/// Not ignored, and that is the point of it. Every other test in this file
-/// provisions PostgreSQL and fetches weights; this one asserts that the
-/// refusal happens *first*, so it needs neither and runs in the default suite
-/// where a regression would be seen.
-///
-/// It exists because the unit test beside `permitted` cannot see the call
-/// site. Deleting `permitted(rerank)?` from the search command leaves that
-/// test passing and the product ungated — verified by doing it — so the check
-/// that matters is this one, through the binary a user runs.
+/// Ignored with the rest of the lifecycle tests, because a notice that does
+/// not refuse cannot be observed without letting the command run -- which
+/// provisions PostgreSQL and downloads 280 MB. That is the honest cost of
+/// having made this a notice rather than a gate, and it is recorded rather
+/// than worked around: the cheap unit tests beside `caution` cannot see the
+/// call site, so deleting the `eprintln!` in `main` would leave them green.
+/// This is the check that would catch it.
 #[test]
-fn the_non_commercial_tier_is_refused_before_anything_is_downloaded() {
-    let home = tempfile::tempdir().expect("temp home");
+#[ignore = "provisions postgres and downloads CC-BY-NC reranker weights"]
+fn the_non_commercial_tier_prints_its_licence_notice() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "release",
+        "the release ships on Thursday",
+    ]);
 
     let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
-        .args(["search", "anything", "--rerank", "noncommercial"])
-        .env("PAMIN_HOME", home.path())
+        .args(["search", "when does it ship", "--rerank", "noncommercial"])
+        .env("PAMIN_HOME", cli.home())
         .env("PAMIN_PROFILE", PROFILE)
         .env_remove("PAMIN_ACCEPT_NONCOMMERCIAL")
         .output()
         .expect("running pamin");
 
     assert!(
-        !output.status.success(),
-        "the non-commercial tier ran without acceptance"
+        output.status.success(),
+        "the notice stopped the search, and it is a notice rather than a gate: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
-    let refusal = String::from_utf8_lossy(&output.stderr);
+    let notice = String::from_utf8_lossy(&output.stderr);
     for expected in ["CC-BY-NC-4.0", "PAMIN_ACCEPT_NONCOMMERCIAL", "NOTICE"] {
         assert!(
-            refusal.contains(expected),
-            "the refusal does not mention {expected:?}: {refusal}"
+            notice.contains(expected),
+            "the notice does not mention {expected:?}: {notice}"
         );
     }
-
-    // Nothing was fetched, which is the substance of the refusal rather than a
-    // side effect of it: a command that downloaded the weights and then
-    // declined to use them would have already put them on the disk.
-    let models = home.path().join("models");
-    assert!(
-        !models.exists() || std::fs::read_dir(&models).is_ok_and(|mut d| d.next().is_none()),
-        "weights were fetched despite the refusal: {}",
-        models.display()
-    );
 }
