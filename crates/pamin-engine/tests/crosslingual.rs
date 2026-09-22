@@ -995,12 +995,12 @@ async fn search_reaches_across_languages() {
         // the table cannot show that. Priced against the best cross-lingual row,
         // query by query, in both groups -- because the weight this sweep
         // settles is the one that trades one group against the other.
-        if let Some((best, top)) = measured.iter().max_by(|left, right| {
-            left.1["cross_lingual"]
-                .mean_ndcg()
-                .total_cmp(&right.1["cross_lingual"].mean_ndcg())
-        }) {
-            println!("\n  against the best cross-lingual row, {best}:");
+        if let Some((best, top)) =
+            statistics::baseline(&measured, |groups: &BTreeMap<String, Scores>| {
+                groups["cross_lingual"].mean_ndcg()
+            })
+        {
+            println!("\n  against {best}:");
             for (label, groups) in &measured {
                 if label == best {
                     continue;

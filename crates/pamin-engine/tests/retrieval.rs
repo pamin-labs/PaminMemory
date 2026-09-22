@@ -277,12 +277,12 @@ async fn retrieval_quality_by_group() {
         // Against the best cross-lingual row, query by query. This corpus has
         // 43 cross-lingual queries, so a tenth of a point is four of them, and
         // a table of means gives no way to see that.
-        if let Some((best, top)) = measured.iter().max_by(|left, right| {
-            left.1["cross_lingual"]
-                .mean_ndcg()
-                .total_cmp(&right.1["cross_lingual"].mean_ndcg())
-        }) {
-            println!("\n  against the best cross-lingual row, {best}:");
+        if let Some((best, top)) =
+            statistics::baseline(&measured, |groups: &BTreeMap<String, Scores>| {
+                groups["cross_lingual"].mean_ndcg()
+            })
+        {
+            println!("\n  against {best}:");
             for (label, groups) in &measured {
                 if label == best {
                     continue;

@@ -776,11 +776,8 @@ async fn search() {
         // one such gap, so every row is now also priced against the best one,
         // query by query. A winner that beats nothing significantly is a winner
         // by luck of which queries the corpus happens to contain.
-        if let Some((best, top)) = measured
-            .iter()
-            .max_by(|left, right| left.1.mean_ndcg().total_cmp(&right.1.mean_ndcg()))
-        {
-            println!("\n  against the best row, {best}:");
+        if let Some((best, top)) = statistics::baseline(&measured, |scores| scores.mean_ndcg()) {
+            println!("\n  against {best}:");
             for (label, scores) in &measured {
                 if label == best {
                     continue;
