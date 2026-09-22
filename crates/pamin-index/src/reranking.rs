@@ -49,6 +49,21 @@
 //! | `fast` | **+0.0381** | **-0.0053** | 264 ms | 211 ms |
 //! | `accurate` | **+0.0448** | **+0.0017** | 1001 ms | 948 ms |
 //!
+//! Those score columns are differences of means, which is all this project
+//! could report until `tests/statistics` existed. Re-taken query by query at
+//! the lexical weight that ships now, the `fast` tier reads:
+//!
+//! | group | mean | wins / losses / ties | p |
+//! |---|---|---|---|
+//! | cross-lingual | **+0.0403** | 547 / 206 / 437 | 0.0001 |
+//! | same-language | **-0.0061** | 3 / 19 / 1,168 | 0.0007 |
+//!
+//! Both are real, and the second one is more interesting than its mean. The
+//! reranker touches twenty-two same-language queries out of 1,190 and makes
+//! nineteen of them worse. The damage is not diffuse and small; it is
+//! concentrated and consistent, and it looks small only because the confinement
+//! to unlexical candidates keeps it away from almost every query.
+//!
 //! Measured through `Engine::search_reranked` -- the entry point `pamin search`
 //! calls -- with `TIERS=1` on the cross-lingual harness, over all 1,190
 //! queries. An earlier version of this table came from a scratch program that
@@ -131,6 +146,16 @@
 //!
 //! recall@50 is 0.9494 for all three tiers, to four decimals, as on the other
 //! corpus: the pass reorders a shortlist and never changes it.
+//!
+//! **And on this corpus the pass is worth less than nothing, which survives
+//! being tested.** On the `speed` profile at the shipped lexical weight, the
+//! `fast` tier scores 0.6730 against fusion's 0.6882: **-0.0152, 37 wins
+//! against 57 losses over 482 queries, p = 0.0129**. It reaches ninety-four
+//! queries and loses on more of them than it wins. That is the same shape as
+//! the same-language group above, on a corpus where every query is
+//! same-language -- so the two corpora agree about what this tier does when a
+//! query and its answer share a language, and disagree only about how many such
+//! queries there are.
 //!
 //!
 //! ## What is not paid twice
@@ -329,6 +354,22 @@ fn max_tokens() -> usize {
 /// sentences, few of them. It earns its place by bounding the worst case rather
 /// than by shaping the ordinary one: one long memory cannot make one query
 /// slow.
+///
+/// **On a corpus of passages it binds, and now there are numbers for both.**
+/// The harnesses count the length of every candidate that reaches the model:
+///
+/// | corpus | mean | longest |
+/// |---|---|---|
+/// | XQuAD-R, sentences | 165 characters | 1,341 |
+/// | MIRACL Swahili, Wikipedia passages | 311 characters | 5,567 |
+///
+/// Characters rather than tokens, because that is what can be counted without
+/// asking the tokenizer -- see the sort in [`Reranker::rank`] for the small
+/// factor between them. A 5,567-character passage is far past this limit
+/// whatever the script, so on MIRACL the truncation is doing real work, and the
+/// sentence-corpus measurement above says nothing about what it costs there.
+/// The 128-against-256 sweep has only ever been run on the corpus where the
+/// limit does not bind, which is the wrong one to run it on.
 const MAX_TOKENS: usize = 256;
 
 impl Rerank {
