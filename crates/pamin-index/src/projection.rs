@@ -467,9 +467,15 @@ pub enum VectorStorage {
     Int8,
     /// Half a byte a dimension.
     Int4,
-    /// A bit a dimension, with a rotation applied first so that the bits carry
-    /// comparable information -- which is the part the Rust binding did not
-    /// expose until 0.7.2, and the reason ADR 0001 deferred this.
+    /// A bit a dimension.
+    ///
+    /// Listed and not reachable: the engine refuses to train a RaBitQ
+    /// quantizer without a `raw_vector_provider`, which this binding does not
+    /// expose, so asking for it fails when the graph is built rather than
+    /// returning a worse index. Kept as a name so the refusal is recorded
+    /// where someone would look for it, and because it is the one storage
+    /// whose codes are small enough to change the disk answer -- see
+    /// `index_params`.
     Rabitq,
 }
 
@@ -526,18 +532,34 @@ impl VectorStorage {
             )?);
         };
 
-        let mut params = IndexParams::hnsw_with_quantize(
+        // Rotation is left off, and that is a measurement rather than the
+        // binding's default carried through.
+        //
+        // It was on here for every quantized storage, on the reasoning that
+        // spreading the bits across dimensions that carry comparable
+        // information must help the coarse storages and could not hurt the
+        // others. Both halves of that were wrong. The engine accepts it only
+        // for int8 and int4 -- for anything else it refuses when the *segment*
+        // opens its vector field rather than when the parameters are built, so
+        // fp16 presented as a segment that would not take writes. And on the
+        // two storages that do accept it, it is ruinous: recall@10 over 50,000
+        // clustered vectors is **0.0530 with rotation and 0.9980 without** for
+        // int8, 0.0580 against 0.9990 for int4. Everything else about the two
+        // runs is equal, including the bytes on disk, and the failure is
+        // silent -- an index that returns plausible neighbours that are not
+        // the nearest ones, which is the exact shape ADR 0001 records from the
+        // last quantization attempt.
+        //
+        // Rotation needs a fitted transform, and nothing here fits one; the
+        // binding's RaBitQ path says as much out loud, refusing to train
+        // without a `raw_vector_provider`. So this stays off until something
+        // supplies that, and `scratch_quantize.rs` is what would notice.
+        Ok(IndexParams::hnsw_with_quantize(
             MetricType::Cosine,
             GRAPH_DEGREE,
             GRAPH_EFFORT,
             quantize,
-        )?;
-        // Off by the binding's own default, asserted by its own tests. It
-        // matters for the coarsest storages, where the bits have to be spread
-        // across dimensions that carry comparable information; it is harmless
-        // for the others, and enabling it uniformly keeps one code path.
-        params.set_quantizer_enable_rotate(true)?;
-        Ok(params)
+        )?)
     }
 }
 
