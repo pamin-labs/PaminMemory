@@ -259,15 +259,18 @@ above names both and why the matrix is on the other page.
 Five findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
 
-**Fusing four channels ranks below one of them on cross-lingual queries.** The
-vector channel alone scores 0.8268 on this project's own cross-lingual group
-and 0.6335 on XQuAD-R's, against 0.7910 and 0.6077 for all four fused. On the
-same-language queries of the same corpus the lexical channels earn their place
-outright — segmented BM25 alone beats the vector channel 0.7299 to 0.6787 — so
-the channels are not weak and one global weight cannot tell the two cases
-apart. The reranking pass buys the cross-lingual loss back, which is a large
-part of what it is being paid for.
-[measured.md](docs/measured.md) has the table and what is being built for it.
+**Fusing four channels ranked below one of them on cross-lingual queries.** The
+vector channel alone scores 0.8268 on this project's own cross-lingual group and
+0.6335 on XQuAD-R's, against 0.7910 and 0.6077 for all four fused by rank. On
+the same-language queries of the same corpus the lexical channels earn their
+place outright — segmented BM25 alone beats the vector channel 0.7299 to 0.6787
+— so the channels are not weak and one global weight could not tell the two
+cases apart. Letting each channel's own scores order its candidates, inside the
+band rank fusion already spanned, is worth +0.0037 cross-lingual and +0.0273
+same-language with recall unmoved, and it is the first change here that
+improves the same-language group rather than charging it.
+[measured.md](docs/measured.md) has both tables, including the version of this
+that looked better on nDCG and took cross-lingual recall from 0.8960 to 0.7765.
 
 **It is a tie, and reporting it as a win would be wrong.** At thirty passages
 the three systems are 0.628, 0.623 and 0.583, and paired McNemar separates no

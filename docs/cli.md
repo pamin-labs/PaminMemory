@@ -478,15 +478,14 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
 Three kinds of entry, and they answer different questions.
 
 **`channel`** — this result appeared in that channel at that rank, and
-contributed `weight / (10 + rank)` to the score. Neither the weight nor the
-contribution is sent: the weight is the constant in the table below and the
-contribution follows from it and the rank, and ten hits of both cost about
-seven hundred tokens to restate what the reader already has. Nor is the score
-the channel gave it, for a different reason — that is the channel's own
-quantity in the channel's own units, so a reader comparing a BM25 score against
-a cosine similarity would be comparing nothing. Fusion reads it, to judge how
-far a channel's best candidate stands above that channel's own field, and the
-result of that judgement reaches you as the rank in the fused list. There are
+contributed a share of its channel's weight to the score. Neither the weight
+nor the contribution is sent: the weight is the constant in the table below,
+and ten hits of both cost about seven hundred tokens to restate what the reader
+already has. Nor is the score the channel gave it, for a different reason —
+that is the channel's own quantity in the channel's own units, so a reader
+comparing a BM25 score against a cosine similarity would be comparing nothing.
+Fusion reads it to decide where inside its channel's share a candidate falls,
+and the result of that reaches you as the rank in the fused list. There are
 four channels:
 
 | Channel | What it matches | Weight |
@@ -496,9 +495,25 @@ four channels:
 | `vector` | Meaning, across languages | 1.0 |
 | `graph` | Topics connected to what the other channels found | 1.0 |
 
-Ranks travel between channels; scores do not. A BM25 score and a cosine distance
-are not comparable quantities, so fusion combines the ranks rather than
-pretending the scores share a scale.
+**Each channel's scores decide the order within its share, and the weights
+decide the shares.** A BM25 score and a cosine distance are not comparable, so
+a channel's scores are only ever compared against that channel's own — mapped
+onto the same narrow band that reciprocal rank fusion would have spanned over
+the same candidates, `[(k + 1) / (k + n), 1]`, where `n` is how many candidates
+the channel returned.
+
+The band is the part that matters, and it is derived rather than chosen. Over
+fifty candidates at `k = 10` it is a factor of 5.45, which is narrow enough
+that a channel's *weight* decides against another channel's position: a lexical
+channel's top hit at an eighth weight lands below the vector channel's
+fiftieth, so a strong channel's marginal candidate still makes the list and a
+weak channel's confident one does not displace it. Normalising onto `[0, 1]`
+instead spans a factor of infinity inside one channel, which inverts that — and
+measurably so. A plain weighted sum of standardised scores scores higher on
+nDCG@10 in three of four groups and takes XQuAD-R's cross-lingual `recall@50`
+from 0.8960 to 0.7765. Nothing recovers a memory that was never returned, so
+that trade is declined; `[ADR 0001](adr/0001-tech-selection.md)` has both
+tables.
 
 The two lexical channels carry an eighth of a weight each because at full
 weight the pair outvotes the other two on exactly the queries where the wording
@@ -524,14 +539,16 @@ boundary, and a great deal within one. Measured, fusing all four channels ranks
 BM25 alone beats the vector channel 0.7299 to 0.6787. A constant cannot be
 right about both.
 
-What answers that is a per-channel confidence: each channel's weight scaled by
-how far its own best candidate stands above its own field. That quantity is
-dimensionless, so a BM25 score and a cosine similarity become comparable, and
-it is readable from the candidates a search already returned — no corpus-wide
-distribution to maintain, which matters because a memory store's distribution
-moves on every write. **It exists and is off, because it has not been
-measured.** [ADR 0001](adr/0001-tech-selection.md) has the argument and says
-what has to be reported before it could become the default. The `10` is likewise measured here rather than taken from the rank
+Reading the scores inside the band is what closes part of that gap without
+picking a side: over the same 1,190 questions it is worth +0.0037 cross-lingual
+and +0.0273 same-language, both significant, with recall unmoved. **It is the
+first change here that improves the same-language group rather than charging
+it** — every weight this project ever moved took something from that group to
+pay for the other one.
+
+A per-channel confidence was built for the same gap and is **off, because it
+was measured and refuted**: it makes the largest cross-lingual group
+significantly worse, which is the group it existed to help. The `10` is likewise measured here rather than taken from the rank
 fusion literature, which uses 60 for lists thousands of results deep; each
 channel proposes fifty, and 60 flattens fifty candidates to the point where
 being first says almost nothing.

@@ -229,13 +229,50 @@ opposed to a badly chosen constant: centring the scores is what costs the
 tail, and −0.12 cross-lingual against −0.018 same-language is the same
 mechanism seen where the weak channel is garbage and where it is good.
 
-**So nothing in the grid ships, and now that is a complete statement rather
-than a cautious one.** Every setting is either a trade between the two groups
-— confidence buys +0.0324 same-language for −0.0174 cross-lingual; zeroing the
-lexical pair buys +0.0258 cross-lingual for −0.0769 same-language — or it pays
-recall for nDCG. Reciprocal rank fusion at an eighth each is not the best
-setting on any single measure. It is the only one that is not clearly worse on
-some other.
+### What that mechanism, once stated, made shippable
+
+Reading the recall column as a property of the *combiner* rather than of the
+settings says what to fix. Rank fusion's contributions span a narrow range —
+over fifty candidates at `k = 10`, `1/11` down to `1/60`, a factor of 5.45 —
+and that narrowness is what makes the channel weights mean anything: a lexical
+channel's top hit at an eighth weight scores 0.0114 while the vector channel's
+fiftieth scores 0.0167, so the good channel's marginal candidate still wins and
+the tail stays full of things a reranker could recover. **Any normaliser onto
+`[0, 1]` spans a factor of infinity inside one channel**, so position beats
+weight and a worthless channel's confident hit displaces a good channel's deep
+one. Centring adds a sign on top of that; min-max alone would do the same
+thing.
+
+So: min-max each channel's scores and map them onto the band rank fusion would
+have spanned over the same candidates, `[(k + 1) / (k + n), 1]`. The band is
+derived, not tuned, and the only thing that changes is whether a channel's
+candidates are ordered inside it by score or by rank — which is the question
+this whole line of work was trying to ask and could not ask cleanly while the
+range was moving too.
+
+| group | nDCG@10 | p | recall@50 |
+| --- | --- | --- | --- |
+| XQuAD-R cross-lingual | **+0.0037** | 0.0003 | 0.8960 → 0.8962 |
+| XQuAD-R same-language | **+0.0273** | 0.0001 | 0.9580 → 0.9571 |
+| MIRACL Swahili | −0.0003 | 0.9210 | 0.9314 → 0.9309 |
+| this project, cross-lingual | +0.0075 | 0.3731 | 0.9605 → 0.9605 |
+
+**Two groups significantly better, none significantly worse, recall moving by
+at most 0.0009 — and this is what ships now.** Every accuracy gate passes and
+two published figures improve: on the shipped path XQuAD-R goes from 0.6480 to
+**0.6511** cross-lingual and from 0.7495 to **0.7769** same-language.
+
+The same-language gain is the part worth noticing. Every weight this project
+ever changed took something from that group to pay for the cross-lingual one —
+the section above is a table of exactly that. This is the first change that
+improves it, and it does so by letting the channel that is genuinely good there
+say *how much* better its top candidates are rather than only that they came
+first.
+
+The rest of the grid still ships nothing, and that is now a complete statement:
+confidence buys +0.0324 same-language for −0.0174 cross-lingual, zeroing the
+lexical pair buys +0.0258 cross-lingual for −0.0769 same-language, and the
+standardised sum buys nDCG everywhere for a recall collapse.
 
 **CombMNZ is significantly worse, and that was predicted before the run.** The
 systematic comparison of ten combiners ranks it first on all four of its
