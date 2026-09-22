@@ -327,7 +327,24 @@ optimization and forgetting; the MCP surface.
 ```bash
 cargo test --workspace                  # fast; no database, no model
 cargo test --workspace -- --ignored     # provisions postgres, downloads models
+cargo deny check licenses               # the crate graph against deny.toml
 ```
+
+## Licensing
+
+Apache-2.0, in [LICENSE](LICENSE).
+
+**No model weights are redistributed.** Nothing in this repository is a
+`.onnx`, `.safetensors` or `.bin`, and a release artifact is the `pamin`
+binary plus the native libraries it links — the size budget counts exactly
+that. Weights are fetched from the Hugging Face hub by the user's own machine
+the first time a command asks for one.
+
+[NOTICE](NOTICE) lists every model a profile or a reranker tier will download
+and the licence it carries, including the two exports that carry no tag of
+their own and the chain to a licensed source for each. [deny.toml](deny.toml)
+is the separate question of what the crate graph may be licensed under, which
+CI enforces.
 
 ## Maintainer Notes
 
