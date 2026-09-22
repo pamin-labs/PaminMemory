@@ -1,0 +1,64 @@
+Påmin Memory
+Copyright the Påmin Memory authors
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Model weights
+================================================================================
+
+This product does not redistribute model weights. No `.onnx`, `.safetensors`
+or `.bin` file is in this repository, and `ci/budget.py` counts only the
+`pamin` binary and the native libraries it links, so a release artifact
+contains no model. Weights are fetched from the Hugging Face hub the first
+time a command asks for one, into a cache under the workspace, by the user's
+own machine.
+
+That distinction is what the list below is scoped by. These licences govern
+what a user downloads and runs when they choose a profile or a reranker tier.
+They are not distribution terms for anything this project ships, and adding a
+model does not move the size budget.
+
+Two of the exports carry no licence tag of their own. That is recorded here
+rather than smoothed over: a re-export with no tag is usable when the chain to
+a licensed source is readable, and the chain is given for each one.
+
+Embedding models
+----------------
+
+  intfloat/multilingual-e5-small                       MIT
+    Profile `speed`.
+
+  intfloat/multilingual-e5-base                        MIT
+    Profile `balanced`.
+
+  gpahal/bge-m3-onnx-int8                              MIT
+    Profile `accuracy`, the default. An int8 export of BAAI/bge-m3, itself
+    MIT.
+
+Reranker models
+---------------
+
+  cross-encoder/mmarco-mMiniLMv2-L12-H384-v1           Apache-2.0
+    Tier `fast`, the default. Distilled from
+    nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large, which carries no
+    tag; that model is Microsoft's MiniLMv2 recipe from the UniLM
+    repository, MIT.
+
+  onnx-community/bge-reranker-v2-m3-ONNX               no tag
+    Tier `accurate`. An ONNX re-export of BAAI/bge-reranker-v2-m3, itself
+    Apache-2.0.
+
+================================================================================
+Rust dependencies
+================================================================================
+
+`deny.toml` holds the licence policy for the crate graph and
+`cargo deny check licenses` enforces it in CI. That is a separate question
+from the models above and the file says so: a crate is linked into the binary
+this project distributes, where a model is not.
+
+One entry there is worth naming here too. `option-ext`, reached through
+`dirs`, is MPL-2.0 — weak copyleft at file granularity. It is linked
+unmodified from crates.io, so its own source stays available under its own
+terms and nothing about this project's Apache-2.0 licence is affected. The
+allowance is deliberate and is explained where it is granted.
