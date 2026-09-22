@@ -976,6 +976,30 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `AT_LIMIT` asks the shipped path for as many results as a person asks
+    // for, and reports what the reranker was made to do rather than how well
+    // it did it. Every other arm here asks for fifty-one so that recall@50 can
+    // be scored, which puts the reranker's whole twenty-deep head inside what
+    // is read; at five, most of that head is past it, and `can_be_seen` then
+    // declines the pass entirely on the queries where none of the candidates
+    // it may move is inside the five. How often that is, is the number this
+    // arm exists for, and it shows up as candidates never offered to the
+    // model.
+    if let Ok(value) = std::env::var("AT_LIMIT") {
+        let limit: u32 = value.parse().expect("AT_LIMIT is a number of results");
+        for tier in [Rerank::Off, Rerank::default()] {
+            let started = std::time::Instant::now();
+            let _ = run(&engine, &queries, Route::AtLimit(tier, limit)).await;
+            println!(
+                "\n  {:?} at --limit {limit}, {named}: {:.0} ms per query",
+                tier,
+                started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64
+            );
+            report_reranking(&engine, tier, queries.len());
+        }
+        return;
+    }
+
     // `TIERS` compares the reranker's settings against each other on this
     // path, which is the only place the comparison means anything: the tier
     // reorders what fusion produced, so a number for it has to come from the
@@ -1042,6 +1066,15 @@ async fn search_reaches_across_languages() {
 enum Route {
     /// The product's own entry point, reranker and all.
     Shipped(Rerank),
+    /// The same entry point, asked for as many results as a person asks for.
+    ///
+    /// `DEPTH` is fifty-one so that recall@50 can be scored, and the whole of
+    /// the reranker's twenty-deep head is inside that. `pamin search` defaults
+    /// to five, where most of that head is past what the caller reads --
+    /// which is a different amount of work for the same query and was never
+    /// measured. The scores from this route are not comparable with anything
+    /// else on this corpus and it does not report them.
+    AtLimit(Rerank, u32),
     /// Fusion alone, at a weighting the caller chooses.
     Fused(Fusion),
 }
@@ -1059,6 +1092,11 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
             Route::Shipped(rerank) => {
                 engine
                     .search_reranked(query.text(), DEPTH as u32, DEPTHS, *rerank)
+                    .await
+            }
+            Route::AtLimit(rerank, limit) => {
+                engine
+                    .search_reranked(query.text(), *limit, DEPTHS, *rerank)
                     .await
             }
             Route::Fused(fusion) => {

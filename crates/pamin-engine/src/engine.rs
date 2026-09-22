@@ -1218,7 +1218,7 @@ impl Engine {
                 })
             })
             .collect();
-        if unlexical.len() < 2 {
+        if !can_be_seen(&unlexical, limit) {
             return Ok(only(hits, limit));
         }
 
@@ -1757,6 +1757,43 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
 }
 
 /// The first `limit` of a list that was fused deeper than the caller asked for.
+/// Whether reranking these positions can change what the caller is given.
+///
+/// The pass reorders the candidates at `unlexical` *into the positions they
+/// already hold* and the caller is then given the first `limit` of the list.
+/// Two things follow, and one of them was being paid for.
+///
+/// Fewer than two positions cannot be reordered at all, which this always
+/// checked.
+///
+/// And if every one of those positions sits at or past `limit`, the pass can
+/// only permute candidates the caller never sees. That is not a heuristic
+/// about when reranking is unlikely to help: the returned results are
+/// identical either way, because the only thing the pass produces is a
+/// permutation of those positions -- it attaches no score to a hit and writes
+/// nothing into the trace. So the work is not merely unlikely to pay, it is
+/// provably invisible.
+///
+/// This is worth nothing to the evaluation harnesses and something to every
+/// user. The harnesses ask for 51 results so they can measure recall@50, and
+/// the reranker's head is 20, so every position it touches is inside what they
+/// read and this returns `true` on every query they run -- the accuracy
+/// figures cannot move, by construction rather than by measurement. `pamin
+/// search` defaults to five. On a query whose first five results all carry a
+/// lexical hit, which is the ordinary shape of a same-language query, every
+/// unlexical candidate is at rank five or beyond and the 226 ms was buying a
+/// reordering of results nobody was going to be shown.
+fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
+    if unlexical.len() < 2 {
+        return false;
+    }
+    // Ascending, because it was built by filtering a range. So the first entry
+    // is the highest-ranked candidate the pass could move.
+    unlexical
+        .first()
+        .is_some_and(|highest| *highest < limit as usize)
+}
+
 fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
     hits.truncate(limit as usize);
     hits
@@ -1766,7 +1803,7 @@ fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{MODEL_IDLE, best_first, fused_for, is_idle, runs_of_tokens};
+    use super::{MODEL_IDLE, best_first, can_be_seen, fused_for, is_idle, runs_of_tokens};
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
 
@@ -1776,6 +1813,46 @@ mod tests {
     /// not enough on its own -- the caller checks that nothing holds the model
     /// as well, because dropping the registry's handle while a search holds
     /// its own frees nothing and makes the next search load a second copy.
+    #[test]
+    fn a_pass_over_candidates_below_the_limit_cannot_be_seen() {
+        // Five results asked for, and the only candidates the pass may move
+        // are at ranks 5 through 8. Whatever order it puts them in, the caller
+        // is given ranks 0 through 4.
+        assert!(!can_be_seen(&[5, 6, 7, 8], 5));
+        // The same list when the caller asks for more of it.
+        assert!(can_be_seen(&[5, 6, 7, 8], 6));
+    }
+
+    #[test]
+    fn a_pass_reaching_the_limit_can_be_seen() {
+        // One candidate inside what the caller reads is enough: reordering
+        // can carry any of the others into that slot.
+        assert!(can_be_seen(&[4, 11, 19], 5));
+        assert!(can_be_seen(&[0, 1], 5));
+    }
+
+    #[test]
+    fn one_candidate_is_not_a_reordering() {
+        // Nothing to permute, wherever it sits.
+        assert!(!can_be_seen(&[0], 5));
+        assert!(!can_be_seen(&[], 5));
+    }
+
+    #[test]
+    fn the_evaluation_harnesses_never_skip_the_pass() {
+        // Both harnesses ask for `RECALL_AT + 1` results so they can measure
+        // recall@50, and the reranker's head is 20. So every position it could
+        // touch is inside what they read, and the published accuracy figures
+        // cannot move because of this gate. Asserted rather than argued,
+        // because the argument is the whole reason the gate is allowed to be
+        // exact rather than swept.
+        let whole_head: Vec<usize> = (0..20).collect();
+        assert!(can_be_seen(&whole_head, 51));
+        // Even the worst case for the harness -- only the last two positions
+        // of the head are unlexical -- is still inside 51.
+        assert!(can_be_seen(&[18, 19], 51));
+    }
+
     #[test]
     fn a_model_is_idle_only_once_the_window_has_passed() {
         let window = Duration::from_secs(300);
