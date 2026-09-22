@@ -208,6 +208,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{IndexError, Result};
 
+/// What a tier's weights may be used for.
+///
+/// Carried in the type rather than looked up in a document, because the one
+/// consequence that matters is a refusal: a tier whose weights are not free for
+/// commercial use has to be asked for on purpose, and a caller cannot be
+/// expected to have read `NOTICE` first.
+///
+/// This project redistributes no weights -- every model is fetched from the hub
+/// by the user's own machine on first use -- so what is described here is what
+/// the user acquires, not what we ship. That is also why a missing licence tag
+/// is not one of the variants: an export with no tag of its own is usable when
+/// the chain to a licensed source is readable, and two of the shipped models
+/// are in exactly that position, with their chains written down in `NOTICE`.
+/// What cannot be left to a document is a term that restricts what the user may
+/// do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Licence {
+    /// Free for any use, commercial included. Apache-2.0 or MIT, directly or
+    /// through a readable chain.
+    Permissive,
+    /// Free for research and personal use, not for commercial use. Asking for a
+    /// tier under this is an explicit act; see [`Rerank::licence`].
+    NonCommercial,
+}
+
 /// How much to spend reordering the shortlist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,6 +420,28 @@ impl Rerank {
         match self {
             Self::Off => 0,
             Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
+        }
+    }
+
+    /// What this tier's weights may be used for.
+    ///
+    /// `Off` has none, which is a real answer rather than a missing one, so it
+    /// is `None` and every tier that loads a model has a `Some`.
+    ///
+    /// The distinction this draws is narrow on purpose: whether the licence
+    /// restricts what the user may do with the results. A permissive tier and a
+    /// tier whose export carries no tag but descends from a permissive model
+    /// are the same answer to that question, and `NOTICE` is where the chains
+    /// are written down.
+    pub fn licence(self) -> Option<Licence> {
+        match self {
+            Self::Off => None,
+            // Apache-2.0. Distilled from a model with no tag of its own, whose
+            // source is Microsoft's MIT MiniLMv2 recipe; see `NOTICE`.
+            Self::Fast => Some(Licence::Permissive),
+            // The export carries no tag; `BAAI/bge-reranker-v2-m3` under it is
+            // Apache-2.0. See `NOTICE`.
+            Self::Accurate => Some(Licence::Permissive),
         }
     }
 
@@ -803,5 +850,44 @@ mod tests {
 
         assert_eq!(scores.order.len(), 1);
         assert_eq!(scores.get(key), Some(99.0));
+    }
+
+    /// Every tier that loads a model says what its weights may be used for.
+    ///
+    /// The point of asserting it rather than trusting the match is that adding
+    /// a tier is a six-arm edit and the compiler catches five of them. This
+    /// catches the sixth if it is ever written as a permissive default by
+    /// reflex: a tier that loads weights must have an answer, and `off` must
+    /// not, because "no weights" is a different statement from "weights you may
+    /// use freely".
+    #[test]
+    fn every_tier_that_loads_weights_declares_what_they_may_be_used_for() {
+        assert_eq!(Rerank::Off.licence(), None, "the off tier loads nothing");
+        for tier in [Rerank::Fast, Rerank::Accurate] {
+            assert!(
+                tier.licence().is_some(),
+                "the {} tier downloads weights and does not say under what terms",
+                tier.name()
+            );
+        }
+    }
+
+    /// Whatever a tier parses from, it round-trips through its own name.
+    ///
+    /// Guards the pair of matches that a new tier has to touch together. The
+    /// wire protocol is this string, so a name that parses to a different tier
+    /// than it prints would route a caller to a model they did not ask for --
+    /// and with a non-commercial tier in the list that is a licence question
+    /// rather than a ranking one.
+    #[test]
+    fn a_tier_parses_from_the_name_it_prints() {
+        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+            assert_eq!(
+                Rerank::parse(tier.name()),
+                Some(tier),
+                "{} does not round-trip",
+                tier.name()
+            );
+        }
     }
 }
