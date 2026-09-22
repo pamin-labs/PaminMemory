@@ -168,7 +168,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use pamin_core::{Channel, Fusion};
+use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::{Depths, Engine, Write};
 use pamin_index::{Access, Embedder, Profile, Rerank};
 use pamin_store::Workspace;
@@ -1120,6 +1120,13 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `GATE` asks whether the pass should run at all, which is a different
+    // question from which tier runs it and is measured separately.
+    if std::env::var("GATE").is_ok() {
+        gate_sweep(&engine, &queries, &named).await;
+        return;
+    }
+
     // `TIERS` compares the reranker's settings against each other on this
     // path, which is the only place the comparison means anything: the tier
     // reorders what fusion produced, so a number for it has to come from the
@@ -1250,6 +1257,234 @@ enum Route {
     AtLimit(Rerank, u32),
     /// Fusion alone, at a weighting the caller chooses.
     Fused(Fusion),
+}
+
+/// Two ways of deciding not to rerank, both swept from one pass.
+///
+/// The reranker is 260 ms of a 359 ms search and is *significantly negative*
+/// on the same-language group -- -0.0060 at p = 0.0008, nineteen queries worse
+/// against three better. So a rule that declines the pass is the only lever on
+/// this project's backlog that buys latency and accuracy at once, and there are
+/// two shapes it could take. Both are measured here rather than argued about.
+///
+/// **Per query, on lexical coverage.** A candidate-level language test was
+/// tried before and rejected for a sound reason: `detect_language` returns
+/// nothing for a query as short as "how does deployment work". The signal used
+/// instead needs no model and no detector -- what share of the fused head at
+/// least one lexical channel already proposed. If the lexical channels own the
+/// head there is nothing for a cross-encoder to recover, and the pass is cost.
+///
+/// **Per candidate, on the model's own score.** The 2025 threshold result this
+/// record cites -- dropping candidates below a cut rather than reordering all
+/// of them, scoring 0.975 against 0.969 -- was not measurable here until
+/// `Why::Reranked` existed. Two families of cut are tried because they test
+/// different claims. An *absolute* cut on the logit is only meaningful if the
+/// score carries calibration the documentation says it does not, so it is
+/// included precisely to find out whether that warning bites. A *relative* cut,
+/// against the best-scoring candidate of the same query, is expressible
+/// whatever the calibration.
+///
+/// One pass produces both. Each query is searched twice, once at `off` and
+/// once at the default tier, and every threshold in both families is then
+/// scored from those two orderings -- so adding a threshold costs nothing and
+/// the arms cannot drift apart by being taken in different runs.
+async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
+    /// Share of the fused head the lexical channels must own before the pass
+    /// is declined. `0.0` declines always, `1.01` never -- the two ends
+    /// reproduce `off` and the shipped tier, which is the check that the sweep
+    /// is wired to the same orderings the baselines came from.
+    const COVERAGE: [f64; 7] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.01];
+
+    /// Absolute cuts on the cross-encoder's logit. Included to test the
+    /// documented claim that this number is not comparable across queries: if
+    /// a fixed cut works, the claim is too strong.
+    const ABSOLUTE: [f32; 5] = [-8.0, -6.0, -4.0, -2.0, 0.0];
+
+    /// Relative cuts: drop a reranked candidate scoring this far below the
+    /// best-scoring reranked candidate of the same query. Expressible whatever
+    /// the calibration.
+    const RELATIVE: [f32; 4] = [2.0, 4.0, 6.0, 8.0];
+
+    /// How deep the coverage signal looks, which is the depth nDCG scores.
+    const HEAD: usize = NDCG_AT;
+
+    let tier = Rerank::default();
+    let mut ungated: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut plain: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut by_coverage: Vec<BTreeMap<String, Scores>> =
+        COVERAGE.iter().map(|_| BTreeMap::new()).collect();
+    let mut by_absolute: Vec<BTreeMap<String, Scores>> =
+        ABSOLUTE.iter().map(|_| BTreeMap::new()).collect();
+    let mut by_relative: Vec<BTreeMap<String, Scores>> =
+        RELATIVE.iter().map(|_| BTreeMap::new()).collect();
+    let mut declined = vec![0usize; COVERAGE.len()];
+    let mut dropped_absolute = vec![0usize; ABSOLUTE.len()];
+    let mut dropped_relative = vec![0usize; RELATIVE.len()];
+    let mut reranked_total = 0usize;
+
+    for query in queries {
+        let off = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+            .await
+            .expect("search with the reranker off");
+        let on = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
+            .await
+            .expect("search at the default tier");
+
+        let names = |hits: &[pamin_engine::SearchHit]| -> Vec<String> {
+            hits.iter().map(|hit| hit.topic.clone()).collect()
+        };
+        let off_order = names(&off);
+        let on_order = names(&on);
+        score(&mut plain, query, &off_order);
+        score(&mut ungated, query, &on_order);
+
+        // The signal, read off the ordering the gate would see: the gate runs
+        // before the pass, so it can only know what fusion produced.
+        let head = HEAD.min(off.len());
+        let lexical = off[..head]
+            .iter()
+            .filter(|hit| {
+                hit.result.why.iter().any(|why| {
+                    matches!(
+                        why,
+                        Why::Channel { channel, .. }
+                            if *channel == Channel::LexicalSegmented
+                                || *channel == Channel::LexicalNgram
+                    )
+                })
+            })
+            .count();
+        let coverage = if head == 0 {
+            0.0
+        } else {
+            lexical as f64 / head as f64
+        };
+
+        for (at, threshold) in COVERAGE.iter().enumerate() {
+            let decline = coverage >= *threshold;
+            if decline {
+                declined[at] += 1;
+            }
+            score(
+                &mut by_coverage[at],
+                query,
+                if decline { &off_order } else { &on_order },
+            );
+        }
+
+        // The model's own scores, from the arm that actually ran it.
+        let scored = |hit: &pamin_engine::SearchHit| -> Option<f32> {
+            hit.result.why.iter().find_map(|why| match why {
+                Why::Reranked { score } => Some(*score),
+                Why::Channel { .. } | Why::Path { .. } => None,
+            })
+        };
+        let best = on.iter().filter_map(scored).fold(f32::MIN, f32::max);
+        reranked_total += on.iter().filter(|hit| scored(hit).is_some()).count();
+
+        // A candidate the model never saw is never dropped: the cut is a
+        // judgement the model made, and it did not make one about those.
+        let keeping = |cut: f32| -> Vec<String> {
+            on.iter()
+                .filter(|hit| scored(hit).is_none_or(|score| score >= cut))
+                .map(|hit| hit.topic.clone())
+                .collect()
+        };
+
+        for (at, cut) in ABSOLUTE.iter().enumerate() {
+            let kept = keeping(*cut);
+            dropped_absolute[at] += on_order.len() - kept.len();
+            score(&mut by_absolute[at], query, &kept);
+        }
+        for (at, margin) in RELATIVE.iter().enumerate() {
+            let kept = keeping(best - *margin);
+            dropped_relative[at] += on_order.len() - kept.len();
+            score(&mut by_relative[at], query, &kept);
+        }
+    }
+
+    for group in GROUPS {
+        println!("\n  gating the reranker per query, {group}, {named}");
+        println!(
+            "  the lexical channels own this much of the head -> decline the pass\n  \
+             coverage >=   declined   nDCG@{NDCG_AT}   recall@{RECALL_AT}   against the ungated tier"
+        );
+        println!(
+            "  ------------------------------------------------------------------------------"
+        );
+        for (at, threshold) in COVERAGE.iter().enumerate() {
+            println!(
+                "  {threshold:>11.2}   {:>7.1}%   {:>7.4}   {:>9.4}   {}",
+                100.0 * declined[at] as f64 / queries.len() as f64,
+                by_coverage[at][group].mean_ndcg(),
+                by_coverage[at][group].mean_recall(),
+                statistics::compare(&ungated[group].per_query, &by_coverage[at][group].per_query)
+            );
+        }
+        println!(
+            "  {:>11}   {:>7}   {:>7.4}   {:>9.4}   the tier, ungated",
+            "--",
+            "--",
+            ungated[group].mean_ndcg(),
+            ungated[group].mean_recall()
+        );
+        println!(
+            "  {:>11}   {:>7}   {:>7.4}   {:>9.4}   reranking off",
+            "--",
+            "--",
+            plain[group].mean_ndcg(),
+            plain[group].mean_recall()
+        );
+
+        println!("\n  dropping candidates instead of reordering them, {group}, {named}");
+        println!(
+            "  cut             dropped   nDCG@{NDCG_AT}   recall@{RECALL_AT}   against the ungated tier"
+        );
+        println!(
+            "  ------------------------------------------------------------------------------"
+        );
+        for (at, cut) in ABSOLUTE.iter().enumerate() {
+            println!(
+                "  score < {cut:<7.1} {:>7.1}%   {:>7.4}   {:>9.4}   {}",
+                100.0 * dropped_absolute[at] as f64 / reranked_total.max(1) as f64,
+                by_absolute[at][group].mean_ndcg(),
+                by_absolute[at][group].mean_recall(),
+                statistics::compare(&ungated[group].per_query, &by_absolute[at][group].per_query)
+            );
+        }
+        for (at, margin) in RELATIVE.iter().enumerate() {
+            println!(
+                "  best - {margin:<8.1} {:>7.1}%   {:>7.4}   {:>9.4}   {}",
+                100.0 * dropped_relative[at] as f64 / reranked_total.max(1) as f64,
+                by_relative[at][group].mean_ndcg(),
+                by_relative[at][group].mean_recall(),
+                statistics::compare(&ungated[group].per_query, &by_relative[at][group].per_query)
+            );
+        }
+    }
+
+    // The premise of both tables. A sweep whose ends do not reproduce the two
+    // baselines is reading something other than the orderings it thinks it is.
+    let last = COVERAGE.len() - 1;
+    for group in GROUPS {
+        assert_eq!(
+            by_coverage[0][group].mean_ndcg(),
+            plain[group].mean_ndcg(),
+            "declining every query did not reproduce reranking off on {group}"
+        );
+        assert_eq!(
+            by_coverage[last][group].mean_ndcg(),
+            ungated[group].mean_ndcg(),
+            "declining no query did not reproduce the ungated tier on {group}"
+        );
+    }
+    println!(
+        "\n  both ends of the coverage sweep reproduce their baselines, and {reranked_total} \
+         candidates over {} queries reached the model\n",
+        queries.len()
+    );
 }
 
 /// Scores every query through one of the engine's search paths.
