@@ -453,15 +453,35 @@ is a structural consequence of centring rather than a constant chosen badly,
 and −0.12 against −0.018 is the same mechanism seen where the weak channel is
 garbage and where it is good.
 
-Which closes the question rather than deferring it. **Every setting in the grid
-is either a trade between the two groups or a payment of recall for nDCG.**
+**And reading that as a property of the combiner said what to fix.** Rank
+fusion's narrow range is not incidental: it is what makes the channel weights
+mean anything. Any normaliser onto `[0, 1]` spans a factor of infinity inside
+one channel, so position beats weight; rank fusion spans 5.45, so weight beats
+position. Keep the band and change only what orders the candidates inside it —
+min-max each channel's scores onto `[(k + 1) / (k + n), 1]`, which is exactly
+the range rank fusion would have used over the same candidates.
+
+| group | nDCG@10 | p | recall@50 |
+| --- | --- | --- | --- |
+| XQuAD-R cross-lingual | **+0.0037** | 0.0003 | 0.8960 → 0.8962 |
+| XQuAD-R same-language | **+0.0273** | 0.0001 | 0.9580 → 0.9571 |
+| MIRACL Swahili | −0.0003 | 0.9210 | 0.9314 → 0.9309 |
+| this project, cross-lingual | +0.0075 | 0.3731 | 0.9605 → 0.9605 |
+
+Two groups significantly better, none significantly worse, recall moving by at
+most 0.0009 — **so `Combine::Banded` is what ships.** Every accuracy gate
+passes and two published figures improve: on the shipped path XQuAD-R goes from
+0.6480 to 0.6511 cross-lingual and from 0.7495 to 0.7769 same-language. The
+same-language gain is the notable half: every weight this project ever changed
+took something from that group to pay for the cross-lingual one, and this is
+the first change that improves it.
+
+The rest of the grid ships nothing, and that part of the question is closed.
 Confidence buys +0.0324 same-language for −0.0174 cross-lingual; zeroing the
 lexical pair buys +0.0258 cross-lingual for −0.0769 same-language; the
-standardised sum buys nDCG everywhere and −0.12 of cross-lingual recall.
-Reciprocal rank fusion at an eighth each is the best setting on no single
-measure and the only one that is not clearly worse on some other. That is the
-argument for the default now, and it is a different argument from the one this
-record used to make.
+standardised sum buys nDCG everywhere and −0.12 of cross-lingual recall. Each
+is a trade this project declines, and each is declined against a number rather
+than a preference.
 Per-channel confidence on top of rank fusion is the weaker mechanism: +0.0118
 at best (8 wins, 0 losses, p = 0.0381) with a narrow plateau, which by
 *Balancing the Blend*'s own reading is what fitting a development set looks
