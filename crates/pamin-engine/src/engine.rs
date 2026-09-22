@@ -804,6 +804,46 @@ impl Engine {
         Ok(())
     }
 
+    /// The same for many states, in one forward pass.
+    ///
+    /// A cascade round claims up to sixty-four jobs and used to index them one
+    /// at a time, which is sixty-four forward passes where the model can do one
+    /// -- and `Embedder::embed_passages` has been there the whole time, used
+    /// only by the rebuild. The flush in the same round was already batched,
+    /// with a comment explaining why batching it mattered, so the pass was the
+    /// half that got left.
+    ///
+    /// **Score-neutral, and that is asserted rather than assumed.**
+    /// `pamin-index`'s `a_batch_changes_nothing_on` compares `embed_passages`
+    /// against `embed_passage` position by position across profiles and
+    /// requires the vectors to be identical, so an index built in batches holds
+    /// what an index built one at a time would have held. (The reranker's
+    /// length-sorted batching is *not* score-neutral and says so where it
+    /// lives; that is a different model and a different code path.)
+    ///
+    /// One model lock and one index lock for the whole batch rather than one
+    /// each per state, which is the other saving and the reason this is one
+    /// closure rather than a loop over the single-state form.
+    pub(crate) async fn index_states(&self, states: &[TopicState]) -> Result<()> {
+        if states.is_empty() {
+            return Ok(());
+        }
+
+        let contents: Vec<&str> = states.iter().map(|state| state.content.as_str()).collect();
+        off_the_runtime(|| {
+            let embeddings = self.embedding()?.embed_passages(&contents)?;
+            let documents: Vec<(TopicId, &str, &[f32])> = states
+                .iter()
+                .zip(&embeddings)
+                .map(|(state, embedding)| {
+                    (state.topic_id, state.content.as_str(), embedding.as_slice())
+                })
+                .collect();
+            self.index().upsert_batch(&documents)
+        })?;
+        Ok(())
+    }
+
     /// Records one memory: the filter's verdict, its language, and one
     /// transaction.
     ///
