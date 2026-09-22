@@ -379,11 +379,17 @@ server remembers a query's vector, so asking the same thing twice costs the
 
 `fast` is the default, on latency: 359 ms against `accurate`'s 1522. It is also
 **the only tier that measurably damages same-language ranking** — −0.0060 at
-`p = 0.0008`, nineteen queries worse against three better — so a workspace whose
-memories are all in one language should set `off`. Only the candidates the
-lexical channels missed are reranked, and those are overwhelmingly the ones
-written in another language; on a single-language corpus the pass has nothing to
-recover and reorders what was already right.
+`p = 0.0008`, nineteen queries worse against three better.
+
+**That is not a reason to set `off` on a single-language workspace, and this
+page used to say it was.** The same-language column above comes from parallel
+text, where it is *the same 1,190 queries* as the cross-lingual column scored
+against a different answer key — so every query in it still has correct answers
+in ten other languages sitting in the index, which a real single-language
+workspace does not. On the one genuinely single-language corpus measured, at
+this profile, the pass **gains** 0.0201 at `fast` and 0.0496 at `accurate`. Set
+`off` to buy back 260 ms if you want the latency; do not set it expecting
+better ranking.
 
 `accurate` is the tier to ask for when a second a search is affordable: the
 largest cross-lingual gain measured here and the only one that costs nothing on
