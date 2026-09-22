@@ -177,8 +177,9 @@ pub struct FusedResult {
 ///   names normalisation as the dominant factor.
 ///
 /// So the alternatives are implemented and measured here rather than argued
-/// about. [`Fusion::with`] selects one; `Reciprocal` is what ships until a
-/// sweep says otherwise.
+/// about. [`Fusion::with`] selects one, and the sweep has since run:
+/// [`Banded`](Self::Banded) is what ships, and what each of the others is
+/// worth against it is recorded on its own variant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Combine {
     /// `sum over channels of weight / (k + rank)`.
@@ -544,9 +545,10 @@ impl Fusion {
 
     /// Combines the channels this way instead of by reciprocal rank.
     ///
-    /// See [`Combine`] for what the choices are and what the literature says
-    /// about them. `Reciprocal` ships; the others exist to be measured against
-    /// it on all three corpora before any of that is believed here.
+    /// See [`Combine`] for what the choices are, what the literature says
+    /// about them, and what each is worth measured. [`Combine::Banded`] ships;
+    /// the others are kept so a change to the default is a comparison against
+    /// something rather than a claim.
     pub fn with(mut self, combine: Combine) -> Self {
         self.combine = combine;
         self
