@@ -527,7 +527,11 @@ impl Fusion {
         // Read as a maximum rather than taken from the head of the list,
         // because the graph channel's score is not its sort key and this should
         // not quietly depend on which channel it is looking at.
-        let Some(best) = rescale(candidates)
+        // `None` rather than the channel's declared scale, and it costs
+        // nothing: this reads `standardised` only, which is centred on the
+        // channel's own mean and divided by its own deviation whatever scale
+        // the score is on.
+        let Some(best) = rescale(candidates, None)
             .into_iter()
             .filter_map(|scaled| scaled.standardised)
             .reduce(f32::max)
@@ -615,7 +619,7 @@ impl Fusion {
             // channel's own mean, deviation, minimum and maximum, so
             // recomputing them inside the loop would be the same numbers at
             // fifty times the cost.
-            let scaled = rescale(&list.candidates);
+            let scaled = rescale(&list.candidates, list.channel.calibrated());
 
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
@@ -677,15 +681,10 @@ struct Scaled {
 ///
 /// Positionally aligned with the candidates. Computed once per channel because
 /// every value in it is a property of the channel rather than of a candidate.
-fn rescale(candidates: &[Scored]) -> Vec<Scaled> {
-    let empty = || {
-        vec![
-            Scaled {
-                of: candidates.len(),
-                ..Scaled::default()
-            };
-            candidates.len()
-        ]
+fn rescale(candidates: &[Scored], calibrated: Option<(f32, f32)>) -> Vec<Scaled> {
+    let blank = Scaled {
+        of: candidates.len(),
+        ..Scaled::default()
     };
 
     let scores: Vec<f32> = candidates
@@ -693,7 +692,7 @@ fn rescale(candidates: &[Scored]) -> Vec<Scaled> {
         .filter_map(|candidate| candidate.score)
         .collect();
     if scores.len() != candidates.len() || scores.is_empty() {
-        return empty();
+        return vec![blank; candidates.len()];
     }
 
     let count = scores.len() as f32;
@@ -706,15 +705,31 @@ fn rescale(candidates: &[Scored]) -> Vec<Scaled> {
         .sqrt();
     let least = scores.iter().copied().fold(f32::MAX, f32::min);
     let most = scores.iter().copied().fold(f32::MIN, f32::max);
-    if deviation <= f32::EPSILON || most - least <= f32::EPSILON {
-        return empty();
-    }
+
+    // Two different questions, and they fail separately.
+    //
+    // `standardised` asks how far a candidate stands from its channel's own
+    // field, which a channel whose candidates all scored the same cannot
+    // answer at any scale. That one is `None` when the deviation vanishes,
+    // whatever the channel is.
+    //
+    // `within` asks where a candidate falls on the scale its score is on, and
+    // for a channel that declares a calibrated range there *is* an answer in
+    // that case: fifty candidates all at 0.5 are all at the middle of `[0, 1]`,
+    // which is the whole point of a score that means the same thing on every
+    // query. Only an empirical min-max has nothing to divide by.
+    let spread = (deviation > f32::EPSILON).then_some(deviation);
+    let scale = match calibrated {
+        Some((low, high)) if high - low > f32::EPSILON => Some((low, high - low)),
+        Some(_) => None,
+        None => (most - least > f32::EPSILON).then_some((least, most - least)),
+    };
 
     scores
         .into_iter()
         .map(|score| Scaled {
-            standardised: Some((score - mean) / deviation),
-            within: Some((score - least) / (most - least)),
+            standardised: spread.map(|deviation| (score - mean) / deviation),
+            within: scale.map(|(low, width)| ((score - low) / width).clamp(0.0, 1.0)),
             of: candidates.len(),
         })
         .collect()
@@ -946,6 +961,116 @@ mod tests {
             level.with(Combine::StandardisedTimesVotes).fuse(&lists)[0].topic,
             agreed,
             "and CombMNZ should follow the agreement, which is the whole disagreement"
+        );
+    }
+
+    /// A calibrated channel votes as loudly as its evidence, not as loudly as
+    /// its best candidate.
+    ///
+    /// The defect this fixes, stated in the numbers it changes. The graph
+    /// channel's score is `confidence * decay^(hops - 1)` over a schema-bounded
+    /// `(0, 1]`, so 0.5 means "one derived mention" on every query. Min-maxed
+    /// inside a query, whatever the best path happened to be became the top of
+    /// the band -- so a channel whose only path was a single weak guess
+    /// contributed exactly what a channel that found an explicit assertion
+    /// contributed, and a channel with nothing good to say could not say so.
+    #[test]
+    fn a_calibrated_channel_cannot_promote_a_weak_path_to_the_top_of_the_band() {
+        let contribution = |scores: &[f32]| -> f32 {
+            let lists = [ChannelResults::new(
+                Channel::Graph,
+                scores
+                    .iter()
+                    .enumerate()
+                    .map(|(n, score)| Scored::new(id(n as u8 + 1), *score))
+                    .collect(),
+            )];
+            Fusion::default().fuse(&lists)[0].score
+        };
+
+        // Three explicit one-hop assertions against three weak derived ones.
+        let strong = contribution(&[1.0, 0.9, 0.8]);
+        let weak = contribution(&[0.1, 0.09, 0.08]);
+        assert!(
+            strong > weak,
+            "a channel holding explicit assertions should outvote one holding \
+             guesses: {strong} against {weak}"
+        );
+
+        // And the arithmetic is the declared scale rather than the query's own
+        // extremes. Over three candidates at `k = 10` the band runs from
+        // `(11/13) / 11` to `1 / 11`; the weak list's best candidate is a tenth
+        // of the way up `[0, 1]`, so it lands at `(11/13 + 0.154 * 0.1) / 11`
+        // and not at the top. Min-maxed it would have been the top exactly,
+        // because min-maxing maps a list's best candidate to one whatever it
+        // scored -- which is the whole defect.
+        let top = 1.0 / (DEFAULT_K + 1.0);
+        assert!(
+            weak < top,
+            "the weak list's best path still took the top of the band: \
+             {weak} against {top}"
+        );
+        assert!(
+            (strong - top).abs() < 1e-6,
+            "and the strong list's best path, at 1.0 of its declared range, \
+             should be the top: {strong} against {top}"
+        );
+    }
+
+    /// A calibrated channel whose candidates all score the same still says
+    /// where that is, rather than falling back to the order it was handed.
+    ///
+    /// The second half of the same defect, and the one that was live in
+    /// production. Every edge the write path derives is a `Mentions` at the
+    /// same confidence, and the walk stops at one hop whenever one hop fills
+    /// the channel's depth -- so every candidate scored identically, the
+    /// empirical minimum equalled the maximum, and fusion fell back to rank.
+    /// The rank came from a sort whose only live tie-break, once distance and
+    /// confidence were constant, was the topic's identifier: the head of a
+    /// search was being ordered by UUID, at full weight.
+    ///
+    /// Now they tie, which is what identical evidence should produce, and the
+    /// identifier decides only the order among equals -- which is what
+    /// `sort_results`' tie-break is for and is documented as.
+    #[test]
+    fn a_calibrated_channel_with_nothing_to_separate_does_not_fall_back_to_rank() {
+        let identical: Vec<Scored> = (1..=6).map(|n| Scored::new(id(n), 0.5)).collect();
+        let fused =
+            Fusion::default().fuse(&[ChannelResults::new(Channel::Graph, identical.clone())]);
+
+        let first = fused[0].score;
+        assert!(
+            fused.iter().all(|result| result.score == first),
+            "identical evidence produced different contributions: {fused:?}"
+        );
+
+        // Where it ties is the middle of the band, because 0.5 is the middle
+        // of the declared range -- not its top and not its bottom.
+        let strong = Fusion::default().fuse(&[ChannelResults::new(
+            Channel::Graph,
+            (1..=6).map(|n| Scored::new(id(n), 1.0)).collect(),
+        )])[0]
+            .score;
+        let faint = Fusion::default().fuse(&[ChannelResults::new(
+            Channel::Graph,
+            (1..=6).map(|n| Scored::new(id(n), 0.01)).collect(),
+        )])[0]
+            .score;
+        assert!(
+            faint < first && first < strong,
+            "the middle of the range should sit between its ends: \
+             {faint} < {first} < {strong}"
+        );
+
+        // An uncalibrated channel keeps the old behaviour, so this is a
+        // property of the declaration and not a change to fusion itself.
+        let lexical = Fusion::default()
+            .with_weight(Channel::LexicalSegmented, 1.0)
+            .fuse(&[ChannelResults::new(Channel::LexicalSegmented, identical)]);
+        assert!(
+            lexical[0].score > lexical[5].score,
+            "an uncalibrated channel with nothing to separate still falls back \
+             to rank, which is what it has: {lexical:?}"
         );
     }
 

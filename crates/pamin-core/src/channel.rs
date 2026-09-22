@@ -29,6 +29,47 @@ pub enum Channel {
 }
 
 impl Channel {
+    /// The range this channel's score means the same thing over, if any.
+    ///
+    /// **Bounded is not the same as calibrated, and only one of the two is
+    /// useful here.** A cosine similarity is bounded on `[-1, 1]` and a BM25
+    /// score is not bounded at all, but neither is *calibrated*: a cosine of
+    /// 0.7 does not mean a fixed thing from one query to the next, and the
+    /// fifty candidates a query returns cluster into a narrow part of the range
+    /// that moves with the query. Normalising those against their theoretical
+    /// bounds would compress a channel's whole list into one corner of the
+    /// band and destroy its internal ordering, which is the opposite of what
+    /// is wanted.
+    ///
+    /// The graph channel is different, and it is the only one. Its score is
+    /// `confidence * decay^(hops - 1)`, where `confidence` is constrained by
+    /// the schema to `(0, 1]` and the decay is a constant. So 0.5 means "one
+    /// derived mention" on every query in every project, 0.25 means "two hops
+    /// of them", and 1.0 means "an edge somebody asserted outright". That is a
+    /// quantity a normaliser must not touch: min-maxing it inside one query
+    /// maps whatever the best path happened to be onto the top of the band, so
+    /// a channel whose only path is a single weak guess votes exactly as
+    /// loudly as one that found an explicit assertion, and a channel with
+    /// nothing good to say cannot say so.
+    ///
+    /// Worse, in production it is degenerate. Every edge the write path
+    /// derives is a `Mentions` at the same 0.5, and the walk stops at one hop
+    /// whenever one hop fills the channel's depth -- so every candidate scores
+    /// 0.5, the empirical minimum equals the maximum, and fusion falls back to
+    /// ranking by the order the walk returned. That order's live tie-break,
+    /// once distance and confidence are constant, is the topic's identifier.
+    /// **A channel was ordering the head of a search by UUID.**
+    pub fn calibrated(self) -> Option<(f32, f32)> {
+        match self {
+            // BM25 is unbounded above and scale-free; a cosine similarity is
+            // bounded and query-relative. See above for why neither qualifies.
+            Self::LexicalSegmented | Self::LexicalNgram | Self::Vector => None,
+            // `confidence` is `(0, 1]` by a schema constraint and the hop
+            // decay only ever reduces it.
+            Self::Graph => Some((0.0, 1.0)),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::LexicalSegmented => "lexical_segmented",
