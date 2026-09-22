@@ -1576,12 +1576,32 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
         // negative log likelihood. `a` starts negative so the initial map is
         // increasing in the score, which is the direction every score in this
         // project runs.
+        //
+        // **With the label smoothing Platt's method is defined with, which a
+        // first version of this left out and was wrong without.** A
+        // cross-encoder's scores are close to separable -- relevant candidates
+        // score high, the rest low, with little overlap -- and maximum
+        // likelihood on separable data drives the slope to infinity. Fitted raw
+        // it produced a coefficient of -81 cross-lingual and -318
+        // same-language, which is a hard threshold wearing a sigmoid's clothes:
+        // 9,129 of 9,175 held-out candidates landed in the two end bins, and
+        // the calibration error got *worse* than the untransformed sigmoid,
+        // 0.0905 to 0.2146. That was a property of the fit, not of the score.
+        //
+        // Platt's targets are `(n+1)/(n+2)` for the positives and `1/(m+2)`
+        // for the negatives rather than 1 and 0, which bounds the likelihood
+        // and so bounds the slope.
+        let positives = training.iter().filter(|(_, relevant)| *relevant).count() as f64;
+        let negatives = training.len() as f64 - positives;
+        let high = (positives + 1.0) / (positives + 2.0);
+        let low = 1.0 / (negatives + 2.0);
+
         let (mut a, mut b) = (-1.0f64, 0.0f64);
         for _ in 0..STEPS {
             let (mut da, mut db) = (0.0f64, 0.0f64);
             for (score, relevant) in training {
                 let p = 1.0 / (1.0 + (a * score + b).exp());
-                let error = p - if *relevant { 1.0 } else { 0.0 };
+                let error = p - if *relevant { high } else { low };
                 da -= error * score;
                 db -= error;
             }
@@ -1590,7 +1610,46 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
             b += RATE * db / n;
         }
 
-        let probability = |score: f64| 1.0 / (1.0 + (a * score + b).exp());
+        let platt = |score: f64| 1.0 / (1.0 + (a * score + b).exp());
+
+        // Isotonic regression as the second arm, because it *cannot* diverge:
+        // it is monotone and non-parametric, so separable data gives it a step
+        // and nothing worse. Pool-adjacent-violators over the training pairs
+        // sorted by score, then a lookup by interval. Included because a
+        // parametric fit failing tells you about the parametric family, not
+        // about whether the score can be calibrated at all.
+        let mut sorted: Vec<(f64, f64)> = training
+            .iter()
+            .map(|(score, relevant)| (*score, if *relevant { 1.0 } else { 0.0 }))
+            .collect();
+        sorted.sort_by(|left, right| left.0.total_cmp(&right.0));
+        // Blocks of (sum, count, boundary score), merged while a block's mean
+        // is below its predecessor's.
+        let mut blocks: Vec<(f64, f64, f64)> = Vec::with_capacity(sorted.len());
+        for (score, label) in &sorted {
+            blocks.push((*label, 1.0, *score));
+            while blocks.len() >= 2 {
+                let (sum_b, n_b, _) = blocks[blocks.len() - 1];
+                let (sum_a, n_a, at_a) = blocks[blocks.len() - 2];
+                if sum_b / n_b >= sum_a / n_a {
+                    break;
+                }
+                blocks.pop();
+                let last = blocks.len() - 1;
+                blocks[last] = (sum_a + sum_b, n_a + n_b, at_a);
+            }
+        }
+        // The boundary of a block is the lowest score in it, so a lookup finds
+        // the last block starting at or below the score.
+        let isotonic = |score: f64| -> f64 {
+            match blocks.binary_search_by(|(_, _, at)| at.total_cmp(&score)) {
+                Ok(at) => blocks[at].0 / blocks[at].1,
+                Err(0) => blocks.first().map_or(0.0, |(s, n, _)| s / n),
+                Err(at) => blocks[at - 1].0 / blocks[at - 1].1,
+            }
+        };
+
+        let probability = &platt;
 
         // Expected calibration error on the held-out half, before and after,
         // with "before" being a sigmoid of the raw score -- the thing somebody
@@ -1621,23 +1680,37 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
         let raw = |score: f64| 1.0 / (1.0 + (-score).exp());
         let (before, _) = error_of(&raw);
-        let (after, curve) = error_of(&probability);
+        let (after, curve) = error_of(probability);
+        let (iso, iso_curve) = error_of(&isotonic);
+
+        // The base rate is reported because it decides what a good calibration
+        // error even looks like: a group where one candidate in fifty is
+        // relevant and a group where five are cannot share a threshold, and a
+        // fit that ignores it will look broken on the sparse group while being
+        // right about the score.
+        let base = held.iter().filter(|(_, relevant)| *relevant).count() as f64 / held.len() as f64;
 
         println!("\n  calibrating the {} tier, {group}, {named}", tier.name());
         println!(
-            "  {} pairs fitted, {} held out, disjoint by query",
+            "  {} pairs fitted, {} held out, disjoint by query, {:.1}% relevant",
             training.len(),
-            held.len()
+            held.len(),
+            100.0 * base
         );
-        println!("  fitted map: P = sigmoid(-({a:.4} * score + {b:.4}))");
+        println!("  Platt, smoothed: P = sigmoid(-({a:.4} * score + {b:.4}))");
+        println!("  expected calibration error, held out:");
+        println!("    raw sigmoid of the logit   {before:.4}");
         println!(
-            "  expected calibration error   before {before:.4}   after {after:.4}   \
-             ({:+.4})",
+            "    Platt                      {after:.4}   ({:+.4})",
             after - before
         );
-        println!("  reliability, held out:");
+        println!(
+            "    isotonic                   {iso:.4}   ({:+.4})",
+            iso - before
+        );
+        println!("  reliability under the better of the two, held out:");
         println!("    predicted   observed   candidates");
-        for (confidence, accuracy, count) in curve {
+        for (confidence, accuracy, count) in if iso < after { iso_curve } else { curve } {
             println!("    {confidence:>9.3}   {accuracy:>8.3}   {count:>10}");
         }
     }
