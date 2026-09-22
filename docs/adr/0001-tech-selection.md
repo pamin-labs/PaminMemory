@@ -413,11 +413,38 @@ pass over each corpus — `channels::as_if` replays a run's trace through the
 shipped `fuse`, so a grid that used to cost thirteen minutes a row costs
 microseconds a row.
 
-**The first corpus has reported, and it separates the two mechanisms.** On this
-project's own cross-lingual group, against the reciprocal rank fusion that
-ships: a weighted sum of standardised scores is **+0.0281 at 15 wins to 1,
-p = 0.0037**, taking 0.7910 to 0.8192 against the vector channel's own 0.8268 —
-so most of the gap this section opens closes by adding scores instead of ranks.
+**Both mechanisms have now been measured on all three corpora, and neither
+ships.** The combiner is the near miss and it is worth stating exactly, because
+it was made the default before the gates caught it.
+
+On nDCG@10 a weighted sum of standardised scores is better in three of four
+groups and significantly so — **+0.0281 on this project's own cross-lingual
+group (15 wins, 1 loss, p = 0.0037), +0.0134 on XQuAD-R's (448 / 120,
+p = 0.0001), +0.0177 on XQuAD-R's same-language group (142 / 106, p = 0.0001)**
+— and not significantly worse anywhere, MIRACL being −0.0043 at p = 0.1632.
+That is the first setting in this project's history that is not a two-sided
+trade, and it takes this project's own cross-lingual group from 0.7910 to
+0.8192 against the vector channel's own 0.8268.
+
+**Then XQuAD-R's cross-lingual `recall@50` fell from 0.8960 to 0.7765, through
+a floor of 0.8000, and the default went back.** The mechanism is the sign:
+every reciprocal-rank contribution is positive, so a candidate one channel
+ranked fiftieth still helps it stay in the list, whereas a standardised score
+is centred and a candidate below its channel's own mean contributes a
+*negative* number. On a cross-lingual query, where a lexical channel scores
+0.0366 alone, that channel's confident top hit at `+2` outranks a genuine deep
+hit from the vector channel at `-1`: the top ten improves because strong vector
+hits dominate it, and the sentences that sat between ranks ten and fifty fall
+past fifty. A precision-for-recall trade is one a search feeding a reranker
+cannot take — nothing recovers a memory that was never returned. A floor under
+each contribution, or normalising to `[0, 1]` rather than centring, would
+change that; neither is what the published work measured, so neither is
+implemented.
+
+**The offline grid that nearly let it through printed nDCG@10 and nothing
+else**, while the gates assert nDCG *and* recall. Forty variants were priced on
+half the criterion. It prints both now, and the note beside it says so in the
+words of the figure that got through.
 Per-channel confidence on top of rank fusion is the weaker mechanism: +0.0118
 at best (8 wins, 0 losses, p = 0.0381) with a narrow plateau, which by
 *Balancing the Blend*'s own reading is what fitting a development set looks

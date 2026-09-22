@@ -178,11 +178,38 @@ against the reciprocal rank fusion that ships:
 | the same, times the number of channels that found it (CombMNZ) | 0.7519 | −0.0392, 3 / 21, p = 0.0008 |
 | *the vector channel alone, for reference* | *0.8268* | — |
 
-**Adding scores rather than ranks is worth a significant +0.0281 here, and it
-closes most of the gap the section above opens** — fusion was 0.0358 behind the
-vector channel alone and is now 0.0076 behind it. A rank cannot express a
-margin: a candidate its channel put a long way clear of the field and one that
-merely came first in a flat list both contribute `weight / (k + 1)`.
+**Adding scores rather than ranks is worth a significant +0.0281 here on
+nDCG@10** — fusion was 0.0358 behind the vector channel alone and is 0.0076
+behind it that way. A rank cannot express a margin: a candidate its channel put
+a long way clear of the field and one that merely came first in a flat list both
+contribute `weight / (k + 1)`.
+
+**It still does not ship, and the reason is recall rather than nDCG.** Read
+across all three corpora the standardised sum is better on nDCG@10 in three of
+four groups, significantly, and worse in none — the first setting in this
+project's history that is not a trade. It was made the default on that reading
+and the accuracy gates rejected it: **XQuAD-R's cross-lingual `recall@50` fell
+from 0.8960 to 0.7765, through a floor of 0.8000.**
+
+The mechanism is the sign. Every reciprocal-rank contribution is positive, so a
+candidate one channel ranked fiftieth still helps it stay in the list. A
+standardised score is centred, so a candidate below its channel's own mean
+contributes a *negative* number — and on a cross-lingual query, where a lexical
+channel scores 0.0366 on its own, that channel's confident top hit at `+2`
+outranks a genuine deep hit from the vector channel at `-1`. The top ten
+improves because strong vector hits dominate it; the tail fills with lexical
+noise and the relevant sentences that sat between ranks ten and fifty fall past
+fifty.
+
+So it is a precision-for-recall trade, and a search that hands its results to a
+reranker cannot afford one: nothing recovers a memory that was never returned.
+What would make it shippable is a floor under each contribution, or normalising
+to `[0, 1]` instead of centring — neither of which is what the published work
+measured, so neither is implemented.
+
+**And the grid that nearly let it through printed nDCG and nothing else.** The
+gates assert both metrics; forty variants were being priced on one. It prints
+recall@50 now.
 
 **CombMNZ is significantly worse, and that was predicted before the run.** The
 systematic comparison of ten combiners ranks it first on all four of its
@@ -202,13 +229,28 @@ channel rather than silencing it.
 The other two groups of this corpus sit on their ceilings (1.0000 and 0.9940)
 and separate nothing.
 
-**MIRACL disagrees, and the disagreement is the finding.** On 482 real
-single-language queries, `speed` profile, every combiner is indistinguishable
-from what ships: standardised scores −0.0043 (45 wins, 49 losses, p = 0.1632)
-and CombMNZ −0.0059 (p = 0.2675). Adding scores instead of ranks is worth a
-great deal on cross-lingual queries and nothing measurable on single-language
-ones, which is the same split the channel table above reports — the mechanism
-helps exactly where fusion was hurting.
+**MIRACL and XQuAD-R fill the picture in.** On 482 real single-language
+queries, `speed` profile, every combiner is indistinguishable from what ships:
+standardised scores −0.0043 (45 wins, 49 losses, p = 0.1632) and CombMNZ
+−0.0059 (p = 0.2675). Adding scores instead of ranks is worth a great deal on
+cross-lingual queries and nothing measurable on single-language ones, which is
+the same split the channel table above reports — the mechanism helps exactly
+where fusion was hurting.
+
+**And CombMNZ is the reverse of itself between the two XQuAD-R groups**, which
+is the cleanest statement of the whole problem this page describes. Over the
+same 1,190 questions it is −0.0350 cross-lingual (122 wins, 601 losses,
+p = 0.0001) and **+0.0700 same-language** (265 / 26, p = 0.0001) — the largest
+single gain measured anywhere here. CombMNZ multiplies by how many channels
+found a candidate, so it is a bet that agreement is evidence. Same-language,
+the channels that agree are independently good — segmented BM25 alone scores
+0.7299 against the vector channel's 0.6787 — and the bet pays. Cross-lingual,
+the lexical channels score 0.0366 and 0.0106 alone, so their agreement with the
+vector channel is coincidence and the bet fails by the same mechanism that
+makes fusion worse than one of its channels there. **Agreement is evidence only
+when the channels agreeing are independently right**, which is why the
+systematic comparison that ranks CombMNZ first of ten combiners is not wrong
+about its own corpora and not transferable to these.
 
 **And per-channel confidence does literally nothing there.** At the two lowest
 spreads the change is 0.0000 across all 482 queries, 0 wins and 0 losses; the
