@@ -392,6 +392,31 @@ const FLOORS: &[(&str, f64, f64)] = &[
 ///
 /// The other two corpora are worse: their harnesses name topics *deliberately*
 /// unlike their own text, and say so, so their graph is empty by design.
+///
+/// **The `relational` group exists to end that.** Ten pairs of memories whose
+/// answering half is named by a natural phrase -- `release bucket`,
+/// `platform rota`, `schema migration window` -- and whose other half mentions
+/// that phrase in its prose. Mention derivation therefore fires, and this is
+/// the first corpus in the repository where the graph channel has anything to
+/// walk. Twenty queries, each written so that
+///
+/// - the mentioning memory matches the query and does **not** answer it,
+/// - the mentioned memory answers it and shares almost no wording with it,
+/// - the answer key is the mentioned memory alone, and
+/// - the query does not contain the answering topic's name, which is asserted
+///   where the corpus is built: a query that named it would seed the walk at
+///   the answer and measure nothing.
+///
+/// **What it cannot show.** The vector channel can still partly reach the
+/// answering memory -- "how long do artifacts last" against "objects expire
+/// after ninety days" is a real semantic link, and a corpus where the answer
+/// is genuinely unreachable except through an edge would be a corpus where the
+/// answer does not answer the question. So this group is not a pure graph
+/// test and the graph channel's leave-one-out on it is not a lower bound on
+/// what the channel is worth in general. It is a measurement, against the
+/// other three channels as the baseline, on a premise that is finally true.
+/// Twenty queries also make it a weak one: read the paired counts, not the
+/// mean.
 async fn live_edges(engine: &Engine) -> Vec<(String, i64)> {
     sqlx::query_as(
         "SELECT r.kind, count(*)
@@ -429,11 +454,18 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
     for (kind, count) in &edges {
         println!("    {kind:<14} {count:>8}");
     }
-    if total == 0 {
-        println!(
-            "  NO EDGES. The graph channel has nothing to walk, so its rows below are a \n               property of this corpus and not of the channel. Mention derivation asserts an \n               edge only where one memory's content contains another's name as a contiguous \n               token run, and this corpus names its topics `<subject>_<language>` -- a run no \n               prose contains. Nothing here has ever measured a non-empty graph."
-        );
-    }
+    // The `relational` group is in this corpus precisely so this cannot be
+    // zero, and an assertion rather than a printed warning because a silent
+    // zero is what turned a premise failure into a verdict about the design
+    // once already. If mention derivation stops firing -- a change to
+    // `name_sequence`, to the run bound, to the filter -- this fails here
+    // instead of quietly handing the graph rows back to the corpus.
+    assert!(
+        total > 0,
+        "no edges: the `relational` group's memories mention each other's topic names by \
+         construction, so mention derivation has stopped asserting them and every graph row \
+         below would be a property of this corpus rather than of the channel"
+    );
 
     let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();

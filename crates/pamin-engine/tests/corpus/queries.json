@@ -1093,5 +1093,145 @@
     "relevant": [
       "metric_ndcg10"
     ]
+  },
+  {
+    "group": "relational",
+    "query": "how long do the signed artifacts from a green build last",
+    "relevant": [
+      "release bucket"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "is there an expiry on what the publisher uploads",
+    "relevant": [
+      "release bucket"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "who gets paged when a sev one escalates",
+    "relevant": [
+      "platform rota"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "which person is reached by an escalated sev one on a saturday",
+    "relevant": [
+      "platform rota"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how fast can a nightly database backup be brought back",
+    "relevant": [
+      "cold storage archive"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "does recovering a replicated nightly backup need anyone to approve it",
+    "relevant": [
+      "cold storage archive"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "when are deployments frozen",
+    "relevant": [
+      "schema migration window"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "which hours and which weekday do deploys stop",
+    "relevant": [
+      "schema migration window"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how quickly does the gate on a gradual rollout decide",
+    "relevant": [
+      "feature flag service"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "is a gradual rollout gate answer cached and for how long",
+    "relevant": [
+      "feature flag service"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how far back can a quarterly compliance export reach",
+    "relevant": [
+      "audit log stream"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how many years of history does the compliance export have to read",
+    "relevant": [
+      "audit log stream"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how long until a change to a static asset is visible everywhere",
+    "relevant": [
+      "edge cache"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how many seconds does it take for a static asset purge to reach all regions",
+    "relevant": [
+      "edge cache"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "when does a branch lose its reusable compilation output",
+    "relevant": [
+      "shared build cache"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "after how many idle days is reused compilation dropped",
+    "relevant": [
+      "shared build cache"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how many requests a minute does the gateway allow one tenant",
+    "relevant": [
+      "rate limit budget"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "what burst does a tenant get on a gateway route",
+    "relevant": [
+      "rate limit budget"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "how often are service account credentials replaced",
+    "relevant": [
+      "secret rotation schedule"
+    ]
+  },
+  {
+    "group": "relational",
+    "query": "does replacing a service account credential need a person",
+    "relevant": [
+      "secret rotation schedule"
+    ]
   }
 ]

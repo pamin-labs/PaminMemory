@@ -1048,5 +1048,105 @@
     "topic": "noise_lock_canal",
     "content": "the canal lock takes eleven minutes to fill and there is no way to hurry it",
     "language": "en"
+  },
+  {
+    "topic": "release bucket",
+    "content": "objects in it expire after ninety days and the expiry cannot be set per team",
+    "language": "en"
+  },
+  {
+    "topic": "artifact publishing_en",
+    "content": "the publisher uploads signed artifacts to the release bucket after every green build",
+    "language": "en"
+  },
+  {
+    "topic": "platform rota",
+    "content": "it pages ines on weekends and mikhail on weekdays",
+    "language": "en"
+  },
+  {
+    "topic": "incident escalation_en",
+    "content": "a sev one escalates to the platform rota within five minutes",
+    "language": "en"
+  },
+  {
+    "topic": "cold storage archive",
+    "content": "restores from it take up to six hours and have to be requested by a person",
+    "language": "en"
+  },
+  {
+    "topic": "backup destination_en",
+    "content": "nightly database backups are replicated to the cold storage archive",
+    "language": "en"
+  },
+  {
+    "topic": "schema migration window",
+    "content": "it runs between two and four in the morning utc and only on tuesdays",
+    "language": "en"
+  },
+  {
+    "topic": "deploy freeze_en",
+    "content": "deployments are frozen during the schema migration window",
+    "language": "en"
+  },
+  {
+    "topic": "feature flag service",
+    "content": "it evaluates rules in under a millisecond and caches each answer for thirty seconds",
+    "language": "en"
+  },
+  {
+    "topic": "rollout control_en",
+    "content": "gradual rollouts are gated by the feature flag service",
+    "language": "en"
+  },
+  {
+    "topic": "audit log stream",
+    "content": "it keeps events for seven years in an append only store",
+    "language": "en"
+  },
+  {
+    "topic": "compliance export_en",
+    "content": "the quarterly compliance export reads from the audit log stream",
+    "language": "en"
+  },
+  {
+    "topic": "edge cache",
+    "content": "a purge takes up to ninety seconds to reach every region",
+    "language": "en"
+  },
+  {
+    "topic": "static asset delivery_en",
+    "content": "static assets are served from the edge cache",
+    "language": "en"
+  },
+  {
+    "topic": "shared build cache",
+    "content": "entries are evicted after fourteen days with no reads",
+    "language": "en"
+  },
+  {
+    "topic": "build speed_en",
+    "content": "compilation reuses the shared build cache across branches",
+    "language": "en"
+  },
+  {
+    "topic": "rate limit budget",
+    "content": "each tenant gets six hundred requests a minute and may burst to nine hundred",
+    "language": "en"
+  },
+  {
+    "topic": "api gateway_en",
+    "content": "the gateway enforces the rate limit budget on every route",
+    "language": "en"
+  },
+  {
+    "topic": "secret rotation schedule",
+    "content": "every credential is replaced on the first of the month without anyone asking",
+    "language": "en"
+  },
+  {
+    "topic": "credential handling_en",
+    "content": "service accounts follow the secret rotation schedule",
+    "language": "en"
   }
 ]
