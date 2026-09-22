@@ -340,10 +340,20 @@ for that shape — configuration rather than a new algorithm, because that is
 what the measurements actually say.
 [measured.md](docs/measured.md) has every figure.
 
-**Two thirds of the database has not been looked at.** `source_versions` is
-16.7% of it and unexamined; `topic_states` carries a duplicate of
-`topics.content` measured at 10.2% of a workspace. The queue that used to be
-38.7% is fixed.
+**One table is provably storing the same bytes twice, and most of the rest has
+never been examined.** `topic_states.content` is **100% derivable from the span
+it already points at** — verified byte-for-byte across all 425,916 rows of the
+evaluation workspace, with no exceptions, at 94 MB of content. The read path
+already joins `source_spans`; what is missing is one join to `source_versions`,
+a substring in the column macro, and a migration to drop the column. It is
+scoped as its own change because a schema migration does not belong in a branch
+about anything else. `source_versions` at 16.7% of the database has not been
+looked at once. The queue that used to be 38.7% is fixed.
+
+A caution that belongs with all of it: a `DELETE` returns space to PostgreSQL
+for reuse, not to the filesystem. Work on this axis stops a database growing
+and lets it reuse what it holds; only `VACUUM FULL` makes the file smaller, and
+nothing here runs one.
 
 **Write latency has never been attributed.** Retrieval is divided into four
 stages and published; the write path is a single number, so there is nothing
@@ -351,7 +361,11 @@ to say about which part of it a round trip would remove.
 
 **Resident memory is measured but not attributed.** 3.6 GB and 7.2 GB are
 published for two corpus sizes and neither is broken down, so nothing here can
-say what a reduction would have to target.
+say what a reduction would have to target. Attribution is the first job on that
+axis rather than optimisation — model weights against index against vector
+graph against connection pools — because optimising the visible part rather
+than the large part is a mistake this project has already made once and
+recorded.
 
 ## Development
 
