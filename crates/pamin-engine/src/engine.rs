@@ -344,6 +344,29 @@ impl Models {
         Ok(reranker)
     }
 
+    /// What a loaded reranker has been asked to do, or `None` if this process
+    /// never loaded that tier.
+    ///
+    /// The handle is cloned out from under the registry lock before the
+    /// reranker's own lock is taken, so asking this while a search is in the
+    /// middle of a forward pass waits for that pass rather than for every
+    /// other tier as well.
+    fn counted(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+        let held = {
+            let rerankers = self
+                .rerankers
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = rerankers.get(&tier)?;
+            Arc::clone(reranker)
+        };
+        Some(
+            held.lock()
+                .expect("the reranker lock is poisoned")
+                .counted(),
+        )
+    }
+
     /// Gives back the embedders no open engine is holding any more.
     ///
     /// **Costs 1.6 GB to hold and 29 MB not to.** Measured on a server over
@@ -1157,6 +1180,17 @@ impl Engine {
     /// rule that quietly does nothing on the commonest shape of query is worse
     /// than a slightly different rule, and this one asks only what the search
     /// already recorded.
+    /// What the reranker at `tier` has done in this process, or `None` if it
+    /// was never loaded.
+    ///
+    /// Here because three deferred decisions turn on these counters and none
+    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
+    /// wants them across a run reads them once at the end: they are lifetime
+    /// totals for the loaded model and are lost when an idle tier is released.
+    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+        self.models.counted(tier)
+    }
+
     pub async fn search_reranked(
         &self,
         query: &str,
