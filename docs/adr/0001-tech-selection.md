@@ -593,26 +593,46 @@ from, arrived at from the other direction, and it is the clearest available
 argument that a calibrated scorer is an enabling piece rather than a
 refinement.
 
-**Why their graph channel pays and this project's contributes exactly
-0.0000.** The graph channel here measures 0.0000 in every group of all three
-corpora, and the natural reading — that graph recall does not help retrieval —
-is not what this comparison supports. Three differences are specific:
+**Why their graph channel pays where this project's has never been shown to.**
+Be careful with the comparison, because the obvious version of it is wrong in
+this project's favour and in its own. The `0.0000` in the leave-one-out table
+above is **not** a measurement of this design: two of the three corpora are
+sentence collections, and the harness names their topics *deliberately* unlike
+anything in their text, so mention derivation finds nothing and the channel is
+handed an empty graph. An arm whose premise is false by construction measures
+the premise, not the channel. The evidence that does exist is thinner and points
+the same way: this project's own corpus has edges and still contributes
+`0.0000`, and the LOCOMO `pamin-ledger` arm — built expressly so the graph could
+reach the rest of an exchange — scored 0.523 against 0.518, twenty-one
+discordant questions against twenty, `p = 1.000`. So the honest position is that
+a graph channel has never been shown to pay here, on two small samples, for a
+reason nothing has isolated.
 
-- **Typed edges.** They keep separate semantic, temporal, causal and entity
-  edge sets and insert an edge only when its relation probability clears 0.60.
-  This project keeps one untyped adjacency.
+Against that, three differences in their design are specific enough to test:
+
+- **Relation type decides traversal, not just provenance.** Nine `EdgeKind`s
+  exist here and `graph::expand` can filter on them, but nothing in the search
+  path ever does: every kind is walked identically, and the only kind the engine
+  ever derives is `Mentions`. Everything else needs an explicit `pamin link`.
+  They insert a typed edge only when its relation probability clears 0.60 and
+  then route per type.
 - **Traversal is gated on predicted need.** Depth is derived per query from a
-  predicted multi-hop requirement rather than fixed, and the budget is
-  allocated across relation views by a predicted usefulness. This project
-  expands a fixed number of hops with a fixed `HOP_DECAY` on every query, so it
-  pays on every query and collects on almost none.
+  predicted multi-hop requirement, and budget is allocated across relation views
+  by a predicted usefulness. Here `Depths::graph` is 2 for every query and
+  `HOP_DECAY` is 0.5 for every arrival, so the walk costs the same on a query
+  that cannot use it as on one that can.
 - **Expansion stops adaptively**, on sufficiency, novelty and contradiction,
-  inside hard caps on nodes, edges, decisions and wall time.
+  inside hard caps on nodes, edges, decisions and wall time. Here the caps exist
+  — `MAX_SEEDS`, `MAX_FRONTIER`, `MAX_DEPTH` — and the stopping rule does not.
 
-So the measured 0.0000 is evidence about this implementation of a graph
-channel, not about the idea. What a working one appears to need is a per-query
-decision about whether to traverse at all — which is the same calibrated
-judgement the fusion and the abstention gap both want, reached a third time.
+What all three share is a per-query decision about whether to do the work at
+all, which is the same calibrated judgement the fusion and the abstention gap
+both want, reached a third time. **And the first thing to do is not a
+refactor**: it is a diagnostic that says what fraction of queries have a
+relevant memory reachable across an edge and *not* already found by another
+channel. If that fraction is near zero on a corpus with a real graph, no
+traversal policy can recover it, and the channel's cost should be removed rather
+than tuned.
 
 **One constant is corpus-dependent, and both values are right.** They seed
 expansion with reciprocal-rank fusion at `k = 60`, the field's convention. This
