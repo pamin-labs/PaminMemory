@@ -1464,7 +1464,7 @@ impl Engine {
             paths.insert(neighbor.topic, neighbor);
         }
 
-        Ok((ChannelResults::new(Channel::Graph, candidates), paths))
+        Ok((ChannelResults::unscored(Channel::Graph, candidates), paths))
     }
 
     /// Rebuilds the projection index from the authority store.
@@ -1707,10 +1707,10 @@ fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
 
     for rank in 0..deepest {
         for list in lists {
-            if let Some(topic) = list.candidates.get(rank)
-                && seen.insert(*topic)
+            if let Some(candidate) = list.candidates.get(rank)
+                && seen.insert(candidate.topic)
             {
-                ranked.push(*topic);
+                ranked.push(candidate.topic);
             }
         }
     }
@@ -1916,11 +1916,11 @@ mod tests {
     #[test]
     fn the_channels_merge_by_rank_and_not_by_channel() {
         let lists = vec![
-            ChannelResults::new(
+            ChannelResults::unscored(
                 Channel::LexicalSegmented,
                 vec![topic(1), topic(2), topic(3)],
             ),
-            ChannelResults::new(Channel::Vector, vec![topic(9), topic(8)]),
+            ChannelResults::unscored(Channel::Vector, vec![topic(9), topic(8)]),
         ];
 
         assert_eq!(
@@ -1935,8 +1935,8 @@ mod tests {
     fn a_topic_two_channels_found_appears_at_its_best_rank() {
         let shared = topic(5);
         let lists = vec![
-            ChannelResults::new(Channel::LexicalSegmented, vec![topic(1), shared]),
-            ChannelResults::new(Channel::Vector, vec![shared, topic(2)]),
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![topic(1), shared]),
+            ChannelResults::unscored(Channel::Vector, vec![shared, topic(2)]),
         ];
 
         assert_eq!(
@@ -1950,8 +1950,8 @@ mod tests {
     #[test]
     fn a_deeper_channel_keeps_the_rest_of_its_list() {
         let lists = vec![
-            ChannelResults::new(Channel::LexicalSegmented, vec![topic(1)]),
-            ChannelResults::new(Channel::Vector, vec![topic(7), topic(8), topic(9)]),
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![topic(1)]),
+            ChannelResults::unscored(Channel::Vector, vec![topic(7), topic(8), topic(9)]),
         ];
 
         assert_eq!(

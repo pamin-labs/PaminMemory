@@ -39,15 +39,56 @@ impl Channel {
     }
 }
 
+/// One candidate as a channel ranked it, with whatever the channel scored it.
+///
+/// The score is the channel's own quantity in the channel's own units -- a BM25
+/// score from one of the lexical channels, a similarity from the vector one --
+/// and it is never comparable across channels. It travels anyway, for the
+/// reason [`ChannelResults`] gives.
+///
+/// `None` means this channel has no score to give, which is a different claim
+/// from a score of zero. The graph channel is the case: it reaches a topic
+/// across edges rather than scoring it against a query, so a zero there would
+/// assert a measurement nobody took.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scored {
+    pub topic: TopicId,
+    pub score: Option<f32>,
+}
+
+impl Scored {
+    pub fn new(topic: TopicId, score: f32) -> Self {
+        Self {
+            topic,
+            score: Some(score),
+        }
+    }
+
+    /// A candidate from a channel that does not score.
+    pub fn unscored(topic: TopicId) -> Self {
+        Self { topic, score: None }
+    }
+}
+
 /// One channel's ranked candidates, best first.
 ///
-/// Ranks travel; scores do not. BM25 scores and vector distances are not
-/// comparable quantities, and rank fusion is what lets them be combined without
-/// pretending they are.
+/// Ranks are what fusion combines, and that has not changed: a BM25 score and a
+/// vector similarity are not comparable quantities, and rank fusion is what
+/// lets them be combined without pretending they are.
+///
+/// Scores travel alongside them all the same, because the thing rank fusion
+/// cannot express is *how sure a channel is*. A channel's first candidate
+/// contributes `weight / (k + 1)` whether it found the answer or merely found
+/// the least bad of fifty wrong ones, so fusion has no way to tell a confident
+/// channel from one that is guessing -- measured on two corpora as fusing all
+/// four channels ranking below the vector channel by itself on exactly the
+/// queries where the lexical pair has nothing to say. A channel's confidence is
+/// legible only in the spread of its own scores, which is why they are carried
+/// even though they are not summed.
 #[derive(Clone, Debug)]
 pub struct ChannelResults {
     pub channel: Channel,
-    pub candidates: Vec<TopicId>,
+    pub candidates: Vec<Scored>,
 }
 
 impl Channel {
@@ -65,10 +106,27 @@ impl Channel {
 }
 
 impl ChannelResults {
-    pub fn new(channel: Channel, candidates: Vec<TopicId>) -> Self {
+    pub fn new(channel: Channel, candidates: Vec<Scored>) -> Self {
         Self {
             channel,
             candidates,
         }
+    }
+
+    /// The same candidates from a channel that does not score, in the same
+    /// order.
+    pub fn unscored(channel: Channel, candidates: Vec<TopicId>) -> Self {
+        Self::new(
+            channel,
+            candidates.into_iter().map(Scored::unscored).collect(),
+        )
+    }
+
+    /// The candidates as topics, best first.
+    ///
+    /// For the callers that only need the ordering -- seeding the graph walk,
+    /// and anything asking which topics a channel proposed at all.
+    pub fn topics(&self) -> impl Iterator<Item = TopicId> + '_ {
+        self.candidates.iter().map(|candidate| candidate.topic)
     }
 }

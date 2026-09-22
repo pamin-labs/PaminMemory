@@ -185,7 +185,7 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
 
         found += got
             .iter()
-            .filter(|topic| want.contains(&position(**topic)))
+            .filter(|candidate| want.contains(&position(candidate.topic)))
             .count();
     }
     let recall = found as f64 / (QUERIES * TOP as usize) as f64;

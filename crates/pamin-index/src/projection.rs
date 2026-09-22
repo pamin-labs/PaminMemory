@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
-use pamin_core::TopicId;
+use pamin_core::{Scored, TopicId};
 
 use crate::embedding::Profile;
 use zvec_rust::{
@@ -97,10 +97,10 @@ pub trait Projection {
     fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()>;
 
     /// Word-level lexical recall, best first.
-    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicId>>;
+    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>>;
 
     /// Substring lexical recall over raw text, best first.
-    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicId>>;
+    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<Scored>>;
 
     /// Lexical recall for documents containing every word of a name.
     ///
@@ -110,10 +110,16 @@ pub trait Projection {
     /// two-word name answered by either word alone fills the candidates with
     /// documents carrying only the common half -- so a real match falls off the
     /// end of a bounded list. The caller still confirms each candidate exactly.
+    ///
+    /// Topics rather than the [`Scored`] the recall channels return, and that is
+    /// the point of the difference: the caller confirms every candidate exactly,
+    /// so the ranking is thrown away and a score would be a number nothing
+    /// reads. The three channels above feed fusion, which is the only thing here
+    /// that has a use for one.
     fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicId>>;
 
     /// Semantic recall over dense embeddings, nearest first.
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicId>>;
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
 
     /// Removes these topics.
     ///
@@ -756,7 +762,7 @@ impl ProjectionIndex {
         Ok(doc)
     }
 
-    fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<TopicId>> {
+    fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<Scored>> {
         self.recall_fts(field, query, limit, false)
     }
 
@@ -767,7 +773,7 @@ impl ProjectionIndex {
         query: &str,
         limit: u32,
         every_term: bool,
-    ) -> Result<Vec<TopicId>> {
+    ) -> Result<Vec<Scored>> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -780,10 +786,14 @@ impl ProjectionIndex {
             search.set_fts_params(FtsQueryParams::new(Some("AND"))?)?;
         }
 
-        // Only ranks leave this function. The engine's BM25 scores are not
-        // comparable with vector distances, and rank fusion is what lets the
-        // two be combined without pretending they are.
-        Ok(collect_ids(self.collection.query(&search)?))
+        // The BM25 score leaves with each candidate. It is still not
+        // comparable with a vector distance, and fusion still combines the
+        // channels by rank for exactly that reason -- but this function used to
+        // destroy the score instead of merely declining to compare it, which
+        // left every layer above unable to tell a channel that found the answer
+        // from one that returned the least bad of fifty wrong documents. Reading
+        // it costs one accessor per candidate on a result set already in memory.
+        Ok(collect_scored(self.collection.query(&search)?))
     }
 
     /// Deletes the index directory so the next open starts empty.
@@ -863,28 +873,35 @@ impl Projection for ProjectionIndex {
     /// The query is segmented by the same function that segmented the documents.
     /// Tokenizing the two differently is the standard way to build an index that
     /// never matches.
-    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<TopicId>> {
+    fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>> {
         let segmented = self.segmenter.segment_for_index(query);
         self.recall_text(FIELD_SEGMENTED, &segmented, limit)
     }
 
     /// Substring lexical recall over raw text, ranked by BM25.
-    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<TopicId>> {
+    fn recall_ngram(&self, query: &str, limit: u32) -> Result<Vec<Scored>> {
         self.recall_text(FIELD_NGRAM, query, limit)
     }
 
     /// Word-level recall requiring every word of the name.
     fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicId>> {
         let segmented = self.segmenter.segment_for_index(name);
-        self.recall_fts(FIELD_SEGMENTED, &segmented, limit, true)
+        Ok(self
+            .recall_fts(FIELD_SEGMENTED, &segmented, limit, true)?
+            .into_iter()
+            .map(|candidate| candidate.topic)
+            .collect())
     }
 
     /// Semantic recall over dense embeddings.
     ///
-    /// Returns ranks only, like the lexical channels. A cosine distance and a
-    /// BM25 score are different quantities, and keeping both as ranks is what
-    /// lets one fusion step combine them.
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<TopicId>> {
+    /// Carries the similarity the index computed, as the lexical channels carry
+    /// their BM25 scores. Fusion still combines the four channels by rank -- a
+    /// similarity and a BM25 score are different quantities and summing them
+    /// directly would be meaningless -- but each channel's own scores are the
+    /// only evidence of whether *that* channel is confident, which is a question
+    /// ranks cannot answer. See [`pamin_core::ChannelResults`].
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
         let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
         search.set_output_fields(&[FIELD_ID])?;
         search.set_include_vector(false)?;
@@ -898,7 +915,7 @@ impl Projection for ProjectionIndex {
             false,
             self.storage.refines(),
         ))?;
-        Ok(collect_ids(self.collection.query(&search)?))
+        Ok(collect_scored(self.collection.query(&search)?))
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -1064,11 +1081,19 @@ fn jittered(wait: Duration) -> Duration {
     wait / 2 + (wait / 2).mul_f64(f64::from(nanos % 1_000) / 1_000.0)
 }
 
-fn collect_ids(docs: Vec<Doc>) -> Vec<TopicId> {
+/// The topics a query returned, best first, each with the score it was ranked by.
+///
+/// A document whose primary key does not parse is dropped rather than reported.
+/// The key is a UUID this crate wrote, so an unparseable one means the index is
+/// corrupt in a way a single query cannot act on, and failing recall over it
+/// would take the whole search down for one bad row.
+fn collect_scored(docs: Vec<Doc>) -> Vec<Scored> {
     docs.iter()
-        .filter_map(|doc| doc.get_pk())
-        .filter_map(|pk| uuid::Uuid::parse_str(pk).ok())
-        .map(TopicId::from)
+        .filter_map(|doc| {
+            let pk = doc.get_pk()?;
+            let topic = uuid::Uuid::parse_str(pk).ok()?;
+            Some(Scored::new(TopicId::from(topic), doc.get_score()))
+        })
         .collect()
 }
 
