@@ -729,6 +729,215 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     );
 }
 
+/// Late interaction against the cross-encoder, over the same candidates.
+///
+/// **What makes this a comparison rather than two pipelines.** The shipped
+/// reranker does not rescore a candidate at all unless the candidate reached
+/// the head without lexical evidence -- see `Engine::search_reranked` -- so a
+/// late-interaction arm that reordered the whole head would be scoring a
+/// different set and the difference between the two numbers would be the set.
+/// This reconstructs the same subset from the trace, the same way
+/// [`channels`] reconstructs a channel's list, and writes the new order back
+/// into the same positions. Then the only thing that differs is the scorer.
+///
+/// The premise is asserted rather than assumed: the reranker's own counter
+/// says how many candidates it was offered, and this arm counts its own. If
+/// the reconstruction drifts from `search_reranked`'s rule the two disagree
+/// and this says so instead of reporting a difference that is really a
+/// different subset.
+///
+/// **The latency column here is not the latency of the thing being proposed.**
+/// Late interaction's whole claim is that a document's vectors are computed
+/// when the memory is written, so the query path pays one encoder pass over
+/// the query and then arithmetic. This encodes documents on demand, because
+/// nothing stores them yet, so its document time is the cost of the
+/// arrangement nobody would ship. The two are reported separately for that
+/// reason, and only the query-side figure is comparable with a cross-encoder
+/// pass.
+async fn late_interaction(
+    engine: &Engine,
+    workspace: &Workspace,
+    queries: &[Query<'_>],
+    named: &str,
+) {
+    use pamin_core::Channel;
+    use pamin_index::late::{LateInteraction, max_sim};
+
+    /// The tier the comparison is against: the most accurate one, because a
+    /// replacement has to beat the best rather than the cheapest.
+    const AGAINST: Rerank = Rerank::Accurate;
+
+    let mut model = match LateInteraction::load(&workspace.root().join("models")) {
+        Ok(model) => model,
+        Err(error) => {
+            println!("  the late-interaction model did not load: {error}");
+            return;
+        }
+    };
+
+    let mut fused: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut late: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut cross: BTreeMap<String, Scores> = BTreeMap::new();
+
+    let mut offered = 0usize;
+    let mut query_ms = 0.0;
+    let mut document_ms = 0.0;
+    let mut cross_ms = 0.0;
+    let mut tokens = 0usize;
+
+    for query in queries {
+        // `Rerank::Off`, so this is the order fusion produced and the trace is
+        // the one the tier would have read.
+        let hits = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+            .await
+            .expect("search");
+        let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        score(&mut fused, query, &ranked);
+
+        // `search_reranked`'s own rule, read off the trace.
+        let head = AGAINST.depth().min(hits.len());
+        let unlexical: Vec<usize> = (0..head)
+            .filter(|position| {
+                !hits[*position].result.why.iter().any(|why| {
+                    matches!(
+                        why,
+                        Why::Channel { channel, .. }
+                            if *channel == Channel::LexicalSegmented
+                                || *channel == Channel::LexicalNgram
+                    )
+                })
+            })
+            .collect();
+
+        let documents: Vec<&str> = unlexical
+            .iter()
+            .map(|position| hits[*position].state.content.as_str())
+            .collect();
+
+        if !documents.is_empty() {
+            offered += documents.len();
+
+            let started = std::time::Instant::now();
+            let asked = model.query(query.text()).expect("encoding the query");
+            query_ms += started.elapsed().as_secs_f64() * 1000.0;
+            tokens += asked.len();
+
+            let started = std::time::Instant::now();
+            let encoded = model
+                .documents(&documents)
+                .expect("encoding the candidates");
+            document_ms += started.elapsed().as_secs_f64() * 1000.0;
+
+            let mut order: Vec<usize> = (0..encoded.len()).collect();
+            let scores: Vec<f32> = encoded
+                .iter()
+                .map(|document| max_sim(&asked, document))
+                .collect();
+            // Descending, ties by position, which is the same tie-break the
+            // cross-encoder path uses when two candidates score the same.
+            order.sort_by(|left, right| {
+                scores[*right]
+                    .partial_cmp(&scores[*left])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(left.cmp(right))
+            });
+
+            let mut reordered = ranked.clone();
+            for (slot, taken) in unlexical.iter().zip(&order) {
+                reordered[*slot] = ranked[unlexical[*taken]].clone();
+            }
+            score(&mut late, query, &reordered);
+        } else {
+            // Nothing to rescore is the same ranking, and it has to be counted
+            // rather than skipped or the two columns are over different query
+            // sets.
+            score(&mut late, query, &ranked);
+        }
+
+        let started = std::time::Instant::now();
+        let reranked = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, AGAINST)
+            .await
+            .expect("search");
+        cross_ms += started.elapsed().as_secs_f64() * 1000.0;
+        score(
+            &mut cross,
+            query,
+            &reranked
+                .iter()
+                .map(|hit| hit.topic.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    // The premise. The tier counts what reached the model; this counted what
+    // it reconstructed. They are the same rule applied to the same traces, so
+    // a disagreement means the reconstruction is not the tier's subset and
+    // every number above is a comparison of two different candidate sets.
+    if let Some(counted) = engine.reranked(AGAINST) {
+        assert_eq!(
+            offered,
+            counted.scored as usize,
+            "the reconstruction offered {offered} candidates where the {} tier \
+             scored {} -- the two columns are not over the same subset",
+            AGAINST.name(),
+            counted.scored
+        );
+    }
+
+    for group in GROUPS {
+        println!("\n  late interaction against a cross-encoder, {group}, {named}");
+        println!(
+            "  scorer              nDCG@{NDCG_AT}   recall@{RECALL_AT}   against fusion alone"
+        );
+        println!("  ---------------------------------------------------------------------------");
+        for (label, scores) in [
+            ("fusion alone", &fused),
+            ("late interaction", &late),
+            (AGAINST.name(), &cross),
+        ] {
+            println!(
+                "  {label:<18}   {:>7.4}   {:>9.4}   {}",
+                scores[group].mean_ndcg(),
+                scores[group].mean_recall(),
+                statistics::compare(&fused[group].per_query, &scores[group].per_query)
+            );
+        }
+        // Head to head, which is the question, and on its own line rather
+        // than as a row with nothing to put in the two score columns.
+        println!(
+            "  late interaction against {}: {}",
+            AGAINST.name(),
+            statistics::compare(&cross[group].per_query, &late[group].per_query)
+        );
+    }
+
+    let asked = queries.len() as f64;
+    println!(
+        "\n  {:.1} candidates a query reached both scorers, {:.1} query tokens each",
+        offered as f64 / asked,
+        tokens as f64 / asked
+    );
+    println!(
+        "  late interaction: {:.1} ms a query to encode the query, {:.1} ms to encode the \
+         candidates on demand",
+        query_ms / asked,
+        document_ms / asked
+    );
+    println!(
+        "  the {} tier: {:.1} ms a query for the whole search",
+        AGAINST.name(),
+        cross_ms / asked
+    );
+    println!(
+        "  only the first of those three is what late interaction would cost: a shipped \
+         version stores the candidates' vectors when the memory is written. The second is \
+         the price of not having stored them and is reported so it is not mistaken for the \
+         first.\n"
+    );
+}
+
 /// Prints the table this harness exists to produce.
 fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64) {
     println!("\n  {title}");
@@ -1210,6 +1419,14 @@ async fn search_reaches_across_languages() {
     // the one lever proportional to its cost rather than all-or-nothing.
     if std::env::var("PAIRS").is_ok() {
         pairs_sweep(&engine, &queries, &named).await;
+        return;
+    }
+
+    // `LATE` asks whether the cross-encoder's work can be moved off the query
+    // path entirely, which is the only proposal on the table that removes the
+    // reranker's cost rather than reducing it.
+    if std::env::var("LATE").is_ok() {
+        late_interaction(&engine, &workspace, &queries, &named).await;
         return;
     }
 
