@@ -443,8 +443,25 @@ implemented.
 
 **The offline grid that nearly let it through printed nDCG@10 and nothing
 else**, while the gates assert nDCG *and* recall. Forty variants were priced on
-half the criterion. It prints both now, and the note beside it says so in the
-words of the figure that got through.
+half the criterion. It prints both now — and with both columns the finding is
+sharper than it was with one: **the recall cost belongs to the combiner and to
+nothing else.** Every variant built on rank fusion, at any pair of lexical
+weights and any confidence setting, holds XQuAD-R's recall at 0.896
+cross-lingual and 0.958 same-language. Every standardised variant sits at
+0.7765 and 0.9403 whatever else is set, and confidence does not rescue it. That
+is a structural consequence of centring rather than a constant chosen badly,
+and −0.12 against −0.018 is the same mechanism seen where the weak channel is
+garbage and where it is good.
+
+Which closes the question rather than deferring it. **Every setting in the grid
+is either a trade between the two groups or a payment of recall for nDCG.**
+Confidence buys +0.0324 same-language for −0.0174 cross-lingual; zeroing the
+lexical pair buys +0.0258 cross-lingual for −0.0769 same-language; the
+standardised sum buys nDCG everywhere and −0.12 of cross-lingual recall.
+Reciprocal rank fusion at an eighth each is the best setting on no single
+measure and the only one that is not clearly worse on some other. That is the
+argument for the default now, and it is a different argument from the one this
+record used to make.
 Per-channel confidence on top of rank fusion is the weaker mechanism: +0.0118
 at best (8 wins, 0 losses, p = 0.0381) with a narrow plateau, which by
 *Balancing the Blend*'s own reading is what fitting a development set looks

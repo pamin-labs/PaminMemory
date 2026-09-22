@@ -209,7 +209,33 @@ measured, so neither is implemented.
 
 **And the grid that nearly let it through printed nDCG and nothing else.** The
 gates assert both metrics; forty variants were being priced on one. It prints
-recall@50 now.
+recall@50 now, and with both columns the answer is cleaner than it was with
+one. On XQuAD-R:
+
+| setting | cross-lingual nDCG / recall | same-language nDCG / recall |
+| --- | --- | --- |
+| rank fusion (ships) | 0.6077 / **0.8960** | 0.7556 / **0.9580** |
+| + confidence, spread 5 | 0.5903 / 0.8944 | **0.7880** / 0.9588 |
+| both lexical weights at zero | **0.6335** / 0.8966 | 0.6787 / 0.9529 |
+| standardised sum | **0.6211** / **0.7765** | **0.7733** / 0.9403 |
+| + CombMNZ | 0.5727 / **0.7764** | **0.8257** / 0.9403 |
+
+**The recall cost belongs to the combiner and to nothing else.** Every variant
+built on rank fusion — any pair of lexical weights, any confidence setting —
+holds recall at 0.896 and 0.958. Every standardised variant sits at 0.7765 and
+0.9403 regardless of what else is set, and confidence does not rescue it
+(0.7772 at its best). That is what a structural consequence looks like as
+opposed to a badly chosen constant: centring the scores is what costs the
+tail, and −0.12 cross-lingual against −0.018 same-language is the same
+mechanism seen where the weak channel is garbage and where it is good.
+
+**So nothing in the grid ships, and now that is a complete statement rather
+than a cautious one.** Every setting is either a trade between the two groups
+— confidence buys +0.0324 same-language for −0.0174 cross-lingual; zeroing the
+lexical pair buys +0.0258 cross-lingual for −0.0769 same-language — or it pays
+recall for nDCG. Reciprocal rank fusion at an eighth each is not the best
+setting on any single measure. It is the only one that is not clearly worse on
+some other.
 
 **CombMNZ is significantly worse, and that was predicted before the run.** The
 systematic comparison of ten combiners ranks it first on all four of its
