@@ -1066,7 +1066,7 @@ Three of the four permissive chains are defensible and **none of those three sta
 
 | candidate | licence | why not |
 | --- | --- | --- |
-| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `-v3.5`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial. Not measurable for a default |
+| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `jina-reranker-m0`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial, so never a default. `v2` **is** now measurable and is shipped as the opt-in `noncommercial` tier; see below for what it was worth. `v3` and `m0` are not runnable here at all |
 | `BAAI/bge-reranker-v2-gemma` | card says `apache-2.0`; base `google/gemma-2b` is `license: gemma`, gated | The Gemma rider follows the derivative — the same reason EmbeddingGemma was refused above |
 | `BAAI/bge-reranker-v2-minicpm-layerwise` | card says `apache-2.0`; base MiniCPM weights carry the General Model License with a commercial-authorization requirement | Painful, because its 8–40 selectable output layers are exactly the early-exit mechanism the latency problem wants |
 | `naver/splade-v3` family | CC-BY-NC-SA-4.0 | Non-commercial and share-alike. `Splade_PP_en_v1` is Apache-2.0 and English |
@@ -1074,6 +1074,47 @@ Three of the four permissive chains are defensible and **none of those three sta
 | `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | MIRACL 28.56. Not a multilingual reranker in the sense this product needs, whatever the language count says |
 | `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one |
 | `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
+
+**What the non-commercial licence actually buys, now that it has been paid.**
+The survey above ruled the whole Jina line out as non-commercial and left it
+there. The rule has since changed — CC-BY-NC is acceptable as a named, opt-in,
+non-default tier — so the question became answerable and was answered rather
+than argued: `jina-reranker-v2-base-multilingual` ships as `noncommercial` and
+its figures are in the tier table above. **It scores +0.0279 cross-lingual where
+the permissive default scores +0.0397, at four times the parameters and 2.5
+times the latency.** Accepting the licence bought nothing.
+
+And it is the *best case* for the hypothesis, not a weak instance of it. It is
+the most-downloaded non-commercial reranker there is, it is a genuine
+XLM-RoBERTa cross-encoder in the shape this project can load, and it carries a
+full ONNX suite — fp32, fp16, int8, q4, bnb4. Everything newer in that line is
+further away rather than closer:
+
+| | licence | base / architecture | ONNX exports | vs `fast` |
+| --- | --- | --- | --- | --- |
+| `jina-reranker-v2-base-multilingual` | `cc-by-nc-4.0` | XLM-R cross-encoder | **the full suite** | 4.0x |
+| `jina-reranker-v3` | `cc-by-nc-4.0` | **`Qwen/Qwen3-0.6B`**, `JinaForRanking` | **none** | ~19x |
+| `jina-reranker-m0` | `cc-by-nc-4.0` | **`Qwen2-VL-2B-Instruct`**, `JinaVLForRanking` | **none** | ~60x |
+| `openjev/openjev` | `cc-by-nc-4.0` | `Qwen3_5ForConditionalGeneration` | **none** | not a ranker head |
+
+`v3` and `m0` are the decoder class this record already priced out, and neither
+publishes a single `.onnx` file, so `fastembed` cannot load them, there is no
+quantized export to fall back on, and adopting one means both a raw `ort` path
+*and* an export nobody has made. `openjev` has 159 downloads and is a
+conditional-generation model rather than a ranking head.
+
+**So the non-commercial licence does not correlate with accuracy here. It
+correlates with size and with a hosted-API business model** — the line moved to
+0.6B and 2B decoders, which are out of an interactive budget on four CPU cores
+whatever their terms say. That is the generalisable finding, and it is the
+reason the `noncommercial` tier is documented as buying nothing rather than
+quietly removed.
+
+One caveat, stated because it is the arm that was not run: the measured export
+is `onnx/model_int8.onnx`. `fast` and `accurate` are quantized too, so the
+comparison is consistent, but no fp16 arm exists. For it to change the verdict
+that arm would have to close 0.0118 of nDCG *and* get faster, and dequantizing
+does neither.
 
 **Jev, and the shape of its claim.** TypeSafe's Jev is a decision model: text in, a number out, no token generation. It is API-only at $0.042 per million input tokens, so it cannot be part of an offline product whatever its quality. The open recreations do not rescue it. `openjev/openjev` is CC-BY-NC-4.0 and 27B parameters — 54 GB in fp16, and its own card measures about 80 ms **for one short decision on an H100 in fp8**, where this product scores twenty pairs in 226 ms on four CPU cores. `jaredpalmer/kev-0.8b` is Apache-2.0 at the adapter and base, tagged `language: en`, and its declared training data includes `Yelp/yelp_review_full`, whose terms grant academic use only.
 
