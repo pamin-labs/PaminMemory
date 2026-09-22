@@ -1120,6 +1120,13 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `LABELS` produces the utility label a router would predict and asks
+    // what, visible before the pass, predicts it.
+    if std::env::var("LABELS").is_ok() {
+        labels(&engine, &queries, &named).await;
+        return;
+    }
+
     // `CALIBRATE` asks whether the shipped tier's score can be made into a
     // probability, which is the cheap half of what the typed judge is for.
     if std::env::var("CALIBRATE").is_ok() {
@@ -1275,6 +1282,222 @@ enum Route {
     AtLimit(Rerank, u32),
     /// Fusion alone, at a weighting the caller chooses.
     Fused(Fusion),
+}
+
+/// The utility labels a router would have to predict, and what predicts them.
+///
+/// The oracle next door said the routing line is alive on latency and nearly
+/// dead on accuracy: over six tiers a perfect router could add at most +0.0404
+/// cross-lingual and +0.0029 same-language, while saving 62% and 85% of the
+/// time. And it said why — **`off` is the cheapest sufficient tier on 43.4% of
+/// cross-lingual queries and 98.4% of same-language ones.** Nearly half, and
+/// almost all, need no reranking at all.
+///
+/// That is also the diagnosis of why the hand-picked gate failed. The oracle
+/// knows *which* queries; lexical coverage did not. The 2026 work this borrows
+/// from says the same thing in its method: a utility-based label per query and
+/// a router trained on it, not a proxy somebody chose. So this arm produces the
+/// label and then asks, feature by feature, whether anything available *before*
+/// the pass predicts it.
+///
+/// **Three tiers, not six, and that is a narrowing rather than a shortcut.**
+/// `typed` measured *below* `off` and is closed; `balanced` costs four times
+/// `fast`'s parameters for a quarter of its gain. What is left — nothing,
+/// cheap, expensive — is what a shipped router would choose between, and is
+/// the same triple the published router used.
+///
+/// Every feature here is read from the **`off`** search, because that is all a
+/// router can see: it runs before the pass it is deciding about.
+async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
+    /// How close to the best a tier must be to count as sufficient. The same
+    /// hundredth the oracle uses, and for the same reason.
+    const ENOUGH: f64 = 0.01;
+
+    /// The tiers a router would choose between, cheapest first, so the first
+    /// sufficient one is the cheapest sufficient one.
+    const LADDER: [Rerank; 3] = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+
+    /// What a feature is measured against: whether the pass was needed at all.
+    /// Binary rather than three-way because that is the decision worth most --
+    /// 43.4% and 98.4% of queries skipping the pass entirely is where the 62%
+    /// and 85% live.
+    struct Sample {
+        group: String,
+        /// `true` when `off` was sufficient: the pass buys nothing.
+        skippable: bool,
+        features: [f64; FEATURES.len()],
+    }
+
+    const FEATURES: [&str; 7] = [
+        "fused score at rank 1",
+        "margin, rank 1 over rank 2",
+        "margin, rank 1 over rank 10",
+        "candidates the pass may touch",
+        "lexical share of the head",
+        "channels proposing rank 1",
+        "query tokens",
+    ];
+
+    let head = Rerank::default().depth();
+    let mut samples: Vec<Sample> = Vec::new();
+    let mut per_tier: Vec<BTreeMap<String, Scores>> =
+        LADDER.iter().map(|_| BTreeMap::new()).collect();
+    let mut chosen: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    // By position rather than keyed by tier: `Rerank` is deliberately not
+    // `Ord`, and the ladder's order is the price order anyway.
+    let mut cost = vec![0.0f64; LADDER.len()];
+
+    // Measured in this run, so the saving below is priced against what these
+    // tiers cost here rather than against a figure from another run.
+    for (at, tier) in LADDER.iter().enumerate() {
+        let started = std::time::Instant::now();
+        let groups = run(engine, queries, Route::Shipped(*tier)).await;
+        cost[at] = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
+        per_tier[at] = groups;
+    }
+
+    // The features, from one more pass at `off` -- which is the cheap tier, and
+    // the only ordering a router gets to look at.
+    for (index, query) in queries.iter().enumerate() {
+        let hits = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+            .await
+            .expect("search with the reranker off");
+
+        let scored_at = |rank: usize| -> f64 {
+            hits.get(rank)
+                .map(|hit| f64::from(hit.result.score))
+                .unwrap_or(0.0)
+        };
+        let lexical = |hit: &pamin_engine::SearchHit| {
+            hit.result.why.iter().any(|why| {
+                matches!(
+                    why,
+                    Why::Channel { channel, .. }
+                        if *channel == Channel::LexicalSegmented
+                            || *channel == Channel::LexicalNgram
+                )
+            })
+        };
+        let depth = head.min(hits.len());
+        let touchable = hits[..depth].iter().filter(|hit| !lexical(hit)).count();
+        let window = NDCG_AT.min(hits.len()).max(1);
+        let lexical_share =
+            hits[..window].iter().filter(|hit| lexical(hit)).count() as f64 / window as f64;
+        let channels_at_1 = hits
+            .first()
+            .map(|hit| {
+                hit.result
+                    .why
+                    .iter()
+                    .filter(|why| matches!(why, Why::Channel { .. }))
+                    .count()
+            })
+            .unwrap_or(0);
+
+        let features = [
+            scored_at(0),
+            scored_at(0) - scored_at(1),
+            scored_at(0) - scored_at(9),
+            touchable as f64,
+            lexical_share,
+            channels_at_1 as f64,
+            query.text().split_whitespace().count() as f64,
+        ];
+
+        for group in GROUPS {
+            // The label: the cheapest tier within ENOUGH of this query's best.
+            let scores: Vec<f64> = per_tier
+                .iter()
+                .map(|by| by[group].per_query[index])
+                .collect();
+            let best = scores.iter().copied().fold(f64::MIN, f64::max);
+            let cheapest = scores
+                .iter()
+                .position(|score| *score >= best - ENOUGH)
+                .expect("the best tier suffices for itself");
+            chosen
+                .entry(group.to_string())
+                .or_insert_with(|| vec![0; LADDER.len()])[cheapest] += 1;
+
+            samples.push(Sample {
+                group: group.to_string(),
+                skippable: cheapest == 0,
+                features,
+            });
+        }
+    }
+
+    for group in GROUPS {
+        let mine: Vec<&Sample> = samples.iter().filter(|s| s.group == group).collect();
+        let skippable = mine.iter().filter(|s| s.skippable).count();
+        let picked = &chosen[group];
+
+        println!("\n  what a router would have to predict, {group}, {named}");
+        for (at, tier) in LADDER.iter().enumerate() {
+            println!(
+                "    {:<10} cheapest-sufficient on {:>5.1}% of queries ({:>6.0} ms)",
+                tier.name(),
+                100.0 * picked[at] as f64 / mine.len() as f64,
+                cost[at]
+            );
+        }
+        println!(
+            "    the pass is skippable on {:.1}% of them",
+            100.0 * skippable as f64 / mine.len() as f64
+        );
+
+        // Separation per feature, as the AUC of ranking skippable above the
+        // rest. 0.5 is a feature that says nothing; 1.0 or 0.0 would be a
+        // feature that decides it. Reported for both directions, because a
+        // feature that predicts the *opposite* is just as useful.
+        println!(
+            "\n  does anything visible before the pass predict it, {group}\n  \
+             feature                          mean when skippable   when not        AUC"
+        );
+        println!("  ----------------------------------------------------------------------------");
+        for (at, name) in FEATURES.iter().enumerate() {
+            let yes: Vec<f64> = mine
+                .iter()
+                .filter(|s| s.skippable)
+                .map(|s| s.features[at])
+                .collect();
+            let no: Vec<f64> = mine
+                .iter()
+                .filter(|s| !s.skippable)
+                .map(|s| s.features[at])
+                .collect();
+            if yes.is_empty() || no.is_empty() {
+                continue;
+            }
+            // Mann-Whitney: the share of (skippable, not) pairs the feature
+            // orders correctly, ties counting half. That is the AUC, and it
+            // needs no model and no threshold.
+            let mut correct = 0.0;
+            for a in &yes {
+                for b in &no {
+                    correct += match a.partial_cmp(b) {
+                        Some(std::cmp::Ordering::Greater) => 1.0,
+                        Some(std::cmp::Ordering::Equal) => 0.5,
+                        _ => 0.0,
+                    };
+                }
+            }
+            let auc = correct / (yes.len() * no.len()) as f64;
+            let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+            println!(
+                "  {name:<32} {:>19.4} {:>14.4} {:>10.4}",
+                mean(&yes),
+                mean(&no),
+                auc
+            );
+        }
+        println!(
+            "\n  An AUC at 0.5 is a feature that says nothing. Far from 0.5 in either\n  \
+             direction is a feature a rule could use -- below 0.5 means the feature\n  \
+             predicts the opposite, which is equally usable.\n"
+        );
+    }
 }
 
 /// Whether the shipped reranker's score can be turned into a probability.
