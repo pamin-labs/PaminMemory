@@ -326,6 +326,19 @@ pub fn variants() -> Vec<(String, Fusion)> {
         variants.push((format!("k {k:.0}"), Fusion::default().with_k(k)));
     }
 
+    // The graph channel's weight, which has never been swept. It is the least
+    // justified constant in the default: 1.0, equal to the vector channel's,
+    // arrived at by nothing, while the only comparable published system
+    // (arXiv:2609.01617) weights its graph channel at 0.15 against a dense
+    // 0.50. The channel is also the only one seeded from the other three, so
+    // it is the one whose candidates are least independent of theirs.
+    for graph in [0.0, 0.15, 0.3, 0.5, 1.0] {
+        variants.push((
+            format!("graph {graph:.2}"),
+            Fusion::default().with_weight(Channel::Graph, graph),
+        ));
+    }
+
     // Requiring corroboration instead of cutting the weight. The weight rows
     // above are a global constant that has to serve both groups of a corpus;
     // these condition on the candidate, so they can in principle take the
