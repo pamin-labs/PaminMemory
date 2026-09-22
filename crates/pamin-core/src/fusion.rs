@@ -7,7 +7,7 @@
 //! the graph list, weighting the pre-fused members twice, and it would erase the
 //! per-channel ranks that every result is required to be able to report.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,10 +38,7 @@ use crate::ledger::RetrievalSignals;
 /// and one channel's mistaken top hit decides the answer.
 pub const DEFAULT_K: f32 = 10.0;
 
-/// What a lexical channel is worth when it agrees fully with the vector one.
-///
-/// The ceiling of the per-query weight rather than the weight itself; see
-/// [`Fusion::lexical_agreement`].
+/// What a lexical channel is worth.
 ///
 /// An eighth, and it was a quarter until a third corpus was measured. The
 /// sweep that settled the quarter ran `1.00 / 0.50 / 0.25 / 0.00` -- so **a
@@ -146,15 +143,6 @@ pub struct FusedResult {
 pub struct Fusion {
     k: f32,
     weights: BTreeMap<Channel, f32>,
-    /// Whether the lexical weight follows the query rather than the config.
-    ///
-    /// Off whenever a caller sets a lexical weight by hand, so a sweep
-    /// measures the constant it asked for.
-    adaptive: bool,
-    /// What the lexical pair keeps at zero agreement, as a share of its weight.
-    agreement_floor: f32,
-    /// What it reaches at full agreement, as a share of its weight.
-    agreement_ceiling: f32,
 }
 
 impl Default for Fusion {
@@ -239,43 +227,14 @@ impl Default for Fusion {
                 (Channel::LexicalSegmented, LEXICAL_WEIGHT),
                 (Channel::LexicalNgram, LEXICAL_WEIGHT),
             ]),
-            agreement_floor: 0.0,
-            agreement_ceiling: 1.0,
-            // Off by default. It is worth a great deal on one group of one
-            // corpus and it takes the other group apart -- see
-            // `lexical_agreement`. A default has to be good for a user and
-            // good on every benchmark, and this is not that yet.
-            adaptive: false,
         }
     }
 }
 
 impl Fusion {
-    /// Overrides the weight of one channel, and pins it.
-    ///
-    /// Setting a lexical weight by hand turns the per-query adjustment off:
-    /// a sweep asked for a constant and has to be measured on one, or the
-    /// column it prints is not the column it named.
+    /// Overrides the weight of one channel.
     pub fn with_weight(mut self, channel: Channel, weight: f32) -> Self {
         self.weights.insert(channel, weight);
-        if channel.is_lexical() {
-            self.adaptive = false;
-        }
-        self
-    }
-
-    /// Scales the lexical weight by per-query agreement, between `floor` and
-    /// `ceiling` of the configured weight.
-    ///
-    /// Opt-in, and swept rather than argued. `floor` is what the lexical pair
-    /// keeps when it agrees with the vector channel about nothing, `ceiling`
-    /// what it reaches at full agreement; `with_adaptive(1.0, 1.0)` is the
-    /// constant, and `with_adaptive(0.0, 1.0)` is the unbounded form measured
-    /// below.
-    pub fn with_adaptive(mut self, floor: f32, ceiling: f32) -> Self {
-        self.adaptive = true;
-        self.agreement_floor = floor.clamp(0.0, 1.0);
-        self.agreement_ceiling = ceiling.clamp(0.0, 1.0).max(floor);
         self
     }
 
@@ -294,87 +253,12 @@ impl Fusion {
         self.weights.get(&channel).copied().unwrap_or(1.0)
     }
 
-    /// What the lexical channels are worth on this query, and why.
-    ///
-    /// The sweep that settled the constant also showed the constant cannot be
-    /// right. On XQuAD-R at `k = 10`, fusing the four channels against running
-    /// the embedding model alone:
-    ///
-    /// ```text
-    ///   lexical   cross-lingual nDCG@10   same-language
-    ///      0.00                  0.6335          0.6787
-    ///      0.125                 0.6077          0.7556
-    ///      0.25                  0.5700          0.8057
-    ///      0.50                  0.4572          0.8379
-    ///      1.00                  0.1569          0.8332
-    /// ```
-    ///
-    /// Zero *is* the model alone -- this corpus gives the graph channel
-    /// nothing to return, so zeroing the lexical pair leaves the vector
-    /// channel by itself. So the eighth that ships costs 0.0258 of
-    /// cross-lingual ranking to buy 0.0769 of same-language, where the quarter
-    /// before it paid 0.0635 for 0.1270, and a constant has to pay that on
-    /// every query including the ones where the lexical channels found nothing
-    /// to contribute.
-    ///
-    /// The signal is how much the lexical channels agree with the vector
-    /// channel about what is relevant: the share of the vector channel's
-    /// candidates that either lexical channel also returned. Low agreement
-    /// means the wording did not carry -- which is what a cross-language query
-    /// looks like from the inside -- and the lexical pair is then voting on
-    /// rank positions it has no evidence for.
-    ///
-    /// It is deliberately not a language test. Inferring the query's language
-    /// from which language its lexical hits sit in was measured and cleared
-    /// nothing, and the reason it failed is that a query's language cannot be
-    /// read off the channel being corrected. Agreement is read off the
-    /// *vector* channel, so it does not have that circularity, and it is the
-    /// same judgement the reranker already makes when it confines itself to
-    /// candidates no lexical channel found.
-    fn lexical_agreement(lists: &[ChannelResults]) -> Option<f32> {
-        let vector = lists.iter().find(|list| list.channel == Channel::Vector)?;
-        if vector.candidates.is_empty() {
-            return None;
-        }
-        let lexical: BTreeSet<TopicId> = lists
-            .iter()
-            .filter(|list| list.channel.is_lexical())
-            .flat_map(ChannelResults::topics)
-            .collect();
-        if lexical.is_empty() {
-            return None;
-        }
-        let shared = vector
-            .topics()
-            .filter(|candidate| lexical.contains(candidate))
-            .count();
-        Some(shared as f32 / vector.candidates.len() as f32)
-    }
-
     /// Fuses per-channel ranked lists into one ordered result set.
     pub fn fuse(&self, lists: &[ChannelResults]) -> Vec<FusedResult> {
         let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
 
-        // Scaled by how far the lexical channels agree with the vector channel
-        // on this query, when nothing pinned them. Absent agreement -- no
-        // vector candidates, or no lexical ones -- there is nothing to read,
-        // so the configured weight stands.
-        let agreement = self
-            .adaptive
-            .then(|| Self::lexical_agreement(lists))
-            .flatten()
-            .map(|agreement| {
-                let span = self.agreement_ceiling - self.agreement_floor;
-                self.agreement_floor + span * agreement
-            });
-
         for list in lists {
-            let weight = match agreement {
-                Some(agreement) if list.channel.is_lexical() => {
-                    self.weight(list.channel) * agreement
-                }
-                _ => self.weight(list.channel),
-            };
+            let weight = self.weight(list.channel);
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
                 let contribution = weight / (self.k + rank as f32);
@@ -723,169 +607,5 @@ mod tests {
         let left: Vec<_> = tied.iter().map(|r| r.topic).collect();
         let right: Vec<_> = reversed.iter().map(|r| r.topic).collect();
         assert_eq!(left, right, "ordering must not depend on input order");
-    }
-
-    /// The weight the trace reports is the weight that was applied.
-    fn lexical_weight_in(fused: &FusedResult) -> f32 {
-        fused
-            .why
-            .iter()
-            .find_map(|why| match why {
-                Why::Channel {
-                    channel, weight, ..
-                } if channel.is_lexical() => Some(*weight),
-                _ => None,
-            })
-            .expect("a lexical channel in the trace")
-    }
-
-    /// Two channels that name the same candidates are a channel worth
-    /// listening to.
-    #[test]
-    fn full_agreement_leaves_the_lexical_pair_at_its_ceiling() {
-        let shared = [id(1), id(2), id(3), id(4)];
-        let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
-            ChannelResults::unscored(Channel::LexicalSegmented, shared.to_vec()),
-            ChannelResults::unscored(Channel::Vector, shared.to_vec()),
-        ]);
-
-        let applied = lexical_weight_in(&fused[0]);
-        assert!(
-            (applied - LEXICAL_WEIGHT).abs() < f32::EPSILON,
-            "full agreement should leave the ceiling alone, got {applied}"
-        );
-    }
-
-    /// And a lexical pair that found none of what the vector channel found has
-    /// no evidence to vote with. This is the cross-language case: the wording
-    /// did not carry, so the words should not decide the ranking.
-    #[test]
-    fn no_agreement_takes_the_lexical_pair_out_of_the_vote() {
-        let vector: Vec<_> = (1..=4).map(id).collect();
-        let lexical: Vec<_> = (10..=13).map(id).collect();
-        let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
-            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
-            ChannelResults::unscored(Channel::Vector, vector.clone()),
-        ]);
-
-        // The vector channel's own order survives intact, which is the point:
-        // at zero agreement this is the embedding model's ranking.
-        let kept: Vec<_> = fused
-            .iter()
-            .filter(|result| vector.contains(&result.topic))
-            .map(|result| result.topic)
-            .collect();
-        assert_eq!(kept, vector, "the vector ranking should be left as it is");
-
-        let lexical_first = fused
-            .iter()
-            .find(|result| !vector.contains(&result.topic))
-            .expect("the lexical candidates are still returned");
-        assert_eq!(
-            lexical_weight_in(lexical_first),
-            0.0,
-            "a lexical channel that agrees with nothing votes with nothing"
-        );
-    }
-
-    /// Half the vector channel's candidates found lexically is half the
-    /// ceiling. Asserted because the shape of the mapping is a choice, and a
-    /// change to it should be a change somebody made on purpose.
-    #[test]
-    fn partial_agreement_scales_the_lexical_pair() {
-        let vector: Vec<_> = (1..=4).map(id).collect();
-        let lexical = vec![id(1), id(2), id(20), id(21)];
-        let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
-            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
-            ChannelResults::unscored(Channel::Vector, vector),
-        ]);
-
-        let applied = lexical_weight_in(&fused[0]);
-        assert!(
-            (applied - LEXICAL_WEIGHT * 0.5).abs() < 1e-6,
-            "two of four shared should halve the ceiling, got {applied}"
-        );
-    }
-
-    /// A pinned weight is a pinned weight. The sweeps name a constant and have
-    /// to be measured on it, or the column they print is not the column they
-    /// named.
-    #[test]
-    fn setting_a_lexical_weight_by_hand_turns_the_adjustment_off() {
-        let vector: Vec<_> = (1..=4).map(id).collect();
-        let lexical: Vec<_> = (10..=13).map(id).collect();
-        let fused = Fusion::default()
-            .with_weight(Channel::LexicalSegmented, 0.25)
-            .with_weight(Channel::LexicalNgram, 0.25)
-            .fuse(&[
-                ChannelResults::unscored(Channel::LexicalSegmented, lexical),
-                ChannelResults::unscored(Channel::Vector, vector),
-            ]);
-
-        let lexical_hit = fused
-            .iter()
-            .find(|result| result.topic == id(10))
-            .expect("the lexical candidates are still returned");
-        assert_eq!(
-            lexical_weight_in(lexical_hit),
-            0.25,
-            "a pinned lexical weight still applies at zero agreement"
-        );
-    }
-
-    /// Nothing to read the agreement from means the configured weight stands,
-    /// rather than silently becoming zero.
-    #[test]
-    fn without_a_vector_channel_the_configured_weight_stands() {
-        let fused = Fusion::default()
-            .with_adaptive(0.0, 1.0)
-            .fuse(&[ChannelResults::unscored(
-                Channel::LexicalSegmented,
-                vec![id(1), id(2)],
-            )]);
-
-        assert_eq!(lexical_weight_in(&fused[0]), LEXICAL_WEIGHT);
-    }
-
-    /// A floor keeps the lexical pair in the vote when agreement is low.
-    ///
-    /// The unbounded form took same-language ranking apart on XQuAD-R, so the
-    /// mapping has a floor and a ceiling and both are swept. This pins the
-    /// arithmetic, not the values.
-    #[test]
-    fn a_floor_keeps_the_lexical_pair_in_the_vote() {
-        let vector: Vec<_> = (1..=4).map(id).collect();
-        let lexical: Vec<_> = (10..=13).map(id).collect();
-        let fused = Fusion::default().with_adaptive(0.5, 1.0).fuse(&[
-            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
-            ChannelResults::unscored(Channel::Vector, vector),
-        ]);
-
-        let lexical_hit = fused
-            .iter()
-            .find(|result| result.topic == id(10))
-            .expect("the lexical candidates are still returned");
-        assert!(
-            (lexical_weight_in(lexical_hit) - LEXICAL_WEIGHT * 0.5).abs() < 1e-6,
-            "zero agreement should land on the floor, not on zero"
-        );
-    }
-
-    /// And the constant is reachable through the same knob, so the sweep can
-    /// include it without a second code path.
-    #[test]
-    fn a_floor_equal_to_the_ceiling_is_the_constant() {
-        let vector: Vec<_> = (1..=4).map(id).collect();
-        let lexical: Vec<_> = (10..=13).map(id).collect();
-        let fused = Fusion::default().with_adaptive(1.0, 1.0).fuse(&[
-            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
-            ChannelResults::unscored(Channel::Vector, vector),
-        ]);
-
-        let lexical_hit = fused
-            .iter()
-            .find(|result| result.topic == id(10))
-            .expect("the lexical candidates are still returned");
-        assert_eq!(lexical_weight_in(lexical_hit), LEXICAL_WEIGHT);
     }
 }
