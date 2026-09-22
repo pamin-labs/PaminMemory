@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::{Channel, Derivation, EdgeKind, Why};
-use pamin_index::{Profile, Rerank};
+use pamin_index::{Licence, Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +37,11 @@ pub struct Args {
     )]
     pub graph_depth: u8,
 
-    /// How much to spend reordering the results: off, fast, or accurate.
+    /// How much to spend reordering the results: off, fast, balanced,
+    /// accurate, or noncommercial.
+    ///
+    /// `noncommercial` needs `PAMIN_ACCEPT_NONCOMMERCIAL` as well, and says so
+    /// when it does not have it. Its weights are CC-BY-NC-4.0.
     ///
     /// A cross-encoder reads the query and a memory together, which is what
     /// lets it correct an order the channels got wrong and what makes it cost
@@ -161,13 +165,16 @@ pub async fn execute(
     profile: Profile,
     args: Args,
 ) -> Result<Results> {
+    // Checked here as well as client-side, so a request arriving over the
+    // socket cannot reach a model the caller never accepted. The client-side
+    // check is the one a person reads; this one is the one that holds.
+    let rerank = tier(&args.rerank)?;
+
     let engine = session.engine(project, profile).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
     };
-    let rerank = Rerank::parse(&args.rerank)
-        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
     let hits = engine
         .search_reranked(&args.query, args.limit, depths, rerank)
         .await?;
@@ -214,6 +221,56 @@ pub fn render(results: &Results) -> String {
         .join("\n")
 }
 
+/// The environment variable that accepts a non-commercial tier's terms.
+const ACCEPT: &str = "PAMIN_ACCEPT_NONCOMMERCIAL";
+
+/// Parses the tier a caller named and refuses it if its weights are not free
+/// for commercial use and nobody has said otherwise.
+///
+/// Called twice per search on purpose. Once in `main`, before a database is
+/// provisioned or a server is started, because that is where a person is
+/// reading and a refusal is worth nothing if it arrives after a PostgreSQL
+/// install. Once in [`run`], which is where a request that came over the
+/// socket arrives, so the gate is not something a caller can route around by
+/// talking to the server directly.
+///
+/// **The error is the notice.** There is nowhere better to put one: the tier is
+/// named on a command line and the weights arrive seconds later, so a line
+/// printed to stderr alongside results nobody asked twice about is a line
+/// nobody reads. Refusing means the terms are read exactly once, at the only
+/// moment they could change somebody's mind.
+///
+/// Stateless, and deliberately not an acknowledgement file in the workspace.
+/// A file would go missing on a new machine, in a fresh container, in CI -- and
+/// it would go missing *silently*, which is the wrong direction for a licence
+/// to fail in. An environment variable has to be set wherever the command runs,
+/// which means it appears in the script or the CI configuration that runs it:
+/// the acceptance is auditable by whoever inherits the setup rather than
+/// recorded in a dotfile on one laptop. That is what an explicit opt-in is for.
+///
+/// It gates the command rather than `Reranker::load`, because a library has no
+/// business deciding what to print and no way to know whether a person is
+/// reading. `pamin topics` asks for `Rerank::Off` and is unaffected.
+pub(crate) fn tier(named: &str) -> Result<Rerank> {
+    let tier =
+        Rerank::parse(named).ok_or_else(|| anyhow::anyhow!("unknown rerank tier {named:?}"))?;
+    if tier.licence() != Some(Licence::NonCommercial) || std::env::var_os(ACCEPT).is_some() {
+        return Ok(tier);
+    }
+
+    anyhow::bail!(
+        "the {tier} reranker tier downloads weights licensed CC-BY-NC-4.0, which permit \
+         research and personal use and do not permit commercial use.\n\n\
+         Nothing is downloaded and no search runs until you accept that. To accept, set \
+         {ACCEPT}=1 in the environment that runs this command -- in your shell profile, \
+         your script, or your CI configuration, so that whoever inherits the setup can \
+         see what was agreed to.\n\n\
+         Every other tier is permissively licensed and needs nothing: `off`, `fast`, \
+         `balanced`, `accurate`. See NOTICE for what each one downloads.",
+        tier = tier.name()
+    )
+}
+
 /// Renders the trace as one line, so the reason a result is here is visible
 /// without asking for JSON.
 fn describe(why: &[Trace]) -> String {
@@ -242,4 +299,73 @@ fn describe(why: &[Trace]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tier_or_panic(named: &str) -> Rerank {
+        tier(named).unwrap_or_else(|error| panic!("{named} was refused: {error}"))
+    }
+
+    /// The permissive tiers run without anybody agreeing to anything.
+    ///
+    /// Asserted alongside the refusal because a gate that refused everything
+    /// would pass the test below and break the product.
+    #[test]
+    fn a_permissively_licensed_tier_needs_no_acceptance() {
+        for tier in [
+            Rerank::Off,
+            Rerank::Fast,
+            Rerank::Balanced,
+            Rerank::Accurate,
+        ] {
+            assert_eq!(
+                tier_or_panic(tier.name()),
+                tier,
+                "{} was refused and is permissively licensed",
+                tier.name()
+            );
+        }
+    }
+
+    /// The non-commercial tier is refused, and the refusal states the terms.
+    ///
+    /// The message is the notice, so the test checks the message rather than
+    /// only the error: a refusal that did not say CC-BY-NC, did not say what it
+    /// permits, and did not say how to accept would be a gate with no notice
+    /// behind it, which is the failure this whole mechanism exists to avoid.
+    ///
+    /// The environment is read rather than injected, so this asserts the
+    /// refusal only when the variable is unset -- and says so rather than
+    /// passing quietly, because a developer who has accepted the terms in their
+    /// own shell would otherwise see this test assert nothing.
+    #[test]
+    fn the_non_commercial_tier_is_refused_and_says_why() {
+        if std::env::var_os(ACCEPT).is_some() {
+            panic!(
+                "{ACCEPT} is set in this environment, so this test cannot check the refusal. \
+                 Unset it and run again."
+            );
+        }
+
+        let refusal = tier(Rerank::Noncommercial.name())
+            .expect_err("the non-commercial tier ran without acceptance")
+            .to_string();
+
+        for expected in [
+            "noncommercial",
+            "CC-BY-NC-4.0",
+            "do not permit commercial use",
+            "Nothing is downloaded",
+            ACCEPT,
+            "NOTICE",
+        ] {
+            assert!(
+                refusal.contains(expected),
+                "the refusal does not mention {expected:?}: {refusal}"
+            );
+        }
+    }
 }
