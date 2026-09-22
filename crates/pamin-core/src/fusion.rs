@@ -324,14 +324,13 @@ impl Fusion {
         let lexical: BTreeSet<TopicId> = lists
             .iter()
             .filter(|list| list.channel.is_lexical())
-            .flat_map(|list| list.candidates.iter().copied())
+            .flat_map(ChannelResults::topics)
             .collect();
         if lexical.is_empty() {
             return None;
         }
         let shared = vector
-            .candidates
-            .iter()
+            .topics()
             .filter(|candidate| lexical.contains(candidate))
             .count();
         Some(shared as f32 / vector.candidates.len() as f32)
@@ -364,7 +363,9 @@ impl Fusion {
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
                 let contribution = weight / (self.k + rank as f32);
-                let entry = accumulated.entry(*candidate).or_insert((0.0, Vec::new()));
+                let entry = accumulated
+                    .entry(candidate.topic)
+                    .or_insert((0.0, Vec::new()));
                 entry.0 += contribution;
                 entry.1.push(Why::Channel {
                     channel: list.channel,
@@ -484,8 +485,8 @@ mod tests {
         let single = id(2);
 
         let fused = Fusion::default().fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, vec![single, both]),
-            ChannelResults::new(Channel::Vector, vec![both]),
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![single, both]),
+            ChannelResults::unscored(Channel::Vector, vec![both]),
         ]);
 
         assert_eq!(
@@ -498,8 +499,8 @@ mod tests {
     fn the_trace_reports_the_rank_in_every_channel_it_appeared_in() {
         let target = id(1);
         let fused = Fusion::default().fuse(&[
-            ChannelResults::new(Channel::LexicalNgram, vec![id(9), target]),
-            ChannelResults::new(Channel::Vector, vec![target]),
+            ChannelResults::unscored(Channel::LexicalNgram, vec![id(9), target]),
+            ChannelResults::unscored(Channel::Vector, vec![target]),
         ]);
 
         let entry = fused.iter().find(|r| r.topic == target).unwrap();
@@ -526,8 +527,8 @@ mod tests {
         // deliberately carry half weight. That says how much they duplicate
         // each other, not that a rank means something different in each.
         let fused = Fusion::default().fuse(&[
-            ChannelResults::new(Channel::Graph, vec![id(1)]),
-            ChannelResults::new(Channel::Vector, vec![id(2)]),
+            ChannelResults::unscored(Channel::Graph, vec![id(1)]),
+            ChannelResults::unscored(Channel::Vector, vec![id(2)]),
         ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
     }
@@ -535,8 +536,8 @@ mod tests {
     #[test]
     fn channel_weights_shift_the_balance() {
         let fused = Fusion::default().with_weight(Channel::Vector, 2.0).fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, vec![id(1)]),
-            ChannelResults::new(Channel::Vector, vec![id(2)]),
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![id(1)]),
+            ChannelResults::unscored(Channel::Vector, vec![id(2)]),
         ]);
         assert_eq!(fused[0].topic, id(2));
     }
@@ -552,7 +553,7 @@ mod tests {
     #[test]
     fn a_modifier_that_changed_nothing_leaves_no_trace() {
         let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
             .remove(0);
         let ranked = fused.score;
 
@@ -579,7 +580,7 @@ mod tests {
 
         // A modifier that does move the result still says so.
         let mut moved = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
             .remove(0);
         Modifiers::default().apply(
             &mut moved,
@@ -604,7 +605,7 @@ mod tests {
     #[test]
     fn each_modifier_appears_at_most_once_in_the_trace() {
         let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
             .remove(0);
 
         Modifiers::default().apply(
@@ -638,7 +639,7 @@ mod tests {
     #[test]
     fn a_state_with_no_recorded_outcomes_is_neither_promoted_nor_punished() {
         let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Vector, vec![id(1)])])
+            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
             .remove(0);
         let original = fused.score;
 
@@ -655,7 +656,7 @@ mod tests {
         // applied-once check on modifiers.
         let target = id(1);
         let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::new(Channel::Graph, vec![target])])
+            .fuse(&[ChannelResults::unscored(Channel::Graph, vec![target])])
             .remove(0);
 
         fused.why.push(Why::Path {
@@ -686,7 +687,7 @@ mod tests {
 
     #[test]
     fn equal_scores_order_the_same_way_every_time() {
-        let lists = [ChannelResults::new(
+        let lists = [ChannelResults::unscored(
             Channel::Vector,
             vec![id(3), id(1), id(2)],
         )];
@@ -728,8 +729,8 @@ mod tests {
     fn full_agreement_leaves_the_lexical_pair_at_its_ceiling() {
         let shared = [id(1), id(2), id(3), id(4)];
         let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, shared.to_vec()),
-            ChannelResults::new(Channel::Vector, shared.to_vec()),
+            ChannelResults::unscored(Channel::LexicalSegmented, shared.to_vec()),
+            ChannelResults::unscored(Channel::Vector, shared.to_vec()),
         ]);
 
         let applied = lexical_weight_in(&fused[0]);
@@ -747,8 +748,8 @@ mod tests {
         let vector: Vec<_> = (1..=4).map(id).collect();
         let lexical: Vec<_> = (10..=13).map(id).collect();
         let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, lexical),
-            ChannelResults::new(Channel::Vector, vector.clone()),
+            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
+            ChannelResults::unscored(Channel::Vector, vector.clone()),
         ]);
 
         // The vector channel's own order survives intact, which is the point:
@@ -779,8 +780,8 @@ mod tests {
         let vector: Vec<_> = (1..=4).map(id).collect();
         let lexical = vec![id(1), id(2), id(20), id(21)];
         let fused = Fusion::default().with_adaptive(0.0, 1.0).fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, lexical),
-            ChannelResults::new(Channel::Vector, vector),
+            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
+            ChannelResults::unscored(Channel::Vector, vector),
         ]);
 
         let applied = lexical_weight_in(&fused[0]);
@@ -801,8 +802,8 @@ mod tests {
             .with_weight(Channel::LexicalSegmented, 0.25)
             .with_weight(Channel::LexicalNgram, 0.25)
             .fuse(&[
-                ChannelResults::new(Channel::LexicalSegmented, lexical),
-                ChannelResults::new(Channel::Vector, vector),
+                ChannelResults::unscored(Channel::LexicalSegmented, lexical),
+                ChannelResults::unscored(Channel::Vector, vector),
             ]);
 
         let lexical_hit = fused
@@ -822,7 +823,7 @@ mod tests {
     fn without_a_vector_channel_the_configured_weight_stands() {
         let fused = Fusion::default()
             .with_adaptive(0.0, 1.0)
-            .fuse(&[ChannelResults::new(
+            .fuse(&[ChannelResults::unscored(
                 Channel::LexicalSegmented,
                 vec![id(1), id(2)],
             )]);
@@ -840,8 +841,8 @@ mod tests {
         let vector: Vec<_> = (1..=4).map(id).collect();
         let lexical: Vec<_> = (10..=13).map(id).collect();
         let fused = Fusion::default().with_adaptive(0.5, 1.0).fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, lexical),
-            ChannelResults::new(Channel::Vector, vector),
+            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
+            ChannelResults::unscored(Channel::Vector, vector),
         ]);
 
         let lexical_hit = fused
@@ -861,8 +862,8 @@ mod tests {
         let vector: Vec<_> = (1..=4).map(id).collect();
         let lexical: Vec<_> = (10..=13).map(id).collect();
         let fused = Fusion::default().with_adaptive(1.0, 1.0).fuse(&[
-            ChannelResults::new(Channel::LexicalSegmented, lexical),
-            ChannelResults::new(Channel::Vector, vector),
+            ChannelResults::unscored(Channel::LexicalSegmented, lexical),
+            ChannelResults::unscored(Channel::Vector, vector),
         ]);
 
         let lexical_hit = fused

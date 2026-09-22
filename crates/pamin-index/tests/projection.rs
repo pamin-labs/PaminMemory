@@ -1,6 +1,6 @@
 //! Drives the projection index against the real engine.
 
-use pamin_core::TopicId;
+use pamin_core::{Scored, TopicId};
 use pamin_index::{Access, Profile, Projection, ProjectionIndex};
 
 const PROFILE: Profile = Profile::Speed;
@@ -18,6 +18,80 @@ fn id(byte: u8) -> TopicId {
 /// A distinct identifier per number, for the tests that write many documents.
 fn numbered(n: u128) -> TopicId {
     TopicId(uuid::Uuid::from_u128(n))
+}
+
+/// Whether a channel returned this topic at all, at any rank.
+fn holds(candidates: &[Scored], topic: TopicId) -> bool {
+    candidates.iter().any(|candidate| candidate.topic == topic)
+}
+
+/// Every channel scores what it returns, and returns it in that order.
+///
+/// The scores were being dropped on the floor: `collect_scored` reads them from
+/// the same result set the ranking already came out of, so nothing here is
+/// asking the index to work harder -- it is asking whether the accessor was
+/// wired to anything at all. A channel that returned `Some(0.0)` for every
+/// candidate would pass a test that only checked the ranking, and would make
+/// any judgement of that channel's confidence a judgement of the constant zero.
+#[test]
+fn every_channel_scores_what_it_returns_and_ranks_by_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    for (n, text) in [
+        "the deployment pipeline runs on every merge to main",
+        "the deployment pipeline is described in database.rs",
+        "an unrelated memory about the weather",
+    ]
+    .iter()
+    .enumerate()
+    {
+        index
+            .upsert(numbered(n as u128 + 1), text, &stub())
+            .expect("upsert");
+    }
+    index.flush().expect("flush");
+
+    let query = stub();
+    for (channel, candidates) in [
+        (
+            "segmented",
+            index.recall_segmented("deployment pipeline", 10).unwrap(),
+        ),
+        ("ngram", index.recall_ngram("pipeline", 10).unwrap()),
+        ("vector", index.recall_vector(&query, 10).unwrap()),
+    ] {
+        assert!(
+            !candidates.is_empty(),
+            "{channel} returned nothing to score"
+        );
+
+        let scores: Vec<f32> = candidates
+            .iter()
+            .map(|candidate| {
+                candidate
+                    .score
+                    .unwrap_or_else(|| panic!("{channel} returned a candidate with no score"))
+            })
+            .collect();
+
+        assert!(
+            scores.windows(2).all(|pair| pair[0] >= pair[1]),
+            "{channel} is not ordered by the score it reports: {scores:?}"
+        );
+        assert!(
+            scores.iter().any(|score| *score != 0.0),
+            "{channel} reported zero for every candidate, which is what an \
+             unwired accessor looks like: {scores:?}"
+        );
+    }
 }
 
 #[test]
@@ -66,25 +140,25 @@ fn lexical_recall_works_across_languages_and_on_exact_strings() {
     // Each language is searched in its own words, which is the whole point of
     // segmenting before indexing rather than falling back to n-grams.
     let hits = index.recall_segmented("deployment", 10).expect("english");
-    assert!(hits.contains(&english), "english recall failed: {hits:?}");
+    assert!(holds(&hits, english), "english recall failed: {hits:?}");
 
     let hits = index.recall_segmented("流水线", 10).expect("chinese");
-    assert!(hits.contains(&chinese), "chinese recall failed: {hits:?}");
+    assert!(holds(&hits, chinese), "chinese recall failed: {hits:?}");
 
     let hits = index.recall_segmented("東京", 10).expect("japanese");
-    assert!(hits.contains(&japanese), "japanese recall failed: {hits:?}");
+    assert!(holds(&hits, japanese), "japanese recall failed: {hits:?}");
 
     let hits = index.recall_segmented("ทำงาน", 10).expect("thai");
-    assert!(hits.contains(&thai), "thai recall failed: {hits:?}");
+    assert!(holds(&hits, thai), "thai recall failed: {hits:?}");
 
     // The n-gram field catches substrings of a path or an error code, which
     // word segmentation splits apart.
     let hits = index.recall_ngram("database.rs", 10).expect("path");
-    assert!(hits.contains(&identifier), "path recall failed: {hits:?}");
+    assert!(holds(&hits, identifier), "path recall failed: {hits:?}");
 
     let hits = index.recall_ngram("E1234", 10).expect("error code");
     assert!(
-        hits.contains(&identifier),
+        holds(&hits, identifier),
         "error code recall failed: {hits:?}"
     );
 
@@ -296,7 +370,8 @@ fn building_the_vector_index_loses_nothing() {
                     // whether it ranks first.
                     .recall_vector(&separated(*written), 3)
                     .expect("recall")
-                    .contains(&numbered(*written))
+                    .iter()
+                    .any(|candidate| candidate.topic == numbered(*written))
             })
             .collect();
 

@@ -62,8 +62,8 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
     let hits = index.recall_vector(&query, 2).expect("vector recall");
 
     assert_eq!(
-        hits.first(),
-        Some(&chinese),
+        hits.first().map(|hit| hit.topic),
+        Some(chinese),
         "an english query should reach the chinese memory first: {hits:?}"
     );
 }
