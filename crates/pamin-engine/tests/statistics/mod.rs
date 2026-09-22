@@ -169,6 +169,28 @@ fn how_often_chance_does_this(differences: &[f64], observed: f64) -> f64 {
     (extreme + 1) as f64 / (RESAMPLES + 1) as f64
 }
 
+/// Which row of a sweep the others are priced against.
+///
+/// Here rather than in each harness because all three sweep the same grid and
+/// all three had the same hole: they printed means and left the reader to
+/// subtract. Subtracting is what this module exists to replace.
+///
+/// The best-scoring row by default, which answers "is the winner
+/// distinguishable from the field at all". `SWEEP_AGAINST` names a row by
+/// label substring instead, for the other question a sweep gets asked: two
+/// particular settings, one of which is what ships. The two are not
+/// interchangeable. Two rows each compared against a third are *not* compared
+/// against each other -- a paired test needs the pair -- and the comparison a
+/// default rests on is almost always a pair.
+pub fn baseline<T>(measured: &[(String, T)], score: impl Fn(&T) -> f64) -> Option<&(String, T)> {
+    match std::env::var("SWEEP_AGAINST") {
+        Ok(wanted) => measured.iter().find(|(label, _)| label.contains(&wanted)),
+        Err(_) => measured
+            .iter()
+            .max_by(|left, right| score(&left.1).total_cmp(&score(&right.1))),
+    }
+}
+
 fn average(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
