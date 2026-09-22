@@ -1587,11 +1587,11 @@ impl Engine {
                 .collect()
         });
 
-        let mut connection = self.database.pool().acquire().await?;
-        for (topic, key, tokens) in &keys {
-            repository::record_topic_name(&mut *connection, self.project, *topic, key, *tokens)
-                .await?;
-        }
+        // One statement rather than one per topic. A rebuild records every
+        // topic in the project, so the row-at-a-time form was a round trip per
+        // topic -- thirteen thousand of them on the corpora this project
+        // measures, for a table with no more rows than that.
+        repository::record_topic_names(self.database.pool(), self.project, &keys).await?;
 
         Ok(keys.len())
     }

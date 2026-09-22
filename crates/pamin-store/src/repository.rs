@@ -969,6 +969,54 @@ pub async fn record_topic_name(
     Ok(())
 }
 
+/// Records how many topics' names tokenize, in one statement.
+///
+/// The single-row form above is what a write uses, because a write records one
+/// topic. This is what a rebuild uses, because a rebuild records all of them --
+/// and doing that a row at a time is one round trip per topic, which on the
+/// corpora this project measures is thirteen thousand of them for a table with
+/// no more rows than that.
+///
+/// `unnest` over three arrays, which is the same shape [`topics_named_by`] and
+/// `graph::live_versions_of` already use for their reads. The conflict clause
+/// is the single-row one unchanged, so a rebuild over a table that already has
+/// these rows updates them rather than failing -- which is what a rebuild is.
+pub async fn record_topic_names(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    names: &[(TopicId, String, usize)],
+) -> Result<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+
+    let topics: Vec<uuid::Uuid> = names.iter().map(|(topic, _, _)| topic.0).collect();
+    let keys: Vec<String> = names.iter().map(|(_, key, _)| key.clone()).collect();
+    // `i16` because that is the column, and a name with more tokens than a
+    // `smallint` holds is not a name.
+    let counts: Vec<i16> = names
+        .iter()
+        .map(|(_, _, tokens)| i16::try_from(*tokens).unwrap_or(i16::MAX))
+        .collect();
+
+    sqlx::query(
+        "INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
+         SELECT $1, topic_id, name_key, token_count
+           FROM unnest($2::uuid[], $3::text[], $4::smallint[])
+             AS incoming(topic_id, name_key, token_count)
+         ON CONFLICT (project_id, topic_id) DO UPDATE
+             SET name_key = EXCLUDED.name_key, token_count = EXCLUDED.token_count",
+    )
+    .bind(project.0)
+    .bind(&topics)
+    .bind(&keys)
+    .bind(&counts)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
 /// How many tokens the longest topic name in this project has.
 ///
 /// Bounds the lookup: a run of tokens wider than the widest name cannot be a
