@@ -22,6 +22,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
+| | `PAMIN_ACCEPT_NONCOMMERCIAL` | unset | Accept the CC-BY-NC-4.0 terms of the `noncommercial` reranker tier |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -343,11 +344,13 @@ ranking internals it has no way to evaluate.
 `--rerank` chooses how much to spend reordering the results, and takes
 `PAMIN_RERANK`:
 
-| | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
-|---|---|---|---|---|
-| `off` | nothing | 53 ms | — | — |
-| `fast` | 113 MB | 264 ms | **+0.0381** | −0.0053 |
-| `accurate` | 570 MB | 1001 ms | **+0.0448** | +0.0017 |
+| | licence | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
+|---|---|---|---|---|---|
+| `off` | — | nothing | 53 ms | — | — |
+| `fast` | permissive | 119 MB | 264 ms | **+0.0381** | −0.0053 |
+| `balanced` | permissive | 341 MB | not taken | not taken | not taken |
+| `accurate` | permissive | 571 MB | 1001 ms | **+0.0448** | +0.0017 |
+| `noncommercial` | **CC-BY-NC-4.0** | 280 MB | not taken | not taken | not taken |
 
 Measured on XQuAD-R's 13,014 sentences in eleven languages, through
 `Engine::search_reranked` — the call this command makes, one layer below the
@@ -369,6 +372,28 @@ server remembers a query's vector, so asking the same thing twice costs the
 second a search should ask for it. A workspace whose memories are all in
 one language should set `off` — only candidates the lexical channels missed are
 reranked, and those are overwhelmingly the ones written in another language.
+
+`balanced` and `noncommercial` are new and **their rows say `not taken`
+because nothing has measured them yet.** They are in the table so the licence
+column is complete, not because there is a recommendation behind them.
+[measured.md](measured.md) will carry the figures when they exist; until then
+the two rows above them are the ones with evidence.
+
+`noncommercial` is refused unless `PAMIN_ACCEPT_NONCOMMERCIAL` is set, and the
+refusal is where the terms are stated. That is the notice: a line printed to
+stderr beside results nobody asked twice about is a line nobody reads, so the
+command stops instead, once, at the only moment the terms could change
+somebody's mind. It is deliberately not an acknowledgement file in the
+workspace — a file goes missing on a new machine, in a fresh container, in CI,
+and it goes missing *silently*, which is the wrong direction for a licence to
+fail in. An environment variable has to be set wherever the command runs, so
+the acceptance appears in the script or the CI configuration that runs it and
+is visible to whoever inherits the setup.
+
+It is also the reason the licence column exists at all. Every other tier is
+permissive and needs nothing; [NOTICE](../NOTICE) lists what each one
+downloads and the chain behind it, including the two exports that carry no tag
+of their own.
 
 The model is fetched the first time a search asks for one, into the same cache
 as the embedding model.

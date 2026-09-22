@@ -165,6 +165,16 @@ async fn main() -> Result<()> {
     // reference.
     let call = fill_from_stdin(call)?;
 
+    // Before a server is started or a database provisioned. A misspelled tier,
+    // or one whose licence the caller has not accepted, is a refusal they can
+    // act on immediately -- and one that arrived after a PostgreSQL install,
+    // leaving a workspace behind for a command that never ran, would be a
+    // worse answer to the same question. The server checks again; see
+    // `command::search::tier`.
+    if let protocol::Call::Search(args) = &call {
+        command::search::tier(&args.rerank)?;
+    }
+
     if client::wanted() {
         let request = protocol::Request {
             version: protocol::version(),

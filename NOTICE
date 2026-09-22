@@ -52,6 +52,13 @@ Reranker models
     Tier `balanced`. An ONNX re-export of
     Alibaba-NLP/gte-multilingual-reranker-base, itself Apache-2.0.
 
+  jinaai/jina-reranker-v2-base-multilingual            CC-BY-NC-4.0
+    Tier `noncommercial`. **Not for commercial use.** The only model here
+    whose licence restricts what a user may do with it, which is why that
+    tier is refused until PAMIN_ACCEPT_NONCOMMERCIAL is set and why the
+    refusal states the terms. Every other tier is permissive and needs
+    nothing.
+
 ================================================================================
 Rust dependencies
 ================================================================================

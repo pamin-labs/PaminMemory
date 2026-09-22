@@ -2016,3 +2016,50 @@ fn an_import_records_the_whole_file_or_none_of_it() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// The non-commercial tier is refused by the real binary, before any download.
+///
+/// Not ignored, and that is the point of it. Every other test in this file
+/// provisions PostgreSQL and fetches weights; this one asserts that the
+/// refusal happens *first*, so it needs neither and runs in the default suite
+/// where a regression would be seen.
+///
+/// It exists because the unit test beside `permitted` cannot see the call
+/// site. Deleting `permitted(rerank)?` from the search command leaves that
+/// test passing and the product ungated — verified by doing it — so the check
+/// that matters is this one, through the binary a user runs.
+#[test]
+fn the_non_commercial_tier_is_refused_before_anything_is_downloaded() {
+    let home = tempfile::tempdir().expect("temp home");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        .args(["search", "anything", "--rerank", "noncommercial"])
+        .env("PAMIN_HOME", home.path())
+        .env("PAMIN_PROFILE", PROFILE)
+        .env_remove("PAMIN_ACCEPT_NONCOMMERCIAL")
+        .output()
+        .expect("running pamin");
+
+    assert!(
+        !output.status.success(),
+        "the non-commercial tier ran without acceptance"
+    );
+
+    let refusal = String::from_utf8_lossy(&output.stderr);
+    for expected in ["CC-BY-NC-4.0", "PAMIN_ACCEPT_NONCOMMERCIAL", "NOTICE"] {
+        assert!(
+            refusal.contains(expected),
+            "the refusal does not mention {expected:?}: {refusal}"
+        );
+    }
+
+    // Nothing was fetched, which is the substance of the refusal rather than a
+    // side effect of it: a command that downloaded the weights and then
+    // declined to use them would have already put them on the disk.
+    let models = home.path().join("models");
+    assert!(
+        !models.exists() || std::fs::read_dir(&models).is_ok_and(|mut d| d.next().is_none()),
+        "weights were fetched despite the refusal: {}",
+        models.display()
+    );
+}

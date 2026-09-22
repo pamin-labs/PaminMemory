@@ -296,6 +296,23 @@ pub enum Rerank {
     /// is Apache-2.0. Read from the hub API rather than from card prose, and
     /// written down in `NOTICE`.
     Balanced,
+    /// Jina reranker v2, twelve layers of 768, 280 MB. **CC-BY-NC-4.0: not for
+    /// commercial use.**
+    ///
+    /// The tier the licence relaxation was for, and the one the relaxation
+    /// probably does not need. It is the *same shape* as `balanced` -- 12x768,
+    /// 84.9M non-embedding -- so there is no compute argument for it at all.
+    /// Either its training makes it better at the same cost, in which case a
+    /// non-commercial option is worth offering, or it does not, in which case
+    /// this is a tier with no reason to exist and saying so is more useful
+    /// than leaving it in the table looking like a choice. That prediction is
+    /// recorded here before the measurement rather than after it.
+    ///
+    /// Opt-in and refused by default -- see [`Rerank::licence`] and the gate
+    /// in the `search` command. The weights are free for research and personal
+    /// use and not for commercial use, and a caller cannot be assumed to have
+    /// read `NOTICE`.
+    Noncommercial,
 }
 
 /// How many of the fused results a tier looks at.
@@ -426,6 +443,7 @@ impl Rerank {
             "fast" => Some(Self::Fast),
             "accurate" => Some(Self::Accurate),
             "balanced" => Some(Self::Balanced),
+            "noncommercial" => Some(Self::Noncommercial),
             _ => None,
         }
     }
@@ -436,6 +454,7 @@ impl Rerank {
             Self::Fast => "fast",
             Self::Accurate => "accurate",
             Self::Balanced => "balanced",
+            Self::Noncommercial => "noncommercial",
         }
     }
 
@@ -443,7 +462,9 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate | Self::Balanced => tuned("PAMIN_RERANK_DEPTH", DEPTH),
+            Self::Fast | Self::Accurate | Self::Balanced | Self::Noncommercial => {
+                tuned("PAMIN_RERANK_DEPTH", DEPTH)
+            }
         }
     }
 
@@ -470,6 +491,9 @@ impl Rerank {
             // `Alibaba-NLP/gte-multilingual-reranker-base` under it is
             // Apache-2.0. See `NOTICE`.
             Self::Balanced => Some(Licence::Permissive),
+            // Tagged `cc-by-nc-4.0` on the model itself. Not a chain to read:
+            // the restriction is the model's own.
+            Self::Noncommercial => Some(Licence::NonCommercial),
         }
     }
 
@@ -479,6 +503,7 @@ impl Rerank {
             Self::Fast => "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
             Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
             Self::Balanced => "onnx-community/gte-multilingual-reranker-base",
+            Self::Noncommercial => "jinaai/jina-reranker-v2-base-multilingual",
         }
     }
 
@@ -494,7 +519,7 @@ impl Rerank {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             // One int8 export, not one per instruction set, so there is
             // nothing to detect at runtime the way `fast` has to.
-            Self::Accurate | Self::Balanced => "onnx/model_int8.onnx",
+            Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_int8.onnx",
             Self::Fast => {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -894,7 +919,12 @@ mod tests {
     #[test]
     fn every_tier_that_loads_weights_declares_what_they_may_be_used_for() {
         assert_eq!(Rerank::Off.licence(), None, "the off tier loads nothing");
-        for tier in [Rerank::Fast, Rerank::Accurate, Rerank::Balanced] {
+        for tier in [
+            Rerank::Fast,
+            Rerank::Accurate,
+            Rerank::Balanced,
+            Rerank::Noncommercial,
+        ] {
             assert!(
                 tier.licence().is_some(),
                 "the {} tier downloads weights and does not say under what terms",
@@ -917,6 +947,7 @@ mod tests {
             Rerank::Fast,
             Rerank::Accurate,
             Rerank::Balanced,
+            Rerank::Noncommercial,
         ] {
             assert_eq!(
                 Rerank::parse(tier.name()),
