@@ -54,11 +54,17 @@ pub struct Args {
 
 /// One entry of the trace, as a caller sees it.
 ///
-/// [`Why`] also carries `weight` and `contribution`, and `docs/cli.md` prints
-/// both as things the reader works out: weight is a constant per channel, and
-/// contribution is `weight / (10 + rank)`. Ten hits of them cost about seven
-/// hundred tokens of somebody's context window to restate what they already
-/// know, so the command layer leaves them out.
+/// [`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`
+/// prints the last two as things the reader works out: weight is a constant per
+/// channel, and contribution is `weight / (10 + rank)`. Ten hits of them cost
+/// about seven hundred tokens of somebody's context window to restate what they
+/// already know, so the command layer leaves them out.
+///
+/// `score` is left out for a different reason. It is the channel's own quantity
+/// in the channel's own units, so a reader comparing a BM25 score against a
+/// vector similarity would be comparing nothing. Fusion reads it to judge how
+/// confident a channel is *against that channel's other candidates*, and that
+/// judgement already reaches the caller as the rank the fused list gives.
 ///
 /// A separate type rather than `#[serde(skip)]` on the core one. Skipping
 /// would make the field deserialize as zero on the far side of the socket,
