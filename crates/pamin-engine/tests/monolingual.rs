@@ -70,6 +70,8 @@
 //! The dataset is not vendored. The corpus is Wikipedia text under
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
+mod statistics;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -343,6 +345,14 @@ struct Scores {
     deep: usize,
     /// Queries with at least one of those.
     with_work: usize,
+    /// Every query's own nDCG, in the order they were scored.
+    ///
+    /// Kept beside the running total because a mean cannot be tested and a
+    /// list can. Two runs over the same queries in the same order pair up
+    /// entry by entry, which is what [`statistics::compare`] needs to say
+    /// whether a difference of means is a result -- see that module for why
+    /// this project stopped reporting the means alone.
+    per_query: Vec<f64>,
 }
 
 impl Scores {
@@ -364,8 +374,11 @@ impl Scores {
             .filter(|rank| hit(*rank))
             .count();
 
+        let ndcg = if ideal == 0.0 { 0.0 } else { gained / ideal };
+
         self.queries += 1;
-        self.ndcg += if ideal == 0.0 { 0.0 } else { gained / ideal };
+        self.ndcg += ndcg;
+        self.per_query.push(ndcg);
         self.recall += found as f64 / relevant.len() as f64;
         self.deep += deep;
         self.with_work += usize::from(deep > 0);
@@ -793,13 +806,20 @@ async fn search() {
         &fused,
         started.elapsed().as_secs_f64() * 1000.0 / corpus.queries.len() as f64,
     );
+    // Query by query, not mean against mean. This corpus is where the
+    // reranker was measured *losing* 0.0152, and a loss that size is exactly
+    // what a paired count can dissolve or confirm -- until now nothing here
+    // could tell which. Printed on every profile, because the number is worth
+    // having even when the floors are not asserted; see `statistics`.
+    let paired = statistics::compare(&fused.per_query, &shipped.per_query);
+    println!("  reranking is worth {paired} nDCG@{NDCG_AT} here\n");
+
     if named == DEFAULT_PROFILE && !corpus.capped {
         let gain = shipped.mean_ndcg() - fused.mean_ndcg();
-        println!("  reranking is worth {gain:+.4} nDCG@{NDCG_AT} here\n");
         assert!(
             gain >= RERANK_IS_WORTH,
             "reranking is worth {gain:.4} nDCG@{NDCG_AT}, under the {RERANK_IS_WORTH:.4} \
-             it is supposed to be worth"
+             it is supposed to be worth ({paired})"
         );
     }
 }
