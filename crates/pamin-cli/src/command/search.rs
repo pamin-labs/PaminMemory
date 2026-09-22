@@ -41,9 +41,13 @@ pub struct Args {
     ///
     /// A cross-encoder reads the query and a memory together, which is what
     /// lets it correct an order the channels got wrong and what makes it cost
-    /// a forward pass per candidate. Only memories written in a language other
-    /// than the query's are reordered, so a workspace in one language gains
-    /// exactly nothing from this and should turn it off.
+    /// a forward pass per candidate. Only the candidates no lexical channel
+    /// found are reordered -- not, as this used to say, the ones in another
+    /// language; the rule is the absence of a lexical hit rather than a
+    /// language test, because a language detector is absent on exactly the
+    /// short queries an agent asks. In practice that is mostly the same set,
+    /// so a workspace in one language gains little from this and, on a corpus
+    /// with one language throughout, measurably loses: see `docs/cli.md`.
     #[arg(long, env = "PAMIN_RERANK", default_value = "fast")]
     pub rerank: String,
 }
