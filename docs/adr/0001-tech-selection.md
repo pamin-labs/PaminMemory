@@ -993,18 +993,22 @@ The published answers to this latency all change the architecture instead, and b
 
 Both routes rest on premises Påmin Memory has not measured — that the hot set is small, that write-time cost is cheap — and the triggers are written to test the premise before the work. Re-checked 2026-09-20: one route's blocker dissolved and the other's did not, which is the reason to re-check a deferral rather than trust the note that created it.
 
-Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path both tiers take.
+Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path every tier here takes.
 
-### What the two shipped tiers are licensed under, and what was surveyed against them
+### What each shipped tier is licensed under, and what was surveyed against them
 
 Licences were checked at the leaf and at the base, because a fine-tune's card can declare a licence its base does not permit.
 
 | tier | model | licence | base |
 | --- | --- | --- | --- |
 | `fast` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | `apache-2.0`, declared on the card | `nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large`, **no licence tag**; MiniLMv2 originates in `microsoft/unilm`, MIT |
+| `balanced` | `onnx-community/gte-multilingual-reranker-base` | **no licence tag** — `library_name` and `base_model` and nothing else | `Alibaba-NLP/gte-multilingual-reranker-base`, `apache-2.0` |
 | `accurate` | `onnx-community/bge-reranker-v2-m3-ONNX` | **no licence tag** — its front matter is `library_name` and `base_model` and nothing else | `BAAI/bge-reranker-v2-m3`, `apache-2.0` |
+| `noncommercial` | `jinaai/jina-reranker-v2-base-multilingual` | **`cc-by-nc-4.0`**, declared on the card | its own weights; the whole Jina reranker line is non-commercial |
 
-Both chains are defensible and neither is stated where it is shipped from. That is worth an upstream request or a self-controlled export; it is recorded here rather than left to be rediscovered.
+Three of the four permissive chains are defensible and **none of those three states its licence where it is shipped from** — two of the exports carry no front matter but `library_name` and `base_model`, and the third's base is itself untagged. A re-export with no tag is usable when the chain to a licensed source is readable, which is the rule this project settled on, and every chain above is given in [`NOTICE`](../../NOTICE) so that a reader does not have to re-derive it. It is still worth an upstream request or a self-controlled export, and it is recorded here rather than left to be rediscovered.
+
+`noncommercial` is the one tier whose licence restricts what may be done with the *output* rather than only how the weights may be redistributed. It is not a default, nothing reaches it without being named, and naming it prints the terms once and then runs — the reasoning for warning rather than refusing is in [cli.md](../cli.md).
 
 **The survey against them, and the reason none of it changed the default.** Every candidate below was checked for a readable permissive licence first, because a model that cannot be shipped does not need measuring.
 
