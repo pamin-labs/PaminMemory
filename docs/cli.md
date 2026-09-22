@@ -22,7 +22,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
-| | `PAMIN_ACCEPT_NONCOMMERCIAL` | unset | Accept the CC-BY-NC-4.0 terms of the `noncommercial` reranker tier |
+| | `PAMIN_ACCEPT_NONCOMMERCIAL` | unset | Acknowledge the `noncommercial` tier's CC-BY-NC-4.0 terms, which stops the notice printing |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -379,21 +379,28 @@ column is complete, not because there is a recommendation behind them.
 [measured.md](measured.md) will carry the figures when they exist; until then
 the two rows above them are the ones with evidence.
 
-`noncommercial` is refused unless `PAMIN_ACCEPT_NONCOMMERCIAL` is set, and the
-refusal is where the terms are stated. That is the notice: a line printed to
-stderr beside results nobody asked twice about is a line nobody reads, so the
-command stops instead, once, at the only moment the terms could change
-somebody's mind. It is deliberately not an acknowledgement file in the
-workspace — a file goes missing on a new machine, in a fresh container, in CI,
-and it goes missing *silently*, which is the wrong direction for a licence to
-fail in. An environment variable has to be set wherever the command runs, so
-the acceptance appears in the script or the CI configuration that runs it and
-is visible to whoever inherits the setup.
+`noncommercial` prints a notice to stderr the first time you ask for it and
+then runs. It is not gated: naming the tier is already deliberate — nothing
+reaches it by default and the default is permissive — so the notice's job is to
+make sure nobody arrives at those terms without being told, not to decide on
+your behalf whether your use is inside them.
 
-It is also the reason the licence column exists at all. Every other tier is
-permissive and needs nothing; [NOTICE](../NOTICE) lists what each one
-downloads and the chain behind it, including the two exports that carry no tag
-of their own.
+What the notice says is an obligation rather than a hazard, and the difference
+matters. Nothing about the model is less reliable for its licence: it loads,
+scores and ranks like any other. What CC-BY-NC-4.0 restricts is **what you may
+use the results for**, which is a question about your situation that this
+program cannot answer — so the notice states the terms and says that staying
+inside them is yours to determine and yours to comply with.
+`PAMIN_ACCEPT_NONCOMMERCIAL=1` records that you have and stops the notice
+printing. It grants nothing, because nothing was withheld; it is there so the
+acknowledgement lands in the script or the CI configuration that runs the
+command, where whoever inherits the setup can see it, rather than scrolling
+past one terminal once.
+
+That tier is also the reason the licence column exists at all. Every other one
+is permissive and says nothing; [NOTICE](../NOTICE) lists what each one
+downloads and the chain behind it, including the three exports that carry no
+tag of their own.
 
 The model is fetched the first time a search asks for one, into the same cache
 as the embedding model.

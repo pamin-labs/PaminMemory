@@ -54,10 +54,12 @@ Reranker models
 
   jinaai/jina-reranker-v2-base-multilingual            CC-BY-NC-4.0
     Tier `noncommercial`. **Not for commercial use.** The only model here
-    whose licence restricts what a user may do with it, which is why that
-    tier is refused until PAMIN_ACCEPT_NONCOMMERCIAL is set and why the
-    refusal states the terms. Every other tier is permissive and needs
-    nothing.
+    whose licence restricts what may be done with its output, rather than
+    only how it may be redistributed. Asking for that tier prints the terms
+    once and then runs: whether a given use falls inside them depends on
+    the user's situation and is theirs to determine and to comply with.
+    PAMIN_ACCEPT_NONCOMMERCIAL=1 records that they have and stops the
+    notice. Every other tier is permissive and says nothing.
 
 ================================================================================
 Rust dependencies

@@ -308,10 +308,12 @@ pub enum Rerank {
     /// than leaving it in the table looking like a choice. That prediction is
     /// recorded here before the measurement rather than after it.
     ///
-    /// Opt-in and refused by default -- see [`Rerank::licence`] and the gate
-    /// in the `search` command. The weights are free for research and personal
-    /// use and not for commercial use, and a caller cannot be assumed to have
-    /// read `NOTICE`.
+    /// Asking for it prints the terms once and then runs -- see
+    /// [`Rerank::licence`] and `caution` in the `search` command. The weights
+    /// are free for research and personal use and not for commercial use, and
+    /// a caller cannot be assumed to have read `NOTICE`; whether a given use
+    /// is inside those terms depends on their situation and is not something
+    /// this program can decide for them.
     Noncommercial,
 }
 

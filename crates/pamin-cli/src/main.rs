@@ -165,14 +165,19 @@ async fn main() -> Result<()> {
     // reference.
     let call = fill_from_stdin(call)?;
 
-    // Before a server is started or a database provisioned. A misspelled tier,
-    // or one whose licence the caller has not accepted, is a refusal they can
-    // act on immediately -- and one that arrived after a PostgreSQL install,
-    // leaving a workspace behind for a command that never ran, would be a
-    // worse answer to the same question. The server checks again; see
-    // `command::search::tier`.
+    // Before a server is started or a database provisioned, for two different
+    // reasons. A misspelled tier is an error the caller can act on at once,
+    // and one that arrived after a PostgreSQL install -- leaving a workspace
+    // behind for a command that never ran -- would be a worse answer to the
+    // same question. And a licence notice is worth printing only where a
+    // person is reading, which is here and not in a resident server whose
+    // stderr is a log file.
     if let protocol::Call::Search(args) = &call {
-        command::search::tier(&args.rerank)?;
+        let tier = pamin_index::Rerank::parse(&args.rerank)
+            .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
+        if let Some(warning) = command::search::caution(tier) {
+            eprintln!("{warning}");
+        }
     }
 
     if client::wanted() {
