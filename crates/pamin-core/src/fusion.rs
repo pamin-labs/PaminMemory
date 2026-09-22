@@ -238,6 +238,22 @@ impl Fusion {
         self
     }
 
+    /// Stops asking this channel entirely.
+    ///
+    /// The same thing as a weight of zero, and that is the point: a channel
+    /// worth nothing should not be able to put a candidate into the result set.
+    /// It used to. `fuse` created its entry for every candidate of every
+    /// channel before applying any weight, so the fused set was always the
+    /// union of all four, and a candidate only a zero-weighted channel proposed
+    /// arrived at score 0.0 ordered against the other zeroes by topic
+    /// identifier. The head of the list stayed clean, because any positive
+    /// score beats zero -- but anything reading past the head, `recall@50`
+    /// above all, counted candidates no surviving channel had proposed, ranked
+    /// by nothing but the accident of a UUID.
+    pub fn without(self, channel: Channel) -> Self {
+        self.with_weight(channel, 0.0)
+    }
+
     /// Overrides the rank constant.
     ///
     /// Alongside [`with_weight`](Self::with_weight) because the two are the
@@ -259,6 +275,13 @@ impl Fusion {
 
         for list in lists {
             let weight = self.weight(list.channel);
+
+            // A channel worth nothing does not get to name candidates. See
+            // `without`, which is the same statement made deliberately.
+            if weight == 0.0 {
+                continue;
+            }
+
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
                 let contribution = weight / (self.k + rank as f32);
@@ -431,6 +454,39 @@ mod tests {
             ChannelResults::unscored(Channel::Vector, vec![id(2)]),
         ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
+    }
+
+    /// A channel worth nothing cannot put anything into the result set.
+    ///
+    /// The behaviour this replaced was invisible at the head and wrong
+    /// everywhere else. `fuse` built its entry before applying any weight, so
+    /// the fused set was the union of every channel asked, and a candidate only
+    /// the zero-weighted channel proposed scored 0.0 and sorted among the other
+    /// zeroes by topic identifier. Nothing reading the top ten would notice,
+    /// because a positive score always beats zero. `recall@50` counted it.
+    #[test]
+    fn a_channel_worth_nothing_contributes_nothing_to_the_result_set() {
+        let theirs = id(1);
+        let ours = id(2);
+
+        let fused = Fusion::default().without(Channel::LexicalSegmented).fuse(&[
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![theirs]),
+            ChannelResults::unscored(Channel::Vector, vec![ours]),
+        ]);
+
+        assert_eq!(
+            fused.iter().map(|result| result.topic).collect::<Vec<_>>(),
+            vec![ours],
+            "a candidate only the silenced channel proposed is still in the results"
+        );
+        assert!(
+            fused[0].why.iter().all(
+                |why| !matches!(why, Why::Channel { channel, .. } if *channel
+                    == Channel::LexicalSegmented)
+            ),
+            "a silenced channel still wrote itself into the trace: {:?}",
+            fused[0].why
+        );
     }
 
     #[test]
