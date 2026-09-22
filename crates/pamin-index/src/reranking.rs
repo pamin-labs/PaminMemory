@@ -17,12 +17,14 @@
 //! settled the question at any size, which it does not: 128-dimensional int8
 //! token vectors are about 67 MB over XQuAD-R's 13,014 sentences and 1.35 GB
 //! over MIRACL's 131,924 passages, against indexes of 119 MB and 1.1 GB. Two
-//! to three times the index is an argument, not a foreclosure. What actually
-//! rules late interaction out today is that no permissively-licensed
-//! multilingual model exists to do it with -- `jina-colbert-v2` is
-//! CC-BY-NC-4.0, `answerai-colbert-small-v1` is Apache-2.0 and English, and
-//! `colbert-xm` is MIT and selects a per-language adapter at runtime, which
-//! does not fit one static ONNX graph. See `docs/adr/0001-tech-selection.md`.
+//! to three times the index is an argument, not a foreclosure. Nor is the
+//! licence one any more: `lightonai/mLateOn` is Apache-2.0, multilingual and
+//! carries its own int8 ONNX, where `jina-colbert-v2` is CC-BY-NC-4.0,
+//! `answerai-colbert-small-v1` is English, and `colbert-xm` selects a
+//! per-language adapter at runtime that does not fit one static graph. What is
+//! left is a measurement nobody has taken -- nine languages against this
+//! product's eleven, and a forward pass per memory added to the write path.
+//! `docs/adr/0001-tech-selection.md` carries the trigger.
 //!
 //! ## What it is worth, measured
 //!
