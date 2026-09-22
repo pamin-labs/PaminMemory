@@ -322,6 +322,37 @@ and what has not, is stated in [Measured](#measured). Not built yet: source
 ingestion and page trees; curated notes and the session brief; passive
 optimization and forgetting; the MCP surface.
 
+### Known and not done
+
+Named here rather than left in a backlog, because each one is a measured gap
+rather than an idea.
+
+**The largest remaining accuracy gains are corpus-dependent and a single
+default cannot take them.** Over four groups of three corpora, three separate
+settings are worth far more than what ships and worth it in opposite
+directions: `CombMNZ` fusion is **+0.0700** on same-language queries and
+−0.0350 on cross-lingual ones; lexical weights at 0.25/0.50 are +0.0656
+same-language and −0.0806 cross-lingual; a rank constant of 60 is +0.0681
+same-language and −0.0724 cross-lingual. The shipped defaults are the
+compromise. What would collect the rest is letting a workspace say whether its
+memories are in one language or many, and applying the values already measured
+for that shape — configuration rather than a new algorithm, because that is
+what the measurements actually say.
+[measured.md](docs/measured.md) has every figure.
+
+**Two thirds of the database has not been looked at.** `source_versions` is
+16.7% of it and unexamined; `topic_states` carries a duplicate of
+`topics.content` measured at 10.2% of a workspace. The queue that used to be
+38.7% is fixed.
+
+**Write latency has never been attributed.** Retrieval is divided into four
+stages and published; the write path is a single number, so there is nothing
+to say about which part of it a round trip would remove.
+
+**Resident memory is measured but not attributed.** 3.6 GB and 7.2 GB are
+published for two corpus sizes and neither is broken down, so nothing here can
+say what a reduction would have to target.
+
 ## Development
 
 ```bash

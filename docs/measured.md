@@ -497,6 +497,40 @@ plan around, and it is why two workspaces do not fit on a sixteen-gigabyte
 machine at this corpus size. A workspace that never asks for `accurate` never
 loads the 570 MB reranker; `--rerank off` never loads either.
 
+**What the database is made of**, which is a figure this page has never carried
+and which turned out to be worth carrying. Broken down by table on the
+evaluation workspace, 1.7 GB across its projects:
+
+| table | total | share |
+| --- | --- | --- |
+| **`index_jobs`** | **632 MB** | **38.7%** |
+| `source_versions` | 273 MB | 16.7% |
+| `topic_states` | 239 MB | 14.6% |
+| `topics` | 176 MB | 10.8% |
+| `topic_name_tokens` | 139 MB | 8.5% |
+| `sources` | 94 MB | 5.8% |
+| `source_spans` | 81 MB | 4.9% |
+
+**The largest table is the work queue, and the corpus had finished indexing.**
+`index_jobs` held 651,128 settled rows out of 1,054,646, completed the day
+before and pruned by nothing since — because nothing had been written since.
+`jobs::prune` existed and worked; its call sat behind `drained.completed > 0`,
+so a drain cleaned the queue only when it had found work, and skipped it in
+exactly the state that needs it. A workspace that imports a corpus and goes
+quiet leaves the queue at its high-water mark indefinitely. Fixed, with a test
+about the empty drain specifically.
+
+Two things to read carefully there. Payloads are 57 MB of the 632; the rest is
+row overhead and six indexes over a million rows, so the cost of a queue row is
+mostly not the work it describes. And a `DELETE` returns space to PostgreSQL for
+reuse rather than to the filesystem — the database stops climbing and reuses
+what it holds, and only `VACUUM FULL` shrinks the file. "38.7%" is growth
+avoided, not a file about to get smaller.
+
+What is still unattributed on this axis: `source_versions` at 16.7% has not been
+looked at, and `topic_states` carries a duplicate of `topics.content` measured
+at 10.2% of a workspace elsewhere. Neither is done.
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested — and the descriptor count is the first thing that would break: this
