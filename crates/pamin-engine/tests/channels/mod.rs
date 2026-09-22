@@ -26,16 +26,17 @@
 //! returned list was shorter than the limit, which is the only way to know the
 //! matrix is whole.
 //!
-//! **Zero weight is not absence, so leave-one-out cannot be done with weights.**
-//! `fuse` creates an entry for every candidate of every channel before applying
-//! any weight, so the fused set is always the union and a candidate only a
-//! zero-weighted channel found lands at score 0.0, ordered against its peers by
-//! topic UUID. The head stays clean -- any positive score beats zero -- but
-//! recall past the head counts candidates the surviving channels never
-//! proposed. [`refuse`] therefore takes a weight function returning `None` for
-//! a channel that was never asked, which is a distinction the engine's own
-//! `Fusion` cannot express: there, a channel missing from the weight map
-//! defaults to 1.0.
+//! **Leave-one-out has to mean absence, and it now does on both sides.** It
+//! used not to: `fuse` created an entry for every candidate of every channel
+//! before applying any weight, so the fused set was always the union and a
+//! candidate only a zero-weighted channel found landed at score 0.0, ordered
+//! against its peers by topic UUID. The head stayed clean -- any positive score
+//! beats zero -- but recall past the head counted candidates the surviving
+//! channels never proposed. `Fusion::without` says the thing outright now and
+//! `fuse` skips a channel weighted at zero, so the engine and [`refuse`] agree
+//! about what leaving a channel out means. [`refuse`] still takes a weight
+//! function returning `None` rather than `Some(0.0)`, because the two readings
+//! are equal in effect and only one of them says which was meant.
 //!
 //! ## What "the graph channel alone" cannot mean
 //!
