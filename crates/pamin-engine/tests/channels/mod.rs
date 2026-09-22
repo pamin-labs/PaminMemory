@@ -307,6 +307,7 @@ pub fn variants() -> Vec<(String, Fusion)> {
     // a row that moved both cannot say which half moved it.
     for (name, combine) in [
         ("rrf", Combine::Reciprocal),
+        ("band", Combine::Banded),
         ("zsum", Combine::Standardised),
         ("zmnz", Combine::StandardisedTimesVotes),
     ] {
