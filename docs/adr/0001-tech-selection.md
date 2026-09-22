@@ -407,14 +407,42 @@ memories are written, which that paper never had to pay because its corpus was
 static, and which would make the mechanism wrong for a user the moment they
 wrote something.
 
-`Fusion::with_confidence` implements it and **is off by default because it has
-not been measured**. The three corpora's accuracy floors stand on constant
-weights. Its two constants, and the two lexical weights now that they are
-separable, are swept offline from one pass over each corpus — `channels::as_if`
-replays a run's trace through the shipped `fuse`, so a grid that used to cost
-thirteen minutes a row costs microseconds a row. Until that sweep is run and
-reported with per-query wins, losses and a bootstrap p, the mechanism is a
-hypothesis with an argument behind it and no number.
+`Fusion::with_confidence` implements it, `Combine` implements the score
+combiners, and **both are off by default**. The sweep runs offline from one
+pass over each corpus — `channels::as_if` replays a run's trace through the
+shipped `fuse`, so a grid that used to cost thirteen minutes a row costs
+microseconds a row.
+
+**The first corpus has reported, and it separates the two mechanisms.** On this
+project's own cross-lingual group, against the reciprocal rank fusion that
+ships: a weighted sum of standardised scores is **+0.0281 at 15 wins to 1,
+p = 0.0037**, taking 0.7910 to 0.8192 against the vector channel's own 0.8268 —
+so most of the gap this section opens closes by adding scores instead of ranks.
+Per-channel confidence on top of rank fusion is the weaker mechanism: +0.0118
+at best (8 wins, 0 losses, p = 0.0381) with a narrow plateau, which by
+*Balancing the Blend*'s own reading is what fitting a development set looks
+like. The `floor` moves almost nothing, so the effect is discounting a channel
+rather than silencing it.
+
+**And CombMNZ is significantly worse, as predicted before the run**: −0.0392 at
+3 wins to 21, p = 0.0008. The systematic comparison ranks it first of ten on
+four corpora; the four-channel analysis names multiplying by agreement as the
+weakest-link mechanism. This corpus says the second one governs here, which is
+the same finding as the channel table above reached from the other direction.
+
+One corpus of three, and 43 queries this project wrote itself. Nothing changes
+default until MIRACL and XQuAD-R agree.
+
+**The first attempt at this sweep measured standardised fusion at 0.0099** — 0
+wins, 43 losses — because zvec reports cosine *distance* for a cosine index, so
+the vector channel was being summed backwards and its confidence read off its
+worst candidate. A figure that implausible is a bug, not a result. The test that
+should have caught it passed: it asserted every channel orders its candidates by
+the score it reports, and wrote every document with the same stub embedding, so
+the vector channel reported one constant and ordering by a constant asserts
+nothing. `collect_scored` now takes the orientation as a parameter, and no
+channel may report one score for every candidate. Nothing published before that
+fix had ever read a score.
 
 ### Every accuracy figure here is a difference of means
 

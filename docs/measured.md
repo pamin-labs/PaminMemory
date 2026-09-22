@@ -165,13 +165,58 @@ relationships to walk, so that much is the corpus, but this project's own
 corpus does have edges and also reports zero, and that is unexplained rather
 than understood.
 
-`Fusion::with_confidence` is the answer built for it: each channel's weight
-scaled by how far its best candidate stands above its own field, which is
-dimensionless and readable from the candidates already in hand. **It is off by
-default and has no figure on this page, because it has not been measured.** The
-sweep is now cheap — one pass per corpus prices the whole grid offline — and
-until it is run and reported with per-query wins, losses and a p, there is
-nothing here to report. The MIRACL comparison above is not re-taken
+### What the fusion function itself is worth
+
+Two mechanisms were built for the finding above and swept offline from one pass
+over each corpus. On this project's own corpus, cross-lingual group, 43 queries,
+against the reciprocal rank fusion that ships:
+
+| | nDCG@10 | against what ships |
+| --- | --- | --- |
+| reciprocal rank fusion (ships) | 0.7910 | — |
+| **weighted sum of standardised scores** | **0.8192** | **+0.0281, 15 wins / 1 loss, p = 0.0037** |
+| the same, times the number of channels that found it (CombMNZ) | 0.7519 | −0.0392, 3 / 21, p = 0.0008 |
+| *the vector channel alone, for reference* | *0.8268* | — |
+
+**Adding scores rather than ranks is worth a significant +0.0281 here, and it
+closes most of the gap the section above opens** — fusion was 0.0358 behind the
+vector channel alone and is now 0.0076 behind it. A rank cannot express a
+margin: a candidate its channel put a long way clear of the field and one that
+merely came first in a flat list both contribute `weight / (k + 1)`.
+
+**CombMNZ is significantly worse, and that was predicted before the run.** The
+systematic comparison of ten combiners ranks it first on all four of its
+corpora; the four-channel analysis names multiplying by agreement as the
+weakest-link mechanism. Those cannot both hold here, and this corpus says the
+second one does — which is the same finding as the table above, arrived at from
+the other direction.
+
+Per-channel confidence, on top of rank fusion, is the weaker of the two:
++0.0118 at its best setting (8 wins, 0 losses, p = 0.0381), +0.0070 and +0.0133
+either side of it, one of those not significant. The direction is consistent and
+the plateau is narrow, which by the same paper's own reading is what overfitting
+a development set looks like. The `floor` — how much a channel with no opinion
+keeps — moves almost nothing, so what little is there comes from discounting a
+channel rather than silencing it.
+
+The other two groups of this corpus sit on their ceilings (1.0000 and 0.9940)
+and separate nothing.
+
+**Nothing has changed default yet.** Reciprocal rank fusion still ships, and
+these are one corpus of three: 43 cross-lingual queries this project wrote
+itself. MIRACL and XQuAD-R have to agree before a default moves, and the
+figures here will be re-taken alongside theirs.
+
+One thing the first attempt at this sweep is worth recording. Standardised
+fusion measured **0.0099 against 0.7910** — 0 wins, 43 losses — because zvec
+reports cosine *distance* for a cosine index and the vector channel was being
+summed backwards. A number that implausible is a bug rather than a result. What
+let it through is worse: the test asserting every channel orders its candidates
+by the score it reports wrote every document with the same stub embedding, so
+the vector channel reported one constant and ordering by a constant asserts
+nothing. Both are fixed, and no figure published before this had ever read a
+score — every ranking that ships, and every number in the table above the fix,
+reads ranks. The MIRACL comparison above is not re-taken
 yet, for the ten hours named earlier, and on `speed` it carries a second
 finding worth stating early: once fusion stops diluting, the cross-encoder
 *costs* 0.0152 there — 0.6730 with it against 0.6882 without, for 226 ms a
