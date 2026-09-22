@@ -58,6 +58,21 @@ pub enum Why {
     Channel {
         channel: Channel,
         rank: u32,
+        /// What this channel scored this candidate, in this channel's own
+        /// units.
+        ///
+        /// Never comparable across channels -- a BM25 score and a vector
+        /// similarity are different quantities, which is why the entry above it
+        /// is a rank and why fusion combines ranks. It is here because the one
+        /// question a rank cannot answer is how sure the channel was: a
+        /// candidate at rank 1 looks identical whether its channel put it a
+        /// long way clear of the field or could barely separate it from rank
+        /// 50. Reading that off requires the channel's own scores, so they are
+        /// written down.
+        ///
+        /// `None` from a channel that does not score against the query. The
+        /// graph channel reaches a topic across edges instead.
+        score: Option<f32>,
         weight: f32,
         contribution: f32,
     },
@@ -370,6 +385,7 @@ impl Fusion {
                 entry.1.push(Why::Channel {
                     channel: list.channel,
                     rank,
+                    score: candidate.score,
                     weight,
                     contribution,
                 });
