@@ -949,6 +949,76 @@ The speed claim is real and does not apply here. Parallel, evaluating Jev indepe
 
 What is worth taking from it is not the model. `jev-reranker`, a library wrapping the API, reports that a relevance *threshold* — dropping candidates rather than reordering all of them — removed about 92% of the candidates and scored higher than reordering them, 0.975 against 0.969 nDCG@10. That is a gate, and a gate needs no weights at all.
 
+### The model map, one year on: ModernBERT, mmBERT, Laya, and the decoder rerankers
+
+The survey above was run against a size budget. That constraint was lifted —
+accuracy, not download size, decides which model may be offered — and the
+survey was re-run against the field as it stands, because a rejection whose
+reason has expired is not a decision any more.
+
+**Nothing in it changes a default, and the reasons are now different reasons.**
+That is the point of recording it: the two families rejected for size are still
+rejected, on grounds that a larger budget does not touch.
+
+| candidate | licence | languages | architecture | non-embedding vs `fast` | why not |
+| --- | --- | --- | --- | --- | --- |
+| `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | 109 | **`Qwen2ForCausalLM`** | ~17x | A decoder, and seconds a query |
+| `Qwen/Qwen3-Reranker-0.6B` | `apache-2.0` | multi | **`Qwen3ForCausalLM`** | ~19x | Same, one size up |
+| `Alibaba-NLP/gte-reranker-modernbert-base` | `apache-2.0` | **English only** | cross-encoder | 4.0x | Full int8 ONNX, 2.7M downloads, and monolingual |
+| `Antix5/product-reranker-mmBERT-small` | `mit` | 13 | cross-encoder | 2.0x | Trained on product similarity, 82 downloads |
+| `convaiinnovations/laya` | `apache-2.0` | 1811 (multilingual variant) | **typed-decision RL agent** | 5.2x | Not a cross-encoder; see below |
+
+**The two `apache-2.0` decoders are blocked on shape before latency.** Both
+rerank by prompting and comparing the logits of a "yes" and a "no" token, so
+the graph returns a vocabulary-sized tensor and needs prompt templating and
+specific token ids. `fastembed`'s `TextRerank` drives a sequence classifier and
+cannot drive that; adopting either means a raw `ort` path. Third-party int8
+ONNX exports exist, so the work is bounded — but at seventeen times `fast`, on
+four cores, where `accurate` already spends most of a second, it buys a tier
+nobody would leave on. Withdrawing the size constraint did not withdraw the
+latency axis.
+
+**Laya is genuinely open and genuinely fast, and is the wrong shape twice
+over.** Its multilingual encoder is `jhu-clsp/mmBERT-base` — 22 layers at width
+768 with an `intermediate_size` of 1152, 110.3M non-embedding parameters, 5.2
+times the default tier. Its head takes `marker_pos`, `marker_mask` and a
+`qtype`, plants markers in a prompt and chooses among them; a reranker needs
+one `(query, document)` pair in and one relevance logit out. The published 33
+ms is one GPU, and "faster than Jev" is measured against a hosted API's network
+round trip rather than against a matrix multiply.
+
+Its card also states that *every question in a call is answered in one single
+forward pass*, which would be a different cost model if it meant shared
+encoding. It does not. The released `rl_agent_api.py` builds one sequence per
+question and stacks them into a batch, so the state is re-encoded for every
+question — one *launch*, not one *encode*, which is what this project already
+gets from `fastembed` for a shortlist. The published latencies say the same
+thing: 39.5 ms for one question, 158.6 ms for ten and 771 ms for fifty is 5.0
+times the questions for 4.86 times the time between the last two, linear once
+the GPU is full. And its `head_max_len` of 256 tokens is smaller than the
+shortlist this project reranks — about 770 tokens of candidate text — so the
+listwise shape, one pass and one softmax over the whole shortlist, is not
+something that head can express.
+
+One property of it is worth wanting and is recorded rather than dismissed:
+**calibrated probabilities over a bounded answer space.** Every score in this
+system is comparable only within one query — which is the constraint
+`Combine::Banded` was derived from and normalises around. Nothing here can say
+*how* relevant a result is in terms that mean the same thing for the next
+query, and two separate wants below need exactly that.
+
+**What the field is missing is the model, not the architecture.** mmBERT is
+multilingual ModernBERT, MIT, 1811 languages, and `mmBERT-small` is 42.2M
+non-embedding — twice the default tier, not five times, with a narrow 1152-wide
+MLP where the convention is four times the hidden size. That is the most
+interesting encoder available for this slot. What does not exist is a
+well-trained multilingual retrieval reranker on it: the one model with both the
+architecture and the `text-ranking` shape is trained on product similarity,
+which is the training-distribution mismatch this project has already measured
+as the reason an off-the-shelf reranker loses. So it is a thing to watch for,
+not a thing to adopt, and it goes into the sweep the day one appears
+permissively licensed.
+
 ### Optional GPU: measured against, not deferred
 
 Accelerating the reranker on a GPU was considered and is not being built, and the reason is not the size budget alone.
