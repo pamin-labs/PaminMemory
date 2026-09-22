@@ -968,12 +968,15 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
     }
 
     println!("\n  every fusion setting against the one that ships, {named}");
-    println!("  setting                        nDCG@{NDCG_AT}   against shipped");
+    println!(
+        "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}   against shipped"
+    );
     println!("  ---------------------------------------------------------------------------");
     for ((label, _), scores) in variants.iter().zip(&offline) {
         println!(
-            "  {label:<28}   {:>7.4}   {}",
+            "  {label:<28}   {:>7.4}   {:>9.4}   {}",
             scores.mean_ndcg(),
+            scores.mean_recall(),
             statistics::compare(&whole.per_query, &scores.per_query)
         );
     }

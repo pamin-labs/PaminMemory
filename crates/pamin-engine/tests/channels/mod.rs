@@ -224,6 +224,16 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 
 /// Every fusion setting worth pricing against the one that ships, labelled.
 ///
+/// **Read against recall as well as nDCG, and that is not a formatting
+/// preference.** The accuracy gates assert both, and the first version of this
+/// table printed only nDCG@10 -- on which the standardised sum is better in
+/// three of four groups and was very nearly made the default. It takes
+/// XQuAD-R's cross-lingual `recall@50` from 0.8960 to 0.7765, straight through
+/// a floor, because a sum of standardised scores gives a candidate that sits
+/// below its channel's mean a *negative* contribution where reciprocal rank
+/// fusion gives every candidate a positive one. The head gains and the tail
+/// collapses. A grid judged on the head alone cannot see that.
+///
 /// Offline, so the whole grid costs one pass over the corpus rather than one
 /// pass per row. That changes what is affordable: a row on XQuAD-R used to be
 /// thirteen minutes, which is why every sweep this project ever ran moved both
