@@ -48,9 +48,23 @@ fusion weight moved on +0.0056 and the reranker is priced at −0.0152, and both
 are small enough that a handful of queries decides them. The harnesses now
 report per-query wins, losses and a paired bootstrap p beside every mean — see
 `crates/pamin-engine/tests/statistics/mod.rs` and the section in
-[ADR 0001](adr/0001-tech-selection.md) — and the two figures named here are the
-ones being re-taken through it first. Until a figure below carries a win/loss
+[ADR 0001](adr/0001-tech-selection.md). Until a figure below carries a win/loss
 count, read it as a difference of means and nothing stronger.
+
+**The first two re-taken are the two the reranker rests on, and both survive:**
+
+| | mean | wins / losses / ties | p |
+| --- | --- | --- | --- |
+| XQuAD-R, cross-lingual, `fast` against `off` | +0.0403 | 547 / 206 / 437 | 0.0001 |
+| XQuAD-R, same-language, `fast` against `off` | −0.0061 | 3 / 19 / 1,168 | 0.0007 |
+| MIRACL Swahili (`speed`), `fast` against fusion alone | −0.0152 | 37 / 57 / 388 | 0.0129 |
+
+So the reranker is not a wash in either direction. It is strongly positive
+where a query and its answer are in different languages and significantly
+negative where they are not — and the second finding is sharper than its mean
+suggests. On XQuAD-R it reaches twenty-two same-language queries out of 1,190
+and makes nineteen of them worse; on MIRACL, where every query is
+same-language, it reaches ninety-four of 482 and loses on fifty-seven.
 
 As for the harness named beside the MIRACL row: this page previously named
 one harness for both corpora, which was true of the XQuAD-R rows and false of

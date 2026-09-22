@@ -290,9 +290,25 @@ p = 0.039**. Read as means, the wrong method wins.
 and a paired bootstrap p alongside every mean, and the cross-lingual harness
 fails if reranking's gain is not significant rather than merely small. Until
 each figure below has been re-taken through it, **a small difference in this
-document is a difference of means and nothing more**. The ones that most need
-re-checking are the two named above, because both are small enough that this
-analysis can dissolve them, and both have already been acted on.
+document is a difference of means and nothing more**.
+
+The first two re-taken were the two that most needed it, and **both survive**.
+Reranking on XQuAD-R is +0.0403 cross-lingual at 547 wins against 206 losses,
+p = 0.0001, and −0.0061 same-language at 3 wins against 19 losses, p = 0.0007.
+On MIRACL it is −0.0152 at 37 wins against 57 losses over 482 queries,
+p = 0.0129. The reranker's cost on single-language retrieval was acted on
+before it was tested; testing it did not take it away.
+
+What the test adds is the shape the means hid. The same-language damage is not
+diffuse — the pass reaches twenty-two of XQuAD-R's 1,190 same-language queries
+and makes nineteen of them worse. It looks small in the mean only because
+confining the pass to unlexical candidates keeps it away from almost every
+query, which is that confinement working exactly as its own note claims. On
+MIRACL, where there is no other language for a candidate to be in, it reaches
+ninety-four of 482.
+
+Still untested, and next: the fusion weight's +0.0056 on MIRACL, which is the
+figure the current default rests on.
 
 ### Three recall channels, not seven
 
