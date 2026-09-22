@@ -221,9 +221,17 @@ async fn retrieval_quality_by_group() {
     write_corpus(&mut engine, &corpus).await;
 
     // `CHANNELS`: what each channel is worth alone, and what the fused list
-    // looks like with each one taken away. This is the only corpus of the three
-    // where the graph channel returns anything at all, so it is the only place
-    // that question has an answer. See `channels`.
+    // looks like with each one taken away. See `channels`.
+    //
+    // This used to claim it was the only corpus of the three where the graph
+    // channel returns anything, and therefore the only place that question has
+    // an answer. Neither half survives inspection. The other two corpora name
+    // their topics deliberately unlike their own text so that mention
+    // derivation finds nothing -- so their graph is empty by design -- and this
+    // corpus names its topics `<subject>_<language>`, which `name_sequence`
+    // opens into a two-to-four token run that no memory's prose contains, so
+    // its graph is empty too. `live_edges` now prints the census instead of
+    // leaving the premise unstated.
     if std::env::var("CHANNELS").is_ok() {
         report_channels(&engine, &queries).await;
         return;
@@ -369,6 +377,36 @@ const FLOORS: &[(&str, f64, f64)] = &[
 ];
 
 /// Each channel alone, and each one removed, on the corpus this project wrote.
+/// Live edges in this project, by kind, so a graph row has a premise.
+///
+/// Every number the `graph` channel contributes is conditional on there being
+/// edges to walk, and nothing in this harness ever said whether there were.
+/// That is not a pedantic gap. Topic names here are identifiers like
+/// `deploy_pipeline_en`, which `name_sequence` opens into the three-token run
+/// `deploy pipeline en`; mention derivation asserts an edge only when one
+/// memory's content contains another's name as a contiguous run, and prose
+/// about a deployment pipeline does not contain that run. So this corpus can
+/// derive **no edges at all** -- which is exactly the state in which a
+/// `0.0000` looks like a measurement of the channel and is a measurement of
+/// the corpus.
+///
+/// The other two corpora are worse: their harnesses name topics *deliberately*
+/// unlike their own text, and say so, so their graph is empty by design.
+async fn live_edges(engine: &Engine) -> Vec<(String, i64)> {
+    sqlx::query_as(
+        "SELECT r.kind, count(*)
+           FROM relationships r
+           JOIN relationship_versions v ON v.relationship_id = r.id
+          WHERE r.project_id = $1 AND v.invalidated_at IS NULL
+          GROUP BY r.kind
+          ORDER BY count(*) DESC",
+    )
+    .bind(engine.project.0)
+    .fetch_all(engine.database.pool())
+    .await
+    .expect("count the live edges")
+}
+
 async fn report_channels(engine: &Engine, queries: &[Query]) {
     use pamin_core::Channel;
 
@@ -382,6 +420,20 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         Channel::Vector,
         Channel::Graph,
     ];
+
+    // The premise of every `graph` row below, taken before anything is scored
+    // so that a zero is never mistaken for a measurement.
+    let edges = live_edges(engine).await;
+    let total: i64 = edges.iter().map(|(_, count)| count).sum();
+    println!("\n  live edges in this project: {total}");
+    for (kind, count) in &edges {
+        println!("    {kind:<14} {count:>8}");
+    }
+    if total == 0 {
+        println!(
+            "  NO EDGES. The graph channel has nothing to walk, so its rows below are a \n               property of this corpus and not of the channel. Mention derivation asserts an \n               edge only where one memory's content contains another's name as a contiguous \n               token run, and this corpus names its topics `<subject>_<language>` -- a run no \n               prose contains. Nothing here has ever measured a non-empty graph."
+        );
+    }
 
     let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
@@ -452,14 +504,28 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         println!("  ---------------------------------------------------------------");
         for (channel, groups) in &alone {
             if let Some(scores) = groups.get(group) {
+                // A graph row with no edges behind it is not a figure. Printing
+                // the reason in the cell is what stops it being copied into a
+                // table as though it were one.
+                let premise = if *channel == Channel::Graph && total == 0 {
+                    "   <- no edges; premise absent"
+                } else {
+                    ""
+                };
                 println!(
-                    "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+                    "  {:<20}   {:>7}   {:>7.4}   {:>9.4}{premise}",
                     format!("{channel:?}"),
                     scores.queries,
                     scores.mean_ndcg(),
                     scores.mean_recall()
                 );
             }
+        }
+        if total == 0 && !alone.contains_key(&Channel::Graph) {
+            println!(
+                "  {:<20}   {:>7}   {:>7}   {:>9}   <- returned nothing on any query",
+                "Graph", 0, "--", "--"
+            );
         }
         println!(
             "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
@@ -472,8 +538,13 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         println!("\n  with one channel taken away, {group}:");
         for (channel, groups) in &without {
             if let Some(scores) = groups.get(group) {
+                let premise = if *channel == Channel::Graph && total == 0 {
+                    "   <- removing an empty channel; asserts nothing"
+                } else {
+                    ""
+                };
                 println!(
-                    "  {:<20}   {}",
+                    "  {:<20}   {}{premise}",
                     format!("{channel:?}"),
                     statistics::compare(&whole[group].per_query, &scores.per_query)
                 );
