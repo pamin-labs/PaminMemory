@@ -1783,6 +1783,28 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
 /// lexical hit, which is the ordinary shape of a same-language query, every
 /// unlexical candidate is at rank five or beyond and the 226 ms was buying a
 /// reordering of results nobody was going to be shown.
+///
+/// **What it is worth is 7%, and the first figure recorded for it was a
+/// third.** Both arms below are `accuracy` / `fast` over XQuAD-R's 1,190
+/// queries, taken in the same session on an idle machine, one thing apart:
+///
+/// | | reranking | candidates a query |
+/// | --- | --- | --- |
+/// | `--limit 51`, the harness | 252 ms | 15.3 |
+/// | `--limit 5`, the default | 235 ms | 14.5 |
+///
+/// The third came from subtracting two arms taken in *different* runs, which
+/// is the mistake this project has already withdrawn one figure for: the
+/// module notes on `reranking` warn that this harness's latency column moves
+/// by as much as a fifth between runs, and a fifth is three times the effect
+/// being measured.
+///
+/// Seven per cent for nothing is still worth keeping, and the reason it is
+/// small here is the reason it should be larger elsewhere: half of XQuAD-R's
+/// queries are answered in another language, so an unlexical candidate is
+/// almost always inside the first five and there is nothing to skip. A
+/// workspace in one language is the case this gate is for, and that is
+/// MIRACL's shape rather than this corpus's. Not measured there yet.
 fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
     if unlexical.len() < 2 {
         return false;
