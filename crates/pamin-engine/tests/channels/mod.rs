@@ -58,7 +58,7 @@
 
 use std::collections::BTreeMap;
 
-use pamin_core::{Channel, ChannelResults, Fusion, Scored, TopicId, Why};
+use pamin_core::{Channel, ChannelResults, Combine, Fusion, Scored, TopicId, Why};
 use pamin_engine::SearchHit;
 
 /// Every channel that returned anything, and the order it returned it in.
@@ -229,7 +229,7 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 /// thirteen minutes, which is why every sweep this project ever ran moved both
 /// lexical channels together and left the rank constant to a coarse handful.
 ///
-/// Two grids, because there are two open questions and they are separate.
+/// Four grids, because there are four open questions and they are separate.
 ///
 /// **The lexical weights, now separable.** Kendall tau-b between the two
 /// lexical channels is around 0.30 on all three corpora, so the premise that
@@ -245,6 +245,28 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 /// opinion keeps: zero silences it outright, and the rows above zero are there
 /// to say whether silencing is the part that works or whether merely
 /// discounting is enough.
+///
+/// **The combiner, which is the choice nobody here recorded making.** This
+/// project argued about `k` and about the channel weights, both of them
+/// parameters *of* reciprocal rank fusion, and never wrote down that fusing
+/// ranks rather than normalised scores was a choice. Every 2025--2026 result
+/// found goes the other way -- see [`Combine`] -- including one measured on
+/// this project's own benchmarks, on CPU, without training. The rows here put
+/// all three combiners on the same queries, each crossed with the confidence
+/// rule, because the two mechanisms are independent: standardising fixes the
+/// magnitude a rank cannot express, and confidence fixes the channel quality
+/// standardising cannot express.
+///
+/// **The rank constant, once, to close the question.** The only real sweep of
+/// it in the recent literature (`arXiv:2604.01733`, 2026, 23,088 queries) puts
+/// `k = 10` ahead of the customary 60 at Recall@5 0.716 against 0.695, and
+/// `MMMORRF` (SIGIR 2025) uses zero. Nothing published derives it. This
+/// project's own sweep already found the curve monotonic all the way down and
+/// took ten as a fifth of the channel depth rather than the boundary. These
+/// rows are here to confirm the curve is flat near ten and then stop asking:
+/// the literature makes `k` worth one to three points and normalisation worth
+/// three to eight, so it is the low-leverage knob and it has had more attention
+/// than the high-leverage one.
 pub fn variants() -> Vec<(String, Fusion)> {
     let mut variants = Vec::new();
 
@@ -268,6 +290,29 @@ pub fn variants() -> Vec<(String, Fusion)> {
                 Fusion::default().with_confidence(spread, floor),
             ));
         }
+    }
+
+    // Score fusion against rank fusion, and each combiner with and without the
+    // confidence rule, because the two mechanisms answer different halves and
+    // a row that moved both cannot say which half moved it.
+    for (name, combine) in [
+        ("rrf", Combine::Reciprocal),
+        ("zsum", Combine::Standardised),
+        ("zmnz", Combine::StandardisedTimesVotes),
+    ] {
+        variants.push((format!("combine {name}"), Fusion::default().with(combine)));
+        for spread in [2.0, 5.0] {
+            variants.push((
+                format!("combine {name} conf {spread:.1}/0.00"),
+                Fusion::default().with(combine).with_confidence(spread, 0.0),
+            ));
+        }
+    }
+
+    // The rank constant, to confirm the curve is flat near ten. Zero because
+    // `MMMORRF` ships it and nothing here has ever tried it.
+    for k in [0.0, 5.0, 10.0, 20.0, 60.0] {
+        variants.push((format!("k {k:.0}"), Fusion::default().with_k(k)));
     }
 
     variants

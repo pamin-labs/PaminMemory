@@ -134,11 +134,20 @@ diagnostic reads every channel's own ranking out of one fused run's trace, so
 it costs nothing to take and had never been taken. Fusion alone, at the weight
 that ships:
 
-| | ours cross | XQuAD-R cross | XQuAD-R same |
+| channel, alone | ours cross | XQuAD-R cross | XQuAD-R same |
 | --- | --- | --- | --- |
-| all four channels fused | 0.7910 | 0.6077 | **0.7556** |
-| the vector channel alone | **0.8268** | **0.6335** | 0.6787 |
-| segmented BM25 alone | — | — | 0.7299 |
+| `lexical_segmented` | 0.1569 | 0.0366 | **0.7299** |
+| `lexical_ngram` | 0.0528 | 0.0106 | — |
+| `vector` | **0.8268** | **0.6335** | 0.6787 |
+| `graph` | 0.0000 | 0.0000 | 0.0000 |
+| all four fused | 0.7910 | 0.6077 | 0.7556 |
+
+And leave-one-out, paired against all four: taking `lexical_segmented` away is
+**+0.0310** on this project's cross-lingual group (16 wins, 1 loss, p = 0.0011)
+and **+0.0158** on XQuAD-R's (496 wins, 30 losses, p = 0.0001); taking
+`lexical_ngram` away is +0.0223 (13 / 1, p = 0.0173) and +0.0110 (333 / 20,
+p = 0.0001). The same removal costs **−0.0442** on XQuAD-R's same-language
+group (14 wins, 275 losses) and −0.0073 on MIRACL (p = 0.0125).
 
 Fusing four channels ranks below one of them on cross-lingual queries, on both
 corpora that have such a group — and on the same-language queries of the same

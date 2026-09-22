@@ -134,9 +134,71 @@ pub struct FusedResult {
     pub why: Vec<Why>,
 }
 
-/// Fuses ranked lists and applies post-fusion modifiers.
+/// How a candidate's places across the channels become one number.
+///
+/// This project argued at length about `k` and about the channel weights --
+/// both of them parameters *of* reciprocal rank fusion -- and never recorded
+/// that fusing ranks rather than normalised scores was a choice at all. It is
+/// the load-bearing one, and it is the one that was never tested.
+///
+/// What the 2025--2026 work says about it, all of it against rank fusion:
+///
+/// - Training-free lexical-dense fusion (`arXiv:2606.04194`, 2026) is the one
+///   result measured on this project's own benchmarks, on CPU, without
+///   training: **z-score weighted fusion at Hit@1 0.752 against RRF's 0.718**
+///   on LoCoMo, with a wide plateau in the mixing weight.
+/// - The systematic comparison (`arXiv:2507.03761`, 2025), ten fusion
+///   algorithms against six normalisers over four corpora, puts **standardised
+///   scores with CombMNZ highest on all four**, and every rank-based and
+///   vote-based method below every score-based one.
+/// - The calibrated graph-vector fusion paper (`arXiv:2603.28886`, 2026)
+///   reports RRF's mean gain as statistically insignificant where its
+///   calibrated fusion's smaller mean gain is significant, and its ablation
+///   names normalisation as the dominant factor.
+///
+/// So the alternatives are implemented and measured here rather than argued
+/// about. [`Fusion::with`] selects one; `Reciprocal` is what ships until a
+/// sweep says otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Combine {
+    /// `sum over channels of weight / (k + rank)`.
+    ///
+    /// The rank is all it reads, which is the property that makes it robust to
+    /// incomparable channels and the property that makes it unable to tell a
+    /// channel that is certain from one that is guessing.
+    #[default]
+    Reciprocal,
+    /// `sum over channels of weight * z(score)`, standardised per channel.
+    ///
+    /// Each channel's scores are centred and divided by their own deviation, so
+    /// a BM25 score and a cosine similarity become the same kind of quantity
+    /// before they are added. A candidate a channel never returned contributes
+    /// nothing, which under standardisation is that channel's own mean -- the
+    /// neutral value, not a penalty.
+    ///
+    /// What this fixes relative to `Reciprocal` is the *magnitude*: a candidate
+    /// that a channel scored far above its field now contributes more than one
+    /// that merely came first in a flat list. What it does **not** fix is
+    /// per-channel quality, for the reason
+    /// [`Fusion::with_confidence`] gives -- standardising removes the units and
+    /// not the quality, so a worthless channel's leader is still about `+2`.
+    /// The two are separate mechanisms and compose.
+    Standardised,
+    /// `Standardised`, multiplied by how many channels returned the candidate.
+    ///
+    /// CombMNZ. In the systematic comparison above it is the best of ten
+    /// combiners on all four corpora, and on this project's corpora it should
+    /// be the worst of the three here -- it multiplies by agreement, and
+    /// agreement between a confident channel and a worthless one is exactly
+    /// the weakest-link failure measured on both cross-lingual groups. It is
+    /// implemented so that prediction can be checked rather than asserted.
+    StandardisedTimesVotes,
+}
+
+/// Fuses ranked lists into one ordered result set.
 #[derive(Clone, Debug)]
 pub struct Fusion {
+    combine: Combine,
     k: f32,
     weights: BTreeMap<Channel, f32>,
     /// How a channel's own scores scale its weight on this query, if at all.
@@ -246,6 +308,10 @@ impl Default for Fusion {
         // corpus. One number is serving both, and the number it settles on is
         // whichever corpus was measured loudest.
         Self {
+            // Rank fusion, because it is what every published figure here was
+            // taken with. `Combine` says what the alternatives are and why they
+            // are worth measuring.
+            combine: Combine::Reciprocal,
             k: DEFAULT_K,
             weights: BTreeMap::from([
                 (Channel::LexicalSegmented, SEGMENTED_WEIGHT),
@@ -346,39 +412,44 @@ impl Fusion {
     /// distribution, and what it says is that the channel cannot separate its
     /// own candidates -- that one gets the floor, and it is the case this
     /// mechanism exists for.
+    /// The value is bounded above by `sqrt(n - 1) / spread`, which is why
+    /// [`with_confidence`](Self::with_confidence) says `spread` is coupled to
+    /// how many candidates a channel proposes.
     fn how_sure(&self, candidates: &[Scored]) -> f32 {
         let Some(confidence) = self.confidence else {
             return 1.0;
         };
-        if candidates.len() < 2 {
+        if candidates.len() < 2 || candidates.iter().any(|it| it.score.is_none()) {
             return 1.0;
         }
-        let Some(scores) = candidates
-            .iter()
-            .map(|candidate| candidate.score)
-            .collect::<Option<Vec<f32>>>()
+
+        // The same standardisation the score combiners use, so there is one
+        // mean and one deviation per channel in this file rather than two.
+        // `None` from all of them means the channel could not separate its own
+        // candidates, which is the case this mechanism exists for.
+        //
+        // Read as a maximum rather than taken from the head of the list,
+        // because the graph channel's score is not its sort key and this should
+        // not quietly depend on which channel it is looking at.
+        let Some(best) = standardise(candidates)
+            .into_iter()
+            .flatten()
+            .reduce(f32::max)
         else {
-            return 1.0;
+            return confidence.floor;
         };
 
-        let count = scores.len() as f32;
-        let mean = scores.iter().sum::<f32>() / count;
-        let deviation = (scores
-            .iter()
-            .map(|score| (score - mean) * (score - mean))
-            .sum::<f32>()
-            / count)
-            .sqrt();
-        if deviation <= f32::EPSILON {
-            return confidence.floor;
-        }
+        (best / confidence.spread).clamp(confidence.floor, 1.0)
+    }
 
-        // The candidates arrive best first, so the leader is the first one --
-        // read as a maximum anyway, because the graph channel's score is not
-        // its sort key and this should not quietly depend on which channel it
-        // is looking at.
-        let best = scores.iter().copied().fold(f32::MIN, f32::max);
-        ((best - mean) / deviation / confidence.spread).clamp(confidence.floor, 1.0)
+    /// Combines the channels this way instead of by reciprocal rank.
+    ///
+    /// See [`Combine`] for what the choices are and what the literature says
+    /// about them. `Reciprocal` ships; the others exist to be measured against
+    /// it on all three corpora before any of that is believed here.
+    pub fn with(mut self, combine: Combine) -> Self {
+        self.combine = combine;
+        self
     }
 
     /// Overrides the rank constant.
@@ -396,9 +467,31 @@ impl Fusion {
         self.weights.get(&channel).copied().unwrap_or(1.0)
     }
 
+    /// What one candidate is worth to the sum, before its channel's weight.
+    ///
+    /// `Reciprocal` reads the rank and nothing else. The standardised
+    /// combiners read `standardised`, which is this channel's score centred on
+    /// its own mean and divided by its own deviation.
+    ///
+    /// A channel that returned no scores at all standardises `1 / (k + rank)`
+    /// instead, which keeps reciprocal rank fusion's shape and removes its
+    /// scale rather than inventing a third shape for the case. Nothing the
+    /// engine assembles is in that case -- all four channels score now -- but a
+    /// caller can build one and it should not silently mean zero.
+    fn share(&self, standardised: Option<f32>, rank: u32) -> f32 {
+        let reciprocal = 1.0 / (self.k + rank as f32);
+        match self.combine {
+            Combine::Reciprocal => reciprocal,
+            Combine::Standardised | Combine::StandardisedTimesVotes => {
+                standardised.unwrap_or(reciprocal)
+            }
+        }
+    }
+
     /// Fuses per-channel ranked lists into one ordered result set.
     pub fn fuse(&self, lists: &[ChannelResults]) -> Vec<FusedResult> {
         let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
+        let mut votes: BTreeMap<TopicId, u32> = BTreeMap::new();
 
         for list in lists {
             let weight = self.weight(list.channel) * self.how_sure(&list.candidates);
@@ -412,9 +505,15 @@ impl Fusion {
                 continue;
             }
 
+            // Standardised once per channel, not once per candidate: it is the
+            // channel's own mean and deviation, so recomputing it inside the
+            // loop would be the same numbers at fifty times the cost.
+            let standardised = standardise(&list.candidates);
+
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
-                let contribution = weight / (self.k + rank as f32);
+                let contribution = weight * self.share(standardised[index], rank);
+                *votes.entry(candidate.topic).or_insert(0) += 1;
                 let entry = accumulated
                     .entry(candidate.topic)
                     .or_insert((0.0, Vec::new()));
@@ -431,12 +530,57 @@ impl Fusion {
 
         let mut results: Vec<FusedResult> = accumulated
             .into_iter()
-            .map(|(topic, (score, why))| FusedResult { topic, score, why })
+            .map(|(topic, (score, why))| {
+                // CombMNZ's one difference from a plain weighted sum: multiply
+                // by how many channels named this candidate at all.
+                let score = match self.combine {
+                    Combine::StandardisedTimesVotes => {
+                        score * votes.get(&topic).copied().unwrap_or(0) as f32
+                    }
+                    Combine::Reciprocal | Combine::Standardised => score,
+                };
+                FusedResult { topic, score, why }
+            })
             .collect();
 
         sort_results(&mut results);
         results
     }
+}
+
+/// Each candidate's score, centred on its channel's mean and divided by its
+/// channel's deviation.
+///
+/// Positionally aligned with the candidates, and `None` wherever there is no
+/// standardised value to give: a channel that does not score, or one whose
+/// candidates all scored the same, where dividing by the deviation would divide
+/// by zero. `Fusion::share` decides what to do with that; here it is only
+/// stated that there is nothing to report.
+fn standardise(candidates: &[Scored]) -> Vec<Option<f32>> {
+    let scores: Vec<f32> = candidates
+        .iter()
+        .filter_map(|candidate| candidate.score)
+        .collect();
+    if scores.len() != candidates.len() || scores.is_empty() {
+        return vec![None; candidates.len()];
+    }
+
+    let count = scores.len() as f32;
+    let mean = scores.iter().sum::<f32>() / count;
+    let deviation = (scores
+        .iter()
+        .map(|score| (score - mean) * (score - mean))
+        .sum::<f32>()
+        / count)
+        .sqrt();
+    if deviation <= f32::EPSILON {
+        return vec![None; candidates.len()];
+    }
+
+    scores
+        .into_iter()
+        .map(|score| Some((score - mean) / deviation))
+        .collect()
 }
 
 /// Orders by score, breaking ties by identifier.
@@ -514,6 +658,160 @@ mod tests {
             ChannelResults::unscored(Channel::Vector, vec![id(2)]),
         ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
+    }
+
+    /// Rank fusion cannot see a margin; standardised fusion can.
+    ///
+    /// The difference between the two combiners, in one case. Both channels put
+    /// their own candidate first, so both candidates get `weight / (k + 1)` and
+    /// reciprocal rank fusion has to break the tie on the identifier -- even
+    /// though one channel scored its leader far above its own field and the
+    /// other could barely separate its top two. Standardising reads exactly
+    /// that.
+    #[test]
+    fn a_margin_decides_under_standardised_fusion_and_is_invisible_to_ranks() {
+        let convinced = id(1);
+        let unconvinced = id(2);
+        let lists = [
+            ChannelResults::new(
+                Channel::Vector,
+                vec![
+                    Scored::new(convinced, 0.99),
+                    Scored::new(id(3), 0.10),
+                    Scored::new(id(4), 0.09),
+                ],
+            ),
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![
+                    Scored::new(unconvinced, 4.01),
+                    Scored::new(id(5), 4.00),
+                    Scored::new(id(6), 3.99),
+                ],
+            ),
+        ];
+
+        // Equal weights, so the combiner is the only thing being compared.
+        let level = Fusion::default()
+            .with_weight(Channel::Vector, 1.0)
+            .with_weight(Channel::LexicalSegmented, 1.0);
+
+        let ranked = level.fuse(&lists);
+        let top = ranked.iter().find(|r| r.topic == convinced).unwrap();
+        let other = ranked.iter().find(|r| r.topic == unconvinced).unwrap();
+        assert!(
+            (top.score - other.score).abs() < f32::EPSILON,
+            "reciprocal rank fusion should see these two as identical: {} against {}",
+            top.score,
+            other.score
+        );
+
+        let scored = level.clone().with(Combine::Standardised).fuse(&lists);
+        assert_eq!(
+            scored[0].topic, convinced,
+            "the channel with a real margin should win once magnitudes are read"
+        );
+    }
+
+    /// A channel's units do not survive standardisation, which is the point.
+    #[test]
+    fn standardised_fusion_does_not_care_what_units_a_channel_uses() {
+        let target = id(1);
+        let shape = [9.0f32, 1.0, 0.5];
+        let build = |scale: f32| {
+            [
+                ChannelResults::new(
+                    Channel::Vector,
+                    shape
+                        .iter()
+                        .enumerate()
+                        .map(|(n, score)| Scored::new(id(n as u8 + 1), score * scale))
+                        .collect(),
+                ),
+                ChannelResults::new(
+                    Channel::LexicalSegmented,
+                    vec![Scored::new(id(7), 2.0), Scored::new(target, 1.0)],
+                ),
+            ]
+        };
+
+        let fusion = Fusion::default().with(Combine::Standardised);
+        let small = fusion.fuse(&build(1.0));
+        let large = fusion.fuse(&build(1000.0));
+
+        let order = |results: &[FusedResult]| -> Vec<TopicId> {
+            results.iter().map(|result| result.topic).collect()
+        };
+        assert_eq!(
+            order(&small),
+            order(&large),
+            "multiplying one channel's scores by a thousand reordered the results"
+        );
+    }
+
+    /// CombMNZ multiplies by agreement, and agreement is what goes wrong here.
+    ///
+    /// Recorded as a test rather than a claim because the systematic comparison
+    /// that favours CombMNZ (`arXiv:2507.03761`) and the four-channel analysis
+    /// that names agreement as the failure mode (`arXiv:2508.01405`) predict
+    /// opposite things for this project. The mechanism is small enough to state
+    /// exactly, and it is stated in numbers: the vector channel is certain
+    /// about one candidate and the lexical channel is certain about another,
+    /// which the lexical channel's own weaker margin does not overcome -- until
+    /// being named by two channels doubles it.
+    #[test]
+    fn combmnz_rewards_being_named_twice_over_being_scored_well() {
+        let certain = id(1);
+        let agreed = id(2);
+        let lists = [
+            ChannelResults::new(
+                Channel::Vector,
+                vec![
+                    Scored::new(certain, 1.00),
+                    Scored::new(agreed, 0.10),
+                    Scored::new(id(3), 0.09),
+                    Scored::new(id(4), 0.08),
+                    Scored::new(id(5), 0.07),
+                    Scored::new(id(6), 0.06),
+                ],
+            ),
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![
+                    Scored::new(agreed, 1.00),
+                    Scored::new(id(7), 0.35),
+                    Scored::new(id(8), 0.30),
+                    Scored::new(id(9), 0.25),
+                    Scored::new(id(10), 0.20),
+                    Scored::new(id(11), 0.15),
+                ],
+            ),
+        ];
+        let level = Fusion::default()
+            .with_weight(Channel::Vector, 1.0)
+            .with_weight(Channel::LexicalSegmented, 1.0);
+
+        // Standardised: the vector channel's +2.23 beats the lexical channel's
+        // +2.18 once the vector channel's own -0.39 for the same candidate is
+        // taken off it.
+        assert_eq!(
+            level.clone().with(Combine::Standardised).fuse(&lists)[0].topic,
+            certain,
+            "a weighted sum should follow the margin"
+        );
+        // CombMNZ: the same 1.79 doubled for being named twice is 3.58, which
+        // is more than 2.23, so agreement wins on nothing but its own count.
+        assert_eq!(
+            level.with(Combine::StandardisedTimesVotes).fuse(&lists)[0].topic,
+            agreed,
+            "and CombMNZ should follow the agreement, which is the whole disagreement"
+        );
+    }
+
+    /// Nothing changes until somebody asks for a different combiner.
+    #[test]
+    fn reciprocal_rank_fusion_is_what_ships() {
+        assert_eq!(Fusion::default().combine, Combine::Reciprocal);
     }
 
     /// A channel that cannot separate its own candidates loses its vote.
