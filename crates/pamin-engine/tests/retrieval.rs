@@ -130,6 +130,7 @@
 //! so their floors below catch a collapse and nothing subtler. Making them
 //! informative needs a larger corpus, not a different metric.
 
+mod channels;
 mod statistics;
 
 use std::collections::{BTreeMap, HashSet};
@@ -256,6 +257,15 @@ async fn retrieval_quality_by_group() {
     // not is written once and re-read. Writing is idempotent per topic either
     // way: the same content produces the same state.
     write_corpus(&mut engine, &corpus).await;
+
+    // `CHANNELS`: what each channel is worth alone, and what the fused list
+    // looks like with each one taken away. This is the only corpus of the three
+    // where the graph channel returns anything at all, so it is the only place
+    // that question has an answer. See `channels`.
+    if std::env::var("CHANNELS").is_ok() {
+        report_channels(&engine, &queries).await;
+        return;
+    }
 
     if let Some(settings) = sweep() {
         println!("\n  setting              cross nDCG@10   mono nDCG@10   lexical nDCG@10");
@@ -397,6 +407,120 @@ const FLOORS: &[(&str, f64, f64)] = &[
     // 0.994 / 1.000 measured; likewise.
     ("monolingual", 0.94, 0.98),
 ];
+
+/// Each channel alone, and each one removed, on the corpus this project wrote.
+async fn report_channels(engine: &Engine, queries: &[Query]) {
+    use pamin_core::Channel;
+
+    /// Past four times the channel depth, so `take(limit)` cannot bite.
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+
+    let shipped: BTreeMap<Channel, f32> = BTreeMap::from([
+        (Channel::LexicalSegmented, 0.125),
+        (Channel::LexicalNgram, 0.125),
+        (Channel::Vector, 1.0),
+        (Channel::Graph, 1.0),
+    ]);
+
+    let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
+    let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
+    let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut lexical_agreement: Vec<f64> = Vec::new();
+
+    for query in queries {
+        let hits = engine
+            .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+            .await
+            .expect("search");
+
+        channels::enough_room(&hits, WIDE);
+        channels::same_as_the_engine(&hits, pamin_core::DEFAULT_K, &shipped);
+
+        let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+        // A topic can appear through several of its states; the question is
+        // whether the topic was found, so the first appearance is the rank --
+        // the same dedup the scoring arm does.
+        let note = |into: &mut BTreeMap<String, Scores>, ranked: &[String]| {
+            let mut deduped: Vec<String> = Vec::new();
+            let mut seen = HashSet::new();
+            for topic in ranked {
+                if seen.insert(topic.clone()) {
+                    deduped.push(topic.clone());
+                }
+            }
+            into.entry(query.group.clone()).or_default().add(
+                ndcg_at(&deduped, &relevant, NDCG_AT),
+                recall_at(&deduped, &relevant, RECALL_AT),
+            );
+        };
+
+        let each = channels::each_alone(&hits);
+        for (channel, ranking) in &each {
+            note(alone.entry(*channel).or_default(), ranking);
+        }
+        for missing in shipped.keys() {
+            let ranking = channels::refuse(&hits, pamin_core::DEFAULT_K, |channel| {
+                (channel != *missing)
+                    .then(|| shipped.get(&channel).copied())
+                    .flatten()
+            });
+            note(without.entry(*missing).or_default(), &ranking);
+        }
+        note(
+            &mut whole,
+            &hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>(),
+        );
+
+        if let (Some(segmented), Some(ngram)) = (
+            each.get(&Channel::LexicalSegmented),
+            each.get(&Channel::LexicalNgram),
+        ) && let Some(tau) = channels::agreement(segmented, ngram)
+        {
+            lexical_agreement.push(tau);
+        }
+    }
+
+    for group in whole.keys() {
+        println!("\n  each channel on its own, {group}");
+        println!("  channel               queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}");
+        println!("  ---------------------------------------------------------------");
+        for (channel, groups) in &alone {
+            if let Some(scores) = groups.get(group) {
+                println!(
+                    "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+                    format!("{channel:?}"),
+                    scores.queries,
+                    scores.mean_ndcg(),
+                    scores.mean_recall()
+                );
+            }
+        }
+        println!(
+            "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+            "all four fused",
+            whole[group].queries,
+            whole[group].mean_ndcg(),
+            whole[group].mean_recall()
+        );
+
+        println!("\n  with one channel taken away, {group}:");
+        for (channel, groups) in &without {
+            if let Some(scores) = groups.get(group) {
+                println!(
+                    "  {:<20}   {}",
+                    format!("{channel:?}"),
+                    statistics::compare(&whole[group].per_query, &scores.per_query)
+                );
+            }
+        }
+    }
+
+    println!(
+        "\n  the two lexical channels agree at Kendall tau {:.4} over {} queries\n",
+        channels::mean(&lexical_agreement),
+        lexical_agreement.len()
+    );
+}
 
 /// The fusion settings to try when `SWEEP` is set, each labelled as printed.
 ///
