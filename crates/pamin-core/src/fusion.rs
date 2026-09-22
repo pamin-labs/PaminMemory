@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::channel::{Channel, ChannelResults};
+use crate::channel::{Channel, ChannelResults, Scored};
 use crate::graph::{Derivation, EdgeKind};
 use crate::id::TopicId;
 
@@ -139,6 +139,21 @@ pub struct FusedResult {
 pub struct Fusion {
     k: f32,
     weights: BTreeMap<Channel, f32>,
+    /// How a channel's own scores scale its weight on this query, if at all.
+    confidence: Option<Confidence>,
+}
+
+/// How far a channel's best candidate has to stand above its own field to be
+/// worth its full weight.
+///
+/// See [`Fusion::with_confidence`] for what this is for and
+/// [`Fusion::how_sure`] for the arithmetic.
+#[derive(Clone, Copy, Debug)]
+struct Confidence {
+    /// The standardised top score that earns the full weight.
+    spread: f32,
+    /// What a channel with no opinion keeps.
+    floor: f32,
 }
 
 impl Default for Fusion {
@@ -236,6 +251,10 @@ impl Default for Fusion {
                 (Channel::LexicalSegmented, SEGMENTED_WEIGHT),
                 (Channel::LexicalNgram, NGRAM_WEIGHT),
             ]),
+            // Off. The three corpora's accuracy floors are all standing on
+            // constant weights, and a mechanism turned on before it is measured
+            // is a mechanism nobody can price. See `with_confidence`.
+            confidence: None,
         }
     }
 }
@@ -263,6 +282,105 @@ impl Fusion {
         self.with_weight(channel, 0.0)
     }
 
+    /// Scales every channel's weight by how sure that channel is on this query.
+    ///
+    /// **What this is for.** Rank fusion cannot tell a channel that found the
+    /// answer from a channel that returned the least bad of fifty wrong
+    /// documents. A first-placed candidate contributes `weight / (k + 1)`
+    /// either way, so a channel with nothing to say votes exactly as loudly as
+    /// one that is certain. Measured, that is not a hypothetical: fusing all
+    /// four channels ranks *below* the vector channel by itself on the
+    /// cross-lingual group of two separate corpora -- 0.7910 against 0.8268 on
+    /// this project's own and 0.6077 against 0.6335 on XQuAD-R -- while the
+    /// same lexical channels are worth having on the same-language queries of
+    /// the same corpus, where segmented BM25 alone scores 0.7299 against the
+    /// vector channel's 0.6787. The channels are not weak. A single constant
+    /// cannot tell the two cases apart, and rank fusion gives it nothing to
+    /// tell them apart with.
+    ///
+    /// **Why the channel's own scores and not agreement between channels.**
+    /// Cross-channel agreement is the cheap answer, it needs nothing plumbed,
+    /// and this project measured it and removed it: scaling the lexical pair by
+    /// how much of the vector channel's list it also returned interpolated
+    /// monotonically between the constants bounding it and was worth between
+    /// +0.0003 and +0.0085. That route is closed. What is left is the shape of
+    /// each channel's own score distribution, which no rank can show.
+    ///
+    /// **Why a standardised top score and not a z-score of every candidate.**
+    /// Standardising the candidates does not answer this question. A channel
+    /// whose fifty candidates are all worthless still maps its best one to
+    /// about `z = +2`, because standardising removes the units and not the
+    /// quality. What separates a sure channel from an unsure one is how far its
+    /// leader stands above its own field, which is a single number:
+    /// `(best - mean) / deviation`, over that channel's candidates, in that
+    /// channel's units. It is dimensionless, so BM25 and cosine similarity are
+    /// comparable after it where they are not before it, and it needs nothing
+    /// but the candidates already in hand -- no corpus-wide distribution to
+    /// build, and none to maintain as memories are written. That last part is
+    /// the constraint: a normaliser that needs a corpus histogram would be
+    /// wrong for a user the moment they wrote something, whatever it did to a
+    /// static benchmark.
+    ///
+    /// `spread` is the standardised top score that earns the full weight and
+    /// `floor` is what a channel with no opinion keeps. Both are swept, not
+    /// argued.
+    pub fn with_confidence(mut self, spread: f32, floor: f32) -> Self {
+        self.confidence = Some(Confidence {
+            spread: spread.max(f32::EPSILON),
+            floor: floor.clamp(0.0, 1.0),
+        });
+        self
+    }
+
+    /// How far this channel's best candidate stands above its own field, as a
+    /// share of its weight.
+    ///
+    /// One when nothing configured this, so the arithmetic below is the same
+    /// arithmetic either way.
+    ///
+    /// Three cases have no distribution to read and all three return one rather
+    /// than the floor, because *unable to judge* is not the same finding as
+    /// *judged and found wanting*: a channel that does not score at all, a
+    /// channel that returned a single candidate, and a channel that returned
+    /// none. A channel whose candidates all scored the same does have a
+    /// distribution, and what it says is that the channel cannot separate its
+    /// own candidates -- that one gets the floor, and it is the case this
+    /// mechanism exists for.
+    fn how_sure(&self, candidates: &[Scored]) -> f32 {
+        let Some(confidence) = self.confidence else {
+            return 1.0;
+        };
+        if candidates.len() < 2 {
+            return 1.0;
+        }
+        let Some(scores) = candidates
+            .iter()
+            .map(|candidate| candidate.score)
+            .collect::<Option<Vec<f32>>>()
+        else {
+            return 1.0;
+        };
+
+        let count = scores.len() as f32;
+        let mean = scores.iter().sum::<f32>() / count;
+        let deviation = (scores
+            .iter()
+            .map(|score| (score - mean) * (score - mean))
+            .sum::<f32>()
+            / count)
+            .sqrt();
+        if deviation <= f32::EPSILON {
+            return confidence.floor;
+        }
+
+        // The candidates arrive best first, so the leader is the first one --
+        // read as a maximum anyway, because the graph channel's score is not
+        // its sort key and this should not quietly depend on which channel it
+        // is looking at.
+        let best = scores.iter().copied().fold(f32::MIN, f32::max);
+        ((best - mean) / deviation / confidence.spread).clamp(confidence.floor, 1.0)
+    }
+
     /// Overrides the rank constant.
     ///
     /// Alongside [`with_weight`](Self::with_weight) because the two are the
@@ -283,10 +401,13 @@ impl Fusion {
         let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
 
         for list in lists {
-            let weight = self.weight(list.channel);
+            let weight = self.weight(list.channel) * self.how_sure(&list.candidates);
 
             // A channel worth nothing does not get to name candidates. See
-            // `without`, which is the same statement made deliberately.
+            // `without`, which is the same statement made deliberately -- and
+            // `with_confidence`, under which a channel that cannot separate its
+            // own candidates arrives here at exactly zero if the floor allows
+            // it, which is the filtering this is for.
             if weight == 0.0 {
                 continue;
             }
@@ -393,6 +514,129 @@ mod tests {
             ChannelResults::unscored(Channel::Vector, vec![id(2)]),
         ]);
         assert!((fused[0].score - fused[1].score).abs() < f32::EPSILON);
+    }
+
+    /// A channel that cannot separate its own candidates loses its vote.
+    ///
+    /// The case the mechanism exists for. Flat scores mean the channel returned
+    /// fifty things and is equally unimpressed by all of them, which is what a
+    /// lexical channel looks like from the inside on a query whose answer is in
+    /// another language. At a floor of zero it says nothing at all.
+    #[test]
+    fn a_channel_that_cannot_separate_its_candidates_says_nothing() {
+        let flat: Vec<Scored> = (1..=4).map(|n| Scored::new(id(n), 3.0)).collect();
+        let sharp = vec![
+            Scored::new(id(10), 9.0),
+            Scored::new(id(11), 1.0),
+            Scored::new(id(12), 0.9),
+            Scored::new(id(13), 0.8),
+        ];
+
+        let fused = Fusion::default()
+            .with_confidence(2.0, 0.0)
+            .with_weight(Channel::LexicalSegmented, 1.0)
+            .fuse(&[
+                ChannelResults::new(Channel::LexicalSegmented, flat),
+                ChannelResults::new(Channel::Vector, sharp),
+            ]);
+
+        assert_eq!(
+            fused.iter().map(|result| result.topic).collect::<Vec<_>>(),
+            vec![id(10), id(11), id(12), id(13)],
+            "the flat channel still put candidates in the results"
+        );
+    }
+
+    /// And a channel with a standout keeps its vote.
+    ///
+    /// The other half, asserted separately, because a mechanism that silences
+    /// everything would pass the test above and be worthless.
+    #[test]
+    fn a_channel_with_a_standout_keeps_its_weight() {
+        let confident = vec![
+            Scored::new(id(1), 40.0),
+            Scored::new(id(2), 1.0),
+            Scored::new(id(3), 1.0),
+            Scored::new(id(4), 1.0),
+        ];
+
+        // A spread of one, because the standardised top score over four
+        // candidates cannot exceed `sqrt(3)` = 1.73 and this channel is at that
+        // ceiling already -- at a spread of two it could not reach full weight
+        // however cleanly it separated them. See `with_confidence`.
+        let fused = Fusion::default()
+            .with_confidence(1.0, 0.0)
+            .with_weight(Channel::LexicalSegmented, 1.0)
+            .fuse(&[ChannelResults::new(Channel::LexicalSegmented, confident)]);
+
+        let applied = fused[0]
+            .why
+            .iter()
+            .find_map(|why| match why {
+                Why::Channel { weight, .. } => Some(*weight),
+                Why::Path { .. } => None,
+            })
+            .expect("a channel entry");
+        assert_eq!(
+            applied, 1.0,
+            "a channel at the ceiling of what four candidates can separate was discounted"
+        );
+    }
+
+    /// Standardising the candidates is not what does the work here.
+    ///
+    /// Worth asserting because it is the mistake this design was nearly built
+    /// on. A z-score over a channel's candidates removes the units, not the
+    /// quality: scale every score by a hundred and nothing about the channel
+    /// has changed, and nothing about its confidence should either. What the
+    /// floor catches is a channel with no shape to its scores, at any scale.
+    #[test]
+    fn multiplying_a_channels_scores_changes_nothing_about_its_confidence() {
+        let fusion = Fusion::default().with_confidence(2.0, 0.0);
+        let shape = [9.0f32, 1.0, 0.9, 0.8];
+
+        let small: Vec<Scored> = shape
+            .iter()
+            .enumerate()
+            .map(|(n, score)| Scored::new(id(n as u8 + 1), *score))
+            .collect();
+        let large: Vec<Scored> = shape
+            .iter()
+            .enumerate()
+            .map(|(n, score)| Scored::new(id(n as u8 + 1), score * 100.0))
+            .collect();
+
+        assert!(
+            (fusion.how_sure(&small) - fusion.how_sure(&large)).abs() < 1e-6,
+            "{} against {}",
+            fusion.how_sure(&small),
+            fusion.how_sure(&large)
+        );
+    }
+
+    /// Unable to judge is not the same finding as judged and found wanting.
+    #[test]
+    fn a_channel_with_no_distribution_to_read_is_not_penalised() {
+        let fusion = Fusion::default().with_confidence(2.0, 0.0);
+
+        assert_eq!(fusion.how_sure(&[]), 1.0, "no candidates");
+        assert_eq!(
+            fusion.how_sure(&[Scored::new(id(1), 5.0)]),
+            1.0,
+            "one candidate is not a distribution"
+        );
+        assert_eq!(
+            fusion.how_sure(&[Scored::unscored(id(1)), Scored::unscored(id(2))]),
+            1.0,
+            "a channel that does not score cannot be judged on its scores"
+        );
+    }
+
+    /// Nothing changes until somebody asks for it.
+    #[test]
+    fn confidence_is_off_unless_it_is_configured() {
+        let flat: Vec<Scored> = (1..=4).map(|n| Scored::new(id(n), 3.0)).collect();
+        assert_eq!(Fusion::default().how_sure(&flat), 1.0);
     }
 
     /// A channel worth nothing cannot put anything into the result set.
