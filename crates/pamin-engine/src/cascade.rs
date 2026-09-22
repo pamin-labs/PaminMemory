@@ -118,15 +118,26 @@ impl Engine {
                 // rather than called: maintenance is per-project work, and the
                 // outbox is what makes one worker run it rather than every
                 // worker racing to. The next round claims it.
-                if drained.completed > 0 && !tidied {
-                    // The queue is not a log. Settled rows outlive their work
-                    // and used to outlive it forever, which made `index_jobs`
-                    // the largest thing in the database -- 26 MB of a 62 MB
-                    // workspace over 13,014 documents, none of it reachable.
-                    // Here rather than in the maintenance job because it is one
-                    // statement and it should not wait on a graph being due.
-                    jobs::prune(self.database.pool(), self.project).await?;
-                }
+                // The queue is not a log. Settled rows outlive their work and
+                // used to outlive it forever, which made `index_jobs` the
+                // largest thing in the database -- 26 MB of a 62 MB workspace
+                // over 13,014 documents, none of it reachable. Here rather
+                // than in the maintenance job because it is one statement and
+                // it should not wait on a graph being due.
+                //
+                // **Unconditional, and it was not.** It used to run only when
+                // this drain had completed something, which skipped it in
+                // exactly the state that needs it: a workspace that finished
+                // importing and went quiet has nothing to claim, so every
+                // drain after the last write took the cheap path and left the
+                // queue at its high-water mark. Measured on the evaluation
+                // workspace, where that is what happened -- `index_jobs` at
+                // 632 MB of a 1.7 GB database, 38.7% of it, with 651,128 of
+                // its 1,054,646 rows settled the previous day and none of them
+                // reachable. The guard was never for this: it is there so the
+                // maintenance job below is not queued twice, and pruning
+                // queues nothing.
+                jobs::prune(self.database.pool(), self.project).await?;
 
                 if drained.completed > 0
                     && !tidied
