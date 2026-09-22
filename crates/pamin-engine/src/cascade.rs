@@ -175,9 +175,7 @@ impl Engine {
                 .partition(|job| job.kind == JobKind::SyncTopicIndex);
 
             let mut written: Vec<(&Job, Result<()>)> = Vec::with_capacity(claimed.len());
-            for job in writes {
-                written.push((job, self.run(job).await));
-            }
+            self.sync_indexes(&writes, &mut written).await;
 
             // What happens to the writes now is the difference between a
             // caller with somebody behind it and one without. Either way they
@@ -316,6 +314,108 @@ impl Engine {
             JobKind::DeriveMentions => self.derive_topic_mentions(subject(job)?.into()).await,
             JobKind::BackfillMentions => self.backfill_topic(subject(job)?.into()).await,
             JobKind::OptimizeIndex => self.optimize_projection().await,
+        }
+    }
+
+    /// Indexes every write job of a round in one forward pass.
+    ///
+    /// A round claims up to sixty-four jobs and this used to run them one at a
+    /// time, so a round that indexed sixty-four topics paid sixty-four forward
+    /// passes where the model can do one. The flush in this same round was
+    /// already batched -- see `BATCH` -- so the pass was the half that got
+    /// left, and `Embedder::embed_passages` had been sitting next to it all
+    /// along, used only by the rebuild.
+    ///
+    /// **Each job still gets its own outcome, and that is the part worth being
+    /// careful about.** The outbox retries per job, so a batch that failed as a
+    /// unit would turn one unindexable document into sixty-four jobs owed --
+    /// and the next round would batch the same sixty-four and fail again. So a
+    /// failed batch falls back to indexing one at a time, which costs the
+    /// passes only on the rounds that actually hit a problem and gives every
+    /// job the verdict it would have had before.
+    async fn sync_indexes<'j>(&self, jobs: &[&'j Job], into: &mut Vec<(&'j Job, Result<()>)>) {
+        // A job whose subject will not parse is its own failure and must not
+        // take the batch with it.
+        let mut topics = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            match subject(job) {
+                Ok(subject) => topics.push((*job, TopicId::from(subject))),
+                Err(error) => into.push((*job, Err(error))),
+            }
+        }
+        if topics.is_empty() {
+            return;
+        }
+
+        let wanted: Vec<TopicId> = topics.iter().map(|(_, topic)| *topic).collect();
+        let states = match pamin_store::repository::current_states_of(
+            self.database.pool(),
+            self.project,
+            &wanted,
+        )
+        .await
+        {
+            Ok(states) => states,
+            // The read failed for all of them, so it failed for all of them.
+            // Nothing was attempted, so nothing is half done. The message is
+            // formatted once and each job gets its own error, because the
+            // store's error is not `Clone` and a job's outcome has to be its
+            // own value.
+            Err(error) => {
+                let message = error.to_string();
+                for (job, _) in topics {
+                    into.push((
+                        job,
+                        Err(anyhow!("reading the states this round owes: {message}")),
+                    ));
+                }
+                return;
+            }
+        };
+
+        // A topic that resolves to nothing has its document removed instead,
+        // which is the same job because the projection holds one document per
+        // topic. Both halves are batched; both are all-or-nothing, which the
+        // fallback below is for.
+        let found: std::collections::HashMap<TopicId, &pamin_core::TopicState> =
+            states.iter().map(|state| (state.topic_id, state)).collect();
+        let (present, absent): (Vec<TopicId>, Vec<TopicId>) = wanted
+            .iter()
+            .copied()
+            .partition(|topic| found.contains_key(topic));
+        let indexing: Vec<pamin_core::TopicState> = present
+            .iter()
+            .filter_map(|topic| found.get(topic).map(|state| (*state).clone()))
+            .collect();
+
+        let batched = async {
+            self.index_states(&indexing).await?;
+            if !absent.is_empty() {
+                crate::engine::off_the_runtime(|| self.index().delete(&absent))?;
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match batched {
+            Ok(()) => {
+                for (job, _) in topics {
+                    into.push((job, Ok(())));
+                }
+            }
+            // One at a time, so the job that cannot be indexed is the only one
+            // recorded as failing. Costs the passes only on a round that hit a
+            // problem.
+            Err(_) => {
+                for (job, topic) in topics {
+                    let one = match found.get(&topic) {
+                        Some(state) => self.index_state(state).await,
+                        None => crate::engine::off_the_runtime(|| self.index().delete(&[topic]))
+                            .map_err(Into::into),
+                    };
+                    into.push((job, one));
+                }
+            }
         }
     }
 
