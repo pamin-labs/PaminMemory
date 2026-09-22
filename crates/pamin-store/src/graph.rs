@@ -154,13 +154,35 @@ const FIND_RELATIONSHIP: &str = "SELECT id, created_at FROM relationships
                                  WHERE project_id = $1 AND from_topic = $2
                                    AND to_topic = $3 AND kind = $4";
 
+/// The same lookup, locking the row it finds.
+///
+/// [`assert_within`] is about to append a version under that identity, and the
+/// lock used to be a second statement: the same row read again by id, for
+/// nothing but `FOR UPDATE`. Two round trips where the work is one. Taking it
+/// in the lookup is also the stricter order -- the old form read the row and
+/// *then* locked it, so the read was outside the lock it exists to be inside.
+///
+/// Derived from the constant above rather than written out, so the two cannot
+/// drift into asking different questions. The unlocked form stays public: a
+/// lookup is a lookup, and `FOR UPDATE` outside a transaction locks a row for
+/// no longer than the statement.
+const LOCK_RELATIONSHIP: &str = concat!(
+    "SELECT id, created_at FROM relationships
+                                 WHERE project_id = $1 AND from_topic = $2
+                                   AND to_topic = $3 AND kind = $4",
+    " FOR UPDATE"
+);
+
 /// Returns the edge identity for this pair and kind, creating it if absent.
 ///
 /// One identity per (pair, kind): two topics can be related several ways at
 /// once, and each way carries its own history.
-/// Takes a connection rather than any executor because it uses it three times,
-/// and a pooled connection is not something that can be handed out twice.
-pub async fn ensure_relationship(
+/// Takes a connection rather than any executor because it uses it twice, and a
+/// pooled connection is not something that can be handed out twice.
+///
+/// Private: `assert_within` is the only caller, and the lock the lookup takes
+/// only means anything inside that transaction.
+async fn ensure_relationship(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     from: TopicId,
@@ -170,7 +192,8 @@ pub async fn ensure_relationship(
     // Read first: an edge is created once and re-asserted on every rewrite of
     // the memory that derives it, so the insert is the rare path. See
     // `repository::ensure_project` for why the conflict clause does not update.
-    if let Some(relationship) = find_relationship(&mut *connection, project, from, to, kind).await?
+    if let Some(relationship) =
+        locked_relationship(&mut *connection, project, from, to, kind).await?
     {
         return Ok(relationship);
     }
@@ -193,9 +216,11 @@ pub async fn ensure_relationship(
 
     let row = match inserted {
         Some(row) => row,
-        // Another writer created it in between.
+        // Another writer created it in between, and it has to be locked here
+        // too: this is the path where two writers raced, which is exactly when
+        // the lock matters.
         None => {
-            sqlx::query(FIND_RELATIONSHIP)
+            sqlx::query(LOCK_RELATIONSHIP)
                 .bind(project.0)
                 .bind(from.0)
                 .bind(to.0)
@@ -409,12 +434,9 @@ async fn assert_within(
     to: TopicId,
     claim: &EdgeClaim,
 ) -> Result<Assertion> {
+    // Locked by the lookup inside this, so the version append below is
+    // serialised against another writer asserting the same edge.
     let relationship = ensure_relationship(transaction, project, from, to, claim.kind).await?;
-
-    sqlx::query("SELECT id FROM relationships WHERE id = $1 FOR UPDATE")
-        .bind(relationship.id.0)
-        .execute(&mut **transaction)
-        .await?;
 
     let live = live_version(&mut **transaction, relationship.id).await?;
     if let Some(existing) = live.as_ref().filter(|version| claim.matches(version)) {
@@ -562,14 +584,43 @@ pub async fn find_relationship(
         .fetch_optional(executor)
         .await?;
 
-    Ok(row.map(|row| Relationship {
+    Ok(row.map(|row| relationship_row(&row, project, from, to, kind)))
+}
+
+/// The same lookup, holding the row until the transaction ends.
+async fn locked_relationship(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    from: TopicId,
+    to: TopicId,
+    kind: EdgeKind,
+) -> Result<Option<Relationship>> {
+    let row = sqlx::query(LOCK_RELATIONSHIP)
+        .bind(project.0)
+        .bind(from.0)
+        .bind(to.0)
+        .bind(kind.label())
+        .fetch_optional(executor)
+        .await?;
+
+    Ok(row.map(|row| relationship_row(&row, project, from, to, kind)))
+}
+
+fn relationship_row(
+    row: &sqlx::postgres::PgRow,
+    project: ProjectId,
+    from: TopicId,
+    to: TopicId,
+    kind: EdgeKind,
+) -> Relationship {
+    Relationship {
         id: row.get::<uuid::Uuid, _>("id").into(),
         project_id: project,
         from_topic: from,
         to_topic: to,
         kind,
         created_at: row.get("created_at"),
-    }))
+    }
 }
 
 /// One topic reached from a seed, and the edge that reached it.
