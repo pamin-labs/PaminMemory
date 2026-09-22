@@ -160,6 +160,8 @@
 //! the eleven, which is 1,190 queries covering every language and every
 //! question and takes a eleventh of the time.
 
+mod statistics;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -511,6 +513,14 @@ struct Scores {
     deep: usize,
     /// Queries with at least one of those.
     with_work: usize,
+    /// Every query's own nDCG, in the order they were scored.
+    ///
+    /// Kept beside the running total because a mean cannot be tested and a
+    /// list can. Two runs over the same queries in the same order pair up
+    /// entry by entry, which is what [`statistics::compare`] needs to say
+    /// whether a difference of means is a result -- see that module for why
+    /// this project stopped reporting the means alone.
+    per_query: Vec<f64>,
 }
 
 impl Scores {
@@ -532,8 +542,11 @@ impl Scores {
             .filter(|rank| hit(*rank))
             .count();
 
+        let ndcg = if ideal == 0.0 { 0.0 } else { gained / ideal };
+
         self.queries += 1;
-        self.ndcg += if ideal == 0.0 { 0.0 } else { gained / ideal };
+        self.ndcg += ndcg;
+        self.per_query.push(ndcg);
         self.recall += if relevant.is_empty() {
             0.0
         } else {
@@ -1037,9 +1050,27 @@ async fn search_reaches_across_languages() {
             groups["cross_lingual"].mean_ndcg(),
             alone["cross_lingual"].mean_ndcg(),
         );
-        println!(
-            "  reranking is worth {:+.4} cross-lingual nDCG@{NDCG_AT}\n",
-            with - without
+        // Query by query as well as mean against mean. A mean cannot tell the
+        // two cases apart -- every query moving a little, and one query moving
+        // a lot -- and this project has been reading differences of this size
+        // as findings without ever checking which case it was in. See
+        // `statistics`.
+        let paired = statistics::compare(
+            &alone["cross_lingual"].per_query,
+            &groups["cross_lingual"].per_query,
+        );
+        let same = statistics::compare(
+            &alone["same_language"].per_query,
+            &groups["same_language"].per_query,
+        );
+        println!("  reranking is worth {paired} cross-lingual nDCG@{NDCG_AT}");
+        println!("  and {same} same-language\n");
+
+        assert!(
+            paired.is_significant(),
+            "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
+             difference of means with nothing under it. The tier is supposed to \
+             be worth something, not to be indistinguishable from leaving it off"
         );
         assert!(
             with - without >= RERANK_IS_WORTH,
