@@ -1127,6 +1127,13 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `PAIRS` asks how few candidates the pass needs to be shown, which is
+    // the one lever proportional to its cost rather than all-or-nothing.
+    if std::env::var("PAIRS").is_ok() {
+        pairs_sweep(&engine, &queries, &named).await;
+        return;
+    }
+
     // `TIERS` compares the reranker's settings against each other on this
     // path, which is the only place the comparison means anything: the tier
     // reorders what fusion produced, so a number for it has to come from the
@@ -1483,6 +1490,176 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     println!(
         "\n  both ends of the coverage sweep reproduce their baselines, and {reranked_total} \
          candidates over {} queries reached the model\n",
+        queries.len()
+    );
+}
+
+/// How few pairs the reranker can be shown before its gain goes.
+///
+/// The per-query gate measured next door can only take the whole pass or none
+/// of it, and on parallel text it cannot even do that -- the two groups are the
+/// same queries. This is the other shape of the same idea and it has neither
+/// problem: the pass costs about 16.9 ms a pair on four cores, linear in pairs,
+/// so showing the model half as many candidates halves the 260 ms whatever the
+/// corpus looks like. The question is what accuracy that costs per pair saved.
+///
+/// **Exact rather than approximate, and from one pass.** `Why::Reranked` now
+/// records which candidates the model saw and what it scored each one, and the
+/// write-back permutes those candidates among the positions they already held.
+/// So "what if only the best `n` of them had been sent" is computable: the rest
+/// keep their fused positions, which is what they would have done in a run that
+/// never sent them. The two ends of the sweep assert the reconstruction rather
+/// than trusting it -- a cap of zero must reproduce `--rerank off` and an
+/// uncapped run must reproduce the shipped tier, orderings included.
+///
+/// One caveat the reconstruction cannot remove. `Reranker::rank` sorts
+/// candidates by length before batching, so a capped run forms different
+/// batches, and a quantized model scores a pair slightly differently depending
+/// on what it shared a tensor with -- measured elsewhere in this repository at
+/// 0.0006 of nDCG. The scores replayed here are the ones the uncapped batches
+/// produced. So a chosen setting is confirmed by a real timed run, and this
+/// sweep is for choosing which setting to confirm.
+async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
+    /// At most this many confined candidates reach the model, best-fused
+    /// first. `usize::MAX` is today's rule: every confined candidate in the
+    /// head.
+    const CAPS: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, usize::MAX];
+
+    let tier = Rerank::default();
+    let head = tier.depth();
+
+    let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut fused_only: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut capped: Vec<BTreeMap<String, Scores>> = CAPS.iter().map(|_| BTreeMap::new()).collect();
+    let mut pairs = vec![0usize; CAPS.len()];
+    let mut ran = 0usize;
+
+    for query in queries {
+        let off = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+            .await
+            .expect("search with the reranker off");
+        let on = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
+            .await
+            .expect("search at the default tier");
+
+        let fused: Vec<String> = off.iter().map(|hit| hit.topic.clone()).collect();
+        let shipped_order: Vec<String> = on.iter().map(|hit| hit.topic.clone()).collect();
+        score(&mut fused_only, query, &fused);
+        score(&mut shipped, query, &shipped_order);
+
+        // What the model scored each candidate it saw, keyed by topic because
+        // the position it holds is what the sweep is varying.
+        let scored: HashMap<&str, f32> = on
+            .iter()
+            .filter_map(|hit| {
+                hit.result
+                    .why
+                    .iter()
+                    .find_map(|why| match why {
+                        Why::Reranked { score } => Some(*score),
+                        Why::Channel { .. } | Why::Path { .. } => None,
+                    })
+                    .map(|score| (hit.topic.as_str(), score))
+            })
+            .collect();
+
+        // The confined set, as the engine builds it: positions inside the
+        // tier's depth that no lexical channel proposed, ascending, so the
+        // first is the best-fused candidate the pass could move.
+        let confined: Vec<usize> = (0..head.min(off.len()))
+            .filter(|position| {
+                !off[*position].result.why.iter().any(|why| {
+                    matches!(
+                        why,
+                        Why::Channel { channel, .. }
+                            if *channel == Channel::LexicalSegmented
+                                || *channel == Channel::LexicalNgram
+                    )
+                })
+            })
+            .collect();
+        // `can_be_seen`: fewer than two candidates cannot be reordered, and a
+        // pass whose best candidate is past the caller's limit changes nothing
+        // the caller reads. When it declines, every cap gives the fused order.
+        let pass_ran = confined.len() >= 2 && confined[0] < DEPTH;
+        if pass_ran {
+            ran += 1;
+        }
+
+        for (at, cap) in CAPS.iter().enumerate() {
+            if !pass_ran {
+                score(&mut capped[at], query, &fused);
+                continue;
+            }
+            let sent = &confined[..(*cap).min(confined.len())];
+            pairs[at] += sent.len();
+
+            let mut order: Vec<usize> = sent.to_vec();
+            // Score descending, then by the position the candidate held --
+            // which is the order `rank` was handed them in, so this is the
+            // same tie-break the engine applies.
+            order.sort_by(|left, right| {
+                let of = |position: &usize| {
+                    scored
+                        .get(fused[*position].as_str())
+                        .copied()
+                        .unwrap_or(f32::MIN)
+                };
+                of(right).total_cmp(&of(left)).then_with(|| left.cmp(right))
+            });
+
+            let mut ranked = fused.clone();
+            for (slot, from) in sent.iter().zip(&order) {
+                ranked[*slot] = fused[*from].clone();
+            }
+            score(&mut capped[at], query, &ranked);
+        }
+    }
+
+    for group in GROUPS {
+        println!("\n  how few pairs the reranker needs, {group}, {named}");
+        println!(
+            "  pairs sent   per query   nDCG@{NDCG_AT}   recall@{RECALL_AT}   against the shipped pass"
+        );
+        println!(
+            "  ------------------------------------------------------------------------------"
+        );
+        for (at, cap) in CAPS.iter().enumerate() {
+            let label = if *cap == usize::MAX {
+                "all (ships)".to_string()
+            } else {
+                format!("at most {cap}")
+            };
+            println!(
+                "  {label:<12} {:>9.2}   {:>7.4}   {:>9.4}   {}",
+                pairs[at] as f64 / queries.len() as f64,
+                capped[at][group].mean_ndcg(),
+                capped[at][group].mean_recall(),
+                statistics::compare(&shipped[group].per_query, &capped[at][group].per_query)
+            );
+        }
+    }
+
+    // The premise, asserted on the orderings rather than on the means: a
+    // reconstruction that agrees on average and not per query would hide
+    // exactly the mistake this is checking for.
+    let last = CAPS.len() - 1;
+    for group in GROUPS {
+        assert_eq!(
+            capped[0][group].per_query, fused_only[group].per_query,
+            "sending no pairs did not reproduce reranking off on {group}"
+        );
+        assert_eq!(
+            capped[last][group].per_query, shipped[group].per_query,
+            "sending every pair did not reproduce the shipped pass on {group}, so the \
+             reconstruction of the write-back is wrong and every row above is wrong with it"
+        );
+    }
+    println!(
+        "\n  the reconstruction reproduces both ends per query, and the pass ran on {ran} of {} \
+         queries\n",
         queries.len()
     );
 }
