@@ -137,17 +137,21 @@ that ships:
 | channel, alone | ours cross | XQuAD-R cross | XQuAD-R same |
 | --- | --- | --- | --- |
 | `lexical_segmented` | 0.1569 | 0.0366 | **0.7299** |
-| `lexical_ngram` | 0.0528 | 0.0106 | — |
+| `lexical_ngram` | 0.0528 | 0.0106 | 0.5337 |
 | `vector` | **0.8268** | **0.6335** | 0.6787 |
-| `graph` | 0.0000 | 0.0000 | 0.0000 |
-| all four fused | 0.7910 | 0.6077 | 0.7556 |
+| `graph` | premise absent | premise absent | premise absent |
+| all four fused | 0.7985 | 0.6114 | 0.7829 |
 
 And leave-one-out, paired against all four: taking `lexical_segmented` away is
-**+0.0310** on this project's cross-lingual group (16 wins, 1 loss, p = 0.0011)
-and **+0.0158** on XQuAD-R's (496 wins, 30 losses, p = 0.0001); taking
-`lexical_ngram` away is +0.0223 (13 / 1, p = 0.0173) and +0.0110 (333 / 20,
-p = 0.0001). The same removal costs **−0.0442** on XQuAD-R's same-language
-group (14 wins, 275 losses) and −0.0073 on MIRACL (p = 0.0125).
+**+0.0148** on this project's cross-lingual group (11 wins, 1 loss, p = 0.0148)
+and **+0.0128** on XQuAD-R's (397 wins, 25 losses, p = 0.0001); taking
+`lexical_ngram` away is +0.0179 (15 / 1, p = 0.0189) and +0.0094 (269 / 16,
+p = 0.0001). The same removals cost **−0.0523** and **−0.0361** on XQuAD-R's
+same-language group (16 wins to 231 and 9 to 155, both p = 0.0001).
+
+Every figure here is the banded combiner's, which is what ships. The
+rank-fusion figures this table used to carry are 0.7910 and 0.6077 fused, and
+they understate the trade in both directions.
 
 Fusing four channels ranks below one of them on cross-lingual queries, on both
 corpora that have such a group — and on the same-language queries of the same
@@ -175,11 +179,12 @@ premise-absent instead of printing a zero that reads like a figure.
 
 Two mechanisms were built for the finding above and swept offline from one pass
 over each corpus. On this project's own corpus, cross-lingual group, 43 queries,
-against the reciprocal rank fusion that ships:
+against the reciprocal rank fusion that shipped when this was measured — the
+banded combiner ships now, and these figures are not retaken against it:
 
-| | nDCG@10 | against what ships |
+| | nDCG@10 | against rank fusion |
 | --- | --- | --- |
-| reciprocal rank fusion (ships) | 0.7910 | — |
+| reciprocal rank fusion | 0.7910 | — |
 | **weighted sum of standardised scores** | **0.8192** | **+0.0281, 15 wins / 1 loss, p = 0.0037** |
 | the same, times the number of channels that found it (CombMNZ) | 0.7519 | −0.0392, 3 / 21, p = 0.0008 |
 | *the vector channel alone, for reference* | *0.8268* | — |
@@ -220,10 +225,11 @@ one. On XQuAD-R:
 
 | setting | cross-lingual nDCG / recall | same-language nDCG / recall |
 | --- | --- | --- |
-| rank fusion (ships) | 0.6077 / **0.8960** | 0.7556 / **0.9580** |
-| + confidence, spread 5 | 0.5903 / 0.8944 | **0.7880** / 0.9588 |
+| banded — **ships** | 0.6114 / **0.8962** | 0.7829 / **0.9571** |
+| rank fusion | 0.6077 / 0.8960 | 0.7556 / 0.9580 |
+| + confidence, spread 5 | 0.6018 / 0.8961 | **0.8041** / 0.9588 |
 | both lexical weights at zero | **0.6335** / 0.8966 | 0.6787 / 0.9529 |
-| standardised sum | **0.6211** / **0.7765** | **0.7733** / 0.9403 |
+| standardised sum | **0.6211** / **0.7765** | 0.7733 / 0.9403 |
 | + CombMNZ | 0.5727 / **0.7764** | **0.8257** / 0.9403 |
 
 **The recall cost belongs to the combiner and to nothing else.** Every variant
