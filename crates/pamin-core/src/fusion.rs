@@ -37,14 +37,27 @@ use crate::id::TopicId;
 /// and one channel's mistaken top hit decides the answer.
 pub const DEFAULT_K: f32 = 10.0;
 
-/// What a lexical channel is worth.
+/// What word-level BM25 is worth.
 ///
 /// An eighth, and it was a quarter until a third corpus was measured. The
 /// sweep that settled the quarter ran `1.00 / 0.50 / 0.25 / 0.00` -- so **a
 /// quarter was the smallest non-zero value ever tried**, and the argument for
 /// it was against zero rather than against half of itself. Half of itself is
 /// better on every group of every corpus but one; see [`Fusion::default`].
-const LEXICAL_WEIGHT: f32 = 0.125;
+const SEGMENTED_WEIGHT: f32 = 0.125;
+
+/// What character-n-gram BM25 is worth.
+///
+/// The same eighth, and that is the part with no evidence under it. Every
+/// sweep this project has run moved both lexical channels together, so no
+/// measurement anywhere distinguishes these two numbers -- the grid was
+/// one-dimensional and the conclusion is being read as though it were two.
+///
+/// Two constants rather than one because the premise that justified sharing is
+/// refuted; see [`Fusion::default`]. Splitting them changes nothing on its own
+/// and is not meant to: it makes the second number nameable, and therefore
+/// sweepable, which it was not.
+const NGRAM_WEIGHT: f32 = 0.125;
 
 /// One line of the explanation attached to a result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,14 +143,27 @@ pub struct Fusion {
 
 impl Default for Fusion {
     fn default() -> Self {
-        // The two lexical channels count as half of one, and both halves of
-        // that are measured rather than reasoned.
+        // The two lexical channels count as half of one, and the size of that
+        // half is measured. What is *not* measured is the decision to give them
+        // the same number, and the argument that used to justify it has been
+        // refuted by this project's own diagnostic.
         //
-        // They are nearly one channel: both run BM25 over the same text, one
-        // over segmented words and one over character n-grams, so they agree
-        // with each other far more often than either agrees with the vector or
-        // the graph. Counted at full weight the pair outvotes the other two on
-        // every query where the wording matches and the meaning does not.
+        // The claim was that they are nearly one channel: both run BM25 over
+        // the same text, one over segmented words and one over character
+        // n-grams, so they were said to agree with each other far more often
+        // than either agrees with the vector or the graph. Kendall tau-b over
+        // the candidates they share says 0.2816 on this project's own corpus,
+        // 0.3188 on XQuAD-R and 0.2973 on MIRACL. Three corpora, one answer:
+        // they are two channels that agree about a third of the time. The thing
+        // that is true is the consequence of their sharing a *field*, not a
+        // ranking -- at full weight the pair still outvotes the other two on
+        // every query where the wording matches and the meaning does not, which
+        // is what the sweep below measures.
+        //
+        // Every row of that sweep moved both channels together, so it cannot
+        // separate them, and the n-gram channel is the weaker of the two in
+        // every group of every corpus measured alone. One number is doing the
+        // work of two and nothing has ever been asked which.
         //
         // What is not obvious, and needed a corpus where a query and its answer
         // are in different languages, is that half of one channel is still too
@@ -207,8 +233,8 @@ impl Default for Fusion {
         Self {
             k: DEFAULT_K,
             weights: BTreeMap::from([
-                (Channel::LexicalSegmented, LEXICAL_WEIGHT),
-                (Channel::LexicalNgram, LEXICAL_WEIGHT),
+                (Channel::LexicalSegmented, SEGMENTED_WEIGHT),
+                (Channel::LexicalNgram, NGRAM_WEIGHT),
             ]),
         }
     }

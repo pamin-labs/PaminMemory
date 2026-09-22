@@ -495,12 +495,15 @@ Ranks travel between channels; scores do not. A BM25 score and a cosine distance
 are not comparable quantities, so fusion combines the ranks rather than
 pretending the scores share a scale.
 
-The two lexical channels carry an eighth of a weight each because they are
-nearly the same channel: both match the literal text, one over segmented words
-and one over character n-grams, so they agree with each other far more often
-than either agrees with the vector or graph channel. At full weight that
-agreement counts twice, and the wording outvotes the meaning on exactly the
-queries where they differ. An eighth rather than the quarter that shipped
+The two lexical channels carry an eighth of a weight each because at full
+weight the pair outvotes the other two on exactly the queries where the wording
+matches and the meaning does not. They were also once described here as nearly
+the same channel, and they are not: Kendall tau-b between their rankings is
+0.2816, 0.3188 and 0.2973 on the three corpora this project measures, so they
+agree about a third of the time. They share a field, not a ranking. The eighth
+each is one number doing the work of two — no sweep has ever moved them
+independently, and the n-gram channel is the weaker of the two wherever either
+is measured alone. An eighth rather than the quarter that shipped
 before because on MIRACL Swahili — 482 questions people asked, judged by
 people — the quarter ranked *worse* than the vector channel by itself, and
 because the quarter had never been compared against anything smaller than
