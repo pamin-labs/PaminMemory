@@ -68,37 +68,54 @@
 //! |---|---|---|---|---|---|
 //! | the model | cross-lingual | 0.6338 | 0.8951 | 3,273 | 965 of 1,190 |
 //! | the model | same-language | 0.6748 | 0.9563 | 115 | 115 of 1,190 |
-//! | fusion alone | cross-lingual | 0.5722 | 0.8864 | 3,811 | 1,095 of 1,190 |
-//! | fusion alone | same-language | 0.8033 | 0.9630 | 61 | 61 of 1,190 |
-//! | **the product** | cross-lingual | **0.6097** | 0.8864 | 3,337 | 1,042 of 1,190 |
-//! | **the product** | same-language | **0.7971** | 0.9630 | 71 | 71 of 1,190 |
+//! | fusion alone | cross-lingual | 0.6077 | 0.8960 | 3,598 | 1,062 of 1,190 |
+//! | fusion alone | same-language | 0.7556 | 0.9580 | 74 | 74 of 1,190 |
+//! | **the product** | cross-lingual | **0.6480** | 0.8960 | 3,097 | 1,009 of 1,190 |
+//! | **the product** | same-language | **0.7495** | 0.9580 | 82 | 82 of 1,190 |
 //!
 //! "The product" is `search_reranked` at the default tier, which is what
 //! `pamin search` calls. "Fusion alone" is `search_fused`, one stage short of
 //! it. Both rows are here because the difference between them is the
 //! reranker's, and for a while only the shorter one was measured.
 //!
+//! The two model rows are older than the other four: they predate the batching
+//! fix that made `embed_passages` deterministic, and re-taken on deterministic
+//! vectors the model scores 0.6335 / 0.8981 and 0.6787 / 0.9529 -- see
+//! `MODEL_FLOORS`, which carries both pairs and why the difference is itself a
+//! finding. Comparisons against the product below are read off the re-taken
+//! pair.
+//!
 //! **Fusion is not one effect, it is two opposite ones, and they cancel in any
-//! average.** It costs almost no recall -- 0.8951 to 0.8864 cross-lingually --
-//! so the candidates the model reaches are still there. What changes is the
-//! order, and it changes in opposite directions: same-language nDCG@10 goes
-//! from 0.6748 to **0.8033**, because a question and its answer sentence in
-//! one language share words and the two lexical channels find them where a
-//! 1024-dimensional cosine does not; cross-lingual nDCG@10 goes from 0.6338 to
-//! **0.5722**, because those same two channels have nothing to match on across
-//! languages and spend part of the fused list on the query's own language
-//! about the wrong subject.
+//! average.** It costs no recall at all -- 0.8951 cross-lingually for the
+//! model and 0.8960 fused -- so the candidates the model reaches are still
+//! there. What changes is the order, and it changes in opposite directions:
+//! same-language nDCG@10 goes from 0.6748 to **0.7556**, because a question
+//! and its answer sentence in one language share words and the two lexical
+//! channels find them where a 1024-dimensional cosine does not; cross-lingual
+//! nDCG@10 goes from 0.6338 to **0.6077**, because those same two channels
+//! have nothing to match on across languages and spend part of the fused list
+//! on the query's own language about the wrong subject.
 //!
-//! The reranker then buys back most of what fusion cost cross-lingually,
-//! +0.0375, and takes 0.0062 off same-language doing it. Both tiers and the
-//! latency they cost are in the ADR; `TIERS=1` reproduces the comparison.
+//! The reranker then buys back more than fusion cost cross-lingually, +0.0403,
+//! and takes 0.0061 off same-language doing it. Both tiers and the latency they
+//! cost are in the ADR; `TIERS=1` reproduces the comparison.
 //!
-//! How much of the list they spend is what the fusion weight decides, and this
-//! corpus is what settled it. Swept here and on the corpus this project wrote,
-//! a quarter beat the half that used to ship on seven of the eight numbers the
-//! two report; the eighth is same-language ranking here, which gave up 0.033.
-//! Equal weighting — what the literature supplies — is worse than either on
-//! every group of both corpora at every `k` tried.
+//! **The whole stack now outranks the embedding model on both groups**, 0.6480
+//! against 0.6335 cross-lingual and 0.7495 against 0.6787 same-language. It did
+//! not when the lexical weight was a quarter: the product scored 0.6097
+//! cross-lingual then, *below* the model it is built on, with the reranker
+//! spending 226 ms a query buying back dilution fusion had introduced. That was
+//! the open question this harness was written to answer, and halving the weight
+//! is what answered it.
+//!
+//! How much of the list the lexical channels spend is what the fusion weight
+//! decides, and this corpus is where the question was first visible. It is not
+//! where it was settled: on parallel text the two groups are the same queries
+//! scored twice, so every gain on one shows up as a loss on the other and the
+//! corpus cannot arbitrate. MIRACL Swahili can -- 482 human-judged queries over
+//! 131,924 real passages, one language -- and it put the eighth ahead of every
+//! other weight tried, with the quarter scoring *below* the vector channel on
+//! its own. The full three-corpus table is in `pamin_core::fusion`.
 //!
 //! Neither number is visible from one test, and neither is visible from the
 //! corpus this project wrote, where both groups sat near the ceiling. What to
@@ -838,28 +855,52 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
 
 /// The floors for the whole search path, as the product calls it.
 ///
-/// A tenth below 0.6097 / 0.8864 cross-lingual and 0.7971 / 0.9630
-/// same-language, which is what `search_reranked` scores at the default tier.
-/// The same-language pair sits *above* the model's own floors and the
-/// cross-lingual nDCG below, which is the finding rather than an inconsistency:
-/// see the table in the module notes.
+/// A tenth below 0.6480 / 0.8960 cross-lingual, which is what
+/// `search_reranked` scores at the default tier.
+///
+/// The same-language pair is deliberately *not* a tenth. It measures 0.7495 /
+/// 0.9580 and the floor stays at the 0.71 set when the lexical weight was a
+/// quarter and this group scored 0.7971: halving that weight cost this group
+/// 0.0476 and bought 0.0383 cross-lingual here, 0.0550 cross-lingual on the
+/// own corpus and the best MIRACL score of the five weights tried (see
+/// `pamin_core::fusion`). That leaves about a twentieth of margin instead of a
+/// tenth, and lowering the floor to restore the tenth would be moving a guard
+/// to fit the regression it exists to catch. A twentieth is enough here
+/// because this measurement is exactly repeatable: fixed corpus, fixed index,
+/// fixed model, greedy pass.
+///
+/// Both pairs now sit *above* the model's own floors. The cross-lingual pair
+/// did not until the lexical weight was halved -- the product used to rank
+/// below the model it is built on, on the group the model is best at -- which
+/// is the single most important thing this harness has found: see the table in
+/// the module notes.
 const SEARCH_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.54, 0.79), ("same_language", 0.71, 0.86)];
+    &[("cross_lingual", 0.58, 0.80), ("same_language", 0.71, 0.86)];
 
 /// The least the reranker must be worth, in cross-lingual nDCG@10.
 ///
 /// A floor cannot carry this. The tenth of margin every other floor here uses
-/// is wider than the reranker's own contribution -- fusion alone scores 0.5722
-/// and the default tier 0.6097, so a floor set a tenth below the tier still
+/// is wider than the reranker's own contribution -- fusion alone scores 0.6077
+/// and the default tier 0.6480, so a floor set a tenth below the tier still
 /// passes with the reranker switched off entirely. Losing it would be silent.
 ///
 /// So the floor test scores fusion alone as well and asserts the gap. Measured
-/// at 0.0375, and the measurement is exactly repeatable: three runs of all
+/// at 0.0403, and the measurement is exactly repeatable: three runs of all
 /// three tiers returned the same four decimals every time, because the corpus,
 /// the index and the model are all fixed and the pass is greedy. Half of what
 /// was measured, so that this fails when the reranker stops working rather than
 /// when it works slightly less well.
-const RERANK_IS_WORTH: f64 = 0.018;
+///
+/// The gap is a corpus's opinion, not the reranker's worth in general. On
+/// MIRACL Swahili the same default tier scores 0.6730 against 0.6882 for
+/// fusion alone -- it *costs* 0.0152 there, at 226 ms a query. Those two are
+/// the `speed` profile rather than this one, because `accuracy` is ten hours
+/// of indexing for that corpus, so the pair is comparable with each other and
+/// not with the figures above. What it establishes is that part of what the
+/// reranker buys here is the dilution fusion introduced, and this corpus --
+/// parallel translations, half its queries answered in another language -- is
+/// the one where that dilution is largest.
+const RERANK_IS_WORTH: f64 = 0.020;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
