@@ -45,6 +45,17 @@ fn every_channel_scores_what_it_returns_and_ranks_by_it() {
     )
     .expect("open index");
 
+    // Distinct embeddings, which is load-bearing: written with the same stub
+    // vector, every document is exactly as near the query as every other, so
+    // the vector channel reports one constant and an assertion that it orders
+    // by its score passes without checking anything. That is how this test
+    // first shipped, and it left the one channel whose metric could have been
+    // a distance rather than a similarity unchecked.
+    let leaning = |towards: usize| {
+        let mut vector = vec![0.1; PROFILE.dimensions() as usize];
+        vector[towards] = 1.0;
+        vector
+    };
     for (n, text) in [
         "the deployment pipeline runs on every merge to main",
         "the deployment pipeline is described in database.rs",
@@ -54,12 +65,14 @@ fn every_channel_scores_what_it_returns_and_ranks_by_it() {
     .enumerate()
     {
         index
-            .upsert(numbered(n as u128 + 1), text, &stub())
+            .upsert(numbered(n as u128 + 1), text, &leaning(n))
             .expect("upsert");
     }
     index.flush().expect("flush");
 
-    let query = stub();
+    // Nearest the first document by construction, so the vector channel has a
+    // real ordering to report and a real best candidate.
+    let query = leaning(0);
     for (channel, candidates) in [
         (
             "segmented",
@@ -84,7 +97,14 @@ fn every_channel_scores_what_it_returns_and_ranks_by_it() {
 
         assert!(
             scores.windows(2).all(|pair| pair[0] >= pair[1]),
-            "{channel} is not ordered by the score it reports: {scores:?}"
+            "{channel} is not ordered by the score it reports, so the score is a distance \
+             rather than a similarity and anything that sums it is summing it backwards: \
+             {scores:?}"
+        );
+        assert!(
+            scores.windows(2).any(|pair| pair[0] > pair[1]),
+            "{channel} reported the same score for every candidate, so ordering by it asserts \
+             nothing: {scores:?}"
         );
         assert!(
             scores.iter().any(|score| *score != 0.0),

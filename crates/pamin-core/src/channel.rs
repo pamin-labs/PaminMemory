@@ -46,6 +46,18 @@ impl Channel {
 /// and it is never comparable across channels. It travels anyway, for the
 /// reason [`ChannelResults`] gives.
 ///
+/// **Larger is always better, and a channel whose engine reports a distance
+/// converts before it gets here.** That is the one thing about this field that
+/// is not the channel's own business, because everything reading it compares
+/// magnitudes: a channel handing over a distance would be summed backwards and
+/// judged on its worst candidate. The vector channel is that case -- zvec
+/// reports cosine *distance*, so [`pamin_index`] subtracts it from one -- and
+/// the test that would have caught it did not, because every document in it was
+/// written with the same stub vector and the whole channel reported one
+/// constant.
+///
+/// [`pamin_index`]: https://docs.rs/pamin-index
+///
 /// `None` means this channel has no score to give, which is a different claim
 /// from a score of zero. The graph channel is the case: it reaches a topic
 /// across edges rather than scoring it against a query, so a zero there would
