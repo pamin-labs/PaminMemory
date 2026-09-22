@@ -183,6 +183,26 @@ impl Default for Fusion {
         // is the one quantity the two same-language corpora disagree about by
         // twenty times, because SQuAD's questions are written out of their
         // answers' own words. See `docs/adr/0001-tech-selection.md`.
+        //
+        // Two things about that table are worth distrusting, and both point the
+        // same way -- that a single global constant is the wrong shape.
+        //
+        // The MIRACL column is +0.0056 over the quarter. Nothing here has ever
+        // checked whether 482 queries support a difference that size; the
+        // harnesses only learned to ask in `statistics`, and until that
+        // comparison is re-run this row is a mean with no evidence under it.
+        //
+        // And the published work predicts the opposite sign for that corpus.
+        // MIRACL's own authors report a BM25-dense hybrid as the strongest
+        // zero-shot baseline and name Swahili among the languages where the
+        // dense side is the weak one -- which argues the lexical pair should be
+        // worth *more* there, not less. Meanwhile `arXiv:2510.00671` (2025)
+        // establishes that lexical matching cannot cross a language boundary
+        // without a shared lexical space, which argues it should be worth
+        // nothing at all on XQuAD-R's cross-lingual group. Those two together
+        // do not describe a constant; they describe a weight that belongs to a
+        // corpus. One number is serving both, and the number it settles on is
+        // whichever corpus was measured loudest.
         Self {
             k: DEFAULT_K,
             weights: BTreeMap::from([

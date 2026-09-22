@@ -21,9 +21,22 @@
 //! licence one any more: `lightonai/mLateOn` is Apache-2.0, multilingual and
 //! carries its own int8 ONNX, where `jina-colbert-v2` is CC-BY-NC-4.0,
 //! `answerai-colbert-small-v1` is English, and `colbert-xm` selects a
-//! per-language adapter at runtime that does not fit one static graph. What is
-//! left is a measurement nobody has taken -- nine languages against this
-//! product's eleven, and a forward pass per memory added to the write path.
+//! per-language adapter at runtime that does not fit one static graph.
+//!
+//! An earlier version of this note gave the remaining obstacle as language
+//! coverage -- nine training languages against this product's eleven, with
+//! Swahili absent. **That was backwards.** The model's own paper
+//! (`arXiv:2607.27178`, 2026) is largely about generalising to languages
+//! absent from retrieval training, and reports its unseen-language MIRACL
+//! average about ten points above the dense model it is paired with. MIRACL
+//! Swahili is not the case that rules mLateOn out; it is the case mLateOn
+//! claims, and it is where this stack is weakest.
+//!
+//! What is actually left is three costs and no measurement of any of them: the
+//! int8 export is the backbone alone, with three `*_Dense` projection modules
+//! shipped separately as safetensors and applied after it, so the projection
+//! is this project's to reimplement; the write path gains a forward pass per
+//! memory; and the token vectors have to be stored.
 //! `docs/adr/0001-tech-selection.md` carries the trigger.
 //!
 //! ## What it is worth, measured

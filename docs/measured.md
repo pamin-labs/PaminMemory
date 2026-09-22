@@ -40,6 +40,18 @@ Each XQuAD-R row was reproduced identically to four decimals by a second run
 before being placed here, which is what this harness does: fixed corpus, fixed
 index, fixed model, a greedy pass.
 
+**But reproducible is not the same as significant, and until recently nothing
+here could tell the difference.** Every comparison on this page is between two
+averages, and an average cannot distinguish every query moving slightly from
+one query moving a great deal. That matters at the sizes being reported: the
+fusion weight moved on +0.0056 and the reranker is priced at −0.0152, and both
+are small enough that a handful of queries decides them. The harnesses now
+report per-query wins, losses and a paired bootstrap p beside every mean — see
+`crates/pamin-engine/tests/statistics/mod.rs` and the section in
+[ADR 0001](adr/0001-tech-selection.md) — and the two figures named here are the
+ones being re-taken through it first. Until a figure below carries a win/loss
+count, read it as a difference of means and nothing stronger.
+
 As for the harness named beside the MIRACL row: this page previously named
 one harness for both corpora, which was true of the XQuAD-R rows and false of
 the MIRACL ones: they came from a program that was never committed, so nothing
