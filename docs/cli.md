@@ -346,11 +346,21 @@ ranking internals it has no way to evaluate.
 
 | | licence | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|---|
-| `off` | — | nothing | 53 ms | — | — |
-| `fast` | permissive | 119 MB | 264 ms | **+0.0381** | −0.0053 |
-| `balanced` | permissive | 341 MB | not taken | not taken | not taken |
-| `accurate` | permissive | 571 MB | 1001 ms | **+0.0448** | +0.0017 |
-| `noncommercial` | **CC-BY-NC-4.0** | 280 MB | not taken | not taken | not taken |
+| `off` | — | nothing | 99 ms | 0.6114 | 0.7829 |
+| `fast` | permissive | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
+| `balanced` | permissive | 341 MB | 821 ms | +0.0094 | +0.0029 |
+| `accurate` | permissive | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
+| `noncommercial` | **CC-BY-NC-4.0** | 280 MB | 905 ms | +0.0279 | +0.0003 |
+
+All five arms are one run over the same 1,190 queries, so the rows can be read
+against each other; none of them can be read against a figure published before
+this table, and the `off` and `fast` rows moved when the fusion layer changed
+underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
+`p = 0.0001` for `fast`, `accurate` and `noncommercial` and `0.0146` for
+`balanced`; same-language `p = 0.0008` for `fast`, `0.0293` for `balanced`, and
+not significant for the other two. `recall@50` is 0.8962 and 0.9571 in **every**
+arm, to four decimals — a reranker reorders a shortlist and never changes what
+is in it.
 
 Measured on XQuAD-R's 13,014 sentences in eleven languages, through
 `Engine::search_reranked` — the call this command makes, one layer below the
@@ -367,17 +377,40 @@ four cores, for a query the server has not been asked before. A resident
 server remembers a query's vector, so asking the same thing twice costs the
 16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
 
-`fast` is the default, on latency: its pass costs 211 ms against `accurate`'s
-948. `accurate` scores better on both groups, so a workspace that can afford a
-second a search should ask for it. A workspace whose memories are all in
-one language should set `off` — only candidates the lexical channels missed are
-reranked, and those are overwhelmingly the ones written in another language.
+`fast` is the default, on latency: 359 ms against `accurate`'s 1522. It is also
+**the only tier that measurably damages same-language ranking** — −0.0060 at
+`p = 0.0008`, nineteen queries worse against three better — so a workspace whose
+memories are all in one language should set `off`. Only the candidates the
+lexical channels missed are reranked, and those are overwhelmingly the ones
+written in another language; on a single-language corpus the pass has nothing to
+recover and reorders what was already right.
 
-`balanced` and `noncommercial` are new and **their rows say `not taken`
-because nothing has measured them yet.** They are in the table so the licence
-column is complete, not because there is a recommendation behind them.
-[measured.md](measured.md) will carry the figures when they exist; until then
-the two rows above them are the ones with evidence.
+`accurate` is the tier to ask for when a second a search is affordable: the
+largest cross-lingual gain measured here and the only one that costs nothing on
+either group.
+
+**`balanced` is a bad trade and is kept only because the table should say so.**
+Four times `fast`'s compute-relevant parameters and 2.3 times its latency buy
+one quarter of its cross-lingual gain. Its one distinction is being the only
+tier with a significant *positive* on same-language, which is worth a row and is
+not worth 821 ms.
+
+**`noncommercial` bought nothing, and that is the useful result.** It was added
+to answer a specific question — whether accepting a non-commercial licence buys
+accuracy a permissive one cannot — and the answer is no: it scores +0.0279
+cross-lingual where the permissive default, at a quarter of its size and 2.5
+times its speed, scores +0.0397. It is kept, documented and measured rather than
+quietly dropped, because "we relaxed the licence and it did not help" is a
+finding somebody would otherwise pay for twice.
+
+One prediction in that experiment was wrong and is worth recording next to it.
+`balanced` and `noncommercial` are the same architecture at the same size —
+twelve layers of width 768, 84.9M non-embedding parameters — so they were
+expected to land within noise of each other. They differ by 0.0185
+cross-lingual, which is twice `balanced`'s entire gain. At this size the
+training, not the capacity, is what is being chosen. The same conclusion is
+visible down the column: 21.2M `fast` beats both 84.9M models cross-lingual, so
+parameter count does not order this table.
 
 `noncommercial` prints a notice to stderr the first time you ask for it and
 then runs. It is not gated: naming the tier is already deliberate — nothing
