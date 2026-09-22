@@ -1180,15 +1180,35 @@ rejected, on grounds that a larger budget does not touch.
 | `Antix5/product-reranker-mmBERT-small` | `mit` | 13 | cross-encoder | 2.0x | Trained on product similarity, 82 downloads |
 | `convaiinnovations/laya` | `apache-2.0` | 1811 (multilingual variant) | **typed-decision RL agent** | 5.2x | Not a cross-encoder; see below |
 
-**The two `apache-2.0` decoders are blocked on shape before latency.** Both
-rerank by prompting and comparing the logits of a "yes" and a "no" token, so
-the graph returns a vocabulary-sized tensor and needs prompt templating and
-specific token ids. `fastembed`'s `TextRerank` drives a sequence classifier and
-cannot drive that; adopting either means a raw `ort` path. Third-party int8
-ONNX exports exist, so the work is bounded — but at seventeen times `fast`, on
-four cores, where `accurate` already spends most of a second, it buys a tier
-nobody would leave on. Withdrawing the size constraint did not withdraw the
-latency axis.
+**The two `apache-2.0` decoders are blocked on latency, and on nothing else.**
+The earlier reading here put shape first. Shape is a real difference — both
+rerank by prompting and comparing the logits of a "yes" and a "no" token, so the
+graph returns a vocabulary-sized tensor where `fastembed`'s `TextRerank` drives
+a sequence classifier — but it costs much less than this record assumed, because
+the two things it was thought to cost are already paid:
+
+- **`ort` 2.0.0-rc.13 and `tokenizers` 0.23.2 are already in the lockfile**,
+  reached transitively through `fastembed`. A raw session is a module, not a new
+  dependency, and it does not move the size budget.
+- **The export already exists, permissively licensed.**
+  `onnx-community/Qwen3-Reranker-0.6B-ONNX` is `apache-2.0` with single-file
+  graphs — `model_quantized.onnx` at 1219 MB, `model_q4.onnx` at 995 MB — and
+  all four tokenizer files.
+
+So this is named work rather than a closed door, and if it is opened it should
+be opened on the permissive model. `jina-reranker-v3` is the same size and the
+same architecture class, publishes no ONNX at all, and wraps it in a custom
+`JinaForRanking` head: strictly more work for a worse licence at equal size.
+Build the path on Qwen3 and Jina v3 becomes a one-line addition for anyone who
+wants the comparison.
+
+What remains is the latency, which the size ruling did not repeal.
+595,776,512 total parameters less a tied 151,936 × 1024 embedding is about 440M
+non-embedding, roughly twenty-one times the default tier, where `accurate` at
+302M already spends 1423 ms of a 1522 ms search. **The prediction, recorded
+before the run: about two seconds of reranking, a search around 2.2 s** —
+coherent as an opt-in tier at 1.4 times `accurate`, and not a default at any
+accuracy.
 
 **Laya is genuinely open and genuinely fast, and is the wrong shape twice
 over.** Its multilingual encoder is `jhu-clsp/mmBERT-base` — 22 layers at width
