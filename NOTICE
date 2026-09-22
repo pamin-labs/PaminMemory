@@ -48,6 +48,10 @@ Reranker models
     Tier `accurate`. An ONNX re-export of BAAI/bge-reranker-v2-m3, itself
     Apache-2.0.
 
+  onnx-community/gte-multilingual-reranker-base        no tag
+    Tier `balanced`. An ONNX re-export of
+    Alibaba-NLP/gte-multilingual-reranker-base, itself Apache-2.0.
+
 ================================================================================
 Rust dependencies
 ================================================================================

@@ -274,6 +274,28 @@ pub enum Rerank {
     /// which is why this is not the default -- but a workspace of long
     /// documents that can afford it is giving up rather more by not asking.
     Accurate,
+    /// GTE multilingual reranker base, twelve layers of 768, 341 MB.
+    /// Seventy-plus languages.
+    ///
+    /// Between the two above by every structural measure and here to find out
+    /// whether it is between them by score. Non-embedding parameters are the
+    /// number that predicts compute -- a 250,000-row embedding table is a
+    /// lookup and not a matrix multiply, so a card's total is misleading --
+    /// and by that count this is 84.9M against `fast`'s 21.2M and
+    /// `accurate`'s 302M: four times the one and a third of the other. The
+    /// int8 export is 341 MB against 119 and 571, which is the same ordering
+    /// and is what a user actually waits for on first use.
+    ///
+    /// The reason to measure it is that `accurate` is where the gain is and
+    /// the latency is why nobody can have it. If four times `fast`'s compute
+    /// buys most of fourteen times' worth, the tier that ships as the quality
+    /// option should be this one.
+    ///
+    /// Apache-2.0 through the same shape of chain as `accurate`: the export
+    /// carries no tag, `Alibaba-NLP/gte-multilingual-reranker-base` under it
+    /// is Apache-2.0. Read from the hub API rather than from card prose, and
+    /// written down in `NOTICE`.
+    Balanced,
 }
 
 /// How many of the fused results a tier looks at.
@@ -403,6 +425,7 @@ impl Rerank {
             "off" => Some(Self::Off),
             "fast" => Some(Self::Fast),
             "accurate" => Some(Self::Accurate),
+            "balanced" => Some(Self::Balanced),
             _ => None,
         }
     }
@@ -412,6 +435,7 @@ impl Rerank {
             Self::Off => "off",
             Self::Fast => "fast",
             Self::Accurate => "accurate",
+            Self::Balanced => "balanced",
         }
     }
 
@@ -419,7 +443,7 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
+            Self::Fast | Self::Accurate | Self::Balanced => tuned("PAMIN_RERANK_DEPTH", DEPTH),
         }
     }
 
@@ -442,6 +466,10 @@ impl Rerank {
             // The export carries no tag; `BAAI/bge-reranker-v2-m3` under it is
             // Apache-2.0. See `NOTICE`.
             Self::Accurate => Some(Licence::Permissive),
+            // Same shape of chain: no tag on the export,
+            // `Alibaba-NLP/gte-multilingual-reranker-base` under it is
+            // Apache-2.0. See `NOTICE`.
+            Self::Balanced => Some(Licence::Permissive),
         }
     }
 
@@ -450,6 +478,7 @@ impl Rerank {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             Self::Fast => "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
             Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
+            Self::Balanced => "onnx-community/gte-multilingual-reranker-base",
         }
     }
 
@@ -463,7 +492,9 @@ impl Rerank {
     fn onnx(self) -> &'static str {
         match self {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
-            Self::Accurate => "onnx/model_int8.onnx",
+            // One int8 export, not one per instruction set, so there is
+            // nothing to detect at runtime the way `fast` has to.
+            Self::Accurate | Self::Balanced => "onnx/model_int8.onnx",
             Self::Fast => {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -863,7 +894,7 @@ mod tests {
     #[test]
     fn every_tier_that_loads_weights_declares_what_they_may_be_used_for() {
         assert_eq!(Rerank::Off.licence(), None, "the off tier loads nothing");
-        for tier in [Rerank::Fast, Rerank::Accurate] {
+        for tier in [Rerank::Fast, Rerank::Accurate, Rerank::Balanced] {
             assert!(
                 tier.licence().is_some(),
                 "the {} tier downloads weights and does not say under what terms",
@@ -881,7 +912,12 @@ mod tests {
     /// rather than a ranking one.
     #[test]
     fn a_tier_parses_from_the_name_it_prints() {
-        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+        for tier in [
+            Rerank::Off,
+            Rerank::Fast,
+            Rerank::Accurate,
+            Rerank::Balanced,
+        ] {
             assert_eq!(
                 Rerank::parse(tier.name()),
                 Some(tier),
