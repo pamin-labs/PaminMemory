@@ -481,8 +481,13 @@ Three kinds of entry, and they answer different questions.
 contributed `weight / (10 + rank)` to the score. Neither the weight nor the
 contribution is sent: the weight is the constant in the table below and the
 contribution follows from it and the rank, and ten hits of both cost about
-seven hundred tokens to restate what the reader already has. There are four
-channels:
+seven hundred tokens to restate what the reader already has. Nor is the score
+the channel gave it, for a different reason — that is the channel's own
+quantity in the channel's own units, so a reader comparing a BM25 score against
+a cosine similarity would be comparing nothing. Fusion reads it, to judge how
+far a channel's best candidate stands above that channel's own field, and the
+result of that judgement reaches you as the rank in the fused list. There are
+four channels:
 
 | Channel | What it matches | Weight |
 | --- | --- | --- |
@@ -513,8 +518,20 @@ itself. Three corpora and the sweep behind that are in
 One weight serves every workspace, and the evidence says that is the wrong
 shape rather than the wrong value. What the lexical pair is worth depends on
 whether a query and its answer share a language at all: nothing across a
-boundary, and a great deal within one. The ADR records what would have to be
-measured before splitting it. The `10` is likewise measured here rather than taken from the rank
+boundary, and a great deal within one. Measured, fusing all four channels ranks
+*below* the vector channel alone on cross-lingual queries — 0.6077 against
+0.6335 on XQuAD-R — while on the same corpus's same-language queries segmented
+BM25 alone beats the vector channel 0.7299 to 0.6787. A constant cannot be
+right about both.
+
+What answers that is a per-channel confidence: each channel's weight scaled by
+how far its own best candidate stands above its own field. That quantity is
+dimensionless, so a BM25 score and a cosine similarity become comparable, and
+it is readable from the candidates a search already returned — no corpus-wide
+distribution to maintain, which matters because a memory store's distribution
+moves on every write. **It exists and is off, because it has not been
+measured.** [ADR 0001](adr/0001-tech-selection.md) has the argument and says
+what has to be reported before it could become the default. The `10` is likewise measured here rather than taken from the rank
 fusion literature, which uses 60 for lists thousands of results deep; each
 channel proposes fifty, and 60 flattens fifty candidates to the point where
 being first says almost nothing.
