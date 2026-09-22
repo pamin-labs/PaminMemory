@@ -1120,6 +1120,13 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `CALIBRATE` asks whether the shipped tier's score can be made into a
+    // probability, which is the cheap half of what the typed judge is for.
+    if std::env::var("CALIBRATE").is_ok() {
+        calibration(&engine, &queries, &named).await;
+        return;
+    }
+
     // `GATE` asks whether the pass should run at all, which is a different
     // question from which tier runs it and is measured separately.
     if std::env::var("GATE").is_ok() {
@@ -1156,26 +1163,27 @@ async fn search_reaches_across_languages() {
         // Kept so the tiers can be compared against each other with paired
         // counts rather than by subtracting two means. `off` is the first,
         // which is what every row is priced against.
-        let mut priced: Vec<(Rerank, BTreeMap<String, Scores>)> = Vec::new();
+        // The cost is kept, not just printed, because the oracle below is about
+        // spending it: a router's whole claim is that some queries need a
+        // cheaper tier than others, and that claim cannot be priced without
+        // knowing what each tier cost in this same run.
+        let mut priced: Vec<(Rerank, f64, BTreeMap<String, Scores>)> = Vec::new();
 
         for tier in tiers {
             let started = std::time::Instant::now();
             let groups = run(&engine, &queries, Route::Shipped(tier)).await;
-            report(
-                &format!("{tier:?}, {named}"),
-                &groups,
-                started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
-            );
+            let cost = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
+            report(&format!("{tier:?}, {named}"), &groups, cost);
             report_reranking(&engine, tier, queries.len());
-            priced.push((tier, groups));
+            priced.push((tier, cost, groups));
         }
 
-        let (_, baseline) = &priced[0];
+        let (_, _, baseline) = &priced[0];
         for group in GROUPS {
             println!("\n  every tier against reranking off, {group}, {named}");
             println!("  tier                 nDCG@{NDCG_AT}   recall@{RECALL_AT}   against off");
             println!("  ---------------------------------------------------------------------");
-            for (tier, groups) in &priced[1..] {
+            for (tier, _, groups) in &priced[1..] {
                 println!(
                     "  {:<18}   {:>7.4}   {:>9.4}   {}",
                     tier.name(),
@@ -1185,6 +1193,8 @@ async fn search_reaches_across_languages() {
                 );
             }
         }
+
+        oracle(&priced, &named);
         return;
     }
 
@@ -1265,6 +1275,281 @@ enum Route {
     AtLimit(Rerank, u32),
     /// Fusion alone, at a weighting the caller chooses.
     Fused(Fusion),
+}
+
+/// Whether the shipped reranker's score can be turned into a probability.
+///
+/// This is the cheap half of the question the typed judge was added to answer,
+/// and it should be asked first: **a cross-encoder can be calibrated too.** If
+/// fitting two parameters onto the tier already running produces a usable
+/// probability, then the thresholding, abstention and weighted-sum-fusion work
+/// all become reachable with no new model, no new download and no
+/// per-question-shape temperature to maintain. If it does not, a
+/// purpose-trained judge very likely will not rescue it either, because
+/// calibration is corpus-specific and cross-corpus comparability is the exact
+/// property being bought.
+///
+/// The dataset already exists and needed no new run: `Why::Reranked` records
+/// what the model scored every candidate it saw, and the corpus supplies
+/// whether each was relevant. What was missing until that entry existed was not
+/// the model — it was that the score was computed and thrown away.
+///
+/// **Fit and test are disjoint by query, not by candidate.** Splitting by
+/// candidate would put two candidates of the same query on opposite sides, and
+/// a cross-encoder's scores within one shortlist are correlated — so the test
+/// half would be partly memorised and the calibration error would read far
+/// better than it is.
+async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
+    /// Bins for the reliability curve and the calibration error.
+    const BINS: usize = 10;
+    /// Gradient steps for the two-parameter fit, and the step size. Plain
+    /// gradient descent rather than Newton: two parameters, a convex loss, and
+    /// a fixed step count is deterministic where a convergence test is not.
+    const STEPS: usize = 4_000;
+    const RATE: f64 = 0.05;
+
+    let tier = Rerank::default();
+    // (score, relevant) per group, split by query parity.
+    let mut fit: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
+    let mut test: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
+
+    for (at, query) in queries.iter().enumerate() {
+        let hits = engine
+            .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
+            .await
+            .expect("search at the default tier");
+
+        for group in GROUPS {
+            let (relevant, drop) = query.relevant(group);
+            let into = if at % 2 == 0 { &mut fit } else { &mut test };
+            let pairs = into.entry(group.to_string()).or_default();
+            for hit in &hits {
+                if drop == Some(hit.topic.as_str()) {
+                    continue;
+                }
+                let scored = hit.result.why.iter().find_map(|why| match why {
+                    Why::Reranked { score } => Some(*score),
+                    Why::Channel { .. } | Why::Path { .. } => None,
+                });
+                if let Some(score) = scored {
+                    pairs.push((f64::from(score), relevant.contains(hit.topic.as_str())));
+                }
+            }
+        }
+    }
+
+    for group in GROUPS {
+        let Some(training) = fit.get(group) else {
+            continue;
+        };
+        let Some(held) = test.get(group) else {
+            continue;
+        };
+        if training.is_empty() || held.is_empty() {
+            continue;
+        }
+
+        // Platt: P = sigmoid(-(a * score + b)), fitted by minimising the
+        // negative log likelihood. `a` starts negative so the initial map is
+        // increasing in the score, which is the direction every score in this
+        // project runs.
+        let (mut a, mut b) = (-1.0f64, 0.0f64);
+        for _ in 0..STEPS {
+            let (mut da, mut db) = (0.0f64, 0.0f64);
+            for (score, relevant) in training {
+                let p = 1.0 / (1.0 + (a * score + b).exp());
+                let error = p - if *relevant { 1.0 } else { 0.0 };
+                da -= error * score;
+                db -= error;
+            }
+            let n = training.len() as f64;
+            a += RATE * da / n;
+            b += RATE * db / n;
+        }
+
+        let probability = |score: f64| 1.0 / (1.0 + (a * score + b).exp());
+
+        // Expected calibration error on the held-out half, before and after,
+        // with "before" being a sigmoid of the raw score -- the thing somebody
+        // would reach for if they assumed the logit was already a probability.
+        let error_of = |map: &dyn Fn(f64) -> f64| -> (f64, Vec<(f64, f64, usize)>) {
+            let mut bins = vec![(0.0f64, 0usize, 0usize); BINS];
+            for (score, relevant) in held {
+                let p = map(*score);
+                let at = ((p * BINS as f64) as usize).min(BINS - 1);
+                bins[at].0 += p;
+                bins[at].1 += usize::from(*relevant);
+                bins[at].2 += 1;
+            }
+            let total = held.len() as f64;
+            let mut ece = 0.0;
+            let mut curve = Vec::new();
+            for (sum, positives, count) in &bins {
+                if *count == 0 {
+                    continue;
+                }
+                let confidence = sum / *count as f64;
+                let accuracy = *positives as f64 / *count as f64;
+                ece += (*count as f64 / total) * (confidence - accuracy).abs();
+                curve.push((confidence, accuracy, *count));
+            }
+            (ece, curve)
+        };
+
+        let raw = |score: f64| 1.0 / (1.0 + (-score).exp());
+        let (before, _) = error_of(&raw);
+        let (after, curve) = error_of(&probability);
+
+        println!("\n  calibrating the {} tier, {group}, {named}", tier.name());
+        println!(
+            "  {} pairs fitted, {} held out, disjoint by query",
+            training.len(),
+            held.len()
+        );
+        println!("  fitted map: P = sigmoid(-({a:.4} * score + {b:.4}))");
+        println!(
+            "  expected calibration error   before {before:.4}   after {after:.4}   \
+             ({:+.4})",
+            after - before
+        );
+        println!("  reliability, held out:");
+        println!("    predicted   observed   candidates");
+        for (confidence, accuracy, count) in curve {
+            println!("    {confidence:>9.3}   {accuracy:>8.3}   {count:>10}");
+        }
+    }
+
+    println!(
+        "\n  a fit is only worth what it transfers: this one is fitted and tested on one \n  \
+         corpus, so it bounds the within-corpus case and says nothing about another. \n  \
+         The transfer test belongs on a corpus this was not fitted on.\n"
+    );
+}
+
+/// The ceiling on routing between tiers, before anybody builds a router.
+///
+/// Both 2025–2026 results this project took its adaptive-reranking ideas from
+/// start here, and the per-query gate measured next door skipped it and failed.
+/// A router's claim is that some queries need a cheaper tier than others, so the
+/// question that decides whether any router can help is: **if an oracle picked
+/// the cheapest tier that was good enough for each query, what would that
+/// buy?** Two numbers answer it, and neither needs a model:
+///
+/// - **The oracle's score**, taking the best tier per query. That is the
+///   unreachable ceiling — a perfect router cannot beat it — so if it sits close
+///   to always running the best single tier, routing has nothing to win on
+///   accuracy.
+/// - **The cheapest-sufficient cost**, taking the cheapest tier within
+///   [`ENOUGH`] of that query's best. That is the unreachable floor on latency,
+///   and if it sits close to the best single tier's cost, routing has nothing to
+///   win there either.
+///
+/// Both are oracles: they read the answer key. Nothing achievable does this
+/// well, so a gap here is an upper bound on a router's value and the absence of
+/// a gap is a **kill condition** rather than a disappointment.
+///
+/// Free, because the tier sweep above already holds every tier's per-query
+/// score and every tier's measured cost from the same run. Priced across runs
+/// this would be worthless, which is why it lives inside the arm rather than
+/// beside it.
+fn oracle(priced: &[(Rerank, f64, BTreeMap<String, Scores>)], named: &str) {
+    /// How close to the best a tier has to be to count as good enough.
+    ///
+    /// Not zero. At zero a tier is "insufficient" for a query it loses by a
+    /// ten-thousandth, which would route on noise and read as though the
+    /// expensive tier were needed everywhere. A hundredth of nDCG is smaller
+    /// than every gain this project has ever acted on and larger than the
+    /// fourth-decimal movement it has measured between identical runs.
+    const ENOUGH: f64 = 0.01;
+
+    for group in GROUPS {
+        let queries = priced[0].2[group].per_query.len();
+        if priced
+            .iter()
+            .any(|(_, _, by)| by[group].per_query.len() != queries)
+        {
+            println!("\n  the tiers scored different numbers of {group} queries; no oracle");
+            continue;
+        }
+
+        let mut best_total = 0.0;
+        let mut cheapest_cost = 0.0;
+        // How often each tier is the cheapest one that suffices, which is the
+        // distribution a router would have to predict.
+        let mut chosen = vec![0usize; priced.len()];
+
+        for query in 0..queries {
+            let best = priced
+                .iter()
+                .map(|(_, _, by)| by[group].per_query[query])
+                .fold(f64::MIN, f64::max);
+            best_total += best;
+
+            // Cheapest by measured cost, not by tier order, because the order
+            // the sweep happens to run in is not a price list.
+            let (at, cost) = priced
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, _, by))| by[group].per_query[query] >= best - ENOUGH)
+                .map(|(at, (_, cost, _))| (at, *cost))
+                .min_by(|left, right| left.1.total_cmp(&right.1))
+                .expect("the best tier always suffices for itself");
+            cheapest_cost += cost;
+            chosen[at] += 1;
+        }
+
+        let queries = queries as f64;
+        let oracle_score = best_total / queries;
+        let routed_cost = cheapest_cost / queries;
+
+        // The best single tier on this group, which is what a router has to
+        // beat rather than `off`. Beating `off` is not the claim.
+        let (strongest, strongest_cost, strongest_scores) = priced
+            .iter()
+            .max_by(|left, right| {
+                left.2[group]
+                    .mean_ndcg()
+                    .total_cmp(&right.2[group].mean_ndcg())
+            })
+            .expect("at least one tier");
+
+        println!("\n  the ceiling on routing between tiers, {group}, {named}");
+        println!("  ----------------------------------------------------------------------");
+        println!(
+            "  an oracle picking the best tier per query      {oracle_score:>7.4} nDCG@{NDCG_AT}"
+        );
+        println!(
+            "  always the strongest single tier ({:<13}) {:>7.4} nDCG@{NDCG_AT}   {:>7.0} ms",
+            strongest.name(),
+            strongest_scores[group].mean_ndcg(),
+            strongest_cost
+        );
+        println!(
+            "  so a perfect router could add at most          {:>+7.4}",
+            oracle_score - strongest_scores[group].mean_ndcg()
+        );
+        println!(
+            "  an oracle picking the cheapest sufficient tier {:>7.0} ms a query, against \
+             {:>4.0} ms",
+            routed_cost, strongest_cost
+        );
+        println!(
+            "  so a perfect router could save at most         {:>7.0} ms ({:.0}%)",
+            strongest_cost - routed_cost,
+            100.0 * (strongest_cost - routed_cost) / strongest_cost
+        );
+        println!("  and it would have to predict this distribution:");
+        for (at, (tier, cost, _)) in priced.iter().enumerate() {
+            if chosen[at] > 0 {
+                println!(
+                    "    {:<14} cheapest-sufficient on {:>5.1}% of queries ({:>6.0} ms)",
+                    tier.name(),
+                    100.0 * chosen[at] as f64 / queries,
+                    cost
+                );
+            }
+        }
+    }
 }
 
 /// Two ways of deciding not to rerank, both swept from one pass.
