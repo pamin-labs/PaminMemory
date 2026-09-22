@@ -1267,8 +1267,20 @@ impl Engine {
             .iter()
             .map(|position| slots[*position].take())
             .collect();
-        for (slot, from) in unlexical.iter().zip(&ordered) {
-            slots[*slot] = taken[*from].take();
+        for (slot, ranked) in unlexical.iter().zip(&ordered) {
+            let mut hit = taken[ranked.position]
+                .take()
+                .expect("each reranked candidate is taken once");
+            // Recorded on the candidate rather than returned beside the list,
+            // because it is an answer to "why is this here" and belongs with
+            // the channel entries that answer the same question. A candidate
+            // the reranker never saw carries no entry, which is how a reader
+            // -- and the threshold sweep this unblocks -- tells the two cases
+            // apart.
+            hit.result.why.push(Why::Reranked {
+                score: ranked.score,
+            });
+            slots[*slot] = Some(hit);
         }
 
         Ok(only(

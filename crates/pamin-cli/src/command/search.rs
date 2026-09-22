@@ -89,6 +89,19 @@ enum Trace {
         edge: EdgeKind,
         derivation: Derivation,
     },
+    /// The cross-encoder decided this position, and fusion did not.
+    ///
+    /// Carried without its score, for the reason the channel score is left out
+    /// above and one more. A cross-encoder's logit is calibrated against
+    /// nothing, so it is comparable within one shortlist and meaningless
+    /// between two -- and a number on the wire invites exactly the comparison
+    /// it cannot support. What a reader can act on is the *fact*, which
+    /// nothing before this exposed: a result carrying this entry was
+    /// reordered by the model, and one without it holds the place fusion gave
+    /// it, either because a lexical channel found it or because it sat below
+    /// the tier's depth. That distinction costs about four tokens and is the
+    /// difference between auditing a ranking and guessing at it.
+    Reranked {},
 }
 
 impl From<Why> for Trace {
@@ -112,6 +125,7 @@ impl From<Why> for Trace {
                 edge,
                 derivation,
             },
+            Why::Reranked { .. } => Self::Reranked {},
         }
     }
 }
@@ -288,6 +302,11 @@ fn describe(why: &[Trace]) -> String {
                     format!("from {from} via {via}: {arrow} ({hops}hop)")
                 }
             }
+            // One word, because the fact is the whole content. A line reading
+            // `vector#12 reranked` says the fused list had this twelfth and
+            // the model moved it, which is what a reader auditing a ranking
+            // wants and could not previously get from anywhere.
+            Trace::Reranked {} => "reranked".to_string(),
         })
         .collect::<Vec<_>>()
         .join(" ")

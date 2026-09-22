@@ -641,12 +641,29 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 `derived_from` and `part_of` the direction *is* the claim, so it is stated
 rather than left to be inferred.
 
-There is no third kind of entry. There used to be a `modifier`, a post-fusion
+**`reranked`** — the cross-encoder decided this result's position, and fusion
+did not. The example above carries no such entry, and correctly: a lexical
+channel found that result, so the pass left it where fusion put it. It carries nothing else, and the omission is the design rather than a
+shortcut: a cross-encoder's score is calibrated against nothing, so it
+separates the candidates of one shortlist and means nothing between two
+queries, and a number on the wire invites exactly the comparison it cannot
+support.
+
+What it does tell you is the part nothing exposed before. A result **with** this
+entry was reordered by the model. A result **without** it holds the place
+fusion gave it — either a lexical channel found it, so the pass deliberately
+left it alone, or it sat below the tier's depth and the model never saw it. So a
+line reading `vector#12 reranked` says the fused list had this twelfth and the
+model moved it, and a line reading `lexical_segmented#3 vector#7` says the two
+channels agreed and no model was consulted. Auditing a ranking needs that
+distinction, and before this it was not derivable from anything the command
+returned. `--rerank off` produces no entries of this kind at all.
+
+There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance
 of outcomes it took part in. Both were read from columns nothing ever wrote, so
 each one multiplied every result by exactly 1.0 on every search anyone ran, and
 the adjustment was removed rather than left to look like a ranking signal.
-Every result ranks on its channels alone, which is what the trace says.
 
 ## Relationships
 
