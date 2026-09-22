@@ -202,10 +202,56 @@ channel rather than silencing it.
 The other two groups of this corpus sit on their ceilings (1.0000 and 0.9940)
 and separate nothing.
 
-**Nothing has changed default yet.** Reciprocal rank fusion still ships, and
-these are one corpus of three: 43 cross-lingual queries this project wrote
-itself. MIRACL and XQuAD-R have to agree before a default moves, and the
-figures here will be re-taken alongside theirs.
+**MIRACL disagrees, and the disagreement is the finding.** On 482 real
+single-language queries, `speed` profile, every combiner is indistinguishable
+from what ships: standardised scores −0.0043 (45 wins, 49 losses, p = 0.1632)
+and CombMNZ −0.0059 (p = 0.2675). Adding scores instead of ranks is worth a
+great deal on cross-lingual queries and nothing measurable on single-language
+ones, which is the same split the channel table above reports — the mechanism
+helps exactly where fusion was hurting.
+
+**And per-channel confidence does literally nothing there.** At the two lowest
+spreads the change is 0.0000 across all 482 queries, 0 wins and 0 losses; the
+largest effect anywhere in the grid is −0.0008. The reason is arithmetic and
+was written down before the run: a standardised top score cannot exceed
+`sqrt(n - 1)`, which is 7.00 over the fifty candidates each channel proposes,
+so any spread of two or less clamps every channel to full weight. What it means
+is worse than a badly chosen constant. On this corpus the lexical channels *are*
+mildly harmful — removing the n-gram channel is +0.0024 and removing the
+segmented one is −0.0073 at p = 0.0125 — and their score distributions
+nonetheless look confident. **The measure cannot see the thing it was built to
+see here.** It stays off, and that is now a measured decision rather than a
+cautious one.
+
+**What MIRACL does say is that splitting the two lexical weights was the right
+move**, and it is the one thing on this page that a one-dimensional sweep could
+not have found:
+
+| segmented / n-gram | nDCG@10 | against what ships |
+| --- | --- | --- |
+| 0.125 / 0.125 (ships) | 0.6882 | — |
+| **0.250 / 0.000** | **0.6958** | **+0.0076, 79 wins / 51 losses, p = 0.0580** |
+| 0.250 / 0.250 | 0.6826 | −0.0056, not significant |
+| 0.000 / 0.125 | 0.6809 | −0.0073, p = 0.0125 |
+
+The best row of the whole grid is asymmetric. Moving both channels together —
+which is what every sweep before this one did — puts 0.25/0.25 at −0.0056 and
+hides that 0.25/0.00 is +0.0076, because the two channels want opposite
+directions and the diagonal cancels them. The direction matches the standalone
+figures (segmented 0.3113 against n-gram 0.0974) and matches MIRACL's own
+authors naming Swahili a language where a BM25 hybrid is the strongest
+zero-shot baseline. At p = 0.0580 it is not yet a result, and it is not being
+taken as one.
+
+`k` is settled and closed: `k = 5` is +0.0220 at p = 0.0039 on this project's
+own corpus and +0.0003 at p = 0.9057 on MIRACL. Two corpora, opposite readings,
+so ten stays — which is what the literature predicts for a constant worth one
+to three points against a normalisation worth three to eight.
+
+**Nothing has changed default.** Reciprocal rank fusion still ships at the
+weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
+same-language queries on the same 1,190 questions, and it has to report before
+any of this moves a default.
 
 One thing the first attempt at this sweep is worth recording. Standardised
 fusion measured **0.0099 against 0.7910** — 0 wins, 43 losses — because zvec

@@ -430,8 +430,45 @@ four corpora; the four-channel analysis names multiplying by agreement as the
 weakest-link mechanism. This corpus says the second one governs here, which is
 the same finding as the channel table above reached from the other direction.
 
-One corpus of three, and 43 queries this project wrote itself. Nothing changes
-default until MIRACL and XQuAD-R agree.
+**MIRACL disagrees about the combiners and refutes the confidence rule
+outright.** On 482 single-language queries every combiner is indistinguishable
+from what ships — standardised scores −0.0043 at p = 0.1632, CombMNZ −0.0059 at
+p = 0.2675 — which is consistent rather than contradictory: adding scores
+instead of ranks buys a great deal where fusion was hurting and nothing where
+it was not.
+
+Confidence is a different matter. At the two lowest spreads the change on
+MIRACL is 0.0000 across all 482 queries, 0 wins and 0 losses, and the largest
+effect anywhere in that grid is −0.0008. The arithmetic was written down before
+the run: a standardised top score cannot exceed `sqrt(n - 1)` = 7.00 over fifty
+candidates, so a spread of two or less clamps every channel to full weight and
+a spread grid read without that in mind shows a ceiling as a plateau. But the
+substantive finding is worse than a badly chosen constant. On this corpus the
+lexical channels *are* mildly harmful, and their score distributions still look
+confident: **the measure cannot see, here, the thing it was built to see.** It
+stays off, and that is now measured rather than cautious. Percentile
+normalisation against a corpus-wide distribution remains the alternative the
+literature supports, and remains refused for the reason above — a memory
+store's distribution moves on every write.
+
+**What MIRACL does support is the lexical split**, and it is the one result
+here that a one-dimensional sweep could not have produced. The best row of the
+whole grid is asymmetric — segmented 0.250 with the n-gram channel at zero,
+0.6958, +0.0076 at 79 wins to 51, p = 0.0580 — while moving both together puts
+0.250/0.250 at −0.0056. The two channels want opposite directions and every
+sweep before this one averaged them. The direction matches the standalone
+figures and matches MIRACL's own authors naming Swahili a language where a BM25
+hybrid is the strongest zero-shot baseline. At p = 0.0580 it is not a result
+and is not taken as one.
+
+`k` is closed. `k = 5` is +0.0220 at p = 0.0039 on this project's own corpus and
++0.0003 at p = 0.9057 on MIRACL — two corpora, opposite readings — so ten
+stays, which is what the literature predicts for a constant worth one to three
+points.
+
+Nothing changes default until XQuAD-R reports, because it is the corpus that
+separates cross-lingual from same-language queries over the same 1,190
+questions and the split above is the whole question.
 
 **The first attempt at this sweep measured standardised fusion at 0.0099** — 0
 wins, 43 losses — because zvec reports cosine *distance* for a cosine index, so
