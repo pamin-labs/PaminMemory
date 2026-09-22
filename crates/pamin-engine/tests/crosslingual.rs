@@ -631,12 +631,15 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
     for group in GROUPS {
         println!("\n  every fusion setting against the one that ships, {group}, {named}");
-        println!("  setting                        nDCG@{NDCG_AT}   against shipped");
+        println!(
+            "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}   against shipped"
+        );
         println!("  ---------------------------------------------------------------------------");
         for ((label, _), scores) in variants.iter().zip(&offline) {
             println!(
-                "  {label:<28}   {:>7.4}   {}",
+                "  {label:<28}   {:>7.4}   {:>9.4}   {}",
                 scores[group].mean_ndcg(),
+                scores[group].mean_recall(),
                 statistics::compare(&whole[group].per_query, &scores[group].per_query)
             );
         }

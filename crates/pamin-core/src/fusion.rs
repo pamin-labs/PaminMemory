@@ -183,6 +183,33 @@ pub enum Combine {
     /// [`Fusion::with_confidence`] gives -- standardising removes the units and
     /// not the quality, so a worthless channel's leader is still about `+2`.
     /// The two are separate mechanisms and compose.
+    ///
+    /// **Measured, and it does not ship, for a reason nDCG cannot show.** On
+    /// nDCG@10 it is better in three of four groups and significantly so --
+    /// +0.0281 on this project's own cross-lingual group (15 wins, 1 loss,
+    /// p = 0.0037), +0.0134 on XQuAD-R's (448 / 120, p = 0.0001), +0.0177 on
+    /// XQuAD-R's same-language group (142 / 106, p = 0.0001) -- and not
+    /// significantly worse anywhere. It was made the default on that reading
+    /// and the accuracy gates rejected it: XQuAD-R's cross-lingual `recall@50`
+    /// fell from 0.8960 to **0.7765**, through a floor of 0.8000.
+    ///
+    /// The mechanism is the sign. Every reciprocal-rank contribution is
+    /// positive, so a candidate one channel ranked fiftieth still helps it
+    /// stay in the list. A standardised score is centred, so a candidate below
+    /// its channel's own mean contributes a *negative* number -- and on a
+    /// cross-lingual query, where a lexical channel scores 0.0366 alone, that
+    /// channel's confident top hit at `+2` outranks a genuine deep hit from
+    /// the vector channel at `-1`. The head improves because strong vector
+    /// hits dominate the top ten; the tail fills with lexical noise and the
+    /// relevant sentences that used to sit at ranks ten to fifty fall past
+    /// fifty.
+    ///
+    /// So this is a precision-for-recall trade rather than an improvement, and
+    /// a search that hands its results to a reranker cannot afford it: nothing
+    /// recovers a memory that was never returned. What would make it shippable
+    /// is a floor under each contribution, or normalising to `[0, 1]` rather
+    /// than centring -- neither of which is what the published work measured,
+    /// so neither is in here yet.
     Standardised,
     /// `Standardised`, multiplied by how many channels returned the candidate.
     ///
@@ -308,9 +335,9 @@ impl Default for Fusion {
         // corpus. One number is serving both, and the number it settles on is
         // whichever corpus was measured loudest.
         Self {
-            // Rank fusion, because it is what every published figure here was
-            // taken with. `Combine` says what the alternatives are and why they
-            // are worth measuring.
+            // Rank fusion. The standardised sum scores higher on nDCG@10 in
+            // three of four groups and it broke the recall floor it was
+            // measured against; see `Combine::Standardised`.
             combine: Combine::Reciprocal,
             k: DEFAULT_K,
             weights: BTreeMap::from([
@@ -696,7 +723,7 @@ mod tests {
             .with_weight(Channel::Vector, 1.0)
             .with_weight(Channel::LexicalSegmented, 1.0);
 
-        let ranked = level.fuse(&lists);
+        let ranked = level.clone().with(Combine::Reciprocal).fuse(&lists);
         let top = ranked.iter().find(|r| r.topic == convinced).unwrap();
         let other = ranked.iter().find(|r| r.topic == unconvinced).unwrap();
         assert!(
@@ -808,7 +835,7 @@ mod tests {
         );
     }
 
-    /// Nothing changes until somebody asks for a different combiner.
+    /// Rank fusion ships, and the reason is a recall floor rather than nDCG.
     #[test]
     fn reciprocal_rank_fusion_is_what_ships() {
         assert_eq!(Fusion::default().combine, Combine::Reciprocal);
