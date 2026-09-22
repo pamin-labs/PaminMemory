@@ -584,6 +584,84 @@ nothing. `collect_scored` now takes the orientation as a parameter, and no
 channel may report one score for every candidate. Nothing published before that
 fix had ever read a score.
 
+### What the 2025-2026 fusion literature says, and which of it applies here
+
+Four findings from a survey of the fusion work since the RRF-and-BM25 advice
+this project's design started from. They are recorded together because two of
+them name this project's measured defect and two of them close off routes it was
+about to take.
+
+**The defect has a name and a published numeric twin.** `arXiv:2508.01405`
+(VLDB 2026) calls it the *weakest-link* effect and reports a case with the same
+shape and nearly the same numbers as this project's: full-text search 0.744,
+dense vector search 0.830, the two fused **0.816** — below the dense channel
+alone. Its mechanism is the one this project derived from its own arithmetic:
+rank fusion is "susceptible to high ranks from a weak path, irrespective of
+relevance", and a *small* `k` aggravates it, because a small `k` is what makes
+the head of a weak channel's list worth a lot. This project runs `k = 10`.
+
+So the generic advice to raise `k` for the weak channel is directionally right
+and insufficient. Raising `k_lexical` shrinks the term a lexical first place
+contributes; it does not stop that term being *added* to the vector channel's
+own. The addition is the mechanism — at `k = 10` and an eighth weight a lexical
+first place is 0.0114, which cannot reach the head alone, but 0.04 + 0.0114
+moves a vector-fifteenth candidate to about eighth. Only a zero weight or a
+non-additive rule removes an addition, which is what `Fusion::needing_support`
+is for.
+
+**This project's normaliser is the least stable variant in the canonical
+taxonomy.** `arXiv:2210.11934` (ACM TOIS 41(4), 2023, and still the systematic
+reference) separates fusion functions by what they normalise with, and finds
+**TM2C2** — a convex combination of *theoretically* min-max-normalised scores —
+beats RRF at p < 0.01 on nearly every dataset it tests (MS MARCO nDCG@1000: RRF
+0.425, TM2C2 0.454, semantic alone 0.441). Two of its secondary findings land
+directly on decisions recorded above: an *unbounded* normalisation degrades
+badly, which is `Combine::Standardised`'s recall loss arrived at
+independently; and a tuned RRF `k` **reverses its own ordering out of domain**,
+which is an argument against ever quoting this project's `k = 10` as a
+transferable choice. What it costs this project is that `Combine::Banded`
+normalises with the *empirical* min and max over the query's own candidates and
+then maps onto a band whose width depends on `n` — two query-dependent
+statistics where TM2C2 has none.
+
+That is a real finding and it is **not** yet an action, for a reason specific to
+this engine: a theoretical maximum exists for a cosine similarity and does not
+exist for a BM25 score. Substituting a fixed constant for it would put back the
+per-corpus tuning the taxonomy's own argument is against. The honest experiment
+is to keep the recall-preserving floor and replace only the empirical extremes,
+and until that is written it is not measured.
+
+**The per-query-weight route is closed by measurement, not by argument.**
+`arXiv:2608.00183` builds exactly the oracle this project built — a per-query
+best mixing weight, worth +21.8% relative — and then tries three ways to predict
+it: a random forest over hand-crafted query features at **−0.00004**, a ridge
+regression over query embeddings at +0.0022 (p = 0.111), and a confidence
+heuristic at **−0.0161**. The best method in their study is training-free RRF at
++0.0090 (p = 0.0046). The conclusion is worth stating as a rule, because this
+project had an oracle and was one step from building the predictor: **an oracle
+gap is not evidence that a predictor can close it.**
+
+This is why the remedy being measured here conditions on the *candidate* rather
+than on the query. "Is this query cross-lingual" is not answerable from a query
+— on XQuAD-R because both groups are the same 1,190 queries scored against
+different answer keys, and in production because a user asking a question does
+not know what language the answer was written in. "Did any other channel also
+return this candidate" is answerable from data already in hand.
+
+**And the graph channel's weight has no support anywhere.** The one comparable
+published system (`arXiv:2609.01617`) weights its graph channel at **0.15**
+against a dense 0.50. This project weights it at **1.0**, equal to the vector
+channel, and that number was arrived at by nothing — it is the default for an
+unnamed channel. It is now in the offline sweep.
+
+**Two questions this project cares about are genuinely unpublished**, which is
+worth recording so they are not researched a fourth time: there is no
+2025-2026 comparison of convex combination against RRF *on a cross-lingual
+benchmark*, and no evaluation of language- or script-conditional fusion weights
+at all. The +0.0283 (p = 0.0046) this project measured for zero lexical weight
+on its own cross-lingual group is therefore its own evidence rather than a
+confirmation of anyone else's.
+
 ### What the closest published system does differently, and what that explains
 
 *Jev-Mem* (arXiv 2609.23986, September 2026, CC-BY-4.0, code MIT) is an
@@ -1434,6 +1512,46 @@ cross-corpus comparability is the exact property being bought. So the fit is
 made on one corpus and **the calibration error is reported on another**. A fit
 that does not transfer is a negative result worth publishing, and it would
 predict the same failure for anything calibrated per question shape.
+
+**Measured, and the shape of the fit is the finding.** `CALIBRATE=1` on
+XQuAD-R, 9,147 pairs fitted against 9,175 held out, split so no query is on both
+sides, 43.8% of the cross-lingual pairs relevant. Expected calibration error on
+the held-out half:
+
+| | cross-lingual |
+| --- | --- |
+| the raw sigmoid of the logit | 0.0905 |
+| Platt, with label smoothing | 0.2146 (**+0.1241**) |
+| isotonic regression | **0.0172** (−0.0733) |
+
+So a calibrated cross-query-comparable probability *is* available from the tier
+already running, at zero new download and zero new runtime cost — but only from
+the monotone fit. The reliability table under isotonic is diagonal across ten
+bins: 0.045 predicted against 0.042 observed on 1,669 candidates, 0.237 against
+0.258, 0.633 against 0.643, 0.943 against 0.918.
+
+**Platt fails here, and not for want of regularisation.** The first attempt was
+read as a missing-regulariser bug in this repository and it was not: with
+Platt's own `(n + 1) / (n + 2)` target smoothing in place the coefficient is
+still −81, which is separability divergence — a two-parameter sigmoid pushed
+towards a step function by data it can nearly separate. The prediction that
+smoothing would fix it was wrong and is withdrawn. What fixes it is choosing a
+fit that cannot diverge: isotonic regression is a monotone step function and has
+no coefficient to run away.
+
+**The same-language row of that run is not a result.** Its positive rate reads
+0.2%, isotonic collapses to a single bin predicting 0.002 everywhere, and its
+ECE of 0.0001 is what a constant predictor always scores — a degenerate fit, not
+a calibrated one. That rate is also the wrong number on its face: 1,190 queries
+with one gold sentence each over 18,353 candidates is 6.5%, not 0.2%, so what
+the arm is labelling in that group has to be explained before any figure from it
+is quoted.
+
+And the caveat the harness prints itself still stands: this fit is made and
+tested on one corpus, so it bounds the within-corpus case and says nothing about
+another. The transfer test is the one that decides whether the fusion rows of
+the table above can be believed, and it belongs on a corpus this was not fitted
+on.
 
 ### Where the decision-model field is, and which of it a CPU can reach
 
