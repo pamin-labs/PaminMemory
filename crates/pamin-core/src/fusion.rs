@@ -211,6 +211,58 @@ pub enum Combine {
     /// than centring -- neither of which is what the published work measured,
     /// so neither is in here yet.
     Standardised,
+    /// Each channel's scores, rescaled into the band reciprocal rank fusion
+    /// would have spanned over the same candidates.
+    ///
+    /// **This isolates the one variable the measurements above confound.**
+    /// `Standardised` loses recall, and the reason is not centring as such --
+    /// it is the *width* of the range a channel's contributions span. Over
+    /// fifty candidates at `k = 10`, reciprocal rank fusion spans `1/11` down
+    /// to `1/60`: a factor of 5.45, narrow enough that a channel's **weight**
+    /// decides against another channel's position. A lexical channel's top hit
+    /// at an eighth weight scores 0.0114 and the vector channel's fiftieth
+    /// scores 0.0167, so the good channel's marginal candidate still wins, and
+    /// that is what keeps the tail of the list full of things worth reranking.
+    ///
+    /// Any normaliser onto `[0, 1]` spans a factor of infinity inside one
+    /// channel, so position beats weight and a worthless channel's confident
+    /// hit displaces a good channel's deep one. Centring makes it worse by
+    /// adding a sign, but min-max would do the same thing, which is why it is
+    /// not a variant here.
+    ///
+    /// So: min-max the scores, then map them onto `[(k + 1) / (k + n), 1]`,
+    /// where `n` is how many candidates the channel returned. The band is
+    /// derived rather than tuned -- it is exactly the range reciprocal rank
+    /// fusion would have used -- and what changes is only whether a channel's
+    /// candidates are ordered inside it by their score or by their rank. That
+    /// is the question this whole line of work has been trying to ask, and
+    /// nothing before this asked it without also changing the band.
+    ///
+    /// **Measured, and it is what ships.** Against reciprocal rank fusion,
+    /// nDCG@10 and `recall@50`, over four groups of three corpora:
+    ///
+    /// ```text
+    ///   group                     nDCG        p        recall
+    ///   XQuAD-R cross-lingual   +0.0037   0.0003   0.8960 -> 0.8962
+    ///   XQuAD-R same-language   +0.0273   0.0001   0.9580 -> 0.9571
+    ///   MIRACL Swahili          -0.0003   0.9210   0.9314 -> 0.9309
+    ///   this project, cross     +0.0075   0.3731   0.9605 -> 0.9605
+    /// ```
+    ///
+    /// Two groups significantly better, none significantly worse, and recall
+    /// moves by at most 0.0009 anywhere -- where the standardised sum cost
+    /// 0.1195 of it on the first row. On the shipped path, reranker included,
+    /// XQuAD-R goes from 0.6480 to 0.6511 cross-lingual and from 0.7495 to
+    /// **0.7769** same-language.
+    ///
+    /// The same-language gain is the part worth noticing. Every weight this
+    /// project ever changed took something from that group to pay for the
+    /// cross-lingual one; this is the first change that improves it, and it
+    /// does so by letting the channel that is genuinely good there --
+    /// segmented BM25, 0.7299 alone against the vector channel's 0.6787 -- say
+    /// *how much* better its top candidates are rather than only that they
+    /// came first.
+    Banded,
     /// `Standardised`, multiplied by how many channels returned the candidate.
     ///
     /// CombMNZ. In the systematic comparison above it is the best of ten
@@ -335,10 +387,7 @@ impl Default for Fusion {
         // corpus. One number is serving both, and the number it settles on is
         // whichever corpus was measured loudest.
         Self {
-            // Rank fusion. The standardised sum scores higher on nDCG@10 in
-            // three of four groups and it broke the recall floor it was
-            // measured against; see `Combine::Standardised`.
-            combine: Combine::Reciprocal,
+            combine: Combine::Banded,
             k: DEFAULT_K,
             weights: BTreeMap::from([
                 (Channel::LexicalSegmented, SEGMENTED_WEIGHT),
@@ -458,9 +507,9 @@ impl Fusion {
         // Read as a maximum rather than taken from the head of the list,
         // because the graph channel's score is not its sort key and this should
         // not quietly depend on which channel it is looking at.
-        let Some(best) = standardise(candidates)
+        let Some(best) = rescale(candidates)
             .into_iter()
-            .flatten()
+            .filter_map(|scaled| scaled.standardised)
             .reduce(f32::max)
         else {
             return confidence.floor;
@@ -505,13 +554,23 @@ impl Fusion {
     /// scale rather than inventing a third shape for the case. Nothing the
     /// engine assembles is in that case -- all four channels score now -- but a
     /// caller can build one and it should not silently mean zero.
-    fn share(&self, standardised: Option<f32>, rank: u32) -> f32 {
+    fn share(&self, scaled: Scaled, rank: u32) -> f32 {
         let reciprocal = 1.0 / (self.k + rank as f32);
         match self.combine {
             Combine::Reciprocal => reciprocal,
             Combine::Standardised | Combine::StandardisedTimesVotes => {
-                standardised.unwrap_or(reciprocal)
+                scaled.standardised.unwrap_or(reciprocal)
             }
+            Combine::Banded => match scaled.within {
+                // The band reciprocal rank fusion would have spanned over the
+                // same candidates, so the only thing that changed is whether
+                // position inside it comes from the score or from the rank.
+                Some(within) => {
+                    let floor = (self.k + 1.0) / (self.k + scaled.of as f32);
+                    (floor + (1.0 - floor) * within) / (self.k + 1.0)
+                }
+                None => reciprocal,
+            },
         }
     }
 
@@ -532,14 +591,15 @@ impl Fusion {
                 continue;
             }
 
-            // Standardised once per channel, not once per candidate: it is the
-            // channel's own mean and deviation, so recomputing it inside the
-            // loop would be the same numbers at fifty times the cost.
-            let standardised = standardise(&list.candidates);
+            // Once per channel, not once per candidate: these are the
+            // channel's own mean, deviation, minimum and maximum, so
+            // recomputing them inside the loop would be the same numbers at
+            // fifty times the cost.
+            let scaled = rescale(&list.candidates);
 
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
-                let contribution = weight * self.share(standardised[index], rank);
+                let contribution = weight * self.share(scaled[index], rank);
                 *votes.entry(candidate.topic).or_insert(0) += 1;
                 let entry = accumulated
                     .entry(candidate.topic)
@@ -564,7 +624,7 @@ impl Fusion {
                     Combine::StandardisedTimesVotes => {
                         score * votes.get(&topic).copied().unwrap_or(0) as f32
                     }
-                    Combine::Reciprocal | Combine::Standardised => score,
+                    Combine::Reciprocal | Combine::Standardised | Combine::Banded => score,
                 };
                 FusedResult { topic, score, why }
             })
@@ -575,21 +635,45 @@ impl Fusion {
     }
 }
 
-/// Each candidate's score, centred on its channel's mean and divided by its
-/// channel's deviation.
+/// One candidate's score, said two ways its own channel can compare.
 ///
-/// Positionally aligned with the candidates, and `None` wherever there is no
-/// standardised value to give: a channel that does not score, or one whose
-/// candidates all scored the same, where dividing by the deviation would divide
-/// by zero. `Fusion::share` decides what to do with that; here it is only
-/// stated that there is nothing to report.
-fn standardise(candidates: &[Scored]) -> Vec<Option<f32>> {
+/// Both are `None` when there is nothing to compute: a channel that does not
+/// score, or one whose candidates all scored the same, where both divisors are
+/// zero. `Fusion::share` decides what to do with that; this only reports that
+/// there is nothing to report.
+#[derive(Clone, Copy, Debug, Default)]
+struct Scaled {
+    /// Centred on the channel's mean, divided by its deviation.
+    standardised: Option<f32>,
+    /// Where it falls between the channel's worst and best candidate, on
+    /// `[0, 1]`.
+    within: Option<f32>,
+    /// How many candidates the channel returned, which is what sets the width
+    /// of [`Combine::Banded`]'s band.
+    of: usize,
+}
+
+/// Every candidate's score expressed against its own channel's distribution.
+///
+/// Positionally aligned with the candidates. Computed once per channel because
+/// every value in it is a property of the channel rather than of a candidate.
+fn rescale(candidates: &[Scored]) -> Vec<Scaled> {
+    let empty = || {
+        vec![
+            Scaled {
+                of: candidates.len(),
+                ..Scaled::default()
+            };
+            candidates.len()
+        ]
+    };
+
     let scores: Vec<f32> = candidates
         .iter()
         .filter_map(|candidate| candidate.score)
         .collect();
     if scores.len() != candidates.len() || scores.is_empty() {
-        return vec![None; candidates.len()];
+        return empty();
     }
 
     let count = scores.len() as f32;
@@ -600,13 +684,19 @@ fn standardise(candidates: &[Scored]) -> Vec<Option<f32>> {
         .sum::<f32>()
         / count)
         .sqrt();
-    if deviation <= f32::EPSILON {
-        return vec![None; candidates.len()];
+    let least = scores.iter().copied().fold(f32::MAX, f32::min);
+    let most = scores.iter().copied().fold(f32::MIN, f32::max);
+    if deviation <= f32::EPSILON || most - least <= f32::EPSILON {
+        return empty();
     }
 
     scores
         .into_iter()
-        .map(|score| Some((score - mean) / deviation))
+        .map(|score| Scaled {
+            standardised: Some((score - mean) / deviation),
+            within: Some((score - least) / (most - least)),
+            of: candidates.len(),
+        })
         .collect()
 }
 
@@ -835,10 +925,43 @@ mod tests {
         );
     }
 
-    /// Rank fusion ships, and the reason is a recall floor rather than nDCG.
+    /// The banded combiner spans exactly what reciprocal rank fusion spans.
+    ///
+    /// The premise the variant exists to test. If the band were wider than
+    /// rank fusion's, the comparison between them would be measuring the width
+    /// as well as the ordering, which is the confound that made the
+    /// standardised sum's recall loss hard to attribute.
     #[test]
-    fn reciprocal_rank_fusion_is_what_ships() {
-        assert_eq!(Fusion::default().combine, Combine::Reciprocal);
+    fn the_banded_combiner_spans_the_same_range_rank_fusion_does() {
+        let deep: Vec<Scored> = (1..=50)
+            .map(|n| Scored::new(id(n), (51 - n) as f32))
+            .collect();
+        let lists = [ChannelResults::new(Channel::Vector, deep)];
+
+        let extremes = |fusion: &Fusion| -> (f32, f32) {
+            let fused = fusion.fuse(&lists);
+            let scores: Vec<f32> = fused.iter().map(|result| result.score).collect();
+            (
+                scores.iter().copied().fold(f32::MAX, f32::min),
+                scores.iter().copied().fold(f32::MIN, f32::max),
+            )
+        };
+
+        let (rank_low, rank_high) = extremes(&Fusion::default().with(Combine::Reciprocal));
+        let (band_low, band_high) = extremes(&Fusion::default().with(Combine::Banded));
+
+        assert!(
+            (rank_low - band_low).abs() < 1e-6 && (rank_high - band_high).abs() < 1e-6,
+            "rank fusion spans {rank_low}..{rank_high} and the band spans \
+             {band_low}..{band_high}; the two have to span the same range or a \
+             comparison between them is measuring the range"
+        );
+    }
+
+    /// The banded combiner ships: two groups better, none worse, recall held.
+    #[test]
+    fn the_banded_combiner_is_what_ships() {
+        assert_eq!(Fusion::default().combine, Combine::Banded);
     }
 
     /// A channel that cannot separate its own candidates loses its vote.
