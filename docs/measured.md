@@ -59,6 +59,23 @@ count, read it as a difference of means and nothing stronger.
 | XQuAD-R, same-language, `fast` against `off` | −0.0061 | 3 / 19 / 1,168 | 0.0007 |
 | MIRACL Swahili (`speed`), `fast` against fusion alone | −0.0152 | 37 / 57 / 388 | 0.0129 |
 
+And the fusion weight, the eighth against the quarter it replaced, fusion only:
+
+| | mean | wins / losses / ties | p |
+| --- | --- | --- | --- |
+| Påmin Memory's corpus, cross-lingual (43) | +0.0589 | 21 / 2 / 20 | 0.0004 |
+| XQuAD-R, cross-lingual (1,190) | +0.0377 | 698 / 26 / 466 | 0.0001 |
+| XQuAD-R, same-language (1,190) | −0.0500 | 16 / 252 / 922 | 0.0001 |
+| MIRACL Swahili (482) | +0.0056 | 77 / 72 / 333 | **0.2300** |
+
+**One of those was the figure the change was announced on, and it did not
+survive.** The MIRACL row is 77 wins against 72 losses — noise. The default is
+supported by the two cross-lingual groups, which are unambiguous, and costs
+XQuAD-R's same-language group, which is equally unambiguous. On 482 real
+single-language queries no weight between zero and a quarter is
+distinguishable. [ADR 0001](adr/0001-tech-selection.md) carries the full
+correction.
+
 So the reranker is not a wash in either direction. It is strongly positive
 where a query and its answer are in different languages and significantly
 negative where they are not — and the second finding is sharper than its mean

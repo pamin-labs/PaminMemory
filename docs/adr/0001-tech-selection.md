@@ -193,6 +193,58 @@ cross-encoder was spending 226 ms a query buying back damage the fusion layer
 had done. At an eighth the stack scores 0.6480, above the model, with the same
 reranker.
 
+#### Re-taken query by query, and one leg of the argument above is withdrawn
+
+Every figure in that table is a difference of means. Re-taken as paired
+comparisons — the eighth against the quarter directly, on the same queries in
+the same order, fusion only at `k = 10`:
+
+| | mean | wins / losses / ties | p |
+| --- | --- | --- | --- |
+| Påmin Memory's corpus, cross-lingual (43 queries) | **+0.0589** | 21 / 2 / 20 | 0.0004 |
+| Påmin Memory's corpus, monolingual and lexical | unmoved | — | at 0.9940 and 1.0000 |
+| XQuAD-R, cross-lingual (1,190) | **+0.0377** | 698 / 26 / 466 | 0.0001 |
+| XQuAD-R, same-language (1,190) | **−0.0500** | 16 / 252 / 922 | 0.0001 |
+| MIRACL Swahili (482) | +0.0056 | 77 / 72 / 333 | **0.2300** |
+
+**The decision stands and the reason given for it does not.** Seventy-seven
+wins against seventy-two losses is not a result, so the +0.0056 that this
+section led with — the eighth as "the best of the five on MIRACL" — is noise.
+So is the −0.0022 by which the quarter was said to rank below the vector
+channel on its own: paired, zero weight against an eighth on MIRACL is 30 wins
+to 59 losses at p = 0.2972, and the quarter against an eighth is the row above.
+Both sentences are withdrawn.
+
+What does hold is the pair of cross-lingual groups, and it holds hard. On
+XQuAD-R the eighth beats the quarter on 698 queries and loses on 26. On this
+project's own corpus it wins 21 of 43 and loses 2, with the other two groups
+sitting still on their ceilings. Those are the legs the change actually rests
+on, and neither was the one being led with.
+
+**And the cost is as real as the gain, which the original note undersold.**
+XQuAD-R's same-language group loses on 252 queries and wins on 16. That is a
+two-sided trade with both sides significant, not a gain with a footnote. It is
+recorded here as a trade this project chose, for the reason the next paragraph
+gives — not as something small.
+
+**What MIRACL does say, once it is allowed to say only what it can.** Nothing
+in the range from zero to a quarter is distinguishable on 482 real
+single-language queries. Half weight is worse (p = 0.0003) and full weight much
+worse (p = 0.0001), so the corpus is not insensitive — it can separate the
+settings that matter and cannot separate these. Read plainly: **on real
+monolingual retrieval the two lexical channels' contribution is not measurable
+at any weight this project would consider.** They earn their place on
+cross-language queries, where the measurement is unambiguous, and on the
+file-path and error-code matching the n-gram channel exists for, which no
+corpus here tests.
+
+**The adaptive rule is now visibly just a weaker constant.** Against the
+quarter on XQuAD-R, `adapt 0.00-1.00` scores +0.0618 cross-lingual and zero
+weight scores +0.0635; the four adaptive rows interpolate monotonically between
+the constants they are built from, group for group, with the same wins and
+losses. It was already off by default on the grounds that it bought almost
+nothing; the counts show there is no separate thing there to buy.
+
 The MIRACL shipped-path cell at the quarter says `not taken` because it never
 was: the run that would have produced it died on an assertion the harness makes
 about its own graph channel, and by the time the harness was fixed the weight
@@ -307,8 +359,10 @@ query, which is that confinement working exactly as its own note claims. On
 MIRACL, where there is no other language for a candidate to be in, it reaches
 ninety-four of 482.
 
-Still untested, and next: the fusion weight's +0.0056 on MIRACL, which is the
-figure the current default rests on.
+The third was the fusion weight's +0.0056 on MIRACL, and it did **not**
+survive: 77 wins against 72 losses, p = 0.2300. The default it was used to
+justify is supported by two other corpora and not by that one; the section on
+the fusion weight above now says so.
 
 ### Three recall channels, not seven
 

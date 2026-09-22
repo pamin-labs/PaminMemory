@@ -176,9 +176,24 @@ impl Default for Fusion {
         //
         // An eighth is the one value that is not a trade against zero at all.
         // It holds the monolingual and lexical groups at the same 0.9940 and
-        // 1.0000 the quarter held, it is the best of the five on MIRACL, and
-        // on MIRACL the quarter scores 0.0022 *below* the vector channel on
-        // its own -- the fused answer was worse than one of the things fused.
+        // 1.0000 the quarter held.
+        //
+        // Two sentences that used to stand here have been withdrawn: that an
+        // eighth is the best of the five on MIRACL, and that on MIRACL the
+        // quarter ranks below the vector channel on its own. Paired against
+        // the quarter, MIRACL gives 77 wins to 72 losses at p = 0.2300, and
+        // against zero weight, 30 to 59 at p = 0.2972. Neither is a result.
+        // On 482 real single-language queries nothing in the range from zero
+        // to a quarter is distinguishable at all, while half weight and full
+        // weight are clearly worse -- so the corpus can separate what matters
+        // and cannot separate these.
+        //
+        // What holds is the pair of cross-lingual groups: 698 wins to 26 on
+        // XQuAD-R and 21 to 2 on this project's own corpus, both at p <= 0.0004.
+        // And what it costs holds too -- XQuAD-R's same-language group loses on
+        // 252 queries and wins on 16. That is a two-sided trade with both sides
+        // measured, taken because the corpus on the losing side writes its
+        // questions out of its answers' own words.
         // Its single cost is XQuAD-R's same-language group, -0.0501, and that
         // is the one quantity the two same-language corpora disagree about by
         // twenty times, because SQuAD's questions are written out of their
