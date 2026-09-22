@@ -1238,7 +1238,7 @@ or a last-position logit and generates nothing — so the whole table follows:
 | | non-embedding | predicted reranking pass | |
 | --- | --- | --- | --- |
 | `fast` | 21.2M | 260 ms | **measured** |
-| Laya, mmBERT-base | 110.3M | ~510 ms at int8, ~1.5–2 s at its fp32-only export | |
+| Laya, mmBERT-base | 110.3M | ~510 ms at int8, ~0.5–1.5 s at its float16 export | |
 | `accurate` | 302M | 1423 ms | **measured; the anchor** |
 | `Qwen3-Reranker-0.6B` | ~440M | ~2.05 s | |
 | `openjev/openjev` | **27.4B** | **~128 s** | |
@@ -1260,6 +1260,46 @@ labels go in the head budget. Its `noul` question type returns the probability o
 one of two options, with a per-option-bucket temperature and a confidence over a
 bounded answer space. `fastembed` cannot supply the marker positions and query
 type that graph wants; a raw session can.
+
+**And the port is bounded rather than a reverse engineering job, because both
+halves are published.** The export is `mizchi/laya-multilingual-onnx` —
+Apache-2.0, 646.9 MB, **float16 weights with a float32 decision tail** (an
+earlier version of this section said fp32 only, which was wrong), opset 18,
+**standard operators only**, and its card reports validation against the
+reference runtime at **63/63 answers agreeing, maximum probability error 5.1e-4
+on the ONNX Runtime CPU provider**. Being float16 halves the download and the
+resident set and buys no speed, because this record already measures fp16 as
+slower than fp32 on a CPU where the runtime converts per operation.
+
+The prompt format is given exactly by the published `rl_common.py`:
+
+```text
+[CLS] "<qtype> question: <instructions>" [SEP]
+  [MASK]" false: no, the statement does not hold"
+  [MASK]" true: yes, the statement holds"          [SEP]
+  <state>                                          [SEP]
+```
+
+markers at the two `[MASK]` indices, `max_len` 1024, `head_max_len` 256, each
+option capped at forty-eight tokens and the head truncated to what the options
+leave. `render_options` fixes those two labels for a `noul` question and its own
+comment records the property that makes this usable: *"Noul is always
+`[false, true]` so `p[1] == noul`"*. So a relevance judgement is `qtype = 2`,
+the query and document in the **state**, and `p[1]` read straight off as
+`P(relevant)`.
+
+That also settles why `head_max_len` was never a constraint on the document, as
+the paragraphs above first assumed: the document goes in the state, inside
+`max_len`, and only two short labels go in the head budget. What 256 tokens
+rules out is the listwise framing, and only that.
+
+One gap is named rather than discovered later. The published multilingual
+checkpoint ships **no calibration**: its `rl_agent_config.json` carries
+`temperature: [1.0, 1.0, 1.0]` and an empty `temperature_by_options`, which is
+the identity — the over-confident state its own card puts at mean ECE 0.466. So
+an arm has to fit the temperature on our own held-out judgements, which is the
+same machinery the calibration work needs anyway. The two share a dependency
+rather than competing for the slot.
 
 So Laya becomes an arm rather than a dismissal, and **what it is being measured
 for is not its ranking.** It is the calibrated, cross-query-comparable score
