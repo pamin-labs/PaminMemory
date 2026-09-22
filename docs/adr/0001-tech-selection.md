@@ -545,6 +545,82 @@ nothing. `collect_scored` now takes the orientation as a parameter, and no
 channel may report one score for every candidate. Nothing published before that
 fix had ever read a score.
 
+### What the closest published system does differently, and what that explains
+
+*Jev-Mem* (arXiv 2609.23986, September 2026, CC-BY-4.0, code MIT) is an
+agentic-memory system built on the same four ingredients as this one — a vector
+index, a lexical index, a typed relation graph, and reciprocal-rank fusion to
+pick the anchors. It reports 0.777 on LoCoMo against the strongest baseline's
+0.700, with memory construction in 158 seconds and 0.93 seconds a query. It is
+recorded here because two of its differences explain results this project
+measured and could not account for, and one of its numbers should not be read
+the way the paper's headline reads it.
+
+**Its control plane is a hosted API, which is what makes the latency
+incomparable.** Every decision — relation typing, query routing, retrieval
+budget, candidate relevance, evidence sufficiency — is a call to a hosted typed
+decision model, up to sixteen of them within a fifteen-second budget. So 0.93
+seconds a query is a figure that includes sixteen possible network round trips
+and is not the same measurement as the 359 ms this project spends on four local
+cores. The code is MIT and the decisions need a paid key, so the published
+result is not reproducible offline.
+
+**Read the adversarial column before reading the headline.** The 11.0% relative
+gain is not spread across the benchmark. Against the strongest baseline the
+adversarial split moves 0.742 to 0.962, +0.220, where multi-hop is +0.095,
+open-domain +0.101, single-hop +0.026 and **temporal is −0.013**. LoCoMo's
+adversarial split is the set where the right answer is to abstain, and their
+pipeline has an explicit evidence-sufficiency decision with adaptive stopping —
+which wins that column close to by construction. The paper reports no
+ablations, so nothing in it separates a retrieval gain from an abstention gain,
+and the per-column decomposition says most of it is the second. This project
+has no abstention at all: `pamin search` returns its best candidates whatever
+the evidence looks like. That is a gap worth naming, and it is a different gap
+from retrieval quality.
+
+**Why their weighted sum works where this project's did not.** They combine
+five terms as a plain normalised weighted sum: embedding similarity, query
+relevance, a graph-need probability times a relation weight, information
+novelty, and edge weight plus evidence support. A plain weighted sum of
+heterogeneous signals is exactly what failed here — `Combine::Standardised`
+lost cross-lingual recall through the floor, for the reason set out above. The
+difference is not the arithmetic. **Four of their five terms are probabilities
+on `[0, 1]` emitted by one calibrated model, so they are commensurable by
+construction.** This project's terms are a cosine similarity, two BM25-family
+scores and a hop-decayed confidence, which are not, and no rescaling makes them
+so within one query. That is the same conclusion `Combine::Banded` was derived
+from, arrived at from the other direction, and it is the clearest available
+argument that a calibrated scorer is an enabling piece rather than a
+refinement.
+
+**Why their graph channel pays and this project's contributes exactly
+0.0000.** The graph channel here measures 0.0000 in every group of all three
+corpora, and the natural reading — that graph recall does not help retrieval —
+is not what this comparison supports. Three differences are specific:
+
+- **Typed edges.** They keep separate semantic, temporal, causal and entity
+  edge sets and insert an edge only when its relation probability clears 0.60.
+  This project keeps one untyped adjacency.
+- **Traversal is gated on predicted need.** Depth is derived per query from a
+  predicted multi-hop requirement rather than fixed, and the budget is
+  allocated across relation views by a predicted usefulness. This project
+  expands a fixed number of hops with a fixed `HOP_DECAY` on every query, so it
+  pays on every query and collects on almost none.
+- **Expansion stops adaptively**, on sufficiency, novelty and contradiction,
+  inside hard caps on nodes, edges, decisions and wall time.
+
+So the measured 0.0000 is evidence about this implementation of a graph
+channel, not about the idea. What a working one appears to need is a per-query
+decision about whether to traverse at all — which is the same calibrated
+judgement the fusion and the abstention gap both want, reached a third time.
+
+**One constant is corpus-dependent, and both values are right.** They seed
+expansion with reciprocal-rank fusion at `k = 60`, the field's convention. This
+project measured `k = 10` better on its corpora and `k` a two-sided trade
+rather than a plateau. Neither figure generalises, which is the useful finding:
+`fusion::DEFAULT_K` is a property of a corpus's channel agreement, not a
+constant to inherit.
+
 ### Every accuracy figure here is a difference of means
 
 Stated as its own section because it applies to all of them, including the
