@@ -94,6 +94,15 @@
 //! of 2.2 GB and 35 ms a query instead of the order of magnitude the
 //! full-precision export used to cost.
 //!
+//! Those three rows are a comparison between models, and they are frozen at
+//! the fusion of the day they were taken: `k = 10` with the lexical pair at
+//! half. The weight has been halved twice since, to a quarter and then to an
+//! eighth, on evidence from two corpora this one cannot see -- see
+//! `pamin_core::fusion`. What the bolded row's profile scores on the shipped
+//! path today is what `FLOORS` records, 0.7773 cross-lingual; the model
+//! ordering the table exists to show is unaffected, because the weight applies
+//! to all three rows alike.
+//!
 //! The shape of the failures changes too, which the mean hides. On `balanced`
 //! the worst cross-lingual queries score exactly zero: the relevant memory is
 //! not in the top ten at all, and the results come back in the query's own
@@ -344,8 +353,10 @@ const DEFAULT_PROFILE: &str = "accuracy";
 /// the cross-lingual pair by a distance, which is the point of measuring all
 /// three rather than pinning one.
 const FLOORS: &[(&str, f64, f64)] = &[
-    // 0.7223 / 0.9605 measured.
-    ("cross_lingual", 0.65, 0.86),
+    // 0.7773 / 0.9605 measured at the eighth lexical weight, against 0.7223 /
+    // 0.9605 at the quarter it replaced: the change is ranking only, and this
+    // group is where the weight is worth the most.
+    ("cross_lingual", 0.69, 0.86),
     // 1.000 / 1.000 measured; at the ceiling, so this catches a collapse only.
     ("lexical", 0.95, 0.98),
     // 0.994 / 1.000 measured; likewise.

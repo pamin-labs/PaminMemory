@@ -41,10 +41,14 @@ pub const DEFAULT_K: f32 = 10.0;
 /// What a lexical channel is worth when it agrees fully with the vector one.
 ///
 /// The ceiling of the per-query weight rather than the weight itself; see
-/// [`Fusion::lexical_agreement`]. Settled by a sweep over two corpora at four
-/// values of `k`, and the sweep's own finding was that no single value serves
-/// both a query answered in its own language and one answered in another.
-const LEXICAL_WEIGHT: f32 = 0.25;
+/// [`Fusion::lexical_agreement`].
+///
+/// An eighth, and it was a quarter until a third corpus was measured. The
+/// sweep that settled the quarter ran `1.00 / 0.50 / 0.25 / 0.00` -- so **a
+/// quarter was the smallest non-zero value ever tried**, and the argument for
+/// it was against zero rather than against half of itself. Half of itself is
+/// better on every group of every corpus but one; see [`Fusion::default`].
+const LEXICAL_WEIGHT: f32 = 0.125;
 
 /// One line of the explanation attached to a result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -151,22 +155,34 @@ impl Default for Fusion {
         //
         // What is not obvious, and needed a corpus where a query and its answer
         // are in different languages, is that half of one channel is still too
-        // much. Swept across both evaluation corpora at four values of `k`:
+        // much -- and a third corpus, judged by people rather than aligned by
+        // translation, said a quarter is still too much. Fusion alone at
+        // `k=10`, nDCG@10, cross-lingual where a corpus has two groups:
         //
-        //   weight    cross-lingual nDCG@10, ours / external
-        //     1.00              0.4345 / 0.1231   -- dominated everywhere
-        //     0.50              0.6550 / 0.4238
-        //     0.25              0.7223 / 0.5623
-        //     0.00              0.8328 / 0.6353
+        //   weight      ours   XQuAD-R   XQuAD-R same   MIRACL sw
+        //     1.00    0.4329    0.1569         0.8332      0.5676
+        //     0.50    0.6619    0.4572         0.8379      0.6606
+        //     0.25    0.7322    0.5700         0.8057      0.6826
+        //     0.125   0.7910    0.6077         0.7556      0.6882
+        //     0.00    0.8268    0.6335         0.6787      0.6848
         //
-        // Equal weighting is not a trade at any `k`: it is worse than half on
-        // every group of both corpora, cross-lingual and same-language alike.
-        // Zero is a trade and a bad one -- it takes the monolingual group from
-        // 0.9940 to 0.9860 and the lexical group off its ceiling, which is the
-        // one thing the n-gram channel exists for, and it would make both
-        // channels dead code. A quarter costs 0.033 of same-language ranking on
-        // the external corpus and buys 0.139 and 0.067 of cross-lingual on the
-        // two, with monolingual and lexical unmoved.
+        // Equal weighting is not a trade at any `k`: it is worse than half
+        // everywhere it can be, which is every group of every corpus except
+        // our lexical group, where both sit on the ceiling. Zero is a trade
+        // and a bad one -- it takes our monolingual group from 0.9940 to
+        // 0.9860 and the lexical group off that ceiling, which is the one
+        // thing the n-gram channel exists for, and it would make both channels
+        // dead code.
+        //
+        // An eighth is the one value that is not a trade against zero at all.
+        // It holds the monolingual and lexical groups at the same 0.9940 and
+        // 1.0000 the quarter held, it is the best of the five on MIRACL, and
+        // on MIRACL the quarter scores 0.0022 *below* the vector channel on
+        // its own -- the fused answer was worse than one of the things fused.
+        // Its single cost is XQuAD-R's same-language group, -0.0501, and that
+        // is the one quantity the two same-language corpora disagree about by
+        // twenty times, because SQuAD's questions are written out of their
+        // answers' own words. See `docs/adr/0001-tech-selection.md`.
         Self {
             k: DEFAULT_K,
             weights: BTreeMap::from([
@@ -237,6 +253,7 @@ impl Fusion {
     /// ```text
     ///   lexical   cross-lingual nDCG@10   same-language
     ///      0.00                  0.6335          0.6787
+    ///      0.125                 0.6077          0.7556
     ///      0.25                  0.5700          0.8057
     ///      0.50                  0.4572          0.8379
     ///      1.00                  0.1569          0.8332
@@ -244,10 +261,11 @@ impl Fusion {
     ///
     /// Zero *is* the model alone -- this corpus gives the graph channel
     /// nothing to return, so zeroing the lexical pair leaves the vector
-    /// channel by itself. So a quarter costs 0.0635 of cross-lingual ranking
-    /// to buy 0.1270 of same-language, and a constant has to pay that on every
-    /// query including the ones where the lexical channels found nothing to
-    /// contribute.
+    /// channel by itself. So the eighth that ships costs 0.0258 of
+    /// cross-lingual ranking to buy 0.0769 of same-language, where the quarter
+    /// before it paid 0.0635 for 0.1270, and a constant has to pay that on
+    /// every query including the ones where the lexical channels found nothing
+    /// to contribute.
     ///
     /// The signal is how much the lexical channels agree with the vector
     /// channel about what is relevant: the share of the vector channel's
