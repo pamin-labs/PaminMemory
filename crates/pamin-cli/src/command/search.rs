@@ -1,7 +1,7 @@
 //! `pamin search` — retrieve memories, with the reasoning attached.
 
 use anyhow::Result;
-use pamin_core::{Channel, Derivation, EdgeKind, Modifier, Why};
+use pamin_core::{Channel, Derivation, EdgeKind, Why};
 use pamin_index::{Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
@@ -76,10 +76,6 @@ enum Trace {
         channel: Channel,
         rank: u32,
     },
-    Modifier {
-        modifier: Modifier,
-        factor: f32,
-    },
     Path {
         from: String,
         via: String,
@@ -95,7 +91,6 @@ impl From<Why> for Trace {
     fn from(why: Why) -> Self {
         match why {
             Why::Channel { channel, rank, .. } => Self::Channel { channel, rank },
-            Why::Modifier { modifier, factor } => Self::Modifier { modifier, factor },
             Why::Path {
                 from,
                 via,
@@ -225,7 +220,6 @@ fn describe(why: &[Trace]) -> String {
     why.iter()
         .map(|entry| match entry {
             Trace::Channel { channel, rank } => format!("{}#{rank}", channel.as_str()),
-            Trace::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
             // The arrow is drawn the way the edge was asserted, so it reads
             // the same whichever end the walk reached it from. `from` is the
             // seed the walk began at, which is a different fact and is kept.

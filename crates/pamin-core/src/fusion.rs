@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use crate::channel::{Channel, ChannelResults};
 use crate::graph::{Derivation, EdgeKind};
 use crate::id::TopicId;
-use crate::ledger::RetrievalSignals;
 
 /// How sharply a result's rank in one channel counts toward its fused score.
 ///
@@ -73,8 +72,6 @@ pub enum Why {
         weight: f32,
         contribution: f32,
     },
-    /// A post-fusion modifier adjusted the score.
-    Modifier { modifier: Modifier, factor: f32 },
     /// The graph reached this result from somewhere else, along this edge.
     ///
     /// Carried separately from the channel entry because it answers a
@@ -110,20 +107,6 @@ pub enum Why {
         edge: EdgeKind,
         derivation: Derivation,
     },
-}
-
-/// A post-fusion adjustment.
-///
-/// Naming these as a closed set rather than free strings is what makes
-/// "applied exactly once" checkable: a typo cannot quietly become a second,
-/// separately-counted modifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Modifier {
-    /// Explicit importance assigned to the state.
-    Importance,
-    /// The balance of successful against failed outcomes it took part in.
-    Worth,
 }
 
 /// A fused result and the reasoning behind its position.
@@ -309,76 +292,6 @@ impl Fusion {
     }
 }
 
-/// Post-fusion adjustments.
-///
-/// Each modifier is applied exactly once per result. Applying one twice, or
-/// applying it here after a channel already expressed the same signal, inflates
-/// whatever it measures without anything in the trace revealing that it
-/// happened.
-#[derive(Clone, Copy, Debug)]
-pub struct Modifiers {
-    /// How strongly explicit importance lifts a result.
-    pub importance_weight: f32,
-    /// How strongly the balance of successful against failed outcomes lifts it.
-    pub worth_weight: f32,
-}
-
-impl Default for Modifiers {
-    fn default() -> Self {
-        Self {
-            importance_weight: 0.2,
-            worth_weight: 0.2,
-        }
-    }
-}
-
-impl Modifiers {
-    /// Applies every modifier to one result, appending a trace line for each.
-    pub fn apply(&self, result: &mut FusedResult, signals: &RetrievalSignals) {
-        let importance = 1.0 + self.importance_weight * signals.importance.clamp(0.0, 1.0);
-        self.record(result, Modifier::Importance, importance);
-
-        let worth = 1.0 + self.worth_weight * worth_ratio(signals);
-        self.record(result, Modifier::Worth, worth);
-    }
-
-    /// Applies one modifier, and records it only if it changed anything.
-    ///
-    /// A factor of one moved no result past any other, so a trace line for it
-    /// says only that the modifier exists. Two of the three are in that state
-    /// permanently: `importance` and `worth_*` are read here and written by
-    /// nothing, so every result carried `Importancex1.00 Worthx1.00` — and the
-    /// trace is the product. Noise in it costs more than a missing line,
-    /// because a reader who learns to skip `why[]` stops reading the part that
-    /// does carry a reason.
-    fn record(&self, result: &mut FusedResult, modifier: Modifier, factor: f32) {
-        debug_assert!(
-            !result.why.iter().any(|why| matches!(
-                why,
-                Why::Modifier { modifier: existing, .. } if *existing == modifier
-            )),
-            "modifier {modifier:?} applied twice to one result"
-        );
-        result.score *= factor;
-
-        if (factor - 1.0).abs() > f32::EPSILON {
-            result.why.push(Why::Modifier { modifier, factor });
-        }
-    }
-}
-
-/// Where a state sits between failure and success, mapped onto -1.0 to 1.0.
-///
-/// A state nothing has been learned about scores zero, so it is neither
-/// promoted nor punished for being new.
-fn worth_ratio(signals: &RetrievalSignals) -> f32 {
-    let total = signals.worth_positive + signals.worth_negative;
-    if total == 0 {
-        return 0.0;
-    }
-    (signals.worth_positive as f32 - signals.worth_negative as f32) / total as f32
-}
-
 /// Orders by score, breaking ties by identifier.
 ///
 /// The tie-break is not cosmetic. Context assembly must produce the same
@@ -432,7 +345,7 @@ mod tests {
             .iter()
             .filter_map(|why| match why {
                 Why::Channel { channel, rank, .. } => Some((*channel, *rank)),
-                Why::Modifier { .. } | Why::Path { .. } => None,
+                Why::Path { .. } => None,
             })
             .collect();
 
@@ -498,118 +411,11 @@ mod tests {
         assert_eq!(fused[0].topic, id(2));
     }
 
-    /// A modifier that changed nothing is not worth a line in the trace.
-    ///
-    /// `importance` and `worth_*` are read by the ranker and written by no
-    /// code at all, so with the signals every result actually carries today
-    /// both come out at exactly one — and every explanation was two lines of
-    /// `x1.00` before anything that moved the result. The trace is the product
-    /// here, so padding it is not harmless: it teaches the reader to skip the
-    /// part that does carry a reason.
     #[test]
-    fn a_modifier_that_changed_nothing_leaves_no_trace() {
-        let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
-            .remove(0);
-        let ranked = fused.score;
-
-        // What a state the ledger has never learned anything about looks like,
-        // which today is every state.
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
-
-        let recorded: Vec<_> = fused
-            .why
-            .iter()
-            .filter_map(|why| match why {
-                Why::Modifier { modifier, factor } => Some((*modifier, *factor)),
-                Why::Channel { .. } | Why::Path { .. } => None,
-            })
-            .collect();
-        assert!(
-            recorded.is_empty(),
-            "nothing moved the result, so nothing should claim to have: {recorded:?}"
-        );
-        assert!(
-            (fused.score - ranked).abs() < f32::EPSILON,
-            "and the score is what the channels made it"
-        );
-
-        // A modifier that does move the result still says so.
-        let mut moved = Fusion::default()
-            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
-            .remove(0);
-        Modifiers::default().apply(
-            &mut moved,
-            &RetrievalSignals {
-                importance: 1.0,
-                ..RetrievalSignals::default()
-            },
-        );
-        assert!(
-            moved.why.iter().any(|why| matches!(
-                why,
-                Why::Modifier {
-                    modifier: Modifier::Importance,
-                    ..
-                }
-            )),
-            "a result was lifted with nothing to show for it: {:?}",
-            moved.why
-        );
-    }
-
-    #[test]
-    fn each_modifier_appears_at_most_once_in_the_trace() {
-        let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
-            .remove(0);
-
-        Modifiers::default().apply(
-            &mut fused,
-            &RetrievalSignals {
-                importance: 0.8,
-                worth_positive: 3,
-                worth_negative: 1,
-                ..RetrievalSignals::default()
-            },
-        );
-
-        let mut applied: Vec<_> = fused
-            .why
-            .iter()
-            .filter_map(|why| match why {
-                Why::Modifier { modifier, .. } => Some(*modifier),
-                Why::Channel { .. } | Why::Path { .. } => None,
-            })
-            .collect();
-        let before = applied.len();
-        applied.sort_unstable_by_key(|modifier| format!("{modifier:?}"));
-        applied.dedup();
-        assert_eq!(
-            before,
-            applied.len(),
-            "a modifier was applied more than once"
-        );
-    }
-
-    #[test]
-    fn a_state_with_no_recorded_outcomes_is_neither_promoted_nor_punished() {
-        let mut fused = Fusion::default()
-            .fuse(&[ChannelResults::unscored(Channel::Vector, vec![id(1)])])
-            .remove(0);
-        let original = fused.score;
-
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
-
-        assert!((fused.score - original).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn path_evidence_is_neither_a_channel_nor_a_modifier() {
+    fn path_evidence_is_not_a_channel_entry() {
         // The channel entry says how highly the graph ranked this result; the
-        // path says why the graph could see it at all. Counting a path as
-        // either of the others would inflate a rank tally or trip the
-        // applied-once check on modifiers.
+        // path says why the graph could see it at all. Counting a path as a
+        // channel would inflate the rank tally the trace is read for.
         let target = id(1);
         let mut fused = Fusion::default()
             .fuse(&[ChannelResults::unscored(Channel::Graph, vec![target])])
@@ -624,8 +430,6 @@ mod tests {
             edge: EdgeKind::DependsOn,
             derivation: Derivation::Deterministic,
         });
-
-        Modifiers::default().apply(&mut fused, &RetrievalSignals::default());
 
         let channels = fused
             .why
