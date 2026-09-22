@@ -1165,7 +1165,17 @@ does neither.
 
 The speed claim is real and does not apply here. Parallel, evaluating Jev independently, states it plainly: *"The headline cost and speed comparisons are against autoregressive LLMs, not dedicated classifiers. Specialized classifiers will still often outperform Jev on cost and speed."* A cross-encoder is a dedicated classifier — one forward pass, no generation — so the thing Jev's design removes is a cost this product never paid. An independent multilingual evaluation (9,831 graded pairs, 164 Chinese and English queries) puts Jev's rerank at **+0.012 over BGE-M3 under its own labels and −0.028 under judge-independent labels**, and measures the circularity that separates them.
 
-What is worth taking from it is not the model. `jev-reranker`, a library wrapping the API, reports that a relevance *threshold* — dropping candidates rather than reordering all of them — removed about 92% of the candidates and scored higher than reordering them, 0.975 against 0.969 nDCG@10. That is a gate, and a gate needs no weights at all.
+What is worth taking from it is not the model. `jev-reranker`, a library wrapping the API, reports that a relevance *threshold* — dropping candidates rather than reordering all of them — removed 92.38% of the candidates and scored higher than reordering them, 0.975 against 0.969 nDCG@10. That is a gate, and a gate needs no weights at all.
+
+**That idea has now been measured here and it lost — but read what was measured before reading the result as a refutation.** The `GATE` arm of the cross-lingual harness swept it over 1,190 queries with paired significance: every relative cut is negative cross-lingual and monotone in how much it drops, the gentlest cuts move nDCG@10 by exactly zero while `recall@50` falls, and `best − 2.0` drops 69.1% for **−0.1642** with recall going 0.8962 to 0.5613. Nothing in the sweep is a win.
+
+Three differences separate that from the published experiment, and each one is load-bearing:
+
+- **Their cut is on a calibrated probability.** The threshold is `0.2` on a `[0, 1]` scale, because Jev returns probabilities. The sweep's absolute family cut a cross-encoder *logit*, which this record says in three places is calibrated against nothing — so that family tested a different claim and, by losing systematically rather than randomly, confirmed the warning it was included to test.
+- **Their candidate set was unfiltered.** The top 100 from hybrid BM25 and dense retrieval, nothing removed. This project's pass is already confined to the candidates no lexical channel found — about fifteen of fifty-one — so a threshold here removes signal where theirs removed junk. The prediction written before the run said exactly this.
+- **Scale and evidence.** Fifty queries on one NanoBEIR split, a hand-set threshold with no account of how it was chosen, no significance test and no latency figure, for +0.006. Against 1,190 queries and a paired bootstrap. And the library's own advice is *"evaluate the cutoff on your own data"*, which is what happened.
+
+So the honest conclusion is narrower than "thresholding does not work": **what has been refuted is thresholding an uncalibrated score over a pre-confined candidate set.** The published idea needs a score that means the same thing across queries, and nothing here has one — which makes it one of the things the calibrated-scorer work below is for, rather than a closed question.
 
 ### The model map, one year on: ModernBERT, mmBERT, Laya, and the decoder rerankers
 
@@ -1288,7 +1298,30 @@ One property of it is worth wanting and is recorded rather than dismissed:
 system is comparable only within one query — which is the constraint
 `Combine::Banded` was derived from and normalises around. Nothing here can say
 *how* relevant a result is in terms that mean the same thing for the next
-query, and two separate wants below need exactly that.
+query, and three separate wants need exactly that: a weighted-sum fusion, an
+abstention gate, and the published threshold idea above.
+
+**And the claim is evidenced rather than asserted, which is rare in this
+field.** The model is trained with reinforcement learning against strictly
+proper scoring rules, so its card can say that "reporting honest probabilities
+is the only way to maximise reward", and it reports an expected calibration
+error of **0.081** against its base checkpoint's 0.144 and the hosted Jev
+model's 0.246. That is a number, measured, in the one dimension this project
+has no instrument for at all.
+
+**With one operational cost the card states plainly and nobody should discover
+later.** It *ships over-confident*: mean ECE is **0.466** out of the box, and
+reaching 0.081 requires refitting one temperature per `(question type, option
+count)`. So adopting the calibration means fitting temperatures on our own
+held-out data, per question shape, and maintaining them — which is real work
+rather than a flag, and is the first thing to cost if that arm is ever run.
+
+The risk on the other side is equally plain: its training workflows are invoice
+processing, security incidents, customer service and agent-trace
+observability. **Relevance ranking is not among them, and its card carries no
+retrieval benchmark of any kind.** So an arm must measure calibration *and*
+ranking, and a well-calibrated mediocre judge would still be the more useful
+result of the two.
 
 **What the field is missing is the model, not the architecture.** mmBERT is
 multilingual ModernBERT, MIT, 1811 languages, and `mmBERT-small` is 42.2M
