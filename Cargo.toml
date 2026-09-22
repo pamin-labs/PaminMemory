@@ -57,6 +57,15 @@ fastembed = { version = "6", default-features = false, features = [
 # to the tree and stops the build depending on that staying true. TLS has to
 # match what `fastembed` chose.
 hf-hub = { version = "0.5", default-features = false, features = ["native-tls"] }
+# The ONNX Runtime binding and the tokenizer, for the typed judge -- which is a
+# decision model rather than a sequence classifier, so `fastembed`'s reranker
+# cannot drive it. Both are already compiled: `fastembed` is built on them, and
+# the versions here are the ones it resolves to. No features, deliberately --
+# the runtime binaries are fetched by `fastembed`'s
+# `ort-download-binaries-native-tls` and enabling that a second time here would
+# be a second opinion about which library to link.
+ort = { version = "=2.0.0-rc.13", default-features = false }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 icu_segmenter = { version = "2", features = ["compiled_data", "auto"] }
 # Not used directly: icu4x reference-counts its compiled data with `Rc` unless
 # this is on, which makes every segmenter -- and so every index that holds one
