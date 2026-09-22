@@ -831,13 +831,21 @@ above is **not** a measurement of this design: two of the three corpora are
 sentence collections, and the harness names their topics *deliberately* unlike
 anything in their text, so mention derivation finds nothing and the channel is
 handed an empty graph. An arm whose premise is false by construction measures
-the premise, not the channel. The evidence that does exist is thinner and points
-the same way: this project's own corpus has edges and still contributes
-`0.0000`, and the LOCOMO `pamin-ledger` arm — built expressly so the graph could
-reach the rest of an exchange — scored 0.523 against 0.518, twenty-one
-discordant questions against twenty, `p = 1.000`. So the honest position is that
-a graph channel has never been shown to pay here, on two small samples, for a
-reason nothing has isolated.
+the premise, not the channel.
+
+**And a sentence that used to stand here is withdrawn.** It read "this
+project's own corpus has edges and still contributes `0.0000`", which is false:
+the edge census prints zero edges for that corpus too, `retrieval.rs` says it
+"can derive no edges at all", and a paragraph of this document three hundred
+lines above already said so. That sentence was the one place a premise failure
+was laundered into a verdict about the design, and every later reading of the
+graph channel in this file rested on it.
+
+What is left is one sample: the LOCOMO `pamin-ledger` arm — built expressly so
+the graph could reach the rest of an exchange — scored 0.523 against 0.518,
+twenty-one discordant questions against twenty, `p = 1.000`. So the honest
+position is that a graph channel has never been shown to pay here, on one small
+sample, for a reason nothing has isolated.
 
 Against that, three differences in their design are specific enough to test:
 
