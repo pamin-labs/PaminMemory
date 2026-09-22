@@ -261,9 +261,10 @@ each of them cuts against this project:
 
 **Fusing four channels ranked below one of them on cross-lingual queries.** The
 vector channel alone scores 0.8268 on this project's own cross-lingual group and
-0.6335 on XQuAD-R's, against 0.7910 and 0.6077 for all four fused by rank. On
-the same-language queries of the same corpus the lexical channels earn their
-place outright — segmented BM25 alone beats the vector channel 0.7299 to 0.6787
+0.6335 on XQuAD-R's, against 0.7985 and 0.6114 for all four fused. On the
+same-language queries of the same corpus the lexical channels earn their place
+outright, and by more than they cost — +0.1042 there against −0.0221 across the
+boundary, with segmented BM25 alone beating the vector channel 0.7299 to 0.6787
 — so the channels are not weak and one global weight could not tell the two
 cases apart. Letting each channel's own scores order its candidates, inside the
 band rank fusion already spanned, is worth +0.0037 cross-lingual and +0.0273

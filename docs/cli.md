@@ -605,10 +605,11 @@ One weight serves every workspace, and the evidence says that is the wrong
 shape rather than the wrong value. What the lexical pair is worth depends on
 whether a query and its answer share a language at all: nothing across a
 boundary, and a great deal within one. Measured, fusing all four channels ranks
-*below* the vector channel alone on cross-lingual queries — 0.6077 against
-0.6335 on XQuAD-R — while on the same corpus's same-language queries segmented
-BM25 alone beats the vector channel 0.7299 to 0.6787. A constant cannot be
-right about both.
+*below* the vector channel alone on cross-lingual queries — 0.6114 against
+0.6335 on XQuAD-R, 481 wins to 35, p = 0.0001 — while on the same corpus's
+same-language queries the lexical channels are worth +0.1042 and segmented BM25
+alone beats the vector channel 0.7299 to 0.6787. A constant cannot be right
+about both, and the two costs are what decide which way it should be wrong.
 
 Reading the scores inside the band is what closes part of that gap without
 picking a side: over the same 1,190 questions it is worth +0.0037 cross-lingual
