@@ -942,9 +942,38 @@ On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between ra
 
 | Tier | Loads | A search costs | Of which reranking | Cross-lingual nDCG@10 | Same-language |
 | --- | --- | --- | --- | --- | --- |
-| `off` | nothing | 53 ms | — | — | — |
-| `fast` (default) | 113 MB | 264 ms | 211 ms | **+0.0381** | **−0.0053** |
-| `accurate` | 570 MB | 1001 ms | 948 ms | **+0.0448** | **+0.0017** |
+| `off` | nothing | 99 ms | — | 0.6114 | 0.7829 |
+| `fast` (default) | 119 MB | 359 ms | 260 ms | **+0.0397** `p=0.0001` | **−0.0060** `p=0.0008` |
+| `balanced` | 341 MB | 821 ms | 722 ms | +0.0094 `p=0.0146` | +0.0029 `p=0.0293` |
+| `accurate` | 571 MB | 1522 ms | 1423 ms | **+0.0482** `p=0.0001` | +0.0006 *ns* |
+| `noncommercial` | 280 MB | 905 ms | 806 ms | +0.0279 `p=0.0001` | +0.0003 *ns* |
+
+Five arms, one run, the same 1,190 queries, paired bootstrap at 10,000
+resamples. Nothing in this table may be read against a figure published before
+it: the two rows that existed were taken at the previous fusion weights and both
+moved. `recall@50` is 0.8962 cross-lingual and 0.9571 same-language in **every**
+arm to four decimals, which is the invariant worth stating — a reranker reorders
+a shortlist and never changes what is in it.
+
+**Three results the two-row version could not show.** `fast` is the only tier
+that measurably damages same-language ranking, and the damage is significant
+rather than incidental: nineteen queries worse against three better. So the
+default's cross-lingual gain is partly bought from the other group, and the
+three larger models decline that trade. **Parameter count does not order the
+table**: 21.2M `fast` beats both 84.9M models cross-lingual, and `accurate` at
+302M beats everything — so the ordering is neither monotone in size nor
+explainable by capacity. And `balanced` and `noncommercial` are *the same
+architecture at the same size*, twelve layers of width 768, yet differ by 0.0185
+cross-lingual, which is twice `balanced`'s entire gain. What is being chosen at
+this size is the training, not the model's shape.
+
+**Relaxing the licence bought nothing, and the experiment is kept for that.**
+`noncommercial` exists to answer one question — whether accepting CC-BY-NC buys
+accuracy that a permissive licence cannot — and the answer is no. The prediction
+written before the run was that it would be indistinguishable from `balanced`;
+it is better than `balanced` and still worse than the permissive default at a
+quarter of its size. Half the prediction held and the more interesting half did
+not.
 
 Measured through `Engine::search_reranked`, the entry point `pamin search`
 calls, with `TIERS=1` on the cross-lingual harness over all 1,190 queries. The
@@ -953,13 +982,16 @@ shortlist with its own copy of the pipeline, and overstated both gains by about
 half — which is the argument for measuring the product rather than a model of
 it.
 
-**The latency in this row is a correction, and the figure it corrects was
-itself a correction.** This table recorded 204 ms and 508 ms, the second of
-those having replaced an earlier 1795 ms. Re-running the same harness on the
-same machine, the same binary and the same workspace returns 264 ms and 1001
-ms: `accurate` costs about twice what was recorded, and the reranking pass
-948 ms rather than 469. So the first figure was too high, the correction was
-too low, and neither was checked by running it again.
+**The latency in this row is a correction, and it is the third one.** This
+table recorded 204 ms and 508 ms, the second of those having replaced an earlier
+1795 ms; re-running the same harness returned 264 ms and 1001 ms. The five-tier
+run above returns **359 ms and 1522 ms** for the same two tiers, on the same
+machine and binary, with the fusion layer changed in between — which is the
+lead the paragraph below names, now acted on rather than offered. Four figures
+for one measurement, each taken once. The rule the sequence earns is the one
+this project now follows: a latency figure is re-taken in the same run as
+everything it will be compared against, and a figure from another run is not a
+baseline.
 
 Where to look, offered as a lead rather than a cause: the pass is confined to
 the candidates no lexical channel found, so its cost moves with the fusion that
@@ -982,9 +1014,9 @@ Confining it was previously recorded here as making the same-language column *un
 
 The rule was a language comparison first, since "written in another language" is what the case really is. The two rules pick the same candidates — they agree on 93% of a shortlist and score within 0.002 — but the language test needs the query's language, and that is exactly what a detector will not commit to for a short query: `detect_language` returns nothing for "how does deployment work". A rule that quietly does nothing on the commonest shape of query is worse than a slightly different rule.
 
-**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 211 ms against 948 — 4.5x. For that it gives up 0.0067 cross-lingual, and it gives up the 0.0070 of same-language that `accurate` gains: `accurate` is the only tier that costs nothing on either group.
+**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 260 ms against 1423 — 5.5x. For that it gives up 0.0085 cross-lingual, and it gives up the 0.0066 of same-language that `accurate` holds on to: `accurate` is the only tier that costs nothing on either group, and `fast` is the only one that costs something.
 
-The appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) turns on a latency budget, and the budget is what this section got wrong twice. At the figures recorded here the gap was 2.5x and the shallow model's case looked thin; re-measured it is 3.8x end to end, 264 ms against 1001. `fast` stays the default, and the reason is unchanged and now better supported: a search that takes a second is a different product from one that takes a quarter, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
+The appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) turns on a latency budget, and the budget is what this section got wrong twice. At the figures recorded here the gap was 2.5x and the shallow model's case looked thin; re-measured it is 4.2x end to end, 359 ms against 1522. `fast` stays the default, and the reason is unchanged and now better supported: a search that takes a second is a different product from one that takes a quarter, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
 
 **On a corpus that is not parallel text the two tiers separate much further.** MIRACL's Swahili dev split is 131,924 real passages averaging 229 characters with human judgements, one language throughout — the shape XQuAD-R is not:
 
@@ -1040,7 +1072,7 @@ Three of the four permissive chains are defensible and **none of those three sta
 | `naver/splade-v3` family | CC-BY-NC-SA-4.0 | Non-commercial and share-alike. `Splade_PP_en_v1` is Apache-2.0 and English |
 | `Qwen/Qwen3-Reranker-0.6B` | `apache-2.0` — the cleanest licence and the best multilingual quality in the field | A decoder at roughly twenty times the compute-relevant parameters of `fast`. Estimated seconds a query on four cores; three to six times the `accurate` tier, which is already not an interactive budget |
 | `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | MIRACL 28.56. Not a multilingual reranker in the sense this product needs, whatever the language count says |
-| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. A plausible middle tier on long documents; not a path below 226 ms |
+| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one |
 | `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
 
 **Jev, and the shape of its claim.** TypeSafe's Jev is a decision model: text in, a number out, no token generation. It is API-only at $0.042 per million input tokens, so it cannot be part of an offline product whatever its quality. The open recreations do not rescue it. `openjev/openjev` is CC-BY-NC-4.0 and 27B parameters — 54 GB in fp16, and its own card measures about 80 ms **for one short decision on an H100 in fp8**, where this product scores twenty pairs in 226 ms on four CPU cores. `jaredpalmer/kev-0.8b` is Apache-2.0 at the adapter and base, tagged `language: en`, and its declared training data includes `Yelp/yelp_review_full`, whose terms grant academic use only.
@@ -1153,8 +1185,12 @@ workspace, `profile accuracy`, one resident server, four cores and 15 GB:
 
 Each row is a difference between two arms that differ by one thing, and each
 is four independent samples of sixty queries, or three of thirty-six for the
-last. The reranking row reproduces the tier table's 211 ms from a different
-direction, which is the check on the method.
+last. The reranking row reproduced the tier table's then-current 211 ms from a
+different direction, which was the check on the method. The tier table now
+reads 260 ms for the same pass at the new fusion weights, so **this division is
+a stage breakdown of a search that no longer exists at these absolute
+figures**; what it still establishes is the shape, and it is not a baseline for
+anything in the five-tier table.
 
 Two of the arms need saying, because both are ways this measurement could
 have lied. The server remembers a query's vector and remembers each
