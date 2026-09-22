@@ -210,6 +210,90 @@ the case for `--rerank off` on single-language corpora is now measured rather
 than speculative. The depth constant it uses was swept against the quarter's
 baseline and has not been re-swept — see `pamin_index::reranking::DEPTH`.
 
+### Rank fusion was never compared against score fusion
+
+Everything above argues about `k` and about the lexical weight. Both are
+parameters *of* reciprocal rank fusion, and the choice to fuse ranks at all —
+rather than to normalise each channel's scores and combine those — was never
+measured here. It was inherited. That is the larger of the two questions and
+the 2025–2026 literature is close to unanimous on it.
+
+| | year | what it found |
+| --- | --- | --- |
+| [Ranking-based Fusion Algorithms for XMTC](https://arxiv.org/html/2507.03761v1) | 2025 | Ten fusion algorithms against six normalisations on four corpora. **z-score normalisation with CombMNZ was highest on every corpus**, and the rank-based family (ISR, Log-ISR) and the voting family (Borda, Condorcet) lost to score fusion on every one |
+| [Training-Free Lexical-Dense Fusion for Conversational-Memory Retrieval](https://arxiv.org/html/2606.04194) | 2026 | On LoCoMo and LongMemEval-S — two of this project's own corpora — on CPU with no training: **z-score weighted fusion Hit@1 0.752 against RRF's 0.718**. The weight has a wide plateau, 0.25 to 0.50 all above 0.73 |
+| [From BM25 to Corrective RAG](https://arxiv.org/html/2604.01733v1) | 2026 | 23,088 questions. RRF at `k=60` Recall@5 0.695, RRF at `k=10` 0.716, **a convex combination at an untuned α=0.5 0.726** |
+| [Calibrated Fusion for Heterogeneous Graph-Vector Retrieval](https://arxiv.org/html/2603.28886v1) | 2026 | The only published work that fuses a graph channel with a vector channel, which is this project's shape. Its ablation's conclusion is that **"normalization appears to be the dominant empirical factor"** — it mattered more than the combination rule |
+
+**And the parameter this ADR spends the most words on turns out to be the
+cheap one.** The only real `k` sweep published in the window tested 10, 30, 60
+and 100 and found 10 the best of them; a SIGIR 2025 paper sets `k = 0`
+outright. No paper in 2025 or 2026 derives `k` from anything. So the spread
+across sensible values of `k` is small, this project's `k = 10` is on the
+favoured side of it, and the fusion function itself is where the difference
+lives.
+
+**Why this matters more here than in the two-channel papers.** Almost all of
+that work fuses one sparse channel with one dense one. This project fuses four,
+and one of them is a graph walk in PostgreSQL whose scores are on no comparable
+scale at all. Rank fusion hides that — which is its appeal — but hiding it is
+not the same as handling it. A graph result ranked first out of four contributes
+exactly what a vector result ranked first out of fifty thousand contributes,
+because rank is all that survives. There is no way to express "this channel
+returned four things and is not confident about any of them".
+
+[Balancing the Blend](https://arxiv.org/abs/2508.01405) (2025) is the only
+published four-channel analysis, over eleven corpora and eleven channel
+combinations, and it names the failure this sets up as the **weakest link**: on
+one configuration, rank-fusing full-text search with dense vector search scored
+**0.604 nDCG@10 where dense search alone scored 0.784** — fusion destroyed
+eighteen points. Its stated mechanism is that RRF read the high ranks coming
+from both channels as agreement and promoted irrelevant documents on the
+strength of it. Its prescription is cheap and needs no training: **set each
+channel's weight to that channel's own standalone nDCG@10**.
+
+Which is a measurement this project has never taken. There is no figure
+anywhere for what any single channel is worth on its own. Every number here is
+of the four fused.
+
+**What would settle it**, in the order the cost says to do it: measure each
+channel alone, per corpus and per language; measure the rank correlation
+between the two lexical channels, because they run BM25 over the same text
+twice and RRF rewards their agreement as though it were independent
+confirmation; then compare RRF against a z-score-normalised weighted
+combination on all three corpora, reporting per-query wins and losses rather
+than means. Score normalisation within the candidate set is the cheap version
+and the one with direct evidence on this project's own corpora; normalising
+against a corpus-wide distribution is what the graph-channel paper actually
+did, and it costs a distribution that has to be maintained as memories are
+written — which that paper never had to pay, because its corpus was static.
+
+### Every accuracy figure here is a difference of means
+
+Stated as its own section because it applies to all of them, including the
+ones this decision record treats as settled.
+
+Not one comparison in this project has ever been tested. The fusion weight
+moved on +0.0056 on MIRACL; the reranker is priced at −0.0152 on the same
+corpus; the segmentation verdict rests on a recall column; the reranker's depth
+was settled on +0.0369 against +0.0110. All of those are differences between
+two averages, and an average cannot distinguish every query moving slightly
+from one query moving a great deal.
+
+The graph-vector fusion paper above is what makes this concrete rather than
+pedantic. It reports rank fusion beating vector-only by +1.7 points, and then
+reports the same comparison as **15 wins against 6 losses at p = 0.078** —
+while its own method's *smaller* mean gain is **8 wins against 1 loss at
+p = 0.039**. Read as means, the wrong method wins.
+
+`crates/pamin-engine/tests/statistics/mod.rs` now reports wins, losses, ties
+and a paired bootstrap p alongside every mean, and the cross-lingual harness
+fails if reranking's gain is not significant rather than merely small. Until
+each figure below has been re-taken through it, **a small difference in this
+document is a difference of means and nothing more**. The ones that most need
+re-checking are the two named above, because both are small enough that this
+analysis can dissolve them, and both have already been acted on.
+
 ### Three recall channels, not seven
 
 An earlier channel list had seven entries. Four were redundant, and two of those double-counted against modifiers the same design already applied after fusion:

@@ -505,7 +505,13 @@ before because on MIRACL Swahili — 482 questions people asked, judged by
 people — the quarter ranked *worse* than the vector channel by itself, and
 because the quarter had never been compared against anything smaller than
 itself. Three corpora and the sweep behind that are in
-[ADR 0001](adr/0001-tech-selection.md). The `10` is likewise measured here rather than taken from the rank
+[ADR 0001](adr/0001-tech-selection.md).
+
+One weight serves every workspace, and the evidence says that is the wrong
+shape rather than the wrong value. What the lexical pair is worth depends on
+whether a query and its answer share a language at all: nothing across a
+boundary, and a great deal within one. The ADR records what would have to be
+measured before splitting it. The `10` is likewise measured here rather than taken from the rank
 fusion literature, which uses 60 for lists thousands of results deep; each
 channel proposes fifty, and 60 flattens fifty candidates to the point where
 being first says almost nothing.
