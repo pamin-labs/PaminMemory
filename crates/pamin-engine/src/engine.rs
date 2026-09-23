@@ -1271,6 +1271,22 @@ impl Engine {
         rerank: Rerank,
         fusion: Fusion,
     ) -> Result<Vec<SearchHit>> {
+        // The reranker is needed after retrieval and was loaded only then, so
+        // a search that found no model resident paid the embedder's load and
+        // then the reranker's, one after the other -- the first search after
+        // an idle release was measured at 4,528 ms against 116, at the `fast`
+        // tier, and most of that is the two loads. Started here, it loads
+        // while the query is
+        // embedded and the channels run. The registry holds its lock across a
+        // load, so the call below either finds the model resident or waits for
+        // this one to finish -- it is never loaded twice. Nothing about the
+        // ranking changes; a failure here is the same failure the call below
+        // reports, so it is left to that one.
+        if rerank != Rerank::Off {
+            let models = self.models.clone();
+            drop(tokio::task::spawn_blocking(move || models.reranker(rerank)));
+        }
+
         let hits = self
             .search_fused(query, fused_for(limit, rerank), depths, fusion)
             .await?;
