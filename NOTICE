@@ -18,9 +18,9 @@ what a user downloads and runs when they choose a profile or a reranker tier.
 They are not distribution terms for anything this project ships, and adding a
 model does not move the size budget.
 
-Two of the exports carry no licence tag of their own. That is recorded here
+One of the exports carries no licence tag of its own. That is recorded here
 rather than smoothed over: a re-export with no tag is usable when the chain to
-a licensed source is readable, and the chain is given for each one.
+a licensed source is readable, and the chain is given for it.
 
 Embedding models
 ----------------
@@ -47,19 +47,6 @@ Reranker models
   onnx-community/bge-reranker-v2-m3-ONNX               no tag
     Tier `accurate`. An ONNX re-export of BAAI/bge-reranker-v2-m3, itself
     Apache-2.0.
-
-  onnx-community/gte-multilingual-reranker-base        no tag
-    Tier `balanced`. An ONNX re-export of
-    Alibaba-NLP/gte-multilingual-reranker-base, itself Apache-2.0.
-
-  jinaai/jina-reranker-v2-base-multilingual            CC-BY-NC-4.0
-    Tier `noncommercial`. **Not for commercial use.** The only model here
-    whose licence restricts what may be done with its output, rather than
-    only how it may be redistributed. Asking for that tier prints the terms
-    once and then runs: whether a given use falls inside them depends on
-    the user's situation and is theirs to determine and to comply with.
-    PAMIN_ACCEPT_NONCOMMERCIAL=1 records that they have and stops the
-    notice. Every other tier is permissive and says nothing.
 
 ================================================================================
 Rust dependencies
