@@ -1171,6 +1171,13 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
+    // `reranking::in_context`.
+    if std::env::var("CONTEXT").is_ok() {
+        context(&engine, &workspace, &queries, &named).await;
+        return;
+    }
+
     // `AT_LIMIT` asks the shipped path for as many results as a person asks
     // for, and reports what the reranker was made to do rather than how well
     // it did it. Every other arm here asks for fifty-one so that recall@50 can
@@ -2416,7 +2423,48 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
         }
     }
     reranking::report(
-        &format!("XQuAD-R, {} tier, {named}", tier.name()),
+        &format!(
+            "rules for the {} reranker's scores, XQuAD-R, {named}",
+            tier.name()
+        ),
+        &rules,
+        reranking::shipped(&rules),
+        &measured,
+    );
+}
+
+/// What the shipped tier is worth when it is shown each candidate's topic
+/// name, and the memory the graph reached it from. See `reranking::in_context`.
+///
+/// This corpus's names are keys chosen to be unlike any text, so the named
+/// renderings ask what a name that carries nothing costs; it has no edges, so
+/// the seeded renderings equal their unseeded counterparts.
+async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], named: &str) {
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    let tier = Rerank::default();
+    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+        .expect("load the reranker");
+    let labels = reranking::context_labels();
+    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+    for query in queries {
+        let hits = engine
+            .search_reranked(query.text(), WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        let replayed = reranking::replay(&hits, tier);
+        let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, query.text());
+        for (order, into) in orders.iter().zip(&mut measured) {
+            score(into, query, order);
+        }
+    }
+    reranking::report(
+        &format!(
+            "what the {} reranker is shown, XQuAD-R, {named}",
+            tier.name()
+        ),
+        &labels,
+        Some(1),
         &measured,
     );
 }
