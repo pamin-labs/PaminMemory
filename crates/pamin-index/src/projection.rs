@@ -325,21 +325,29 @@ const SMALLEST_SEGMENT: u64 = 10_000;
 /// from 0.9639 to 0.9655, while a query went from 208 ms to 63 ms.
 ///
 /// A collection records this when it is created, so a project that has grown
-/// by orders of magnitude keeps the size it was created with until
-/// `pamin reindex` rebuilds it.
+/// by orders of magnitude keeps the size it was created with until something
+/// recreates it: a server reshapes it on its own once
+/// [`Segmentation::is_worth_rebuilding`] says so, and `pamin reindex` rebuilds
+/// it where there is no server.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
 }
 
 /// How an index is segmented, against what the policy would choose now.
 ///
-/// Reported because a workspace has no other way to find out. The size is
-/// recorded when the collection is created and a workspace is created empty,
-/// so every grown project records [`SMALLEST_SEGMENT`] and holds one segment
-/// per ten thousand documents rather than the four the policy aims at -- 14
-/// over 131,924. Measured over fifty thousand, 25 segments answer a query in
-/// 39.8 ms where four answer in 16.9. `pamin reindex` reshapes an index without
-/// embedding anything again; see [`Previous`].
+/// The size is recorded when the collection is created and a workspace is
+/// created empty, so every grown project records [`SMALLEST_SEGMENT`] and
+/// holds one segment per ten thousand documents rather than the four the
+/// policy aims at -- 14 over 131,924. Measured over fifty thousand, 25
+/// segments answer a query in 39.8 ms where four answer in 16.9.
+///
+/// Acted on, not only reported. A server checks each open project's shape
+/// from its upkeep loop and, when [`is_worth_rebuilding`](Self::is_worth_rebuilding)
+/// says so, reshapes the index in the background: a copy taken while the
+/// index is served, with every vector reused and the lock held a batch at a
+/// time -- see [`crate::Reshape`]. Without a server nothing does that on its
+/// own, `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds
+/// it, also without embedding anything again; see [`Previous`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segmentation {
     /// Documents the collection holds.

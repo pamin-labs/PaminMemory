@@ -9,11 +9,14 @@
 //! inherits the workspace's permissions and cannot be reached from off the
 //! machine by accident. No authentication, for the same reason.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
+use pamin_engine::Engine;
 use pamin_index::Profile;
 use pamin_store::{Connections, Workspace};
 use tokio::net::{UnixListener, UnixStream};
@@ -111,6 +114,7 @@ const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 /// claims lapse and the ledger replays them. What is lost is the amortization,
 /// which is the entire reason the write did not flush for itself.
 async fn maintain(session: Arc<Session>) {
+    let mut reshapes = Reshapes::default();
     loop {
         tokio::time::sleep(UPKEEP).await;
 
@@ -124,7 +128,9 @@ async fn maintain(session: Arc<Session>) {
         // length of a sweep makes every one of them look busy to eviction,
         // which then finds nothing to close and lets the registry grow past
         // its bound whenever a cold project arrives during a tick.
-        for key in session.opened_projects() {
+        let opened = session.opened_projects();
+        reshapes.forget_all_but(&opened);
+        for key in opened {
             let Some(engine) = session.opened_engine(&key) else {
                 // Being opened, or being rebuilt. Its upkeep waits for the
                 // next tick rather than this loop waiting for it.
@@ -140,6 +146,10 @@ async fn maintain(session: Arc<Session>) {
                 Ok(false) => {}
                 Err(error) => tracing::warn!(%error, "index upkeep failed"),
             }
+            // Beside the loop rather than in it: a reshape takes minutes, and
+            // every other project's flushes wait on this loop -- a claim held
+            // past its lease is replayed.
+            reshapes.consider(&key, engine);
         }
 
         // The engines above are dropped by now, so a project that has gone
@@ -154,6 +164,97 @@ async fn maintain(session: Arc<Session>) {
             );
             trim_heap();
         }
+    }
+}
+
+/// How long after one reshape of a project the server will consider another.
+///
+/// A reshape is only started when the index is spread over more than twice
+/// the segments the policy wants, and one that finished leaves it at what the
+/// policy wants -- so the next is not due until the project has roughly
+/// doubled, and the interval is not what paces them. It is what paces a
+/// failure: a reshape that failed on something that has not changed would
+/// otherwise copy the whole index again every tick. An hour is a choice, not
+/// a measurement. Outside it a project is checked on every tick, which costs
+/// one read of the index's statistics under its lock.
+const RESHAPE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// The reshapes this server has started, one per project at most.
+///
+/// Held by the upkeep loop rather than the session, because nothing else
+/// starts one: `pamin reindex` is a rebuild, and waits for a reshape of its
+/// project to finish rather than being one.
+#[derive(Default)]
+struct Reshapes {
+    started: HashMap<(String, Profile), (Instant, tokio::task::JoinHandle<()>)>,
+}
+
+impl Reshapes {
+    /// Starts reshaping this project's index in the background, if its shape
+    /// is worth it and no reshape of it has started within the interval.
+    ///
+    /// Never two at once for one project: one still running is never
+    /// replaced, and the engine refuses a second on the same directory
+    /// besides.
+    fn consider(&mut self, key: &(String, Profile), engine: Arc<Engine>) {
+        if let Some((at, running)) = self.started.get(key)
+            && (!running.is_finished() || at.elapsed() < RESHAPE_INTERVAL)
+        {
+            return;
+        }
+        let shape = match engine.segmentation() {
+            Ok(shape) => shape,
+            Err(error) => {
+                tracing::warn!(%error, "reading the index's shape failed");
+                return;
+            }
+        };
+        if !shape.is_worth_rebuilding() {
+            return;
+        }
+
+        let project = key.0.clone();
+        tracing::info!(
+            %project,
+            documents = shape.documents,
+            segments = shape.segments(),
+            wanted = shape.wanted(),
+            "reshaping the index"
+        );
+        let running = tokio::spawn(async move {
+            let started = Instant::now();
+            match engine.reshape().await {
+                Ok(Some(reshaped)) => tracing::info!(
+                    %project,
+                    before = reshaped.before.segments(),
+                    after = reshaped.after.segments(),
+                    copied = reshaped.copied,
+                    caught_up = reshaped.caught_up,
+                    seconds = started.elapsed().as_secs_f64(),
+                    "reshaped the index"
+                ),
+                Ok(None) => tracing::info!(
+                    %project,
+                    "the index needed no reshaping, or something else was restructuring it"
+                ),
+                Err(error) => tracing::warn!(
+                    %project,
+                    %error,
+                    seconds = started.elapsed().as_secs_f64(),
+                    "reshaping the index failed; the index it was copying is still served"
+                ),
+            }
+        });
+        self.started.insert(key.clone(), (Instant::now(), running));
+    }
+
+    /// Forgets projects that are no longer open and have nothing running.
+    ///
+    /// A project closed and reopened is considered again at once, which is
+    /// what opening a project that grew without a server should do.
+    fn forget_all_but(&mut self, opened: &[(String, Profile)]) {
+        self.started
+            .retain(|key, (_, running)| !running.is_finished() || opened.contains(key));
     }
 }
 
