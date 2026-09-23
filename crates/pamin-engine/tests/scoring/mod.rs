@@ -76,25 +76,63 @@ impl Scores {
         judged: usize,
         relevant: impl Fn(&str) -> bool,
     ) -> f64 {
-        let hit = |rank: usize| relevant(ranked[rank].as_str());
+        // Binary relevance is graded relevance whose gains are all one, and
+        // whose ideal is `judged` of them. Expressed that way rather than
+        // computed separately, so the two paths cannot drift: a corpus scored
+        // by one and compared against a corpus scored by the other is the
+        // failure this module exists to prevent.
+        self.add_graded(ranked, &vec![1.0; judged], |key| f64::from(relevant(key)))
+    }
+
+    /// Scores one ranking against graded judgements.
+    ///
+    /// `ideal` is every judged document's gain, **sorted descending**, which
+    /// is what the perfect ranking would have earned; `gain` is what one
+    /// returned key is worth, and zero for one that is not judged relevant at
+    /// all. Gains are the caller's, not this module's: a corpus that publishes
+    /// four labels decides what they are worth, and the usual `2^label - 1` is
+    /// a choice about that corpus rather than a property of nDCG.
+    ///
+    /// Recall and the `deep` count read "relevant" as "gain above zero",
+    /// because recall has no graded form -- a document is either returned or
+    /// it is not.
+    pub fn add_graded(
+        &mut self,
+        ranked: &[String],
+        ideal: &[f64],
+        gain: impl Fn(&str) -> f64,
+    ) -> f64 {
+        let at = |rank: usize| gain(ranked[rank].as_str());
+        let discount = |rank: usize| 1.0 / ((rank + 2) as f64).log2();
 
         let gained: f64 = (0..ranked.len().min(NDCG_AT))
-            .filter(|rank| hit(*rank))
-            .map(|rank| 1.0 / ((rank + 2) as f64).log2())
+            .map(|rank| at(rank) * discount(rank))
             .sum();
-        let ideal: f64 = (0..judged.min(NDCG_AT))
-            .map(|rank| 1.0 / ((rank + 2) as f64).log2())
+        // Asserted rather than sorted here: sorting silently would hide a
+        // caller that built the ideal from the ranking instead of from the
+        // judgements, which is how a recall failure gets reported as a perfect
+        // ranking.
+        debug_assert!(
+            ideal.windows(2).all(|pair| pair[0] >= pair[1]),
+            "the ideal gains must be sorted descending"
+        );
+        let best: f64 = ideal
+            .iter()
+            .take(NDCG_AT)
+            .enumerate()
+            .map(|(rank, gain)| gain * discount(rank))
             .sum();
 
+        let judged = ideal.iter().filter(|gain| **gain > 0.0).count();
         let found = (0..ranked.len().min(RECALL_AT))
-            .filter(|rank| hit(*rank))
+            .filter(|rank| at(*rank) > 0.0)
             .count();
         let deep = (NDCG_AT..ranked.len().min(RECALL_AT))
-            .filter(|rank| hit(*rank))
+            .filter(|rank| at(*rank) > 0.0)
             .count();
 
         self.queries += 1;
-        let ndcg = if ideal == 0.0 { 0.0 } else { gained / ideal };
+        let ndcg = if best == 0.0 { 0.0 } else { gained / best };
         self.ndcg += ndcg;
         self.per_query.push(ndcg);
         self.recall += if judged == 0 {
@@ -177,6 +215,58 @@ mod tests {
         scores.add(&ranking(&["a", "b"]), 0, |_| true);
         assert_eq!(scores.mean_ndcg(), 0.0);
         assert_eq!(scores.mean_recall(), 0.0);
+    }
+
+    /// A grade that is worth more belongs higher, and nDCG says so.
+    ///
+    /// The property binary relevance cannot express and the reason a graded
+    /// corpus is worth having: two rankings that return the same two documents
+    /// in opposite orders score the same under binary relevance and differently
+    /// here.
+    #[test]
+    fn a_better_grade_belongs_higher() {
+        let ideal = [3.0, 1.0];
+        let gain = |key: &str| match key {
+            "best" => 3.0,
+            "fair" => 1.0,
+            _ => 0.0,
+        };
+
+        let mut right = Scores::default();
+        right.add_graded(&ranking(&["best", "fair"]), &ideal, gain);
+        let mut wrong = Scores::default();
+        wrong.add_graded(&ranking(&["fair", "best"]), &ideal, gain);
+
+        assert!((right.mean_ndcg() - 1.0).abs() < 1e-12);
+        assert!(
+            wrong.mean_ndcg() < right.mean_ndcg(),
+            "{} against {}",
+            wrong.mean_ndcg(),
+            right.mean_ndcg()
+        );
+        // And binary relevance cannot tell them apart, which is the point.
+        let mut flat = Scores::default();
+        flat.add(&ranking(&["fair", "best"]), 2, |key| gain(key) > 0.0);
+        assert!((flat.mean_ndcg() - 1.0).abs() < 1e-12);
+    }
+
+    /// The binary arithmetic, pinned to a number rather than to itself.
+    ///
+    /// `add` is a call into `add_graded` now, so a test that compared the two
+    /// could not fail -- it would be asserting that a function equals itself.
+    /// What can fail is the arithmetic changing, and this is the value the
+    /// three corpora's floors were set under: one relevant result at rank one
+    /// out of five relevant in total is `1 / (sum over five of 1/log2(r+2))`.
+    #[test]
+    fn the_binary_arithmetic_is_what_the_floors_were_set_under() {
+        let mut scores = Scores::default();
+        scores.add(&ranking(&["a", "x", "y"]), 5, |topic| topic == "a");
+        assert!(
+            (scores.mean_ndcg() - 0.339_160_2).abs() < 1e-6,
+            "{}",
+            scores.mean_ndcg()
+        );
+        assert!((scores.mean_recall() - 0.2).abs() < 1e-12);
     }
 
     /// What is inside the shortlist but below rank ten is a reranker's to fix.
