@@ -446,10 +446,10 @@ pub fn shipped_row(variants: &[(String, Fusion)]) -> Option<usize> {
 /// difference that row's paired differences could have detected at 80% power,
 /// so a difference smaller than it is readable at a glance as noise. The
 /// row's own p is still printed, and it is the less important of the two.
-pub fn sweep_table(
+pub fn sweep_table<T>(
     title: &str,
     shipped: &crate::scoring::Scores,
-    variants: &[(String, Fusion)],
+    variants: &[(String, T)],
     rows: &[Option<&crate::scoring::Scores>],
 ) {
     use crate::scoring::{NDCG_AT, RECALL_AT};
@@ -468,7 +468,7 @@ pub fn sweep_table(
             .collect::<Vec<_>>(),
     );
 
-    println!("\n  every fusion setting against the one that ships, {title}");
+    println!("\n  every setting against the one that ships, {title}");
     println!(
         "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}     diff   can see   family p   own comparison"
     );
@@ -513,16 +513,17 @@ pub fn sweep_table(
 /// - the procedure's macro nDCG@10 on queries it did not choose on;
 /// - the shipped setting's, on the same queries, with a paired test against
 ///   the procedure.
-pub fn cross_validated(
+pub fn cross_validated<T>(
     title: &str,
     groups: &[&str],
     shipped: &BTreeMap<String, crate::scoring::Scores>,
-    variants: &[(String, Fusion)],
+    variants: &[(String, T)],
+    ship: Option<usize>,
     offline: &[BTreeMap<String, crate::scoring::Scores>],
 ) {
     use crate::statistics;
 
-    let Some(ship) = shipped_row(variants) else {
+    let Some(ship) = ship else {
         println!("\n  no row of the sweep is the shipped setting, so nothing is cross-validated");
         return;
     };

@@ -674,6 +674,7 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         &GROUPS,
         &whole,
         &variants,
+        channels::shipped_row(&variants),
         &offline,
     );
 
