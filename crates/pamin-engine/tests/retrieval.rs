@@ -374,6 +374,16 @@ const FLOORS: &[(&str, f64, f64)] = &[
     ("lexical", 0.95, 0.98),
     // 0.994 / 1.000 measured; likewise.
     ("monolingual", 0.94, 0.98),
+    // 0.6068 / 1.0000 measured, at the graph weight this group's own sweep
+    // chose. Roughly a tenth below, like the others.
+    //
+    // This is the one group whose floor guards a channel rather than the
+    // pipeline: it is twenty queries whose answers are reachable across an
+    // edge and hard to reach without one, so it falls when the graph channel
+    // stops working -- which is exactly what the other three cannot see. It
+    // is also twenty queries, so it is a collapse detector and not a
+    // regression detector.
+    ("relational", 0.54, 0.90),
 ];
 
 /// Each channel alone, and each one removed, on the corpus this project wrote.
