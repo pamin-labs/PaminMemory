@@ -662,20 +662,20 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     }
 
     for group in GROUPS {
-        println!("\n  every fusion setting against the one that ships, {group}, {named}");
-        println!(
-            "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}   against shipped"
+        channels::sweep_table(
+            &format!("{group}, {named}"),
+            &whole[group],
+            &variants,
+            &offline.iter().map(|row| row.get(group)).collect::<Vec<_>>(),
         );
-        println!("  ---------------------------------------------------------------------------");
-        for ((label, _), scores) in variants.iter().zip(&offline) {
-            println!(
-                "  {label:<28}   {:>7.4}   {:>9.4}   {}",
-                scores[group].mean_ndcg(),
-                scores[group].mean_recall(),
-                statistics::compare(&whole[group].per_query, &scores[group].per_query)
-            );
-        }
     }
+    channels::cross_validated(
+        &format!("XQuAD-R, {named}"),
+        &GROUPS,
+        &whole,
+        &variants,
+        &offline,
+    );
 
     // Per language, against the vector channel alone rather than against
     // nothing. Fusing all four ranks below the vector channel by itself on

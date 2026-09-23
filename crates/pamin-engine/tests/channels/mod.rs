@@ -425,6 +425,201 @@ pub fn variants() -> Vec<(String, Fusion)> {
     variants
 }
 
+/// Which row of a sweep is the setting that ships.
+///
+/// Found by value rather than by label, so relabelling a row cannot silently
+/// make a different setting the baseline everything is priced against.
+pub fn shipped_row(variants: &[(String, Fusion)]) -> Option<usize> {
+    let shipped = format!("{:?}", Fusion::default());
+    variants
+        .iter()
+        .position(|(_, fusion)| format!("{fusion:?}") == shipped)
+}
+
+/// One group's sweep, priced as a family.
+///
+/// Every row against the shipped setting, with three columns the table used to
+/// lack. `family p` is the Westfall-Young adjusted p across *all* the rows at
+/// once -- the only p here that means what a reader will take it to mean,
+/// because a table of ninety rows each with its own p is a table in which
+/// about four of them clear 0.05 by chance. `can see` is the smallest mean
+/// difference that row's paired differences could have detected at 80% power,
+/// so a difference smaller than it is readable at a glance as noise. The
+/// row's own p is still printed, and it is the less important of the two.
+pub fn sweep_table(
+    title: &str,
+    shipped: &crate::scoring::Scores,
+    variants: &[(String, Fusion)],
+    rows: &[Option<&crate::scoring::Scores>],
+) {
+    use crate::scoring::{NDCG_AT, RECALL_AT};
+    use crate::statistics;
+
+    let present: Vec<(usize, &crate::scoring::Scores)> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(at, row)| row.map(|row| (at, row)))
+        .collect();
+    let adjusted = statistics::family(
+        &shipped.per_query,
+        &present
+            .iter()
+            .map(|(_, row)| row.per_query.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    println!("\n  every fusion setting against the one that ships, {title}");
+    println!(
+        "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}     diff   can see   family p   own comparison"
+    );
+    println!("  {}", "-".repeat(118));
+    for ((at, row), family_p) in present.iter().zip(&adjusted) {
+        let differences: Vec<f64> = row
+            .per_query
+            .iter()
+            .zip(&shipped.per_query)
+            .map(|(after, before)| after - before)
+            .collect();
+        println!(
+            "  {:<28}   {:>7.4}   {:>9.4}   {:>+7.4}   {:>7.4}   {:>8.4}   {}",
+            variants[*at].0,
+            row.mean_ndcg(),
+            row.mean_recall(),
+            row.mean_ndcg() - shipped.mean_ndcg(),
+            statistics::minimum_detectable(&differences),
+            family_p,
+            statistics::compare(&shipped.per_query, &row.per_query)
+        );
+    }
+}
+
+/// What choosing a setting from this sweep is worth, measured on queries the
+/// choice never saw.
+///
+/// **The rule is fixed here, before any table is read, and it is stated so it
+/// can be argued with:** maximise the mean over groups of each group's mean
+/// nDCG@10, every group counting equally whatever its size. Equal weight is a
+/// prior -- that no kind of query here matters more than another -- and it is
+/// written down because the old procedure had one too and never said so. Ties
+/// go to the shipped setting, so a sweep that finds nothing changes nothing.
+/// `recall@50` is not in the rule; it is reported beside it.
+///
+/// Five folds stratified by group. For each, the rule sees the other four
+/// folds' means and its choice is scored on the fifth. Three numbers come out,
+/// and the gap between the first two is the one this repository never had:
+///
+/// - the best macro nDCG@10 of any row, scored on the queries that chose it --
+///   what the old procedure would have reported;
+/// - the procedure's macro nDCG@10 on queries it did not choose on;
+/// - the shipped setting's, on the same queries, with a paired test against
+///   the procedure.
+pub fn cross_validated(
+    title: &str,
+    groups: &[&str],
+    shipped: &BTreeMap<String, crate::scoring::Scores>,
+    variants: &[(String, Fusion)],
+    offline: &[BTreeMap<String, crate::scoring::Scores>],
+) {
+    use crate::statistics;
+
+    let Some(ship) = shipped_row(variants) else {
+        println!("\n  no row of the sweep is the shipped setting, so nothing is cross-validated");
+        return;
+    };
+    // Only groups every row scored, so the matrix is rectangular.
+    let groups: Vec<&str> = groups
+        .iter()
+        .copied()
+        .filter(|group| {
+            shipped.contains_key(*group) && offline.iter().all(|row| row.contains_key(*group))
+        })
+        .collect();
+    if groups.is_empty() {
+        return;
+    }
+
+    let mut labels = Vec::new();
+    for (index, group) in groups.iter().enumerate() {
+        labels.extend(std::iter::repeat_n(index, shipped[*group].per_query.len()));
+    }
+    let matrix: Vec<Vec<f64>> = offline
+        .iter()
+        .map(|row| {
+            groups
+                .iter()
+                .flat_map(|group| row[*group].per_query.iter().copied())
+                .collect()
+        })
+        .collect();
+    let baseline: Vec<f64> = groups
+        .iter()
+        .flat_map(|group| shipped[*group].per_query.iter().copied())
+        .collect();
+
+    let macro_mean = |per_group: &[f64]| per_group.iter().sum::<f64>() / per_group.len() as f64;
+    let rule = |table: &[Vec<f64>]| -> usize {
+        let mut best = ship;
+        for (at, row) in table.iter().enumerate() {
+            if macro_mean(row) > macro_mean(&table[best]) + 1e-12 {
+                best = at;
+            }
+        }
+        best
+    };
+
+    let by_group = |scores: &[f64]| -> Vec<f64> {
+        (0..groups.len())
+            .map(|group| {
+                let (sum, count) = scores
+                    .iter()
+                    .zip(&labels)
+                    .filter(|(_, label)| **label == group)
+                    .fold((0.0, 0usize), |(sum, count), (score, _)| {
+                        (sum + score, count + 1)
+                    });
+                sum / count.max(1) as f64
+            })
+            .collect()
+    };
+
+    let in_sample = matrix
+        .iter()
+        .map(|row| macro_mean(&by_group(row)))
+        .fold(f64::MIN, f64::max);
+    let selected =
+        statistics::cross_validate(&matrix, &labels, &statistics::folds(&labels, 5), rule);
+    let procedure = macro_mean(&by_group(&selected.held_out));
+    let current = macro_mean(&by_group(&baseline));
+
+    println!("\n  choosing from this sweep, cross-validated over five folds, {title}");
+    println!(
+        "  rule: maximise the mean over {} groups of nDCG@10, ties to what ships",
+        groups.len()
+    );
+    println!(
+        "  best row, scored on the queries that chose it   {in_sample:.4}   <- what a sweep used to report"
+    );
+    println!("  the procedure, on queries it did not choose on  {procedure:.4}");
+    println!("  what ships, on the same queries                 {current:.4}");
+    println!(
+        "  optimism of choosing in-sample                  {:+.4}",
+        in_sample - procedure
+    );
+    println!(
+        "  the procedure against what ships: {}",
+        statistics::compare(&baseline, &selected.held_out)
+    );
+    let chosen: Vec<&str> = selected
+        .chosen
+        .iter()
+        .map(|at| variants[*at].0.as_str())
+        .collect();
+    println!("  chosen per fold: {chosen:?}");
+    if selected.chosen.iter().any(|at| *at != selected.chosen[0]) {
+        println!("  the folds disagree, so no single setting is a stable choice at this size");
+    }
+}
+
 /// Kendall's tau-b between two channels' orderings.
 ///
 /// Computed over the candidates both channels returned, because a channel

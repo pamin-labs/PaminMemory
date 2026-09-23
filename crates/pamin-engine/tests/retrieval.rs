@@ -593,22 +593,21 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
             }
         }
 
-        println!("\n  every fusion setting against the one that ships, {group}");
-        println!(
-            "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}   against shipped"
+        channels::sweep_table(
+            group,
+            &whole[group],
+            &variants,
+            &offline.iter().map(|row| row.get(group)).collect::<Vec<_>>(),
         );
-        println!("  ---------------------------------------------------------------------------");
-        for ((label, _), scores) in variants.iter().zip(&offline) {
-            if let Some(scores) = scores.get(group) {
-                println!(
-                    "  {label:<28}   {:>7.4}   {:>9.4}   {}",
-                    scores.mean_ndcg(),
-                    scores.mean_recall(),
-                    statistics::compare(&whole[group].per_query, &scores.per_query)
-                );
-            }
-        }
     }
+
+    channels::cross_validated(
+        "own corpus",
+        &whole.keys().map(String::as_str).collect::<Vec<_>>(),
+        &whole,
+        &variants,
+        &offline,
+    );
 
     println!(
         "\n  the two lexical channels agree at Kendall tau {:.4} over {} queries\n",
