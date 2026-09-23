@@ -161,6 +161,7 @@
 //! question and takes a eleventh of the time.
 
 mod channels;
+mod features;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -245,6 +246,8 @@ struct Sentence {
 /// not parallel, so a Thai paragraph holds 852 sentences where the German one
 /// holds 1,276 and nothing can be matched by position.
 struct Question {
+    /// The dataset's own id, the same in all eleven files.
+    id: String,
     /// The question text, per language.
     asked: HashMap<&'static str, String>,
     /// The key of the answering sentence, per language.
@@ -392,6 +395,7 @@ impl Corpus {
             .map(|id| Question {
                 asked: asked.remove(&id).expect("the question text"),
                 answers: answers.remove(&id).expect("the answering sentences"),
+                id,
             })
             // A question the eleven files do not agree on cannot be scored
             // cross-lingually. There are none today; this is what would happen
@@ -1203,6 +1207,35 @@ async fn search_reaches_across_languages() {
             }
         }
         println!();
+        return;
+    }
+
+    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
+    // fusion offline. See `features`. Each query is written in both groups,
+    // and its question id is the dataset's, so every asking of one question
+    // can be kept in one fold.
+    if let Some(mut dump) = features::Features::from_env("xquad-r") {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        for query in &queries {
+            let hits = engine
+                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            for group in GROUPS {
+                let (relevant, drop) = query.relevant(group);
+                let asked = features::Asked {
+                    group,
+                    question: &format!("{}/{}", query.question.id, query.language),
+                    text: query.text(),
+                    language: Some(query.language),
+                    judged: relevant.len(),
+                };
+                dump.observe(&asked, &hits, WIDE, |topic| {
+                    (drop != Some(topic)).then(|| f64::from(relevant.contains(topic)))
+                });
+            }
+        }
+        dump.finish(queries.len() * GROUPS.len());
         return;
     }
 
