@@ -692,6 +692,16 @@ const GRAPH_EFFORT: i32 = 500;
 /// measured to reach 0.95 recall against exact search, which is the target --
 /// the last few points cost more than the rest put together, and a query
 /// spends 35 ms embedding before it gets here.
+///
+/// **Checked again once segments grew, and it holds on real text.** A reshape
+/// takes a project from 10,000 documents a segment to a quarter of the
+/// collection, and on 132,000 synthetic clustered vectors four such segments
+/// reach only 0.9758 recall@50 against exact search at 700 (0.9976 at 2,000;
+/// the engine refuses more than 2,048). On MIRACL's 131,924 real passages in
+/// four segments, every one of 482 questions returns the same results at 700
+/// and at 2,000, fused and through the reranker -- zero wins, zero losses (the
+/// `EFFORTS` arm of `pamin-engine/tests/monolingual.rs`). Synthetic clusters
+/// are harder to search than real embeddings, so the width stays.
 const SEARCH_EFFORT: i32 = 700;
 
 /// Overrides [`SEARCH_EFFORT`], for the sweep that settles it.
