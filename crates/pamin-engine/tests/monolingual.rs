@@ -75,6 +75,7 @@
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
 mod channels;
+mod memory;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -639,6 +640,13 @@ async fn search() {
         .await
         .expect("open the engine");
 
+    // `MEMORY`: where the resident memory goes, stage by stage. First, so no
+    // other arm has loaded anything yet. See `memory`.
+    if std::env::var("MEMORY").is_ok() {
+        attribute_memory(&engine, &corpus).await;
+        return;
+    }
+
     write_corpus(&engine, &corpus).await;
 
     // Every arm asserts its own premise. A vector channel over an index with
@@ -1194,6 +1202,52 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
 }
 
 /// Writes every passage that is not already a topic, then runs the queue.
+/// Resident memory after each thing a server loads, on the largest corpus
+/// here, and what the allocator is holding that nothing uses.
+async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
+    assert_eq!(
+        engine.indexed_documents().expect("count the documents") as usize,
+        corpus.passages.len(),
+        "the index does not hold the whole corpus, so this would measure a smaller one"
+    );
+    const SEARCHES: usize = 100;
+    println!(
+        "\n  resident memory, stage by stage, {} passages",
+        corpus.passages.len()
+    );
+    memory::Resident::now().print("the engine opened");
+    let queries: Vec<&str> = corpus
+        .queries
+        .iter()
+        .take(SEARCHES)
+        .map(|query| query.text.as_str())
+        .collect();
+    for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+        engine
+            .search_reranked(queries[0], DEPTH as u32, DEPTHS, tier)
+            .await
+            .expect("search");
+        memory::Resident::now().print(&format!("one search, {}", tier.name()));
+        for query in &queries {
+            engine
+                .search_reranked(query, DEPTH as u32, DEPTHS, tier)
+                .await
+                .expect("search");
+        }
+        memory::Resident::now().print(&format!("{SEARCHES} searches, {}", tier.name()));
+    }
+
+    // What the allocator holds after it was freed: glibc keeps freed memory in
+    // per-thread arenas, and the difference trimming makes is memory the
+    // process holds and does not use.
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: glibc's own function, no arguments that point anywhere.
+    unsafe { malloc_trim(0) };
+    memory::Resident::now().print("after malloc_trim(0)");
+}
+
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     let project = engine.project;
     let mut written = 0usize;
