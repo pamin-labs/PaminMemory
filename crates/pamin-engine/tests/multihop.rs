@@ -449,7 +449,19 @@ async fn search_answers_questions_that_take_several_steps() {
             statistics::compare(&scores.per_query, &graphless[group].per_query)
         );
     }
-    println!("\n  no floors are asserted on this corpus yet: this is its first reading\n");
+    println!();
+
+    // What this corpus exists to show. First read at 1,000 two-hop questions:
+    // 0.6834 shipped, and the graph worth 0.0406 of it (114W/238L, p=0.0001).
+    // Asserted as a direction rather than a figure, because the group's mean
+    // moves with how many questions are asked.
+    for (group, scores) in &shipped {
+        let without = statistics::compare(&scores.per_query, &graphless[group].per_query);
+        assert!(
+            without.mean < 0.0 && without.is_significant(),
+            "{group}: the shipped search no longer needs the graph ({without})"
+        );
+    }
 }
 
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
