@@ -25,7 +25,7 @@ One rule ran through all of it:
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | `fastembed` over ONNX Runtime, BGE-M3 with int8 weights by default |
+| Embeddings | ONNX Runtime through `ort` and `tokenizers`, BGE-M3 with int8 weights by default; the E5 profiles through `fastembed` |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -1175,7 +1175,7 @@ The measurement could not be made by reading the code. Whether a refiner stores 
 
 Same bytes, same build time, same query time. This is the failure shape recorded above from the previous quantization attempt — an index returning plausible neighbours that are not the nearest ones, with no error anywhere — and it was reproduced here only because the harness reports recall rather than whether the calls succeeded. Rotation needs a fitted transform and nothing supplies one; the binding's RaBitQ path is explicit about it, refusing to train without a `raw_vector_provider` the binding does not expose. It is off, and `crates/pamin-index/tests/scratch_quantize.rs` is what would notice if it came back.
 
-**The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not fastembed's Rust code either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
+**The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not the tokenization either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
 
 The consequence was not accuracy. It was reproducibility: `reindex` embedded in batches of 256 and the cascade embeds one document at a time, so a rebuild did not reproduce the index it replaced, and a document's vector depended on which other documents happened to be in flight beside it. So the joint export now runs one text at a time, which costs the batching win on this profile — thirty-two texts together take 190 ms against 409 ms one at a time, so `reindex` is roughly twice the wall clock here.
 
@@ -1510,7 +1510,7 @@ further away rather than closer:
 | `openjev/openjev` | `cc-by-nc-4.0` | `Qwen3_5ForConditionalGeneration` | **none** | not a ranker head |
 
 `v3` and `m0` are the decoder class this record already priced out, and neither
-publishes a single `.onnx` file, so `fastembed` cannot load them, there is no
+publishes a single `.onnx` file, so there is nothing for a session to load, there is no
 quantized export to fall back on, and adopting one means both a raw `ort` path
 *and* an export nobody has made. `openjev` has 159 downloads and is a
 conditional-generation model rather than a ranking head.
@@ -1566,12 +1566,13 @@ rejected, on grounds that a larger budget does not touch.
 **The two `apache-2.0` decoders are blocked on latency, and on nothing else.**
 The earlier reading here put shape first. Shape is a real difference — both
 rerank by prompting and comparing the logits of a "yes" and a "no" token, so the
-graph returns a vocabulary-sized tensor where `fastembed`'s `TextRerank` drives
-a sequence classifier — but it costs much less than this record assumed, because
+graph returns a vocabulary-sized tensor where the reranker's encoder reads one
+logit from a sequence classifier — but it costs much less than this record assumed, because
 the two things it was thought to cost are already paid:
 
 - **`ort` 2.0.0-rc.13 and `tokenizers` 0.23.2 are already in the lockfile**,
-  reached transitively through `fastembed`. A raw session is a module, not a new
+  and every reranker already runs on a raw session over them
+  (`crates/pamin-index/src/encoder.rs`). Another shape is a module, not a new
   dependency, and it does not move the size budget.
 - **The export already exists, permissively licensed.**
   `onnx-community/Qwen3-Reranker-0.6B-ONNX` is `apache-2.0` with single-file
@@ -1625,8 +1626,8 @@ narrower than it read.** What `head_max_len` of 256 tokens rules out is the
 document goes in the state, within `max_len` of 1024, and only two short option
 labels go in the head budget. Its `noul` question type returns the probability of
 one of two options, with a per-option-bucket temperature and a confidence over a
-bounded answer space. `fastembed` cannot supply the marker positions and query
-type that graph wants; a raw session can.
+bounded answer space. The reranker's encoder does not supply the marker
+positions and query type that graph wants; a session built for it can.
 
 **And the port is bounded rather than a reverse engineering job, because both
 halves are published.** The export is `mizchi/laya-multilingual-onnx` —
@@ -1692,7 +1693,7 @@ forward pass*, which would be a different cost model if it meant shared
 encoding. It does not. The released `rl_agent_api.py` builds one sequence per
 question and stacks them into a batch, so the state is re-encoded for every
 question — one *launch*, not one *encode*, which is what this project already
-gets from `fastembed` for a shortlist. The published latencies say the same
+gets from its reranker for a shortlist. The published latencies say the same
 thing: 39.5 ms for one question, 158.6 ms for ten and 771 ms for fifty is 5.0
 times the questions for 4.86 times the time between the last two, linear once
 the GPU is full. And its `head_max_len` of 256 tokens is smaller than the
