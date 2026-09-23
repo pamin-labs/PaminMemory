@@ -1005,6 +1005,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         &[GROUP],
         &keyed(&whole),
         &variants,
+        channels::shipped_row(&variants),
         &offline.iter().map(keyed).collect::<Vec<_>>(),
     );
 
