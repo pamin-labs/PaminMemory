@@ -724,3 +724,73 @@ fn tokenizing_does_not_wait_for_the_index() {
     // lock was still held for all of the above.
     drop(held);
 }
+
+/// A rebuild reuses a vector only where it is certainly the one it would compute.
+///
+/// The set-aside index lends a topic's stored vector when the text stored with
+/// it is the state's text exactly; a changed memory, or one the old index never
+/// held, is embedded again. An index whose vectors came from another encoding
+/// lends nothing and is gone, so nothing can mix two embedding spaces.
+#[test]
+fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
+    use pamin_index::Previous;
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("index");
+    let legacy = root.path().join("legacy");
+    let mut vector = stub();
+    vector[1] = 0.5;
+
+    let index = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+    index
+        .upsert_batch(&[
+            (
+                id(1),
+                "the release train leaves on thursdays",
+                vector.as_slice(),
+            ),
+            (id(2), "the oncall rota rotates weekly", stub().as_slice()),
+        ])
+        .expect("write");
+    index.flush().expect("flush");
+    drop(index);
+
+    let previous = Previous::set_aside(&dir, PROFILE)
+        .expect("set aside")
+        .expect("an index built now lends its vectors");
+    assert!(!dir.exists(), "the rebuild starts from an empty directory");
+
+    let wanted = [
+        (id(1), "the release train leaves on thursdays"),
+        (id(2), "the oncall rota rotates every fortnight"),
+        (id(3), "a topic the old index never held"),
+    ];
+    assert_eq!(previous.lends(&wanted).expect("count"), 1);
+    let lent = previous.vectors(&wanted).expect("lend");
+    assert_eq!(
+        lent[0].as_deref(),
+        Some(vector.as_slice()),
+        "unchanged text keeps its vector"
+    );
+    assert_eq!(lent[1], None, "changed text is embedded again");
+    assert_eq!(lent[2], None, "a topic the old index lacks is embedded");
+    previous.discard().expect("discard");
+    assert!(!dir.with_extension("previous").exists());
+
+    // Built from content alone: its vectors are not what an index built now
+    // computes, so it lends nothing and is discarded.
+    let index = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+    drop(index);
+    std::fs::write(
+        dir.join("profile"),
+        format!("{}\ntopic\nfp32\ncontent", PROFILE.model_id()),
+    )
+    .expect("age the marker");
+    assert!(
+        Previous::set_aside(&dir, PROFILE)
+            .expect("set aside")
+            .is_none(),
+        "vectors from another encoding were lent"
+    );
+    assert!(!dir.exists() && !dir.with_extension("previous").exists());
+}

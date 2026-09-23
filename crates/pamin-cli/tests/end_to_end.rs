@@ -1289,6 +1289,10 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
 
     let rebuilt = cli.json(&["reindex"]);
     assert!(rebuilt["indexed"].as_u64().unwrap_or(0) >= MEMORIES.len() as u64);
+    assert_eq!(
+        rebuilt["reused"], 0,
+        "with the index deleted there is nothing to reuse: {rebuilt}"
+    );
 
     let after = contents(&cli.json(&["search", "流水线", "--limit", "1"]));
     assert_eq!(
@@ -1990,6 +1994,10 @@ fn a_topics_history_does_not_crowd_the_index() {
     assert_eq!(
         rebuilt["indexed"], 2,
         "two topics is two documents, whatever their histories: {rebuilt}"
+    );
+    assert_eq!(
+        rebuilt["reused"], 2,
+        "neither topic's text changed, so neither is embedded again: {rebuilt}"
     );
 
     // And the ranked results agree: one entry for the topic, at what it says
