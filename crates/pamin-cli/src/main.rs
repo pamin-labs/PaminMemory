@@ -378,6 +378,7 @@ mod tests {
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
+        "PAMIN_SEARCH_EFFORT",
         "PAMIN_UNINDEXED_BUDGET",
         "PAMIN_VECTOR_STORAGE",
     ];

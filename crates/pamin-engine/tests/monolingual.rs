@@ -655,6 +655,13 @@ async fn search() {
         return;
     }
 
+    // `EFFORTS=700,2000`: every question at each graph search width, paired
+    // against the first. Leaves the index as it is.
+    if let Ok(efforts) = std::env::var("EFFORTS") {
+        compare_efforts(&engine, &corpus, &efforts).await;
+        return;
+    }
+
     write_corpus(&engine, &corpus).await;
 
     // Every arm asserts its own premise. A vector channel over an index with
@@ -1325,6 +1332,50 @@ async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
             statistics::compare(&was.per_query, &now.per_query)
         );
     }
+}
+
+/// Asks every question at each search width in `efforts`, fused and through
+/// the shipped reranker, paired against the first width.
+///
+/// The width is read from `PAMIN_SEARCH_EFFORT` on every query, so setting it
+/// between passes is the whole mechanism.
+async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
+    let efforts: Vec<&str> = efforts.split(',').collect();
+    let segmentation = engine.segmentation().expect("the shape");
+    println!(
+        "\n  search width over {} segments, {} documents",
+        segmentation.segments(),
+        engine.indexed_documents().expect("count the documents")
+    );
+    let routes = [
+        ("fused", Route::Fused(Fusion::default())),
+        ("shipped", Route::Shipped(Rerank::default())),
+    ];
+    for (name, route) in &routes {
+        let mut baseline: Option<Scores> = None;
+        for effort in &efforts {
+            // SAFETY: the harness runs one test on one thread at a time, and
+            // nothing else reads the environment while this is written.
+            unsafe { std::env::set_var("PAMIN_SEARCH_EFFORT", effort) };
+            let started = std::time::Instant::now();
+            let scores = run(engine, corpus, clone_route(route)).await;
+            let seconds = started.elapsed().as_secs_f64();
+            let paired = baseline
+                .as_ref()
+                .map(|first| statistics::compare(&first.per_query, &scores.per_query).to_string())
+                .unwrap_or_default();
+            println!(
+                "  {name:<8} width {effort:>5}   nDCG@{NDCG_AT} {:.4}   recall@{RECALL_AT} {:.4}   {:.0} ms a question   {paired}",
+                scores.mean_ndcg(),
+                scores.mean_recall(),
+                seconds * 1000.0 / corpus.queries.len() as f64
+            );
+            if baseline.is_none() {
+                baseline = Some(scores);
+            }
+        }
+    }
+    unsafe { std::env::remove_var("PAMIN_SEARCH_EFFORT") };
 }
 
 fn clone_route(route: &Route) -> Route {
