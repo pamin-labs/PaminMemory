@@ -32,9 +32,12 @@ zvec-rust = { workspace = true }
 #
 # On Linux that is CUDA, whose provider library (79 MB) is copied beside the
 # binary; using it needs the NVIDIA driver, CUDA 13 and cuDNN 9, which are the
-# user's and are not shipped. On Apple silicon it is Core ML, which is the only
-# build of the runtime published for it; on Windows, DirectML, which is part of
-# the OS. Elsewhere -- Linux on ARM, Intel Macs -- there is no prebuilt runtime
+# user's and are not shipped. On Apple silicon it is Core ML, which is linked
+# into the binary from the system framework and needs no file beside it. On
+# Windows it is DirectML: the runtime links `DirectML.dll` (18.5 MB), which is
+# copied beside the binary because the copy Windows ships in System32 can be
+# older than the runtime needs -- with only that one the program still starts
+# and the reranker runs on the CPU. Elsewhere -- Linux on ARM, Intel Macs -- there is no prebuilt runtime
 # with an accelerator and the CPU is all there is.
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 ort = { workspace = true, features = ["cuda", "copy-dylibs"] }
@@ -43,7 +46,7 @@ ort = { workspace = true, features = ["cuda", "copy-dylibs"] }
 ort = { workspace = true, features = ["coreml"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { workspace = true, features = ["directml"] }
+ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
