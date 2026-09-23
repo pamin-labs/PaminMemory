@@ -411,6 +411,34 @@ own corpus and +0.0003 at p = 0.9057 on MIRACL. Two corpora, opposite readings,
 so ten stays — which is what the literature predicts for a constant worth one
 to three points against a normalisation worth three to eight.
 
+**A learned fusion head was fitted and does not generalise.** The `FEATURES`
+arm (`pamin-engine/tests/features`) dumps every fused candidate with each
+channel's rank and score, and the shipped combiner rebuilt from the dump alone
+matches the engine bit for bit on all 3,537 question-groups of the own corpus,
+XQuAD-R and MuSiQue. The rule, written before any table was read: a head ships
+only if, trained on two corpora, it beats the shipped combiner on recall@20 --
+what the reranker is handed -- in the third, every time, and loses no group
+significantly. Held out by corpus, recall@20 against the shipped combiner:
+
+| head | own | XQuAD-R | MuSiQue |
+| --- | --- | --- | --- |
+| per-group weights, fitted in sample (an upper bound) | +0.0172 | +0.0117 | +0.0050 |
+| the shipped weights re-tuned on the other two | +0.0115 | −0.0013 | ±0 |
+| logistic regression | +0.0013 | −0.0131 | **−0.2375** |
+| pairwise linear | +0.0096 | −0.0037 | **−0.1180** |
+| gradient-boosted LambdaRank, monotone | +0.0054 | −0.0070 | +0.0200 |
+
+None passes. Three reasons, each visible in the data: only MuSiQue has a graph
+worth weighting, so any head trained without it gets the graph wrong; XQuAD-R's
+two groups are the same queries with opposite optima for the lexical weight, so
+any head can only pick a point on that trade, and a script feature buys
+cross-lingual +0.028 for same-language −0.050; and even the in-sample oracle is
+worth under two points of recall@20. A per-query gate choosing the lexical
+weight from query features -- the shape of DAT and MoR -- turns lexical off on
+3,506 of 3,537 queries and loses on both external corpora. Published learned
+fusion (Bruch et al., TOIS 2023; DAT and MoR, 2025) reports gains inside one
+benchmark mix; the held-out-corpus test is the one that fails here.
+
 **Nothing has changed default.** Reciprocal rank fusion still ships at the
 weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
 same-language queries on the same 1,190 questions, and it has to report before
