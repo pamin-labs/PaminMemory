@@ -16,7 +16,7 @@
 //!
 //! So it is a setting, and its default is what the library already did.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use ort::ep::ExecutionProviderDispatch;
 use ort::session::Session;
@@ -33,24 +33,35 @@ use crate::error::{IndexError, Result};
 /// those are what this chooses, in the order it chose them. It asked for
 /// nothing else on these platforms -- its DirectML adjustments are behind a
 /// feature of its own that this build does not enable.
-pub(crate) fn session(providers: Vec<ExecutionProviderDispatch>, model: &Path) -> Result<Session> {
-    let failed = |error: &dyn std::fmt::Display| {
-        IndexError::Engine(format!("loading {}: {error}", model.display()))
-    };
+///
+/// `model` is asked for only once the providers have registered, because
+/// asking for it can mean downloading it, and each device has an export of
+/// its own. Found the other way round, a CPU-only Linux machine fetched the
+/// `accurate` reranker's 1,136 MB half-precision export before learning that
+/// CUDA would not register -- which it does in about a millisecond -- and
+/// then kept the file, never loading it, beside the int8 export it runs.
+pub(crate) fn session(
+    providers: Vec<ExecutionProviderDispatch>,
+    model: impl FnOnce() -> Result<PathBuf>,
+) -> Result<Session> {
+    let unready =
+        |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
     let threads = match threads() {
         Some(threads) => threads,
         None => std::thread::available_parallelism()?.get(),
     };
-    Session::builder()
-        .map_err(|error| failed(&error))?
+    let mut builder = Session::builder()
+        .map_err(|error| unready(&error))?
         .with_execution_providers(providers)
-        .map_err(|error| failed(&error))?
+        .map_err(|error| unready(&error))?
         .with_optimization_level(crate::prepared::LEVEL)
-        .map_err(|error| failed(&error))?
+        .map_err(|error| unready(&error))?
         .with_intra_threads(threads)
-        .map_err(|error| failed(&error))?
-        .commit_from_file(model)
-        .map_err(|error| failed(&error))
+        .map_err(|error| unready(&error))?;
+    let model = model()?;
+    builder
+        .commit_from_file(&model)
+        .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))
 }
 
 /// Intra-op threads per inference session, or `None` for one per core.
@@ -157,4 +168,44 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
             ort::ep::DirectML::default().build().error_on_failure(),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device that will not register is found before its model is asked for,
+    /// since asking can mean downloading an export this machine cannot run.
+    ///
+    /// Whether an accelerator registers is a property of the machine, so each
+    /// is first registered on a builder of its own; only one that fails there
+    /// says anything about the order. On a machine with no GPU -- every one
+    /// this suite has run on -- that is each of them.
+    #[test]
+    fn a_device_that_will_not_register_is_never_asked_for_its_model() {
+        for (device, provider) in accelerators() {
+            let registers = Session::builder()
+                .expect("a session builder")
+                .with_execution_providers([provider.clone()])
+                .is_ok();
+            if registers {
+                continue;
+            }
+            let asked = std::cell::Cell::new(false);
+            let loaded = session(vec![provider], || {
+                asked.set(true);
+                Err(IndexError::Engine("no model here".into()))
+            });
+            assert!(
+                loaded.is_err(),
+                "{} registered the second time",
+                device.name()
+            );
+            assert!(
+                !asked.get(),
+                "{}'s model was asked for before the device refused to register",
+                device.name()
+            );
+        }
+    }
 }
