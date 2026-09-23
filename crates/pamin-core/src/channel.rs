@@ -74,22 +74,6 @@ impl Channel {
         }
     }
 
-    /// The least score this channel can give, if its scale has a bottom.
-    ///
-    /// What theoretical min-max normalises from ([`Combine::Convex`]). Unlike
-    /// [`calibrated`](Self::calibrated) this asks nothing about the top, which
-    /// is why BM25 has one: it is a sum of non-negative term weights, so zero
-    /// is its floor however unbounded it is above. The vector channel's score
-    /// is a cosine similarity, `1 - distance`, so minus one.
-    ///
-    /// [`Combine::Convex`]: crate::Combine::Convex
-    pub fn infimum(self) -> Option<f32> {
-        match self {
-            Self::LexicalSegmented | Self::LexicalNgram | Self::Graph => Some(0.0),
-            Self::Vector => Some(-1.0),
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::LexicalSegmented => "lexical_segmented",
