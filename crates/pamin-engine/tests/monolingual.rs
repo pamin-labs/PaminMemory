@@ -811,6 +811,7 @@ async fn search() {
             let replayed = reranking::replay(&hits, tier);
             routes.observe(
                 GROUP,
+                &query.text,
                 &hits,
                 &replayed,
                 &mut small,

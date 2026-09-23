@@ -29,6 +29,9 @@ use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::SearchHit;
 use pamin_index::Rerank;
 
+mod router;
+pub use router::Router;
+
 /// How the two scores are put on one scale before they are summed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scale {
@@ -95,6 +98,7 @@ pub struct Routes {
     /// Per row, total pairs through the small model and through the large one.
     pairs: Vec<(u64, u64)>,
     queries: u64,
+    router: Router,
 }
 
 /// How many the cascade lets the large model order.
@@ -127,16 +131,21 @@ impl Default for Routes {
             measured: vec![BTreeMap::new(); rows],
             pairs: vec![(0, 0); rows],
             queries: 0,
+            router: Router::default(),
         }
     }
 }
 
 impl Routes {
     /// One shipped search, its replay, and a small model to score what the
-    /// pass showed. `score` scores one ranking into `group`.
+    /// pass showed. `score` scores one ranking into `group`; `question` names
+    /// what is asked, so the learned router holds every asking of it out
+    /// together.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         group: &str,
+        question: &str,
         hits: &[SearchHit],
         replayed: &Replayed,
         small: &mut pamin_index::Reranker,
@@ -205,6 +214,8 @@ impl Routes {
                 cheap[ranked.position] = ranked.score;
             }
         }
+        self.router
+            .observe(group, question, query, hits, replayed, &cheap);
         for n in CASCADE {
             let mut keep: Vec<usize> = (0..documents.len()).collect();
             keep.sort_by(|left, right| {
@@ -254,6 +265,7 @@ impl Routes {
                 *dear as f64 / self.queries.max(1) as f64
             );
         }
+        self.router.report(&self.measured[0], &self.measured[1]);
         println!();
     }
 }

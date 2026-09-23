@@ -301,6 +301,7 @@ async fn retrieval_quality_by_group() {
             let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
             routes.observe(
                 &query.group,
+                &query.query,
                 &hits,
                 &replayed,
                 &mut small,

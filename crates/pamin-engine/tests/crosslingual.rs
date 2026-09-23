@@ -1242,6 +1242,7 @@ async fn search_reaches_across_languages() {
             for group in GROUPS {
                 routes.observe(
                     group,
+                    &query.question.answers["en"],
                     &hits,
                     &replayed,
                     &mut small,
