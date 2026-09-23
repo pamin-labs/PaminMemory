@@ -5,6 +5,7 @@
 
 mod descriptors;
 pub mod embedding;
+mod encoder;
 pub mod error;
 mod hub;
 mod inference;
@@ -13,6 +14,7 @@ pub mod projection;
 pub mod reranking;
 mod reshape;
 pub mod segmentation;
+mod tokenizer;
 
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Profile};

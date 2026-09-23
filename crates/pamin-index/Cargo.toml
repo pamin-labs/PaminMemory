@@ -23,13 +23,15 @@ serde_json = { workspace = true }
 # `prepared.rs`). Already `pamin-engine`'s, so this adds no lockfile entry.
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tokenizers = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 whatlang = { workspace = true }
 zvec-rust = { workspace = true }
-# The inference runtime `fastembed` runs on, named directly to configure the
-# CPU execution provider (see `inference::cpu`) and, per platform below, to
-# ask for a GPU one.
+# The inference runtime, named directly: the rerankers and BGE-M3 run their
+# sessions on it (see `encoder`), the E5 models run on it through `fastembed`,
+# and it configures the CPU execution provider (see `inference::cpu`) and, per
+# platform below, asks for a GPU one.
 ort = { workspace = true }
 
 # A GPU, when the machine has one, with no build flag: each platform's ONNX

@@ -60,21 +60,21 @@ use crate::error::{IndexError, Result};
 
 /// The optimization level the copy is written at.
 ///
-/// It has to be the level the copy is loaded at, and `fastembed` builds every
-/// session at `Level3` -- ONNX Runtime's layout level -- with no way to ask
-/// for another. Loading runs the optimizers again over the optimized graph.
+/// It has to be the level the copy is loaded at, so it is the one
+/// `crate::inference::session` loads every model at: `Level3`, ONNX Runtime's
+/// layout level, which is what `fastembed` builds every session at with no way
+/// to ask for another. Loading runs the optimizers again over the optimized
+/// graph.
 /// That the result scores bit-identically and still finds its packed weights
 /// on disk is not argued here but checked, by `tests/prepared.rs`; a change of
 /// level is exactly what that check would have to be re-run for, so the level
 /// is part of the key.
-const LEVEL: GraphOptimizationLevel = GraphOptimizationLevel::Level3;
+pub(crate) const LEVEL: GraphOptimizationLevel = GraphOptimizationLevel::Level3;
 
 /// What a prepared copy's two files are called.
 ///
-/// `model.onnx` because that is the name `fastembed`'s path-based loaders
-/// expect in a directory. The data file is named inside the graph, relative to
-/// it, so the pair moves together and can be renamed into place as one
-/// directory.
+/// The data file is named inside the graph, relative to it, so the pair moves
+/// together and can be renamed into place as one directory.
 const MODEL: &str = "model.onnx";
 const DATA: &str = "model.onnx.data";
 
