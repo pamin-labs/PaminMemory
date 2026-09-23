@@ -239,6 +239,23 @@ async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &D
     // A new append continues the numbering rather than reusing the freed one.
     let next = write_state(database, project.id, topic.id, "note-3", "deploys via cd").await;
     assert_eq!(next.version, 3, "version numbers are never reused");
+
+    // The identifiers alone name exactly the topics whose states a rebuild
+    // indexes, so a reshape and a rebuild agree on what the index holds.
+    let states = repository::all_current_topic_states(database.pool(), project.id)
+        .await
+        .expect("current states");
+    let ids = repository::current_topic_ids(database.pool(), project.id)
+        .await
+        .expect("current topic ids");
+    assert!(ids.contains(&topic.id));
+    assert_eq!(
+        ids,
+        states
+            .iter()
+            .map(|state| state.topic_id)
+            .collect::<Vec<_>>()
+    );
 }
 
 async fn filtered_evidence_is_still_stored(database: &Database) {

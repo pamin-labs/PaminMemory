@@ -576,6 +576,30 @@ pub async fn all_current_topic_states(
     Ok(rows.iter().map(row_to_topic_state).collect())
 }
 
+/// The topics [`all_current_topic_states`] would return, without their states.
+///
+/// For a caller that needs to know which topics the projection should hold
+/// and not what they say -- a reshape copies each document from the index it
+/// already has, so reading every topic's content out of the ledger to learn
+/// its identifier would load the whole project to use none of it. Filtered the
+/// same way, so the two can never disagree about which topics are live.
+pub async fn current_topic_ids(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<TopicId>> {
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT topics.id FROM topics
+          JOIN topic_states ts ON ts.id = topics.current_state_id
+          WHERE topics.project_id = $1 AND ts.deleted_at IS NULL
+          ORDER BY topics.id ASC",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(ids.into_iter().map(TopicId::from).collect())
+}
+
 /// Loads these states, skipping any the ledger has soft deleted.
 ///
 /// The search path's replacement for reading the project. What it needs is the
