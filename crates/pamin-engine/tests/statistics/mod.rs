@@ -137,36 +137,50 @@ pub fn compare(before: &[f64], after: &[f64]) -> Paired {
     }
 }
 
-/// The share of resamples whose mean difference is at least as extreme as the
+/// The share of sign-flips whose mean difference is at least as extreme as the
 /// one observed, under the hypothesis that the true difference is zero.
 ///
-/// The differences are centred before resampling, which is what makes this a
-/// test of that hypothesis rather than a confidence interval around the
-/// observed value. Resampling the uncentred differences would answer "how
-/// precisely do we know this number", and the question here is the other one:
-/// "would we have seen a number like this if there were nothing there".
+/// **A paired randomisation test, not a bootstrap, and the difference is
+/// measured rather than stylistic.** This used to centre the differences and
+/// resample them with replacement -- the bootstrap-shift test. Urbano, Lima and
+/// Hanjalic measured that test over five hundred million simulated p values
+/// (`arXiv:1905.11096`) and found it anti-conservative: 0.059 actual against
+/// 0.050 nominal, 0.014 against 0.010, with "a systematic bias towards small p
+/// values". They recommend discontinuing it in favour of the permutation or
+/// `t` test, finding "virtually no gain" from the bootstrap. Every p value this
+/// repository had published was from the test they name.
+///
+/// The randomisation is the exact one for paired data: under the null, which
+/// of the two settings produced the higher score on a given query is a coin
+/// flip, so each difference's *sign* is exchangeable and flipping signs
+/// enumerates the null distribution. Nothing is assumed about the shape of the
+/// differences, which matters here because they are sparse and heavy-tailed --
+/// two near-identical fusion settings agree exactly on most queries and differ
+/// a lot on a few.
 ///
 /// The count is offset by one on both sides, which keeps a p of exactly zero
-/// from being reported for an effect that merely exceeded every resample --
-/// ten thousand resamples cannot distinguish 1e-5 from impossible.
+/// from being reported for an effect that merely exceeded every draw -- ten
+/// thousand draws cannot distinguish 1e-5 from impossible.
 fn how_often_chance_does_this(differences: &[f64], observed: f64) -> f64 {
     if differences.is_empty() {
         return 1.0;
     }
 
-    let centred: Vec<f64> = differences
-        .iter()
-        .map(|difference| difference - observed)
-        .collect();
-
     let mut draws = Draws(0x5eed_600d_15c0);
     let extreme = (0..RESAMPLES)
         .filter(|_| {
-            let resampled: f64 = (0..centred.len())
-                .map(|_| centred[draws.below(centred.len())])
+            let flipped: f64 = differences
+                .iter()
+                .map(|difference| {
+                    if draws.below(2) == 0 {
+                        *difference
+                    } else {
+                        -difference
+                    }
+                })
                 .sum::<f64>()
-                / centred.len() as f64;
-            resampled.abs() >= observed.abs()
+                / differences.len() as f64;
+            flipped.abs() >= observed.abs()
         })
         .count();
 
@@ -220,6 +234,62 @@ impl Draws {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handful of queries all improving is not evidence, and the test this
+    /// replaced said it was.
+    ///
+    /// Three differences of one. Under the sign-flip randomisation there are
+    /// eight assignments and two of them -- all positive and all negative --
+    /// have a mean at least as extreme as the observed one, so `p = 0.25`:
+    /// three queries cannot distinguish a real effect from a coin landing the
+    /// same way three times.
+    ///
+    /// The bootstrap-shift test this replaced centred the differences first,
+    /// which turns `[1, 1, 1]` into `[0, 0, 0]`. Every resample then has a
+    /// mean of zero, none is as extreme as the observed one, and it reports
+    /// `p = 0.0001`. That is not a rounding difference; it is the difference
+    /// between "not evidence" and "overwhelming", and this repository
+    /// published sweep rows at `p = 0.0618` on four non-tied queries where the
+    /// smallest attainable p is `2 / 2^4 = 0.125`.
+    #[test]
+    fn a_few_queries_all_improving_is_a_coin_landing_the_same_way() {
+        let before = [0.0, 0.0, 0.0];
+        let after = [1.0, 1.0, 1.0];
+        let paired = compare(&before, &after);
+        assert_eq!((paired.wins, paired.losses, paired.ties), (3, 0, 0));
+        assert!(
+            (paired.p - 0.25).abs() < 0.02,
+            "the sign-flip null over three differences has two extreme \
+             assignments of eight, so p is a quarter; got {}",
+            paired.p
+        );
+        assert!(!paired.is_significant(), "p was {}", paired.p);
+    }
+
+    /// The smallest p a given number of untied queries can reach.
+    ///
+    /// `2 / 2^n`, because only the all-positive and all-negative assignments
+    /// are at least as extreme when every difference has the same sign. Ties
+    /// contribute nothing: flipping a zero leaves it zero. This is the bound
+    /// that makes the row above impossible, and it is asserted so that a
+    /// future change to the test cannot quietly go below it.
+    #[test]
+    fn ties_do_not_buy_significance() {
+        // Four untied queries among twenty: the effective sample is four.
+        let before = vec![0.0; 20];
+        let mut after = vec![0.0; 20];
+        for difference in after.iter_mut().take(4) {
+            *difference = 1.0;
+        }
+
+        let paired = compare(&before, &after);
+        assert_eq!((paired.wins, paired.losses, paired.ties), (4, 0, 16));
+        assert!(
+            paired.p >= 2.0 / 16.0 - 0.02,
+            "four untied queries cannot reach below 2/2^4 = 0.125; got {}",
+            paired.p
+        );
+    }
 
     #[test]
     fn two_identical_runs_have_nothing_to_report() {
