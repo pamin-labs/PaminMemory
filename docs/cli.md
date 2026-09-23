@@ -22,6 +22,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
+| | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
 | | `PAMIN_ACCEPT_NONCOMMERCIAL` | unset | Acknowledge the `noncommercial` tier's CC-BY-NC-4.0 terms, which stops the notice printing |
 
 The JSON is compact because the usual caller pays for every token of it, and
@@ -79,6 +80,31 @@ rather than an idle core. Splitting the cores between callers instead of
 between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
 whose default is what the library already did.
+
+The reranker runs on a GPU when the machine has one, with no flag and no
+separate build. Each platform's inference runtime carries the accelerator that
+platform has -- CUDA on x86-64 Linux, Core ML on Apple silicon, DirectML on
+Windows -- and loading a reranker tries it first and falls back to the CPU when
+it will not start. On a GPU it runs the model's half-precision export rather
+than the CPU's int8 one, so the scores are close but not identical; which one
+ran is logged when the model loads. `PAMIN_DEVICE=cpu` keeps it on the CPU, for
+a comparison that has to be like for like or a GPU that belongs to something
+else. Embedding stays on the CPU either way: the index was built with the CPU's
+vectors and a query has to be embedded the same way to be compared with them.
+
+On Linux the CUDA path has two requirements the program cannot meet for you.
+The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
+provider libraries -- `libonnxruntime_providers_shared.so` and
+`libonnxruntime_providers_cuda.so`, 79 MB, built into `target/release` beside
+the binary -- have to sit in the same directory as `pamin`, which `cargo
+install` does not arrange: copy them next to the installed binary. Missing
+either, the reranker runs on the CPU exactly as before.
+
+What a GPU is worth has not been measured here, because nothing this project
+is measured on has one. The ordering is checked instead: `every_device_orders_like_the_cpu`
+in `crates/pamin-index/tests/reranking.rs` loads the reranker wherever it lands
+and again forced onto the CPU, and asserts the two order clearly separated
+candidates the same way.
 
 A handful of other `PAMIN_*` variables exist and are deliberately not listed
 here: they shorten a window or a budget so a test can reach a case, and a
