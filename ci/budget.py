@@ -72,6 +72,19 @@ def directory_bytes(path: pathlib.Path) -> int:
 SIDECAR_SUFFIXES = (".so", ".dylib", ".dll")
 
 
+# The inference runtime's execution providers for an accelerator: CUDA and
+# TensorRT on x86-64 Linux, copied beside the binary so a machine with an
+# NVIDIA GPU can use it. Counted apart from the rest, because they are not the
+# program: a machine without the GPU never loads them and can delete them, and
+# folding 79 MB of CUDA into `distribution_bytes` would leave that budget
+# unable to notice the next heavyweight dependency.
+ACCELERATOR_PREFIX = "libonnxruntime_providers_"
+
+
+def is_accelerator(path: pathlib.Path) -> bool:
+    return path.name.startswith(ACCELERATOR_PREFIX)
+
+
 def sidecar_bytes() -> int:
     """Return the bytes of the native libraries shipped beside the binary.
 
@@ -86,7 +99,22 @@ def sidecar_bytes() -> int:
     return sum(
         f.stat().st_size
         for f in profile.iterdir()
-        if f.is_file() and f.suffix in SIDECAR_SUFFIXES
+        if f.is_file() and f.suffix in SIDECAR_SUFFIXES and not is_accelerator(f)
+    )
+
+
+def accelerator_bytes() -> int:
+    """Return the bytes of the accelerator providers shipped beside the binary.
+
+    Resolved through symlinks, because the runtime's build copies them as links
+    into its own cache on some hosts, and a link's size is not what a user
+    downloads.
+    """
+    profile = BINARY.parent
+    return sum(
+        f.resolve().stat().st_size
+        for f in profile.iterdir()
+        if f.suffix in SIDECAR_SUFFIXES and is_accelerator(f) and f.resolve().is_file()
     )
 
 
@@ -113,6 +141,7 @@ def measure() -> dict[str, float]:
     return {
         "binary_bytes": binary_bytes,
         "distribution_bytes": binary_bytes + sidecar_bytes(),
+        "accelerator_bytes": accelerator_bytes(),
         "total_dependencies": dependency_count(),
         "cold_build_seconds": round(cold_build_seconds, 1),
         "incremental_check_seconds": round(incremental_check_seconds, 1),
