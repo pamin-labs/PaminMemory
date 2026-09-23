@@ -46,6 +46,7 @@
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
+//! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `GRAPH_TO_RERANK` | also hand the reranker the strongest candidates only the graph found |
 //! | `REACH` | where the supporting titles sit, channel by channel, in the names-only and shared-name projects |
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
@@ -294,6 +295,49 @@ async fn search_answers_questions_that_take_several_steps() {
         total > 0,
         "mention derivation built no edges, so nothing here can measure the graph channel"
     );
+
+    // `PASSAGES`: the same memories in a second project whose vectors embed
+    // the topic's name, asked every question alongside this one. See
+    // `channels::Paired`.
+    if std::env::var("PASSAGES").is_ok() {
+        let other = Engine::open(
+            &workspace,
+            &format!("{project}-named"),
+            profile,
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the named project");
+        write_corpus(&other, &corpus).await;
+        assert_eq!(
+            engine.passage(),
+            pamin_index::Passage::Content,
+            "the baseline project was built from content"
+        );
+        assert_eq!(
+            other.passage(),
+            pamin_index::Passage::Named,
+            "the new project embeds names"
+        );
+        let mut paired = channels::Paired::default();
+        for query in &corpus.queries {
+            let before = engine
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let after = other
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            paired.observe(&query.group, &before, &after, |into, ranking| {
+                score(into, query, ranking)
+            });
+        }
+        paired.report(&format!(
+            "vectors embedding the topic name, MuSiQue, {named}"
+        ));
+        return;
+    }
 
     if std::env::var("GRAPH_TO_RERANK").is_ok() {
         graph_to_rerank(&engine, &workspace, &corpus, &named).await;

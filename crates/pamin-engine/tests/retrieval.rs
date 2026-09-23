@@ -238,6 +238,51 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
+    // `PASSAGES`: the same memories in a second project whose vectors embed
+    // the topic's name, asked every question alongside this one. See
+    // `channels::Paired`.
+    if std::env::var("PASSAGES").is_ok() {
+        let mut other = Engine::open(
+            &workspace,
+            &format!("{project}-named"),
+            profile,
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the named project");
+        write_corpus(&mut other, &corpus).await;
+        assert_eq!(
+            engine.passage(),
+            pamin_index::Passage::Content,
+            "the baseline project was built from content"
+        );
+        assert_eq!(
+            other.passage(),
+            pamin_index::Passage::Named,
+            "the new project embeds names"
+        );
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let mut paired = channels::Paired::default();
+        for query in &queries {
+            let before = engine
+                .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let after = other
+                .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+            paired.observe(&query.group, &before, &after, |into, ranking| {
+                into.add(ranking, relevant.len(), |topic| relevant.contains(topic));
+            });
+        }
+        paired.report(&format!(
+            "vectors embedding the topic name, own corpus, {named}"
+        ));
+        return;
+    }
+
     // `RERANK_RULES` asks which candidates the reranker should be allowed to
     // move, which is a question the tier table cannot ask: it compares tiers
     // under one rule, and this compares rules under one tier.

@@ -505,20 +505,27 @@ fn fetch(dir: &Path) {
 /// Scores one ranking into every group.
 fn score(groups: &mut BTreeMap<String, Scores>, query: &Query<'_>, ranked: &[String]) {
     for group in GROUPS {
-        let (relevant, drop) = query.relevant(group);
-        let kept: Vec<String> = match drop {
-            None => ranked.to_vec(),
-            Some(key) => ranked
-                .iter()
-                .filter(|hit| hit.as_str() != key)
-                .cloned()
-                .collect(),
-        };
-        groups
-            .entry(group.to_string())
-            .or_default()
-            .add(&kept, relevant.len(), |topic| relevant.contains(topic));
+        score_group(
+            groups.entry(group.to_string()).or_default(),
+            query,
+            group,
+            ranked,
+        );
     }
+}
+
+/// Scores one ranking for one group, dropping what that group drops.
+fn score_group(into: &mut Scores, query: &Query<'_>, group: &str, ranked: &[String]) {
+    let (relevant, drop) = query.relevant(group);
+    let kept: Vec<String> = match drop {
+        None => ranked.to_vec(),
+        Some(key) => ranked
+            .iter()
+            .filter(|hit| hit.as_str() != key)
+            .cloned()
+            .collect(),
+    };
+    into.add(&kept, relevant.len(), |topic| relevant.contains(topic));
 }
 
 /// The channel diagnostic, plus the two things only this corpus can answer.
@@ -1099,6 +1106,52 @@ async fn search_reaches_across_languages() {
         .expect("open the engine");
 
     write_corpus(&engine, &corpus).await;
+
+    // `PASSAGES`: the same memories in a second project whose vectors embed
+    // the topic's name, asked every question alongside this one. See
+    // `channels::Paired`.
+    if std::env::var("PASSAGES").is_ok() {
+        let other = Engine::open(
+            &workspace,
+            &format!("{project}-named"),
+            profile,
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the named project");
+        write_corpus(&other, &corpus).await;
+        assert_eq!(
+            engine.passage(),
+            pamin_index::Passage::Content,
+            "the baseline project was built from content"
+        );
+        assert_eq!(
+            other.passage(),
+            pamin_index::Passage::Named,
+            "the new project embeds names"
+        );
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let mut paired = channels::Paired::default();
+        for query in &queries {
+            let before = engine
+                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let after = other
+                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            for group in GROUPS {
+                paired.observe(group, &before, &after, |into, ranking| {
+                    score_group(into, query, group, ranking)
+                });
+            }
+        }
+        paired.report(&format!(
+            "vectors embedding the topic name, XQuAD-R, {named}"
+        ));
+        return;
+    }
 
     if let Some(settings) = sweep() {
         println!("\n  setting              cross nDCG@10   same nDCG@10   cross recall@50");
