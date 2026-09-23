@@ -607,6 +607,32 @@ needs no model: fifty thousand documents reused all fifty thousand. ONNX
 Runtime's memory arena is off, which took a hundred `accurate` searches from
 6,208 MB to 5,914 MB anonymous with bit-identical scores.
 
+Both tables above were taken with every model loaded from the file the hub
+serves, which ONNX Runtime copies onto the heap. They have not been re-run
+since the change below.
+
+**The weights are mapped now, not copied.** On the CPU each model loads from a
+copy the runtime maps from disk -- written once beside the download; see
+`crates/pamin-index/src/prepared.rs` -- and
+`crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
+and `Embedder::load`. Each load runs in a fresh process, and what is counted
+is live anonymous memory with the model loaded, after `malloc_trim`, in MiB as
+the test prints it:
+
+| model | from the download | from the copy | the copy's data file |
+| --- | --- | --- | --- |
+| `accurate` reranker | 822 | **271** | 833 |
+| BGE-M3, the `accuracy` embedder | 824 | **272** | 832 |
+| `fast` reranker | 385 | **268** | 133 |
+
+Every score and every vector is bit-identical, and the figures repeated to the
+megabyte across two runs. What the copy leaves is mostly not the weights: a
+bare runtime session adds 139 MB loading the `fast` reranker's download and
+12 MB loading its copy, so most of the 268 is what a load holds besides its
+session. The data file is the price, on disk rather than in memory -- larger
+than the model it came from, because the packed weights are stored beside the
+originals.
+
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
 evaluation workspace, 1.7 GB across its projects:

@@ -23,6 +23,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 | | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
+| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy |
 | | `PAMIN_ACCEPT_NONCOMMERCIAL` | unset | Acknowledge the `noncommercial` tier's CC-BY-NC-4.0 terms, which stops the notice printing |
 
 The JSON is compact because the usual caller pays for every token of it, and
@@ -80,6 +81,24 @@ rather than an idle core. Splitting the cores between callers instead of
 between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
 whose default is what the library already did.
+
+On the CPU, the first load of a model writes a second copy of it into
+`models/prepared/`, and every load after that reads the copy. The copy is the
+runtime's own optimized form of the graph with its weights in a separate data
+file, which the runtime maps from disk instead of copying onto the heap: the
+`accurate` reranker holds 271 MB of live memory rather than 822, the `accuracy`
+embedder 272 rather than 824, with scores and vectors bit-identical (see
+[measured.md](measured.md)). What it costs is disk. Each copy is larger than the
+model it came from, because the weights are also stored in the layout the CPU's
+kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
+as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
+it makes that first load slower, 5.1 s for `accurate`. A copy belongs to the
+runtime version and the CPU that wrote it, so an upgrade, or a model directory
+moved to a different CPU, writes a new one and leaves the old one in place; it
+is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
+from the download, for a disk that cannot spare the second copy. When a copy
+cannot be written -- a full or read-only disk -- the model loads from the
+download anyway and the log says why.
 
 The reranker runs on a GPU when the machine has one, with no flag and no
 separate build. Each platform's inference runtime carries the accelerator that
