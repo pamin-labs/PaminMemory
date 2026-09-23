@@ -101,11 +101,12 @@ pub struct Routes {
 const CASCADE: [usize; 5] = [4, 6, 8, 10, 12];
 
 /// The gates, each a rule on the fused list before the pass.
-const GATES: [&str; 4] = [
+const GATES: [&str; 5] = [
     "skip: top has lexical and another channel",
     "skip: top found by three channels",
     "skip: top is first in both lexical channels",
     "skip: three channels agree, no graph find",
+    "skip: first in both lexical, no graph find",
 ];
 
 impl Default for Routes {
@@ -168,14 +169,19 @@ impl Routes {
             matches!(channel, Channel::LexicalSegmented | Channel::LexicalNgram)
         };
         let graph_find = replayed.movable.iter().any(|at| *at >= replayed.head);
+        let exact = top
+            .iter()
+            .filter(|(channel, rank)| lexical(channel) && *rank == 1)
+            .count()
+            == 2;
         let skips = [
             top.iter().any(|(channel, _)| lexical(channel)) && top.len() >= 2,
             top.len() >= 3,
-            top.iter()
-                .filter(|(channel, rank)| lexical(channel) && *rank == 1)
-                .count()
-                == 2,
+            exact,
             top.len() >= 3 && !graph_find,
+            // A graph find is the sign of a question that needs another
+            // memory, and the pass is what brings it up -- so never skip it.
+            exact && !graph_find,
         ];
 
         let fused = replayed.fused.clone();
