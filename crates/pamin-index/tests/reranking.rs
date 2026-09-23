@@ -22,12 +22,7 @@ use pamin_index::{Licence, Rerank, Reranker};
 
 /// Every tier that loads a model, so a new one is measured only after it has
 /// been shown to work at all.
-const TIERS: &[Rerank] = &[
-    Rerank::Fast,
-    Rerank::Accurate,
-    Rerank::Balanced,
-    Rerank::Typed,
-];
+const TIERS: &[Rerank] = &[Rerank::Fast, Rerank::Accurate, Rerank::Balanced];
 
 #[test]
 #[ignore = "downloads reranker model weights"]

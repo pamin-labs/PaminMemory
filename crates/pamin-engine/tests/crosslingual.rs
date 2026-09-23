@@ -1229,7 +1229,6 @@ async fn search_reaches_across_languages() {
             Rerank::Balanced,
             Rerank::Accurate,
             Rerank::Noncommercial,
-            Rerank::Typed,
         ];
 
         // Kept so the tiers can be compared against each other with paired

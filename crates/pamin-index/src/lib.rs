@@ -10,7 +10,6 @@ mod inference;
 pub mod projection;
 pub mod reranking;
 pub mod segmentation;
-mod typed;
 
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Profile};
@@ -21,4 +20,3 @@ pub use projection::{
 };
 pub use reranking::{Licence, Ranked, Rerank, Reranked, Reranker};
 pub use segmentation::{Segmenter, detect_language};
-pub use typed::Judge;
