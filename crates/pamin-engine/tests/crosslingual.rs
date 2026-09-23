@@ -155,6 +155,11 @@
 //! embeddings and the indexed workspace between runs, which is the difference
 //! between minutes and most of an hour.
 //!
+//! The shipped path's per-question scores are saved beside the workspace, by
+//! project, and `AGAINST=<profile>` pairs a run with that profile's saved run
+//! over the same corpus, question by question -- how a change of embedding
+//! model is read on the path a user gets.
+//!
 //! `XQUAD_ALL_QUERIES=1` asks every question in all eleven languages, 13,090
 //! queries. The default asks each question in one language, rotating through
 //! the eleven, which is 1,190 queries covering every language and every
@@ -1478,6 +1483,22 @@ async fn search_reaches_across_languages() {
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
     report_reranking(&engine, Rerank::default(), queries.len());
+
+    // Kept, so a run under another profile can be paired with this one
+    // question by question; `AGAINST=<profile>` does the pairing, from that
+    // profile's saved run over the same corpus. See `scoring::save`.
+    scoring::save(&scoring::saved(workspace.root(), &project), &groups);
+    if let Ok(other) = std::env::var("AGAINST") {
+        let theirs = scoring::saved(
+            workspace.root(),
+            &format!("xquad-{other}-{}", corpus.fingerprint()),
+        );
+        scoring::against(
+            &format!("the shipped search path, {other} before and {named} after, XQuAD-R"),
+            &scoring::load(&theirs),
+            &groups,
+        );
+    }
     assert_floors(&named, &groups, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker. Forty seconds against the four

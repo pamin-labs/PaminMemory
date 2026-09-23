@@ -56,6 +56,8 @@ pub struct Scores {
     /// difference of means is a result -- see that module for why this project
     /// stopped reporting the means alone.
     pub per_query: Vec<f64>,
+    /// Every query's own recall, in the same order, for the same reason.
+    pub per_query_recall: Vec<f64>,
 }
 
 impl Scores {
@@ -135,11 +137,13 @@ impl Scores {
         let ndcg = if best == 0.0 { 0.0 } else { gained / best };
         self.ndcg += ndcg;
         self.per_query.push(ndcg);
-        self.recall += if judged == 0 {
+        let recall = if judged == 0 {
             0.0
         } else {
             found as f64 / judged as f64
         };
+        self.recall += recall;
+        self.per_query_recall.push(recall);
         self.deep += deep;
         self.with_work += usize::from(deep > 0);
         ndcg
@@ -154,6 +158,7 @@ impl Scores {
         self.deep += other.deep;
         self.with_work += other.with_work;
         self.per_query.extend(other.per_query);
+        self.per_query_recall.extend(other.per_query_recall);
     }
 
     pub fn mean_ndcg(&self) -> f64 {
@@ -169,6 +174,110 @@ impl Scores {
         }
         self.recall / self.queries as f64
     }
+}
+
+/// Where a run's per-question scores are kept, in `root`, for `project`.
+///
+/// Named by the project, which each harness names by profile and corpus
+/// fingerprint, so a file can only be paired with a run over the same
+/// questions.
+pub fn saved(root: &std::path::Path, project: &str) -> std::path::PathBuf {
+    root.join(format!("shipped-{project}.tsv"))
+}
+
+/// Writes every group's per-question nDCG and recall, one line a question in
+/// the order they were scored.
+///
+/// So that a run on another project over the same questions can be paired
+/// with this one later, rather than holding both projects open in one process
+/// -- two models and two indexes -- or at one moment, when another run may hold
+/// one of them. Written whole and renamed into place, so a run that dies
+/// leaves the previous file rather than half of a new one.
+pub fn save(path: &std::path::Path, groups: &std::collections::BTreeMap<String, Scores>) {
+    let mut lines = String::new();
+    for (group, scores) in groups {
+        for (ndcg, recall) in scores.per_query.iter().zip(&scores.per_query_recall) {
+            // `{}` on an `f64` is its shortest round-trip form, so what is
+            // read back is the same value, not one rounded to the table's.
+            lines.push_str(&format!("{group}\t{ndcg}\t{recall}\n"));
+        }
+    }
+    let partial = path.with_extension("partial");
+    std::fs::write(&partial, lines)
+        .unwrap_or_else(|error| panic!("writing {}: {error}", partial.display()));
+    std::fs::rename(&partial, path)
+        .unwrap_or_else(|error| panic!("naming {}: {error}", path.display()));
+    println!("  per-question scores saved to {}", path.display());
+}
+
+/// Reads back what [`save`] wrote. `deep` and `with_work` are not kept, so
+/// they read as zero.
+pub fn load(path: &std::path::Path) -> std::collections::BTreeMap<String, Scores> {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    let mut groups: std::collections::BTreeMap<String, Scores> = Default::default();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [group, ndcg, recall] = fields[..] else {
+            panic!("{}: not a saved score: {line:?}", path.display());
+        };
+        let value = |field: &str| -> f64 {
+            field
+                .parse()
+                .unwrap_or_else(|_| panic!("{}: not a number: {line:?}", path.display()))
+        };
+        let into = groups.entry(group.to_string()).or_default();
+        into.queries += 1;
+        into.ndcg += value(ndcg);
+        into.recall += value(recall);
+        into.per_query.push(value(ndcg));
+        into.per_query_recall.push(value(recall));
+    }
+    groups
+}
+
+/// This run against a saved one over the same questions, query by query, in
+/// both metrics: the table a change of model rests on.
+///
+/// Panics when a group is missing from either side or holds a different
+/// number of questions -- see `statistics::compare` -- because a pairing of
+/// two different question sets is not a comparison of anything.
+pub fn against(
+    title: &str,
+    before: &std::collections::BTreeMap<String, Scores>,
+    after: &std::collections::BTreeMap<String, Scores>,
+) {
+    use crate::statistics::compare;
+
+    let mut names: Vec<&String> = before.keys().chain(after.keys()).collect();
+    names.sort();
+    names.dedup();
+    println!("\n  {title}");
+    println!("  group            queries   nDCG@{NDCG_AT} before    after   paired");
+    for group in &names {
+        let (Some(was), Some(is)) = (before.get(*group), after.get(*group)) else {
+            panic!("{group} was scored on one side only");
+        };
+        println!(
+            "  {group:<15}  {:>7}   {:>12.4}   {:>6.4}   {}",
+            is.queries,
+            was.mean_ndcg(),
+            is.mean_ndcg(),
+            compare(&was.per_query, &is.per_query)
+        );
+    }
+    println!("  group            queries   recall@{RECALL_AT} before  after   paired");
+    for group in &names {
+        let (was, is) = (&before[*group], &after[*group]);
+        println!(
+            "  {group:<15}  {:>7}   {:>12.4}   {:>6.4}   {}",
+            is.queries,
+            was.mean_recall(),
+            is.mean_recall(),
+            compare(&was.per_query_recall, &is.per_query_recall)
+        );
+    }
+    println!();
 }
 
 #[cfg(test)]
@@ -267,6 +376,35 @@ mod tests {
             scores.mean_ndcg()
         );
         assert!((scores.mean_recall() - 0.2).abs() < 1e-12);
+    }
+
+    /// What is saved reads back as the same values, per question and in
+    /// order, so a pairing of two runs compares what each measured rather
+    /// than a rounding of it.
+    #[test]
+    fn saved_scores_read_back_exactly() {
+        let mut first = Scores::default();
+        first.add(&ranking(&["a", "x", "y"]), 5, |topic| topic == "a");
+        first.add(&ranking(&["x", "b"]), 3, |topic| topic == "b");
+        let mut second = Scores::default();
+        second.add(&ranking(&["x", "c"]), 1, |topic| topic == "c");
+        let groups = std::collections::BTreeMap::from([
+            ("first".to_string(), first),
+            ("second".to_string(), second),
+        ]);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = saved(dir.path(), "project");
+        save(&path, &groups);
+        let read = load(&path);
+
+        assert_eq!(read.len(), 2);
+        for (group, scores) in &groups {
+            assert_eq!(read[group].queries, scores.queries);
+            assert_eq!(read[group].per_query, scores.per_query);
+            assert_eq!(read[group].per_query_recall, scores.per_query_recall);
+            assert_eq!(read[group].mean_ndcg(), scores.mean_ndcg());
+        }
     }
 
     /// What is inside the shortlist but below rank ten is a reranker's to fix.
