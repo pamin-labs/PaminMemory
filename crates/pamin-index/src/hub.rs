@@ -6,8 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use fastembed::TokenizerFiles;
-
 use crate::error::{IndexError, Result};
 
 /// One model repository on the hub, cached under a workspace's model directory.
@@ -50,17 +48,6 @@ impl Repository {
     pub(crate) fn get(&self, file: &str) -> Result<PathBuf> {
         self.repo.get(file).map_err(|error| {
             IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
-        })
-    }
-
-    /// The four files a tokenizer is built from, read into memory.
-    pub(crate) fn tokenizer(&self) -> Result<TokenizerFiles> {
-        let read = |file: &str| -> Result<Vec<u8>> { Ok(std::fs::read(self.get(file)?)?) };
-        Ok(TokenizerFiles {
-            tokenizer_file: read("tokenizer.json")?,
-            config_file: read("config.json")?,
-            special_tokens_map_file: read("special_tokens_map.json")?,
-            tokenizer_config_file: read("tokenizer_config.json")?,
         })
     }
 }
