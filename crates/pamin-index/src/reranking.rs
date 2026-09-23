@@ -808,7 +808,10 @@ impl Reranker {
         }
         let (model, device) = match loaded {
             Some(found) => found,
-            None => (session(Device::Cpu, Vec::new())?, Device::Cpu),
+            None => (
+                session(Device::Cpu, vec![crate::inference::cpu()])?,
+                Device::Cpu,
+            ),
         };
         tracing::info!(
             tier = tier.name(),

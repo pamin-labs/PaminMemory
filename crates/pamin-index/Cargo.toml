@@ -24,6 +24,10 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 whatlang = { workspace = true }
 zvec-rust = { workspace = true }
+# The inference runtime `fastembed` runs on, named directly to configure the
+# CPU execution provider (see `inference::cpu`) and, per platform below, to
+# ask for a GPU one.
+ort = { workspace = true }
 
 # A GPU, when the machine has one, with no build flag: each platform's ONNX
 # Runtime build carries the accelerator that platform has, and it is tried at

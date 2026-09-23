@@ -175,7 +175,8 @@ impl Embedder {
             Profile::Accuracy => {
                 let mut options = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
                     .with_cache_dir(cache_dir.to_path_buf())
-                    .with_show_download_progress(false);
+                    .with_show_download_progress(false)
+                    .with_execution_providers(vec![crate::inference::cpu()]);
                 if let Some(threads) = threads {
                     options = options.with_intra_threads(threads);
                 }
@@ -186,7 +187,8 @@ impl Embedder {
             _ => {
                 let mut options = TextInitOptions::new(profile.model())
                     .with_cache_dir(cache_dir.to_path_buf())
-                    .with_show_download_progress(false);
+                    .with_show_download_progress(false)
+                    .with_execution_providers(vec![crate::inference::cpu()]);
                 if let Some(threads) = threads {
                     options = options.with_intra_threads(threads);
                 }
