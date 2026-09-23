@@ -1223,13 +1223,26 @@ async fn search_reaches_across_languages() {
         // which is a thing a measurement may do and a product may not without
         // being asked -- the gate is on the command, and this is the harness
         // that prices the tier the gate exists for.
-        let tiers = [
-            Rerank::Off,
-            Rerank::Fast,
-            Rerank::Balanced,
-            Rerank::Accurate,
-            Rerank::Noncommercial,
-        ];
+        // `TIERS=1` runs every tier; `TIERS=fast,accurate` runs those, with
+        // `off` always first because every row is also priced against it. The
+        // whole set is about two hours, and the question is usually about two.
+        let wanted = std::env::var("TIERS").expect("checked above");
+        let tiers: Vec<Rerank> = if wanted == "1" {
+            vec![
+                Rerank::Off,
+                Rerank::Fast,
+                Rerank::Balanced,
+                Rerank::Accurate,
+                Rerank::Noncommercial,
+            ]
+        } else {
+            std::iter::once(Rerank::Off)
+                .chain(wanted.split(',').map(|name| {
+                    Rerank::parse(name.trim())
+                        .unwrap_or_else(|| panic!("TIERS names an unknown tier: {name}"))
+                }))
+                .collect()
+        };
 
         // Kept so the tiers can be compared against each other with paired
         // counts rather than by subtracting two means. `off` is the first,
@@ -1262,6 +1275,38 @@ async fn search_reaches_across_languages() {
                     groups[group].mean_recall(),
                     statistics::compare(&baseline[group].per_query, &groups[group].per_query)
                 );
+            }
+        }
+
+        // Against the tier that ships, directly. "Each against `off`" cannot
+        // answer whether the default is the right tier: two tiers each compared
+        // with a third are not compared with each other, and a paired test
+        // needs the pair. This is the table a change of default rests on.
+        if let Some((_, _, shipped)) = priced.iter().find(|(tier, ..)| *tier == Rerank::default()) {
+            for group in GROUPS {
+                println!(
+                    "\n  every tier against the one that ships ({}), {group}, {named}",
+                    Rerank::default().name()
+                );
+                println!(
+                    "  tier                 nDCG@{NDCG_AT}   recall@{RECALL_AT}   ms   against shipped"
+                );
+                println!(
+                    "  -------------------------------------------------------------------------------"
+                );
+                for (tier, cost, groups) in &priced {
+                    if *tier == Rerank::default() {
+                        continue;
+                    }
+                    println!(
+                        "  {:<18}   {:>7.4}   {:>9.4}   {:>5.0}   {}",
+                        tier.name(),
+                        groups[group].mean_ndcg(),
+                        groups[group].mean_recall(),
+                        cost,
+                        statistics::compare(&shipped[group].per_query, &groups[group].per_query)
+                    );
+                }
             }
         }
 
