@@ -74,6 +74,12 @@ impl Device {
 /// shorter pairs. The embedder saves nothing measurable there, since a query
 /// is one short text; it takes the same setting because its largest batch is
 /// a bulk write's, which that arm does not exercise.
+///
+/// The arena holds activations. The weights are the other half, and loaded
+/// from the file the hub serves they are copied onto the heap: +664 MB
+/// anonymous for the `accurate` reranker's 570 MB export in a bare session.
+/// So a CPU session loads a prepared copy whose weights ONNX Runtime maps
+/// from disk instead, +11 MB in the same session -- see `crate::prepared`.
 pub(crate) fn cpu() -> fastembed::ExecutionProviderDispatch {
     ort::ep::CPU::default().with_arena_allocator(false).build()
 }

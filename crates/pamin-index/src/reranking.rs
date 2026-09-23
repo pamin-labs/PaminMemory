@@ -743,12 +743,18 @@ impl Reranker {
         let repository = Repository::open(cache_dir, tier.repository())?;
 
         let session = |device: Device, providers| -> Result<TextRerank> {
+            let source = repository.get(tier.onnx(device))?;
             TextRerank::try_new_from_user_defined(
                 UserDefinedRerankingModel::new(
-                    // By path rather than by bytes: the session maps the file,
-                    // and handing it a copy of half a gigabyte first serves no
-                    // purpose.
-                    OnnxSource::File(repository.get(tier.onnx(device))?),
+                    // By path rather than by bytes, so half a gigabyte is not
+                    // read into memory only to be copied again. The file the
+                    // hub serves is still copied onto the heap whole; on the
+                    // CPU, the prepared copy is mapped instead -- see
+                    // `crate::prepared` for what that saves.
+                    OnnxSource::File(match device {
+                        Device::Cpu => crate::prepared::prepared(&source, cache_dir),
+                        _ => source,
+                    }),
                     repository.tokenizer()?,
                 ),
                 {

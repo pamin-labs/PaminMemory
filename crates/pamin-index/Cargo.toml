@@ -19,6 +19,9 @@ icu_segmenter = { workspace = true }
 icu_provider = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Keys a prepared copy of a model by what it was written for (see
+# `prepared.rs`). Already `pamin-engine`'s, so this adds no lockfile entry.
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
