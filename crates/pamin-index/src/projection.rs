@@ -694,6 +694,17 @@ const GRAPH_EFFORT: i32 = 500;
 /// spends 35 ms embedding before it gets here.
 const SEARCH_EFFORT: i32 = 700;
 
+/// Overrides [`SEARCH_EFFORT`], for the sweep that settles it.
+const PAMIN_SEARCH_EFFORT: &str = "PAMIN_SEARCH_EFFORT";
+
+fn search_effort() -> i32 {
+    std::env::var(PAMIN_SEARCH_EFFORT)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|effort| *effort > 0)
+        .unwrap_or(SEARCH_EFFORT)
+}
+
 impl ProjectionIndex {
     /// Opens the index at `dir`, creating it if absent.
     ///
@@ -1266,7 +1277,7 @@ impl Projection for ProjectionIndex {
         // `VectorStorage::refines` gives: asking for one over unquantized
         // vectors fails outright rather than being ignored.
         search.set_hnsw_params(HnswQueryParams::new(
-            SEARCH_EFFORT,
+            search_effort(),
             0.0,
             false,
             self.storage.refines(),
