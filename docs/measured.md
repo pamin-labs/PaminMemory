@@ -633,6 +633,39 @@ session. The data file is the price, on disk rather than in memory -- larger
 than the model it came from, because the packed weights are stored beside the
 originals.
 
+**And one vocabulary between them, not one each.** What a copy leaves is mostly
+tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
+vocabulary, and loading it adds 280 MiB anonymous each time -- measured by
+loading BGE-M3's `tokenizer.json` and then the `accurate` reranker's in one
+process, 280 MiB for each. The `accurate`, `balanced` and `noncommercial`
+rerankers describe exactly BGE-M3's model, every piece and score bit for bit, and `fast`
+differs only in leaving a default flag unstated, so a loaded model now finds
+one already built rather than building its own; see
+`crates/pamin-index/src/tokenizer.rs`.
+`crates/pamin-index/tests/shared_vocabulary.rs` measures it with BGE-M3 and
+the `accurate` reranker both loaded, as a server searching at the defaults
+holds them, through `Embedder::load` and `Reranker::load` against `fastembed`
+loading the same prepared copies the way the product did before. Each arm is a
+fresh process; nine rounds across two runs, on four cores shared with another
+measurement, in MiB:
+
+| | `fastembed` | shared vocabulary |
+| --- | --- | --- |
+| live, after `malloc_trim` | 539 -- 582, median 582 | **292 -- 330, median 330** |
+| before the trim | 778 in every round | 339 -- 346 |
+| seconds to load both | 3.30 -- 3.66 | 1.77 -- 1.95 |
+
+Every vector and every score is bit-identical: 18,432 embedding values over
+eighteen texts and 65 `accurate` scores, over eight scripts, runs of spaces,
+trailing and leading spaces, empty texts and one past both length limits --
+and 65 scores each for `balanced`, `noncommercial` and `fast`, from their
+downloads. Before the trim the gap is wider than one vocabulary; `fastembed`'s
+loader clones each tokenizer it configures and drops the original, which would
+leave that much freed and not yet returned, but that was not measured
+separately. Twenty rerank passes of sixteen pairs of about 200 tokens showed no speed
+change: the per-round median moved between -22% and +9% against `fastembed`,
+median -2.5%, while one arm's own rounds moved by up to 40%.
+
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
 evaluation workspace, 1.7 GB across its projects:
