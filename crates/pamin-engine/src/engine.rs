@@ -1334,19 +1334,8 @@ impl Engine {
             return Ok(hits);
         }
 
-        let head = rerank.depth().min(hits.len());
-        let unlexical: Vec<usize> = (0..head)
-            .filter(|position| {
-                !hits[*position].result.why.iter().any(|why| {
-                    matches!(
-                        why,
-                        Why::Channel { channel, .. }
-                            if *channel == Channel::LexicalSegmented
-                                || *channel == Channel::LexicalNgram
-                    )
-                })
-            })
-            .collect();
+        let traces: Vec<&[Why]> = hits.iter().map(|hit| hit.result.why.as_slice()).collect();
+        let unlexical = rerankable(&traces, rerank);
         if !can_be_seen(&unlexical, limit) {
             return Ok(only(hits, limit));
         }
@@ -2014,6 +2003,64 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
     text
 }
 
+/// How many candidates only the graph found are shown to the reranker beside
+/// the head.
+///
+/// The graph finds what the other channels cannot -- the memory a question
+/// needs because another memory names it -- and fusion, weighing it at 0.30
+/// and flooring what nothing corroborates, ranks those finds far below the
+/// head: on MuSiQue's 1,000 two-hop questions, 153 supporting titles were
+/// found by the graph alone and not one reached the reranker's twenty, at a
+/// median fused rank of 99. The reranker is the one stage that is shown the
+/// memory that reached them, so it is the one that can judge them. Handing it
+/// the strongest ten lifts nDCG@10 from 0.6573 to 0.6834 (108 questions
+/// better, 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435; five
+/// was worth +0.0234. Chosen by five-fold cross-validation, every fold picking
+/// ten. The cost is ten more pairs a search, only where there are edges: a
+/// project with none has no graph candidates and pays nothing.
+const GRAPH_CANDIDATES: usize = 10;
+
+/// The positions of a fused list the reranker is shown: the head's candidates
+/// no lexical channel found, and the [`GRAPH_CANDIDATES`] strongest below the
+/// head that only the graph found. Ascending.
+///
+/// One rule, public so the harnesses that replay a search from its trace use
+/// this rather than a copy that could drift from it. `traces` is each fused
+/// result's `why`, in fused order.
+pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
+    let head = rerank.depth().min(traces.len());
+    let lexical = |why: &[Why]| {
+        why.iter().any(|entry| {
+            matches!(
+                entry,
+                Why::Channel { channel, .. }
+                    if *channel == Channel::LexicalSegmented || *channel == Channel::LexicalNgram
+            )
+        })
+    };
+    let graph_only = |why: &[Why]| -> Option<f32> {
+        let mut graph = None;
+        for entry in why {
+            if let Why::Channel { channel, score, .. } = entry {
+                if *channel != Channel::Graph {
+                    return None;
+                }
+                graph = Some(score.unwrap_or(0.0));
+            }
+        }
+        graph
+    };
+
+    let mut positions: Vec<usize> = (0..head).filter(|at| !lexical(traces[*at])).collect();
+    let mut graph: Vec<(usize, f32)> = (head..traces.len())
+        .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
+        .collect();
+    graph.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    positions.extend(graph.into_iter().take(GRAPH_CANDIDATES).map(|(at, _)| at));
+    positions.sort_unstable();
+    positions
+}
+
 /// How deep to fuse when a reranker is going to reorder the head.
 ///
 /// A cross-encoder can only reorder what it is shown, so the list it works on
@@ -2029,10 +2076,16 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// [`Depths::channel`] candidates and all of them are already resolved against
 /// the ledger. What grows is the hydration, by the difference between the two
 /// numbers.
+///
+/// And then the whole list rather than the head: the reranker is also shown the
+/// strongest candidates only the graph found, wherever fusion put them (see
+/// [`GRAPH_CANDIDATES`]), so a list cut at the head would have cut them off.
+/// Every fused result is already resolved by then; what the depth costs is one
+/// `SearchHit` a result, and the caller's limit is applied after the pass.
 fn fused_for(limit: u32, rerank: Rerank) -> u32 {
     match rerank {
         Rerank::Off => limit,
-        tier => limit.max(tier.depth() as u32),
+        _ => u32::MAX,
     }
 }
 
@@ -2106,8 +2159,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle, path_strength,
-        runs_of_tokens, seed_relevance, shown,
+        GRAPH_CANDIDATES, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle,
+        path_strength, rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2325,6 +2378,55 @@ mod tests {
         }
     }
 
+    /// The reranker is shown the head's unlexical candidates and the strongest
+    /// graph-only ones below it -- not a lexical one, not a corroborated one
+    /// from below the head, and no more graph ones than the cap.
+    #[test]
+    fn the_reranker_is_shown_the_unlexical_head_and_the_strongest_graph_finds() {
+        use pamin_core::Why;
+
+        let channel = |channel, score| Why::Channel {
+            channel,
+            rank: 1,
+            score: Some(score),
+            weight: 1.0,
+            contribution: 0.0,
+        };
+        let head = Rerank::Accurate.depth();
+        let mut traces: Vec<Vec<Why>> = Vec::new();
+        for at in 0..head {
+            // Every other head position has lexical evidence.
+            traces.push(if at % 2 == 0 {
+                vec![channel(Channel::LexicalSegmented, 1.0)]
+            } else {
+                vec![channel(Channel::Vector, 0.5)]
+            });
+        }
+        // Below the head: a vector candidate, a corroborated graph one, and
+        // more graph-only ones than the cap, with increasing strength.
+        traces.push(vec![channel(Channel::Vector, 0.4)]);
+        traces.push(vec![
+            channel(Channel::Vector, 0.4),
+            channel(Channel::Graph, 0.9),
+        ]);
+        let first_graph = traces.len();
+        for strength in 0..GRAPH_CANDIDATES + 3 {
+            traces.push(vec![channel(Channel::Graph, strength as f32 / 100.0)]);
+        }
+        let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
+
+        let shown = rerankable(&borrowed, Rerank::Accurate);
+        let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
+        assert_eq!(
+            head_shown,
+            (0..head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
+        );
+        let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
+        // The strongest GRAPH_CANDIDATES, which are the last ones pushed.
+        let strongest = (first_graph + 3..first_graph + GRAPH_CANDIDATES + 3).collect::<Vec<_>>();
+        assert_eq!(below, strongest);
+    }
+
     /// What this process remembers about the widest name only ever grows.
     ///
     /// The direction matters more than the caching does. Remembering a value
@@ -2347,7 +2449,7 @@ mod tests {
     /// A caller wanting more than the reranker reads still gets what it asked.
     #[test]
     fn fusing_for_a_reranker_never_shortens_what_was_asked_for() {
-        assert_eq!(fused_for(500, Rerank::Fast), 500);
+        assert!(fused_for(500, Rerank::Fast) >= 500);
         // Nothing is going to reorder it, so nothing needs to be fused deep.
         assert_eq!(fused_for(5, Rerank::Off), 5);
     }
