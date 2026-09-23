@@ -363,6 +363,17 @@ pub enum Combine {
     /// a cosine, and the top is still this query's best candidate. So it keeps
     /// what a min-max over the candidates throws away -- how far the worst of
     /// them is from nothing -- without needing a maximum BM25 does not have.
+    ///
+    /// **Measured, and it loses by a fifth.** Own corpus, fusion alone:
+    /// cross-lingual 0.7791 to 0.5744, 0 queries better and 37 worse, at the
+    /// paper's own alpha; no lexical or graph weight in the sweep recovers
+    /// it. The reason is the embedding model rather than the corpus: a
+    /// query's fifty vector candidates sit in the top 17% of the distance
+    /// from minus one to the best of them (median, `CHANNELS`), where BM25's
+    /// sit across three quarters of theirs. Read from the infimum, the vector
+    /// channel's own ordering is flattened to a few hundredths and the
+    /// lexical and graph channels decide among its candidates -- the
+    /// anisotropy of contrastively trained embedders.
     Convex,
     /// [`Banded`](Self::Banded), with a candidate's place inside its channel's
     /// band read on theoretical min-max rather than on the candidates' own.
@@ -371,6 +382,10 @@ pub enum Combine {
     /// that is about the band: a channel's worst candidate no longer lands on
     /// the bottom of the band by construction, so a channel whose whole list
     /// is close to its best stays near the top of it.
+    ///
+    /// **Measured, and worse than `Convex`**: 0.4214 cross-lingual on the own
+    /// corpus against the shipped 0.7791, for the same reason -- the vector
+    /// channel's candidates all land at the top of its band.
     BandedTheoretical,
 }
 
