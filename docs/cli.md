@@ -402,8 +402,11 @@ ranking internals it has no way to evaluate.
 | `fast` | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
 | `accurate` | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
 
-All three rows are one run over the same 1,190 queries, so they can be read
-against each other; none of them can be read against a figure published before
+All three rows are one run over the same 1,190 queries, taken when a tier
+reranked twenty candidates; it now reranks thirty, which the `accurate` tier
+turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
+model pairs, and whose wall time has not been re-taken on a quiet machine. The
+rows can be read against each other; none of them can be read against a figure published before
 this table, and the `off` and `fast` rows moved when the fusion layer changed
 underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
 `p = 0.0001` for both tiers; same-language `p = 0.0008` for `fast` and not
