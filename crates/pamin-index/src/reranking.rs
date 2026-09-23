@@ -315,18 +315,6 @@ pub enum Rerank {
     /// is inside those terms depends on their situation and is not something
     /// this program can decide for them.
     Noncommercial,
-    /// A typed-decision model asked whether each candidate answers the query.
-    ///
-    /// Not a cross-encoder. It is here because it is the only candidate that
-    /// reports a **probability** rather than an uncalibrated logit, and because
-    /// the tier this project has shipped as its default since the beginning is a
-    /// 2021 model on a 2021 training distribution while this sits on a 2025
-    /// architecture. Both of those are reasons to measure it, not reasons to
-    /// prefer it: it has never been trained on relevance and its card carries
-    /// no retrieval benchmark, so what this tier exists for is to find out.
-    ///
-    /// See [`crate::typed`] for the port, the prompt, and what is unmeasured.
-    Typed,
 }
 
 /// How many of the fused results a tier looks at.
@@ -458,7 +446,6 @@ impl Rerank {
             "accurate" => Some(Self::Accurate),
             "balanced" => Some(Self::Balanced),
             "noncommercial" => Some(Self::Noncommercial),
-            "typed" => Some(Self::Typed),
             _ => None,
         }
     }
@@ -470,7 +457,6 @@ impl Rerank {
             Self::Accurate => "accurate",
             Self::Balanced => "balanced",
             Self::Noncommercial => "noncommercial",
-            Self::Typed => "typed",
         }
     }
 
@@ -478,7 +464,7 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate | Self::Balanced | Self::Noncommercial | Self::Typed => {
+            Self::Fast | Self::Accurate | Self::Balanced | Self::Noncommercial => {
                 tuned("PAMIN_RERANK_DEPTH", DEPTH)
             }
         }
@@ -512,7 +498,6 @@ impl Rerank {
             Self::Noncommercial => Some(Licence::NonCommercial),
             // Apache-2.0 on the export and Apache-2.0 upstream. An independent
             // port rather than an official release, which `NOTICE` says.
-            Self::Typed => Some(Licence::Permissive),
         }
     }
 
@@ -523,7 +508,6 @@ impl Rerank {
             Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
             Self::Balanced => "onnx-community/gte-multilingual-reranker-base",
             Self::Noncommercial => "jinaai/jina-reranker-v2-base-multilingual",
-            Self::Typed => crate::typed::REPOSITORY,
         }
     }
 
@@ -540,11 +524,6 @@ impl Rerank {
             // One int8 export, not one per instruction set, so there is
             // nothing to detect at runtime the way `fast` has to.
             Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_int8.onnx",
-            // Not fetched through this path: the typed judge loads its own
-            // graph, tokenizer and prompt limits, because it needs three files
-            // this one does not know about and a session `fastembed` cannot
-            // build. See `crate::typed`.
-            Self::Typed => unreachable!("the typed judge fetches its own files"),
             Self::Fast => {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -667,25 +646,9 @@ pub struct Ranked {
     pub score: f32,
 }
 
-/// What actually scores a pair.
-///
-/// Two shapes, not one, because the tiers are no longer all the same kind of
-/// model. A cross-encoder takes a pair and returns a logit; a typed judge takes
-/// a prompt with markers and returns a probability. Keeping the difference here
-/// rather than in the caller is what lets `Rerank` stay a flat set of tiers and
-/// `search_reranked` stay one code path -- which matters because that path is
-/// the one every figure this project publishes is measured through.
-enum Backend {
-    /// Driven by the embedding library's reranking loader.
-    CrossEncoder(TextRerank),
-    /// Driven by a raw session, because the library's loader cannot express a
-    /// graph with marker positions and a question type.
-    Typed(crate::typed::Judge),
-}
-
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
-    model: Backend,
+    model: TextRerank,
     tier: Rerank,
     scores: Scores,
     lengths: Lengths,
@@ -737,18 +700,6 @@ impl Reranker {
         debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
         std::fs::create_dir_all(cache_dir)?;
 
-        // The typed judge needs three files and a session shape the loader
-        // below cannot express, so it fetches its own. Everything after this
-        // point is the cross-encoder path.
-        if tier == Rerank::Typed {
-            return Ok(Self {
-                model: Backend::Typed(crate::typed::Judge::load(cache_dir)?),
-                tier,
-                scores: Scores::default(),
-                lengths: Lengths::default(),
-            });
-        }
-
         let repository = hf_hub::api::sync::ApiBuilder::new()
             .with_cache_dir(cache_dir.to_path_buf())
             .with_progress(false)
@@ -791,7 +742,7 @@ impl Reranker {
         .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
 
         Ok(Self {
-            model: Backend::CrossEncoder(model),
+            model,
             tier,
             scores: Scores::default(),
             lengths: Lengths::default(),
@@ -858,42 +809,14 @@ impl Reranker {
                 self.lengths.total += characters as u64;
                 self.lengths.longest = self.lengths.longest.max(characters);
             }
-            match &mut self.model {
-                Backend::CrossEncoder(model) => {
-                    let scored = model
-                        .rerank(query, &batch, false, Some(self::batch()))
-                        .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
-                    for result in scored {
-                        let position = unscored[result.index];
-                        scores[position] = Some(result.score);
-                        self.scores.put(keys[position], result.score);
-                    }
-                }
-                // A probability rather than a logit, and it goes into the same
-                // slot: everything downstream of here orders by "larger is
-                // better" and does not care which scale it is on. What the
-                // scale buys -- comparability across queries -- is used by
-                // whatever reads `Why::Reranked`, not by the sort.
-                //
-                // Not batched in chunks the way the cross-encoder is, because
-                // this batch is already the whole shortlist: the confinement
-                // rule hands over about fifteen candidates and the reference
-                // implementation stacks its questions into one pass too.
-                Backend::Typed(judge) => {
-                    let probabilities = judge.judge(query, &batch)?;
-                    if probabilities.len() != batch.len() {
-                        return Err(IndexError::Engine(format!(
-                            "the typed judge returned {} scores for {} candidates",
-                            probabilities.len(),
-                            batch.len()
-                        )));
-                    }
-                    for (at, probability) in probabilities.into_iter().enumerate() {
-                        let position = unscored[at];
-                        scores[position] = Some(probability);
-                        self.scores.put(keys[position], probability);
-                    }
-                }
+            let scored = self
+                .model
+                .rerank(query, &batch, false, Some(self::batch()))
+                .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
+            for result in scored {
+                let position = unscored[result.index];
+                scores[position] = Some(result.score);
+                self.scores.put(keys[position], result.score);
             }
         }
 
