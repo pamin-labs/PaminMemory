@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::{Channel, Derivation, EdgeKind, Why};
-use pamin_index::{Licence, Profile, Rerank};
+use pamin_index::{Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,11 +37,7 @@ pub struct Args {
     )]
     pub graph_depth: u8,
 
-    /// How much to spend reordering the results: off, fast, balanced,
-    /// accurate, or noncommercial.
-    ///
-    /// `noncommercial` needs `PAMIN_ACCEPT_NONCOMMERCIAL` as well, and says so
-    /// when it does not have it. Its weights are CC-BY-NC-4.0.
+    /// How much to spend reordering the results: off, fast, or accurate.
     ///
     /// A cross-encoder reads the query and a memory together, which is what
     /// lets it correct an order the channels got wrong and what makes it cost
@@ -236,50 +232,6 @@ pub fn render(results: &Results) -> String {
         .join("\n")
 }
 
-/// The environment variable that accepts a non-commercial tier's terms.
-const ACCEPT: &str = "PAMIN_ACCEPT_NONCOMMERCIAL";
-
-/// What to tell a caller about a tier's licence before its weights are
-/// fetched, if anything.
-///
-/// A tier whose weights are not free for commercial use is offered rather than
-/// withheld, and this is the notice that goes with offering it. It does not
-/// refuse. Naming the tier is already a deliberate act -- nothing reaches it
-/// by default and the default is permissive -- so the job here is to make sure
-/// nobody arrives at those terms without being told, not to decide on their
-/// behalf whether their use is within them. Only the caller knows that.
-///
-/// The wording is about an obligation rather than a hazard, and the difference
-/// is not cosmetic. Nothing here is going to break: the model loads, scores,
-/// and ranks like any other. What the licence does is restrict *what the
-/// output may be used for*, which is a question about the caller's situation
-/// and one this program has no way to answer. So the notice says what the
-/// terms are and whose responsibility it is to stay inside them.
-///
-/// Returned rather than printed, so the caller decides where it goes. That
-/// matters: it belongs where a person is reading and nowhere else, and a
-/// library that wrote to stderr on its own would put it in a resident server's
-/// log file, which is the one place it is certain to inform nobody.
-///
-/// `None` for every permissive tier and for `off`, which loads nothing.
-pub(crate) fn caution(tier: Rerank) -> Option<String> {
-    if tier.licence() != Some(Licence::NonCommercial) || std::env::var_os(ACCEPT).is_some() {
-        return None;
-    }
-
-    Some(format!(
-        "notice: the {tier} reranker tier downloads weights licensed CC-BY-NC-4.0. They \
-         permit research and personal use and do not permit commercial use. Nothing about \
-         the model is less reliable for it -- what the licence restricts is what you may \
-         use the results for, and whether your use falls inside those terms is yours to \
-         determine and yours to comply with.\n\
-         Set {ACCEPT}=1 once you have, to record that and stop showing this. Every other \
-         tier is permissively licensed: `off`, `fast`, `balanced`, `accurate`. See NOTICE \
-         for what each one downloads.",
-        tier = tier.name()
-    ))
-}
-
 /// Renders the trace as one line, so the reason a result is here is visible
 /// without asking for JSON.
 fn describe(why: &[Trace]) -> String {
@@ -313,86 +265,4 @@ fn describe(why: &[Trace]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A permissive tier says nothing, which is most of the point.
-    ///
-    /// Asserted alongside the notice because a `caution` that spoke about
-    /// every tier would pass the test below and make the notice worthless by
-    /// making it ordinary.
-    #[test]
-    fn a_permissively_licensed_tier_carries_no_notice() {
-        for tier in [
-            Rerank::Off,
-            Rerank::Fast,
-            Rerank::Balanced,
-            Rerank::Accurate,
-        ] {
-            assert_eq!(
-                caution(tier),
-                None,
-                "{} is permissively licensed and carries a notice",
-                tier.name()
-            );
-        }
-    }
-
-    /// The non-commercial tier carries one, and it states the terms.
-    ///
-    /// This is the whole notice -- nothing refuses and nothing else mentions
-    /// the licence at the moment of use -- so the test reads its contents
-    /// rather than only checking that some string came back. It has to name
-    /// the licence, say what it forbids, and say who is responsible for
-    /// staying inside it; a notice missing any of those informs nobody.
-    ///
-    /// It must also not read as a warning about reliability. The model is not
-    /// less trustworthy for its licence, and a notice that implied otherwise
-    /// would be inaccurate in the direction that makes people ignore notices.
-    ///
-    /// The environment is read rather than injected, so this can only assert
-    /// the notice when the variable is unset. It panics rather than passing
-    /// quietly in that case: a developer who set it in their own shell would
-    /// otherwise see this test assert nothing at all.
-    #[test]
-    fn the_non_commercial_tier_carries_a_notice_about_the_obligation() {
-        if std::env::var_os(ACCEPT).is_some() {
-            panic!(
-                "{ACCEPT} is set in this environment, so this test cannot check the notice. \
-                 Unset it and run again."
-            );
-        }
-
-        let notice = caution(Rerank::Noncommercial).expect("no notice for a CC-BY-NC tier");
-
-        for expected in [
-            "noncommercial",
-            "CC-BY-NC-4.0",
-            "do not permit commercial use",
-            "yours to comply with",
-            ACCEPT,
-            "NOTICE",
-        ] {
-            assert!(
-                notice.contains(expected),
-                "the notice does not mention {expected:?}: {notice}"
-            );
-        }
-    }
-
-    /// And it is a notice rather than a refusal: the tier still runs.
-    ///
-    /// Worth its own test because the first version of this refused, and the
-    /// difference between the two is the entire product decision. A tier
-    /// nobody can reach was not offered.
-    #[test]
-    fn carrying_a_notice_does_not_stop_the_tier_from_running() {
-        assert_eq!(
-            Rerank::parse(Rerank::Noncommercial.name()),
-            Some(Rerank::Noncommercial)
-        );
-    }
 }
