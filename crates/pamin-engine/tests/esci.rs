@@ -541,23 +541,23 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             );
         }
 
-        println!("\n  every fusion setting against the one that ships, {locale}, {named}");
-        println!(
-            "  setting                        nDCG@{NDCG_AT}   recall@{RECALL_AT}   against shipped"
+        channels::sweep_table(
+            &format!("{locale}, {named}"),
+            group,
+            &variants,
+            &offline
+                .iter()
+                .map(|row| row.get(locale))
+                .collect::<Vec<_>>(),
         );
-        println!("  ---------------------------------------------------------------------------");
-        for ((label, _), scores) in variants.iter().zip(&offline) {
-            let Some(scores) = scores.get(locale) else {
-                continue;
-            };
-            println!(
-                "  {label:<28}   {:>7.4}   {:>9.4}   {}",
-                scores.mean_ndcg(),
-                scores.mean_recall(),
-                statistics::compare(&group.per_query, &scores.per_query)
-            );
-        }
     }
+    channels::cross_validated(
+        &format!("ESCI, {named}"),
+        &LOCALES,
+        &whole,
+        &variants,
+        &offline,
+    );
     println!();
 }
 

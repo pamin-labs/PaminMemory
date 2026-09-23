@@ -38,7 +38,7 @@ pub const RECALL_AT: usize = 50;
 /// relevance -- binary because a hand-written corpus cannot honestly carry
 /// graded relevance. "This memory answers the query" is a judgement one author
 /// can make consistently; "this one answers it 0.7 as well" is not.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Scores {
     pub queries: usize,
     pub ndcg: f64,
