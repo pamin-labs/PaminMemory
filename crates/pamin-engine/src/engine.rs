@@ -1283,11 +1283,7 @@ impl Engine {
             .iter()
             .map(|position| {
                 let hit = &hits[*position];
-                shown(&hit.topic, &hit.state.content, &hit.result.why, |name| {
-                    hits.iter()
-                        .find(|other| other.topic == name)
-                        .map(|other| other.state.content.as_str())
-                })
+                shown(&hit.topic, &hit.state.content, hit.seed.as_deref())
             })
             .collect();
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
@@ -1445,10 +1441,15 @@ impl Engine {
             .take(limit as usize)
             .map(|result| {
                 let state = live.state(result.topic).expect("retained above");
+                let seed = paths
+                    .get(&result.topic)
+                    .and_then(|reached| live.state(reached.origin))
+                    .map(|origin| origin.content.clone());
                 SearchHit {
                     topic: live.topic_name(result.topic),
                     state: state.clone(),
                     result,
+                    seed,
                 }
             })
             .collect())
@@ -1799,6 +1800,11 @@ pub struct SearchHit {
     /// history; `pamin read --version-offset` is what reaches an earlier one.
     pub state: TopicState,
     pub result: FusedResult,
+    /// For a hit the graph reached, the content of the memory the walk started
+    /// from -- the sentence that makes this one relevant, which is why the
+    /// reranker is shown it. Taken from every state the search resolved rather
+    /// than from the results, so it does not depend on how many were asked for.
+    pub seed: Option<String>,
 }
 
 /// The channels' candidates in one order, best first, without duplicates.
@@ -1906,7 +1912,7 @@ fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
 
 /// What the reranker is shown for one candidate: its topic's name, its
 /// content, and -- for a candidate the graph reached -- the memory the walk
-/// started from, when that memory is in the list too.
+/// started from ([`SearchHit::seed`]).
 ///
 /// **Content alone is not enough to judge a memory by.** A memory's text
 /// leaves implicit what its topic's name says -- `platform rota` is "it pages
@@ -1923,20 +1929,8 @@ fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
 /// and none worse, and cross-lingual +0.0235, 16 better and 1 worse (family
 /// p = 0.035). Chosen in every fold of a five-fold cross-validation, +0.0129
 /// on the queries it did not choose on (p = 0.0005).
-///
-/// `content_of` reads another candidate's content by topic name, and answers
-/// `None` for a topic that is not in the list.
-fn shown<'a>(
-    topic: &str,
-    content: &str,
-    why: &[Why],
-    content_of: impl Fn(&str) -> Option<&'a str>,
-) -> String {
+fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
     let mut text = format!("{topic}: {content}");
-    let seed = why.iter().find_map(|why| match why {
-        Why::Path { from, .. } => content_of(from),
-        _ => None,
-    });
     if let Some(seed) = seed {
         text.push_str(". ");
         text.push_str(seed);
@@ -2046,43 +2040,17 @@ mod tests {
     /// the memory it was reached from -- the sentence that makes it relevant.
     #[test]
     fn a_candidate_is_shown_with_its_name_and_the_memory_that_reached_it() {
-        use pamin_core::{Derivation, EdgeKind, Why};
-
-        let path = Why::Path {
-            from: "incident escalation".into(),
-            via: "incident escalation".into(),
-            hops: 1,
-            asserted_from: "incident escalation".into(),
-            asserted_to: "platform rota".into(),
-            edge: EdgeKind::Mentions,
-            derivation: Derivation::Deterministic,
-        };
-        let listed = |name: &str| {
-            (name == "incident escalation").then_some("a sev one escalates to the platform rota")
-        };
-
         assert_eq!(
             shown(
                 "platform rota",
                 "it pages ines on weekends",
-                std::slice::from_ref(&path),
-                listed
+                Some("a sev one escalates to the platform rota")
             ),
             "platform rota: it pages ines on weekends. a sev one escalates to the platform rota"
         );
         // Not reached by the graph: the name and nothing else added.
         assert_eq!(
-            shown("platform rota", "it pages ines on weekends", &[], listed),
-            "platform rota: it pages ines on weekends"
-        );
-        // Reached from a memory that is not in the list: nothing to show.
-        assert_eq!(
-            shown(
-                "platform rota",
-                "it pages ines on weekends",
-                &[path],
-                |_| None
-            ),
+            shown("platform rota", "it pages ines on weekends", None),
             "platform rota: it pages ines on weekends"
         );
     }
