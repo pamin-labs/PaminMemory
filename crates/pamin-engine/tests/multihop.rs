@@ -43,11 +43,11 @@
 //! | variable | what it does |
 //! |---|---|
 //! | `MUSIQUE_DIR` | where cached pages are, instead of fetching them |
+//! | `MUSIQUE_QUESTIONS` | read only the first this many questions |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
-//! | `GRAPH_TO_RERANK` | also hand the reranker the strongest candidates only the graph found |
 //! | `REACH` | where the supporting titles sit, channel by channel, in the names-only and shared-name projects |
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
 
@@ -80,8 +80,16 @@ const PER_PAGE: usize = 100;
 /// on -- and the dataset is ordered by hop count, so the first thousand are
 /// all two-hop and the three- and four-hop questions, the ones a walk should
 /// matter most for, were never asked. `QUESTIONS` is the whole split, read in
-/// full so the groups are what the dataset has.
+/// full so the groups are what the dataset has. `MUSIQUE_QUESTIONS` reads
+/// fewer, which is how a run is paired with a project built on a prefix.
 const QUESTIONS: usize = 2_417;
+
+fn questions() -> usize {
+    std::env::var("MUSIQUE_QUESTIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(QUESTIONS)
+}
 
 /// How deep to retrieve, so recall@50 can be scored.
 const DEPTH: usize = RECALL_AT + 1;
@@ -140,7 +148,8 @@ impl Corpus {
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
         let mut rows: Vec<Row> = Vec::new();
-        for offset in (0..QUESTIONS).step_by(PER_PAGE) {
+        let wanted = questions();
+        for offset in (0..wanted).step_by(PER_PAGE) {
             let path = dir.join(format!("page-{offset:05}.json"));
             download(&path, &format!("{ROWS}&offset={offset}&length={PER_PAGE}"));
             let text = std::fs::read_to_string(&path)
@@ -157,7 +166,7 @@ impl Corpus {
                 );
             }
         }
-        rows.truncate(QUESTIONS);
+        rows.truncate(wanted);
 
         // Distinct paragraphs per title, in first-seen order so the joined
         // text is the same on every run.
@@ -336,11 +345,6 @@ async fn search_answers_questions_that_take_several_steps() {
         paired.report(&format!(
             "vectors embedding the topic name, MuSiQue, {named}"
         ));
-        return;
-    }
-
-    if std::env::var("GRAPH_TO_RERANK").is_ok() {
-        graph_to_rerank(&engine, &workspace, &corpus, &named).await;
         return;
     }
 
@@ -843,58 +847,5 @@ async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     println!(
         "  in the list but below rank {NDCG_AT}: {missed}, of which the graph found {graph_found_missed} \
          and the vector channel {vector_found_missed}"
-    );
-}
-
-/// The shipped path, and the same with the reranker also shown the strongest
-/// few candidates only the graph found. See
-/// `reranking::with_graph_candidates` for the rule and `reach` for why.
-async fn graph_to_rerank(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named: &str) {
-    const EXTRA: [usize; 2] = [5, 10];
-    let tier = Rerank::default();
-    let mut models: Vec<pamin_index::Reranker> = EXTRA
-        .iter()
-        .map(|_| {
-            pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-                .expect("load the reranker")
-        })
-        .collect();
-    let mut labels: Vec<(String, ())> = vec![("shipped".to_string(), ())];
-    labels.extend(
-        EXTRA
-            .iter()
-            .map(|extra| (format!("+{extra} graph candidates"), ())),
-    );
-    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
-
-    for query in &corpus.queries {
-        let hits = engine
-            .search_reranked(&query.text, WIDE, DEPTHS, tier)
-            .await
-            .expect("search");
-        channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
-        let mut orders = vec![hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>()];
-        for (extra, model) in EXTRA.iter().zip(&mut models) {
-            orders.push(reranking::with_graph_candidates(
-                &hits,
-                &replayed,
-                model,
-                &query.text,
-                *extra,
-            ));
-        }
-        for (order, into) in orders.iter().zip(&mut measured) {
-            score(into.entry(query.group.clone()).or_default(), query, order);
-        }
-    }
-    reranking::report(
-        &format!(
-            "handing the {} reranker graph-only candidates, MuSiQue, {named}",
-            tier.name()
-        ),
-        &labels,
-        Some(0),
-        &measured,
     );
 }
