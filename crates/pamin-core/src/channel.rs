@@ -140,8 +140,11 @@ impl Scored {
 /// channel from one that is guessing -- measured on two corpora as fusing all
 /// four channels ranking below the vector channel by itself on exactly the
 /// queries where the lexical pair has nothing to say. A channel's confidence is
-/// legible only in the spread of its own scores, which is why they are carried
-/// even though they are not summed.
+/// legible only in the spread of its own scores, which is why they are carried:
+/// [`Combine::Banded`] orders a channel's candidates inside its band by them,
+/// and the trace reports them.
+///
+/// [`Combine::Banded`]: crate::Combine::Banded
 #[derive(Clone, Debug)]
 pub struct ChannelResults {
     pub channel: Channel,
