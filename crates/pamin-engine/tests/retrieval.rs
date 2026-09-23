@@ -131,6 +131,7 @@
 //! informative needs a larger corpus, not a different metric.
 
 mod channels;
+mod cold;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -315,6 +316,21 @@ async fn retrieval_quality_by_group() {
             "spending less on the {} reranker, own corpus, {named}",
             tier.name()
         ));
+        return;
+    }
+
+    // `COLD`: where the first search after an idle release spends its time.
+    // The harness's own engine is closed first, because it holds the index
+    // this reopens and a read-write handle excludes every other. See `cold`.
+    if std::env::var("COLD").is_ok() {
+        let database = engine.database.clone();
+        drop(engine);
+        let cross: Vec<&str> = queries
+            .iter()
+            .filter(|query| query.group == "cross_lingual")
+            .map(|query| query.query.as_str())
+            .collect();
+        cold::report(&database, &workspace, &project, profile, &cross).await;
         return;
     }
 
