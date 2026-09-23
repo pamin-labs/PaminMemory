@@ -1279,10 +1279,18 @@ impl Engine {
             return Ok(only(hits, limit));
         }
 
-        let documents: Vec<&str> = unlexical
+        let shown: Vec<String> = unlexical
             .iter()
-            .map(|position| hits[*position].state.content.as_str())
+            .map(|position| {
+                let hit = &hits[*position];
+                shown(&hit.topic, &hit.state.content, &hit.result.why, |name| {
+                    hits.iter()
+                        .find(|other| other.topic == name)
+                        .map(|other| other.state.content.as_str())
+                })
+            })
             .collect();
+        let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
         // first search of a tier downloads its weights, holding the registry
         // lock so that twenty concurrent searches fetch one model rather than
@@ -1878,6 +1886,46 @@ fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
     runs
 }
 
+/// What the reranker is shown for one candidate: its topic's name, its
+/// content, and -- for a candidate the graph reached -- the memory the walk
+/// started from, when that memory is in the list too.
+///
+/// **Content alone is not enough to judge a memory by.** A memory's text
+/// leaves implicit what its topic's name says -- `platform rota` is "it pages
+/// ines on weekends" -- and a candidate the graph reached is relevant because
+/// of an edge whose sentence is in *another* memory: "a sev one escalates to
+/// the platform rota". Shown only its own text, a cross-encoder has nothing to
+/// connect "who gets paged when a sev one escalates" to it and demotes it.
+/// Titles before bodies is how the standard retrieval benchmarks present a
+/// document to a reranker; the seed is the same argument for the one kind of
+/// evidence this engine has that a benchmark does not.
+///
+/// Measured on the own corpus through the `CONTEXT` arm, against content
+/// alone at the `accurate` tier: relational 0.6230 to 0.6739, 4 queries better
+/// and none worse, and cross-lingual +0.0235, 16 better and 1 worse (family
+/// p = 0.035). Chosen in every fold of a five-fold cross-validation, +0.0129
+/// on the queries it did not choose on (p = 0.0005).
+///
+/// `content_of` reads another candidate's content by topic name, and answers
+/// `None` for a topic that is not in the list.
+fn shown<'a>(
+    topic: &str,
+    content: &str,
+    why: &[Why],
+    content_of: impl Fn(&str) -> Option<&'a str>,
+) -> String {
+    let mut text = format!("{topic}: {content}");
+    let seed = why.iter().find_map(|why| match why {
+        Why::Path { from, .. } => content_of(from),
+        _ => None,
+    });
+    if let Some(seed) = seed {
+        text.push_str(". ");
+        text.push_str(seed);
+    }
+    text
+}
+
 /// How deep to fuse when a reranker is going to reorder the head.
 ///
 /// A cross-encoder can only reorder what it is shown, so the list it works on
@@ -1971,10 +2019,55 @@ mod tests {
 
     use super::{
         MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle, path_strength,
-        runs_of_tokens, seed_relevance,
+        runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    /// The reranker reads a candidate under its name, and a graph arrival with
+    /// the memory it was reached from -- the sentence that makes it relevant.
+    #[test]
+    fn a_candidate_is_shown_with_its_name_and_the_memory_that_reached_it() {
+        use pamin_core::{Derivation, EdgeKind, Why};
+
+        let path = Why::Path {
+            from: "incident escalation".into(),
+            via: "incident escalation".into(),
+            hops: 1,
+            asserted_from: "incident escalation".into(),
+            asserted_to: "platform rota".into(),
+            edge: EdgeKind::Mentions,
+            derivation: Derivation::Deterministic,
+        };
+        let listed = |name: &str| {
+            (name == "incident escalation").then_some("a sev one escalates to the platform rota")
+        };
+
+        assert_eq!(
+            shown(
+                "platform rota",
+                "it pages ines on weekends",
+                std::slice::from_ref(&path),
+                listed
+            ),
+            "platform rota: it pages ines on weekends. a sev one escalates to the platform rota"
+        );
+        // Not reached by the graph: the name and nothing else added.
+        assert_eq!(
+            shown("platform rota", "it pages ines on weekends", &[], listed),
+            "platform rota: it pages ines on weekends"
+        );
+        // Reached from a memory that is not in the list: nothing to show.
+        assert_eq!(
+            shown(
+                "platform rota",
+                "it pages ines on weekends",
+                &[path],
+                |_| None
+            ),
+            "platform rota: it pages ines on weekends"
+        );
+    }
 
     /// A seed is as relevant as its best rank anywhere, and a named seed is
     /// fully relevant.
