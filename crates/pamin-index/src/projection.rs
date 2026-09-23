@@ -122,6 +122,15 @@ pub trait Projection {
     /// Semantic recall over dense embeddings, nearest first.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
 
+    /// What this index holds for these topics, as it was written, in the
+    /// order asked; `None` for a topic it does not hold.
+    ///
+    /// Reading a document back is what lets an index be copied rather than
+    /// rebuilt: the vector is the one expensive part of a document, and the
+    /// index already holds it. A write the index has buffered and not yet
+    /// flushed is read back like any other, because a query sees it too.
+    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>>;
+
     /// Removes these topics.
     ///
     /// The projection had no way to shrink: the only route out was deleting the
@@ -155,6 +164,16 @@ pub trait Projection {
     /// What text this index's vectors are embedded from, which every write to
     /// it has to follow.
     fn passage(&self) -> Passage;
+}
+
+/// One document as an index holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stored {
+    /// The memory's text, exactly as written. The segmented field is derived
+    /// from it, so it is all a copy needs to rebuild both lexical fields.
+    pub content: String,
+    /// The vector, as it was embedded under the index's [`Passage`].
+    pub embedding: Vec<f32>,
 }
 
 /// A lexical or vector index over topics.
@@ -852,6 +871,29 @@ impl ProjectionIndex {
         }))
     }
 
+    /// The documents stored under these topics, keyed by primary key.
+    ///
+    /// The one way anything reads a document back, so a rebuild lending its
+    /// vectors and a reshape copying whole documents cannot come to disagree
+    /// about what a stored document is. The text comes from the n-gram field,
+    /// which holds the content verbatim; the segmented one is derived from it.
+    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<String, Doc>> {
+        let keys: Vec<String> = topics.iter().map(ToString::to_string).collect();
+        let mut stored: HashMap<String, Doc> = HashMap::with_capacity(keys.len());
+        for chunk in keys.chunks(WRITE_BATCH) {
+            let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            for doc in self
+                .collection
+                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), vectors)?
+            {
+                if let Some(key) = doc.get_pk() {
+                    stored.insert(key.to_string(), doc);
+                }
+            }
+        }
+        Ok(stored)
+    }
+
     /// Deletes the index directory so the next open starts empty.
     ///
     /// Rebuilding is the intended way to clear it. The projection carries no
@@ -1005,24 +1047,12 @@ impl Previous {
     }
 
     fn lend(&self, wanted: &[(TopicId, &str)], vectors: bool) -> Result<Vec<Option<Vec<f32>>>> {
-        let keys: Vec<String> = wanted.iter().map(|(topic, _)| topic.to_string()).collect();
-        let borrowed: Vec<&str> = keys.iter().map(String::as_str).collect();
-        let mut stored: HashMap<String, Doc> = HashMap::with_capacity(wanted.len());
-        for chunk in borrowed.chunks(WRITE_BATCH) {
-            for doc in
-                self.index
-                    .collection
-                    .fetch_with_options(chunk, Some(&[FIELD_NGRAM]), vectors)?
-            {
-                if let Some(key) = doc.get_pk() {
-                    stored.insert(key.to_string(), doc);
-                }
-            }
-        }
-        keys.iter()
-            .zip(wanted)
-            .map(|(key, (_, content))| {
-                let Some(doc) = stored.get(key) else {
+        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
+        let stored = self.index.fetch(&topics, vectors)?;
+        wanted
+            .iter()
+            .map(|(topic, content)| {
+                let Some(doc) = stored.get(&topic.to_string()) else {
                     return Ok(None);
                 };
                 if doc.get_string(FIELD_NGRAM)?.as_deref() != Some(*content) {
@@ -1092,6 +1122,29 @@ impl Projection for ProjectionIndex {
         let doc = self.document(topic, content, embedding)?;
         self.collection.upsert(&[&doc])?;
         Ok(())
+    }
+
+    /// A document without its text or its vector is refused rather than read
+    /// as absent: a copy that took it for absent would drop it without a word.
+    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
+        let stored = self.fetch(topics, true)?;
+        topics
+            .iter()
+            .map(|topic| {
+                let Some(doc) = stored.get(&topic.to_string()) else {
+                    return Ok(None);
+                };
+                match (
+                    doc.get_string(FIELD_NGRAM)?,
+                    doc.get_vector_f32(FIELD_VECTOR)?,
+                ) {
+                    (Some(content), Some(embedding)) => Ok(Some(Stored { content, embedding })),
+                    _ => Err(IndexError::Engine(format!(
+                        "the document for topic {topic} came back without its text or its vector"
+                    ))),
+                }
+            })
+            .collect()
     }
 
     /// Removes these topics.

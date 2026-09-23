@@ -794,3 +794,64 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
     );
     assert!(!dir.exists() && !dir.with_extension("previous").exists());
 }
+
+/// A document reads back as it was written -- the text and the vector both --
+/// whether or not a flush has reached it yet, and a topic the index does not
+/// hold reads back as absent rather than as an error.
+///
+/// Unflushed is the case that matters. A copy taken from a served index reads
+/// whatever the writes since the last flush left in its buffer, and a read
+/// that skipped the buffer would copy a memory as it was before its last edit.
+#[test]
+fn a_document_reads_back_as_it_was_written() {
+    use pamin_index::Stored;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    index
+        .upsert(
+            id(1),
+            "the release train leaves on thursdays",
+            &separated(1),
+        )
+        .expect("upsert");
+    index.flush().expect("flush");
+    index
+        .upsert(id(2), "the oncall rota rotates weekly", &separated(2))
+        .expect("upsert, left unflushed");
+    index
+        .upsert(id(1), "the release train leaves on fridays", &separated(3))
+        .expect("an edit, left unflushed");
+
+    let stored = index.stored(&[id(1), id(2), id(3)]).expect("read back");
+    assert_eq!(
+        stored,
+        vec![
+            Some(Stored {
+                content: "the release train leaves on fridays".to_string(),
+                embedding: separated(3),
+            }),
+            Some(Stored {
+                content: "the oncall rota rotates weekly".to_string(),
+                embedding: separated(2),
+            }),
+            None,
+        ],
+        "an unflushed edit or write read back as something other than itself"
+    );
+
+    index.delete(&[id(2)]).expect("delete");
+    assert_eq!(
+        index.stored(&[id(2)]).expect("read back"),
+        vec![None],
+        "a deleted document still reads back"
+    );
+}
