@@ -810,12 +810,21 @@ async fn late_interaction(
             })
             .collect();
 
+        // `can_be_seen`, the other half of the tier's rule and the half this
+        // was missing: a pass that could move fewer than two positions, or
+        // whose highest movable position sits at or past what the caller is
+        // given, is declined outright and the tier hands its model nothing.
+        // Reconstructing the subset without this counts candidates the tier
+        // never offered.
+        let movable =
+            unlexical.len() >= 2 && unlexical.first().is_some_and(|highest| *highest < DEPTH);
+
         let documents: Vec<&str> = unlexical
             .iter()
             .map(|position| hits[*position].state.content.as_str())
             .collect();
 
-        if !documents.is_empty() {
+        if movable && !documents.is_empty() {
             offered += documents.len();
 
             let started = std::time::Instant::now();
@@ -871,18 +880,24 @@ async fn late_interaction(
         );
     }
 
-    // The premise. The tier counts what reached the model; this counted what
+    // The premise. The tier counts what it handed its model; this counted what
     // it reconstructed. They are the same rule applied to the same traces, so
     // a disagreement means the reconstruction is not the tier's subset and
     // every number above is a comparison of two different candidate sets.
+    //
+    // `offered`, not `scored`: `scored` is what reached the model and excludes
+    // the ones its cache answered, while this arm reconstructs what would be
+    // handed to `rank`. Comparing against `scored` is what fired the first
+    // time this ran, on a difference of eighteen that was the cache -- the
+    // assertion was right and the field was wrong.
     if let Some(counted) = engine.reranked(AGAINST) {
         assert_eq!(
             offered,
-            counted.scored as usize,
+            counted.offered as usize,
             "the reconstruction offered {offered} candidates where the {} tier \
-             scored {} -- the two columns are not over the same subset",
+             was offered {} -- the two columns are not over the same subset",
             AGAINST.name(),
-            counted.scored
+            counted.offered
         );
     }
 
