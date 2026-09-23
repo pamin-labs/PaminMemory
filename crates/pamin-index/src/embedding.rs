@@ -16,11 +16,13 @@
 //! because the model registry publishes no quantized variant for that family.
 
 use fastembed::{
-    Bgem3Embedding, Bgem3InitOptions, Bgem3Model, EmbeddingModel, TextEmbedding, TextInitOptions,
+    Bgem3Embedding, Bgem3InitOptions, Bgem3Model, EmbeddingModel, InitOptionsUserDefined,
+    TextEmbedding, TextInitOptions,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::error::{IndexError, Result};
+use crate::hub::Repository;
 
 /// Which embedding model to run.
 ///
@@ -180,9 +182,7 @@ impl Embedder {
                 if let Some(threads) = threads {
                     options = options.with_intra_threads(threads);
                 }
-                Model::Joint(Box::new(Bgem3Embedding::try_new(options).map_err(
-                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
-                )?))
+                Model::Joint(Box::new(joint(options, cache_dir)?))
             }
             _ => {
                 let mut options = TextInitOptions::new(profile.model())
@@ -313,6 +313,42 @@ impl Embedder {
             }
         }
     }
+}
+
+/// Loads the joint BGE-M3 export on the CPU, from its prepared copy.
+///
+/// Its int8 export is 570 MB, and loaded from the file the hub serves it is
+/// copied onto the heap whole and its matrix weights packed into a second copy
+/// -- see `crate::prepared`, which writes a copy the runtime maps instead. So
+/// the export is fetched here rather than by `fastembed`, the same repository
+/// and file `Bgem3Embedding::try_new` would fetch, and the copy is loaded with
+/// the options that call would have used: the same length limit, threads and
+/// execution provider, so a vector is the one it would have been.
+///
+/// When no copy could be written, `try_new` itself, which is exactly how this
+/// model loaded before copies existed.
+fn joint(options: Bgem3InitOptions, cache_dir: &std::path::Path) -> Result<Bgem3Embedding> {
+    let info = Bgem3Embedding::get_model_info(&options.model_name);
+    let repository = Repository::open(cache_dir, &info.model_code)?;
+    let source = repository.get(&info.model_file)?;
+    let copy = crate::prepared::prepared(&source, cache_dir);
+
+    let loaded = match copy.parent().filter(|_| copy != source) {
+        Some(directory) => {
+            let mut prepared = InitOptionsUserDefined::new()
+                .with_execution_providers(options.execution_providers)
+                .with_max_length(options.max_length);
+            if let Some(threads) = options.intra_threads {
+                prepared = prepared.with_intra_threads(threads);
+            }
+            for (key, value) in options.session_config {
+                prepared = prepared.with_session_config(key, value);
+            }
+            Bgem3Embedding::try_new_from_path(directory, repository.tokenizer()?, prepared)
+        }
+        None => Bgem3Embedding::try_new(options),
+    };
+    loaded.map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
 }
 
 /// Query vectors already computed, oldest first.
