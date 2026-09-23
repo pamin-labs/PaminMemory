@@ -564,7 +564,23 @@ four channels:
 | `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.125 |
 | `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.125 |
 | `vector` | Meaning, across languages | 1.0 |
-| `graph` | Topics connected to what the other channels found | 1.0 |
+| `graph` | Topics connected to what the other channels found | 0.30 |
+
+The graph channel's weight was 1.0 until it was measured, which needed a corpus
+with edges in it — every evaluation corpus here derived none, so the channel
+returned nothing and its weight could not matter. Given eleven edges to walk it
+turns out to cost 0.2794 nDCG@10 on a cross-lingual group at 1.0, against the
+0.1673 it earns on queries whose answers are only reachable across an edge.
+Three tenths is the knee of that trade; `pamin_core::fusion` carries the sweep.
+
+Its scores are also the only ones fusion does *not* rescale, and for the reason
+this table's own note gives about comparability. A path strength is
+`confidence × decay^(hops − 1)` over a `(0, 1]` confidence, so 0.5 means "one
+derived mention" on every query in every project — a quantity that means the
+same thing twice, which a BM25 score and a cosine similarity are not. Rescaling
+it inside one query would map whatever the best path happened to be onto the
+top of the band, so a single weak guess would vote as loudly as an explicit
+assertion.
 
 **Each channel's scores decide the order within its share, and the weights
 decide the shares.** A BM25 score and a cosine distance are not comparable, so
