@@ -565,6 +565,51 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
     );
 }
 
+/// An index built before names were embedded keeps being written the way it
+/// was built, and a new one embeds names.
+///
+/// The upgrade has to be silent in the right direction: an existing workspace
+/// must neither refuse to open nor start mixing `name: content` vectors into
+/// an index of content vectors, whose distances would then compare two
+/// different encodings and look fine. So the marker's missing line reads as
+/// the old encoding, and only a fresh index -- which is what `pamin reindex`
+/// builds -- gets the new one.
+#[test]
+fn an_index_built_before_names_keeps_its_encoding() {
+    use pamin_index::{Passage, Projection};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let legacy = dir.path().join("legacy");
+
+    let fresh = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0)
+        .expect("build one");
+    assert_eq!(fresh.passage(), Passage::Named, "a new index embeds names");
+    drop(fresh);
+
+    // What the marker held before the encoding was recorded.
+    std::fs::write(
+        dir.path().join("profile"),
+        format!("{}\ntopic\nfp32", PROFILE.model_id()),
+    )
+    .expect("age the marker");
+    let aged = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0)
+        .expect("an index from before the encoding line still opens");
+    assert_eq!(
+        aged.passage(),
+        Passage::Content,
+        "an index with no encoding line was built from content and must stay so"
+    );
+
+    assert_eq!(
+        Passage::Named.render("platform rota", "it pages ines"),
+        "platform rota: it pages ines"
+    );
+    assert_eq!(
+        Passage::Content.render("platform rota", "it pages ines"),
+        "it pages ines"
+    );
+}
+
 /// Rewriting the same few memories does not make the index grow for ever.
 ///
 /// The index spreads across about two more files with every write, whatever it
