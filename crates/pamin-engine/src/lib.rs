@@ -7,6 +7,7 @@
 
 mod cascade;
 mod engine;
+mod reshape;
 
 pub use cascade::{Drained, Owed};
 pub use engine::{

@@ -35,6 +35,8 @@ tokio = { version = "1", features = [
     "time",
     # The resident server listens on a Unix domain socket.
     "net",
+    # A reshape and a rebuild of one index wait for each other.
+    "sync",
 ] }
 # Line-delimited framing for that socket, and the Stream/Sink extension traits
 # the framed transport is used through. Both were already compiled -- by

@@ -155,11 +155,19 @@ pub struct Engine {
     /// the deferred entry in `docs/adr/0001-tech-selection.md` for the trigger
     /// and for what has to be measured before the lock comes off.
     ///
+    /// A reshape takes the same lock a batch at a time and, for the length of
+    /// one, replaces what it holds -- see [`reshape`](Self::reshape).
+    ///
     /// [`Engine::index`]: Self::index
-    index: Arc<Mutex<Arc<dyn Projection + Send + Sync>>>,
-    /// The index a rebuild replaced, kept until [`reindex`](Self::reindex)
-    /// has reused the vectors it holds. See [`Previous`].
-    previous: Arc<Mutex<Option<Previous>>>,
+    pub(crate) index: Arc<pamin_index::Held>,
+    /// Where this project's index lives, which a reshape builds beside and
+    /// swaps into.
+    pub(crate) dir: std::path::PathBuf,
+    /// How the index was opened. Only a writer may reshape it: a reshape moves
+    /// the directory, and a reader shares it with another process.
+    pub(crate) access: Access,
+    /// What a rebuild holds until [`reindex`](Self::reindex) has finished.
+    rebuilding: Arc<Mutex<Option<Rebuilding>>>,
     /// Index writes that are applied but not yet on disk, with their claims.
     ///
     /// The projection buffers a write in memory and a query reads that buffer,
@@ -237,7 +245,7 @@ pub struct Engine {
     /// Which model this engine's index was built with, and therefore the only
     /// one it may embed with. Held because the load is deferred and the
     /// deferred load has to ask for the same profile the index recorded.
-    profile: Profile,
+    pub(crate) profile: Profile,
     /// Where a reranker comes from, if a search asks for one.
     ///
     /// The registry rather than a loaded model: most searches do not rerank,
@@ -245,6 +253,15 @@ pub struct Engine {
     /// disk by opening a project.
     models: Models,
     pub project: ProjectId,
+}
+
+/// What a rebuild holds from opening its index until
+/// [`reindex`](Engine::reindex) has finished with it.
+struct Rebuilding {
+    /// The index it replaced, to lend its vectors. See [`Previous`].
+    previous: Option<Previous>,
+    /// This project's index directory, held against a reshape.
+    _exclusive: tokio::sync::OwnedMutexGuard<()>,
 }
 
 /// The embedding models this process has loaded, one per profile.
@@ -587,6 +604,20 @@ impl Engine {
         // to be in hand before the index is opened.
         let documents = repository::topic_count(database.pool(), project.id).await?;
 
+        // A rebuild waits out a reshape of this index, and holds it off until
+        // `reindex` finishes: both move the directory. Anything else opening
+        // it only has to put back what a reshape that died mid-swap left
+        // aside -- and not while one is running here, when the directory is
+        // that reshape's to move.
+        let exclusive = if discard {
+            Some(crate::reshape::exclusive(&dir).lock_owned().await)
+        } else {
+            if let Ok(_running) = crate::reshape::exclusive(&dir).try_lock_owned() {
+                off_the_runtime(|| pamin_index::Reshape::recover(&dir))?;
+            }
+            None
+        };
+
         let (index, previous) = off_the_runtime(|| {
             // Set aside rather than deleted, so the rebuild can take the
             // vectors it still holds instead of embedding every memory again.
@@ -623,7 +654,12 @@ impl Engine {
             widest_name: Arc::default(),
             unflushed: Arc::default(),
             index: Arc::new(Mutex::new(index)),
-            previous: Arc::new(Mutex::new(previous)),
+            dir,
+            access,
+            rebuilding: Arc::new(Mutex::new(exclusive.map(|exclusive| Rebuilding {
+                previous,
+                _exclusive: exclusive,
+            }))),
             embedder: std::sync::OnceLock::new(),
             profile,
             models: models.clone(),
@@ -698,12 +734,11 @@ impl Engine {
     /// only a claim about a graph once something is in there.
     /// How this project's index is segmented, against what the policy wants.
     ///
-    /// Reported rather than acted on. Resegmenting means recreating the
-    /// collection -- `set_max_doc_count_per_segment` on an open one returns
-    /// `Ok` and changes nothing, which ADR 0001 records -- so the only thing
-    /// that fixes it is `pamin reindex`, and that is hours on a large project.
-    /// Doing hours of work because a diagnostic noticed something is not a
-    /// decision this should make for a caller.
+    /// Resegmenting means recreating the collection --
+    /// `set_max_doc_count_per_segment` on an open one returns `Ok` and changes
+    /// nothing, which ADR 0001 records. [`reshape`](Self::reshape) does that
+    /// by copying the index while it is served, and a server runs it on its
+    /// own; without a server, `pamin reindex` is what fixes it.
     pub fn segmentation(&self) -> Result<pamin_index::Segmentation> {
         Ok(self.index().segmentation()?)
     }
@@ -1671,11 +1706,20 @@ impl Engine {
             repository::all_current_topic_states(self.database.pool(), self.project).await?;
         let passages = self.passages(&states).await?;
 
-        let previous = self
-            .previous
+        // Held to the end of this function, so a reshape cannot start on the
+        // index while it is being rebuilt.
+        let (previous, _exclusive) = match self
+            .rebuilding
             .lock()
             .expect("the set-aside index lock is poisoned")
-            .take();
+            .take()
+        {
+            Some(Rebuilding {
+                previous,
+                _exclusive,
+            }) => (previous, Some(_exclusive)),
+            None => (None, None),
+        };
 
         let reused = off_the_runtime(|| {
             fn pairs(batch: &[TopicState]) -> Vec<(TopicId, &str)> {
