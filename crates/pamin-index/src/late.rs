@@ -89,11 +89,14 @@ const MODEL: &str = "model_int8.onnx";
 const TOKENIZER: &str = "tokenizer.json";
 
 /// The three projection layers, in the order `modules.json` applies them.
-const DENSE: [&str; 3] = [
-    "1_Dense/model.safetensors",
-    "2_Dense/model.safetensors",
-    "3_Dense/model.safetensors",
-];
+///
+/// Each is a directory holding a `config.json` and a `model.safetensors`, and
+/// the config is what says whether the layer has a residual. **The shape does
+/// not say it.** `1_Dense` is 768 -> 1536 with a residual and `3_Dense` is
+/// 768 -> 128 without one, so a rule that inferred the residual from "the
+/// shape changes" -- which this file had, and which failed on the first load
+/// -- gets the last layer wrong.
+const DENSE: [&str; 3] = ["1_Dense", "2_Dense", "3_Dense"];
 
 /// The added tokens that tell the encoder which side it is reading.
 ///
@@ -257,6 +260,14 @@ fn tensor(path: &Path, name: &str) -> Result<Matrix> {
     })
 }
 
+/// Each layer's `(in, out)`, for the chain check and for what it reports.
+fn head_shapes(layers: &[Layer]) -> Vec<(usize, usize)> {
+    layers
+        .iter()
+        .map(|layer| (layer.linear.inp, layer.linear.out))
+        .collect()
+}
+
 /// A loaded late-interaction encoder.
 pub struct LateInteraction {
     session: Session,
@@ -286,18 +297,43 @@ impl LateInteraction {
         let tokenizer = Tokenizer::from_file(fetch(TOKENIZER)?)
             .map_err(|error| IndexError::Engine(format!("loading the tokenizer: {error}")))?;
 
-        // The residual is present exactly when the layer changes shape, which
-        // is what `pylate`'s `Dense` does and what the three configurations
-        // say. Read as "whichever tensors the file has" rather than hardcoded,
-        // so a checkpoint that disagrees fails loudly here.
+        // `use_residual` from each layer's own config, because the shape does
+        // not imply it: two of the three change shape and only two of the
+        // three have a residual, and they are not the same two.
+        #[derive(serde::Deserialize)]
+        struct Dense {
+            use_residual: bool,
+        }
+
         let mut layers = Vec::with_capacity(DENSE.len());
         for name in DENSE {
-            let path = fetch(name)?;
+            let config: Dense =
+                serde_json::from_slice(&std::fs::read(fetch(&format!("{name}/config.json"))?)?)
+                    .map_err(|error| {
+                        IndexError::Engine(format!("reading {name}'s config: {error}"))
+                    })?;
+            let path = fetch(&format!("{name}/model.safetensors"))?;
             let linear = tensor(&path, "linear.weight")?;
-            let residual = (linear.out != linear.inp)
+            let residual = config
+                .use_residual
                 .then(|| tensor(&path, "residual.weight"))
                 .transpose()?;
             layers.push(Layer { linear, residual });
+        }
+
+        // The layers have to chain, which is the other way a checkpoint can be
+        // read wrongly and still produce vectors: `modules.json` gives the
+        // order and nothing above would notice if it changed.
+        for pair in head_shapes(&layers).windows(2) {
+            let [(_, out), (inp, _)] = pair else {
+                unreachable!("windows(2) yields pairs")
+            };
+            if out != inp {
+                return Err(IndexError::Engine(format!(
+                    "the projection layers do not chain: {:?}",
+                    head_shapes(&layers)
+                )));
+            }
         }
 
         let head = Head { layers };
