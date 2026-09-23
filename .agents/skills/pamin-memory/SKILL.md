@@ -151,13 +151,15 @@ that two topics really are related the way it claims.
 
 | | cost | when |
 | --- | --- | --- |
-| `off` | 53 ms | Every memory is in one language — the pass is nearly free of benefit there |
-| `fast` (default) | 264 ms | Mixed languages, ordinary latency budget |
-| `accurate` | 1001 ms | Mixed languages, and a second a search is affordable |
+| `off` | 99 ms | Every memory is in one language, or a search must be as fast as possible |
+| `fast` | 359 ms | Mixed languages, and a search must stay under half a second |
+| `accurate` (default) | 1522 ms | Mixed languages — the tier that ranks best on every corpus measured |
 
-`accurate` scores better than `fast` on every corpus measured; `fast` is the
-default purely on latency. Only candidates that no lexical channel found are
-reordered, which is why a single-language workspace gains almost nothing.
+Costs are one search against a warm server on four cores, from `docs/cli.md`.
+`accurate` is the default because accuracy comes first; `fast` buys most of the
+time back and is the one tier that costs same-language ranking. Only candidates
+that no lexical channel found are reordered, which is why a single-language
+workspace gains almost nothing.
 
 **Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
 evaluation harness. Raising them costs latency for recall you have no way to

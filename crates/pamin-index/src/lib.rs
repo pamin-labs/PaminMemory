@@ -24,6 +24,6 @@ pub use projection::{
     Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorStorage,
     is_fragmented, segment_documents, vector_index_lags,
 };
-pub use reranking::{Licence, Ranked, Rerank, Reranked, Reranker};
+pub use reranking::{Ranked, Rerank, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
 pub use segmentation::{Segmenter, detect_language};
