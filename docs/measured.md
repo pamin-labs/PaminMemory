@@ -223,7 +223,10 @@ paying.
 Two mechanisms were built for the finding above and swept offline from one pass
 over each corpus. On this project's own corpus, cross-lingual group, 43 queries,
 against the reciprocal rank fusion that shipped when this was measured — the
-banded combiner ships now, and these figures are not retaken against it:
+banded combiner ships now, and these figures are not retaken against it. Both
+score combiners below and the confidence rule have since been removed from the
+code; [ADR 0001](adr/0001-tech-selection.md) records each under *Fusion designs
+measured and removed*:
 
 | | nDCG@10 | against rank fusion |
 | --- | --- | --- |
@@ -380,8 +383,8 @@ is worse than a badly chosen constant. On this corpus the lexical channels *are*
 mildly harmful — removing the n-gram channel is +0.0024 and removing the
 segmented one is −0.0073 at p = 0.0125 — and their score distributions
 nonetheless look confident. **The measure cannot see the thing it was built to
-see here.** It stays off, and that is now a measured decision rather than a
-cautious one.
+see here.** It never shipped and has since been removed, and that is a
+measured decision rather than a cautious one.
 
 **What MIRACL does say is that splitting the two lexical weights was the right
 move**, and it is the one thing on this page that a one-dimensional sweep could

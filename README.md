@@ -332,9 +332,10 @@ rather than an idea.
 default cannot take them.** Over four groups of three corpora, three separate
 settings are worth far more than what ships and worth it in opposite
 directions: `CombMNZ` fusion is **+0.0700** on same-language queries and
-−0.0350 on cross-lingual ones; lexical weights at 0.25/0.50 are +0.0656
-same-language and −0.0806 cross-lingual; a rank constant of 60 is +0.0681
-same-language and −0.0724 cross-lingual. The shipped defaults are the
+−0.0350 on cross-lingual ones (and was removed from the code for the recall it
+costs, so taking it back would mean restoring it); lexical weights at 0.25/0.50
+are +0.0656 same-language and −0.0806 cross-lingual; a rank constant of 60 is
++0.0681 same-language and −0.0724 cross-lingual. The shipped defaults are the
 compromise. What would collect the rest is letting a workspace say whether its
 memories are in one language or many, and applying the values already measured
 for that shape — configuration rather than a new algorithm, because that is
