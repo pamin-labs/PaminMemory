@@ -14,6 +14,7 @@ pub mod segmentation;
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Profile};
 pub use error::{IndexError, Result};
+pub use inference::Device;
 pub use projection::{
     Access, Projection, ProjectionIndex, Segmentation, VectorStorage, is_fragmented,
     segment_documents, vector_index_lags,

@@ -52,6 +52,11 @@ fastembed = { version = "6", default-features = false, features = [
     "ort-download-binaries-native-tls",
     "hf-hub-native-tls",
 ] }
+# The inference runtime `fastembed` already runs on, named directly only to ask
+# it for a GPU execution provider. Pinned to the exact version `fastembed`
+# resolves, so it is the same crate and the features unify rather than a second
+# runtime being linked.
+ort = { version = "=2.0.0-rc.13", default-features = false }
 # The model hub client, for the reranker's weights. Already compiled -- it is
 # how `fastembed` fetches the embedding model -- so declaring it adds nothing
 # to the tree and stops the build depending on that staying true. TLS has to
