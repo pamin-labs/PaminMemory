@@ -136,21 +136,7 @@ pub fn render_value(
     match args.command {
         Command::Drain => {
             let result: Drained = serde_json::from_str(value.get())?;
-            format.emit(&result, || {
-                let mut rendered = format!(
-                    "Ran {} jobs, {} failed, {} still owed",
-                    result.completed, result.failed, result.pending
-                );
-                if let Some(segments) = &result.segments {
-                    rendered.push_str(&format!(
-                        "\nThis index is spread over {} segments where {} would do, because it \
-                         recorded its segment size when it was empty. Searches pay for the \
-                         extra segments; `pamin reindex` rebuilds at the right size.",
-                        segments.holds, segments.wants
-                    ));
-                }
-                rendered
-            });
+            format.emit(&result, || render_drained(&result, Served::Yes));
         }
         Command::Failed => {
             let result: Failures = serde_json::from_str(value.get())?;
@@ -187,12 +173,7 @@ pub async fn execute(
     match args.command {
         Command::Drain => {
             let result = drain(session, project, profile).await?;
-            format.emit(&result, || {
-                format!(
-                    "Ran {} jobs, {} failed, {} still owed",
-                    result.completed, result.failed, result.pending
-                )
-            });
+            format.emit(&result, || render_drained(&result, Served::No));
         }
         Command::Run => keep_running(session, project, profile).await?,
         Command::Failed => {
@@ -211,6 +192,45 @@ pub async fn execute(
         }
     }
     Ok(())
+}
+
+/// Whether a server answered, which decides what fixes a badly shaped index.
+#[derive(Clone, Copy)]
+enum Served {
+    Yes,
+    No,
+}
+
+/// What a drain did, and what shape it left the index in if that is worth
+/// saying.
+///
+/// One rendering for both paths. The served one used to be the only one that
+/// mentioned the shape, so the same drain said less without a server -- where
+/// nothing reshapes the index on its own and the advice mattered most.
+fn render_drained(result: &Drained, served: Served) -> String {
+    let mut rendered = format!(
+        "Ran {} jobs, {} failed, {} still owed",
+        result.completed, result.failed, result.pending
+    );
+    if let Some(segments) = &result.segments {
+        let fix = match served {
+            Served::Yes => {
+                "the server reshapes it in the background, copying what it holds \
+                 rather than embedding it again; `pamin reindex` rebuilds it now"
+            }
+            Served::No => {
+                "`pamin reindex` rebuilds it at the right size, and a running server \
+                 reshapes it in the background on its own"
+            }
+        };
+        rendered.push_str(&format!(
+            "\nThis index is spread over {} segments where {} would do, because it \
+             recorded its segment size when it was empty. Searches pay for the extra \
+             segments; {fix}.",
+            segments.holds, segments.wants
+        ));
+    }
+    rendered
 }
 
 pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result<Drained> {
