@@ -264,6 +264,35 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
+    if std::env::var("GRAPH_VARIANTS").is_ok() {
+        let questions: Vec<(String, String)> = queries
+            .iter()
+            .map(|query| (query.query.clone(), query.group.clone()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            "own corpus",
+            &questions,
+            SEARCH_LIMIT,
+            DEPTHS,
+            &channels::graph_variants(),
+            |index, into, hits| {
+                let query = &queries[index];
+                let mut ranked: Vec<String> = Vec::new();
+                let mut seen = HashSet::new();
+                for hit in hits {
+                    if seen.insert(hit.topic.clone()) {
+                        ranked.push(hit.topic.clone());
+                    }
+                }
+                let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+                into.add(&ranked, relevant.len(), |topic| relevant.contains(topic));
+            },
+        )
+        .await;
+        return;
+    }
+
     // `PASSAGES`: the same memories in a second project whose vectors embed
     // the topic's name, asked every question alongside this one. See
     // `channels::Paired`.

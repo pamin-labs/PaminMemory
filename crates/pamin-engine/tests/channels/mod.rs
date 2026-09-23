@@ -867,6 +867,85 @@ impl Paired {
     }
 }
 
+/// Graph-channel settings worth pairing against the shipped fusion on the path
+/// a user gets, reranker and all.
+///
+/// The lead they test came out of the offline fit in `features`: the graph at
+/// half weight with its support rule off moved MuSiQue's recall@20 by +0.0175
+/// with fused nDCG@10 unchanged. That was found after looking at the data, so
+/// it is a hypothesis until the reranked path says otherwise -- which is what
+/// [`compare_reranked`] asks.
+pub fn graph_variants() -> Vec<(String, Fusion)> {
+    vec![
+        (
+            "graph 0.50, no support rule".into(),
+            Fusion::default()
+                .with_weight(Channel::Graph, 0.5)
+                .needing_support([]),
+        ),
+        (
+            "graph 0.30, no support rule".into(),
+            Fusion::default().needing_support([]),
+        ),
+        (
+            "graph 0.50".into(),
+            Fusion::default().with_weight(Channel::Graph, 0.5),
+        ),
+    ]
+}
+
+/// Every question through `search_reranked_with` under the shipped fusion and
+/// under each variant, scored by group and paired against the shipped one.
+///
+/// `questions` is each question's text and group; `score` ranks one
+/// question's hits into its group's `Scores`, the way the harness already does
+/// -- so the comparison scores exactly what the harness's own shipped row
+/// scores.
+pub async fn compare_reranked(
+    engine: &pamin_engine::Engine,
+    title: &str,
+    questions: &[(String, String)],
+    limit: u32,
+    depths: pamin_engine::Depths,
+    variants: &[(String, Fusion)],
+    score: impl Fn(usize, &mut crate::scoring::Scores, &[SearchHit]),
+) {
+    let rerank = pamin_index::Rerank::default();
+    let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
+        vec![BTreeMap::new(); variants.len() + 1];
+    for (index, (text, group)) in questions.iter().enumerate() {
+        let fusions =
+            std::iter::once(Fusion::default()).chain(variants.iter().map(|(_, f)| f.clone()));
+        for (fusion, into) in fusions.zip(measured.iter_mut()) {
+            let hits = engine
+                .search_reranked_with(text, limit, depths, rerank, fusion)
+                .await
+                .expect("search");
+            score(index, into.entry(group.clone()).or_default(), &hits);
+        }
+    }
+
+    println!("\n  {title}: the shipped search path under other graph settings, paired against it");
+    for (group, shipped) in &measured[0] {
+        println!(
+            "  {group:<16} shipped            nDCG@{} {:.4}   recall@{} {:.4}",
+            crate::scoring::NDCG_AT,
+            shipped.mean_ndcg(),
+            crate::scoring::RECALL_AT,
+            shipped.mean_recall()
+        );
+        for ((name, _), other) in variants.iter().zip(&measured[1..]) {
+            let other = &other[group];
+            println!(
+                "  {group:<16} {name:<28} {:.4} / {:.4}   {}",
+                other.mean_ndcg(),
+                other.mean_recall(),
+                crate::statistics::compare(&shipped.per_query, &other.per_query)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
