@@ -1365,34 +1365,23 @@ impl Engine {
                 .rank(query, &documents)
         })?;
 
-        // Back into the positions those candidates already held, so nothing
-        // else in the list moves.
-        let mut slots: Vec<Option<SearchHit>> = hits.into_iter().map(Some).collect();
-        let mut taken: Vec<Option<SearchHit>> = unlexical
-            .iter()
-            .map(|position| slots[*position].take())
-            .collect();
-        for (slot, ranked) in unlexical.iter().zip(&ordered) {
-            let mut hit = taken[ranked.position]
-                .take()
-                .expect("each reranked candidate is taken once");
-            // Recorded on the candidate rather than returned beside the list,
-            // because it is an answer to "why is this here" and belongs with
-            // the channel entries that answer the same question. A candidate
-            // the reranker never saw carries no entry, which is how a reader
-            // -- and the threshold sweep this unblocks -- tells the two cases
-            // apart.
-            hit.result.why.push(Why::Reranked {
-                score: ranked.score,
-            });
-            slots[*slot] = Some(hit);
+        // Recorded on the candidate rather than returned beside the list,
+        // because it is an answer to "why is this here" and belongs with the
+        // channel entries that answer the same question. A candidate the
+        // reranker never saw carries no entry, which is how a reader -- and
+        // the threshold sweep this unblocks -- tells the two cases apart.
+        let mut hits = hits;
+        for ranked in &ordered {
+            hits[unlexical[ranked.position]]
+                .result
+                .why
+                .push(Why::Reranked {
+                    score: ranked.score,
+                });
         }
-
+        let best_first: Vec<usize> = ordered.iter().map(|ranked| ranked.position).collect();
         Ok(only(
-            slots
-                .into_iter()
-                .map(|hit| hit.expect("every position refilled"))
-                .collect(),
+            place(hits, &unlexical, rerank.depth(), &best_first),
             limit,
         ))
     }
@@ -2061,6 +2050,47 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
     positions
 }
 
+/// Puts the candidates the reranker scored back into the list, best first.
+///
+/// `shown` is what [`rerankable`] chose, ascending, and `best_first` indexes
+/// into it in the model's order. A head candidate's slot is refilled in place,
+/// so nothing else in the head moves. A graph candidate from below the head
+/// has no slot there, so it is *inserted*: the list gains one slot at the end
+/// of the head for each, the graph candidates leave their old positions, and
+/// the whole shown set fills the head's slots and the new ones in the model's
+/// order. So a graph find the model rates rises into the head, and a head
+/// candidate it rates below one falls to just after the head -- not to rank
+/// ninety-nine, where the find came from and where it would drop out of every
+/// list a caller reads. With no graph candidates this is the in-place refill
+/// it always was.
+///
+/// Generic because the harnesses replay a search by names through the same
+/// function the engine places hits with.
+pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]) -> Vec<T> {
+    let head = head.min(list.len());
+    let mut slots: Vec<Option<T>> = list.into_iter().map(Some).collect();
+    let mut taken: Vec<Option<T>> = shown.iter().map(|at| slots[*at].take()).collect();
+
+    let below = shown.iter().filter(|at| **at >= head).count();
+    let mut rest = slots.split_off(head);
+    rest.retain(Option::is_some);
+    slots.extend(std::iter::repeat_with(|| None).take(below));
+    slots.extend(rest);
+
+    let targets = shown
+        .iter()
+        .copied()
+        .filter(|at| *at < head)
+        .chain(head..head + below);
+    for (slot, pick) in targets.zip(best_first) {
+        slots[slot] = taken[*pick].take();
+    }
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every slot refilled"))
+        .collect()
+}
+
 /// How deep to fuse when a reranker is going to reorder the head.
 ///
 /// A cross-encoder can only reorder what it is shown, so the list it works on
@@ -2160,7 +2190,7 @@ mod tests {
 
     use super::{
         GRAPH_CANDIDATES, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle,
-        path_strength, rerankable, runs_of_tokens, seed_relevance, shown,
+        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2425,6 +2455,26 @@ mod tests {
         // The strongest GRAPH_CANDIDATES, which are the last ones pushed.
         let strongest = (first_graph + 3..first_graph + GRAPH_CANDIDATES + 3).collect::<Vec<_>>();
         assert_eq!(below, strongest);
+    }
+
+    /// A head candidate is refilled in place; a graph find from below the head
+    /// is inserted at the end of it, and what it beats falls to just after the
+    /// head rather than to where the find came from.
+    #[test]
+    fn a_graph_find_is_inserted_and_what_it_beats_falls_only_past_the_head() {
+        // Head of three: a, b (shown), c (lexical, not shown). Below: d, e,
+        // and the graph find g at the bottom.
+        let list = vec!["a", "b", "c", "d", "e", "g"];
+        let shown = [0, 1, 5];
+        // The model: g best, then a, then b.
+        let placed = place(list.clone(), &shown, 3, &[2, 0, 1]);
+        assert_eq!(placed, vec!["g", "a", "c", "b", "d", "e"]);
+
+        // Without a graph find it is the in-place refill it always was.
+        assert_eq!(
+            place(list, &[0, 1], 3, &[1, 0]),
+            vec!["b", "a", "c", "d", "e", "g"]
+        );
     }
 
     /// What this process remembers about the widest name only ever grows.

@@ -10,6 +10,6 @@ mod engine;
 
 pub use cascade::{Drained, Owed};
 pub use engine::{
-    Depths, Engine, MODEL_IDLE_VAR, Models, Rebuilt, Recorded, SearchHit, Write, model_idle,
+    Depths, Engine, MODEL_IDLE_VAR, Models, Rebuilt, Recorded, SearchHit, Write, model_idle, place,
     rerankable,
 };

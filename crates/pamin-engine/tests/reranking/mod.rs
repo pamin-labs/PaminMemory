@@ -238,6 +238,8 @@ pub struct Replayed {
     fusion: Vec<f64>,
     /// Per movable position, the model's score.
     model: Vec<f64>,
+    /// How deep the tier reads, which is where a graph find is inserted.
+    head: usize,
 }
 
 /// Rebuilds one shipped search at `tier` and checks the rebuild.
@@ -280,6 +282,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             movable: Vec::new(),
             fusion: Vec::new(),
             model: Vec::new(),
+            head: tier.depth(),
         }
     } else {
         assert_eq!(
@@ -298,6 +301,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
                 .iter()
                 .map(|at| model[fused[*at].as_str()])
                 .collect(),
+            head: tier.depth(),
             fused,
             movable,
         }
@@ -342,6 +346,7 @@ impl Replayed {
             movable: self.movable.clone(),
             fusion: self.fusion.clone(),
             model,
+            head: self.head,
         }
     }
 
@@ -366,11 +371,7 @@ impl Replayed {
                 .total_cmp(&keys[*left])
                 .then_with(|| left.cmp(right))
         });
-        let mut order = self.fused.clone();
-        for (slot, pick) in self.movable.iter().zip(&picks) {
-            order[*slot] = self.fused[self.movable[*pick]].clone();
-        }
-        order
+        pamin_engine::place(self.fused.clone(), &self.movable, self.head, &picks)
     }
 }
 
@@ -423,6 +424,7 @@ mod tests {
             movable: vec![1, 2, 3],
             fusion: fusion.to_vec(),
             model: model.to_vec(),
+            head: 4,
         }
     }
 
