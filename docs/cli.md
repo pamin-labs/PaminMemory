@@ -377,9 +377,19 @@ four cores, for a query the server has not been asked before. A resident
 server remembers a query's vector, so asking the same thing twice costs the
 16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
 
-`fast` is the default, on latency: 359 ms against `accurate`'s 1522. It is also
+`accurate` is the default, on accuracy: it is the best tier on every corpus
+measured, and query by query against `fast` it is ahead by 0.0086 cross-lingual
+(`p = 0.0015`) and 0.0066 same-language (`p = 0.0001`) on XQuAD-R, and by
+0.0411 on MIRACL Swahili (83 queries better, 12 worse, `p = 0.0001`). What that
+costs is the latency column: 1522 ms against `fast`'s 359, about a quarter of
+the throughput, and 571 MB loaded against 119.
+
+`fast` was the default until it was measured against that order, and it is
 **the only tier that measurably damages same-language ranking** — −0.0060 at
-`p = 0.0008`, nineteen queries worse against three better.
+`p = 0.0008`, nineteen queries worse against three better, and on MIRACL at the
+`speed` profile −0.0154 against no reranking at all (35 better, 58 worse,
+`p = 0.014`). Ask for it when a search has to stay under half a second and the
+workspace is mostly cross-lingual, which is where it still earns its place.
 
 **That is not a reason to set `off` on a single-language workspace, and this
 page used to say it was.** The same-language column above comes from parallel
@@ -388,12 +398,8 @@ against a different answer key — so every query in it still has correct answer
 in ten other languages sitting in the index, which a real single-language
 workspace does not. On the one genuinely single-language corpus measured, at
 this profile, the pass **gains** 0.0201 at `fast` and 0.0496 at `accurate`. Set
-`off` to buy back 260 ms if you want the latency; do not set it expecting
+`off` to buy back the time if you want the latency; do not set it expecting
 better ranking.
-
-`accurate` is the tier to ask for when a second a search is affordable: the
-largest cross-lingual gain measured here and the only one that costs nothing on
-either group.
 
 **`balanced` is a bad trade and is kept only because the table should say so.**
 Four times `fast`'s compute-relevant parameters and 2.3 times its latency buy
@@ -404,7 +410,7 @@ not worth 821 ms.
 **`noncommercial` bought nothing, and that is the useful result.** It was added
 to answer a specific question — whether accepting a non-commercial licence buys
 accuracy a permissive one cannot — and the answer is no: it scores +0.0279
-cross-lingual where the permissive default, at a quarter of its size and 2.5
+cross-lingual where `fast`, at a quarter of its size and 2.5
 times its speed, scores +0.0397. It is kept, documented and measured rather than
 quietly dropped, because "we relaxed the licence and it did not help" is a
 finding somebody would otherwise pay for twice.
@@ -451,7 +457,8 @@ a 130 MB model, the difference being the inference runtime's arenas rather than
 the weights. `pamin serve` gives it back after five minutes with nothing asking
 for that tier, which returns 368 to 380 MB of it to the operating system; the
 arena growth above that stays. A workspace that sets `off` never pays it at
-all, which is the other half of the reason a single-language workspace should.
+all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
+and its resident cost has not been taken on its own.
 
 A reranker reads the query and a memory together, which is what lets it correct
 an order the channels got wrong, and what makes it cost a forward pass for
@@ -463,10 +470,11 @@ than by the hundredths the cross-lingual column moves. It does not hold the
 column still: a same-language answer the lexical channels happened to miss is
 an unlexical candidate like any other, and reordering can carry it down.
 
-That also means a workspace whose memories are all in one language gains
-almost nothing here and should set `off`: the candidates the lexical channels
-miss are overwhelmingly the ones in another language. The numbers above are
-from eleven languages at once.
+On a workspace in one language there are fewer such candidates, so there is
+less for the pass to do -- but less is not nothing. On MIRACL, one language
+throughout, `accurate` is still worth +0.0257 over `off` (67 queries better, 19
+worse, `p = 0.0001`, `speed` profile); it is `fast` that is worth less than
+nothing there.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:

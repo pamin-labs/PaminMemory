@@ -73,7 +73,7 @@ Every hit reports the rank it held in each channel and the graph path that
 reached it. There is no step at which a score becomes unattributable.
 
 **A cross-encoder pass, tiered.** Over the fused shortlist, `off`, `fast`
-(default) and `accurate` trade latency for quality on a curve that is measured
+and `accurate` (default) trade latency for quality on a curve that is measured
 rather than assumed — the figures are in [cli.md](cli.md), and the one that had
 to be corrected twice, along with why, is in
 [the ADR](adr/0001-tech-selection.md).

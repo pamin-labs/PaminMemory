@@ -11,13 +11,21 @@ in [benchmarks.md](benchmarks.md), along with what that comparison holds fixed
 and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
-**Retrieval quality**, at the shipped defaults:
+**Retrieval quality**, at the `fast` reranking tier, which was the default when
+these were taken:
 
 | corpus | group | nDCG@10 | recall@50 |
 | --- | --- | --- | --- |
 | MIRACL Swahili dev — 131,924 real passages, 482 queries, 5,092 human judgements | one language throughout | 0.7359 | 0.9494 |
 | XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6480 | 0.8960 |
 | XQuAD-R | query and answer in the same language | 0.7495 | 0.9580 |
+
+The default is now `accurate`, chosen on the paired comparison in
+[cli.md](cli.md). The runs behind this table measured it too: MIRACL 0.7654,
+XQuAD-R 0.6597 cross-lingual and 0.7835 same-language, recall unchanged because
+a reranker reorders a shortlist and never changes it. The XQuAD-R pair is from
+the later run under the fusion that ships, so it sits against 0.6114 with no
+reranking rather than against the rows above.
 
 Both corpora are fetched rather than vendored, and each has a harness in the
 repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
@@ -98,8 +106,8 @@ corpus, the same dev split and the same qrels:**
 | --- | --- | --- |
 | Pyserini BM25 baseline | 0.3826 | lexical only |
 | Påmin Memory, `--rerank off` | 0.7158 | four channels fused |
-| Påmin Memory, `fast` (default) | **0.7359** | fused, then a cross-encoder |
-| Påmin Memory, `accurate` | 0.7654 | fused, then a larger cross-encoder |
+| Påmin Memory, `fast` | 0.7359 | fused, then a cross-encoder |
+| Påmin Memory, `accurate` (default) | **0.7654** | fused, then a larger cross-encoder |
 | BGE-M3, published | 0.787 | dense retrieval alone |
 
 Read the last row carefully, because it is the honest reading: **a whole
@@ -461,7 +469,7 @@ the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
 queries, reported as the median of them:
 
-| corpus | `--rerank off` | `fast` (default) | `accurate` |
+| corpus | `--rerank off` | `fast` | `accurate` (default) |
 | --- | --- | --- | --- |
 | XQuAD-R, 13,014 documents | 77 ms | 251 ms | 1241 ms |
 | MIRACL Swahili dev, 131,924 documents | 142 ms | 472 ms | 1675 ms |
@@ -488,13 +496,14 @@ Measured on 4 vCPU (Intel Xeon @ 2.80 GHz, no SMT), 15 GB RAM, release build,
 embeddings on CPU through ONNX Runtime, with every cell's queries disjoint from
 every other's so that no figure is a cache hit. `accurate` scores higher on
 every corpus measured and costs 3.5 to 4.9 times `fast` on the two corpora in
-that table; `fast` is the default on that difference alone, which is a
-judgement and not a result.
+that table; `fast` was the default on that difference alone, which was a
+judgement and not a result, and the default is now `accurate` on the
+project's own ordering of accuracy before latency.
 Four cores is where the embedding model and the reranker contend, so a machine
 with cores to spare will not look like this.
 
 **Throughput, and where it stops.** The same sweep at one, eight and
-thirty-two concurrent callers, `fast` being the default:
+thirty-two concurrent callers, taken while `fast` was the default:
 
 | corpus | tier | 1 | 8 | 32 | ceiling |
 | --- | --- | --- | --- | --- | --- |
@@ -506,7 +515,7 @@ thirty-two concurrent callers, `fast` being the default:
 | | `accurate` | 0.6 q/s | 0.6 | 0.6 | **~0.6 q/s** |
 
 Read it as a ceiling, not a score. Four cores saturate at eight concurrent
-callers and the rest is queueing: at thirty-two the default tier gets *less*
+callers and the rest is queueing: at thirty-two `fast` gets *less*
 throughput than at eight (4.2 against 4.7) and waits twenty-one times longer —
 p50 from 251 ms to 5.4 s. Nothing here scales by adding callers; adding cores
 is the lever, and this measurement does not say by how much.

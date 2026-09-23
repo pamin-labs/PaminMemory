@@ -246,10 +246,10 @@ under [benchmarks/results/](benchmarks/results).
 
 | | | measured on |
 | --- | --- | --- |
-| retrieval, one language | nDCG@10 **0.7359** | MIRACL Swahili dev, 131,924 passages |
-| retrieval, query and answer in different languages | nDCG@10 0.6480 | XQuAD-R, 13,014 sentences |
+| retrieval, one language | nDCG@10 **0.7654** | MIRACL Swahili dev, 131,924 passages, `accurate` reranking |
+| retrieval, query and answer in different languages | nDCG@10 0.6597 | XQuAD-R, 13,014 sentences, `accurate` reranking |
 | one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
-| one `pamin search` as a whole CLI invocation | 251 ms | XQuAD-R, `fast` reranking |
+| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, `accurate` reranking |
 | one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
 | resident, one project | 2,088 MB | model and index inside the server |
 

@@ -49,10 +49,13 @@ pub struct Args {
     /// found are reordered -- not, as this used to say, the ones in another
     /// language; the rule is the absence of a lexical hit rather than a
     /// language test, because a language detector is absent on exactly the
-    /// short queries an agent asks. In practice that is mostly the same set,
-    /// so a workspace in one language gains little from this and, on a corpus
-    /// with one language throughout, measurably loses: see `docs/cli.md`.
-    #[arg(long, env = "PAMIN_RERANK", default_value = "fast")]
+    /// short queries an agent asks.
+    ///
+    /// The default is `accurate`, the tier that ranks best on every corpus
+    /// measured and costs about a second and a half a search on four cores;
+    /// `fast` and `off` buy that time back at a measured price. See
+    /// `docs/cli.md`.
+    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
     pub rerank: String,
 }
 

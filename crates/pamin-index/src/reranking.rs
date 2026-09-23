@@ -97,7 +97,7 @@
 //! **`accurate` is better on both groups, not just the first.** It is the only
 //! tier that does not cost same-language ranking.
 //!
-//! **`fast` is the default on latency, not on quality.** It is a twelve-layer
+//! **`fast` was the default on latency, not on quality.** It is a twelve-layer
 //! distilled MiniLM with 21M encoder parameters against XLM-RoBERTa-large's
 //! 303M -- fourteen times smaller, and its pass costs 211 ms against 948, so
 //! 4.5x. For that it gives up 0.0067 cross-lingual and the 0.0070
@@ -139,10 +139,9 @@
 //! What it costs is the other half. Reranking is 332 ms and 1725 ms here
 //! against 165 and 469 on sentences, because a cross-encoder reads the
 //! candidate and `MAX_TOKENS` actually binds on a passage. Two seconds a search
-//! is not an interactive budget, so `fast` stays the default -- but on real
-//! passages the choice is giving up three fifths of the available gain rather
-//! than a fifth, and a workspace of long documents should know that before
-//! accepting it.
+//! is not an interactive budget, which is why `fast` stayed the default -- and
+//! on real passages that choice gave up three fifths of the available gain
+//! rather than a fifth. The section below is why it no longer does.
 //!
 //! recall@50 is 0.9494 for all three tiers, to four decimals, as on the other
 //! corpus: the pass reorders a shortlist and never changes it.
@@ -156,6 +155,32 @@
 //! same-language -- so the two corpora agree about what this tier does when a
 //! query and its answer share a language, and disagree only about how many such
 //! queries there are.
+//!
+//! ## Why `accurate` is the default
+//!
+//! The ranking this project works to is accuracy, then latency, then memory,
+//! then disk. `fast` was chosen on the second; put to the first, query by query
+//! against `accurate` through `search_reranked`:
+//!
+//! | corpus, group | `accurate` against `fast` | wins / losses / ties | p |
+//! |---|---|---|---|
+//! | XQuAD-R, cross-lingual | **+0.0086** | 1,190 queries | 0.0015 |
+//! | XQuAD-R, same-language | **+0.0066** | 1,190 queries | 0.0001 |
+//! | MIRACL Swahili, `speed` profile | **+0.0411** | 83 / 12 / 387 | 0.0001 |
+//! | own corpus, cross-lingual | +0.0151 | 16 / 11 / 16 | 0.37 |
+//! | own corpus, relational | +0.0096 | 3 / 1 / 16 | 0.63 |
+//!
+//! It is never worse, significantly better wherever there are enough queries
+//! to say, and on the one non-parallel corpus the gap is four hundredths.
+//! `fast` meanwhile loses to no reranking at all on both same-language
+//! measurements: -0.0060 on XQuAD-R (p = 0.0002) and -0.0154 on MIRACL
+//! (35 wins, 58 losses, p = 0.014) -- so the tier that shipped was, for any
+//! query whose answer shares its language, worse than asking for nothing.
+//!
+//! What it costs is written down rather than argued away: 1522 ms a search on
+//! XQuAD-R against 359, about a quarter of `fast`'s throughput, and 571 MB
+//! loaded against 119. `--rerank fast` and `--rerank off` are how a workspace
+//! that cannot afford it buys the time back, knowingly.
 //!
 //!
 //! ## What is not paid twice
@@ -251,13 +276,13 @@ pub enum Rerank {
     /// them. On this project's own corpus the monolingual group does not
     /// budge, but that group sits at 0.9940 where nothing could move it.
     Off,
-    /// A twelve-layer distilled multilingual MiniLM, 113 MB. The default.
+    /// A twelve-layer distilled multilingual MiniLM, 113 MB.
     ///
-    /// Chosen over the larger model on latency rather than on the score: it
-    /// reaches four fifths of the cross-lingual gain for two fifths of the
-    /// latency and a fifth of the download. It is the one tier that costs
-    /// same-language ranking, by 0.0062.
-    #[default]
+    /// The default until it was measured against the order it was chosen on:
+    /// it reaches four fifths of `accurate`'s cross-lingual gain for a quarter
+    /// of the latency, but it is the one tier that costs same-language
+    /// ranking -- below no reranking at all, on both corpora that can say.
+    /// The tier to ask for when a search must stay under half a second.
     Fast,
     /// XLM-RoBERTa-large, 570 MB. Worth more the less the corpus looks like
     /// a parallel sentence benchmark.
@@ -270,9 +295,10 @@ pub enum Rerank {
     /// three-hundred-million one does not.
     ///
     /// It is also five times the cost there rather than three: reranking is
-    /// 1725 ms a search against `fast`'s 332. Two seconds is not interactive,
-    /// which is why this is not the default -- but a workspace of long
-    /// documents that can afford it is giving up rather more by not asking.
+    /// 1725 ms a search against `fast`'s 332. That is the price of the default
+    /// being the most accurate tier; the module note has the paired numbers
+    /// that decided it.
+    #[default]
     Accurate,
     /// GTE multilingual reranker base, twelve layers of 768, 341 MB.
     /// Seventy-plus languages.
