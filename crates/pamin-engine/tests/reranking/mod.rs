@@ -72,6 +72,94 @@ pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
     rules.iter().position(|(_, rule)| *rule == Rule::Substitute)
 }
 
+/// The order the shipped rule would give if the model were also shown the
+/// `extra` strongest candidates only the graph found, from wherever fusion
+/// put them.
+///
+/// **Why.** On MuSiQue the graph finds supporting titles that no other channel
+/// does, and fusion ranks every one of them below the reranker's head -- median
+/// rank 99 -- so the model that could judge them, shown the memory that reached
+/// them, never sees them. This hands it the best few. The positions they held
+/// join the movable ones and every candidate in the union is placed by the
+/// model's score, so a graph candidate the model rates rises into the head and
+/// one it does not stays where fusion left it.
+///
+/// Scored in one call per query, the way the engine would, so a candidate
+/// already in the head is scored in a batch that includes the new ones -- and
+/// an int8 model's scores move a little with the batch. That difference is
+/// part of what is being priced. `model` must be used for nothing else: its
+/// cache would otherwise hand it scores from other batches.
+pub fn with_graph_candidates(
+    hits: &[SearchHit],
+    replayed: &Replayed,
+    model: &mut pamin_index::Reranker,
+    query: &str,
+    extra: usize,
+) -> Vec<String> {
+    let by_name: HashMap<&str, &SearchHit> =
+        hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
+    let graph_score = |hit: &SearchHit| -> Option<f32> {
+        let mut only_graph = true;
+        let mut score = None;
+        for why in &hit.result.why {
+            if let Why::Channel {
+                channel,
+                score: scored,
+                ..
+            } = why
+            {
+                if *channel == Channel::Graph {
+                    score = Some(scored.unwrap_or(0.0));
+                } else {
+                    only_graph = false;
+                }
+            }
+        }
+        score.filter(|_| only_graph)
+    };
+
+    let head: std::collections::HashSet<usize> = replayed.movable.iter().copied().collect();
+    let mut graph: Vec<(usize, f32)> = replayed
+        .fused
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !head.contains(at))
+        .filter_map(|(at, name)| graph_score(by_name[name.as_str()]).map(|score| (at, score)))
+        .collect();
+    graph.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    graph.truncate(extra);
+
+    let mut positions: Vec<usize> = replayed.movable.clone();
+    positions.extend(graph.iter().map(|(at, _)| *at));
+    positions.sort_unstable();
+    if positions.len() < 2 {
+        return replayed.fused.clone();
+    }
+    let documents: Vec<String> = positions
+        .iter()
+        .map(|at| {
+            let hit = by_name[replayed.fused[*at].as_str()];
+            render(&hit.topic, &hit.state.content, hit.seed.as_deref(), true)
+        })
+        .collect();
+    let borrowed: Vec<&str> = documents.iter().map(String::as_str).collect();
+    let mut scores = vec![0.0f32; positions.len()];
+    for ranked in model.rank(query, &borrowed).expect("rank") {
+        scores[ranked.position] = ranked.score;
+    }
+    let mut picks: Vec<usize> = (0..positions.len()).collect();
+    picks.sort_by(|left, right| {
+        scores[*right]
+            .total_cmp(&scores[*left])
+            .then_with(|| left.cmp(right))
+    });
+    let mut order = replayed.fused.clone();
+    for (slot, pick) in positions.iter().zip(&picks) {
+        order[*slot] = replayed.fused[positions[*pick]].clone();
+    }
+    order
+}
+
 /// Every row against the one that ships, group by group and as one
 /// cross-validated choice. `measured` is indexed like `labels`.
 pub fn report<T>(
@@ -102,6 +190,22 @@ pub fn report<T>(
         measured,
     );
     println!();
+}
+
+/// One candidate as the model is shown it: `name: content` when `named`, then
+/// the seed's content when there is one. With both, the engine's own rendering,
+/// which the CONTEXT arm asserts it reproduces.
+fn render(name: &str, content: &str, seed: Option<&str>, named: bool) -> String {
+    let mut text = if named {
+        format!("{name}: {content}")
+    } else {
+        content.to_string()
+    };
+    if let Some(seed) = seed {
+        text.push_str(". ");
+        text.push_str(seed);
+    }
+    text
 }
 
 /// What the model is shown for each candidate, in the order [`in_context`]
@@ -181,16 +285,8 @@ pub fn in_context(
         let documents: Vec<String> = movable
             .iter()
             .map(|name| {
-                let mut text = if named {
-                    format!("{name}: {}", content[name])
-                } else {
-                    content[name].to_string()
-                };
-                if let (true, Some(from)) = (with_seed, seed.get(name)) {
-                    text.push_str(". ");
-                    text.push_str(from);
-                }
-                text
+                let seed = seed.get(name).copied().filter(|_| with_seed);
+                render(name, content[name], seed, named)
             })
             .collect();
         let mut scores = vec![0.0; movable.len()];
