@@ -46,6 +46,8 @@
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
+//! | `GRAPH_TO_RERANK` | also hand the reranker the strongest candidates only the graph found |
+//! | `REACH` | where the supporting titles sit, channel by channel, in the names-only and shared-name projects |
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
 
 mod channels;
@@ -287,6 +289,25 @@ async fn search_answers_questions_that_take_several_steps() {
         total > 0,
         "mention derivation built no edges, so nothing here can measure the graph channel"
     );
+
+    if std::env::var("GRAPH_TO_RERANK").is_ok() {
+        graph_to_rerank(&engine, &workspace, &corpus, &named).await;
+        return;
+    }
+
+    if std::env::var("REACH").is_ok() {
+        reach(&engine, &corpus, "names only").await;
+        let entities = Engine::open(
+            &workspace,
+            &format!("{project}-entities"),
+            profile,
+            Access::ReadOnly,
+        )
+        .await
+        .expect("open the entity project; run ENTITIES first");
+        reach(&entities, &corpus, "with shared names").await;
+        return;
+    }
 
     if std::env::var("ENTITIES").is_ok() {
         entities(&engine, &workspace, &corpus, &project, profile, &named).await;
@@ -699,5 +720,132 @@ fn proper_names_are_runs_of_capitals_across_particles() {
     assert!(
         !names.iter().any(|name| name.contains("album")),
         "{names:?}"
+    );
+}
+
+/// Where the supporting titles the fused list ranks badly actually are.
+///
+/// The question it answers decides what to change next. The reranker reads
+/// the fused head -- the first `Rerank::default().depth()` -- and nothing
+/// below it, so a supporting title that only the graph found helps a user only
+/// if fusion puts it inside that head. If the graph finds such titles and
+/// fusion leaves them below it, the bottleneck is the handoff to the reranker
+/// and not the edges; if the graph never finds them, it is the edges.
+async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
+    use pamin_core::{Channel, Why};
+
+    let head = Rerank::default().depth();
+    let mut missed = 0usize;
+    let mut graph_only = 0usize;
+    let mut graph_only_in_head = 0usize;
+    let mut graph_found_missed = 0usize;
+    let mut vector_found_missed = 0usize;
+    let mut fused_ranks: Vec<usize> = Vec::new();
+    for query in &corpus.queries {
+        let hits = engine
+            .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        for (position, hit) in hits.iter().enumerate() {
+            if !query.relevant.contains(&hit.topic) {
+                continue;
+            }
+            let channels: Vec<Channel> = hit
+                .result
+                .why
+                .iter()
+                .filter_map(|why| match why {
+                    Why::Channel { channel, .. } => Some(*channel),
+                    _ => None,
+                })
+                .collect();
+            let only_graph = channels == [Channel::Graph];
+            if only_graph {
+                graph_only += 1;
+                fused_ranks.push(position + 1);
+                if position < head {
+                    graph_only_in_head += 1;
+                }
+            }
+            if position >= NDCG_AT {
+                missed += 1;
+                if channels.contains(&Channel::Graph) {
+                    graph_found_missed += 1;
+                }
+                if channels.contains(&Channel::Vector) {
+                    vector_found_missed += 1;
+                }
+            }
+        }
+    }
+    fused_ranks.sort_unstable();
+    let median = fused_ranks.get(fused_ranks.len() / 2).copied().unwrap_or(0);
+    let total: usize = corpus
+        .queries
+        .iter()
+        .map(|query| query.relevant.len())
+        .sum();
+    println!("\n  where the supporting titles are, {label}: {total} supporting titles");
+    println!(
+        "  found by the graph alone: {graph_only}, of which {graph_only_in_head} inside the \
+         reranker's head of {head}; median fused rank {median}"
+    );
+    println!(
+        "  in the list but below rank {NDCG_AT}: {missed}, of which the graph found {graph_found_missed} \
+         and the vector channel {vector_found_missed}"
+    );
+}
+
+/// The shipped path, and the same with the reranker also shown the strongest
+/// few candidates only the graph found. See
+/// `reranking::with_graph_candidates` for the rule and `reach` for why.
+async fn graph_to_rerank(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named: &str) {
+    const EXTRA: [usize; 2] = [5, 10];
+    let tier = Rerank::default();
+    let mut models: Vec<pamin_index::Reranker> = EXTRA
+        .iter()
+        .map(|_| {
+            pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+                .expect("load the reranker")
+        })
+        .collect();
+    let mut labels: Vec<(String, ())> = vec![("shipped".to_string(), ())];
+    labels.extend(
+        EXTRA
+            .iter()
+            .map(|extra| (format!("+{extra} graph candidates"), ())),
+    );
+    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+
+    for query in &corpus.queries {
+        let hits = engine
+            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        let replayed = reranking::replay(&hits, tier);
+        let mut orders = vec![hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>()];
+        for (extra, model) in EXTRA.iter().zip(&mut models) {
+            orders.push(reranking::with_graph_candidates(
+                &hits,
+                &replayed,
+                model,
+                &query.text,
+                *extra,
+            ));
+        }
+        for (order, into) in orders.iter().zip(&mut measured) {
+            score(into.entry(query.group.clone()).or_default(), query, order);
+        }
+    }
+    reranking::report(
+        &format!(
+            "handing the {} reranker graph-only candidates, MuSiQue, {named}",
+            tier.name()
+        ),
+        &labels,
+        Some(0),
+        &measured,
     );
 }
