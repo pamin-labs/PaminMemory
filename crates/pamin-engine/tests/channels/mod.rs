@@ -912,8 +912,14 @@ pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
 /// `questions` is each question's text and group; `score` ranks one
 /// question's hits into its group's `Scores`, the way the harness already does
 /// -- so the comparison scores exactly what the harness's own shipped row
-/// scores. Each setting's wall time is reported, and is only a guide on a
-/// machine running anything else.
+/// scores.
+///
+/// No time is reported, and that is deliberate. Every setting asks the same
+/// question in turn, and the reranker remembers each pair it has scored, so a
+/// setting that reranks a subset of what the shipped pass already scored
+/// costs nothing -- depths 10 and 15 measured 70 ms a question against 1,364
+/// for the shipped twenty on MIRACL, which is the cache and not the depth.
+/// What a depth costs is its pair count, which is the depth.
 pub async fn compare_reranked(
     engine: &pamin_engine::Engine,
     title: &str,
@@ -929,9 +935,8 @@ pub async fn compare_reranked(
         .collect();
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
         vec![BTreeMap::new(); settings.len()];
-    let mut seconds = vec![0.0f64; settings.len()];
     for (index, (text, group)) in questions.iter().enumerate() {
-        for ((setting, into), spent) in settings.iter().zip(&mut measured).zip(&mut seconds) {
+        for (setting, into) in settings.iter().zip(&mut measured) {
             // SAFETY: the harness runs one test on one thread, and nothing
             // else reads the environment while this is written.
             match setting.depth {
@@ -940,36 +945,31 @@ pub async fn compare_reranked(
                 },
                 None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
             }
-            let started = std::time::Instant::now();
             let hits = engine
                 .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
                 .await
                 .expect("search");
-            *spent += started.elapsed().as_secs_f64();
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
     unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
 
-    let per_question = |spent: f64| spent * 1000.0 / questions.len().max(1) as f64;
     println!("\n  {title}: the shipped search path under other settings, paired against it");
     for (group, shipped) in &measured[0] {
         println!(
-            "  {group:<16} {:<28} nDCG@{} {:.4}   recall@{} {:.4}   {:.0} ms",
+            "  {group:<16} {:<28} nDCG@{} {:.4}   recall@{} {:.4}",
             "shipped",
             crate::scoring::NDCG_AT,
             shipped.mean_ndcg(),
             crate::scoring::RECALL_AT,
             shipped.mean_recall(),
-            per_question(seconds[0])
         );
-        for (((name, _), other), spent) in variants.iter().zip(&measured[1..]).zip(&seconds[1..]) {
+        for ((name, _), other) in variants.iter().zip(&measured[1..]) {
             let other = &other[group];
             println!(
-                "  {group:<16} {name:<28} {:.4} / {:.4}   {:.0} ms   {}",
+                "  {group:<16} {name:<28} {:.4} / {:.4}   {}",
                 other.mean_ndcg(),
                 other.mean_recall(),
-                per_question(*spent),
                 crate::statistics::compare(&shipped.per_query, &other.per_query)
             );
         }
