@@ -17,10 +17,25 @@ pub(crate) struct Repository {
 }
 
 impl Repository {
+    /// Opens `name`, cached under `cache_dir`.
+    ///
+    /// Or under `HF_HOME`, and fetched from `HF_ENDPOINT`, when those are set:
+    /// that is what `fastembed` does when it fetches a model itself, which is
+    /// how the embedding model was always fetched. The reranker used to ignore
+    /// both, so under either it was fetched from somewhere the embedder was
+    /// not -- a mirror set for one and not the other, or two copies of the
+    /// cache. Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
-        let repo = hf_hub::api::sync::ApiBuilder::new()
-            .with_cache_dir(cache_dir.to_path_buf())
-            .with_progress(false)
+        let cache_dir = std::env::var_os("HF_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cache_dir.to_path_buf());
+        let mut builder = hf_hub::api::sync::ApiBuilder::new()
+            .with_cache_dir(cache_dir)
+            .with_progress(false);
+        if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
+            builder = builder.with_endpoint(endpoint);
+        }
+        let repo = builder
             .build()
             .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
             .model(name.to_string());
