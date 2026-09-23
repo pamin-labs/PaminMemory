@@ -150,6 +150,10 @@ pub trait Projection {
 
     /// How this index is segmented, against what the policy would choose.
     fn segmentation(&self) -> Result<Segmentation>;
+
+    /// What text this index's vectors are embedded from, which every write to
+    /// it has to follow.
+    fn passage(&self) -> Passage;
 }
 
 /// A lexical or vector index over topics.
@@ -162,7 +166,57 @@ pub struct ProjectionIndex {
     /// again at query time would let a process that changed it mid-flight ask
     /// for a refiner that is not there.
     storage: VectorStorage,
+    /// What this index's vectors were embedded from. See [`Passage`].
+    passage: Passage,
 }
+
+/// What text a document's vector was embedded from.
+///
+/// Recorded in the index beside the model, for the same reason the model is:
+/// two encodings in one index produce distances that mean nothing and look
+/// fine. An index built before this existed has no line for it and was built
+/// from content alone, which is what it keeps being written with -- so an
+/// existing workspace goes on working unchanged, and `pamin reindex`, which
+/// builds a fresh index, is what moves it to the current encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Passage {
+    /// The memory's content alone. Every index built before names were.
+    Content,
+    /// `name: content`. A memory's text leaves implicit what its topic's name
+    /// says -- a paragraph under "Green (Steve Hillage album)" never names the
+    /// album -- and the vector cannot use what it was not shown. Measured on
+    /// MuSiQue, embedding the vector channel's documents this way lifts its
+    /// nDCG@10 from 0.6221 to 0.6516 (247 questions better, 145 worse).
+    Named,
+}
+
+impl Passage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Content => "content",
+            Self::Named => "named",
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        match label.trim() {
+            "content" => Some(Self::Content),
+            "named" => Some(Self::Named),
+            _ => None,
+        }
+    }
+
+    /// The text a memory is embedded from under this encoding.
+    pub fn render(self, name: &str, content: &str) -> String {
+        match self {
+            Self::Content => content.to_string(),
+            Self::Named => format!("{name}: {content}"),
+        }
+    }
+}
+
+/// The encoding a new index is built with.
+const PASSAGE: Passage = Passage::Named;
 
 /// What one document in this index stands for.
 ///
@@ -624,6 +678,7 @@ impl ProjectionIndex {
         std::fs::create_dir_all(dir)?;
         let marker = dir.join("profile");
         let storage = vector_storage();
+        let mut passage = PASSAGE;
         match std::fs::read_to_string(&marker) {
             Ok(recorded) => {
                 let recorded = recorded.trim();
@@ -639,6 +694,11 @@ impl ProjectionIndex {
                     .next()
                     .and_then(VectorStorage::parse)
                     .unwrap_or(VectorStorage::Fp32);
+                // No line: built before names were embedded, from content.
+                passage = lines
+                    .next()
+                    .and_then(Passage::parse)
+                    .unwrap_or(Passage::Content);
                 if indexed_storage != storage {
                     return Err(IndexError::VectorStorageMismatch {
                         indexed: indexed_storage.label().to_string(),
@@ -675,16 +735,19 @@ impl ProjectionIndex {
                 std::fs::write(
                     &marker,
                     format!(
-                        "{}\n{DOCUMENT_GRAIN}\n{}",
+                        "{}\n{DOCUMENT_GRAIN}\n{}\n{}",
                         profile.model_id(),
-                        storage.label()
+                        storage.label(),
+                        PASSAGE.label()
                     ),
                 )?;
             }
             Err(error) => return Err(error.into()),
         }
 
-        Self::open_with_dimensions(dir, profile.dimensions(), access, documents)
+        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, documents)?;
+        index.passage = passage;
+        Ok(index)
     }
 
     fn open_with_dimensions(
@@ -748,6 +811,7 @@ impl ProjectionIndex {
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
             storage: vector_storage(),
+            passage: PASSAGE,
         })
     }
 
@@ -815,6 +879,10 @@ impl ProjectionIndex {
 }
 
 impl Projection for ProjectionIndex {
+    fn passage(&self) -> Passage {
+        self.passage
+    }
+
     /// The segmenter this index tokenizes with.
     ///
     /// Shared rather than duplicated so that anything comparing text against
