@@ -224,14 +224,13 @@
 //! divide the gain differently -- is now the MIRACL section above. It does
 //! divide it differently, and not in the direction the caveat guessed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use fastembed::{
-    OnnxSource, RerankInitOptionsUserDefined, TextRerank, TokenizerFiles, UserDefinedRerankingModel,
-};
+use fastembed::{OnnxSource, RerankInitOptionsUserDefined, TextRerank, UserDefinedRerankingModel};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{IndexError, Result};
+use crate::hub::Repository;
 use crate::inference::Device;
 
 /// What a tier's weights may be used for.
@@ -741,22 +740,7 @@ impl Reranker {
         debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
         std::fs::create_dir_all(cache_dir)?;
 
-        let repository = hf_hub::api::sync::ApiBuilder::new()
-            .with_cache_dir(cache_dir.to_path_buf())
-            .with_progress(false)
-            .build()
-            .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
-            .model(tier.repository().to_string());
-
-        let fetch = |name: &str| -> Result<PathBuf> {
-            repository.get(name).map_err(|error| {
-                IndexError::Engine(format!(
-                    "fetching {name} for the {} reranker: {error}",
-                    tier.name()
-                ))
-            })
-        };
-        let read = |name: &str| -> Result<Vec<u8>> { Ok(std::fs::read(fetch(name)?)?) };
+        let repository = Repository::open(cache_dir, tier.repository())?;
 
         let session = |device: Device, providers| -> Result<TextRerank> {
             TextRerank::try_new_from_user_defined(
@@ -764,13 +748,8 @@ impl Reranker {
                     // By path rather than by bytes: the session maps the file,
                     // and handing it a copy of half a gigabyte first serves no
                     // purpose.
-                    OnnxSource::File(fetch(tier.onnx(device))?),
-                    TokenizerFiles {
-                        tokenizer_file: read("tokenizer.json")?,
-                        config_file: read("config.json")?,
-                        special_tokens_map_file: read("special_tokens_map.json")?,
-                        tokenizer_config_file: read("tokenizer_config.json")?,
-                    },
+                    OnnxSource::File(repository.get(tier.onnx(device))?),
+                    repository.tokenizer()?,
                 ),
                 {
                     let mut options = RerankInitOptionsUserDefined::new()

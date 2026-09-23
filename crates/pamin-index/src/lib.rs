@@ -6,6 +6,7 @@
 mod descriptors;
 pub mod embedding;
 pub mod error;
+mod hub;
 mod inference;
 pub mod projection;
 pub mod reranking;
