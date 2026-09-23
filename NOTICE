@@ -39,14 +39,14 @@ Reranker models
 ---------------
 
   cross-encoder/mmarco-mMiniLMv2-L12-H384-v1           Apache-2.0
-    Tier `fast`, the default. Distilled from
+    Tier `fast`. Distilled from
     nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large, which carries no
     tag; that model is Microsoft's MiniLMv2 recipe from the UniLM
     repository, MIT.
 
   onnx-community/bge-reranker-v2-m3-ONNX               no tag
-    Tier `accurate`. An ONNX re-export of BAAI/bge-reranker-v2-m3, itself
-    Apache-2.0.
+    Tier `accurate`, the default. An ONNX re-export of
+    BAAI/bge-reranker-v2-m3, itself Apache-2.0.
 
 ================================================================================
 Rust dependencies
