@@ -366,6 +366,7 @@ async fn search_answers_questions_that_take_several_steps() {
             let replayed = reranking::replay(&hits, tier);
             routes.observe(
                 &query.group,
+                &query.text,
                 &hits,
                 &replayed,
                 &mut small,
