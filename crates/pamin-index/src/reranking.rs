@@ -32,12 +32,12 @@
 //! Swahili is not the case that rules mLateOn out; it is the case mLateOn
 //! claims, and it is where this stack is weakest.
 //!
-//! What is actually left is three costs and no measurement of any of them: the
-//! int8 export is the backbone alone, with three `*_Dense` projection modules
-//! shipped separately as safetensors and applied after it, so the projection
-//! is this project's to reimplement; the write path gains a forward pass per
-//! memory; and the token vectors have to be stored.
-//! `docs/adr/0001-tech-selection.md` carries the trigger.
+//! It was then built and measured, which ended it: over the exact candidates
+//! the `accurate` tier is offered, reordering by MaxSim scored 0.5857 on
+//! XQuAD-R's cross-lingual group against 0.6114 for not reranking at all and
+//! 0.6597 for `accurate` -- worse than every tier, including `off`. The storage
+//! it would have needed was never built, and the implementation was deleted.
+//! `docs/adr/0001-tech-selection.md` has the table.
 //!
 //! ## What it is worth, measured
 //!
