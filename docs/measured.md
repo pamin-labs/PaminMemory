@@ -525,6 +525,33 @@ project's own ordering of accuracy before latency.
 Four cores is where the embedding model and the reranker contend, so a machine
 with cores to spare will not look like this.
 
+**Reranking only the queries that need it was measured, and does not ship.**
+No reranking is the cheapest sufficient choice for 43.4% of XQuAD-R's
+cross-lingual queries, so an oracle would save a great deal. The `ROUTES` arm
+prices every way of acting on that from one shipped run: a cascade where the
+`fast` reranker picks what `accurate` orders, five rules on the fused list, and
+a ridge regression of the pass's gain on features of the list before it,
+cross-validated by question so no asking of a question is scored by a model
+that saw another. Against reranking every query, nDCG@10:
+
+| route | XQuAD-R cross-lingual | MIRACL | MuSiQue |
+| --- | --- | --- | --- |
+| `fast` picks ten, `accurate` orders them | −0.0284, p = 0.0001 | | −0.0047, p = 0.0015 |
+| best rule (skip when the top is first in both lexical channels) | −0.0133, p = 0.0001 | | ±0 (never fires) |
+| learned, reranking half the queries | −0.0085, p = 0.0001 | −0.0036, p = 0.014 | −0.0023, n.s. |
+| learned, reranking four in five | −0.0020, p = 0.0001 | +0.0001, n.s. | −0.0000, n.s. |
+
+The learned route beats a random choice at the same rate everywhere -- half the
+queries keep 66% of the pass's gain on XQuAD-R, 87% on MIRACL and 93% on
+MuSiQue, where chance keeps 50% -- and it is still significantly worse than
+reranking everything on the cross-lingual group at any rate that saves much.
+Every cross-validated fold on every corpus chose to rerank every query. The
+literature says the same thing from the other side: query-performance
+predictors transfer badly between collections, and routers recover 60-80% of
+an oracle's saving at best. Accuracy is the axis this project will not trade,
+so every query is still reranked; the learned route is a candidate for the
+`speed` profile, not the default.
+
 **Throughput, and where it stops.** The same sweep at one, eight and
 thirty-two concurrent callers, taken while `fast` was the default:
 
@@ -555,6 +582,30 @@ Seven gigabytes for a hundred and thirty thousand documents is the number to
 plan around, and it is why two workspaces do not fit on a sixteen-gigabyte
 machine at this corpus size. A workspace that never asks for `accurate` never
 loads the 570 MB reranker; `--rerank off` never loads either.
+
+**And where those seven gigabytes are.** The `MEMORY` arm of
+`pamin-engine/tests/monolingual.rs` reads `/proc/self/smaps` after each thing a
+server loads, on MIRACL at the shipped configuration. Anonymous memory -- the
+part only the process can give back:
+
+| stage | anonymous memory added |
+| --- | --- |
+| opening the index, 66 segments | **3,283 MB** |
+| the embedder, and a first search | 1,080 MB |
+| the `fast` reranker | 674 MB |
+| the `accurate` reranker, whose weights are 545 MB | 911 MB |
+| a hundred searches after that | 160 MB |
+| freed afterwards by `malloc_trim` | −457 MB |
+
+The index was the largest single item, and not because of its size on disk: a
+project grown from empty recorded a segment of 2,000 documents, and every
+segment holds its own full-text stores resident. Fifty thousand documents open
+at 1,292 MB in 25 segments and at 308 MB in 4. The floor is now 10,000 -- the
+largest size whose graph still agrees with an exhaustive scan exactly -- and
+`pamin reindex` reshapes an existing index reusing every vector it holds, so it
+needs no model: fifty thousand documents reused all fifty thousand. ONNX
+Runtime's memory arena is off, which took a hundred `accurate` searches from
+6,208 MB to 5,914 MB anonymous with bit-identical scores.
 
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
