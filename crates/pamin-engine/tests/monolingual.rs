@@ -66,6 +66,7 @@
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
 //! | `TIERS` | run all three rerank tiers instead of the default |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
+//! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
 //! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
 //! | `RERANK_RULES` | price blending the shipped tier's scores with fusion's, from one run |
 //! | `SWEEP` | run fusion settings instead of the shipped path |
@@ -790,6 +791,41 @@ async fn search() {
     // from one shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
         rerank_rules(&engine, &corpus, &named).await;
+        return;
+    }
+
+    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
+    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    if std::env::var("ROUTES").is_ok() {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let tier = Rerank::default();
+        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+            .expect("load the small reranker");
+        let mut routes = reranking::Routes::default();
+        for query in &corpus.queries {
+            let hits = engine
+                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let replayed = reranking::replay(&hits, tier);
+            routes.observe(
+                GROUP,
+                &hits,
+                &replayed,
+                &mut small,
+                &query.text,
+                |into, ranking| {
+                    into.add(ranking, query.relevant.len(), |topic| {
+                        query.relevant.contains(topic)
+                    });
+                },
+            );
+        }
+        routes.report(&format!(
+            "spending less on the {} reranker, MIRACL, {named}",
+            tier.name()
+        ));
         return;
     }
 
