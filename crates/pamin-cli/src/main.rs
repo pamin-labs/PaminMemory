@@ -367,8 +367,13 @@ mod tests {
     /// documented knob is a knob somebody will turn -- so they stay out of the
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
+    ///
+    /// `PAMIN_PPLX_DIR` is here for a different reason: it points the
+    /// experimental `pplx` profile at an export that is published nowhere, so
+    /// there is nothing a reader of the table could set it to.
     const UNDOCUMENTED: &[&str] = &[
         "PAMIN_EVAL_HOME",
+        "PAMIN_PPLX_DIR",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",

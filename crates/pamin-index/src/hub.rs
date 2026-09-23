@@ -3,6 +3,11 @@
 //! Both kinds of model in this crate are downloaded on first use into the
 //! workspace's model directory and read from there afterwards. One place does
 //! that, so the two cannot disagree about where the weights live.
+//!
+//! A repository can also be a directory on this machine, for an export that
+//! is not published anywhere a download could reach -- the experimental
+//! `pplx` profile's is one. Its files are read the same way, so what a model
+//! does with them does not depend on where they came from.
 
 use std::path::{Path, PathBuf};
 
@@ -10,8 +15,15 @@ use crate::error::{IndexError, Result};
 
 /// One model repository on the hub, cached under a workspace's model directory.
 pub(crate) struct Repository {
-    repo: hf_hub::api::sync::ApiRepo,
+    source: Source,
     name: String,
+}
+
+/// Boxed: the hub's handle is over three hundred bytes, and a directory is a
+/// path.
+enum Source {
+    Hub(Box<hf_hub::api::sync::ApiRepo>),
+    Directory(PathBuf),
 }
 
 impl Repository {
@@ -38,16 +50,38 @@ impl Repository {
             .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
             .model(name.to_string());
         Ok(Self {
-            repo,
+            source: Source::Hub(Box::new(repo)),
             name: name.to_string(),
         })
+    }
+
+    /// The files in `dir`, which is the whole repository: nothing is fetched,
+    /// and a file that is not there is an error rather than a download.
+    pub(crate) fn directory(dir: &Path) -> Self {
+        Self {
+            source: Source::Directory(dir.to_path_buf()),
+            name: dir.display().to_string(),
+        }
     }
 
     /// The local path of one of the repository's files, downloading it first
     /// if it is not cached yet.
     pub(crate) fn get(&self, file: &str) -> Result<PathBuf> {
-        self.repo.get(file).map_err(|error| {
-            IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
-        })
+        match &self.source {
+            Source::Hub(repo) => repo.get(file).map_err(|error| {
+                IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
+            }),
+            Source::Directory(dir) => {
+                let path = dir.join(file);
+                if path.is_file() {
+                    Ok(path)
+                } else {
+                    Err(IndexError::Engine(format!(
+                        "{file} is not in {}",
+                        self.name
+                    )))
+                }
+            }
+        }
     }
 }
