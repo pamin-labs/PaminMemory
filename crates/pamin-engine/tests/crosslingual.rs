@@ -1249,6 +1249,36 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `DEPTH_VARIANTS`: every question through the shipped path at other
+    // rerank depths, paired. Each question is listed once per group, since the
+    // groups judge the same ranking differently; the second asking reranks
+    // from the reranker's own cache. See `channels::compare_reranked`.
+    if let Some(variants) = channels::requested_variants() {
+        let asked: Vec<(&Query<'_>, &str)> = queries
+            .iter()
+            .flat_map(|query| GROUPS.map(|group| (query, group)))
+            .collect();
+        let questions: Vec<(String, String)> = asked
+            .iter()
+            .map(|(query, group)| (query.text().to_string(), group.to_string()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            &format!("XQuAD-R, {named}"),
+            &questions,
+            DEPTH as u32,
+            DEPTHS,
+            &variants,
+            |index, into, hits| {
+                let (query, group) = asked[index];
+                let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+                score_group(into, query, group, &ranked);
+            },
+        )
+        .await;
+        return;
+    }
+
     // `RERANK_RULES` prices other rules for using the shipped tier's scores
     // -- blending them with fusion's rather than substituting -- from one
     // shipped run. See `reranking`.
