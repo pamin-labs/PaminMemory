@@ -615,6 +615,18 @@ pub fn cross_validated(
         .map(|at| variants[*at].0.as_str())
         .collect();
     println!("  chosen per fold: {chosen:?}");
+
+    // The same rule on every query, which is what would actually ship if this
+    // procedure were trusted -- and which is the row to look up in *another*
+    // corpus's table to ask whether the choice transfers. A choice that
+    // improves the corpus it was made on and not the next one is a property of
+    // that corpus, which is what Bruch, Gai and Ingber found for per-channel
+    // rank constants (`arXiv:2210.11934`).
+    let everything: Vec<Vec<f64>> = matrix.iter().map(|row| by_group(row)).collect();
+    println!(
+        "  chosen on all of this corpus's queries: {:?}  <- look this row up in another corpus's table",
+        variants[rule(&everything)].0
+    );
     if selected.chosen.iter().any(|at| *at != selected.chosen[0]) {
         println!("  the folds disagree, so no single setting is a stable choice at this size");
     }
