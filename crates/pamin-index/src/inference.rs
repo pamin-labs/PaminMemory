@@ -60,6 +60,21 @@ impl Device {
     }
 }
 
+/// The CPU, with ONNX Runtime's memory arena off.
+///
+/// The arena keeps every buffer a pass ever needed and hands it back to the
+/// next pass instead of to the system, so a model's resident size settles at
+/// its largest batch and stays there. Measured on the `accurate` reranker, six
+/// passes of sixteen passages at 256 tokens: 1,682 MB resident with the arena
+/// against 1,077 MB without -- 605 MB of activations held for a batch shape
+/// that recurs only when the next search runs -- with scores bit-identical and
+/// no slower pass. The embedder takes the same setting, since its largest
+/// batch is a bulk write's rather than a search's; what it saves there is
+/// read by the `MEMORY` arm of the MIRACL harness.
+pub(crate) fn cpu() -> fastembed::ExecutionProviderDispatch {
+    ort::ep::CPU::default().with_arena_allocator(false).build()
+}
+
 /// The accelerators to try before the CPU, best first.
 ///
 /// Whatever this platform's runtime carries, with no build flag: CUDA on
