@@ -718,8 +718,7 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     // group the query's own language is *never* the answer -- the one gold
     // sentence in it is removed from the ranking -- so a channel whose head is
     // mostly the query's own language is spending its head on candidates that
-    // cannot be right, and it is the additive promotion of exactly those that
-    // `Fusion::needing_support` is a candidate remedy for.
+    // cannot be right.
     println!("  what language each channel's top {NDCG_AT} is in, {named}");
     println!("  channel                own language   of returned   share");
     println!("  ----------------------------------------------------------");

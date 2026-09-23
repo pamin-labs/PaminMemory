@@ -578,8 +578,8 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
 /// 0.6499 to 0.6322, -0.0177 (156W/251L, p = 0.0001); the graph channel alone
 /// falls from 0.1423 to 0.0770 and its net worth to the fused list from
 /// +0.0159 to nothing (+0.0018 for removing it, n.s.). The corroboration rule
-/// is not the cause -- relaxing it for the graph changes nothing on either
-/// project. Coverage rose and precision fell further: a seed now has several
+/// was not the cause -- relaxing it for the graph changed nothing on either
+/// project, and it has since been removed. Coverage rose and precision fell further: a seed now has several
 /// times as many neighbours, most unrelated to the question, and the channel's
 /// fifty places go to them. That is HippoRAG's own ablation arrived at again
 /// -- expanding to neighbours without asking which ones the query wants cost

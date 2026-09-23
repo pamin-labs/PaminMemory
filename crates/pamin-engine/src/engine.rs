@@ -2112,13 +2112,15 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// the head.
 ///
 /// The graph finds what the other channels cannot -- the memory a question
-/// needs because another memory names it -- and fusion, weighing it at 0.30
-/// and flooring what nothing corroborates, ranks those finds far below the
-/// head: on MuSiQue's 1,000 two-hop questions, 153 supporting titles were
-/// found by the graph alone and not one reached the reranker's twenty, at a
-/// median fused rank of 99. The reranker is the one stage that is shown the
-/// memory that reached them, so it is the one that can judge them. Handing it
-/// the strongest ten lifts nDCG@10 from 0.6573 to 0.6834 (108 questions
+/// needs because another memory names it -- and fusion, weighing it at 0.30,
+/// ranks those finds far below the head: on MuSiQue's 1,000 two-hop questions,
+/// 153 supporting titles were found by the graph alone and not one reached the
+/// reranker's twenty, at a median fused rank of 99. That rank was taken while
+/// fusion also floored every candidate only the graph found; removing the
+/// floor can only raise them, and it left all 1,000 questions' nDCG@10 where
+/// it was. The reranker is the one stage that is shown the memory that
+/// reached them, so it is the one that can judge them. Handing it the
+/// strongest ten lifts nDCG@10 from 0.6573 to 0.6834 (108 questions
 /// better, 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435; five
 /// was worth +0.0234. Chosen by five-fold cross-validation, every fold picking
 /// ten. The cost is ten more pairs a search, only where there are edges: a
