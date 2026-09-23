@@ -1674,6 +1674,128 @@ mod tests {
         assert_eq!(Fusion::default().combine, Combine::Banded);
     }
 
+    /// Four channels as the engine hands them over: two unbounded BM25 lists,
+    /// a cosine list, and a calibrated graph list with a tie and candidates
+    /// nothing else found, so the corroboration floor is exercised too.
+    fn every_kind_of_channel() -> [ChannelResults; 4] {
+        let scored = |channel, pairs: &[(u8, f32)]| {
+            ChannelResults::new(
+                channel,
+                pairs
+                    .iter()
+                    .map(|(n, score)| Scored::new(id(*n), *score))
+                    .collect(),
+            )
+        };
+        [
+            scored(
+                Channel::Vector,
+                &[
+                    (1, 0.863),
+                    (2, 0.826),
+                    (3, 0.789),
+                    (4, 0.752),
+                    (5, 0.715),
+                    (6, 0.678),
+                    (7, 0.641),
+                    (8, 0.604),
+                ],
+            ),
+            scored(
+                Channel::LexicalSegmented,
+                &[(3, 14.2), (9, 11.7), (1, 6.1), (10, 5.9), (5, 2.3)],
+            ),
+            scored(
+                Channel::LexicalNgram,
+                &[(9, 31.0), (11, 30.5), (2, 12.25), (6, 4.0)],
+            ),
+            scored(Channel::Graph, &[(4, 0.5), (12, 0.5), (7, 0.25)]),
+        ]
+    }
+
+    /// The same shape with no scores, where both combiners read rank alone.
+    fn every_channel_unscored() -> [ChannelResults; 4] {
+        [
+            ChannelResults::unscored(Channel::Vector, (1..=6).map(id).collect()),
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![id(3), id(9), id(1)]),
+            ChannelResults::unscored(Channel::LexicalNgram, vec![id(9), id(11), id(2)]),
+            ChannelResults::unscored(Channel::Graph, vec![id(4), id(12)]),
+        ]
+    }
+
+    fn fingerprint(fused: &[FusedResult]) -> Vec<(u8, u32)> {
+        fused
+            .iter()
+            .map(|result| (result.topic.0.as_bytes()[0], result.score.to_bits()))
+            .collect()
+    }
+
+    /// What ships and the baseline every figure is quoted against, to the bit.
+    ///
+    /// Every accuracy floor in this repository was taken under these two, so a
+    /// change that moves either one by a single ulp -- on the order, the score,
+    /// or the corroboration floor -- is a change to what those floors describe
+    /// and has to be made on purpose. Recorded from the code before the
+    /// combiners that measured worse were removed around it.
+    #[test]
+    fn the_shipped_and_baseline_combiners_are_pinned_to_the_bit() {
+        let banded = Fusion::default();
+        let reciprocal = Fusion::default().with(Combine::Reciprocal);
+
+        let scored = every_kind_of_channel();
+        assert_eq!(
+            fingerprint(&banded.fuse(&scored)),
+            [
+                (4, 0x3dceb5a6),
+                (1, 0x3dcd3af2),
+                (2, 0x3dc3a5dd),
+                (3, 0x3dbcc486),
+                (7, 0x3dad87f0),
+                (5, 0x3da1dff0),
+                (6, 0x3d98c018),
+                (8, 0x3d638e39),
+                (12, 0x3cbd0bd2),
+                (9, 0x3cb4f776),
+                (11, 0x3c397169),
+                (10, 0x3c178d94),
+            ]
+        );
+        assert_eq!(
+            fingerprint(&reciprocal.fuse(&scored)),
+            [
+                (1, 0x3dcddfc7),
+                (4, 0x3dca23e9),
+                (2, 0x3dbe5be6),
+                (3, 0x3db4cfaa),
+                (7, 0x3da7bb6d),
+                (5, 0x3d99999a),
+                (6, 0x3d924925),
+                (8, 0x3d638e39),
+                (12, 0x3cbd0bd2),
+                (9, 0x3cb26c9c),
+                (11, 0x3c2aaaab),
+                (10, 0x3c124925),
+            ]
+        );
+
+        // With nothing to read but rank, the band has nothing to order by and
+        // the two are the same function.
+        let unscored = every_channel_unscored();
+        let rank_only = [
+            (1, 0x3dcddfc7),
+            (4, 0x3dca23e9),
+            (2, 0x3dbe5be6),
+            (3, 0x3db4cfaa),
+            (5, 0x3d888889),
+            (6, 0x3d800000),
+            (12, 0x3cccccce),
+            (9, 0x3cb26c9c),
+            (11, 0x3c2aaaab),
+        ];
+        assert_eq!(fingerprint(&banded.fuse(&unscored)), rank_only);
+        assert_eq!(fingerprint(&reciprocal.fuse(&unscored)), rank_only);
+    }
+
     /// A channel that cannot separate its own candidates loses its vote.
     ///
     /// The case the mechanism exists for. Flat scores mean the channel returned
