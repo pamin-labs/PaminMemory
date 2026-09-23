@@ -161,6 +161,7 @@
 //! question and takes a eleventh of the time.
 
 mod channels;
+mod reranking;
 mod scoring;
 mod statistics;
 
@@ -1159,6 +1160,14 @@ async fn search_reaches_across_languages() {
     // channel's rank for every candidate. See `channels`.
     if std::env::var("CHANNELS").is_ok() {
         report_channels(&engine, &queries, &named).await;
+        return;
+    }
+
+    // `RERANK_RULES` prices other rules for using the shipped tier's scores
+    // -- blending them with fusion's rather than substituting -- from one
+    // shipped run. See `reranking`.
+    if std::env::var("RERANK_RULES").is_ok() {
+        rerank_rules(&engine, &queries, &named).await;
         return;
     }
 
@@ -2387,6 +2396,29 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
         score(&mut groups, query, &ranked);
     }
     groups
+}
+
+/// Every rule in `reranking::rules` over the shipped tier's own scores.
+async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    let tier = Rerank::default();
+    let rules = reranking::rules();
+    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    for query in queries {
+        let hits = engine
+            .search_reranked(query.text(), WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        let replayed = reranking::replay(&hits, tier);
+        for ((_, rule), into) in rules.iter().zip(&mut measured) {
+            score(into, query, &replayed.order(*rule));
+        }
+    }
+    reranking::report(
+        &format!("XQuAD-R, {} tier, {named}", tier.name()),
+        &measured,
+    );
 }
 
 /// Writes every sentence that is not already a topic, then runs the queue.

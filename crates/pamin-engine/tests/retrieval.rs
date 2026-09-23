@@ -500,32 +500,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
         }
     }
 
-    let ship = reranking::shipped(&rules);
-    let shipped = &measured[ship.expect("the shipped rule is measured")];
-    println!(
-        "\n  rules for the {} reranker's scores, own corpus",
-        tier.name()
-    );
-    for (group, scores) in shipped {
-        channels::sweep_table(
-            group,
-            scores,
-            &rules,
-            &measured
-                .iter()
-                .map(|row| row.get(group))
-                .collect::<Vec<_>>(),
-        );
-    }
-    channels::cross_validated(
-        "own corpus",
-        &shipped.keys().map(String::as_str).collect::<Vec<_>>(),
-        shipped,
-        &rules,
-        ship,
-        &measured,
-    );
-    println!();
+    reranking::report("own corpus", &measured);
 }
 
 /// Live edges in this project, by kind, so a graph row has a premise.
