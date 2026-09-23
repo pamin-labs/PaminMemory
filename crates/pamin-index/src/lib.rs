@@ -9,6 +9,7 @@ pub mod error;
 mod inference;
 pub mod projection;
 pub mod reranking;
+mod reshape;
 pub mod segmentation;
 
 pub use descriptors::raise_open_file_limit;
@@ -20,4 +21,5 @@ pub use projection::{
     is_fragmented, segment_documents, vector_index_lags,
 };
 pub use reranking::{Licence, Ranked, Rerank, Reranked, Reranker};
+pub use reshape::{Held, Reshape, Reshaped};
 pub use segmentation::{Segmenter, detect_language};

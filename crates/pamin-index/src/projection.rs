@@ -711,6 +711,21 @@ impl ProjectionIndex {
             return Err(IndexError::LegacyLayout);
         }
 
+        Self::open_sized(dir, profile, access, segment_documents(documents))
+    }
+
+    /// Opens the index at `dir`, creating it with segments of `segment`
+    /// documents if absent.
+    ///
+    /// The size is the caller's here rather than derived from a count, because
+    /// the reshape's tests have to build an index in the shape a grown project
+    /// is in -- many segments -- without writing fifty thousand documents.
+    pub(crate) fn open_sized(
+        dir: &Path,
+        profile: Profile,
+        access: Access,
+        segment: u64,
+    ) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let storage = vector_storage();
         let passage = match Marker::read(dir)? {
@@ -753,16 +768,59 @@ impl ProjectionIndex {
             }
         };
 
-        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, documents)?;
+        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
         index.passage = passage;
         Ok(index)
+    }
+
+    /// Creates an empty index at `dir` that records what the one at `source`
+    /// does, sized for `documents`.
+    ///
+    /// The marker is copied rather than written afresh, so the copy keeps the
+    /// source's encoding: a copy of an index whose vectors were embedded from
+    /// content alone must go on being written that way, and writing the
+    /// current marker would label those vectors `name: content`. Reopening
+    /// then checks the copied marker against `profile` like any other open.
+    ///
+    /// Whatever is at `dir` already is discarded first: it can only be a copy
+    /// that did not finish.
+    pub(crate) fn create_beside(
+        source: &Path,
+        dir: &Path,
+        profile: Profile,
+        documents: u64,
+    ) -> Result<Self> {
+        Self::discard(dir)?;
+        std::fs::create_dir_all(dir)?;
+        std::fs::copy(source.join(Marker::FILE), dir.join(Marker::FILE))?;
+        Self::open_sized(
+            dir,
+            profile,
+            Access::ReadWrite,
+            segment_documents(documents),
+        )
+    }
+
+    /// Opens the index at `dir` for writing, refusing to create one.
+    ///
+    /// For reopening an index after its directory was moved into place, where
+    /// finding nothing there is a fault: an open that created an empty index
+    /// would hand the caller a project with no memories and no error.
+    pub(crate) fn reopen(dir: &Path, profile: Profile) -> Result<Self> {
+        if !std::fs::exists(dir.join(COLLECTION))? {
+            return Err(IndexError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no index at {}", dir.display()),
+            )));
+        }
+        Self::open_sized(dir, profile, Access::ReadWrite, segment_documents(0))
     }
 
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
         access: Access,
-        documents: u64,
+        segment: u64,
     ) -> Result<Self> {
         INITIALIZE.call_once(|| {
             let _ = zvec_rust::initialize(None);
@@ -794,7 +852,7 @@ impl ProjectionIndex {
                 dimensions,
                 vector_storage().index_params()?,
             )
-            .max_doc_count_per_segment(segment_documents(documents))
+            .max_doc_count_per_segment(segment)
             .build()?;
 
         // The engine refuses to create over an existing path, so reopen when
@@ -1028,7 +1086,7 @@ impl Previous {
             &aside,
             profile.dimensions(),
             Access::ReadOnly,
-            0,
+            segment_documents(0),
         )?;
         index.passage = PASSAGE;
         Ok(Some(Self { index, dir: aside }))
