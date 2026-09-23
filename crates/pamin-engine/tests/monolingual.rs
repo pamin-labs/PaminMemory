@@ -662,6 +662,33 @@ async fn search() {
 
     // `EFFORTS=700,2000`: every question at each graph search width, paired
     // against the first. Leaves the index as it is.
+    // `GRAPH_VARIANTS` / `DEPTH_VARIANTS`: every question through the shipped
+    // path under other settings, paired. See `channels::compare_reranked`.
+    if let Some(variants) = channels::requested_variants() {
+        let questions: Vec<(String, String)> = corpus
+            .queries
+            .iter()
+            .map(|query| (query.text.clone(), "miracl".to_string()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            "MIRACL",
+            &questions,
+            DEPTH as u32,
+            DEPTHS,
+            &variants,
+            |index, into, hits| {
+                let query = &corpus.queries[index];
+                let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+                into.add(&ranked, query.relevant.len(), |topic| {
+                    query.relevant.contains(topic)
+                });
+            },
+        )
+        .await;
+        return;
+    }
+
     if let Ok(efforts) = std::env::var("EFFORTS") {
         compare_efforts(&engine, &corpus, &efforts).await;
         return;

@@ -867,6 +867,15 @@ impl Paired {
     }
 }
 
+/// One way to run the shipped search path: the fusion it uses, and how many
+/// candidates the reranker reads. `Setting::default()` is what ships.
+#[derive(Clone, Default)]
+pub struct Setting {
+    pub fusion: Fusion,
+    /// `PAMIN_RERANK_DEPTH` for the pass; `None` leaves the shipped depth.
+    pub depth: Option<usize>,
+}
+
 /// Graph-channel settings worth pairing against the shipped fusion on the path
 /// a user gets, reranker and all.
 ///
@@ -875,71 +884,133 @@ impl Paired {
 /// with fused nDCG@10 unchanged. That was found after looking at the data, so
 /// it is a hypothesis until the reranked path says otherwise -- which is what
 /// [`compare_reranked`] asks.
-pub fn graph_variants() -> Vec<(String, Fusion)> {
-    vec![
+pub fn graph_variants() -> Vec<(String, Setting)> {
+    [
         (
-            "graph 0.50, no support rule".into(),
+            "graph 0.50, no support rule",
             Fusion::default()
                 .with_weight(Channel::Graph, 0.5)
                 .needing_support([]),
         ),
         (
-            "graph 0.30, no support rule".into(),
+            "graph 0.30, no support rule",
             Fusion::default().needing_support([]),
         ),
         (
-            "graph 0.50".into(),
+            "graph 0.50",
             Fusion::default().with_weight(Channel::Graph, 0.5),
         ),
     ]
+    .into_iter()
+    .map(|(name, fusion)| {
+        (
+            name.to_string(),
+            Setting {
+                fusion,
+                depth: None,
+            },
+        )
+    })
+    .collect()
 }
 
-/// Every question through `search_reranked_with` under the shipped fusion and
+/// How many candidates the reranker reads, around the shipped twenty.
+///
+/// The constant was settled at the `fast` tier on sentences; the default is
+/// now `accurate`, whose pass is most of a search, on corpora of passages.
+/// Fewer candidates is the one latency lever that costs no model change, and
+/// more is the one accuracy lever that costs nothing but time.
+pub fn depth_variants() -> Vec<(String, Setting)> {
+    [10, 15, 30, 40]
+        .into_iter()
+        .map(|depth| {
+            (
+                format!("rerank depth {depth}"),
+                Setting {
+                    fusion: Fusion::default(),
+                    depth: Some(depth),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The variants an arm was asked for: `GRAPH_VARIANTS` or `DEPTH_VARIANTS`.
+pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
+    let mut variants = Vec::new();
+    if std::env::var("GRAPH_VARIANTS").is_ok() {
+        variants.extend(graph_variants());
+    }
+    if std::env::var("DEPTH_VARIANTS").is_ok() {
+        variants.extend(depth_variants());
+    }
+    (!variants.is_empty()).then_some(variants)
+}
+
+/// Every question through `search_reranked_with` under the shipped setting and
 /// under each variant, scored by group and paired against the shipped one.
 ///
 /// `questions` is each question's text and group; `score` ranks one
 /// question's hits into its group's `Scores`, the way the harness already does
 /// -- so the comparison scores exactly what the harness's own shipped row
-/// scores.
+/// scores. Each setting's wall time is reported, and is only a guide on a
+/// machine running anything else.
 pub async fn compare_reranked(
     engine: &pamin_engine::Engine,
     title: &str,
     questions: &[(String, String)],
     limit: u32,
     depths: pamin_engine::Depths,
-    variants: &[(String, Fusion)],
+    variants: &[(String, Setting)],
     score: impl Fn(usize, &mut crate::scoring::Scores, &[SearchHit]),
 ) {
     let rerank = pamin_index::Rerank::default();
+    let settings: Vec<Setting> = std::iter::once(Setting::default())
+        .chain(variants.iter().map(|(_, setting)| setting.clone()))
+        .collect();
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
-        vec![BTreeMap::new(); variants.len() + 1];
+        vec![BTreeMap::new(); settings.len()];
+    let mut seconds = vec![0.0f64; settings.len()];
     for (index, (text, group)) in questions.iter().enumerate() {
-        let fusions =
-            std::iter::once(Fusion::default()).chain(variants.iter().map(|(_, f)| f.clone()));
-        for (fusion, into) in fusions.zip(measured.iter_mut()) {
+        for ((setting, into), spent) in settings.iter().zip(&mut measured).zip(&mut seconds) {
+            // SAFETY: the harness runs one test on one thread, and nothing
+            // else reads the environment while this is written.
+            match setting.depth {
+                Some(depth) => unsafe {
+                    std::env::set_var("PAMIN_RERANK_DEPTH", depth.to_string())
+                },
+                None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
+            }
+            let started = std::time::Instant::now();
             let hits = engine
-                .search_reranked_with(text, limit, depths, rerank, fusion)
+                .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
                 .await
                 .expect("search");
+            *spent += started.elapsed().as_secs_f64();
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
+    unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
 
-    println!("\n  {title}: the shipped search path under other graph settings, paired against it");
+    let per_question = |spent: f64| spent * 1000.0 / questions.len().max(1) as f64;
+    println!("\n  {title}: the shipped search path under other settings, paired against it");
     for (group, shipped) in &measured[0] {
         println!(
-            "  {group:<16} shipped            nDCG@{} {:.4}   recall@{} {:.4}",
+            "  {group:<16} {:<28} nDCG@{} {:.4}   recall@{} {:.4}   {:.0} ms",
+            "shipped",
             crate::scoring::NDCG_AT,
             shipped.mean_ndcg(),
             crate::scoring::RECALL_AT,
-            shipped.mean_recall()
+            shipped.mean_recall(),
+            per_question(seconds[0])
         );
-        for ((name, _), other) in variants.iter().zip(&measured[1..]) {
+        for (((name, _), other), spent) in variants.iter().zip(&measured[1..]).zip(&seconds[1..]) {
             let other = &other[group];
             println!(
-                "  {group:<16} {name:<28} {:.4} / {:.4}   {}",
+                "  {group:<16} {name:<28} {:.4} / {:.4}   {:.0} ms   {}",
                 other.mean_ndcg(),
                 other.mean_recall(),
+                per_question(*spent),
                 crate::statistics::compare(&shipped.per_query, &other.per_query)
             );
         }

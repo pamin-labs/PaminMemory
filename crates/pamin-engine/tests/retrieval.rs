@@ -264,7 +264,7 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
-    if std::env::var("GRAPH_VARIANTS").is_ok() {
+    if let Some(variants) = channels::requested_variants() {
         let questions: Vec<(String, String)> = queries
             .iter()
             .map(|query| (query.query.clone(), query.group.clone()))
@@ -275,7 +275,7 @@ async fn retrieval_quality_by_group() {
             &questions,
             SEARCH_LIMIT,
             DEPTHS,
-            &channels::graph_variants(),
+            &variants,
             |index, into, hits| {
                 let query = &queries[index];
                 let mut ranked: Vec<String> = Vec::new();
