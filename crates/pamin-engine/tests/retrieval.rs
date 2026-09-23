@@ -693,7 +693,6 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
     let mut lexical_agreement: Vec<f64> = Vec::new();
-    let mut floors: BTreeMap<Channel, Vec<f64>> = BTreeMap::new();
 
     // Every fusion setting worth pricing, scored from the same traces as the
     // rows above. One pass, the whole grid.
@@ -726,10 +725,6 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
                 .or_default()
                 .add(&deduped, relevant.len(), |topic| relevant.contains(topic));
         };
-
-        for (channel, place) in channels::floor_places(&hits) {
-            floors.entry(channel).or_default().push(place);
-        }
 
         let each = channels::each_alone(&hits);
         for (channel, ranking) in &each {
@@ -826,15 +821,6 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         channels::shipped_row(&variants),
         &offline,
     );
-
-    println!("\n  where each channel's worst candidate sits on theoretical min-max, median");
-    for (channel, places) in &floors {
-        println!(
-            "  {:<20}   {:.4}",
-            format!("{channel:?}"),
-            channels::median(places)
-        );
-    }
 
     println!(
         "\n  the two lexical channels agree at Kendall tau {:.4} over {} queries\n",

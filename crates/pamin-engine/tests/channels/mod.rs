@@ -19,7 +19,7 @@
 //! over the rebuilt lists, at any settings, without touching the corpus.
 //! [`replay`] rebuilds them and [`as_if`] fuses them, so **any fusion setting
 //! this project can express is measurable offline from one pass**: a
-//! leave-one-out, a weight grid, a confidence spread. A sweep row on XQuAD-R is
+//! leave-one-out, a weight grid, a combiner. A sweep row on XQuAD-R is
 //! thirteen minutes; an offline row is microseconds. And because it calls the
 //! shipped `fuse` rather than restating its arithmetic, there is nothing here
 //! that can drift away from what the product does.
@@ -243,7 +243,7 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 /// thirteen minutes, which is why every sweep this project ever ran moved both
 /// lexical channels together and left the rank constant to a coarse handful.
 ///
-/// Four grids, because there are four open questions and they are separate.
+/// Several grids, because the open questions are separate.
 ///
 /// **The lexical weights, now separable.** Kendall tau-b between the two
 /// lexical channels is around 0.30 on all three corpora, so the premise that
@@ -251,25 +251,14 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 /// distinguishes the two numbers. The grid crosses them, including an eighth
 /// against an eighth, which is what ships and must come back identical.
 ///
-/// **The confidence spread and floor.** `spread` is coupled to how many
-/// candidates a channel proposes -- a standardised top score cannot exceed
-/// `sqrt(n - 1)`, so 7.00 is the ceiling at the fifty each channel returns
-/// here -- which is why the values run up to seven rather than stopping at the
-/// two a reader might expect from a z-score. `floor` is what a channel with no
-/// opinion keeps: zero silences it outright, and the rows above zero are there
-/// to say whether silencing is the part that works or whether merely
-/// discounting is enough.
-///
 /// **The combiner, which is the choice nobody here recorded making.** This
 /// project argued about `k` and about the channel weights, both of them
 /// parameters *of* reciprocal rank fusion, and never wrote down that fusing
 /// ranks rather than normalised scores was a choice. Every 2025--2026 result
-/// found goes the other way -- see [`Combine`] -- including one measured on
-/// this project's own benchmarks, on CPU, without training. The rows here put
-/// all three combiners on the same queries, each crossed with the confidence
-/// rule, because the two mechanisms are independent: standardising fixes the
-/// magnitude a rank cannot express, and confidence fixes the channel quality
-/// standardising cannot express.
+/// found goes the other way -- see [`Combine`]. The score combiners and the
+/// per-channel confidence rule this grid used to sweep were measured and
+/// removed (`docs/adr/0001-tech-selection.md`); what is left is the band that
+/// ships against the reciprocal-rank baseline every figure is quoted against.
 ///
 /// **The rank constant, once, to close the question.** The only real sweep of
 /// it in the recent literature (`arXiv:2604.01733`, 2026, 23,088 queries) puts
@@ -295,62 +284,9 @@ pub fn variants() -> Vec<(String, Fusion)> {
         }
     }
 
-    // On the shipped weights, so a gain here is the confidence rule and not a
-    // smaller lexical weight wearing its name.
-    for spread in [1.0, 2.0, 3.0, 5.0, 7.0] {
-        for floor in [0.0, 0.25, 0.5] {
-            variants.push((
-                format!("conf spread {spread:.1} floor {floor:.2}"),
-                Fusion::default().with_confidence(spread, floor),
-            ));
-        }
-    }
-
-    // Score fusion against rank fusion, and each combiner with and without the
-    // confidence rule, because the two mechanisms answer different halves and
-    // a row that moved both cannot say which half moved it.
-    for (name, combine) in [
-        ("rrf", Combine::Reciprocal),
-        ("band", Combine::Banded),
-        ("zsum", Combine::Standardised),
-        ("zmnz", Combine::StandardisedTimesVotes),
-        ("tm2c2", Combine::Convex),
-        ("bandt", Combine::BandedTheoretical),
-    ] {
+    // The band that ships against the reciprocal-rank baseline.
+    for (name, combine) in [("rrf", Combine::Reciprocal), ("band", Combine::Banded)] {
         variants.push((format!("combine {name}"), Fusion::default().with(combine)));
-        for spread in [2.0, 5.0] {
-            variants.push((
-                format!("combine {name} conf {spread:.1}/0.00"),
-                Fusion::default().with(combine).with_confidence(spread, 0.0),
-            ));
-        }
-    }
-
-    // TM2C2 (`arXiv:2210.11934`) across the two weights it has, and the band
-    // on theoretical min-max beside it. The shipped eighth per lexical channel
-    // is the paper's own alpha of 0.8 -- two eighths of lexical against one of
-    // dense -- so the middle row is the published setting, not a guess.
-    for (name, combine) in [
-        ("tm2c2", Combine::Convex),
-        ("bandt", Combine::BandedTheoretical),
-    ] {
-        for lexical in [0.0625, 0.25, 0.5] {
-            variants.push((
-                format!("{name} lex {lexical:.4}"),
-                Fusion::default()
-                    .with(combine)
-                    .with_weight(Channel::LexicalSegmented, lexical)
-                    .with_weight(Channel::LexicalNgram, lexical),
-            ));
-        }
-        for graph in [0.15, 0.5, 1.0] {
-            variants.push((
-                format!("{name} graph {graph:.2}"),
-                Fusion::default()
-                    .with(combine)
-                    .with_weight(Channel::Graph, graph),
-            ));
-        }
     }
 
     // The rank constant, to confirm the curve is flat near ten. Zero because
@@ -711,48 +647,6 @@ pub fn agreement(left: &[String], right: &[String]) -> Option<f64> {
     (pairs > 0).then(|| (concordant - discordant) as f64 / pairs as f64)
 }
 
-/// Where each channel's worst candidate sits on theoretical min-max, from the
-/// channel's infimum to this query's best: zero means the list spans the whole
-/// scale, one means every candidate scored the same as the best.
-///
-/// The premise `Combine::Convex` rests on. Theoretical min-max keeps a
-/// channel's ordering only if its candidates spread over a good part of the
-/// distance from the infimum to the best; a channel whose fifty candidates
-/// all sit near the top is flattened by it, and the other channels then decide
-/// the order among them.
-pub fn floor_places(hits: &[SearchHit]) -> BTreeMap<Channel, f64> {
-    let mut extremes: BTreeMap<Channel, (f32, f32)> = BTreeMap::new();
-    for hit in hits {
-        for why in &hit.result.why {
-            if let Why::Channel {
-                channel,
-                score: Some(score),
-                ..
-            } = why
-            {
-                let entry = extremes.entry(*channel).or_insert((*score, *score));
-                entry.0 = entry.0.min(*score);
-                entry.1 = entry.1.max(*score);
-            }
-        }
-    }
-    extremes
-        .into_iter()
-        .filter_map(|(channel, (least, most))| {
-            let floor = channel.infimum()?;
-            (most - floor > f32::EPSILON)
-                .then(|| (channel, f64::from((least - floor) / (most - floor))))
-        })
-        .collect()
-}
-
-/// The median of whatever was collected, or zero when nothing was.
-pub fn median(values: &[f64]) -> f64 {
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    sorted.get(sorted.len() / 2).copied().unwrap_or(0.0)
-}
-
 /// The mean of whatever was collected, or zero when nothing was.
 pub fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
@@ -794,7 +688,6 @@ pub struct Diagnosis {
     alone: BTreeMap<Channel, BTreeMap<String, crate::scoring::Scores>>,
     without: BTreeMap<Channel, BTreeMap<String, crate::scoring::Scores>>,
     offline: Vec<BTreeMap<String, crate::scoring::Scores>>,
-    floors: BTreeMap<Channel, Vec<f64>>,
 }
 
 impl Default for Diagnosis {
@@ -807,7 +700,6 @@ impl Default for Diagnosis {
             alone: BTreeMap::new(),
             without: BTreeMap::new(),
             offline,
-            floors: BTreeMap::new(),
         }
     }
 }
@@ -847,9 +739,6 @@ impl Diagnosis {
         }
         for ((_, fusion), into) in self.variants.iter().zip(&mut self.offline) {
             note(into, &as_if(hits, fusion));
-        }
-        for (channel, place) in floor_places(hits) {
-            self.floors.entry(channel).or_default().push(place);
         }
     }
 
@@ -912,10 +801,6 @@ impl Diagnosis {
             shipped_row(&self.variants),
             &self.offline,
         );
-        println!("\n  where each channel's worst candidate sits on theoretical min-max, median");
-        for (channel, places) in &self.floors {
-            println!("  {:<20}   {:.4}", format!("{channel:?}"), median(places));
-        }
         println!();
     }
 }
