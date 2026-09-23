@@ -259,9 +259,24 @@ const TARGET_SEGMENTS: u64 = 4;
 /// segment is linear and the build cost of one is not.
 const LARGEST_SEGMENT: u64 = 250_000;
 
-/// The smallest, so a new and nearly empty project is one segment rather than
-/// a hundred tiny ones.
-const SMALLEST_SEGMENT: u64 = 2_000;
+/// The smallest, which is also what every project grown from empty holds.
+///
+/// A collection records its segment size when it is created, and a workspace
+/// is created before anything is written to it, so this floor -- not the
+/// division by [`TARGET_SEGMENTS`] -- is the segment size of nearly every
+/// project anyone has. It was 2,000, which put 131,924 documents in 66
+/// segments, and a segment is not free to hold open: each keeps its own
+/// full-text stores resident. Fifty thousand documents open at 1,292 MB in 25
+/// segments and at 308 MB in 4, and the MIRACL workspace spent 3,283 MB on
+/// opening its index before any model was loaded.
+///
+/// Ten thousand is the largest size in the table below at which a segment's
+/// graph still agrees with an exhaustive scan exactly, and the size at which
+/// scanning the segment being written costs 2.7 ms. Twenty-five thousand
+/// would cost less memory again and give up recall -- 0.9830 -- which is
+/// the axis this project will not trade. So 131,924 documents are 14 segments
+/// rather than 66, recall is what it was, and a new project is still one.
+const SMALLEST_SEGMENT: u64 = 10_000;
 
 /// How many documents a segment should hold, for a collection of this size.
 ///
@@ -302,9 +317,10 @@ pub fn segment_documents(documents: u64) -> u64 {
 /// Reported because a workspace has no other way to find out. The size is
 /// recorded when the collection is created and a workspace is created empty,
 /// so every grown project records [`SMALLEST_SEGMENT`] and holds one segment
-/// per two thousand documents rather than the four the policy aims at -- 25
-/// over fifty thousand, 66 over 131,924. Measured over the same fifty
-/// thousand, 25 segments answer a query in 39.8 ms where four answer in 16.9.
+/// per ten thousand documents rather than the four the policy aims at -- 14
+/// over 131,924. Measured over fifty thousand, 25 segments answer a query in
+/// 39.8 ms where four answer in 16.9. `pamin reindex` reshapes an index without
+/// embedding anything again; see [`Previous`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segmentation {
     /// Documents the collection holds.
@@ -938,7 +954,7 @@ impl Marker {
 /// passage.
 ///
 /// That turns reshaping an index into copying it. A project grown from empty
-/// holds one segment per two thousand documents -- 66 over 131,924 -- and
+/// held one segment per two thousand documents -- 66 over 131,924 -- and
 /// every segment keeps its own full-text store resident: opening fifty thousand
 /// documents in 25 segments costs 1,292 MB where 4 cost 308 MB. A rebuild that
 /// had to embed every memory again took hours at that size and needed the
@@ -1342,7 +1358,8 @@ mod upkeep {
     /// anything is written to it, so `segment_documents` is asked about zero
     /// documents and clamped to the floor -- which means the division by
     /// `TARGET_SEGMENTS` never runs for a project anyone has, and 131,924
-    /// documents land in 66 segments rather than four.
+    /// documents land in 14 segments rather than four -- 66 before the floor
+    /// was raised.
     #[test]
     fn a_project_grown_from_empty_holds_the_floors_segments_and_the_report_says_so() {
         let grown = Segmentation {
@@ -1350,14 +1367,14 @@ mod upkeep {
             recorded: segment_documents(0),
         };
         assert_eq!(
-            grown.recorded, 2_000,
+            grown.recorded, 10_000,
             "an empty collection records the floor"
         );
-        assert_eq!(grown.segments(), 66);
+        assert_eq!(grown.segments(), 14);
         assert_eq!(grown.wanted(), 4);
         assert!(
             grown.is_worth_rebuilding(),
-            "sixty-six segments where four would do was not reported"
+            "fourteen segments where four would do was not reported"
         );
 
         let rebuilt = Segmentation {

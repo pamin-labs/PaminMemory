@@ -131,11 +131,11 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
     // the shape `pamin reindex` produces and **not** the shape a workspace
     // that grew from empty has. A collection records its segment size at
     // creation and a workspace is created before anything is written to it, so
-    // a grown project records `SMALLEST_SEGMENT` and holds 25 segments over
-    // these fifty thousand documents rather than four. Measured side by side,
-    // the difference is 10.6 ms a query and recall of 1.0000 against 0.9980 --
-    // so the grown shape is the slower one and the *more* accurate one, and
-    // this floor is not what protects it.
+    // a grown project records `SMALLEST_SEGMENT` and holds five segments over
+    // these fifty thousand documents rather than four -- 25 when the floor was
+    // 2,000. Measured side by side at 25, the difference was 10.6 ms a query
+    // and recall of 1.0000 against 0.9980 -- so the grown shape is the slower
+    // one and the *more* accurate one, and this floor is not what protects it.
     //
     // Left as the rebuilt shape deliberately, because this test's subject is
     // the graph parameters rather than the segmentation policy: a floor taken
