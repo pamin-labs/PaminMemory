@@ -2510,7 +2510,7 @@ mod tests {
     /// The constant saying how many a tier looks at is measured, and before
     /// this it was unreachable: the fused list was cut to the caller's limit
     /// first, so at the default `--limit 5` the tier saw five candidates rather
-    /// than its twenty, and the shipped default reordered nothing. This is the
+    /// than the twenty it then read, and the shipped default reordered nothing. This is the
     /// arithmetic that was wrong, on its own, because the alternative is a test
     /// that needs half a gigabyte of weights to observe a reordering that
     /// silently did not happen.

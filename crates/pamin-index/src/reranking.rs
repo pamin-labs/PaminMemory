@@ -279,35 +279,30 @@ pub enum Rerank {
 
 /// How many of the fused results a tier looks at.
 ///
-/// Twenty for both, which is where the gain stops. Swept through
-/// `search_reranked` on the `fast` model, 1,190 XQuAD-R queries, against a
-/// baseline of 0.5722 cross-lingual with reranking off:
+/// Thirty, and it was twenty until the default tier was measured at it. The
+/// twenty was settled on the `fast` model, where thirty bought +0.0009 of
+/// XQuAD-R cross-lingual -- "twenty is simply where it stops". The default is
+/// now `accurate`, a model fourteen times the size, and it keeps finding
+/// answers further down. Paired against twenty through `search_reranked`,
+/// nDCG@10 (the `DEPTH_VARIANTS` arm of each harness):
 ///
-/// | depth | cross-lingual | gain | same-language |
-/// |---|---|---|---|
-/// | 10 | 0.5831 | +0.0110 | 0.8005 |
-/// | 15 | 0.6047 | +0.0325 | 0.7987 |
-/// | **20** | **0.6091** | **+0.0369** | **0.7974** |
-/// | 30 | 0.6099 | +0.0378 | 0.7967 |
-/// | 50 | 0.6055 | +0.0333 | 0.7957 |
+/// | depth | XQuAD-R cross (1,190) | own cross (43) | MIRACL (482) | MuSiQue (1,000) |
+/// |---|---|---|---|---|
+/// | 10 | **−0.0365**, p = 0.0001 | −0.0144 | −0.0021 | −0.0031, p = 0.069 |
+/// | 15 | **−0.0096**, p = 0.0001 | +0.0027 | +0.0015 | −0.0004 |
+/// | **30** | **+0.0063**, 192W/134L, p = 0.0001 | +0.0117 | −0.0008 | +0.0011 |
+/// | 40 | **+0.0076**, p = 0.0001 | +0.0235, p = 0.062 | +0.0002 | +0.0007 |
 ///
-/// The constant is unchanged and the reason for it is not. An earlier sweep,
-/// on the scratch harness whose figures ran about half again high, put twenty
-/// at +0.0572 and thirty at +0.0667 and recorded thirty as the better score
-/// given up for latency. Measured through the engine, thirty buys +0.0009 --
-/// a tenth of what was recorded, for sixteen per cent more latency. There is
-/// no trade to make; twenty is simply where it stops.
-///
-/// Taken when the lexical weight was a quarter. It is now an eighth, and the
-/// baseline this sweep measured against moved with it, 0.5722 to 0.6077: the
-/// reranker has less dilution to undo, so where the gain stops could have
-/// moved too. Re-running the five depths is five passes of the corpus, about
-/// three quarters of an hour, and it has not been done.
-///
-/// Same-language ranking falls monotonically with depth, which is the same
-/// effect the tier table describes: more candidates reranked means more of the
-/// ones the lexical channels missed being carried down.
-const DEPTH: usize = 20;
+/// Unmarked cells are not significant, and XQuAD-R's same-language group
+/// moves by under 0.0006 at every depth. So shallower is refused -- fifteen
+/// looked free on MIRACL and MuSiQue and costs a hundredth where the
+/// reranker matters most -- and deeper is a significant gain on the
+/// cross-lingual group and a loss nowhere. Thirty takes five sixths of forty's
+/// gain for half its extra pairs: accuracy decides the direction and latency
+/// the distance, and forty's last 0.0013 is not worth another third of the
+/// reranker's time. The pass costs half again what it did at twenty in model
+/// pairs; its wall time has not been re-measured on a quiet machine.
+const DEPTH: usize = 30;
 
 /// The tuning constants above, overridable for a sweep.
 ///
