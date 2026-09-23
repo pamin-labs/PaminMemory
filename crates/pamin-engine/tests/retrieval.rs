@@ -134,10 +134,10 @@ mod channels;
 mod scoring;
 mod statistics;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
-use pamin_core::{Channel, Fusion};
+use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::{Depths, Engine, Write};
 use pamin_index::{Access, Profile, Rerank};
 use pamin_store::Workspace;
@@ -234,6 +234,14 @@ async fn retrieval_quality_by_group() {
     // leaving the premise unstated.
     if std::env::var("CHANNELS").is_ok() {
         report_channels(&engine, &queries).await;
+        return;
+    }
+
+    // `RERANK_RULES` asks which candidates the reranker should be allowed to
+    // move, which is a question the tier table cannot ask: it compares tiers
+    // under one rule, and this compares rules under one tier.
+    if std::env::var("RERANK_RULES").is_ok() {
+        rerank_rules(&engine, &queries).await;
         return;
     }
 
@@ -387,6 +395,152 @@ const FLOORS: &[(&str, f64, f64)] = &[
 ];
 
 /// Each channel alone, and each one removed, on the corpus this project wrote.
+/// Which candidates the reranker may move, priced rule against rule.
+///
+/// **What prompted it.** The relational group scores lower through the shipped
+/// path than through fusion alone -- the reranker costs it about 0.025. The
+/// mechanism is specific: a relational answer is relevant because *another*
+/// memory mentions it, and its own text does not answer the query's wording.
+/// A cross-encoder reads the query and that text and nothing else, so it
+/// demotes the answer below candidates that sound closer and are wrong. The
+/// engine already refuses to let the reranker move candidates with lexical
+/// evidence; this asks whether candidates with graph evidence -- evidence the
+/// cross-encoder likewise cannot see -- should be exempt on the same terms.
+///
+/// **Both rules from one run.** The shipped path records every score the
+/// reranker gave (`Why::Reranked`) and every channel's rank (`Why::Channel`),
+/// so the fused order is rebuilt with [`channels::as_if`] and either rule is
+/// replayed over it. The first thing asserted is that replaying the *shipped*
+/// rule reproduces the engine's own output position for position; only then
+/// is the other rule's number a comparison rather than a reconstruction error.
+///
+/// One approximation, stated: the alternative rule would hand the model fewer
+/// documents, and a cross-encoder's score for a pair moves in the fourth
+/// decimal with what else shares its batch. The replay reuses the scores the
+/// model gave in the shipped batch.
+async fn rerank_rules(engine: &Engine, queries: &[Query]) {
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    let tier = Rerank::default();
+
+    let mut fusion_alone: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut shipped_rule: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut graph_exempt: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut exempted = 0usize;
+
+    for query in queries {
+        let hits = engine
+            .search_reranked(&query.query, WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+
+        let by_name: HashMap<&str, &pamin_engine::SearchHit> =
+            hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
+        let has =
+            |name: &str, channel: Channel| {
+                by_name[name].result.why.iter().any(
+                    |why| matches!(why, Why::Channel { channel: seen, .. } if *seen == channel),
+                )
+            };
+        let reranked = |name: &str| {
+            by_name[name]
+                .result
+                .why
+                .iter()
+                .find_map(|why| match why {
+                    Why::Reranked { score } => Some(*score),
+                    _ => None,
+                })
+                .unwrap_or(f32::MIN)
+        };
+
+        let fused = channels::as_if(&hits, &Fusion::default());
+        let head = tier.depth().min(fused.len());
+        let unlexical: Vec<usize> = (0..head)
+            .filter(|at| {
+                !has(&fused[*at], Channel::LexicalSegmented)
+                    && !has(&fused[*at], Channel::LexicalNgram)
+            })
+            .collect();
+
+        // `search_reranked`'s own substitution: the movable positions keep
+        // their slots and are refilled in the model's order, ties to the
+        // earlier position -- and nothing moves when fewer than two could.
+        let replay = |movable: &[usize]| -> Vec<String> {
+            let mut order = fused.clone();
+            if movable.len() < 2 {
+                return order;
+            }
+            let mut picks: Vec<usize> = (0..movable.len()).collect();
+            picks.sort_by(|left, right| {
+                reranked(&fused[movable[*right]])
+                    .total_cmp(&reranked(&fused[movable[*left]]))
+                    .then_with(|| left.cmp(right))
+            });
+            for (slot, pick) in movable.iter().zip(&picks) {
+                order[*slot] = fused[movable[*pick]].clone();
+            }
+            order
+        };
+
+        let engine_order: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        let shipped = replay(&unlexical);
+        assert_eq!(
+            shipped, engine_order,
+            "replaying the shipped rule did not reproduce the engine's order for {:?}, so the \
+             other rule's figure would be a reconstruction error",
+            query.query
+        );
+
+        let without_graph: Vec<usize> = unlexical
+            .iter()
+            .copied()
+            .filter(|at| !has(&fused[*at], Channel::Graph))
+            .collect();
+        exempted += unlexical.len() - without_graph.len();
+        let alternative = replay(&without_graph);
+
+        let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+        for (into, ranked) in [
+            (&mut fusion_alone, &fused),
+            (&mut shipped_rule, &shipped),
+            (&mut graph_exempt, &alternative),
+        ] {
+            into.entry(query.group.clone())
+                .or_default()
+                .add(ranked, relevant.len(), |topic| relevant.contains(topic));
+        }
+    }
+
+    println!(
+        "\n  which candidates the {} reranker may move, {exempted} graph-reached candidates \
+         exempted over {} queries",
+        tier.name(),
+        queries.len()
+    );
+    for (group, shipped) in &shipped_rule {
+        println!("\n  {group}");
+        println!("  rule                              nDCG@{NDCG_AT}   against the shipped rule");
+        println!("  ----------------------------------------------------------------------------");
+        for (label, scores) in [
+            ("fusion alone, no reranking", &fusion_alone[group]),
+            ("graph-reached are exempt", &graph_exempt[group]),
+        ] {
+            println!(
+                "  {label:<30}   {:>7.4}   {}",
+                scores.mean_ndcg(),
+                statistics::compare(&shipped.per_query, &scores.per_query)
+            );
+        }
+        println!(
+            "  {:<30}   {:>7.4}",
+            "shipped: unlexical may move",
+            shipped.mean_ndcg()
+        );
+    }
+    println!();
+}
+
 /// Live edges in this project, by kind, so a graph row has a premise.
 ///
 /// Every number the `graph` channel contributes is conditional on there being
