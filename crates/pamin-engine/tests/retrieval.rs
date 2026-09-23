@@ -573,61 +573,6 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
     );
 }
 
-/// Live edges in this project, by kind, so a graph row has a premise.
-///
-/// Every number the `graph` channel contributes is conditional on there being
-/// edges to walk, and nothing in this harness ever said whether there were.
-/// That is not a pedantic gap. Topic names here are identifiers like
-/// `deploy_pipeline_en`, which `name_sequence` opens into the three-token run
-/// `deploy pipeline en`; mention derivation asserts an edge only when one
-/// memory's content contains another's name as a contiguous run, and prose
-/// about a deployment pipeline does not contain that run. So this corpus can
-/// derive **no edges at all** -- which is exactly the state in which a
-/// `0.0000` looks like a measurement of the channel and is a measurement of
-/// the corpus.
-///
-/// The other two corpora are worse: their harnesses name topics *deliberately*
-/// unlike their own text, and say so, so their graph is empty by design.
-///
-/// **The `relational` group exists to end that.** Ten pairs of memories whose
-/// answering half is named by a natural phrase -- `release bucket`,
-/// `platform rota`, `schema migration window` -- and whose other half mentions
-/// that phrase in its prose. Mention derivation therefore fires, and this is
-/// the first corpus in the repository where the graph channel has anything to
-/// walk. Twenty queries, each written so that
-///
-/// - the mentioning memory matches the query and does **not** answer it,
-/// - the mentioned memory answers it and shares almost no wording with it,
-/// - the answer key is the mentioned memory alone, and
-/// - the query does not contain the answering topic's name, which is asserted
-///   where the corpus is built: a query that named it would seed the walk at
-///   the answer and measure nothing.
-///
-/// **What it cannot show.** The vector channel can still partly reach the
-/// answering memory -- "how long do artifacts last" against "objects expire
-/// after ninety days" is a real semantic link, and a corpus where the answer
-/// is genuinely unreachable except through an edge would be a corpus where the
-/// answer does not answer the question. So this group is not a pure graph
-/// test and the graph channel's leave-one-out on it is not a lower bound on
-/// what the channel is worth in general. It is a measurement, against the
-/// other three channels as the baseline, on a premise that is finally true.
-/// Twenty queries also make it a weak one: read the paired counts, not the
-/// mean.
-async fn live_edges(engine: &Engine) -> Vec<(String, i64)> {
-    sqlx::query_as(
-        "SELECT r.kind, count(*)
-           FROM relationships r
-           JOIN relationship_versions v ON v.relationship_id = r.id
-          WHERE r.project_id = $1 AND v.invalidated_at IS NULL
-          GROUP BY r.kind
-          ORDER BY count(*) DESC",
-    )
-    .bind(engine.project.0)
-    .fetch_all(engine.database.pool())
-    .await
-    .expect("count the live edges")
-}
-
 /// Each channel alone, and each one removed, on the corpus this project wrote.
 async fn report_channels(engine: &Engine, queries: &[Query]) {
     use pamin_core::Channel;
@@ -645,7 +590,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
 
     // The premise of every `graph` row below, taken before anything is scored
     // so that a zero is never mistaken for a measurement.
-    let edges = live_edges(engine).await;
+    let edges = channels::live_edges(engine).await;
     let total: i64 = edges.iter().map(|(_, count)| count).sum();
     println!("\n  live edges in this project: {total}");
     for (kind, count) in &edges {

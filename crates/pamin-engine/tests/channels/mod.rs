@@ -761,6 +761,165 @@ pub fn mean(values: &[f64]) -> f64 {
     values.iter().sum::<f64>() / values.len() as f64
 }
 
+/// Live edges in a project, by kind, so a graph row has a premise.
+///
+/// Every number the `graph` channel contributes is conditional on there being
+/// edges to walk, and three of this project's corpora have none by design.
+pub async fn live_edges(engine: &pamin_engine::Engine) -> Vec<(String, i64)> {
+    sqlx::query_as(
+        "SELECT r.kind, count(*)
+           FROM relationships r
+           JOIN relationship_versions v ON v.relationship_id = r.id
+          WHERE r.project_id = $1 AND v.invalidated_at IS NULL
+          GROUP BY r.kind
+          ORDER BY count(*) DESC",
+    )
+    .bind(engine.project.0)
+    .fetch_all(engine.database.pool())
+    .await
+    .expect("count the live edges")
+}
+
+/// The whole channel diagnostic, accumulated one query at a time.
+///
+/// Every harness used to carry its own copy of this loop -- each channel
+/// alone, the fused list with each one removed, the offline fusion sweep --
+/// differing only in how a ranking is scored. That is the one thing a harness
+/// supplies here: [`observe`](Self::observe) takes the query's untruncated
+/// trace and a closure that scores one ranking, and [`report`](Self::report)
+/// prints the tables. Nothing is kept per query but the scores.
+pub struct Diagnosis {
+    variants: Vec<(String, Fusion)>,
+    whole: BTreeMap<String, crate::scoring::Scores>,
+    alone: BTreeMap<Channel, BTreeMap<String, crate::scoring::Scores>>,
+    without: BTreeMap<Channel, BTreeMap<String, crate::scoring::Scores>>,
+    offline: Vec<BTreeMap<String, crate::scoring::Scores>>,
+    floors: BTreeMap<Channel, Vec<f64>>,
+}
+
+impl Default for Diagnosis {
+    fn default() -> Self {
+        let variants = variants();
+        let offline = vec![BTreeMap::new(); variants.len()];
+        Self {
+            variants,
+            whole: BTreeMap::new(),
+            alone: BTreeMap::new(),
+            without: BTreeMap::new(),
+            offline,
+            floors: BTreeMap::new(),
+        }
+    }
+}
+
+impl Diagnosis {
+    /// One query's trace, fused at the shipped settings with room to spare
+    /// (see [`enough_room`]), and how to score a ranking of it.
+    ///
+    /// Asserts the trace rebuilds into the engine's own order first, so every
+    /// row below is a reconstruction that has been checked.
+    pub fn observe(
+        &mut self,
+        group: &str,
+        hits: &[SearchHit],
+        score: impl Fn(&mut crate::scoring::Scores, &[String]),
+    ) {
+        same_as_the_engine(hits, &Fusion::default());
+        let note = |into: &mut BTreeMap<String, crate::scoring::Scores>, ranking: &[String]| {
+            score(into.entry(group.to_string()).or_default(), ranking);
+        };
+
+        note(
+            &mut self.whole,
+            &hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>(),
+        );
+        for (channel, ranking) in each_alone(hits) {
+            note(self.alone.entry(channel).or_default(), &ranking);
+        }
+        for channel in [
+            Channel::LexicalSegmented,
+            Channel::LexicalNgram,
+            Channel::Vector,
+            Channel::Graph,
+        ] {
+            let ranking = as_if(hits, &Fusion::default().without(channel));
+            note(self.without.entry(channel).or_default(), &ranking);
+        }
+        for ((_, fusion), into) in self.variants.iter().zip(&mut self.offline) {
+            note(into, &as_if(hits, fusion));
+        }
+        for (channel, place) in floor_places(hits) {
+            self.floors.entry(channel).or_default().push(place);
+        }
+    }
+
+    /// Every table, per group, then the cross-validated choice over all of
+    /// them. `edges` is the live-edge census, printed beside the graph rows so
+    /// a zero there is read as "nothing to walk" rather than as a result.
+    pub fn report(&self, title: &str, edges: &[(String, i64)]) {
+        use crate::scoring::{NDCG_AT, RECALL_AT};
+        use crate::statistics;
+
+        let total: i64 = edges.iter().map(|(_, count)| count).sum();
+        println!("\n  {title}: {total} live edges {edges:?}");
+        for (group, whole) in &self.whole {
+            println!("\n  each channel on its own, {group}");
+            println!("  channel               queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}");
+            for (channel, groups) in &self.alone {
+                if let Some(scores) = groups.get(group) {
+                    println!(
+                        "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+                        format!("{channel:?}"),
+                        scores.queries,
+                        scores.mean_ndcg(),
+                        scores.mean_recall()
+                    );
+                }
+            }
+            println!(
+                "  {:<20}   {:>7}   {:>7.4}   {:>9.4}",
+                "fused",
+                whole.queries,
+                whole.mean_ndcg(),
+                whole.mean_recall()
+            );
+            println!("\n  the fused list with each channel removed, against all four, {group}");
+            for (channel, groups) in &self.without {
+                if let Some(scores) = groups.get(group) {
+                    println!(
+                        "  {:<20}   {}",
+                        format!("{channel:?}"),
+                        statistics::compare(&whole.per_query, &scores.per_query)
+                    );
+                }
+            }
+            sweep_table(
+                group,
+                whole,
+                &self.variants,
+                &self
+                    .offline
+                    .iter()
+                    .map(|row| row.get(group))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        cross_validated(
+            title,
+            &self.whole.keys().map(String::as_str).collect::<Vec<_>>(),
+            &self.whole,
+            &self.variants,
+            shipped_row(&self.variants),
+            &self.offline,
+        );
+        println!("\n  where each channel's worst candidate sits on theoretical min-max, median");
+        for (channel, places) in &self.floors {
+            println!("  {:<20}   {:.4}", format!("{channel:?}"), median(places));
+        }
+        println!();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
