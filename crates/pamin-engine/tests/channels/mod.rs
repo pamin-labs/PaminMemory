@@ -920,6 +920,68 @@ impl Diagnosis {
     }
 }
 
+/// The same questions asked of two projects that hold the same memories
+/// differently -- one built before a change, one after -- scored per question,
+/// so each row is a paired comparison inside one run rather than two runs
+/// subtracted.
+///
+/// Records the fused list and the vector channel alone, because a change to
+/// what the vector is shown should show in the channel first and in fusion
+/// only as far as fusion lets it.
+#[derive(Default)]
+pub struct Paired {
+    fused: [BTreeMap<String, crate::scoring::Scores>; 2],
+    vector: [BTreeMap<String, crate::scoring::Scores>; 2],
+}
+
+impl Paired {
+    /// One question's untruncated traces from both projects, `before` first.
+    pub fn observe(
+        &mut self,
+        group: &str,
+        before: &[SearchHit],
+        after: &[SearchHit],
+        score: impl Fn(&mut crate::scoring::Scores, &[String]),
+    ) {
+        for (side, hits) in [before, after].into_iter().enumerate() {
+            let fused: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+            score(
+                self.fused[side].entry(group.to_string()).or_default(),
+                &fused,
+            );
+            let vector = each_alone(hits)
+                .remove(&Channel::Vector)
+                .unwrap_or_default();
+            score(
+                self.vector[side].entry(group.to_string()).or_default(),
+                &vector,
+            );
+        }
+    }
+
+    pub fn report(&self, title: &str) {
+        use crate::scoring::NDCG_AT;
+        use crate::statistics;
+
+        println!("\n  {title}");
+        println!("  group            what           nDCG@{NDCG_AT} before   after   paired");
+        for (label, sides) in [("fused", &self.fused), ("vector alone", &self.vector)] {
+            for (group, before) in &sides[0] {
+                let Some(after) = sides[1].get(group) else {
+                    continue;
+                };
+                println!(
+                    "  {group:<15}  {label:<13}  {:>12.4}   {:>5.4}   {}",
+                    before.mean_ndcg(),
+                    after.mean_ndcg(),
+                    statistics::compare(&before.per_query, &after.per_query)
+                );
+            }
+        }
+        println!();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

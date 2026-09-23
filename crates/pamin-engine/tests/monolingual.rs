@@ -65,6 +65,7 @@
 //! | `MIRACL_MAX_DOCS` | cap the corpus, for checking the harness runs. **Not the benchmark**: the floors are not asserted and the number is not comparable with anyone's |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
 //! | `TIERS` | run all three rerank tiers instead of the default |
+//! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
 //! | `RERANK_RULES` | price blending the shipped tier's scores with fusion's, from one run |
 //! | `SWEEP` | run fusion settings instead of the shipped path |
@@ -736,6 +737,52 @@ async fn search() {
             }
         }
         println!();
+        return;
+    }
+
+    // `PASSAGES`: the same memories in a second project whose vectors embed
+    // the topic's name, asked every question alongside this one. See
+    // `channels::Paired`.
+    if std::env::var("PASSAGES").is_ok() {
+        let other = Engine::open(
+            &workspace,
+            &format!("{project}-named"),
+            profile,
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the named project");
+        write_corpus(&other, &corpus).await;
+        assert_eq!(
+            engine.passage(),
+            pamin_index::Passage::Content,
+            "the baseline project was built from content"
+        );
+        assert_eq!(
+            other.passage(),
+            pamin_index::Passage::Named,
+            "the new project embeds names"
+        );
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let mut paired = channels::Paired::default();
+        for query in &corpus.queries {
+            let before = engine
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let after = other
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            paired.observe(GROUP, &before, &after, |into, ranking| {
+                into.add(ranking, query.relevant.len(), |topic| {
+                    query.relevant.contains(topic)
+                });
+            });
+        }
+        paired.report(&format!(
+            "vectors embedding the topic name, MIRACL, {named}"
+        ));
         return;
     }
 

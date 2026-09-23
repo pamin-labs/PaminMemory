@@ -652,6 +652,13 @@ impl Engine {
         self.index.lock().expect("the index lock is poisoned")
     }
 
+    /// What text this project's vectors are embedded from. Public because a
+    /// measurement comparing two encodings has to be able to assert which one
+    /// each side holds.
+    pub fn passage(&self) -> pamin_index::Passage {
+        self.index().passage()
+    }
+
     /// What share of this project's documents the vector graph covers.
     ///
     /// Public because it is the premise of every retrieval measurement taken
