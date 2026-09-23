@@ -522,7 +522,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
             tier.name()
         ),
         &labels,
-        Some(1),
+        reranking::shipped_context(),
         &measured,
     );
 }

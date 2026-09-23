@@ -105,7 +105,7 @@ pub fn report<T>(
 }
 
 /// What the model is shown for each candidate, in the order [`in_context`]
-/// returns them after `fusion alone`. The first is what ships.
+/// returns them after `fusion alone`. [`SHIPPED`] names the one that ships.
 pub const RENDERINGS: [&str; 4] = [
     "content",
     "name: content",
@@ -113,8 +113,15 @@ pub const RENDERINGS: [&str; 4] = [
     "name: content, then the seed",
 ];
 
-/// The rows [`in_context`] produces: fusion alone, then each rendering. The
-/// shipped one is at index one.
+/// Which of [`RENDERINGS`] `search_reranked` uses: name, content and seed.
+pub const SHIPPED: usize = 3;
+
+/// The row of [`context_labels`] that ships: after `fusion alone`.
+pub fn shipped_context() -> Option<usize> {
+    Some(1 + SHIPPED)
+}
+
+/// The rows [`in_context`] produces: fusion alone, then each rendering.
 pub fn context_labels() -> Vec<(String, ())> {
     std::iter::once("fusion alone")
         .chain(RENDERINGS)
@@ -125,14 +132,14 @@ pub fn context_labels() -> Vec<(String, ())> {
 /// One query's order under each of [`context_labels`], rescoring the movable
 /// candidates with `model` as each rendering presents them.
 ///
-/// **Panics unless the first rendering reproduces the engine's own scores**:
-/// it is the one that ships, so a disagreement means the other rows are priced
-/// against a different model, or different text, than the product used.
+/// **Panics unless the shipped rendering reproduces the engine's own scores**:
+/// a disagreement means the other rows are priced against a different model,
+/// or different text, than the product used.
 ///
-/// A candidate's seed is the memory the graph walked from to reach it,
-/// provided the walk's origin is itself in the list; on a corpus with no
-/// edges no candidate has one, and the seeded renderings equal their unseeded
-/// counterparts. Returns how many movable candidates were shown a seed.
+/// A candidate's seed is [`SearchHit::seed`], the memory the graph walked from
+/// to reach it; on a corpus with no edges no candidate has one, and the seeded
+/// renderings equal their unseeded counterparts. Returns how many movable
+/// candidates were shown a seed.
 pub fn in_context(
     hits: &[SearchHit],
     replayed: &Replayed,
@@ -145,14 +152,7 @@ pub fn in_context(
         .collect();
     let seed: HashMap<&str, &str> = hits
         .iter()
-        .filter_map(|hit| {
-            hit.result.why.iter().find_map(|why| match why {
-                Why::Path { from, .. } => content
-                    .get(from.as_str())
-                    .map(|text| (hit.topic.as_str(), *text)),
-                _ => None,
-            })
-        })
+        .filter_map(|hit| Some((hit.topic.as_str(), hit.seed.as_deref()?)))
         .collect();
 
     let movable = replayed.movable();
@@ -164,7 +164,19 @@ pub fn in_context(
         fusion: 1.0,
         scale: Scale::Rank,
     })];
-    for (rendering, label) in RENDERINGS.iter().enumerate() {
+    // The shipped rendering first. The model keeps a score cache keyed by
+    // query and text, and renderings share most of their texts -- a candidate
+    // with no seed reads the same with or without one -- so a later rendering
+    // takes those candidates' scores from an earlier one's batches and sends
+    // only the rest to the model. An int8 model quantizes activations per
+    // batch, so that changes the scores: measured at up to half a logit. Scored
+    // first, with nothing cached, the shipped rendering forms exactly the
+    // engine's batches and the premise below can hold; the others are then the
+    // approximation the reranking module's note already states.
+    let mut rendered: Vec<Option<Vec<String>>> = vec![None; RENDERINGS.len()];
+    let order = std::iter::once(SHIPPED).chain((0..RENDERINGS.len()).filter(|at| *at != SHIPPED));
+    for rendering in order {
+        let label = RENDERINGS[rendering];
         let (named, with_seed) = (rendering % 2 == 1, rendering >= 2);
         let documents: Vec<String> = movable
             .iter()
@@ -188,7 +200,7 @@ pub fn in_context(
                 scores[ranked.position] = f64::from(ranked.score);
             }
         }
-        if rendering == 0 {
+        if rendering == SHIPPED {
             for (again, recorded) in scores.iter().zip(replayed.model()) {
                 assert!(
                     (again - recorded).abs() < 1e-4,
@@ -197,8 +209,13 @@ pub fn in_context(
                 );
             }
         }
-        orders.push(replayed.rescored(scores).order(Rule::Substitute));
+        rendered[rendering] = Some(replayed.rescored(scores).order(Rule::Substitute));
     }
+    orders.extend(
+        rendered
+            .into_iter()
+            .map(|order| order.expect("every rendering scored")),
+    );
     (orders, seeded)
 }
 
