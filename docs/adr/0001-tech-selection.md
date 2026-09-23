@@ -1805,6 +1805,28 @@ dot product.
 
 #### Late interaction: the one candidate that removes the cost rather than moving it
 
+**Measured, and it is worse than not reranking at all.** The arm reconstructs
+the exact subset the `accurate` tier is offered — the tier's own rule, read off
+the trace, with the tier's counter asserted to agree — and reorders it by MaxSim
+instead. XQuAD-R, 1,190 queries, nDCG@10:
+
+| | cross-lingual | against fusion alone | same-language |
+| --- | --- | --- | --- |
+| fusion alone | 0.6114 | — | 0.7829 |
+| **mLateOn** | **0.5857** | **−0.0257**, 381 wins / 530 losses, `p = 0.0001` | 0.7808 (n.s.) |
+| `accurate` | 0.6597 | +0.0482, 560 / 192 | 0.7835 (n.s.) |
+
+Head to head it loses to `accurate` by 0.0739, 144 queries to 729. The
+prediction written before the run was that it would lose to `accurate` and
+might beat `fast`; it lost to every tier including `off`. The query-side cost
+was about 82 ms, which was the whole case for it, and it does not matter at
+this accuracy. It is the same shape of result the typed judge gave — a model
+whose card is strong on the benchmarks it was trained toward and whose
+reordering of *this* pipeline's candidates is worse than the fusion order it
+replaces — and for the same practical reason the storage never had to be
+built. The implementation and the arm were deleted; this paragraph is the
+record, and the commit that removed them is where to reproduce it.
+
 `lightonai/mLateOn` is Apache-2.0 on ModernBERT, and the export was checked
 rather than taken on trust. `model_int8.onnx` is 312 MB — smaller than the
 `accurate` tier's 571 MB — and the projection head is **not** folded into it:
