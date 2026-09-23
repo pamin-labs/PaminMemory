@@ -445,6 +445,28 @@ async fn search_answers_questions_that_take_several_steps() {
         return;
     }
 
+    if std::env::var("GRAPH_VARIANTS").is_ok() {
+        let questions: Vec<(String, String)> = corpus
+            .queries
+            .iter()
+            .map(|query| (query.text.clone(), query.group.clone()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            &format!("MuSiQue, {named}"),
+            &questions,
+            DEPTH as u32,
+            DEPTHS,
+            &channels::graph_variants(),
+            |index, into, hits| {
+                let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+                score(into, &corpus.queries[index], &ranked);
+            },
+        )
+        .await;
+        return;
+    }
+
     if std::env::var("CONTEXT").is_ok() {
         let tier = Rerank::default();
         let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
