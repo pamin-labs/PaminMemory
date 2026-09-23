@@ -100,6 +100,12 @@ the binary -- have to sit in the same directory as `pamin`, which `cargo
 install` does not arrange: copy them next to the installed binary. Missing
 either, the reranker runs on the CPU exactly as before.
 
+On Windows the same holds for one file, `DirectML.dll` (18.5 MB), built beside
+`pamin.exe`. Without it the program still starts -- Windows 10 and later carry
+their own copy in System32 -- but that copy can be older than the runtime
+needs, in which case the reranker quietly stays on the CPU. On Apple silicon
+nothing needs copying: Core ML is linked into the binary from the system.
+
 What a GPU is worth has not been measured here, because nothing this project
 is measured on has one. The ordering is checked instead: `every_device_orders_like_the_cpu`
 in `crates/pamin-index/tests/reranking.rs` loads the reranker wherever it lands
