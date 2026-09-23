@@ -1336,9 +1336,9 @@ On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between ra
 | --- | --- | --- | --- | --- | --- |
 | `off` | nothing | 99 ms | — | 0.6114 | 0.7829 |
 | `fast` | 119 MB | 359 ms | 260 ms | **+0.0397** `p=0.0001` | **−0.0060** `p=0.0008` |
-| `balanced` | 341 MB | 821 ms | 722 ms | +0.0094 `p=0.0146` | +0.0029 `p=0.0293` |
+| `balanced`, removed | 341 MB | 821 ms | 722 ms | +0.0094 `p=0.0146` | +0.0029 `p=0.0293` |
 | `accurate` (default) | 571 MB | 1522 ms | 1423 ms | **+0.0482** `p=0.0001` | +0.0006 *ns* |
-| `noncommercial` | 280 MB | 905 ms | 806 ms | +0.0279 `p=0.0001` | +0.0003 *ns* |
+| `noncommercial`, removed | 280 MB | 905 ms | 806 ms | +0.0279 `p=0.0001` | +0.0003 *ns* |
 
 Five arms, one run, the same 1,190 queries, paired bootstrap at 10,000
 resamples. Nothing in this table may be read against a figure published before
@@ -1359,13 +1359,25 @@ architecture at the same size*, twelve layers of width 768, yet differ by 0.0185
 cross-lingual, which is twice `balanced`'s entire gain. What is being chosen at
 this size is the training, not the model's shape.
 
-**Relaxing the licence bought nothing, and the experiment is kept for that.**
-`noncommercial` exists to answer one question — whether accepting CC-BY-NC buys
-accuracy that a permissive licence cannot — and the answer is no. The prediction
-written before the run was that it would be indistinguishable from `balanced`;
-it is better than `balanced` and still worse than the permissive default at a
+**Relaxing the licence bought nothing, and the experiment is recorded for
+that.** `noncommercial` existed to answer one question — whether accepting
+CC-BY-NC buys accuracy that a permissive licence cannot — and the answer is no.
+The prediction written before the run was that it would be indistinguishable
+from `balanced`; it is better than `balanced` and still worse than `fast` at a
 quarter of its size. Half the prediction held and the more interesting half did
 not.
+
+**`balanced` and `noncommercial` were removed on these rows.** They were
+`onnx-community/gte-multilingual-reranker-base` and
+`jinaai/jina-reranker-v2-base-multilingual`, and neither has a place on the
+trade a tier is chosen on: `fast` beats each of them cross-lingual at under half
+the download and under half the latency, and `accurate` beats everything
+cross-lingual. `balanced`'s one distinction, the only significant *positive* on
+same-language, is +0.0029 and not worth 821 ms. They were kept for a while so
+the product's own tier table could say so; the numbers are here instead, and
+with the non-commercial tier went the licence notice and the
+`PAMIN_ACCEPT_NONCOMMERCIAL` variable that existed only for it. Asking for
+either tier by name is now the unknown-tier error.
 
 Measured through `Engine::search_reranked`, the entry point `pamin search`
 calls, with `TIERS=1` on the cross-lingual harness over all 1,190 queries. The
@@ -1466,34 +1478,32 @@ Licences were checked at the leaf and at the base, because a fine-tune's card ca
 | tier | model | licence | base |
 | --- | --- | --- | --- |
 | `fast` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | `apache-2.0`, declared on the card | `nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large`, **no licence tag**; MiniLMv2 originates in `microsoft/unilm`, MIT |
-| `balanced` | `onnx-community/gte-multilingual-reranker-base` | **no licence tag** — `library_name` and `base_model` and nothing else | `Alibaba-NLP/gte-multilingual-reranker-base`, `apache-2.0` |
 | `accurate` | `onnx-community/bge-reranker-v2-m3-ONNX` | **no licence tag** — its front matter is `library_name` and `base_model` and nothing else | `BAAI/bge-reranker-v2-m3`, `apache-2.0` |
-| `noncommercial` | `jinaai/jina-reranker-v2-base-multilingual` | **`cc-by-nc-4.0`**, declared on the card | its own weights; the whole Jina reranker line is non-commercial |
 
-Three of the four permissive chains are defensible and **none of those three states its licence where it is shipped from** — two of the exports carry no front matter but `library_name` and `base_model`, and the third's base is itself untagged. A re-export with no tag is usable when the chain to a licensed source is readable, which is the rule this project settled on, and every chain above is given in [`NOTICE`](../../NOTICE) so that a reader does not have to re-derive it. It is still worth an upstream request or a self-controlled export, and it is recorded here rather than left to be rediscovered.
+Both chains are defensible and **neither states its licence where it is shipped from** — `accurate`'s export carries no front matter but `library_name` and `base_model`, and `fast`'s base is itself untagged. A re-export with no tag is usable when the chain to a licensed source is readable, which is the rule this project settled on, and every chain above is given in [`NOTICE`](../../NOTICE) so that a reader does not have to re-derive it. It is still worth an upstream request or a self-controlled export, and it is recorded here rather than left to be rediscovered.
 
-`noncommercial` is the one tier whose licence restricts what may be done with the *output* rather than only how the weights may be redistributed. It is not a default, nothing reaches it without being named, and naming it prints the terms once and then runs — the reasoning for warning rather than refusing is in [cli.md](../cli.md).
+`balanced` and `noncommercial` shipped for a while and were removed on their measurements; both are in the survey below. `balanced`'s export carried no tag over an `apache-2.0` base. `noncommercial` was `cc-by-nc-4.0` on its own card, the only tier whose licence restricted what may be done with the *output* rather than how the weights may be redistributed, and it printed the terms once and then ran rather than refusing. Every tier that ships now is permissive, so nothing is left to warn about.
 
 **The survey against them, and the reason none of it changed the default.** Every candidate below was checked for a readable permissive licence first, because a model that cannot be shipped does not need measuring.
 
 | candidate | licence | why not |
 | --- | --- | --- |
-| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `jina-reranker-m0`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial, so never a default. `v2` **is** now measurable and is shipped as the opt-in `noncommercial` tier; see below for what it was worth. `v3` and `m0` are not runnable here at all |
+| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `jina-reranker-m0`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial, so never a default. `v2` was shipped as the opt-in `noncommercial` tier to measure it, and removed; see below for what it was worth. `v3` and `m0` are not runnable here at all |
 | `BAAI/bge-reranker-v2-gemma` | card says `apache-2.0`; base `google/gemma-2b` is `license: gemma`, gated | The Gemma rider follows the derivative — the same reason EmbeddingGemma was refused above |
 | `BAAI/bge-reranker-v2-minicpm-layerwise` | card says `apache-2.0`; base MiniCPM weights carry the General Model License with a commercial-authorization requirement | Painful, because its 8–40 selectable output layers are exactly the early-exit mechanism the latency problem wants |
 | `naver/splade-v3` family | CC-BY-NC-SA-4.0 | Non-commercial and share-alike. `Splade_PP_en_v1` is Apache-2.0 and English |
 | `Qwen/Qwen3-Reranker-0.6B` | `apache-2.0` — the cleanest licence and the best multilingual quality in the field | A decoder at roughly twenty times the compute-relevant parameters of `fast`. Estimated seconds a query on four cores; three to six times the `accurate` tier, which is already not an interactive budget |
 | `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | MIRACL 28.56. Not a multilingual reranker in the sense this product needs, whatever the language count says |
-| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one |
+| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one, and it was removed |
 | `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
 
 **What the non-commercial licence actually buys, now that it has been paid.**
 The survey above ruled the whole Jina line out as non-commercial and left it
-there. The rule has since changed — CC-BY-NC is acceptable as a named, opt-in,
+there. The rule was then relaxed — CC-BY-NC acceptable as a named, opt-in,
 non-default tier — so the question became answerable and was answered rather
-than argued: `jina-reranker-v2-base-multilingual` ships as `noncommercial` and
+than argued: `jina-reranker-v2-base-multilingual` shipped as `noncommercial` and
 its figures are in the tier table above. **It scores +0.0279 cross-lingual where
-the permissive default scores +0.0397, at four times the parameters and 2.5
+`fast` scores +0.0397, at four times the parameters and 2.5
 times the latency.** Accepting the licence bought nothing.
 
 And it is the *best case* for the hypothesis, not a weak instance of it. It is
@@ -1518,9 +1528,9 @@ conditional-generation model rather than a ranking head.
 **So the non-commercial licence does not correlate with accuracy here. It
 correlates with size and with a hosted-API business model** — the line moved to
 0.6B and 2B decoders, which are out of an interactive budget on four CPU cores
-whatever their terms say. That is the generalisable finding, and it is the
-reason the `noncommercial` tier is documented as buying nothing rather than
-quietly removed.
+whatever their terms say. That is the generalisable finding, and it is why the
+`noncommercial` tier's result is recorded here now that the tier is gone rather
+than dropped along with it.
 
 One caveat, stated because it is the arm that was not run: the measured export
 is `onnx/model_int8.onnx`. `fast` and `accurate` are quantized too, so the
