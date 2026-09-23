@@ -55,6 +55,10 @@
 //! weight-by-standalone-quality prescription does not apply to it in the sense
 //! its authors meant, and saying so is more useful than printing a number that
 //! looks comparable and is not.
+// A fourth test binary includes these modules and does not use every helper --
+// the same reason `scoring` carries this. One helper per harness is what these
+// shared modules exist to undo.
+#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 

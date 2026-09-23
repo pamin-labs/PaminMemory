@@ -31,6 +31,10 @@
 //! It is also deterministic here: the resampling uses a fixed seed, so two runs
 //! of the same comparison report the same p to the last digit. A significance
 //! figure that moved between runs would be one more number nobody could check.
+// A fourth test binary includes these modules and does not use every helper --
+// the same reason `scoring` carries this. One helper per harness is what these
+// shared modules exist to undo.
+#![allow(dead_code)]
 
 use std::fmt;
 
