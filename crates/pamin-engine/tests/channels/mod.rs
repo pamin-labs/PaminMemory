@@ -314,12 +314,41 @@ pub fn variants() -> Vec<(String, Fusion)> {
         ("band", Combine::Banded),
         ("zsum", Combine::Standardised),
         ("zmnz", Combine::StandardisedTimesVotes),
+        ("tm2c2", Combine::Convex),
+        ("bandt", Combine::BandedTheoretical),
     ] {
         variants.push((format!("combine {name}"), Fusion::default().with(combine)));
         for spread in [2.0, 5.0] {
             variants.push((
                 format!("combine {name} conf {spread:.1}/0.00"),
                 Fusion::default().with(combine).with_confidence(spread, 0.0),
+            ));
+        }
+    }
+
+    // TM2C2 (`arXiv:2210.11934`) across the two weights it has, and the band
+    // on theoretical min-max beside it. The shipped eighth per lexical channel
+    // is the paper's own alpha of 0.8 -- two eighths of lexical against one of
+    // dense -- so the middle row is the published setting, not a guess.
+    for (name, combine) in [
+        ("tm2c2", Combine::Convex),
+        ("bandt", Combine::BandedTheoretical),
+    ] {
+        for lexical in [0.0625, 0.25, 0.5] {
+            variants.push((
+                format!("{name} lex {lexical:.4}"),
+                Fusion::default()
+                    .with(combine)
+                    .with_weight(Channel::LexicalSegmented, lexical)
+                    .with_weight(Channel::LexicalNgram, lexical),
+            ));
+        }
+        for graph in [0.15, 0.5, 1.0] {
+            variants.push((
+                format!("{name} graph {graph:.2}"),
+                Fusion::default()
+                    .with(combine)
+                    .with_weight(Channel::Graph, graph),
             ));
         }
     }

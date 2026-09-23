@@ -352,6 +352,26 @@ pub enum Combine {
     /// the weakest-link failure measured on both cross-lingual groups. It is
     /// implemented so that prediction can be checked rather than asserted.
     StandardisedTimesVotes,
+    /// TM2C2 (`arXiv:2210.11934`): each channel's score on theoretical min-max,
+    /// summed by weight, with no band.
+    ///
+    /// The one normaliser in that taxonomy that beats rank fusion on nearly
+    /// every dataset it tests -- MS MARCO nDCG 0.454 against RRF's 0.425 -- and
+    /// the one whose tuned weight transfers out of domain where RRF's `k` does
+    /// not. *Theoretical* is only half of it: the bottom of the scale is the
+    /// score's infimum ([`Channel::infimum`]), zero for BM25 and minus one for
+    /// a cosine, and the top is still this query's best candidate. So it keeps
+    /// what a min-max over the candidates throws away -- how far the worst of
+    /// them is from nothing -- without needing a maximum BM25 does not have.
+    Convex,
+    /// [`Banded`](Self::Banded), with a candidate's place inside its channel's
+    /// band read on theoretical min-max rather than on the candidates' own.
+    ///
+    /// Asks the half of `Convex` that is about normalisation without the half
+    /// that is about the band: a channel's worst candidate no longer lands on
+    /// the bottom of the band by construction, so a channel whose whole list
+    /// is close to its best stays near the top of it.
+    BandedTheoretical,
 }
 
 /// Fuses ranked lists into one ordered result set.
@@ -681,7 +701,7 @@ impl Fusion {
         // nothing: this reads `standardised` only, which is centred on the
         // channel's own mean and divided by its own deviation whatever scale
         // the score is on.
-        let Some(best) = rescale(candidates, None)
+        let Some(best) = rescale(candidates, None, None)
             .into_iter()
             .filter_map(|scaled| scaled.standardised)
             .reduce(f32::max)
@@ -736,16 +756,24 @@ impl Fusion {
             Combine::Standardised | Combine::StandardisedTimesVotes => {
                 scaled.standardised.unwrap_or(reciprocal)
             }
-            Combine::Banded => match scaled.within {
-                // The band reciprocal rank fusion would have spanned over the
-                // same candidates, so the only thing that changed is whether
-                // position inside it comes from the score or from the rank.
-                Some(within) => {
-                    let floor = (self.k + 1.0) / (self.k + scaled.of as f32);
-                    (floor + (1.0 - floor) * within) / (self.k + 1.0)
+            Combine::Banded | Combine::BandedTheoretical => {
+                let place = match self.combine {
+                    Combine::Banded => scaled.within,
+                    _ => scaled.above_infimum,
+                };
+                match place {
+                    // The band reciprocal rank fusion would have spanned over
+                    // the same candidates, so the only thing that changed is
+                    // whether position inside it comes from the score or from
+                    // the rank.
+                    Some(within) => {
+                        let floor = (self.k + 1.0) / (self.k + scaled.of as f32);
+                        (floor + (1.0 - floor) * within) / (self.k + 1.0)
+                    }
+                    None => reciprocal,
                 }
-                None => reciprocal,
-            },
+            }
+            Combine::Convex => scaled.above_infimum.unwrap_or(reciprocal),
         }
     }
 
@@ -787,7 +815,11 @@ impl Fusion {
             // channel's own mean, deviation, minimum and maximum, so
             // recomputing them inside the loop would be the same numbers at
             // fifty times the cost.
-            let scaled = rescale(&list.candidates, list.channel.calibrated());
+            let scaled = rescale(
+                &list.candidates,
+                list.channel.calibrated(),
+                list.channel.infimum(),
+            );
 
             // This channel's own last place: the bottom of its band at its
             // deepest rank. What an uncorroborated candidate is worth when
@@ -816,6 +848,7 @@ impl Fusion {
                             .filter_map(|it| it.standardised)
                             .reduce(f32::min),
                         within: Some(0.0),
+                        above_infimum: Some(0.0),
                         of: scaled.first().map_or(0, |it| it.of),
                     },
                     list.candidates.len() as u32,
@@ -853,7 +886,11 @@ impl Fusion {
                     Combine::StandardisedTimesVotes => {
                         score * votes.get(&topic).copied().unwrap_or(0) as f32
                     }
-                    Combine::Reciprocal | Combine::Standardised | Combine::Banded => score,
+                    Combine::Reciprocal
+                    | Combine::Standardised
+                    | Combine::Banded
+                    | Combine::Convex
+                    | Combine::BandedTheoretical => score,
                 };
                 FusedResult { topic, score, why }
             })
@@ -877,6 +914,10 @@ struct Scaled {
     /// Where it falls between the channel's worst and best candidate, on
     /// `[0, 1]`.
     within: Option<f32>,
+    /// Where it falls between the bottom of its channel's *scale* and the
+    /// channel's best candidate, on `[0, 1]`: theoretical min-max. For a
+    /// calibrated channel the same as `within`.
+    above_infimum: Option<f32>,
     /// How many candidates the channel returned, which is what sets the width
     /// of [`Combine::Banded`]'s band.
     of: usize,
@@ -886,7 +927,11 @@ struct Scaled {
 ///
 /// Positionally aligned with the candidates. Computed once per channel because
 /// every value in it is a property of the channel rather than of a candidate.
-fn rescale(candidates: &[Scored], calibrated: Option<(f32, f32)>) -> Vec<Scaled> {
+fn rescale(
+    candidates: &[Scored],
+    calibrated: Option<(f32, f32)>,
+    infimum: Option<f32>,
+) -> Vec<Scaled> {
     let blank = Scaled {
         of: candidates.len(),
         ..Scaled::default()
@@ -930,11 +975,19 @@ fn rescale(candidates: &[Scored], calibrated: Option<(f32, f32)>) -> Vec<Scaled>
         None => (most - least > f32::EPSILON).then_some((least, most - least)),
     };
 
+    // Theoretical min-max: the bottom of the scale, the top of this query.
+    let theoretical = match (calibrated, infimum) {
+        (Some(_), _) => scale,
+        (None, Some(low)) => (most - low > f32::EPSILON).then_some((low, most - low)),
+        (None, None) => None,
+    };
+
     scores
         .into_iter()
         .map(|score| Scaled {
             standardised: spread.map(|deviation| (score - mean) / deviation),
             within: scale.map(|(low, width)| ((score - low) / width).clamp(0.0, 1.0)),
+            above_infimum: theoretical.map(|(low, width)| ((score - low) / width).clamp(0.0, 1.0)),
             of: candidates.len(),
         })
         .collect()
@@ -961,6 +1014,59 @@ mod tests {
 
     fn id(byte: u8) -> TopicId {
         TopicId(uuid::Uuid::from_bytes([byte; 16]))
+    }
+
+    /// Theoretical min-max keeps how far a channel's worst candidate is from
+    /// nothing. Two BM25 lists with the same order but different spreads are
+    /// the same list to a min-max over the candidates; to TM2C2 the one whose
+    /// last candidate is nearly as good as its first says so.
+    #[test]
+    fn convex_reads_a_channel_from_the_bottom_of_its_scale() {
+        let (first, last) = (id(1), id(2));
+        let lexical = |low: f32| {
+            ChannelResults::new(
+                Channel::LexicalSegmented,
+                vec![Scored::new(first, 10.0), Scored::new(last, low)],
+            )
+        };
+        let share_of_last = |low: f32| {
+            let fused = Fusion::default()
+                .with(Combine::Convex)
+                .with_weight(Channel::LexicalSegmented, 1.0)
+                .fuse(&[lexical(low)]);
+            fused.iter().find(|it| it.topic == last).unwrap().score
+        };
+        assert!((share_of_last(9.0) - 0.9).abs() < 1e-6);
+        assert!((share_of_last(1.0) - 0.1).abs() < 1e-6);
+
+        // Min-max over the candidates cannot tell the two apart.
+        let within = |low: f32| {
+            Fusion::default()
+                .with(Combine::Banded)
+                .with_weight(Channel::LexicalSegmented, 1.0)
+                .fuse(&[lexical(low)])
+                .iter()
+                .find(|it| it.topic == last)
+                .unwrap()
+                .score
+        };
+        assert_eq!(within(9.0), within(1.0));
+    }
+
+    /// A cosine's floor is minus one, not zero, so a candidate at similarity
+    /// zero is halfway up when the best is one.
+    #[test]
+    fn a_cosine_is_read_from_minus_one() {
+        let (best, orthogonal) = (id(1), id(2));
+        let fused = Fusion::default()
+            .with(Combine::Convex)
+            .fuse(&[ChannelResults::new(
+                Channel::Vector,
+                vec![Scored::new(best, 1.0), Scored::new(orthogonal, 0.0)],
+            )]);
+        let score = |topic| fused.iter().find(|it| it.topic == topic).unwrap().score;
+        assert!((score(best) - 1.0).abs() < 1e-6);
+        assert!((score(orthogonal) - 0.5).abs() < 1e-6);
     }
 
     #[test]
