@@ -796,12 +796,44 @@ impl Engine {
     ///
     /// [`drain_cascade`]: Self::drain_cascade
     pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
+        let passage = self
+            .passages(std::slice::from_ref(state))
+            .await?
+            .pop()
+            .expect("one passage for one state");
         off_the_runtime(|| {
-            let embedding = self.embedding()?.embed_passage(&state.content)?;
+            let embedding = self.embedding()?.embed_passage(&passage)?;
             self.index()
                 .upsert(state.topic_id, &state.content, &embedding)
         })?;
         Ok(())
+    }
+
+    /// The text each state's vector is embedded from, in the encoding this
+    /// project's index was built with ([`pamin_index::Passage`]).
+    ///
+    /// Asks for the names only when the encoding uses them, and for a whole
+    /// batch at once. What the lexical channels index is the content either
+    /// way: this is what the vector is shown, not what a word is matched in.
+    async fn passages(&self, states: &[TopicState]) -> Result<Vec<String>> {
+        let passage = self.index().passage();
+        if passage == pamin_index::Passage::Content {
+            return Ok(states.iter().map(|state| state.content.clone()).collect());
+        }
+        let ids: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
+        let names: std::collections::HashMap<TopicId, String> =
+            repository::topics_by_id(self.database.pool(), self.project, &ids)
+                .await?
+                .into_iter()
+                .map(|(topic, name, _)| (topic, name))
+                .collect();
+        Ok(states
+            .iter()
+            .map(|state| {
+                let name = names.get(&state.topic_id).map_or("", String::as_str);
+                passage.render(name, &state.content)
+            })
+            .collect())
     }
 
     /// The same for many states, in one forward pass.
@@ -829,7 +861,8 @@ impl Engine {
             return Ok(());
         }
 
-        let contents: Vec<&str> = states.iter().map(|state| state.content.as_str()).collect();
+        let passages = self.passages(states).await?;
+        let contents: Vec<&str> = passages.iter().map(String::as_str).collect();
         off_the_runtime(|| {
             let embeddings = self.embedding()?.embed_passages(&contents)?;
             let documents: Vec<(TopicId, &str, &[f32])> = states
@@ -1637,6 +1670,7 @@ impl Engine {
         // one key and leave whichever row the scan reached last.
         let states =
             repository::all_current_topic_states(self.database.pool(), self.project).await?;
+        let passages = self.passages(&states).await?;
 
         off_the_runtime(|| {
             // Both locks, in the order every other caller takes them, and held
@@ -1649,14 +1683,17 @@ impl Engine {
             let mut embedder = self.embedding()?;
             let index = self.index();
 
-            for batch in states.chunks(REINDEX_BATCH) {
+            for (batch, batch_passages) in states
+                .chunks(REINDEX_BATCH)
+                .zip(passages.chunks(REINDEX_BATCH))
+            {
                 // One forward pass over the batch rather than one per state.
                 // Measured on the smallest profile, thirty-two texts together
                 // take 190 ms against 409 ms one at a time -- the model is the
                 // same work either way, and what the batch saves is everything
                 // around it. A rebuild is the one path that always has a batch
                 // in hand.
-                let texts: Vec<&str> = batch.iter().map(|state| state.content.as_str()).collect();
+                let texts: Vec<&str> = batch_passages.iter().map(String::as_str).collect();
                 let embeddings = embedder.embed_passages(&texts)?;
 
                 let documents: Vec<_> = batch
