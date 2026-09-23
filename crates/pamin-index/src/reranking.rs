@@ -226,9 +226,9 @@
 
 use std::path::Path;
 
-use fastembed::{OnnxSource, RerankInitOptionsUserDefined, TextRerank, UserDefinedRerankingModel};
 use serde::{Deserialize, Serialize};
 
+use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 use crate::inference::Device;
@@ -440,8 +440,8 @@ fn max_tokens() -> usize {
 /// | **256** | **0.6091** | **0.7974** | **217 ms** |
 ///
 /// Both halves were wrong. The saving is five per cent rather than twenty, and
-/// it costs 0.0014 of cross-lingual ranking rather than nothing. `fastembed`
-/// pads a batch to its longest member and not to this limit, so the limit only
+/// it costs 0.0014 of cross-lingual ranking rather than nothing. A batch is
+/// padded to its longest member and not to this limit, so the limit only
 /// truncates the candidates that genuinely exceed it -- on a corpus of
 /// sentences, few of them. It earns its place by bounding the worst case rather
 /// than by shaping the ordinary one: one long memory cannot make one query
@@ -687,7 +687,7 @@ pub struct Ranked {
 
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
-    model: TextRerank,
+    model: Encoder,
     tier: Rerank,
     device: Device,
     scores: Scores,
@@ -742,34 +742,17 @@ impl Reranker {
 
         let repository = Repository::open(cache_dir, tier.repository())?;
 
-        let session = |device: Device, providers| -> Result<TextRerank> {
+        let session = |device: Device, providers| -> Result<Encoder> {
             let source = repository.get(tier.onnx(device))?;
-            TextRerank::try_new_from_user_defined(
-                UserDefinedRerankingModel::new(
-                    // By path rather than by bytes, so half a gigabyte is not
-                    // read into memory only to be copied again. The file the
-                    // hub serves is still copied onto the heap whole; on the
-                    // CPU, the prepared copy is mapped instead -- see
-                    // `crate::prepared` for what that saves.
-                    OnnxSource::File(match device {
-                        Device::Cpu => crate::prepared::prepared(&source, cache_dir),
-                        _ => source,
-                    }),
-                    repository.tokenizer()?,
-                ),
-                {
-                    let mut options = RerankInitOptionsUserDefined::new()
-                        .with_max_length(max_tokens())
-                        .with_execution_providers(providers);
-                    // Same setting as the embedder's, and for the same reason:
-                    // see `crate::inference`.
-                    if let Some(threads) = crate::inference::threads() {
-                        options = options.with_intra_threads(threads);
-                    }
-                    options
-                },
-            )
-            .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
+            // The file the hub serves is copied onto the heap whole; on the
+            // CPU, the prepared copy is mapped instead -- see
+            // `crate::prepared` for what that saves.
+            let model = match device {
+                Device::Cpu => crate::prepared::prepared(&source, cache_dir),
+                _ => source,
+            };
+            Encoder::load(&model, &repository, max_tokens(), providers)
+                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
         };
 
         // Each accelerator this build carries, then the CPU. An accelerator
@@ -878,14 +861,11 @@ impl Reranker {
                 self.lengths.total += characters as u64;
                 self.lengths.longest = self.lengths.longest.max(characters);
             }
-            let scored = self
-                .model
-                .rerank(query, &batch, false, Some(self::batch()))
+            let scored = score(&mut self.model, query, &batch, self::batch())
                 .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
-            for result in scored {
-                let position = unscored[result.index];
-                scores[position] = Some(result.score);
-                self.scores.put(keys[position], result.score);
+            for (position, score) in unscored.iter().zip(scored) {
+                scores[*position] = Some(score);
+                self.scores.put(keys[*position], score);
             }
         }
 
@@ -936,6 +916,37 @@ impl Reranker {
             longest: self.lengths.longest,
         }
     }
+}
+
+/// The model's score for `query` against each of `documents`, in their order.
+///
+/// What `fastembed`'s `TextRerank::rerank` computed before this replaced it:
+/// the documents in consecutive chunks of `batch`, each chunk one forward pass
+/// over (query, document) pairs, and a pair's score the first column of its
+/// row of `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
+fn score(model: &mut Encoder, query: &str, documents: &[&str], batch: usize) -> Result<Vec<f32>> {
+    let mut scores = Vec::with_capacity(documents.len());
+    for chunk in documents.chunks(batch) {
+        let pairs: Vec<(&str, &str)> = chunk.iter().map(|document| (query, *document)).collect();
+        let outputs = model.run(pairs)?;
+        let logits = outputs
+            .get("logits")
+            .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
+        let (shape, values) = logits
+            .try_extract_tensor::<f32>()
+            .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
+        let labels = match **shape {
+            [rows, labels] if rows as usize == chunk.len() && labels > 0 => labels as usize,
+            _ => {
+                return Err(IndexError::Engine(format!(
+                    "logits of shape {shape:?} for {} pairs",
+                    chunk.len()
+                )));
+            }
+        };
+        scores.extend(values.chunks(labels).map(|row| row[0]));
+    }
+    Ok(scores)
 }
 
 #[cfg(test)]

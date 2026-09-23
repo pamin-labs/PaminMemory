@@ -54,11 +54,19 @@ fastembed = { version = "6", default-features = false, features = [
     "ort-download-binaries-native-tls",
     "hf-hub-native-tls",
 ] }
-# The inference runtime `fastembed` already runs on, named directly only to ask
-# it for a GPU execution provider. Pinned to the exact version `fastembed`
-# resolves, so it is the same crate and the features unify rather than a second
-# runtime being linked.
-ort = { version = "=2.0.0-rc.13", default-features = false }
+# The tokenizer `fastembed` already builds on, at the version and features it
+# resolves, so this adds no lockfile entry. Named directly so a reranker and an
+# embedder that share a vocabulary can share one loaded copy of it; see
+# `pamin-index`'s `tokenizer.rs`.
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+# The inference runtime `fastembed` already runs on, named directly because the
+# rerankers and BGE-M3 run their own sessions on it (see `pamin-index`'s
+# `encoder.rs`) and to ask it for a GPU execution provider. Pinned to the exact
+# version `fastembed` resolves, so it is the same crate and the features unify
+# rather than a second runtime being linked. `std` is what loading a session
+# from a file needs; `fastembed` enables it too, and naming it here stops the
+# build depending on that.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std"] }
 # The model hub client, for the reranker's weights. Already compiled -- it is
 # how `fastembed` fetches the embedding model -- so declaring it adds nothing
 # to the tree and stops the build depending on that staying true. TLS has to
