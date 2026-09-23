@@ -465,8 +465,10 @@ impl Default for Fusion {
             // constant weights, and a mechanism turned on before it is measured
             // is a mechanism nobody can price. See `with_confidence`.
             confidence: None,
-            // Empty, for the same reason. See `needing_support`.
-            needs_support: BTreeSet::new(),
+            // The graph channel, and only it. See `needing_support` for what
+            // this is worth and for why "worth nothing today" is the honest
+            // description of it.
+            needs_support: BTreeSet::from([Channel::Graph]),
         }
     }
 }
@@ -538,9 +540,39 @@ impl Fusion {
     /// no cosine to test -- and it needs a threshold, which is another
     /// constant to tune per corpus. Membership needs neither.
     ///
-    /// Nothing calls this yet. It is swept offline in
-    /// `crates/pamin-engine/tests/channels` before it is allowed a default,
-    /// the same way the weight was.
+    /// **Measured, and the graph channel is what it ships for.** On the own
+    /// corpus, whose `relational` group finally gives the channel edges to
+    /// walk, against the same graph weight without the rule:
+    ///
+    ///   graph weight   cross-lingual         relational
+    ///           0.30   0.7746 -> 0.7746      0.6295 -> 0.6295
+    ///           0.50   0.7415 -> 0.7441      0.6583 -> 0.6583
+    ///           1.00   0.5109 -> **0.5606**  0.6910 -> 0.6910
+    ///
+    /// So it is free: never worse anywhere measured, identical on the group
+    /// the graph channel exists for, and at full weight it recovers a fifth of
+    /// what that weight costs the cross-lingual group. **And at the weight
+    /// that ships it does exactly nothing** -- 0.0000 on all four groups, zero
+    /// wins and zero losses -- because three tenths has already quieted the
+    /// channel as far as this rule would.
+    ///
+    /// It ships on anyway, and the argument is the one thing the table above
+    /// shows that a single row cannot: the rule's value scales with how loudly
+    /// the channel speaks, and every corpus here understates that. Eleven
+    /// edges is what the `relational` group could honestly provide; a
+    /// workspace somebody uses has thousands, the walk then fills the
+    /// channel's depth at one hop, and the arithmetic says the damage grows
+    /// with it. A mechanism that is worth nothing at this corpus's density and
+    /// +0.0497 at four times the weight is a mechanism whose value is a
+    /// function of density, and the direction real data moves in is the one no
+    /// corpus here can reach.
+    ///
+    /// The lexical channels are **not** named, and that is measured too: at
+    /// the eighth weight they ship at, the rule is a bit-identical no-op on
+    /// 1,190 XQuAD-R queries, and every setting of it lies on the lexical
+    /// weight's own curve. Where it helps them is at weights this project does
+    /// not use -- a half and one -- and there it is a better way of spending a
+    /// weight nobody should spend.
     pub fn needing_support(mut self, channels: impl IntoIterator<Item = Channel>) -> Self {
         self.needs_support = channels.into_iter().collect();
         self
@@ -1147,10 +1179,13 @@ mod tests {
                     .map(|(n, score)| Scored::new(id(n as u8 + 1), *score))
                     .collect(),
             )];
-            // Full weight, so what this reads is the declared scale and not
-            // the three tenths the channel is worth against the others.
+            // Full weight and no corroboration rule, so what this reads is
+            // the declared scale alone -- not the three tenths the channel is
+            // worth against the others, and not the floor the default gives a
+            // candidate nothing else found.
             Fusion::default()
                 .with_weight(Channel::Graph, 1.0)
+                .needing_support([])
                 .fuse(&lists)[0]
                 .score
         };
@@ -1202,9 +1237,14 @@ mod tests {
     #[test]
     fn a_calibrated_channel_with_nothing_to_separate_does_not_fall_back_to_rank() {
         let identical: Vec<Scored> = (1..=6).map(|n| Scored::new(id(n), 0.5)).collect();
-        // Full weight throughout, so this reads the declared scale rather than
-        // what the graph channel is worth against the others.
-        let graph = || Fusion::default().with_weight(Channel::Graph, 1.0);
+        // Full weight and no corroboration rule throughout, so this reads the
+        // declared scale rather than what the channel is worth against the
+        // others or what the default does to an uncorroborated candidate.
+        let graph = || {
+            Fusion::default()
+                .with_weight(Channel::Graph, 1.0)
+                .needing_support([])
+        };
         let fused = graph().fuse(&[ChannelResults::new(Channel::Graph, identical.clone())]);
 
         let first = fused[0].score;
@@ -1374,7 +1414,11 @@ mod tests {
                 vec![Scored::new(corroborated, 0.5), Scored::new(alone, 0.5)],
             ),
         ];
-        let level = Fusion::default().with_weight(Channel::Graph, 1.0);
+        // Explicitly ungated, because the default names this channel now and
+        // this test is about the difference the rule makes.
+        let level = Fusion::default()
+            .with_weight(Channel::Graph, 1.0)
+            .needing_support([]);
 
         let graph_share = |results: &[FusedResult], topic| {
             results
