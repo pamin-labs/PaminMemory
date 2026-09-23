@@ -36,6 +36,12 @@ pub enum IndexError {
     )]
     Busy(String),
 
+    #[error(
+        "this project's index could not be reopened after it was reshaped ({0}); \
+         restart the server, or run `pamin reindex` to rebuild it"
+    )]
+    Unavailable(String),
+
     #[error("index io: {0}")]
     Io(#[from] std::io::Error),
 }
