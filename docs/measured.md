@@ -139,7 +139,7 @@ that ships:
 | `lexical_segmented` | 0.1569 | 0.0366 | **0.7299** |
 | `lexical_ngram` | 0.0528 | 0.0106 | 0.5337 |
 | `vector` | **0.8268** | **0.6335** | 0.6787 |
-| `graph` | premise absent | premise absent | premise absent |
+| `graph` | premise absent, since supplied — see below | premise absent | premise absent |
 | all four fused | 0.7985 | 0.6114 | 0.7829 |
 
 And leave-one-out, paired against all four: taking `lexical_segmented` away is
@@ -174,6 +174,20 @@ this corpus names topics `<subject>_<language>` — a two-to-four token run that
 memory's prose contains. Simulated over all 210 memories against all 210 names
 it yields zero. The harness now prints the edge census and marks the cell
 premise-absent instead of printing a zero that reads like a figure.
+
+**And the premise has since been supplied, which changed a default.** The own
+corpus gained a `relational` group: ten pairs of memories whose answering half
+is named by a phrase the other half's prose contains, so derivation fires and
+the project holds eleven live edges. With something to walk, the graph channel
+at its old weight of 1.0 costs **0.2794** nDCG@10 on the cross-lingual group —
+forty wins to nothing for removing it, `p = 0.0001` — and 0.0694 on the
+monolingual group, where the whole search path then measured 0.9246 against
+this repository's own 0.9400 floor and failed it. Against that it earns 0.1673
+on the twenty queries built to need it.
+
+The weight was never chosen: every unnamed channel defaults to 1.0 and this one
+was never named. It is three tenths now, from the knee of that trade, and every
+floor clears. The sweep is in `pamin_core::fusion`.
 
 ### What the fusion function itself is worth
 
