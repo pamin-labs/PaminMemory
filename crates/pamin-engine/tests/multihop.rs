@@ -51,6 +51,7 @@
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
 //! | `REACH` | where the supporting titles sit, channel by channel, in the names-only and shared-name projects |
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
+//! | `AGAINST` | pair the shipped path, question by question, with another profile's saved run over the same questions |
 
 mod channels;
 mod reranking;
@@ -483,6 +484,21 @@ async fn search_answers_questions_that_take_several_steps() {
         );
     }
     println!();
+
+    // Kept, and paired under `AGAINST=<profile>` with that profile's saved
+    // run over the same questions. See `scoring::save`.
+    scoring::save(&scoring::saved(workspace.root(), &project), &shipped);
+    if let Ok(other) = std::env::var("AGAINST") {
+        let theirs = scoring::saved(
+            workspace.root(),
+            &format!("musique-{other}-{}", corpus.fingerprint()),
+        );
+        scoring::against(
+            &format!("the shipped search path, {other} before and {named} after, MuSiQue"),
+            &scoring::load(&theirs),
+            &shipped,
+        );
+    }
 
     // What this corpus exists to show. First read at 1,000 two-hop questions:
     // 0.6834 shipped, and the graph worth 0.0406 of it (114W/238L, p=0.0001).
