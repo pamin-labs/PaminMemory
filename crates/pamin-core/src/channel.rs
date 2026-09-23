@@ -42,10 +42,14 @@ impl Channel {
     /// is wanted.
     ///
     /// The graph channel is different, and it is the only one. Its score is
-    /// `confidence * decay^(hops - 1)`, where `confidence` is constrained by
-    /// the schema to `(0, 1]` and the decay is a constant. So 0.5 means "one
-    /// derived mention" on every query in every project, 0.25 means "two hops
-    /// of them", and 1.0 means "an edge somebody asserted outright". That is a
+    /// the seed's relevance times `confidence * decay^(hops - 1)`: `confidence`
+    /// is constrained by the schema to `(0, 1]`, the decay is a constant, and a
+    /// seed's relevance is a fixed function of its best rank, `(k + 1) /
+    /// (k + rank)`, or one for a topic the query names. Every factor is on
+    /// `(0, 1]` and none is relative to the other candidates, so the product
+    /// means the same thing on every query -- one derived mention from the
+    /// best-matching memory is 0.5 wherever it occurs, and 1.0 is an edge
+    /// somebody asserted outright from a topic the query named. That is a
     /// quantity a normaliser must not touch: min-maxing it inside one query
     /// maps whatever the best path happened to be onto the top of the band, so
     /// a channel whose only path is a single weak guess votes exactly as

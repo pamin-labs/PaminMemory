@@ -1392,7 +1392,7 @@ impl Engine {
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
         let (graph_list, paths) = self
-            .recall_graph(query, &candidates, &mut working, depths)
+            .recall_graph(query, &candidates, &lists, &mut working, depths)
             .await?;
         let mut lists = lists;
         lists.push(graph_list);
@@ -1461,6 +1461,7 @@ impl Engine {
         &self,
         query: &str,
         ranked: &[TopicId],
+        lists: &[ChannelResults],
         working: &mut WorkingSet,
         depths: Depths,
     ) -> Result<(ChannelResults, std::collections::HashMap<TopicId, Neighbor>)> {
@@ -1473,6 +1474,7 @@ impl Engine {
         let widest = self.widest_name().await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
         let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
+        let relevance = seed_relevance(&named, lists);
 
         let seeds: Vec<TopicId> = {
             let mut seen = std::collections::HashSet::new();
@@ -1503,6 +1505,22 @@ impl Engine {
         )
         .await?;
 
+        // Ordered by what each arrival is worth to *this query* before the cut,
+        // not by the order the walk returned them in. The walk's order is
+        // fewest hops, then most confident edge, then topic identifier -- and
+        // with every derived edge at the same confidence and the walk stopping
+        // at one hop, that is identifier order. Cutting it to the channel's
+        // depth kept an arbitrary fifty and could drop every neighbour of the
+        // seed that matched the query best.
+        let strength = |neighbor: &Neighbor| {
+            path_strength(neighbor) * relevance.get(&neighbor.origin).copied().unwrap_or(0.0)
+        };
+        neighbors.sort_by(|left, right| {
+            strength(right)
+                .total_cmp(&strength(left))
+                .then_with(|| left.topic.0.cmp(&right.topic.0))
+        });
+
         // Cut to the channel's depth before anything is resolved. Cutting after
         // meant every neighbour the walk found was looked up and given a path,
         // and the paths were not cut with the results -- so the list was bounded
@@ -1528,7 +1546,7 @@ impl Engine {
             if !resolves.contains(&neighbor.topic) {
                 continue;
             }
-            candidates.push(Scored::new(neighbor.topic, path_strength(&neighbor)));
+            candidates.push(Scored::new(neighbor.topic, strength(&neighbor)));
             paths.insert(neighbor.topic, neighbor);
         }
 
@@ -1785,6 +1803,47 @@ fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
     ranked
 }
 
+/// How relevant each seed is to the query, on `(0, 1]`.
+///
+/// **What a graph arrival is worth depends on where it was reached from, and
+/// the channel's score used to ignore that.** A neighbour of the memory that
+/// matched the query best and a neighbour of the sixty-fourth seed both scored
+/// one derived mention's 0.5, so the channel could not tell an answer reached
+/// from the right place from noise reached from a weak one -- and its weight
+/// had to be cut for every query to protect the queries it was hurting. That
+/// is the whole reason it ships at three tenths.
+///
+/// Personalised PageRank, as HippoRAG and its successors use it for graph
+/// retrieval, starts the walk from a personalisation vector weighted by each
+/// seed's relevance to the query, so what an expanded node scores is
+/// proportional to how relevant its seed was. This is the one-step version of
+/// that: an arrival's strength is its seed's relevance times the path's.
+///
+/// A seed the query names outright is fully relevant. Any other seed is worth
+/// its best rank in any of the three index channels, discounted the way rank
+/// fusion discounts it -- `(k + 1) / (k + rank)` with the same `k` fusion uses,
+/// so this adds no constant of its own to tune.
+fn seed_relevance(
+    named: &[TopicId],
+    lists: &[ChannelResults],
+) -> std::collections::HashMap<TopicId, f32> {
+    let mut relevance = std::collections::HashMap::new();
+    for list in lists {
+        for (index, candidate) in list.candidates.iter().enumerate() {
+            let rank = index as f32 + 1.0;
+            let worth = (pamin_core::DEFAULT_K + 1.0) / (pamin_core::DEFAULT_K + rank);
+            relevance
+                .entry(candidate.topic)
+                .and_modify(|held: &mut f32| *held = held.max(worth))
+                .or_insert(worth);
+        }
+    }
+    for topic in named {
+        relevance.insert(*topic, 1.0);
+    }
+    relevance
+}
+
 /// How strongly the graph vouches for one arrival: edge confidence, per hop.
 ///
 /// **This is the one channel whose score is not its sort key, and the
@@ -1912,10 +1971,49 @@ mod tests {
 
     use super::{
         MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle, path_strength,
-        runs_of_tokens,
+        runs_of_tokens, seed_relevance,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    /// A seed is as relevant as its best rank anywhere, and a named seed is
+    /// fully relevant.
+    ///
+    /// What makes a graph arrival from the top of the lexical list worth more
+    /// than one from the bottom of it. The first place in any channel is
+    /// `(k + 1) / (k + 1) = 1`, the eleventh is `11 / 21`, a topic ranked well
+    /// by one channel and badly by another keeps the better, and a topic the
+    /// query names outright is worth one whatever the channels thought.
+    #[test]
+    fn a_seed_is_as_relevant_as_its_best_rank() {
+        let id = |byte: u8| TopicId::from(uuid::Uuid::from_bytes([byte; 16]));
+        let list = |channel, topics: &[u8]| {
+            ChannelResults::unscored(channel, topics.iter().map(|byte| id(*byte)).collect())
+        };
+        let lists = [
+            list(
+                Channel::LexicalSegmented,
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            ),
+            list(Channel::Vector, &[11, 1]),
+        ];
+
+        let relevance = seed_relevance(&[id(99)], &lists);
+        assert_eq!(relevance[&id(1)], 1.0, "first in a channel");
+        let eleventh = (pamin_core::DEFAULT_K + 1.0) / (pamin_core::DEFAULT_K + 11.0);
+        assert!((relevance[&id(2)] - 11.0 / 12.0).abs() < 1e-6, "second");
+        assert_eq!(
+            relevance[&id(11)],
+            1.0,
+            "eleventh lexically but first by vector"
+        );
+        assert!(
+            relevance[&id(10)] > eleventh,
+            "tenth is worth more than eleventh would be"
+        );
+        assert_eq!(relevance[&id(99)], 1.0, "named by the query");
+        assert!(!relevance.contains_key(&id(50)), "not a seed at all");
+    }
 
     /// A model in use is not idle, however long ago it was handed out.
     ///
