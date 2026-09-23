@@ -711,6 +711,48 @@ pub fn agreement(left: &[String], right: &[String]) -> Option<f64> {
     (pairs > 0).then(|| (concordant - discordant) as f64 / pairs as f64)
 }
 
+/// Where each channel's worst candidate sits on theoretical min-max, from the
+/// channel's infimum to this query's best: zero means the list spans the whole
+/// scale, one means every candidate scored the same as the best.
+///
+/// The premise `Combine::Convex` rests on. Theoretical min-max keeps a
+/// channel's ordering only if its candidates spread over a good part of the
+/// distance from the infimum to the best; a channel whose fifty candidates
+/// all sit near the top is flattened by it, and the other channels then decide
+/// the order among them.
+pub fn floor_places(hits: &[SearchHit]) -> BTreeMap<Channel, f64> {
+    let mut extremes: BTreeMap<Channel, (f32, f32)> = BTreeMap::new();
+    for hit in hits {
+        for why in &hit.result.why {
+            if let Why::Channel {
+                channel,
+                score: Some(score),
+                ..
+            } = why
+            {
+                let entry = extremes.entry(*channel).or_insert((*score, *score));
+                entry.0 = entry.0.min(*score);
+                entry.1 = entry.1.max(*score);
+            }
+        }
+    }
+    extremes
+        .into_iter()
+        .filter_map(|(channel, (least, most))| {
+            let floor = channel.infimum()?;
+            (most - floor > f32::EPSILON)
+                .then(|| (channel, f64::from((least - floor) / (most - floor))))
+        })
+        .collect()
+}
+
+/// The median of whatever was collected, or zero when nothing was.
+pub fn median(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted.get(sorted.len() / 2).copied().unwrap_or(0.0)
+}
+
 /// The mean of whatever was collected, or zero when nothing was.
 pub fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
