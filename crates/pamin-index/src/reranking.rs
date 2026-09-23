@@ -232,6 +232,7 @@ use fastembed::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::{IndexError, Result};
+use crate::inference::Device;
 
 /// What a tier's weights may be used for.
 ///
@@ -537,14 +538,27 @@ impl Rerank {
         }
     }
 
-    /// Which export of the model to fetch.
+    /// Which export of the model to fetch, for the device it will run on.
     ///
-    /// The fast model publishes one quantized export per instruction set, and
+    /// On an accelerator, the half-precision export where there is one: an
+    /// int8 graph of `MatMulInteger` and `DynamicQuantizeLinear` is a CPU
+    /// format that GPU providers run poorly or partly on the CPU anyway. The
+    /// fast model has no half-precision export and is small enough that full
+    /// precision costs a GPU nothing worth counting.
+    ///
+    /// On the CPU, the fast model publishes one quantized export per instruction set, and
     /// they are not interchangeable in speed: on a machine with AVX-512 VNNI
     /// the VNNI build is 1.5x the AVX2 one for the same scores. Picking at
     /// runtime rather than at build time, because a binary is built once and
     /// run on whatever is there.
-    fn onnx(self) -> &'static str {
+    fn onnx(self, device: Device) -> &'static str {
+        if device != Device::Cpu {
+            return match self {
+                Self::Off => unreachable!("nothing is loaded for the off tier"),
+                Self::Fast => "onnx/model.onnx",
+                Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_fp16.onnx",
+            };
+        }
         match self {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             // One int8 export, not one per instruction set, so there is
@@ -676,6 +690,7 @@ pub struct Ranked {
 pub struct Reranker {
     model: TextRerank,
     tier: Rerank,
+    device: Device,
     scores: Scores,
     lengths: Lengths,
 }
@@ -743,36 +758,76 @@ impl Reranker {
         };
         let read = |name: &str| -> Result<Vec<u8>> { Ok(std::fs::read(fetch(name)?)?) };
 
-        let model = TextRerank::try_new_from_user_defined(
-            UserDefinedRerankingModel::new(
-                // By path rather than by bytes: the session maps the file, and
-                // handing it a copy of half a gigabyte first serves no purpose.
-                OnnxSource::File(fetch(tier.onnx())?),
-                TokenizerFiles {
-                    tokenizer_file: read("tokenizer.json")?,
-                    config_file: read("config.json")?,
-                    special_tokens_map_file: read("special_tokens_map.json")?,
-                    tokenizer_config_file: read("tokenizer_config.json")?,
+        let session = |device: Device, providers| -> Result<TextRerank> {
+            TextRerank::try_new_from_user_defined(
+                UserDefinedRerankingModel::new(
+                    // By path rather than by bytes: the session maps the file,
+                    // and handing it a copy of half a gigabyte first serves no
+                    // purpose.
+                    OnnxSource::File(fetch(tier.onnx(device))?),
+                    TokenizerFiles {
+                        tokenizer_file: read("tokenizer.json")?,
+                        config_file: read("config.json")?,
+                        special_tokens_map_file: read("special_tokens_map.json")?,
+                        tokenizer_config_file: read("tokenizer_config.json")?,
+                    },
+                ),
+                {
+                    let mut options = RerankInitOptionsUserDefined::new()
+                        .with_max_length(max_tokens())
+                        .with_execution_providers(providers);
+                    // Same setting as the embedder's, and for the same reason:
+                    // see `crate::inference`.
+                    if let Some(threads) = crate::inference::threads() {
+                        options = options.with_intra_threads(threads);
+                    }
+                    options
                 },
-            ),
-            {
-                let mut options = RerankInitOptionsUserDefined::new().with_max_length(max_tokens());
-                // Same setting as the embedder's, and for the same reason:
-                // see `crate::inference`.
-                if let Some(threads) = crate::inference::threads() {
-                    options = options.with_intra_threads(threads);
+            )
+            .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
+        };
+
+        // Each accelerator this build carries, then the CPU. An accelerator
+        // that will not register -- no device, no driver, the wrong CUDA -- is
+        // a machine without one rather than an error, so it is logged and the
+        // next is tried.
+        let mut loaded = None;
+        for (device, provider) in crate::inference::accelerators() {
+            match session(device, vec![provider]) {
+                Ok(model) => {
+                    loaded = Some((model, device));
+                    break;
                 }
-                options
-            },
-        )
-        .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
+                Err(error) => tracing::warn!(
+                    tier = tier.name(),
+                    device = device.name(),
+                    %error,
+                    "the reranker could not use this accelerator; trying the next"
+                ),
+            }
+        }
+        let (model, device) = match loaded {
+            Some(found) => found,
+            None => (session(Device::Cpu, Vec::new())?, Device::Cpu),
+        };
+        tracing::info!(
+            tier = tier.name(),
+            device = device.name(),
+            "reranker loaded"
+        );
 
         Ok(Self {
             model,
             tier,
+            device,
             scores: Scores::default(),
             lengths: Lengths::default(),
         })
+    }
+
+    /// Where this reranker's passes run. See [`Device`].
+    pub fn device(&self) -> Device {
+        self.device
     }
 
     pub fn tier(&self) -> Rerank {

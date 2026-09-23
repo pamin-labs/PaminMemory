@@ -1888,6 +1888,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "libc",
+ "ort",
  "pamin-core",
  "serde",
  "serde_json",

@@ -25,5 +25,25 @@ uuid = { workspace = true }
 whatlang = { workspace = true }
 zvec-rust = { workspace = true }
 
+# A GPU, when the machine has one, with no build flag: each platform's ONNX
+# Runtime build carries the accelerator that platform has, and it is tried at
+# load and dropped for the CPU when it will not register. See
+# `inference::accelerators`.
+#
+# On Linux that is CUDA, whose provider library (79 MB) is copied beside the
+# binary; using it needs the NVIDIA driver, CUDA 13 and cuDNN 9, which are the
+# user's and are not shipped. On Apple silicon it is Core ML, which is the only
+# build of the runtime published for it; on Windows, DirectML, which is part of
+# the OS. Elsewhere -- Linux on ARM, Intel Macs -- there is no prebuilt runtime
+# with an accelerator and the CPU is all there is.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+ort = { workspace = true, features = ["cuda", "copy-dylibs"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+ort = { workspace = true, features = ["coreml"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { workspace = true, features = ["directml"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

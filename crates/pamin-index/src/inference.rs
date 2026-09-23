@@ -32,3 +32,68 @@ pub(crate) fn threads() -> Option<usize> {
         .ok()
         .filter(|threads| *threads > 0)
 }
+
+/// Where a model's forward passes run.
+///
+/// Recorded on every loaded model rather than inferred, because the answer is
+/// not what the platform says: every x86-64 Linux build can use CUDA, and one
+/// on a machine with no GPU, or with the wrong CUDA, runs on the CPU -- and a
+/// score cannot be read without knowing which. The CPU runs the int8 export and a GPU the fp16 one, so the two do
+/// not produce bit-identical scores and are not interchangeable in a
+/// measurement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Device {
+    Cpu,
+    Cuda,
+    CoreMl,
+    DirectMl,
+}
+
+impl Device {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Cuda => "cuda",
+            Self::CoreMl => "coreml",
+            Self::DirectMl => "directml",
+        }
+    }
+}
+
+/// The accelerators to try before the CPU, best first.
+///
+/// Whatever this platform's runtime carries, with no build flag: CUDA on
+/// x86-64 Linux, Core ML on Apple silicon, DirectML on Windows, nothing
+/// elsewhere. A machine without the device -- or, for CUDA, without the
+/// driver, CUDA 13 and cuDNN 9 -- fails to register it and runs on the CPU,
+/// so a GPU is used when there is one and costs nothing when there is not.
+/// `PAMIN_DEVICE=cpu` empties this, for a measurement that must be comparable
+/// with a CPU one or a machine whose GPU belongs to something else.
+///
+/// Each is set to fail loudly on registration rather than fall through to the
+/// CPU inside ONNX Runtime, which is its default. A silent fallback would load
+/// the GPU's fp16 export onto the CPU -- slower than the int8 one it was
+/// chosen over -- and report nothing; failing here lets the caller load the
+/// CPU's own export instead and record that it did.
+pub(crate) fn accelerators() -> Vec<(Device, fastembed::ExecutionProviderDispatch)> {
+    if std::env::var("PAMIN_DEVICE").is_ok_and(|device| device.eq_ignore_ascii_case("cpu")) {
+        return Vec::new();
+    }
+    vec![
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        (
+            Device::Cuda,
+            ort::ep::CUDA::default().build().error_on_failure(),
+        ),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        (
+            Device::CoreMl,
+            ort::ep::CoreML::default().build().error_on_failure(),
+        ),
+        #[cfg(target_os = "windows")]
+        (
+            Device::DirectMl,
+            ort::ep::DirectML::default().build().error_on_failure(),
+        ),
+    ]
+}

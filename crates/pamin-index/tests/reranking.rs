@@ -100,3 +100,62 @@ fn nothing_in_the_download_sweep_is_non_commercial() {
         );
     }
 }
+
+/// Whatever device the load picks, it orders like the CPU.
+///
+/// On a GPU the reranker runs a different export in a different precision --
+/// fp16 rather than int8 -- so its scores are not the CPU's and are not
+/// expected to be. What must hold is the ordering on candidates the model
+/// separates clearly, which is the only thing a search reads. On a machine
+/// with no accelerator both loads land on the CPU and this checks that the
+/// fallback runs the CPU's own export; on a GPU it is the equivalence check a
+/// user of the accelerator is relying on.
+///
+/// One test, not two, because `PAMIN_DEVICE` is process-wide and a second
+/// test flipping it in parallel would race this one.
+#[test]
+#[ignore = "downloads reranker model weights"]
+fn every_device_orders_like_the_cpu() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let models = dir.path().join("models");
+
+    let query = "how does the deployment pipeline handle a failed migration";
+    let documents = [
+        "The office coffee machine is descaled on the first Monday of each month.",
+        "When a migration fails the deployment pipeline rolls the release back and \
+         leaves the previous version serving.",
+        "Deployments are frozen on Fridays after noon.",
+        "Database migrations run before the new version takes traffic.",
+    ];
+
+    let order = |reranker: &mut Reranker| -> Vec<usize> {
+        reranker
+            .rank(query, &documents)
+            .expect("score the candidates")
+            .iter()
+            .map(|ranked| ranked.position)
+            .collect()
+    };
+
+    let mut chosen = Reranker::load(Rerank::Fast, &models).expect("load on any device");
+    let chosen_order = order(&mut chosen);
+
+    // SAFETY: nothing else in this binary reads the environment concurrently;
+    // see the note above.
+    unsafe { std::env::set_var("PAMIN_DEVICE", "cpu") };
+    let mut cpu = Reranker::load(Rerank::Fast, &models).expect("load on the cpu");
+    unsafe { std::env::remove_var("PAMIN_DEVICE") };
+
+    assert_eq!(
+        cpu.device(),
+        pamin_index::Device::Cpu,
+        "PAMIN_DEVICE=cpu was not honoured"
+    );
+    assert_eq!(
+        chosen_order,
+        order(&mut cpu),
+        "the {} device ordered four clearly separated candidates differently from the cpu",
+        chosen.device().name()
+    );
+    println!("  the build chose {}", chosen.device().name());
+}
