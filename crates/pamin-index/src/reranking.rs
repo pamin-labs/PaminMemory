@@ -233,31 +233,6 @@ use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 use crate::inference::Device;
 
-/// What a tier's weights may be used for.
-///
-/// Carried in the type rather than looked up in a document, because the one
-/// consequence that matters is a refusal: a tier whose weights are not free for
-/// commercial use has to be asked for on purpose, and a caller cannot be
-/// expected to have read `NOTICE` first.
-///
-/// This project redistributes no weights -- every model is fetched from the hub
-/// by the user's own machine on first use -- so what is described here is what
-/// the user acquires, not what we ship. That is also why a missing licence tag
-/// is not one of the variants: an export with no tag of its own is usable when
-/// the chain to a licensed source is readable, and two of the shipped models
-/// are in exactly that position, with their chains written down in `NOTICE`.
-/// What cannot be left to a document is a term that restricts what the user may
-/// do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Licence {
-    /// Free for any use, commercial included. Apache-2.0 or MIT, directly or
-    /// through a readable chain.
-    Permissive,
-    /// Free for research and personal use, not for commercial use. Asking for a
-    /// tier under this is an explicit act; see [`Rerank::licence`].
-    NonCommercial,
-}
-
 /// How much to spend reordering the shortlist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -300,47 +275,6 @@ pub enum Rerank {
     /// that decided it.
     #[default]
     Accurate,
-    /// GTE multilingual reranker base, twelve layers of 768, 341 MB.
-    /// Seventy-plus languages.
-    ///
-    /// Between the two above by every structural measure and here to find out
-    /// whether it is between them by score. Non-embedding parameters are the
-    /// number that predicts compute -- a 250,000-row embedding table is a
-    /// lookup and not a matrix multiply, so a card's total is misleading --
-    /// and by that count this is 84.9M against `fast`'s 21.2M and
-    /// `accurate`'s 302M: four times the one and a third of the other. The
-    /// int8 export is 341 MB against 119 and 571, which is the same ordering
-    /// and is what a user actually waits for on first use.
-    ///
-    /// The reason to measure it is that `accurate` is where the gain is and
-    /// the latency is why nobody can have it. If four times `fast`'s compute
-    /// buys most of fourteen times' worth, the tier that ships as the quality
-    /// option should be this one.
-    ///
-    /// Apache-2.0 through the same shape of chain as `accurate`: the export
-    /// carries no tag, `Alibaba-NLP/gte-multilingual-reranker-base` under it
-    /// is Apache-2.0. Read from the hub API rather than from card prose, and
-    /// written down in `NOTICE`.
-    Balanced,
-    /// Jina reranker v2, twelve layers of 768, 280 MB. **CC-BY-NC-4.0: not for
-    /// commercial use.**
-    ///
-    /// The tier the licence relaxation was for, and the one the relaxation
-    /// probably does not need. It is the *same shape* as `balanced` -- 12x768,
-    /// 84.9M non-embedding -- so there is no compute argument for it at all.
-    /// Either its training makes it better at the same cost, in which case a
-    /// non-commercial option is worth offering, or it does not, in which case
-    /// this is a tier with no reason to exist and saying so is more useful
-    /// than leaving it in the table looking like a choice. That prediction is
-    /// recorded here before the measurement rather than after it.
-    ///
-    /// Asking for it prints the terms once and then runs -- see
-    /// [`Rerank::licence`] and `caution` in the `search` command. The weights
-    /// are free for research and personal use and not for commercial use, and
-    /// a caller cannot be assumed to have read `NOTICE`; whether a given use
-    /// is inside those terms depends on their situation and is not something
-    /// this program can decide for them.
-    Noncommercial,
 }
 
 /// How many of the fused results a tier looks at.
@@ -470,8 +404,6 @@ impl Rerank {
             "off" => Some(Self::Off),
             "fast" => Some(Self::Fast),
             "accurate" => Some(Self::Accurate),
-            "balanced" => Some(Self::Balanced),
-            "noncommercial" => Some(Self::Noncommercial),
             _ => None,
         }
     }
@@ -481,8 +413,6 @@ impl Rerank {
             Self::Off => "off",
             Self::Fast => "fast",
             Self::Accurate => "accurate",
-            Self::Balanced => "balanced",
-            Self::Noncommercial => "noncommercial",
         }
     }
 
@@ -490,40 +420,7 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate | Self::Balanced | Self::Noncommercial => {
-                tuned("PAMIN_RERANK_DEPTH", DEPTH)
-            }
-        }
-    }
-
-    /// What this tier's weights may be used for.
-    ///
-    /// `Off` has none, which is a real answer rather than a missing one, so it
-    /// is `None` and every tier that loads a model has a `Some`.
-    ///
-    /// The distinction this draws is narrow on purpose: whether the licence
-    /// restricts what the user may do with the results. A permissive tier and a
-    /// tier whose export carries no tag but descends from a permissive model
-    /// are the same answer to that question, and `NOTICE` is where the chains
-    /// are written down.
-    pub fn licence(self) -> Option<Licence> {
-        match self {
-            Self::Off => None,
-            // Apache-2.0. Distilled from a model with no tag of its own, whose
-            // source is Microsoft's MIT MiniLMv2 recipe; see `NOTICE`.
-            Self::Fast => Some(Licence::Permissive),
-            // The export carries no tag; `BAAI/bge-reranker-v2-m3` under it is
-            // Apache-2.0. See `NOTICE`.
-            Self::Accurate => Some(Licence::Permissive),
-            // Same shape of chain: no tag on the export,
-            // `Alibaba-NLP/gte-multilingual-reranker-base` under it is
-            // Apache-2.0. See `NOTICE`.
-            Self::Balanced => Some(Licence::Permissive),
-            // Tagged `cc-by-nc-4.0` on the model itself. Not a chain to read:
-            // the restriction is the model's own.
-            Self::Noncommercial => Some(Licence::NonCommercial),
-            // Apache-2.0 on the export and Apache-2.0 upstream. An independent
-            // port rather than an official release, which `NOTICE` says.
+            Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
         }
     }
 
@@ -532,8 +429,6 @@ impl Rerank {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             Self::Fast => "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
             Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
-            Self::Balanced => "onnx-community/gte-multilingual-reranker-base",
-            Self::Noncommercial => "jinaai/jina-reranker-v2-base-multilingual",
         }
     }
 
@@ -555,14 +450,14 @@ impl Rerank {
             return match self {
                 Self::Off => unreachable!("nothing is loaded for the off tier"),
                 Self::Fast => "onnx/model.onnx",
-                Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_fp16.onnx",
+                Self::Accurate => "onnx/model_fp16.onnx",
             };
         }
         match self {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             // One int8 export, not one per instruction set, so there is
             // nothing to detect at runtime the way `fast` has to.
-            Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_int8.onnx",
+            Self::Accurate => "onnx/model_int8.onnx",
             Self::Fast => {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -1025,47 +920,14 @@ mod tests {
         assert_eq!(scores.get(key), Some(99.0));
     }
 
-    /// Every tier that loads a model says what its weights may be used for.
-    ///
-    /// The point of asserting it rather than trusting the match is that adding
-    /// a tier is a six-arm edit and the compiler catches five of them. This
-    /// catches the sixth if it is ever written as a permissive default by
-    /// reflex: a tier that loads weights must have an answer, and `off` must
-    /// not, because "no weights" is a different statement from "weights you may
-    /// use freely".
-    #[test]
-    fn every_tier_that_loads_weights_declares_what_they_may_be_used_for() {
-        assert_eq!(Rerank::Off.licence(), None, "the off tier loads nothing");
-        for tier in [
-            Rerank::Fast,
-            Rerank::Accurate,
-            Rerank::Balanced,
-            Rerank::Noncommercial,
-        ] {
-            assert!(
-                tier.licence().is_some(),
-                "the {} tier downloads weights and does not say under what terms",
-                tier.name()
-            );
-        }
-    }
-
     /// Whatever a tier parses from, it round-trips through its own name.
     ///
     /// Guards the pair of matches that a new tier has to touch together. The
     /// wire protocol is this string, so a name that parses to a different tier
-    /// than it prints would route a caller to a model they did not ask for --
-    /// and with a non-commercial tier in the list that is a licence question
-    /// rather than a ranking one.
+    /// than it prints would route a caller to a model they did not ask for.
     #[test]
     fn a_tier_parses_from_the_name_it_prints() {
-        for tier in [
-            Rerank::Off,
-            Rerank::Fast,
-            Rerank::Accurate,
-            Rerank::Balanced,
-            Rerank::Noncommercial,
-        ] {
+        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
             assert_eq!(
                 Rerank::parse(tier.name()),
                 Some(tier),

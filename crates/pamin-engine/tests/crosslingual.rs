@@ -1323,22 +1323,12 @@ async fn search_reaches_across_languages() {
     // same pipeline that produced the ordering.
     if std::env::var("TIERS").is_ok() {
         // Every tier that loads a model, plus `off` as the baseline the others
-        // are read against. `noncommercial` downloads CC-BY-NC-4.0 weights,
-        // which is a thing a measurement may do and a product may not without
-        // being asked -- the gate is on the command, and this is the harness
-        // that prices the tier the gate exists for.
-        // `TIERS=1` runs every tier; `TIERS=fast,accurate` runs those, with
-        // `off` always first because every row is also priced against it. The
-        // whole set is about two hours, and the question is usually about two.
+        // are read against. `TIERS=1` runs every tier; `TIERS=fast` runs the
+        // ones named, with `off` always first because every row is also priced
+        // against it.
         let wanted = std::env::var("TIERS").expect("checked above");
         let tiers: Vec<Rerank> = if wanted == "1" {
-            vec![
-                Rerank::Off,
-                Rerank::Fast,
-                Rerank::Balanced,
-                Rerank::Accurate,
-                Rerank::Noncommercial,
-            ]
+            vec![Rerank::Off, Rerank::Fast, Rerank::Accurate]
         } else {
             std::iter::once(Rerank::Off)
                 .chain(wanted.split(',').map(|name| {
@@ -1514,10 +1504,10 @@ enum Route {
 /// the pass predicts it.
 ///
 /// **Three tiers, not six, and that is a narrowing rather than a shortcut.**
-/// `typed` measured *below* `off` and is closed; `balanced` costs four times
-/// `fast`'s parameters for a quarter of its gain. What is left — nothing,
-/// cheap, expensive — is what a shipped router would choose between, and is
-/// the same triple the published router used.
+/// `typed` measured *below* `off` and is closed; `balanced` cost four times
+/// `fast`'s parameters for a quarter of its gain and has been removed. What
+/// is left — nothing, cheap, expensive — is what a shipped router would choose
+/// between, and is the same triple the published router used.
 ///
 /// Every feature here is read from the **`off`** search, because that is all a
 /// router can see: it runs before the pass it is deciding about.

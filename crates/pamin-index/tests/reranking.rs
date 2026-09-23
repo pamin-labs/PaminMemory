@@ -18,11 +18,11 @@
 //! misconfigured rather than weak -- and it is the premise every figure the
 //! corpora report is standing on.
 
-use pamin_index::{Licence, Rerank, Reranker};
+use pamin_index::{Rerank, Reranker};
 
 /// Every tier that loads a model, so a new one is measured only after it has
 /// been shown to work at all.
-const TIERS: &[Rerank] = &[Rerank::Fast, Rerank::Accurate, Rerank::Balanced];
+const TIERS: &[Rerank] = &[Rerank::Fast, Rerank::Accurate];
 
 #[test]
 #[ignore = "downloads reranker model weights"]
@@ -80,24 +80,6 @@ fn every_tier_puts_the_relevant_document_first() {
         }
 
         println!("  {} scores the pair the right way round", tier.name());
-    }
-}
-
-/// The non-commercial tier is not in `TIERS` and this says why in a test.
-///
-/// It downloads weights a commercial user may not use, so it is not swept up
-/// by a loop over "every tier that loads a model". Anything added to `TIERS`
-/// has to be permissive, and this is the assertion that makes that a rule
-/// rather than a habit.
-#[test]
-fn nothing_in_the_download_sweep_is_non_commercial() {
-    for tier in TIERS {
-        assert_eq!(
-            tier.licence(),
-            Some(Licence::Permissive),
-            "{} is in the sweep and is not permissive",
-            tier.name()
-        );
     }
 }
 

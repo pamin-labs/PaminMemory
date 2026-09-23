@@ -24,7 +24,6 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 | | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy |
-| | `PAMIN_ACCEPT_NONCOMMERCIAL` | unset | Acknowledge the `noncommercial` tier's CC-BY-NC-4.0 terms, which stops the notice printing |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -397,23 +396,20 @@ ranking internals it has no way to evaluate.
 `--rerank` chooses how much to spend reordering the results, and takes
 `PAMIN_RERANK`:
 
-| | licence | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
-|---|---|---|---|---|---|
-| `off` | — | nothing | 99 ms | 0.6114 | 0.7829 |
-| `fast` | permissive | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
-| `balanced` | permissive | 341 MB | 821 ms | +0.0094 | +0.0029 |
-| `accurate` | permissive | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
-| `noncommercial` | **CC-BY-NC-4.0** | 280 MB | 905 ms | +0.0279 | +0.0003 |
+| | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
+|---|---|---|---|---|
+| `off` | nothing | 99 ms | 0.6114 | 0.7829 |
+| `fast` | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
+| `accurate` | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
 
-All five arms are one run over the same 1,190 queries, so the rows can be read
+All three rows are one run over the same 1,190 queries, so they can be read
 against each other; none of them can be read against a figure published before
 this table, and the `off` and `fast` rows moved when the fusion layer changed
 underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
-`p = 0.0001` for `fast`, `accurate` and `noncommercial` and `0.0146` for
-`balanced`; same-language `p = 0.0008` for `fast`, `0.0293` for `balanced`, and
-not significant for the other two. `recall@50` is 0.8962 and 0.9571 in **every**
-arm, to four decimals — a reranker reorders a shortlist and never changes what
-is in it.
+`p = 0.0001` for both tiers; same-language `p = 0.0008` for `fast` and not
+significant for `accurate`. `recall@50` is 0.8962 and 0.9571 in **every** arm,
+to four decimals — a reranker reorders a shortlist and never changes what is in
+it.
 
 Measured on XQuAD-R's 13,014 sentences in eleven languages, through
 `Engine::search_reranked` — the call this command makes, one layer below the
@@ -454,51 +450,11 @@ this profile, the pass **gains** 0.0201 at `fast` and 0.0496 at `accurate`. Set
 `off` to buy back the time if you want the latency; do not set it expecting
 better ranking.
 
-**`balanced` is a bad trade and is kept only because the table should say so.**
-Four times `fast`'s compute-relevant parameters and 2.3 times its latency buy
-one quarter of its cross-lingual gain. Its one distinction is being the only
-tier with a significant *positive* on same-language, which is worth a row and is
-not worth 821 ms.
-
-**`noncommercial` bought nothing, and that is the useful result.** It was added
-to answer a specific question — whether accepting a non-commercial licence buys
-accuracy a permissive one cannot — and the answer is no: it scores +0.0279
-cross-lingual where `fast`, at a quarter of its size and 2.5
-times its speed, scores +0.0397. It is kept, documented and measured rather than
-quietly dropped, because "we relaxed the licence and it did not help" is a
-finding somebody would otherwise pay for twice.
-
-One prediction in that experiment was wrong and is worth recording next to it.
-`balanced` and `noncommercial` are the same architecture at the same size —
-twelve layers of width 768, 84.9M non-embedding parameters — so they were
-expected to land within noise of each other. They differ by 0.0185
-cross-lingual, which is twice `balanced`'s entire gain. At this size the
-training, not the capacity, is what is being chosen. The same conclusion is
-visible down the column: 21.2M `fast` beats both 84.9M models cross-lingual, so
-parameter count does not order this table.
-
-`noncommercial` prints a notice to stderr the first time you ask for it and
-then runs. It is not gated: naming the tier is already deliberate — nothing
-reaches it by default and the default is permissive — so the notice's job is to
-make sure nobody arrives at those terms without being told, not to decide on
-your behalf whether your use is inside them.
-
-What the notice says is an obligation rather than a hazard, and the difference
-matters. Nothing about the model is less reliable for its licence: it loads,
-scores and ranks like any other. What CC-BY-NC-4.0 restricts is **what you may
-use the results for**, which is a question about your situation that this
-program cannot answer — so the notice states the terms and says that staying
-inside them is yours to determine and yours to comply with.
-`PAMIN_ACCEPT_NONCOMMERCIAL=1` records that you have and stops the notice
-printing. It grants nothing, because nothing was withheld; it is there so the
-acknowledgement lands in the script or the CI configuration that runs the
-command, where whoever inherits the setup can see it, rather than scrolling
-past one terminal once.
-
-That tier is also the reason the licence column exists at all. Every other one
-is permissive and says nothing; [NOTICE](../NOTICE) lists what each one
-downloads and the chain behind it, including the three exports that carry no
-tag of their own.
+The same run measured two more tiers, `balanced` and `noncommercial`, and both
+were removed: `fast` beat each of them cross-lingual at under half the latency.
+[ADR 0001](adr/0001-tech-selection.md) keeps their rows. Every tier left is
+permissively licensed; [NOTICE](../NOTICE) lists what each one downloads and the
+chain behind it.
 
 The model is fetched the first time a search asks for one, into the same cache
 as the embedding model.
