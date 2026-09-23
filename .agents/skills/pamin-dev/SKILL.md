@@ -81,6 +81,39 @@ the fix?" If not, it is decoration. Known trap: verifying "after drain the index
 has it" also passes on code with no queue at all — proving the outbox is worth
 anything requires interrupting between commit and execution.
 
+## Choosing a constant is a fit, so score it on queries it did not see
+
+Every rule above is about not *measuring* the wrong thing. This one is about not
+*choosing* on what you report, and this project broke it for every fusion
+parameter it has before anyone noticed -- while its calibration arm, in the same
+file, split by query and explained why.
+
+A sweep that scores ninety settings on every query and ships the best has fitted
+ninety degrees of freedom to its own test set. The best row's number is the
+maximum of ninety draws, not an estimate of anything. So:
+
+- **Choose with `statistics::cross_validate`**, folds stratified by group, and
+  report what `channels::cross_validated` prints: the procedure's held-out
+  score, beside what ships on the same queries. The in-sample best row is
+  printed too, labelled as what a sweep *used* to report.
+- **Write the selection rule down before reading the table.** The rule is an
+  argument to `cross_validate` for exactly this reason. "The knee" is a rule
+  with a hidden prior that moves when the grid does.
+- **Read `family p`, not the row's own p.** Ninety rows each tested alone put
+  about four under 0.05 by chance.
+- **Read `can see` before reading a difference.** A twenty-query group cannot
+  resolve 0.08; a gain smaller than its own row's detectable difference is not
+  a finding, however many rows agree with it.
+- **If the folds disagree, there is no choice to make at this sample size.**
+  Keep what ships and say so. "Nothing in the sweep beats the default" is a
+  result, and it is the one the fusion sweeps here returned once asked
+  properly.
+
+And the p value itself has to be a randomisation test, not a bootstrap: the
+bootstrap-shift test is measured anti-conservative (`arXiv:1905.11096`), and
+under it three queries all improving came out at `p = 0.0001` where the right
+answer is 0.25.
+
 ## A shared endpoint makes cost a property of the pair
 
 Two arms were run at once because the reader and the judge are network waits

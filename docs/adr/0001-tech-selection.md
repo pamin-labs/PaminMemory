@@ -861,7 +861,9 @@ nothing, `p = 0.0001`, the largest single effect measured anywhere in this
 project — and +0.0694 on the monolingual group, against the 0.1673 it earns on
 the twenty queries written to favour it. The whole search path at 1.0 fails
 this repository's own guard: 0.9246 on the monolingual group against a 0.9400
-floor. Three tenths clears every floor and is the knee of the trade, and
+floor. Three tenths clears every floor; 1.0 and 0.5 are significantly worse
+than it once the whole sweep is priced as one family, 0.15 cannot be told
+apart from it at this sample size, and
 `pamin_core::fusion` carries the arithmetic.
 
 The weight was never chosen. Every unnamed channel defaults to 1.0 and this one
@@ -879,7 +881,8 @@ arm — built expressly so the graph could reach the rest of an exchange — sco
 Read the `relational` figures as what they are. Twenty queries is a collapse
 detector, not a regression detector, and they were written in this repository
 *to make this channel look useful* — which is why the weight was chosen from
-the knee of the trade rather than from a four-group mean that would have let
+which rows the family correction can separate rather than from a four-group
+mean that would have let
 the purpose-built group pick its own weight.
 
 Against that, three differences in their design are specific enough to test:
@@ -915,6 +918,84 @@ rather than a plateau. Neither figure generalises, which is the useful finding:
 `fusion::DEFAULT_K` is a property of a corpus's channel agreement, not a
 constant to inherit.
 
+### How a constant here is chosen, and what that changed
+
+Every fusion parameter in this repository was chosen the same way: run one
+search pass per query, replay eighty to ninety-six fusion settings offline from
+the trace, score each on *all* of a corpus's queries, pick one by eye --
+usually "the knee", where one group's gain stops exceeding another's loss --
+and report the chosen setting with the numbers it was chosen by. That is a fit
+with ninety degrees of freedom scored on its own training data, and it had four
+defects, each with a name in the literature and each now fixed.
+
+**No split.** Fuhr (*Some Common Mistakes in IR Evaluation*, SIGIR Forum
+51(3), 2017) states that the tuning set must be disjoint from the test set;
+Cawley and Talbot (JMLR 11, 2010) measure what skipping it costs and show it
+can reorder competing methods. This repository's calibration arm already split
+by query and said why. The fusion sweeps never did. They now run the selection
+as a procedure: five folds stratified by group, the rule sees four and is
+scored on the fifth.
+
+**A rule chosen after looking.** The knee is an expected-utility rule under an
+unstated uniform prior, and it depends on how densely the grid was sampled. The
+rule is now fixed in code before any table is read and stated so it can be
+argued with: maximise the mean over groups of nDCG@10, every group equal, ties
+to what ships.
+
+**Ninety uncorrected tests.** Each row reported its own p against the shipped
+setting, so about four rows a table cleared 0.05 by chance. Every table now
+carries a Westfall-Young family-adjusted p, the correlation-aware procedure
+evaluated for exactly this design by Boytsov, Belova and Westfall (SIGIR 2013),
+and the smallest difference each row's queries could detect at 80% power
+(Sakai, IRJ 19, 2016). The twenty-query relational group can see about 0.08.
+
+**An anti-conservative test.** The paired bootstrap-shift test every p here came
+from is measured by Urbano, Lima and Hanjalic (`arXiv:1905.11096`, 500 million
+simulated p values) at 0.059 actual against 0.050 nominal. It is now the exact
+paired sign-flip randomisation. The difference is not subtle: three queries all
+improving is `p = 0.25` under it and was `p = 0.0001` under the bootstrap, and
+this document has carried rows such as `4W/0L/16T p = 0.0618` where the
+smallest attainable p on four untied queries is 0.125.
+
+**What the honest procedure says, which is the part worth keeping:**
+
+| | own corpus | XQuAD-R |
+| --- | --- | --- |
+| best row, scored on the queries that chose it | 0.8562 | 0.7033 |
+| the procedure, on queries it did not choose on | 0.8534 | 0.6998 |
+| what ships, on the same queries | 0.8495 | 0.6972 |
+| procedure against what ships | +0.0025, 19W/3L, `p = 0.57` | +0.0026, 231W/**320L**, `p = 0.10` |
+| rows chosen across the five folds | two different | three different |
+
+**Chosen honestly, nothing in the sweep beats what ships on either corpus, and
+the folds do not agree on what they would choose.** The in-sample optimism is
+small here -- about 0.003 -- because the grid's rows are close to one another;
+what the procedure changes is not the size of the number but whether it is a
+result. A previous reading of this same sweep found two asymmetric lexical
+weightings "no worse than shipped on all four groups" of the own corpus and
+nearly moved the default on it; that is exactly what choosing the best of
+eighty-five on the queries that grade them produces.
+
+One decision survives the correction, and it is the large one: the graph
+channel's weight moving from 1.0 to 0.30, significant after family adjustment
+on the cross-lingual and monolingual groups. Its stated reason -- the knee --
+did not survive, and `pamin_core::fusion` now gives the one that does.
+
+One criticism the literature made of this procedure does not apply, and is
+recorded so it is not re-litigated. Offline replay was suspected of *support
+deficiency* -- that the candidate set is authored by the shipped setting, so a
+challenger's documents are invisible. It is not: the replay requests more than
+four times the channel depth and asserts on every query that the fused list did
+not reach that limit, so every candidate every channel returned is in the trace
+and a replayed setting is an exact simulation, not an approximation.
+
+And one limit no procedure here can remove. Bruch, Gai and Ingber
+(`arXiv:2210.11934`) tuned per-channel rank constants on proper validation
+splits and watched them lose 8 to 10% out of domain, the optimal direction
+reversing between corpora. Cross-validation over these corpora estimates
+performance on these corpora. The cheapest thing that speaks to transfer is to
+fit on two corpora and test on the third, and it has not been done yet.
+
 ### Every accuracy figure here is a difference of means
 
 Stated as its own section because it applies to all of them, including the
@@ -934,7 +1015,8 @@ while its own method's *smaller* mean gain is **8 wins against 1 loss at
 p = 0.039**. Read as means, the wrong method wins.
 
 `crates/pamin-engine/tests/statistics/mod.rs` now reports wins, losses, ties
-and a paired bootstrap p alongside every mean, and the cross-lingual harness
+and a paired randomisation p alongside every mean -- a bootstrap until the
+section below found it anti-conservative -- and the cross-lingual harness
 fails if reranking's gain is not significant rather than merely small. Until
 each figure below has been re-taken through it, **a small difference in this
 document is a difference of means and nothing more**.
