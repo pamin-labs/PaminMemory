@@ -288,48 +288,15 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
-    let mut groups: BTreeMap<String, Scores> = BTreeMap::new();
-    let mut worst: Vec<(f64, String, Vec<String>)> = Vec::new();
-
-    for query in &queries {
-        // `search_reranked`, because that is what `pamin search` calls and a
-        // floor is only worth having over the path that ships. The sweep below
-        // stays on `search_fused`, which is the one that takes a weighting.
-        //
-        // The tier reorders the top twenty of a hundred, so recall@50 cannot
-        // move and only nDCG@10 can. On this corpus it is expected not to move
-        // either -- nothing relevant here has ever sat below rank ten, which is
-        // the finding that sent reranking to the external benchmark in the
-        // first place -- but expected-not-to-move is still measured, because
-        // otherwise nothing guards it.
-        let hits = engine
-            .search_reranked(&query.query, SEARCH_LIMIT, DEPTHS, Rerank::default())
-            .await
-            .expect("search");
-
-        // A topic can appear through several of its states; the question is
-        // whether the topic was found, so the first appearance is the rank.
-        let mut ranked: Vec<String> = Vec::new();
-        let mut seen = HashSet::new();
-        for hit in &hits {
-            if seen.insert(hit.topic.clone()) {
-                ranked.push(hit.topic.clone());
-            }
-        }
-
-        let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
-        let ndcg =
-            groups
-                .entry(query.group.clone())
-                .or_default()
-                .add(&ranked, relevant.len(), |topic| relevant.contains(topic));
-        worst.push((
-            ndcg,
-            query.query.clone(),
-            ranked.into_iter().take(3).collect(),
-        ));
+    // `TIERS`: every reranker tier through the shipped path, paired query by
+    // query against the one that ships. This is the corpus with the relational
+    // group, the one place a tier's cost to graph-reached answers is visible.
+    if std::env::var("TIERS").is_ok() {
+        report_tiers(&engine, &queries).await;
+        return;
     }
 
+    let (groups, mut worst) = shipped(&engine, &queries, Rerank::default()).await;
     report(&groups, &mut worst);
 
     // The floors describe one configuration, so they are only asserted against
@@ -394,7 +361,109 @@ const FLOORS: &[(&str, f64, f64)] = &[
     ("relational", 0.54, 0.90),
 ];
 
-/// Each channel alone, and each one removed, on the corpus this project wrote.
+/// Every query through `search_reranked` at `tier`, scored by group, with each
+/// query's score, text and first three topics for the worst-first listing.
+async fn shipped(
+    engine: &Engine,
+    queries: &[Query],
+    tier: Rerank,
+) -> (BTreeMap<String, Scores>, Vec<(f64, String, Vec<String>)>) {
+    let mut groups: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut worst: Vec<(f64, String, Vec<String>)> = Vec::new();
+
+    for query in queries {
+        // `search_reranked`, because that is what `pamin search` calls and a
+        // floor is only worth having over the path that ships. The sweep below
+        // stays on `search_fused`, which is the one that takes a weighting.
+        //
+        // The tier reorders the top twenty of a hundred, so recall@50 cannot
+        // move and only nDCG@10 can. On this corpus it is expected not to move
+        // either -- nothing relevant here has ever sat below rank ten, which is
+        // the finding that sent reranking to the external benchmark in the
+        // first place -- but expected-not-to-move is still measured, because
+        // otherwise nothing guards it.
+        let hits = engine
+            .search_reranked(&query.query, SEARCH_LIMIT, DEPTHS, tier)
+            .await
+            .expect("search");
+
+        // A topic can appear through several of its states; the question is
+        // whether the topic was found, so the first appearance is the rank.
+        let mut ranked: Vec<String> = Vec::new();
+        let mut seen = HashSet::new();
+        for hit in &hits {
+            if seen.insert(hit.topic.clone()) {
+                ranked.push(hit.topic.clone());
+            }
+        }
+
+        let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+        let ndcg =
+            groups
+                .entry(query.group.clone())
+                .or_default()
+                .add(&ranked, relevant.len(), |topic| relevant.contains(topic));
+        worst.push((
+            ndcg,
+            query.query.clone(),
+            ranked.into_iter().take(3).collect(),
+        ));
+    }
+    (groups, worst)
+}
+
+/// Each reranker tier through the shipped path, group by group, paired against
+/// the tier that ships.
+///
+/// The external corpora answer which tier ranks passages best; they cannot say
+/// what a tier does to an answer that is relevant because another memory
+/// mentions it, since neither has an edge. This corpus's relational group is
+/// the only place that cost can be read, and it is twenty queries, so the
+/// paired counts are the number to read and the mean is not.
+async fn report_tiers(engine: &Engine, queries: &[Query]) {
+    let tiers = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+    let mut priced: Vec<(Rerank, BTreeMap<String, Scores>, f64)> = Vec::new();
+    for tier in tiers {
+        let started = std::time::Instant::now();
+        let (groups, _) = shipped(engine, queries, tier).await;
+        let per_query = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
+        priced.push((tier, groups, per_query));
+    }
+
+    let (_, ships, _) = priced
+        .iter()
+        .find(|(tier, _, _)| *tier == Rerank::default())
+        .expect("the shipped tier is one of those measured");
+    for group in ships.keys() {
+        println!("\n  {group}");
+        println!(
+            "  tier        nDCG@10   against {}",
+            Rerank::default().name()
+        );
+        println!("  ----------------------------------------------------------------------");
+        for (tier, groups, _) in &priced {
+            let scores = &groups[group];
+            let against = if *tier == Rerank::default() {
+                String::new()
+            } else {
+                statistics::compare(&ships[group].per_query, &scores.per_query).to_string()
+            };
+            println!(
+                "  {:<10}  {:>7.4}   {against}",
+                tier.name(),
+                scores.mean_ndcg()
+            );
+        }
+    }
+    println!();
+    for (tier, _, per_query) in &priced {
+        println!("  {:<10}  {per_query:.0} ms a query", tier.name());
+    }
+    println!(
+        "  timed in a test harness, so read these against each other and not as a product figure\n"
+    );
+}
+
 /// Which candidates the reranker may move, priced rule against rule.
 ///
 /// **What prompted it.** The relational group scores lower through the shipped
@@ -596,6 +665,7 @@ async fn live_edges(engine: &Engine) -> Vec<(String, i64)> {
     .expect("count the live edges")
 }
 
+/// Each channel alone, and each one removed, on the corpus this project wrote.
 async fn report_channels(engine: &Engine, queries: &[Query]) {
     use pamin_core::Channel;
 
