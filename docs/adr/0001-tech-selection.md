@@ -841,11 +841,46 @@ lines above already said so. That sentence was the one place a premise failure
 was laundered into a verdict about the design, and every later reading of the
 graph channel in this file rested on it.
 
-What is left is one sample: the LOCOMO `pamin-ledger` arm — built expressly so
-the graph could reach the rest of an exchange — scored 0.523 against 0.518,
-twenty-one discordant questions against twenty, `p = 1.000`. So the honest
-position is that a graph channel has never been shown to pay here, on one small
-sample, for a reason nothing has isolated.
+**Measured now, on a corpus built to give it a premise.** The `relational`
+group adds ten pairs of memories whose answering half is named by a phrase the
+other half's prose contains, so mention derivation fires and that project holds
+eleven live edges — the first non-empty graph anything here has ever fused.
+Fusion alone, nDCG@10, sweeping the weight:
+
+| weight | cross-lingual | lexical | monolingual | relational |
+| --- | --- | --- | --- | --- |
+| 0.00 | **0.7903** | 1.0000 | 0.9940 | 0.5237 |
+| 0.15 | 0.7853 | 1.0000 | 0.9940 | 0.5517 |
+| 0.30 | 0.7746 | 1.0000 | 0.9940 | 0.6295 |
+| 0.50 | 0.7415 | 1.0000 | 0.9821 | 0.6583 |
+| 1.00 — *was the default* | 0.5109 | 0.9885 | 0.9246 | **0.6910** |
+
+**So the channel pays, and the weight it was paying at was catastrophic.** At
+1.0 removing it is worth **+0.2794** on the cross-lingual group — forty wins to
+nothing, `p = 0.0001`, the largest single effect measured anywhere in this
+project — and +0.0694 on the monolingual group, against the 0.1673 it earns on
+the twenty queries written to favour it. The whole search path at 1.0 fails
+this repository's own guard: 0.9246 on the monolingual group against a 0.9400
+floor. Three tenths clears every floor and is the knee of the trade, and
+`pamin_core::fusion` carries the arithmetic.
+
+The weight was never chosen. Every unnamed channel defaults to 1.0 and this one
+was simply never named, so it voted as loudly as the dense channel on the
+strength of a single derived mention — and nothing could see that, because
+every corpus handed it an empty graph. **That is what a premise failure costs.**
+It does not produce a wrong number; it produces no number, for as long as
+nobody notices that the zero is the corpus answering.
+
+The other sample still stands and still says nothing: the LOCOMO `pamin-ledger`
+arm — built expressly so the graph could reach the rest of an exchange — scored
+0.523 against 0.518, twenty-one discordant questions against twenty,
+`p = 1.000`.
+
+Read the `relational` figures as what they are. Twenty queries is a collapse
+detector, not a regression detector, and they were written in this repository
+*to make this channel look useful* — which is why the weight was chosen from
+the knee of the trade rather than from a four-group mean that would have let
+the purpose-built group pick its own weight.
 
 Against that, three differences in their design are specific enough to test:
 
