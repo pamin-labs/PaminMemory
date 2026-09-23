@@ -647,6 +647,14 @@ async fn search() {
         return;
     }
 
+    // `RESHAPE`: the index reshaped in place, the way the server does it when
+    // idle, with every question asked before and after. Leaves the project in
+    // the new shape, which is the point: the next run measures that one.
+    if std::env::var("RESHAPE").is_ok() {
+        reshape_in_place(&engine, &corpus).await;
+        return;
+    }
+
     write_corpus(&engine, &corpus).await;
 
     // Every arm asserts its own premise. A vector channel over an index with
@@ -1246,6 +1254,84 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
     // SAFETY: glibc's own function, no arguments that point anywhere.
     unsafe { malloc_trim(0) };
     memory::Resident::now().print("after malloc_trim(0)");
+}
+
+/// Reshapes the index while it is open, and asks every question before and
+/// after -- fused and through the shipped reranker -- so what the new shape
+/// costs in accuracy is a paired comparison rather than a claim.
+///
+/// The premise is asserted: the index holds the whole corpus, is worth
+/// reshaping before and is not after, and holds every document afterwards.
+async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
+    assert_eq!(
+        engine.indexed_documents().expect("count the documents") as usize,
+        corpus.passages.len(),
+        "the index does not hold the whole corpus"
+    );
+    let before = engine.segmentation().expect("the shape");
+    assert!(
+        before.is_worth_rebuilding(),
+        "{} segments where {} are wanted is not worth reshaping, so this would measure nothing",
+        before.segments(),
+        before.wanted()
+    );
+
+    let routes = [
+        ("fused", Route::Fused(Fusion::default())),
+        ("shipped", Route::Shipped(Rerank::default())),
+    ];
+    let mut earlier = Vec::new();
+    for (_, route) in &routes {
+        earlier.push(run(engine, corpus, clone_route(route)).await);
+    }
+
+    let started = std::time::Instant::now();
+    let reshaped = engine
+        .reshape()
+        .await
+        .expect("reshape")
+        .expect("a reshape was worth doing");
+    println!(
+        "\n  reshaped {} segments into {} in {:.0} s: {} copied, {} caught up",
+        reshaped.before.segments(),
+        reshaped.after.segments(),
+        started.elapsed().as_secs_f64(),
+        reshaped.copied,
+        reshaped.caught_up
+    );
+    assert_eq!(
+        engine.indexed_documents().expect("count the documents") as usize,
+        corpus.passages.len(),
+        "the reshaped index lost documents"
+    );
+    assert!(
+        !engine
+            .segmentation()
+            .expect("the shape")
+            .is_worth_rebuilding()
+    );
+
+    println!(
+        "  route      nDCG@{NDCG_AT} before   after    recall@{RECALL_AT} before   after   paired"
+    );
+    for ((name, route), was) in routes.iter().zip(&earlier) {
+        let now = run(engine, corpus, clone_route(route)).await;
+        println!(
+            "  {name:<8}   {:>13.4}  {:>6.4}   {:>15.4}  {:>6.4}   {}",
+            was.mean_ndcg(),
+            now.mean_ndcg(),
+            was.mean_recall(),
+            now.mean_recall(),
+            statistics::compare(&was.per_query, &now.per_query)
+        );
+    }
+}
+
+fn clone_route(route: &Route) -> Route {
+    match route {
+        Route::Shipped(rerank) => Route::Shipped(*rerank),
+        Route::Fused(fusion) => Route::Fused(fusion.clone()),
+    }
 }
 
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
