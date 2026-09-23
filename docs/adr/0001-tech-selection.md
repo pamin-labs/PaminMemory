@@ -1152,6 +1152,61 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 
 Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half.
 
+### The embedder, surveyed again: one candidate, and the leaderboard would have picked wrong
+
+Surveyed in September 2026 against the models released since BGE-M3, with the
+licence read from each card's metadata. Scores are recomputed from the
+per-task files in `embeddings-benchmark/results`; "cross" averages the subsets
+whose query and document languages differ.
+
+| model | licence | MMTEB retrieval | MIRACL-HN | MLQA cross | Belebele cross |
+| --- | --- | --- | --- | --- | --- |
+| BGE-M3 (shipped) | MIT | 54.6 | **69.6** | 74.7 | 77.0 |
+| Harrier-0.6B (Microsoft, 2026) | MIT | **70.8** | 66.4 | 72.7 | 77.0 |
+| pplx-embed-v1-0.6b (Perplexity, 2026) | MIT | 65.4 | 68.6 | **79.1** | 72.7 |
+| granite-embedding-311m-multilingual-r2 | Apache-2.0 | 65.2 | 59.8 | 66.9 | 64.8 |
+| Qwen3-Embedding-0.6B | Apache-2.0 | 64.6 | 61.2 | 72.8 | 67.6 |
+| multilingual-e5-large-instruct | MIT | 57.1 | 57.7 | 76.0 | **79.9** |
+
+EmbeddingGemma (Gemma terms) and jina v3/v5 (CC-BY-NC-4.0) were excluded on
+licence. BGE-M3's low retrieval average is reasoning, English and long-context
+tasks; on the four multilingual Wikipedia tasks it is still the best under a
+billion parameters.
+
+Then measured offline, vector channel alone, exact cosine, one text per call
+as the product embeds, against BGE-M3's int8 export, nDCG@10, paired:
+
+| model | XQuAD-R cross | XQuAD-R same | MuSiQue | own, cross (43) |
+| --- | --- | --- | --- | --- |
+| BGE-M3 int8 | 0.6348 | 0.6725 | 0.6262 | 0.8275 |
+| pplx-embed-v1-0.6b, own int8 | **+0.0251**, p = 0.0002 | **+0.0457**, p = 0.0001 | **+0.0647**, p = 0.0001 | +0.050, p = 0.054 |
+| Harrier-0.6B, own int8 | **−0.378** | +0.185 | | −0.163 |
+| multilingual-e5-large-instruct | **−0.435** | +0.200 | −0.030 | −0.289 |
+| granite-311m-r2, IBM's int8 | −0.145 | −0.050 | −0.002 | +0.023 |
+
+The pipeline reproduces the engine's own BGE-M3 figures within 0.0013 on three
+arms and 0.0062 on XQuAD-R same-language, where the int8 export itself moves by
+that much with the runtime's optimisation level (cosine 0.985 between builds).
+
+**The two highest-ranked models collapse across languages**, and MTEB cannot
+see it: it scores each language pair against a corpus in one language, while a
+memory store holds all its languages in one pool. Harrier and mE5 rank a
+same-language non-answer above the answer in another language -- two thirds
+and three quarters of their cross-lingual top ten are in the query's own
+language, where a language-blind ranking would put one in eleven -- and
+removing their query instructions does not change it.
+
+**pplx-embed-v1-0.6b is the only candidate worth an end-to-end trial.** Its
+gains hold on every corpus, but four things stand between that and a default:
+it was measured on the vector channel alone, and fusion and the reranker
+already recover part of what a better vector buys; its published 8-bit export
+runs 8-10x slower on this CPU, so shipping it means shipping a quantization of
+our own (dynamic int8 on every layer but `down_proj`, cosine 0.995 to fp32,
+against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
+(p = 0.002, surviving correction over eleven languages); and a query costs
+about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
+to be re-embedded.
+
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
