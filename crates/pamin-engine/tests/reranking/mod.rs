@@ -19,7 +19,7 @@
 //! engine's order position for position; only then is another rule's figure a
 //! comparison rather than a reconstruction error.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::SearchHit;
@@ -66,6 +66,35 @@ pub fn rules() -> Vec<(String, Rule)> {
 /// Which row of [`rules`] ships.
 pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
     rules.iter().position(|(_, rule)| *rule == Rule::Substitute)
+}
+
+/// Every rule against the one that ships, group by group and as one
+/// cross-validated choice. `measured` is indexed like [`rules`].
+pub fn report(title: &str, measured: &[BTreeMap<String, crate::scoring::Scores>]) {
+    let rules = rules();
+    let ship = shipped(&rules);
+    let shipped = &measured[ship.expect("the shipped rule is measured")];
+    println!("\n  rules for the reranker's scores, {title}");
+    for (group, scores) in shipped {
+        crate::channels::sweep_table(
+            group,
+            scores,
+            &rules,
+            &measured
+                .iter()
+                .map(|row| row.get(group))
+                .collect::<Vec<_>>(),
+        );
+    }
+    crate::channels::cross_validated(
+        title,
+        &shipped.keys().map(String::as_str).collect::<Vec<_>>(),
+        shipped,
+        &rules,
+        ship,
+        measured,
+    );
+    println!();
 }
 
 /// One query's fused order, which positions the model could move, and what it

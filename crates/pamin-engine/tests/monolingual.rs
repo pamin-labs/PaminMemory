@@ -65,12 +65,14 @@
 //! | `MIRACL_MAX_DOCS` | cap the corpus, for checking the harness runs. **Not the benchmark**: the floors are not asserted and the number is not comparable with anyone's |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
 //! | `TIERS` | run all three rerank tiers instead of the default |
+//! | `RERANK_RULES` | price blending the shipped tier's scores with fusion's, from one run |
 //! | `SWEEP` | run fusion settings instead of the shipped path |
 //!
 //! The dataset is not vendored. The corpus is Wikipedia text under
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
 mod channels;
+mod reranking;
 mod scoring;
 mod statistics;
 
@@ -736,6 +738,13 @@ async fn search() {
         return;
     }
 
+    // `RERANK_RULES`: other rules for using the shipped tier's scores, priced
+    // from one shipped run. See `reranking`.
+    if std::env::var("RERANK_RULES").is_ok() {
+        rerank_rules(&engine, &corpus, &named).await;
+        return;
+    }
+
     if std::env::var("TIERS").is_ok() {
         let mut priced: Vec<(Rerank, Scores)> = Vec::new();
         for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
@@ -876,6 +885,32 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
         });
     }
     scores
+}
+
+/// Every rule in `reranking::rules` over the shipped tier's own scores.
+async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
+    use std::collections::BTreeMap;
+
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    let tier = Rerank::default();
+    let rules = reranking::rules();
+    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    for query in &corpus.queries {
+        let hits = engine
+            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        let replayed = reranking::replay(&hits, tier);
+        for ((_, rule), into) in rules.iter().zip(&mut measured) {
+            into.entry(GROUP.to_string()).or_default().add(
+                &replayed.order(*rule),
+                query.relevant.len(),
+                |topic| query.relevant.contains(topic),
+            );
+        }
+    }
+    reranking::report(&format!("MIRACL, {} tier, {named}", tier.name()), &measured);
 }
 
 /// The channel diagnostic: each one alone, each one removed, and how far the
