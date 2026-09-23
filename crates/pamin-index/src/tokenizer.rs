@@ -9,9 +9,9 @@
 //! bare ONNX Runtime session over a prepared copy holds about 12 MiB.
 //!
 //! Every model that runs through `crate::encoder` uses that vocabulary. The
-//! `accurate`, `balanced` and `noncommercial` rerankers' `tokenizer.json`
-//! describe the same model as BGE-M3's -- every piece and every score bit for
-//! bit, the same unknown-token id, no byte fallback -- and the `fast`
+//! `accurate` reranker's `tokenizer.json` describes the same model as
+//! BGE-M3's -- every piece and every score bit for bit, the same
+//! unknown-token id, no byte fallback -- and the `fast`
 //! reranker's differs only in leaving the byte-fallback flag unstated. What
 //! they differ in is around the model: the `accurate` reranker strips trailing
 //! whitespace and replaces a run of spaces with `▁` where the embedder

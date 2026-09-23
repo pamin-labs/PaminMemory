@@ -637,8 +637,8 @@ originals.
 tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
 vocabulary, and loading it adds 280 MiB anonymous each time -- measured by
 loading BGE-M3's `tokenizer.json` and then the `accurate` reranker's in one
-process, 280 MiB for each. The `accurate`, `balanced` and `noncommercial`
-rerankers describe exactly BGE-M3's model, every piece and score bit for bit, and `fast`
+process, 280 MiB for each. The `accurate`
+reranker describes exactly BGE-M3's model, every piece and score bit for bit, and `fast`
 differs only in leaving a default flag unstated, so a loaded model now finds
 one already built rather than building its own; see
 `crates/pamin-index/src/tokenizer.rs`.
@@ -658,8 +658,7 @@ measurement, in MiB:
 Every vector and every score is bit-identical: 18,432 embedding values over
 eighteen texts and 65 `accurate` scores, over eight scripts, runs of spaces,
 trailing and leading spaces, empty texts and one past both length limits --
-and 65 scores each for `balanced`, `noncommercial` and `fast`, from their
-downloads. Before the trim the gap is wider than one vocabulary; `fastembed`'s
+and 65 `fast` scores, from its download. Before the trim the gap is wider than one vocabulary; `fastembed`'s
 loader clones each tokenizer it configures and drops the original, which would
 leave that much freed and not yet returned, but that was not measured
 separately. Twenty rerank passes of sixteen pairs of about 200 tokens showed no speed
