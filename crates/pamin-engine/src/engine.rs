@@ -12,7 +12,9 @@ use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
     Scored, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
-use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, Rerank, Reranker};
+use pamin_index::{
+    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
+};
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
@@ -155,6 +157,9 @@ pub struct Engine {
     ///
     /// [`Engine::index`]: Self::index
     index: Arc<Mutex<Arc<dyn Projection + Send + Sync>>>,
+    /// The index a rebuild replaced, kept until [`reindex`](Self::reindex)
+    /// has reused the vectors it holds. See [`Previous`].
+    previous: Arc<Mutex<Option<Previous>>>,
     /// Index writes that are applied but not yet on disk, with their claims.
     ///
     /// The projection buffers a write in memory and a query reads that buffer,
@@ -582,13 +587,18 @@ impl Engine {
         // to be in hand before the index is opened.
         let documents = repository::topic_count(database.pool(), project.id).await?;
 
-        let index = off_the_runtime(|| {
-            if discard {
-                ProjectionIndex::discard(&dir)?;
+        let (index, previous) = off_the_runtime(|| {
+            // Set aside rather than deleted, so the rebuild can take the
+            // vectors it still holds instead of embedding every memory again.
+            let previous = if discard {
+                let previous = Previous::set_aside(&dir, profile)?;
                 // A rebuild is also the migration off the shared layout, which
                 // is what the error about it tells the caller to run.
                 ProjectionIndex::discard(&legacy)?;
-            }
+                previous
+            } else {
+                None
+            };
 
             let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
             // The model is not loaded here. It was, and that made opening an
@@ -596,7 +606,10 @@ impl Engine {
             // is that a cold profile's download used to surface at open rather
             // than at the first embedding; what is gained is every command
             // that does not embed.
-            Ok::<_, pamin_index::IndexError>(Arc::new(index) as Arc<dyn Projection + Send + Sync>)
+            Ok::<_, pamin_index::IndexError>((
+                Arc::new(index) as Arc<dyn Projection + Send + Sync>,
+                previous,
+            ))
         })?;
 
         Ok(Self {
@@ -610,6 +623,7 @@ impl Engine {
             widest_name: Arc::default(),
             unflushed: Arc::default(),
             index: Arc::new(Mutex::new(index)),
+            previous: Arc::new(Mutex::new(previous)),
             embedder: std::sync::OnceLock::new(),
             profile,
             models: models.clone(),
@@ -1657,7 +1671,28 @@ impl Engine {
             repository::all_current_topic_states(self.database.pool(), self.project).await?;
         let passages = self.passages(&states).await?;
 
-        off_the_runtime(|| {
+        let previous = self
+            .previous
+            .lock()
+            .expect("the set-aside index lock is poisoned")
+            .take();
+
+        let reused = off_the_runtime(|| {
+            fn pairs(batch: &[TopicState]) -> Vec<(TopicId, &str)> {
+                batch
+                    .iter()
+                    .map(|state| (state.topic_id, state.content.as_str()))
+                    .collect()
+            }
+            // Counted before any lock is taken, so a rebuild that can reuse
+            // every vector never loads the model at all.
+            let mut lent = 0;
+            if let Some(previous) = &previous {
+                for batch in states.chunks(REINDEX_BATCH) {
+                    lent += previous.lends(&pairs(batch))?;
+                }
+            }
+
             // Both locks, in the order every other caller takes them, and held
             // for the whole rebuild. Taking the index first here would invert
             // the order against `search` and deadlock: a rebuild holding the
@@ -1665,27 +1700,52 @@ impl Engine {
             // and wanting the index. Holding both throughout also matches what
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
-            let mut embedder = self.embedding()?;
+            let mut embedder = if lent < states.len() {
+                Some(self.embedding()?)
+            } else {
+                None
+            };
             let index = self.index();
 
             for (batch, batch_passages) in states
                 .chunks(REINDEX_BATCH)
                 .zip(passages.chunks(REINDEX_BATCH))
             {
-                // One forward pass over the batch rather than one per state.
-                // Measured on the smallest profile, thirty-two texts together
-                // take 190 ms against 409 ms one at a time -- the model is the
-                // same work either way, and what the batch saves is everything
-                // around it. A rebuild is the one path that always has a batch
-                // in hand.
-                let texts: Vec<&str> = batch_passages.iter().map(String::as_str).collect();
-                let embeddings = embedder.embed_passages(&texts)?;
+                let mut vectors = match &previous {
+                    Some(previous) => previous.vectors(&pairs(batch))?,
+                    None => vec![None; batch.len()],
+                };
+
+                // One forward pass over what the old index could not supply,
+                // rather than one per state. Measured on the smallest profile,
+                // thirty-two texts together take 190 ms against 409 ms one at
+                // a time -- the model is the same work either way, and what
+                // the batch saves is everything around it.
+                let missing: Vec<usize> = (0..batch.len())
+                    .filter(|at| vectors[*at].is_none())
+                    .collect();
+                if !missing.is_empty() {
+                    let texts: Vec<&str> = missing
+                        .iter()
+                        .map(|at| batch_passages[*at].as_str())
+                        .collect();
+                    let embedder = embedder
+                        .as_mut()
+                        .expect("the model is loaded whenever a vector is missing");
+                    for (at, embedding) in missing.iter().zip(embedder.embed_passages(&texts)?) {
+                        vectors[*at] = Some(embedding);
+                    }
+                }
 
                 let documents: Vec<_> = batch
                     .iter()
-                    .zip(&embeddings)
+                    .zip(&vectors)
                     .map(|(state, embedding)| {
-                        (state.topic_id, state.content.as_str(), embedding.as_slice())
+                        (
+                            state.topic_id,
+                            state.content.as_str(),
+                            embedding.as_deref().expect("every vector is filled above"),
+                        )
                     })
                     .collect();
 
@@ -1696,11 +1756,16 @@ impl Engine {
             // clearly worth its cost: everything has just been written, and
             // without this the graph the index was configured for does not
             // exist and every vector query scans the buffer instead.
-            index.optimize()
+            index.optimize()?;
+            if let Some(previous) = previous {
+                previous.discard()?;
+            }
+            Ok::<_, pamin_index::IndexError>(lent)
         })?;
 
         Ok(Rebuilt {
             indexed: states.len(),
+            reused,
             repaired_pointers,
             names,
         })
@@ -1777,6 +1842,9 @@ pub struct Recorded {
 pub struct Rebuilt {
     /// Topics written to the projection, which is one document each.
     pub indexed: usize,
+    /// Of those, how many kept the vector the replaced index already held
+    /// rather than being embedded again. See [`Previous`].
+    pub reused: usize,
     /// Topics whose current-state pointer disagreed with the ledger.
     ///
     /// Expected to be zero: both writers move it under the topic's lock in the

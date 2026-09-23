@@ -16,8 +16,8 @@ pub use embedding::{Embedder, Profile};
 pub use error::{IndexError, Result};
 pub use inference::Device;
 pub use projection::{
-    Access, Passage, Projection, ProjectionIndex, Segmentation, VectorStorage, is_fragmented,
-    segment_documents, vector_index_lags,
+    Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, VectorStorage,
+    is_fragmented, segment_documents, vector_index_lags,
 };
 pub use reranking::{Licence, Ranked, Rerank, Reranked, Reranker};
 pub use segmentation::{Segmenter, detect_language};

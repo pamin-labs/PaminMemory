@@ -10,6 +10,7 @@
 //! list, weighting its members twice, and the per-channel ranks every result has
 //! to report would already be gone.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
@@ -676,74 +677,46 @@ impl ProjectionIndex {
         }
 
         std::fs::create_dir_all(dir)?;
-        let marker = dir.join("profile");
         let storage = vector_storage();
-        let mut passage = PASSAGE;
-        match std::fs::read_to_string(&marker) {
-            Ok(recorded) => {
-                let recorded = recorded.trim();
-                let mut lines = recorded.lines();
-                let model = lines.next().unwrap_or_default();
-                let grain = lines.next().unwrap_or_default();
-                // A marker with no storage line was written before the storage
-                // could be anything but `fp32`, which is what it therefore is.
-                // The same shape as the grain line above, and for the same
-                // reason: an existing workspace must be told to reindex rather
-                // than fail to open.
-                let indexed_storage = lines
-                    .next()
-                    .and_then(VectorStorage::parse)
-                    .unwrap_or(VectorStorage::Fp32);
-                // No line: built before names were embedded, from content.
-                passage = lines
-                    .next()
-                    .and_then(Passage::parse)
-                    .unwrap_or(Passage::Content);
-                if indexed_storage != storage {
+        let passage = match Marker::read(dir)? {
+            Some(recorded) => {
+                if recorded.storage != storage {
                     return Err(IndexError::VectorStorageMismatch {
-                        indexed: indexed_storage.label().to_string(),
+                        indexed: recorded.storage.label().to_string(),
                         requested: storage.label().to_string(),
                     });
                 }
-
-                if model.trim() != profile.model_id() {
+                if recorded.model != profile.model_id() {
                     return Err(IndexError::ProfileMismatch {
-                        indexed: model.trim().to_string(),
+                        indexed: recorded.model,
                         requested: profile.model_id().to_string(),
                     });
                 }
-                if grain.trim() != DOCUMENT_GRAIN {
+                if recorded.grain != DOCUMENT_GRAIN {
                     return Err(IndexError::GrainMismatch {
                         // A marker with no grain line was written before there
                         // was one, and everything written then was keyed by
                         // state.
-                        indexed: if grain.trim().is_empty() {
+                        indexed: if recorded.grain.is_empty() {
                             "topic state".to_string()
                         } else {
-                            grain.trim().to_string()
+                            recorded.grain
                         },
                         expected: DOCUMENT_GRAIN.to_string(),
                     });
                 }
+                recorded.passage
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            None => {
                 // What was actually built, not what was asked for. The two are
                 // the same today; they stop being the same the moment a
                 // storage needs a capability the machine may not have, and a
                 // marker recording the request would then be read as a
                 // description of the index -- ADR 0001's silent wrong answer.
-                std::fs::write(
-                    &marker,
-                    format!(
-                        "{}\n{DOCUMENT_GRAIN}\n{}\n{}",
-                        profile.model_id(),
-                        storage.label(),
-                        PASSAGE.label()
-                    ),
-                )?;
+                Marker::current(profile).write(dir)?;
+                PASSAGE
             }
-            Err(error) => return Err(error.into()),
-        }
+        };
 
         let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, documents)?;
         index.passage = passage;
@@ -875,6 +848,183 @@ impl ProjectionIndex {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+/// What an index records it was built for, in its `profile` file.
+///
+/// Four lines: the embedding model, what a document stands for, how vectors
+/// are stored, and what text they were embedded from. A line an older index
+/// does not have reads as what that index was built with, so an existing
+/// workspace opens unchanged: no storage line is `fp32`, no passage line is
+/// content alone.
+struct Marker {
+    model: String,
+    grain: String,
+    storage: VectorStorage,
+    passage: Passage,
+}
+
+impl Marker {
+    const FILE: &str = "profile";
+
+    /// What an index built now, for this profile, is.
+    fn current(profile: Profile) -> Self {
+        Self {
+            model: profile.model_id().to_string(),
+            grain: DOCUMENT_GRAIN.to_string(),
+            storage: vector_storage(),
+            passage: PASSAGE,
+        }
+    }
+
+    /// The marker in `dir`, or `None` for an index that has none yet.
+    fn read(dir: &Path) -> Result<Option<Self>> {
+        let recorded = match std::fs::read_to_string(dir.join(Self::FILE)) {
+            Ok(recorded) => recorded,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut lines = recorded.trim().lines();
+        Ok(Some(Self {
+            model: lines.next().unwrap_or_default().trim().to_string(),
+            grain: lines.next().unwrap_or_default().trim().to_string(),
+            storage: lines
+                .next()
+                .and_then(VectorStorage::parse)
+                .unwrap_or(VectorStorage::Fp32),
+            passage: lines
+                .next()
+                .and_then(Passage::parse)
+                .unwrap_or(Passage::Content),
+        }))
+    }
+
+    fn write(&self, dir: &Path) -> Result<()> {
+        std::fs::write(
+            dir.join(Self::FILE),
+            format!(
+                "{}\n{}\n{}\n{}",
+                self.model,
+                self.grain,
+                self.storage.label(),
+                self.passage.label()
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Whether a vector this index holds is the vector an index built now
+    /// would compute for the same text: same model, same storage, same
+    /// encoding, same keys.
+    fn matches(&self, other: &Self) -> bool {
+        self.model == other.model
+            && self.grain == other.grain
+            && self.storage == other.storage
+            && self.passage == other.passage
+    }
+}
+
+/// A project's index, moved aside by a rebuild so the rebuild can reuse the
+/// vectors it already holds.
+///
+/// A rebuild restates the index from the ledger, and the ledger stays the
+/// authority: every topic's current state is read from it and written again.
+/// What the old index can still supply is the one expensive part, the vector,
+/// and only where it is certainly the vector the rebuild would compute -- the
+/// stored text is the state's text exactly, and the marker says the same
+/// model, storage and encoding produced it. A topic's name is fixed for its
+/// life, so under the `name: content` encoding the same content is the same
+/// passage.
+///
+/// That turns reshaping an index into copying it. A project grown from empty
+/// holds one segment per two thousand documents -- 66 over 131,924 -- and
+/// every segment keeps its own full-text store resident: opening fifty thousand
+/// documents in 25 segments costs 1,292 MB where 4 cost 308 MB. A rebuild that
+/// had to embed every memory again took hours at that size and needed the
+/// model; one that reuses what is stored takes neither.
+pub struct Previous {
+    index: ProjectionIndex,
+    dir: std::path::PathBuf,
+}
+
+impl Previous {
+    /// Moves the index in `dir` aside and opens it to lend its vectors.
+    ///
+    /// `None`, with the directory discarded, when there is no index or when
+    /// its vectors were computed some other way than an index built now would
+    /// compute them. A directory left aside by a rebuild that did not finish is
+    /// discarded first: what is in `dir` is then that rebuild's partial output
+    /// or its finished one, and the ledger reproduces either.
+    pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
+        let aside = dir.with_extension("previous");
+        ProjectionIndex::discard(&aside)?;
+        let lends =
+            Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&Marker::current(profile)));
+        if !lends {
+            ProjectionIndex::discard(dir)?;
+            return Ok(None);
+        }
+        std::fs::rename(dir, &aside)?;
+        let mut index = ProjectionIndex::open_with_dimensions(
+            &aside,
+            profile.dimensions(),
+            Access::ReadOnly,
+            0,
+        )?;
+        index.passage = PASSAGE;
+        Ok(Some(Self { index, dir: aside }))
+    }
+
+    /// For each topic, its stored vector if the text stored with it is
+    /// exactly `content`, and `None` otherwise.
+    pub fn vectors(&self, wanted: &[(TopicId, &str)]) -> Result<Vec<Option<Vec<f32>>>> {
+        self.lend(wanted, true)
+    }
+
+    /// How many of these topics [`vectors`](Self::vectors) would supply,
+    /// without reading a vector.
+    pub fn lends(&self, wanted: &[(TopicId, &str)]) -> Result<usize> {
+        Ok(self.lend(wanted, false)?.iter().flatten().count())
+    }
+
+    fn lend(&self, wanted: &[(TopicId, &str)], vectors: bool) -> Result<Vec<Option<Vec<f32>>>> {
+        let keys: Vec<String> = wanted.iter().map(|(topic, _)| topic.to_string()).collect();
+        let borrowed: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let mut stored: HashMap<String, Doc> = HashMap::with_capacity(wanted.len());
+        for chunk in borrowed.chunks(WRITE_BATCH) {
+            for doc in
+                self.index
+                    .collection
+                    .fetch_with_options(chunk, Some(&[FIELD_NGRAM]), vectors)?
+            {
+                if let Some(key) = doc.get_pk() {
+                    stored.insert(key.to_string(), doc);
+                }
+            }
+        }
+        keys.iter()
+            .zip(wanted)
+            .map(|(key, (_, content))| {
+                let Some(doc) = stored.get(key) else {
+                    return Ok(None);
+                };
+                if doc.get_string(FIELD_NGRAM)?.as_deref() != Some(*content) {
+                    return Ok(None);
+                }
+                if !vectors {
+                    return Ok(Some(Vec::new()));
+                }
+                Ok(doc.get_vector_f32(FIELD_VECTOR)?)
+            })
+            .collect()
+    }
+
+    /// Deletes the set-aside index, once the rebuild no longer needs it.
+    pub fn discard(self) -> Result<()> {
+        let Self { index, dir } = self;
+        drop(index);
+        ProjectionIndex::discard(&dir)
     }
 }
 
