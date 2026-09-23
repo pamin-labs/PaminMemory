@@ -737,6 +737,7 @@ async fn search() {
     }
 
     if std::env::var("TIERS").is_ok() {
+        let mut priced: Vec<(Rerank, Scores)> = Vec::new();
         for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
             let started = std::time::Instant::now();
             let scores = run(&engine, &corpus, Route::Shipped(tier)).await;
@@ -746,6 +747,30 @@ async fn search() {
                 started.elapsed().as_secs_f64() * 1000.0 / corpus.queries.len() as f64,
             );
             report_reranking(&engine, tier, corpus.queries.len());
+            priced.push((tier, scores));
+        }
+
+        // Paired, against `off` and against the tier that ships. The means
+        // above cannot say whether one tier beats another: that needs the two
+        // compared query by query, and this corpus is the one where it matters
+        // most -- real questions, judged by people, nothing parallel -- and
+        // where reranking at the default tier has been a net loss.
+        for against in [Rerank::Off, Rerank::default()] {
+            let Some((_, base)) = priced.iter().find(|(tier, _)| *tier == against) else {
+                continue;
+            };
+            println!("\n  every tier against {}, {named}", against.name());
+            for (tier, scores) in &priced {
+                if *tier == against {
+                    continue;
+                }
+                println!(
+                    "  {:<10}   {:>7.4}   {}",
+                    tier.name(),
+                    scores.mean_ndcg(),
+                    statistics::compare(&base.per_query, &scores.per_query)
+                );
+            }
         }
         return;
     }
