@@ -86,16 +86,32 @@ const NGRAM_WEIGHT: f32 = 0.125;
 /// whole search path at 1.0 fails this repository's own `monolingual` floor:
 /// 0.9246 against 0.9400.
 ///
-/// Three tenths is the knee rather than a preference. From 0.15 to 0.30 the
-/// relational group gains 0.0778 and the cross-lingual group loses 0.0157;
-/// from 0.30 to 0.50 it gains 0.0288 and loses 0.0331. It is the last point
-/// where the channel's own group gains more than the others give up.
+/// **Why three tenths, read the way the evidence can support.** An earlier
+/// version of this note called 0.30 "the knee" of that table, and the knee was
+/// read off increments of 0.03 to 0.08 on a twenty-query group whose smallest
+/// detectable difference, from its own paired differences, is about 0.08. It
+/// was steering by noise. Priced again as one family -- Westfall-Young across
+/// every row of the sweep, against 0.30 -- the table says three things and no
+/// more:
+///
+/// - **1.0 is wrong.** Cross-lingual -0.2140 and monolingual -0.0694 against
+///   0.30, family-adjusted `p = 0.0001` and `0.0003`; its relational advantage
+///   is not detectable, `p = 0.18`.
+/// - **0.5 is worse on cross-lingual**, -0.0305 at family `p = 0.0027`, and its
+///   relational gain is below what twenty queries can see.
+/// - **0.15 and 0.30 cannot be told apart**, and zero trades a cross-lingual
+///   gain of 0.0157 (`p = 0.043`) for a relational loss of 0.1058 (`p = 0.007`).
+///
+/// So the choice is anywhere in `[0.15, 0.30]`, and 0.30 is kept because the
+/// sweep has no evidence to move it -- which is the honest description of most
+/// constants in this file. Cross-validated over five folds, choosing from the
+/// whole sweep by the mean over groups picked no other graph weight in any
+/// fold.
 ///
 /// The number is not read off the four-group mean, and the reason is a bias
 /// this weight would otherwise be chosen by: the relational group is twenty
 /// queries written in this repository *to make the graph channel look useful*,
-/// and the other 137 were written before that intent existed. Weighting them
-/// equally would let the purpose-built group pick its own weight.
+/// and the other 137 were written before that intent existed.
 ///
 /// The only comparable published system (`arXiv:2609.01617`) weights its graph
 /// channel at 0.15 against a dense 0.50, which is the same order and was the

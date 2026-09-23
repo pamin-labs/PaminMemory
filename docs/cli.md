@@ -571,7 +571,9 @@ with edges in it — every evaluation corpus here derived none, so the channel
 returned nothing and its weight could not matter. Given eleven edges to walk it
 turns out to cost 0.2794 nDCG@10 on a cross-lingual group at 1.0, against the
 0.1673 it earns on queries whose answers are only reachable across an edge.
-Three tenths is the knee of that trade; `pamin_core::fusion` carries the sweep.
+1.0 and 0.5 are significantly worse on the cross-lingual group once the whole
+sweep is priced as one family, and 0.15 and 0.30 cannot be told apart; 0.30 is
+kept because nothing supports moving it. `pamin_core::fusion` carries the sweep.
 
 Its scores are also the only ones fusion does *not* rescale, and for the reason
 this table's own note gives about comparability. A path strength is

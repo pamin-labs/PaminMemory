@@ -186,7 +186,8 @@ this repository's own 0.9400 floor and failed it. Against that it earns 0.1673
 on the twenty queries built to need it.
 
 The weight was never chosen: every unnamed channel defaults to 1.0 and this one
-was never named. It is three tenths now, from the knee of that trade, and every
+was never named. It is three tenths now -- 1.0 and 0.5 are significantly worse
+once the sweep is priced as one family, and 0.15 cannot be told apart -- and every
 floor clears. The sweep is in `pamin_core::fusion`.
 
 ### What the fusion function itself is worth
