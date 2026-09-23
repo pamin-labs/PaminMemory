@@ -46,6 +46,7 @@
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
+//! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
 
 mod channels;
 mod reranking;
@@ -287,6 +288,11 @@ async fn search_answers_questions_that_take_several_steps() {
         "mention derivation built no edges, so nothing here can measure the graph channel"
     );
 
+    if std::env::var("ENTITIES").is_ok() {
+        entities(&engine, &workspace, &corpus, &project, profile, &named).await;
+        return;
+    }
+
     if std::env::var("CHANNELS").is_ok() {
         let mut diagnosis = channels::Diagnosis::default();
         for query in &corpus.queries {
@@ -417,4 +423,268 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.memories.len());
     }
+}
+
+/// Edges from the names a memory's text shares with another's, priced against
+/// edges from topic names alone.
+///
+/// **Why.** Mention derivation links two memories only when one's *topic name*
+/// occurs in the other's text, and on this corpus that connects 39% of the
+/// supporting pairs a question needs: the bridge -- "Steve Hillage", between
+/// an album and his spouse -- is usually named in both paragraphs and titled
+/// in neither. Sharing a capitalised name connects 72% of them, and sharing a
+/// *rare* one (in at most 1% of memories) 63%. That is the premise; this arm
+/// measures what it is worth.
+///
+/// **What it builds, and how the noise is held down.** Each memory's proper
+/// names are its maximal runs of capitalised words (joined by the usual
+/// particles), plus its own title. A name in more than 1% of the memories is a
+/// hub and dropped -- "United States" links everything to everything, which
+/// is the case HippoRAG's node specificity and SPRIG's hub pruning exist for.
+/// Two memories sharing names are weighted by the sum of those names' inverse
+/// document frequencies over `ln N`, which puts one shared name in two memories
+/// near 0.9 and a common one near 0.5, the confidence a derived mention has;
+/// each memory keeps its ten strongest. The edges are `related_to`, derived.
+///
+/// **Paired, in one run.** A second project holds the same memories with these
+/// edges added to the mentions; every question is asked of both, so each row
+/// below is a per-question comparison rather than two runs subtracted.
+///
+/// A prototype: the names are found here, in the harness, and asserted through
+/// the store the way `pamin link` does. Only if it pays is it worth a job in
+/// the write path, and a model instead of a regular pattern is a later step.
+async fn entities(
+    base: &Engine,
+    workspace: &Workspace,
+    corpus: &Corpus,
+    project: &str,
+    profile: Profile,
+    named: &str,
+) {
+    use pamin_core::{Derivation, EdgeKind, Validity};
+    use pamin_store::graph::{EdgeClaim, assert_edges};
+    use std::collections::HashMap;
+
+    /// Past this share of the memories a name is a hub and says nothing.
+    const HUB: f64 = 0.01;
+    /// The strongest neighbours each memory keeps.
+    const KEEP: usize = 10;
+
+    let engine = Engine::open(
+        workspace,
+        &format!("{project}-entities"),
+        profile,
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the entity project");
+    write_corpus(&engine, corpus).await;
+
+    let names: Vec<HashSet<String>> = corpus
+        .memories
+        .iter()
+        .map(|memory| {
+            let mut found = proper_names(&memory.text);
+            found.insert(memory.title.to_lowercase());
+            found
+        })
+        .collect();
+    let total = names.len() as f64;
+    let mut frequency: HashMap<&str, usize> = HashMap::new();
+    for found in &names {
+        for name in found {
+            *frequency.entry(name.as_str()).or_default() += 1;
+        }
+    }
+    let hub = ((HUB * total) as usize).max(2);
+    let mut holders: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (memory, found) in names.iter().enumerate() {
+        for name in found {
+            let count = frequency[name.as_str()];
+            if count >= 2 && count <= hub {
+                holders.entry(name.as_str()).or_default().push(memory);
+            }
+        }
+    }
+
+    let mut weight: HashMap<(usize, usize), f64> = HashMap::new();
+    for (name, memories) in &holders {
+        let idf = (total / frequency[name] as f64).ln();
+        for (at, left) in memories.iter().enumerate() {
+            for right in &memories[at + 1..] {
+                *weight.entry((*left, *right)).or_default() += idf;
+            }
+        }
+    }
+    let mut strongest: Vec<Vec<(usize, f64)>> = vec![Vec::new(); names.len()];
+    for ((left, right), strength) in &weight {
+        strongest[*left].push((*right, *strength));
+        strongest[*right].push((*left, *strength));
+    }
+    let mut kept: HashMap<(usize, usize), f64> = HashMap::new();
+    for (memory, neighbours) in strongest.iter_mut().enumerate() {
+        neighbours.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (other, strength) in neighbours.iter().take(KEEP) {
+            kept.insert((memory.min(*other), memory.max(*other)), *strength);
+        }
+    }
+
+    let mut ids = Vec::with_capacity(corpus.memories.len());
+    for memory in &corpus.memories {
+        let topic = pamin_store::repository::find_topic(
+            engine.database.pool(),
+            engine.project,
+            &memory.title,
+        )
+        .await
+        .expect("look up a topic")
+        .expect("every memory was written");
+        ids.push(topic.id);
+    }
+    let scale = total.ln();
+    let mut edges: Vec<_> = kept
+        .iter()
+        .map(|((left, right), strength)| {
+            (
+                ids[*left],
+                ids[*right],
+                EdgeClaim {
+                    kind: EdgeKind::RelatedTo,
+                    derivation: Derivation::Deterministic,
+                    confidence: (strength / scale).clamp(0.05, 1.0) as f32,
+                    validity: Validity::ALWAYS,
+                    caused_by_topic_state: None,
+                },
+            )
+        })
+        .collect();
+    edges.sort_by_key(|(left, right, _)| (left.0, right.0));
+    for chunk in edges.chunks(1_000) {
+        assert_edges(engine.database.pool(), engine.project, chunk)
+            .await
+            .expect("assert the entity edges");
+    }
+    println!(
+        "  {} names in 2..={hub} memories, {} pairs share one, {} edges kept ({} a memory at most)",
+        holders.len(),
+        weight.len(),
+        kept.len(),
+        KEEP
+    );
+
+    let base_edges = channels::live_edges(base).await;
+    let entity_edges = channels::live_edges(&engine).await;
+    println!("  names only: {base_edges:?}\n  with shared names: {entity_edges:?}");
+
+    let mut before: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut after: BTreeMap<String, Scores> = BTreeMap::new();
+    let mut diagnosis = channels::Diagnosis::default();
+    for query in &corpus.queries {
+        for (searcher, into, observed) in [(base, &mut before, false), (&engine, &mut after, true)]
+        {
+            let hits = searcher
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+            score(into.entry(query.group.clone()).or_default(), query, &ranked);
+            if observed {
+                diagnosis.observe(&query.group, &hits, |into, ranking| {
+                    score(into, query, ranking)
+                });
+            }
+        }
+    }
+
+    println!("\n  fused, with edges from shared names against names only, {named}");
+    println!(
+        "  group   questions   nDCG@{NDCG_AT} before   after   recall@{RECALL_AT} before   after   paired"
+    );
+    for (group, scores) in &after {
+        let was = &before[group];
+        println!(
+            "  {group:<6}   {:>9}   {:>12.4}   {:>5.4}   {:>14.4}   {:>5.4}   {}",
+            scores.queries,
+            was.mean_ndcg(),
+            scores.mean_ndcg(),
+            was.mean_recall(),
+            scores.mean_recall(),
+            statistics::compare(&was.per_query, &scores.per_query)
+        );
+    }
+    diagnosis.report(
+        &format!("MuSiQue with shared-name edges, {named}"),
+        &entity_edges,
+    );
+}
+
+/// A text's proper names, lowercased: maximal runs of capitalised words,
+/// joined across the particles names carry ("Duke of York", "van Gogh").
+///
+/// A regular pattern rather than a model, which is the point of trying it
+/// first: it costs nothing, and whether names are worth edges at all is the
+/// question. It only sees scripts with case, which this corpus is.
+fn proper_names(text: &str) -> HashSet<String> {
+    const PARTICLES: [&str; 8] = ["of", "the", "de", "von", "van", "and", "la", "du"];
+    let words: Vec<&str> = text
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | ';' | ':' | '(' | ')' | '"' | '“' | '”')
+        })
+        .filter(|word| !word.is_empty())
+        .collect();
+    let capital = |word: &str| word.chars().next().is_some_and(char::is_uppercase);
+    let clean = |word: &str| {
+        word.trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase()
+    };
+
+    let mut names = HashSet::new();
+    let mut at = 0;
+    while at < words.len() {
+        if !capital(words[at]) {
+            at += 1;
+            continue;
+        }
+        let mut run = vec![clean(words[at])];
+        let mut end = at + 1;
+        while end < words.len() {
+            if capital(words[end]) {
+                run.push(clean(words[end]));
+                end += 1;
+            } else if PARTICLES.contains(&words[end])
+                && end + 1 < words.len()
+                && capital(words[end + 1])
+            {
+                run.push(words[end].to_string());
+                end += 1;
+            } else {
+                break;
+            }
+            // A sentence break ends a name even between capitals.
+            if words[end - 1].ends_with('.') && words[end - 1].len() > 3 {
+                break;
+            }
+        }
+        let name = run.join(" ");
+        if name.chars().count() > 2 {
+            names.insert(name);
+        }
+        at = end;
+    }
+    names
+}
+
+#[test]
+fn proper_names_are_runs_of_capitals_across_particles() {
+    let names = proper_names(
+        "Green is an album by Steve Hillage, recorded with the Duke of York in London.",
+    );
+    assert!(names.contains("steve hillage"), "{names:?}");
+    assert!(names.contains("duke of york"), "{names:?}");
+    assert!(names.contains("london"), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.contains("album")),
+        "{names:?}"
+    );
 }
