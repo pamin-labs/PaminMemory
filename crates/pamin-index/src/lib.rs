@@ -8,6 +8,7 @@ pub mod embedding;
 pub mod error;
 mod hub;
 mod inference;
+mod prepared;
 pub mod projection;
 pub mod reranking;
 mod reshape;
