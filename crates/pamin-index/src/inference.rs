@@ -68,9 +68,12 @@ impl Device {
 /// passes of sixteen passages at 256 tokens: 1,682 MB resident with the arena
 /// against 1,077 MB without -- 605 MB of activations held for a batch shape
 /// that recurs only when the next search runs -- with scores bit-identical and
-/// no slower pass. The embedder takes the same setting, since its largest
-/// batch is a bulk write's rather than a search's; what it saves there is
-/// read by the `MEMORY` arm of the MIRACL harness.
+/// no slower pass. Through the whole search path on MIRACL (the `MEMORY` arm),
+/// a hundred `accurate` searches hold 5,914 MB anonymous against 6,208 MB --
+/// less than the six fixed passes, because a real search scores fewer and
+/// shorter pairs. The embedder saves nothing measurable there, since a query
+/// is one short text; it takes the same setting because its largest batch is
+/// a bulk write's, which that arm does not exercise.
 pub(crate) fn cpu() -> fastembed::ExecutionProviderDispatch {
     ort::ep::CPU::default().with_arena_allocator(false).build()
 }
