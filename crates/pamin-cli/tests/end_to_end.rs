@@ -767,6 +767,76 @@ fn a_query_naming_a_topic_walks_out_from_it(cli: &Cli) {
     );
 }
 
+/// The case `a_query_naming_a_topic_walks_out_from_it` cannot reach: a named
+/// topic that no index channel returned. That one runs on a workspace small
+/// enough that every channel returns every topic, so the named topic was always
+/// a candidate anyway. At a channel depth of one it is not, and the walk has to
+/// start from the name alone -- which is the whole reason names are resolved.
+///
+/// Its own workspace, because at a channel depth of one the graph keeps one
+/// neighbour, and in the shared one an unrelated edge of equal strength can
+/// take that place and make the test about tie-breaking instead.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "office_plants",
+        "the ficus by the window needs watering on thursdays",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "quartz_vein",
+        "painted blue on thursdays",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "mine_shaft",
+        "reachable only by the east ladder",
+    ]);
+    cli.run(&["link", "quartz_vein", "mine_shaft", "--kind", "depends_on"]);
+
+    let results = cli.json(&[
+        "search",
+        "what does quartz_vein need",
+        "--limit",
+        "8",
+        "--channel-depth",
+        "1",
+        "--rerank",
+        "off",
+    ]);
+
+    // The premise: no index channel returned the named topic, so only its
+    // name can seed the walk. If one did, this is the other test again.
+    if let Some(named) = hit_containing(&results, "painted blue") {
+        let credited = credited_channels(named);
+        assert!(
+            credited.iter().all(|channel| channel == "graph"),
+            "premise: an index channel returned the named topic ({credited:?}), so this \
+             does not test seeding from the name"
+        );
+    }
+
+    let reached = hit_containing(&results, "east ladder").unwrap_or_else(|| {
+        panic!(
+            "a topic the query names should seed the walk even when no channel \
+             returned it: {:?}",
+            contents(&results)
+        )
+    });
+    assert!(
+        credited_channels(reached).contains(&"graph".to_string()),
+        "and the graph is what reached it, got {:?}",
+        credited_channels(reached)
+    );
+}
+
 fn a_retraction_says_whether_the_claim_ended_or_was_wrong(cli: &Cli) {
     cli.run(&[
         "write",

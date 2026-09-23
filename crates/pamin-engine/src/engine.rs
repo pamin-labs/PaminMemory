@@ -1484,6 +1484,24 @@ impl Engine {
         let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
         let relevance = seed_relevance(&named, lists);
 
+        // A named topic no channel returned is not in the working set, and the
+        // filter below keeps only topics that are -- which is what it is for
+        // with the ranked candidates, where it drops one that no longer stands
+        // for anything, and exactly wrong for a name, whose point is to seed
+        // the walk when the content did not match. So resolve those here, in
+        // one lookup, and let the same filter judge them on the same terms.
+        let unresolved: Vec<TopicId> = named
+            .iter()
+            .copied()
+            .filter(|topic| working.state(*topic).is_none())
+            .collect();
+        if !unresolved.is_empty() {
+            working.add(
+                repository::current_states_of(self.database.pool(), self.project, &unresolved)
+                    .await?,
+            );
+        }
+
         let seeds: Vec<TopicId> = {
             let mut seen = std::collections::HashSet::new();
 
