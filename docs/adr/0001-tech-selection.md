@@ -994,7 +994,20 @@ And one limit no procedure here can remove. Bruch, Gai and Ingber
 splits and watched them lose 8 to 10% out of domain, the optimal direction
 reversing between corpora. Cross-validation over these corpora estimates
 performance on these corpora. The cheapest thing that speaks to transfer is to
-fit on two corpora and test on the third, and it has not been done yet.
+choose on one corpus and test on another, and **neither direction transfers**:
+
+| chosen on | the row the rule picks | on the other corpus |
+| --- | --- | --- |
+| own corpus | drop the n-gram channel | XQuAD-R cross-lingual +0.0094, same-language **−0.0361** (9 wins to 155, family `p = 0.0001`): a net loss |
+| XQuAD-R | confidence, spread 5, floor 0.5 | own corpus cross-lingual +0.0117 and relational −0.0559, neither significant: a net loss |
+
+Each choice improves the corpus that made it and costs the one that did not,
+which is Bruch, Gai and Ingber's result reproduced on this system. So the
+lexical and combiner settings stay where they are, and not for want of looking:
+every candidate the sweep can offer either fails to beat them where it was
+chosen or fails to carry to the next corpus. The graph weight's move is the
+exception because it is neutral wherever the graph is empty and significantly
+positive where it is not -- there is no corpus here on which it costs anything.
 
 ### Every accuracy figure here is a difference of means
 
