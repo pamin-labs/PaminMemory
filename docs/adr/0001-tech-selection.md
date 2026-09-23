@@ -658,7 +658,9 @@ does not reorder a top ten. Corroboration and the weight are the same
 suppression applied to overlapping sets, and an eighth weight has already
 applied it to everything. Read as a frontier, every corroboration setting lies
 on the weight's own curve to within 0.0017. The code was removed; this is the
-finding.
+finding. It came back later for the graph channel alone, measured as a no-op
+at the graph weight that ships, and was removed again — see *Fusion designs
+measured and removed*.
 
 That also closes the published form of the idea — dropping a lexical candidate
 whose dense similarity falls below a threshold. It is the same suppression with
@@ -722,7 +724,8 @@ own. The addition is the mechanism — at `k = 10` and an eighth weight a lexica
 first place is 0.0114, which cannot reach the head alone, but 0.04 + 0.0114
 moves a vector-fifteenth candidate to about eighth. Only a zero weight or a
 non-additive rule removes an addition, which is what `Fusion::needing_support`
-is for.
+was built to be; it measured as the same suppression as the weight and was
+removed — see *Fusion designs measured and removed* below.
 
 **This project's normaliser is the least stable variant in the canonical
 taxonomy.** `arXiv:2210.11934` (ACM TOIS 41(4), 2023, and still the systematic
@@ -757,7 +760,7 @@ heuristic at **−0.0161**. The best method in their study is training-free RRF 
 project had an oracle and was one step from building the predictor: **an oracle
 gap is not evidence that a predictor can close it.**
 
-This is why the remedy being measured here conditions on the *candidate* rather
+This is why the remedy measured here conditioned on the *candidate* rather
 than on the query. "Is this query cross-lingual" is not answerable from a query
 — on XQuAD-R because both groups are the same 1,190 queries scored against
 different answer keys, and in production because a user asking a question does
@@ -780,7 +783,7 @@ confirmation of anyone else's.
 
 ### Fusion designs measured and removed
 
-Each of these was built, swept offline against what ships, and deleted once the
+Each of these was built, measured against what ships, and deleted once the
 measurement was in. The code, its tests and its sweep rows are gone; what each
 was worth is recorded here so the question is not reopened without new
 evidence. `Combine::Banded` ships, and `Combine::Reciprocal` is kept, reachable
@@ -794,6 +797,7 @@ against.
 | TM2C2 (`Combine::Convex`, `arXiv:2210.11934`) | each channel on theoretical min-max — from its score's infimum, 0 for BM25 and −1 for a cosine, to the query's best — convexly weighted, no band | own cross-lingual **0.7791 → 0.5744**, 0 wins to 37 losses, at the paper's own alpha, and no lexical or graph weight in the sweep recovered it; XQuAD-R cross-lingual **−0.1480** | Anisotropy of the embedder. A query's fifty vector candidates sit in the top ~17% of the distance from the cosine infimum to the best of them (median), where BM25's spread across about three quarters of theirs. Read from −1, the vector channel's own ordering is flattened to a few hundredths, and the lexical and graph channels decide among its candidates. |
 | Band on theoretical min-max (`Combine::BandedTheoretical`) | `Banded`, with a candidate's place in its channel's band read from the infimum rather than from the channel's worst candidate | own cross-lingual **0.4214** against the shipped 0.7791 | The same anisotropy: every vector candidate lands at the top of its band, so the band keeps the range and loses the channel's ordering. |
 | Per-channel confidence (`Fusion::with_confidence`) | each channel's weight scaled by how far its best candidate stands above its own field, `(best − mean) / deviation` over a `spread`, clamped to a `floor` | on rank fusion +0.0118 at best (8 / 0, p = 0.0381) on a narrow plateau; 0.0000 on MIRACL at low spreads. Cross-validated over the whole sweep of about a hundred settings, nothing beats what ships on held-out queries (own p = 0.57, XQuAD-R p = 0.10), and the XQuAD-R choice, spread 5 floor 0.5, is a net loss on the own corpus | A standardised top score cannot exceed `sqrt(n − 1)`, 7.00 over fifty candidates, so a low spread clamps every channel to full weight. Above that, on MIRACL the mildly harmful lexical channels still look confident, so the measure cannot see what it was built to see; everywhere else its gains were trades between groups. |
+| Support rule (`Fusion::needing_support`) | a named channel's own last place, instead of what its rank was worth, for any candidate no unnamed channel returned; shipped naming the graph channel | at the shipped graph weight 0.30, 0.0000 on all four groups of the own corpus; bit-identical for the lexical channels at their eighth over 1,190 XQuAD-R queries. On MuSiQue — 10,785 memories, 12,840 live `mentions` edges, 1,000 two-hop questions through `search_reranked_with` with the `accurate` reranker — nDCG@10 0.6834 and `recall@50` 0.8435 with it and without it, **0 wins, 0 losses, 1,000 ties**; the own corpus through the same path, all 157 questions tied | It was kept as insurance for graphs denser than any corpus here, and the dense graph did not need it: three tenths already quiets the channel as far as the rule would. Its one measured benefit was at a graph weight of 1.0 (own cross-lingual 0.5109 → 0.5606), a weight that is itself refuted. It was a no-op by measurement, not by construction — it lowered every candidate only the graph returned, and when the graph returns fewer than about forty candidates that can change which make the top fifty, in principle the top ten — so removing it moved the scores of those candidates and no measured result. |
 
 The figures were taken while the code existed, by the harnesses of the time;
 nothing in the tree today can reproduce them, and that is the point of writing

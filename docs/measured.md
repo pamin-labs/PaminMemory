@@ -214,7 +214,9 @@ Fusion alone gains 0.0159 from the graph there, and the weight of three tenths
 chosen on the own corpus is again the best of the sweep — the first external
 confirmation of a graph setting. The rest of the gain is the reranker being
 shown the graph's ten strongest finds below its head: of 153 supporting titles
-the graph alone found, none had reached the head (median fused rank 99). The
+the graph alone found, none had reached the head (median fused rank 99, taken
+while a support rule, since measured as a no-op on these questions and
+removed, also held them down). The
 harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
 paying.
 
