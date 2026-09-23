@@ -7,9 +7,9 @@
 //! Two different operations are easy to conflate here. Quantizing model weights
 //! buys a large CPU speedup for well under a percent of quality; storing output
 //! vectors as int8 costs one and a half to three and a half percent and needs a
-//! calibration set. The first is worth taking and the second is not,
-//! particularly since the default reranker has no cross-encoder to recover the
-//! loss.
+//! calibration set. The first is worth taking and the second is not: a
+//! reranker reorders the fused head, but it cannot recover a candidate the
+//! vector channel ranked out of the list.
 //!
 //! Stored vectors are float32. Weights are quantized where a quantized export
 //! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
@@ -35,9 +35,10 @@ pub enum Profile {
     /// 384 dimensions. Bulk ingestion and low-spec machines.
     ///
     /// 384 dimensions is generally held to be enough only alongside a
-    /// cross-encoder reranker, and ours is deterministic and has none, so this
-    /// pairs the weaker model with the weaker reranker. It is here for
-    /// machines that cannot afford the others.
+    /// cross-encoder reranker. There is one now -- `accurate` by default --
+    /// but it reorders what the channels found and cannot add what this
+    /// narrower space missed, so this stays the profile for machines that
+    /// cannot afford the others.
     Speed,
     /// 768 dimensions, full-precision weights.
     ///
