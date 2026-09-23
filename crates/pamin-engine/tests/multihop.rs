@@ -445,7 +445,7 @@ async fn search_answers_questions_that_take_several_steps() {
         return;
     }
 
-    if std::env::var("GRAPH_VARIANTS").is_ok() {
+    if let Some(variants) = channels::requested_variants() {
         let questions: Vec<(String, String)> = corpus
             .queries
             .iter()
@@ -457,7 +457,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &questions,
             DEPTH as u32,
             DEPTHS,
-            &channels::graph_variants(),
+            &variants,
             |index, into, hits| {
                 let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
                 score(into, &corpus.queries[index], &ranked);
