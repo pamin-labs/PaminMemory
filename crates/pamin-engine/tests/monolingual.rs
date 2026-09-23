@@ -65,6 +65,7 @@
 //! | `MIRACL_MAX_DOCS` | cap the corpus, for checking the harness runs. **Not the benchmark**: the floors are not asserted and the number is not comparable with anyone's |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
 //! | `TIERS` | run all three rerank tiers instead of the default |
+//! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
 //! | `RERANK_RULES` | price blending the shipped tier's scores with fusion's, from one run |
 //! | `SWEEP` | run fusion settings instead of the shipped path |
 //!
@@ -745,6 +746,13 @@ async fn search() {
         return;
     }
 
+    // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
+    // `reranking::in_context`.
+    if std::env::var("CONTEXT").is_ok() {
+        context(&engine, &workspace, &corpus, &named).await;
+        return;
+    }
+
     if std::env::var("TIERS").is_ok() {
         let mut priced: Vec<(Rerank, Scores)> = Vec::new();
         for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
@@ -910,7 +918,57 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
             );
         }
     }
-    reranking::report(&format!("MIRACL, {} tier, {named}", tier.name()), &measured);
+    reranking::report(
+        &format!(
+            "rules for the {} reranker's scores, MIRACL, {named}",
+            tier.name()
+        ),
+        &rules,
+        reranking::shipped(&rules),
+        &measured,
+    );
+}
+
+/// What the shipped tier is worth when it is shown each candidate's topic
+/// name, and the memory the graph reached it from. See `reranking::in_context`.
+///
+/// This corpus's names are MIRACL's own document ids behind a prefix, so the
+/// named renderings ask what a name that carries nothing costs; it has no
+/// edges, so the seeded renderings equal their unseeded counterparts.
+async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named: &str) {
+    use std::collections::BTreeMap;
+
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    let tier = Rerank::default();
+    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+        .expect("load the reranker");
+    let labels = reranking::context_labels();
+    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+    for query in &corpus.queries {
+        let hits = engine
+            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        let replayed = reranking::replay(&hits, tier);
+        let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
+        for (order, into) in orders.iter().zip(&mut measured) {
+            into.entry(GROUP.to_string())
+                .or_default()
+                .add(order, query.relevant.len(), |topic| {
+                    query.relevant.contains(topic)
+                });
+        }
+    }
+    reranking::report(
+        &format!(
+            "what the {} reranker is shown, MIRACL, {named}",
+            tier.name()
+        ),
+        &labels,
+        Some(1),
+        &measured,
+    );
 }
 
 /// The channel diagnostic: each one alone, each one removed, and how far the

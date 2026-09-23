@@ -246,6 +246,14 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
+    // `CONTEXT` asks what the reranker would say if it were shown what made a
+    // candidate a candidate: its topic's name, and the memory whose edge
+    // reached it. See `context`.
+    if std::env::var("CONTEXT").is_ok() {
+        context(&engine, &workspace, &queries).await;
+        return;
+    }
+
     if let Some(settings) = sweep() {
         println!("\n  setting              cross nDCG@10   mono nDCG@10   lexical nDCG@10");
         println!("  --------------------------------------------------------------------");
@@ -465,6 +473,60 @@ async fn report_tiers(engine: &Engine, queries: &[Query]) {
     );
 }
 
+/// What the reranker is worth when it can see why a candidate is there.
+///
+/// **What prompted it.** The model is shown a memory's content and nothing
+/// else -- not its topic's name, and not the edge that brought it into the
+/// list. A relational answer is relevant *because* of that edge: "who gets
+/// paged when a sev one escalates" is answered by `platform rota`, whose text
+/// is "it pages ines on weekends and mikhail on weekdays", and the sentence
+/// that connects the two is in another memory, "a sev one escalates to the
+/// platform rota". Shown only the first, a cross-encoder has nothing to go on.
+/// This is contextual retrieval's argument (prepend what the text leaves
+/// implicit) applied at the one stage that reads text pairwise.
+///
+/// Four renderings of each movable candidate, scored by the shipped tier and
+/// substituted by the shipped rule: the content alone, which must reproduce
+/// the engine's own scores or the rest is a reconstruction error; the topic's
+/// name before it; the memory the graph walked from after it, for a candidate
+/// the graph reached; and both.
+async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
+    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    let tier = Rerank::default();
+    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+        .expect("load the reranker");
+
+    let labels = reranking::context_labels();
+    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+    let mut seeded = 0usize;
+    for query in queries {
+        let hits = engine
+            .search_reranked(&query.query, WIDE, DEPTHS, tier)
+            .await
+            .expect("search");
+        channels::enough_room(&hits, WIDE);
+        let replayed = reranking::replay(&hits, tier);
+        let (orders, shown) = reranking::in_context(&hits, &replayed, &mut model, &query.query);
+        seeded += shown;
+
+        let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+        for (order, into) in orders.iter().zip(&mut measured) {
+            into.entry(query.group.clone())
+                .or_default()
+                .add(order, relevant.len(), |topic| relevant.contains(topic));
+        }
+    }
+    reranking::report(
+        &format!(
+            "what the {} reranker is shown, own corpus; {seeded} candidates shown a seed",
+            tier.name()
+        ),
+        &labels,
+        Some(1),
+        &measured,
+    );
+}
+
 /// Every rule for using the reranker's scores, priced against the one that
 /// ships, from one shipped run. See `reranking`.
 ///
@@ -500,7 +562,15 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
         }
     }
 
-    reranking::report("own corpus", &measured);
+    reranking::report(
+        &format!(
+            "rules for the {} reranker's scores, own corpus",
+            tier.name()
+        ),
+        &rules,
+        reranking::shipped(&rules),
+        &measured,
+    );
 }
 
 /// Live edges in this project, by kind, so a graph row has a premise.

@@ -19,6 +19,10 @@
 //! engine's order position for position; only then is another rule's figure a
 //! comparison rather than a reconstruction error.
 
+// Included by harnesses that use only some of it, like the other shared
+// modules here.
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, HashMap};
 
 use pamin_core::{Channel, Fusion, Why};
@@ -68,18 +72,21 @@ pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
     rules.iter().position(|(_, rule)| *rule == Rule::Substitute)
 }
 
-/// Every rule against the one that ships, group by group and as one
-/// cross-validated choice. `measured` is indexed like [`rules`].
-pub fn report(title: &str, measured: &[BTreeMap<String, crate::scoring::Scores>]) {
-    let rules = rules();
-    let ship = shipped(&rules);
-    let shipped = &measured[ship.expect("the shipped rule is measured")];
-    println!("\n  rules for the reranker's scores, {title}");
+/// Every row against the one that ships, group by group and as one
+/// cross-validated choice. `measured` is indexed like `labels`.
+pub fn report<T>(
+    title: &str,
+    labels: &[(String, T)],
+    ship: Option<usize>,
+    measured: &[BTreeMap<String, crate::scoring::Scores>],
+) {
+    let shipped = &measured[ship.expect("the shipped row is measured")];
+    println!("\n  {title}");
     for (group, scores) in shipped {
         crate::channels::sweep_table(
             group,
             scores,
-            &rules,
+            labels,
             &measured
                 .iter()
                 .map(|row| row.get(group))
@@ -90,11 +97,109 @@ pub fn report(title: &str, measured: &[BTreeMap<String, crate::scoring::Scores>]
         title,
         &shipped.keys().map(String::as_str).collect::<Vec<_>>(),
         shipped,
-        &rules,
+        labels,
         ship,
         measured,
     );
     println!();
+}
+
+/// What the model is shown for each candidate, in the order [`in_context`]
+/// returns them after `fusion alone`. The first is what ships.
+pub const RENDERINGS: [&str; 4] = [
+    "content",
+    "name: content",
+    "content, then the seed",
+    "name: content, then the seed",
+];
+
+/// The rows [`in_context`] produces: fusion alone, then each rendering. The
+/// shipped one is at index one.
+pub fn context_labels() -> Vec<(String, ())> {
+    std::iter::once("fusion alone")
+        .chain(RENDERINGS)
+        .map(|label| (label.to_string(), ()))
+        .collect()
+}
+
+/// One query's order under each of [`context_labels`], rescoring the movable
+/// candidates with `model` as each rendering presents them.
+///
+/// **Panics unless the first rendering reproduces the engine's own scores**:
+/// it is the one that ships, so a disagreement means the other rows are priced
+/// against a different model, or different text, than the product used.
+///
+/// A candidate's seed is the memory the graph walked from to reach it,
+/// provided the walk's origin is itself in the list; on a corpus with no
+/// edges no candidate has one, and the seeded renderings equal their unseeded
+/// counterparts. Returns how many movable candidates were shown a seed.
+pub fn in_context(
+    hits: &[SearchHit],
+    replayed: &Replayed,
+    model: &mut pamin_index::Reranker,
+    query: &str,
+) -> (Vec<Vec<String>>, usize) {
+    let content: HashMap<&str, &str> = hits
+        .iter()
+        .map(|hit| (hit.topic.as_str(), hit.state.content.as_str()))
+        .collect();
+    let seed: HashMap<&str, &str> = hits
+        .iter()
+        .filter_map(|hit| {
+            hit.result.why.iter().find_map(|why| match why {
+                Why::Path { from, .. } => content
+                    .get(from.as_str())
+                    .map(|text| (hit.topic.as_str(), *text)),
+                _ => None,
+            })
+        })
+        .collect();
+
+    let movable = replayed.movable();
+    let seeded = movable
+        .iter()
+        .filter(|name| seed.contains_key(*name))
+        .count();
+    let mut orders = vec![replayed.order(Rule::Blend {
+        fusion: 1.0,
+        scale: Scale::Rank,
+    })];
+    for (rendering, label) in RENDERINGS.iter().enumerate() {
+        let (named, with_seed) = (rendering % 2 == 1, rendering >= 2);
+        let documents: Vec<String> = movable
+            .iter()
+            .map(|name| {
+                let mut text = if named {
+                    format!("{name}: {}", content[name])
+                } else {
+                    content[name].to_string()
+                };
+                if let (true, Some(from)) = (with_seed, seed.get(name)) {
+                    text.push_str(". ");
+                    text.push_str(from);
+                }
+                text
+            })
+            .collect();
+        let mut scores = vec![0.0; movable.len()];
+        if !movable.is_empty() {
+            let borrowed: Vec<&str> = documents.iter().map(String::as_str).collect();
+            for ranked in model.rank(query, &borrowed).expect("rank") {
+                scores[ranked.position] = f64::from(ranked.score);
+            }
+        }
+        if rendering == 0 {
+            for (again, recorded) in scores.iter().zip(replayed.model()) {
+                assert!(
+                    (again - recorded).abs() < 1e-4,
+                    "{label} scored {again} where the engine recorded {recorded} for {query:?}, \
+                     so the other renderings would be priced against a different model"
+                );
+            }
+        }
+        orders.push(replayed.rescored(scores).order(Rule::Substitute));
+    }
+    (orders, seeded)
 }
 
 /// One query's fused order, which positions the model could move, and what it
@@ -194,6 +299,37 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
 }
 
 impl Replayed {
+    /// The names of the candidates the tier may move, in fused order -- what
+    /// the model was shown, in the order it was shown them.
+    pub fn movable(&self) -> Vec<&str> {
+        self.movable
+            .iter()
+            .map(|at| self.fused[*at].as_str())
+            .collect()
+    }
+
+    /// The model's scores as the engine recorded them, per movable candidate.
+    pub fn model(&self) -> &[f64] {
+        &self.model
+    }
+
+    /// The same query with the model's scores replaced, one per movable
+    /// candidate -- for pricing what the model would have said had it been
+    /// shown something else.
+    pub fn rescored(&self, model: Vec<f64>) -> Replayed {
+        assert_eq!(
+            model.len(),
+            self.movable.len(),
+            "one score per movable candidate"
+        );
+        Replayed {
+            fused: self.fused.clone(),
+            movable: self.movable.clone(),
+            fusion: self.fusion.clone(),
+            model,
+        }
+    }
+
     /// The whole list under `rule`: unmovable positions stay, movable ones are
     /// refilled in the rule's order, ties to the earlier position.
     pub fn order(&self, rule: Rule) -> Vec<String> {
