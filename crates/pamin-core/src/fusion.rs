@@ -745,6 +745,21 @@ impl Fusion {
             // deepest rank. What an uncorroborated candidate is worth when
             // this channel needs support, which is a floor rather than a
             // removal so the candidate stays inside `recall@50`.
+            //
+            // **The bottom of the channel's scale, not of its observed
+            // scores.** For an uncalibrated channel the two are the same thing
+            // -- min-maxing the query's candidates maps the worst of them to
+            // zero by construction -- so this changes nothing about the
+            // channels that were measured under it. For a calibrated one they
+            // are not: the graph channel's paths are all one derived mention
+            // in production, so every candidate sits at 0.5 of `[0, 1]`, the
+            // observed minimum *is* 0.5, and a floor set there would be
+            // exactly what every candidate already had. The rule would be a
+            // no-op on the one channel whose candidates are by construction
+            // the case it exists for.
+            //
+            // `standardised` keeps the observed minimum, because a
+            // standardised score has no absolute bottom to fall to.
             let unsupported = self.needs_support.contains(&list.channel).then(|| {
                 self.share(
                     Scaled {
@@ -752,7 +767,7 @@ impl Fusion {
                             .iter()
                             .filter_map(|it| it.standardised)
                             .reduce(f32::min),
-                        within: scaled.iter().filter_map(|it| it.within).reduce(f32::min),
+                        within: Some(0.0),
                         of: scaled.first().map_or(0, |it| it.of),
                     },
                     list.candidates.len() as u32,
@@ -1328,6 +1343,78 @@ mod tests {
         assert!(
             contribution(&gated, lexical_only) < contribution(&ungated, lexical_only),
             "and an uncorroborated one must be worth less than its rank said"
+        );
+    }
+
+    /// A calibrated channel whose candidates all tie can still be told to
+    /// stand down on the ones nothing else found.
+    ///
+    /// The interaction between the two mechanisms, and the reason the floor is
+    /// the bottom of the channel's *scale* rather than of its observed scores.
+    /// In production every edge the write path derives is one mention at the
+    /// same confidence, so the graph channel's candidates all sit at 0.5 of
+    /// `[0, 1]` and its observed minimum is 0.5 -- a floor set there would be
+    /// exactly what every candidate already had, and the rule would do nothing
+    /// on the one channel whose candidates are by construction uncorroborated.
+    #[test]
+    fn a_tied_calibrated_channel_still_has_somewhere_to_stand_down_to() {
+        let corroborated = id(1);
+        let alone = id(9);
+        let lists = [
+            ChannelResults::new(
+                Channel::Vector,
+                (1..=4)
+                    .map(|n| Scored::new(id(n), (5 - n) as f32 / 4.0))
+                    .collect(),
+            ),
+            // Every path the same strength, which is what this channel's
+            // production scores look like.
+            ChannelResults::new(
+                Channel::Graph,
+                vec![Scored::new(corroborated, 0.5), Scored::new(alone, 0.5)],
+            ),
+        ];
+        let level = Fusion::default().with_weight(Channel::Graph, 1.0);
+
+        let graph_share = |results: &[FusedResult], topic| {
+            results
+                .iter()
+                .find(|result| result.topic == topic)
+                .expect("in the list")
+                .why
+                .iter()
+                .filter_map(|why| match why {
+                    Why::Channel {
+                        channel: Channel::Graph,
+                        contribution,
+                        ..
+                    } => Some(*contribution),
+                    _ => None,
+                })
+                .sum::<f32>()
+        };
+
+        let ungated = level.clone().fuse(&lists);
+        assert_eq!(
+            graph_share(&ungated, corroborated),
+            graph_share(&ungated, alone),
+            "the premise: identical evidence, identical contribution"
+        );
+
+        let gated = level.needing_support([Channel::Graph]).fuse(&lists);
+        assert_eq!(
+            graph_share(&gated, corroborated),
+            graph_share(&ungated, corroborated),
+            "a corroborated candidate is untouched"
+        );
+        assert!(
+            graph_share(&gated, alone) < graph_share(&gated, corroborated),
+            "and one nothing else found must stand below it: {gated:?}"
+        );
+        assert_eq!(
+            gated.len(),
+            ungated.len(),
+            "support is a floor, not a filter"
         );
     }
 
