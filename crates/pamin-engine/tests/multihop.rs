@@ -73,9 +73,14 @@ const ROWS: &str = "https://datasets-server.huggingface.co/rows\
 /// The server's own maximum.
 const PER_PAGE: usize = 100;
 
-/// A thousand questions, which is the sample the graph-retrieval literature
-/// reports on. Taken as the first thousand rows, so two runs read the same ones.
-const QUESTIONS: usize = 1_000;
+/// Every answerable dev question, 2,417 of them.
+///
+/// It was the first thousand, the size the graph-retrieval literature reports
+/// on -- and the dataset is ordered by hop count, so the first thousand are
+/// all two-hop and the three- and four-hop questions, the ones a walk should
+/// matter most for, were never asked. `QUESTIONS` is the whole split, read in
+/// full so the groups are what the dataset has.
+const QUESTIONS: usize = 2_417;
 
 /// How deep to retrieve, so recall@50 can be scored.
 const DEPTH: usize = RECALL_AT + 1;
