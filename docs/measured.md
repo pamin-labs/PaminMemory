@@ -198,6 +198,26 @@ was never named. It is three tenths now -- 1.0 and 0.5 are significantly worse
 once the sweep is priced as one family, and 0.15 cannot be told apart -- and every
 floor clears. The sweep is in `pamin_core::fusion`.
 
+**Twenty queries written by the mechanism's authors are not evidence on their
+own, so the graph was then measured on a corpus nobody here wrote.** MuSiQue's
+answerable dev split (CC BY 4.0) stores each paragraph under its Wikipedia
+title, so the edges are the engine's own `Mentions` derivation — 12,840 of them
+over 10,785 memories. On its first 1,000 two-hop questions, through
+`search_reranked` itself:
+
+| | nDCG@10 | recall@50 |
+| --- | --- | --- |
+| the shipped search | **0.6834** | **0.8435** |
+| the same search without the graph | −0.0406 (114 wins, 238 losses, p = 0.0001) | |
+
+Fusion alone gains 0.0159 from the graph there, and the weight of three tenths
+chosen on the own corpus is again the best of the sweep — the first external
+confirmation of a graph setting. The rest of the gain is the reranker being
+shown the graph's ten strongest finds below its head: of 153 supporting titles
+the graph alone found, none had reached the head (median fused rank 99). The
+harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
+paying.
+
 ### What the fusion function itself is worth
 
 Two mechanisms were built for the finding above and swept offline from one pass
