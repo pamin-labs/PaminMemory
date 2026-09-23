@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use pamin_core::{Fusion, Why};
+use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::SearchHit;
 use pamin_index::Rerank;
 
@@ -70,6 +70,186 @@ pub fn rules() -> Vec<(String, Rule)> {
 /// Which row of [`rules`] ships.
 pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
     rules.iter().position(|(_, rule)| *rule == Rule::Substitute)
+}
+
+/// Ways of spending less on the reranker, each priced against spending all of
+/// it: a cascade, where the small model scores what the pass would show and
+/// the large one orders only its best `n`; and gates, where a signal read
+/// before the pass decides the query does not need it at all.
+///
+/// **Why both.** The large model is 1.4 s of a 1.5 s search. Replacing it with
+/// the small one is measured to cost accuracy -- `fast` is below no reranking
+/// on same-language queries -- so the small model is only allowed to *choose*
+/// here, never to order what is returned. And on XQuAD-R no reranking at all
+/// was the cheapest sufficient choice for 43.4% of cross-lingual queries and
+/// 98.4% of same-language ones, so a gate has room -- if anything visible
+/// before the pass can find those queries, which a relative-score gate could
+/// not.
+///
+/// One approximation, the one the pairs sweep states: the large model's scores
+/// are the ones it gave in the shipped batch, and a smaller batch would score
+/// a pair slightly differently. A chosen row is confirmed by a timed run.
+pub struct Routes {
+    labels: Vec<(String, ())>,
+    measured: Vec<BTreeMap<String, crate::scoring::Scores>>,
+    /// Per row, total pairs through the small model and through the large one.
+    pairs: Vec<(u64, u64)>,
+    queries: u64,
+}
+
+/// How many the cascade lets the large model order.
+const CASCADE: [usize; 5] = [4, 6, 8, 10, 12];
+
+/// The gates, each a rule on the fused list before the pass.
+const GATES: [&str; 4] = [
+    "skip: top has lexical and another channel",
+    "skip: top found by three channels",
+    "skip: top is first in both lexical channels",
+    "skip: three channels agree, no graph find",
+];
+
+impl Default for Routes {
+    fn default() -> Self {
+        let mut labels = vec![
+            ("fusion alone".to_string(), ()),
+            ("accurate on all (ships)".to_string(), ()),
+        ];
+        labels.extend(
+            CASCADE
+                .iter()
+                .map(|n| (format!("cascade: fast picks {n}"), ())),
+        );
+        labels.extend(GATES.iter().map(|gate| (gate.to_string(), ())));
+        let rows = labels.len();
+        Self {
+            labels,
+            measured: vec![BTreeMap::new(); rows],
+            pairs: vec![(0, 0); rows],
+            queries: 0,
+        }
+    }
+}
+
+impl Routes {
+    /// One shipped search, its replay, and a small model to score what the
+    /// pass showed. `score` scores one ranking into `group`.
+    pub fn observe(
+        &mut self,
+        group: &str,
+        hits: &[SearchHit],
+        replayed: &Replayed,
+        small: &mut pamin_index::Reranker,
+        query: &str,
+        score: impl Fn(&mut crate::scoring::Scores, &[String]),
+    ) {
+        self.queries += 1;
+        let by_name: HashMap<&str, &SearchHit> =
+            hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
+        let shown = replayed.movable.len() as u64;
+
+        // What the list looked like before the pass, for the gates.
+        let channels_of = |name: &str| -> Vec<(Channel, u32)> {
+            by_name[name]
+                .result
+                .why
+                .iter()
+                .filter_map(|why| match why {
+                    Why::Channel { channel, rank, .. } => Some((*channel, *rank)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let top = replayed
+            .fused
+            .first()
+            .map(|name| channels_of(name))
+            .unwrap_or_default();
+        let lexical = |channel: &Channel| {
+            matches!(channel, Channel::LexicalSegmented | Channel::LexicalNgram)
+        };
+        let graph_find = replayed.movable.iter().any(|at| *at >= replayed.head);
+        let skips = [
+            top.iter().any(|(channel, _)| lexical(channel)) && top.len() >= 2,
+            top.len() >= 3,
+            top.iter()
+                .filter(|(channel, rank)| lexical(channel) && *rank == 1)
+                .count()
+                == 2,
+            top.len() >= 3 && !graph_find,
+        ];
+
+        let fused = replayed.fused.clone();
+        let shipped = replayed.order(Rule::Substitute);
+        let mut orders: Vec<(Vec<String>, u64, u64)> =
+            vec![(fused.clone(), 0, 0), (shipped.clone(), 0, shown)];
+
+        // The small model scores exactly what the pass would show.
+        let documents: Vec<String> = replayed
+            .movable()
+            .iter()
+            .map(|name| {
+                let hit = by_name[name];
+                render(&hit.topic, &hit.state.content, hit.seed.as_deref(), true)
+            })
+            .collect();
+        let mut cheap = vec![0.0f32; documents.len()];
+        if !documents.is_empty() {
+            let borrowed: Vec<&str> = documents.iter().map(String::as_str).collect();
+            for ranked in small.rank(query, &borrowed).expect("rank") {
+                cheap[ranked.position] = ranked.score;
+            }
+        }
+        for n in CASCADE {
+            let mut keep: Vec<usize> = (0..documents.len()).collect();
+            keep.sort_by(|left, right| {
+                cheap[*right].total_cmp(&cheap[*left]).then(left.cmp(right))
+            });
+            keep.truncate(n);
+            keep.sort_unstable();
+            let positions: Vec<usize> = keep.iter().map(|at| replayed.movable[*at]).collect();
+            let mut best: Vec<usize> = (0..keep.len()).collect();
+            best.sort_by(|left, right| {
+                replayed.model[keep[*right]]
+                    .total_cmp(&replayed.model[keep[*left]])
+                    .then(left.cmp(right))
+            });
+            let order = if positions.len() < 2 {
+                fused.clone()
+            } else {
+                pamin_engine::place(fused.clone(), &positions, replayed.head, &best)
+            };
+            orders.push((order, shown, keep.len() as u64));
+        }
+        for skip in skips {
+            orders.push(if skip {
+                (fused.clone(), 0, 0)
+            } else {
+                (shipped.clone(), 0, shown)
+            });
+        }
+
+        for ((order, cheap_pairs, dear_pairs), (into, pairs)) in orders
+            .iter()
+            .zip(self.measured.iter_mut().zip(self.pairs.iter_mut()))
+        {
+            score(into.entry(group.to_string()).or_default(), order);
+            pairs.0 += cheap_pairs;
+            pairs.1 += dear_pairs;
+        }
+    }
+
+    pub fn report(&self, title: &str) {
+        report(title, &self.labels, Some(1), &self.measured);
+        println!("  pairs a search, small model / large model");
+        for ((label, _), (cheap, dear)) in self.labels.iter().zip(&self.pairs) {
+            println!(
+                "  {label:<44}  {:>6.1} / {:>6.1}",
+                *cheap as f64 / self.queries.max(1) as f64,
+                *dear as f64 / self.queries.max(1) as f64
+            );
+        }
+        println!();
+    }
 }
 
 /// Every row against the one that ships, group by group and as one

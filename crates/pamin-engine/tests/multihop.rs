@@ -48,6 +48,7 @@
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
+//! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
 //! | `REACH` | where the supporting titles sit, channel by channel, in the names-only and shared-name projects |
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
 
@@ -344,6 +345,37 @@ async fn search_answers_questions_that_take_several_steps() {
         }
         paired.report(&format!(
             "vectors embedding the topic name, MuSiQue, {named}"
+        ));
+        return;
+    }
+
+    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
+    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    if std::env::var("ROUTES").is_ok() {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let tier = Rerank::default();
+        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+            .expect("load the small reranker");
+        let mut routes = reranking::Routes::default();
+        for query in &corpus.queries {
+            let hits = engine
+                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let replayed = reranking::replay(&hits, tier);
+            routes.observe(
+                &query.group,
+                &hits,
+                &replayed,
+                &mut small,
+                &query.text,
+                |into, ranking| score(into, query, ranking),
+            );
+        }
+        routes.report(&format!(
+            "spending less on the {} reranker, MuSiQue, {named}",
+            tier.name()
         ));
         return;
     }

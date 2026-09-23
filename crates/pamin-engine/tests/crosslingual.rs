@@ -1224,6 +1224,39 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
+    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    if std::env::var("ROUTES").is_ok() {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let tier = Rerank::default();
+        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+            .expect("load the small reranker");
+        let mut routes = reranking::Routes::default();
+        for query in &queries {
+            let hits = engine
+                .search_reranked(query.text(), WIDE, DEPTHS, tier)
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let replayed = reranking::replay(&hits, tier);
+            for group in GROUPS {
+                routes.observe(
+                    group,
+                    &hits,
+                    &replayed,
+                    &mut small,
+                    query.text(),
+                    |into, ranking| score_group(into, query, group, ranking),
+                );
+            }
+        }
+        routes.report(&format!(
+            "spending less on the {} reranker, XQuAD-R, {named}",
+            tier.name()
+        ));
+        return;
+    }
+
     // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
     // `reranking::in_context`.
     if std::env::var("CONTEXT").is_ok() {

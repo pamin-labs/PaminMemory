@@ -283,6 +283,40 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
+    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
+    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    if std::env::var("ROUTES").is_ok() {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let tier = Rerank::default();
+        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+            .expect("load the small reranker");
+        let mut routes = reranking::Routes::default();
+        for query in &queries {
+            let hits = engine
+                .search_reranked(&query.query, WIDE, DEPTHS, tier)
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let replayed = reranking::replay(&hits, tier);
+            let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+            routes.observe(
+                &query.group,
+                &hits,
+                &replayed,
+                &mut small,
+                &query.query,
+                |into, ranking| {
+                    into.add(ranking, relevant.len(), |topic| relevant.contains(topic));
+                },
+            );
+        }
+        routes.report(&format!(
+            "spending less on the {} reranker, own corpus, {named}",
+            tier.name()
+        ));
+        return;
+    }
+
     // `RERANK_RULES` asks which candidates the reranker should be allowed to
     // move, which is a question the tier table cannot ask: it compares tiers
     // under one rule, and this compares rules under one tier.
