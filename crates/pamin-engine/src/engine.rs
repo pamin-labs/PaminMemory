@@ -1255,8 +1255,24 @@ impl Engine {
         depths: Depths,
         rerank: Rerank,
     ) -> Result<Vec<SearchHit>> {
+        self.search_reranked_with(query, limit, depths, rerank, Fusion::default())
+            .await
+    }
+
+    /// [`search_reranked`](Self::search_reranked) over a fusion other than
+    /// the shipped one, for a measurement that has to hold everything else
+    /// the product does fixed -- the reranker above all -- while one channel
+    /// is taken out or reweighted.
+    pub async fn search_reranked_with(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        rerank: Rerank,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
         let hits = self
-            .search_fused(query, fused_for(limit, rerank), depths, Fusion::default())
+            .search_fused(query, fused_for(limit, rerank), depths, fusion)
             .await?;
         if rerank == Rerank::Off || hits.is_empty() {
             return Ok(hits);
