@@ -428,15 +428,15 @@ decision at all appears nowhere, and it is the load-bearing one. Every
 | [2604.01733](https://arxiv.org/html/2604.01733v1) (2026) | 23,088 queries, the only real sweep of `k` in the window | `k = 10` Recall@5 0.716 against `k = 60`'s 0.695 — the low constant wins, and nothing published derives one |
 
 Read together they say the knob this project tuned is the low-leverage one:
-`k` is worth one to three points and normalisation three to eight. `Combine`
-implements all three combiners, `Reciprocal` still ships, and the offline grid
-prices each of them with and without the confidence rule, because the two
-mechanisms answer different halves and a row that moved both could not say
-which half moved it. One prediction is written down in a unit test rather than
-here: CombMNZ multiplies by agreement, and agreement between a confident
-channel and a worthless one is exactly the failure measured on both
-cross-lingual groups above, so the combiner the systematic comparison ranks
-first should rank last on these corpora.
+`k` is worth one to three points and normalisation three to eight. So
+`Combine` implemented the score combiners beside `Reciprocal`, which shipped
+then, and the offline grid priced each of them with and without the confidence
+rule, because the two mechanisms answer different halves and a row that moved
+both could not say which half moved it. One prediction was written down in a
+unit test before the run: CombMNZ multiplies by agreement, and agreement
+between a confident channel and a worthless one is exactly the failure measured
+on both cross-lingual groups above, so the combiner the systematic comparison
+ranks first should rank last on these corpora.
 
 **What that argues for, and what was built.** Not a normaliser: standardising a
 channel's candidates removes the units and not the quality, so a channel whose
@@ -452,8 +452,9 @@ memories are written, which that paper never had to pay because its corpus was
 static, and which would make the mechanism wrong for a user the moment they
 wrote something.
 
-`Fusion::with_confidence` implements it, `Combine` implements the score
-combiners, and **both are off by default**. The sweep runs offline from one
+`Fusion::with_confidence` implemented it and `Combine` the score combiners,
+**both off by default**, and both have since been removed — see
+*Fusion designs measured and removed* below. The sweep runs offline from one
 pass over each corpus — `channels::as_if` replays a run's trace through the
 shipped `fuse`, so a grid that used to cost thirteen minutes a row costs
 microseconds a row.
@@ -555,10 +556,10 @@ a spread grid read without that in mind shows a ceiling as a plateau. But the
 substantive finding is worse than a badly chosen constant. On this corpus the
 lexical channels *are* mildly harmful, and their score distributions still look
 confident: **the measure cannot see, here, the thing it was built to see.** It
-stays off, and that is now measured rather than cautious. Percentile
-normalisation against a corpus-wide distribution remains the alternative the
-literature supports, and remains refused for the reason above — a memory
-store's distribution moves on every write.
+never shipped, and has since been removed; that is measured rather than
+cautious. Percentile normalisation against a corpus-wide distribution remains
+the alternative the literature supports, and remains refused for the reason
+above — a memory store's distribution moves on every write.
 
 **What MIRACL does support is the lexical split**, and it is the one result
 here that a one-dimensional sweep could not have produced. The best row of the
@@ -730,7 +731,7 @@ reference) separates fusion functions by what they normalise with, and finds
 beats RRF at p < 0.01 on nearly every dataset it tests (MS MARCO nDCG@1000: RRF
 0.425, TM2C2 0.454, semantic alone 0.441). Two of its secondary findings land
 directly on decisions recorded above: an *unbounded* normalisation degrades
-badly, which is `Combine::Standardised`'s recall loss arrived at
+badly, which is the standardised sum's recall loss arrived at
 independently; and a tuned RRF `k` **reverses its own ordering out of domain**,
 which is an argument against ever quoting this project's `k = 10` as a
 transferable choice. What it costs this project is that `Combine::Banded`
@@ -738,12 +739,13 @@ normalises with the *empirical* min and max over the query's own candidates and
 then maps onto a band whose width depends on `n` — two query-dependent
 statistics where TM2C2 has none.
 
-That is a real finding and it is **not** yet an action, for a reason specific to
-this engine: a theoretical maximum exists for a cosine similarity and does not
-exist for a BM25 score. Substituting a fixed constant for it would put back the
-per-corpus tuning the taxonomy's own argument is against. The honest experiment
-is to keep the recall-preserving floor and replace only the empirical extremes,
-and until that is written it is not measured.
+That was a real finding, and it has since been measured rather than argued.
+A theoretical maximum exists for a cosine similarity and not for a BM25 score,
+so the version built reads each channel from its score's *infimum* up to the
+query's best — TM2C2 itself, and the band read that way. Both lost badly, for a
+reason the taxonomy's corpora could not show: this engine's embedder is
+anisotropic, so read from minus one its fifty candidates are nearly flat. See
+*Fusion designs measured and removed* below.
 
 **The per-query-weight route is closed by measurement, not by argument.**
 `arXiv:2608.00183` builds exactly the oracle this project built — a per-query
@@ -775,6 +777,27 @@ benchmark*, and no evaluation of language- or script-conditional fusion weights
 at all. The +0.0283 (p = 0.0046) this project measured for zero lexical weight
 on its own cross-lingual group is therefore its own evidence rather than a
 confirmation of anyone else's.
+
+### Fusion designs measured and removed
+
+Each of these was built, swept offline against what ships, and deleted once the
+measurement was in. The code, its tests and its sweep rows are gone; what each
+was worth is recorded here so the question is not reopened without new
+evidence. `Combine::Banded` ships, and `Combine::Reciprocal` is kept, reachable
+through `Fusion::with`, as the baseline every figure in this record is quoted
+against.
+
+| design | what it was | measured | why it lost |
+| --- | --- | --- | --- |
+| Standardised sum (`Combine::Standardised`) | each channel's scores centred on their own mean and divided by their own deviation, summed by weight | nDCG@10 better in three of four groups (own cross-lingual +0.0281, p = 0.0037), but XQuAD-R cross-lingual `recall@50` **0.8960 → 0.7765**, through a floor of 0.8000 | A centred score is negative below its channel's mean, so a weak lexical channel's confident hit at `+2` outranks the vector channel's genuine deep hit at `−1`. The head improves and the relevant candidates at ranks ten to fifty fall out, where no reranker can recover them. |
+| CombMNZ (`Combine::StandardisedTimesVotes`) | the standardised sum, multiplied by how many channels returned the candidate | own cross-lingual **−0.0392**, 3 wins to 21, p = 0.0008; XQuAD-R −0.0350 cross-lingual and +0.0700 same-language, recall 0.7764 | It multiplies by agreement, and agreement between a confident channel and a worthless one is the weakest-link failure. It pays only where the agreeing channels are independently right, and it inherits the standardised sum's recall loss. |
+| TM2C2 (`Combine::Convex`, `arXiv:2210.11934`) | each channel on theoretical min-max — from its score's infimum, 0 for BM25 and −1 for a cosine, to the query's best — convexly weighted, no band | own cross-lingual **0.7791 → 0.5744**, 0 wins to 37 losses, at the paper's own alpha, and no lexical or graph weight in the sweep recovered it; XQuAD-R cross-lingual **−0.1480** | Anisotropy of the embedder. A query's fifty vector candidates sit in the top ~17% of the distance from the cosine infimum to the best of them (median), where BM25's spread across about three quarters of theirs. Read from −1, the vector channel's own ordering is flattened to a few hundredths, and the lexical and graph channels decide among its candidates. |
+| Band on theoretical min-max (`Combine::BandedTheoretical`) | `Banded`, with a candidate's place in its channel's band read from the infimum rather than from the channel's worst candidate | own cross-lingual **0.4214** against the shipped 0.7791 | The same anisotropy: every vector candidate lands at the top of its band, so the band keeps the range and loses the channel's ordering. |
+| Per-channel confidence (`Fusion::with_confidence`) | each channel's weight scaled by how far its best candidate stands above its own field, `(best − mean) / deviation` over a `spread`, clamped to a `floor` | on rank fusion +0.0118 at best (8 / 0, p = 0.0381) on a narrow plateau; 0.0000 on MIRACL at low spreads. Cross-validated over the whole sweep of about a hundred settings, nothing beats what ships on held-out queries (own p = 0.57, XQuAD-R p = 0.10), and the XQuAD-R choice, spread 5 floor 0.5, is a net loss on the own corpus | A standardised top score cannot exceed `sqrt(n − 1)`, 7.00 over fifty candidates, so a low spread clamps every channel to full weight. Above that, on MIRACL the mildly harmful lexical channels still look confident, so the measure cannot see what it was built to see; everywhere else its gains were trades between groups. |
+
+The figures were taken while the code existed, by the harnesses of the time;
+nothing in the tree today can reproduce them, and that is the point of writing
+them down.
 
 ### What the closest published system does differently, and what that explains
 
@@ -813,7 +836,7 @@ from retrieval quality.
 five terms as a plain normalised weighted sum: embedding similarity, query
 relevance, a graph-need probability times a relation weight, information
 novelty, and edge weight plus evidence support. A plain weighted sum of
-heterogeneous signals is exactly what failed here — `Combine::Standardised`
+heterogeneous signals is exactly what failed here — the standardised sum
 lost cross-lingual recall through the floor, for the reason set out above. The
 difference is not the arithmetic. **Four of their five terms are probabilities
 on `[0, 1]` emitted by one calibrated model, so they are commensurable by
@@ -1732,7 +1755,7 @@ confidence are different quantities — so only their *ranks* can be combined.
 Everything else follows from that: reciprocal rank fusion's contribution range
 is narrow enough that a channel's *weight* decides against another channel's
 *position*, `Combine::Banded` exists to preserve exactly that band, its floor is
-`(k + 1) / (k + n)` for that reason, and `Combine::Standardised` lost
+`(k + 1) / (k + n)` for that reason, and the standardised sum lost
 cross-lingual recall through the floor when it broke the property. One
 constraint, one design.
 
