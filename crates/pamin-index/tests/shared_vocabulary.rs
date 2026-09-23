@@ -49,17 +49,7 @@ const EMBEDDER: &str = "gpahal/bge-m3-onnx-int8";
 /// the repository `fastembed` read each from. Not measured: their memory is a
 /// session's as much as a vocabulary's, and `accurate` is the one a server
 /// holds by default.
-const TIERS: &[(Rerank, &str)] = &[
-    (
-        Rerank::Balanced,
-        "onnx-community/gte-multilingual-reranker-base",
-    ),
-    (
-        Rerank::Noncommercial,
-        "jinaai/jina-reranker-v2-base-multilingual",
-    ),
-    (Rerank::Fast, "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"),
-];
+const TIERS: &[(Rerank, &str)] = &[(Rerank::Fast, "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")];
 const ACCURATE: &str = "onnx-community/bge-reranker-v2-m3-ONNX";
 
 /// What `Reranker::rank` batched by, and truncated at, before this change,
