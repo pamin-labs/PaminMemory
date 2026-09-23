@@ -1312,9 +1312,9 @@ On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between ra
 | Tier | Loads | A search costs | Of which reranking | Cross-lingual nDCG@10 | Same-language |
 | --- | --- | --- | --- | --- | --- |
 | `off` | nothing | 99 ms | — | 0.6114 | 0.7829 |
-| `fast` (default) | 119 MB | 359 ms | 260 ms | **+0.0397** `p=0.0001` | **−0.0060** `p=0.0008` |
+| `fast` | 119 MB | 359 ms | 260 ms | **+0.0397** `p=0.0001` | **−0.0060** `p=0.0008` |
 | `balanced` | 341 MB | 821 ms | 722 ms | +0.0094 `p=0.0146` | +0.0029 `p=0.0293` |
-| `accurate` | 571 MB | 1522 ms | 1423 ms | **+0.0482** `p=0.0001` | +0.0006 *ns* |
+| `accurate` (default) | 571 MB | 1522 ms | 1423 ms | **+0.0482** `p=0.0001` | +0.0006 *ns* |
 | `noncommercial` | 280 MB | 905 ms | 806 ms | +0.0279 `p=0.0001` | +0.0003 *ns* |
 
 Five arms, one run, the same 1,190 queries, paired bootstrap at 10,000
@@ -1383,7 +1383,7 @@ Confining it was previously recorded here as making the same-language column *un
 
 The rule was a language comparison first, since "written in another language" is what the case really is. The two rules pick the same candidates — they agree on 93% of a shortlist and score within 0.002 — but the language test needs the query's language, and that is exactly what a detector will not commit to for a short query: `detect_language` returns nothing for "how does deployment work". A rule that quietly does nothing on the commonest shape of query is worse than a slightly different rule.
 
-**`fast` is the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 260 ms against 1423 — 5.5x. For that it gives up 0.0085 cross-lingual, and it gives up the 0.0066 of same-language that `accurate` holds on to: `accurate` is the only tier that costs nothing on either group, and `fast` is the only one that costs something.
+**`fast` was the default on latency, not on quality.** It is fourteen times smaller than `accurate` and its pass costs 260 ms against 1423 — 5.5x. For that it gives up 0.0085 cross-lingual, and it gives up the 0.0066 of same-language that `accurate` holds on to: `accurate` is the only tier that costs nothing on either group, and `fast` is the only one that costs something.
 
 The appeal to *Shallow Cross-Encoders for Low-Latency Retrieval* (arXiv 2403.20222) turns on a latency budget, and the budget is what this section got wrong twice. At the figures recorded here the gap was 2.5x and the shallow model's case looked thin; re-measured it is 4.2x end to end, 359 ms against 1522. `fast` stays the default, and the reason is unchanged and now better supported: a search that takes a second is a different product from one that takes a quarter, and the difference it buys is in the third decimal. That is a judgement about the budget rather than a result, and `--rerank accurate` is there for a workspace that judges differently.
 
@@ -1406,6 +1406,20 @@ It costs accordingly: 1725 ms against 332. Two seconds a search is not an intera
 So the recommendation is withdrawn rather than softened: **on a single-language corpus the pass pays**, by half of what it pays on parallel sentences, and the tier to choose is a latency question like any other. What remains true is the mechanism the advice was reaching for — the pass reorders only what the lexical channels missed, and within one language that is a smaller fraction of the shortlist, 84 of 482 queries here against 1,042 of 1,190 there. A smaller fraction is not zero.
 
 One figure elsewhere looks like a contradiction and is not. [measured.md](../measured.md) prices `fast` on this same corpus at **−0.0152** (37 wins, 57 losses, p = 0.0129). That arm is the **`speed` profile**; this table is the **`accuracy`** profile, the default. Two embedding models produce two different shortlists and the pass is worth different things on each, which is a result rather than a discrepancy — and the sign flip between them is the strongest evidence on this page that a reranker's value is a property of what fusion hands it rather than of the model.
+
+**The default moved to `accurate`, and what moved it was the ordering rather than a new number.** Every paragraph above that kept `fast` did so on latency, and each one said it was a judgement about the budget. The project's ordering is accuracy, then latency, then memory, then disk, and under that ordering the judgement goes the other way. Put query by query through `search_reranked`, `accurate` against `fast`:
+
+| corpus, group | `accurate` − `fast` | wins / losses / ties | p |
+| --- | --- | --- | --- |
+| XQuAD-R, cross-lingual | **+0.0086** | — | 0.0015 |
+| XQuAD-R, same-language | **+0.0066** | — | 0.0001 |
+| MIRACL Swahili, `speed` profile | **+0.0411** | 83 / 12 / 387 | 0.0001 |
+| own corpus, cross-lingual | +0.0151 | 16 / 11 / 16 | 0.37 |
+| own corpus, relational | +0.0096 | 3 / 1 / 16 | 0.63 |
+
+`accurate` is never behind, and significantly ahead wherever there are queries enough to say. `fast` is below no reranking at all on both same-language measurements — XQuAD-R −0.0060 (p = 0.0002) and MIRACL at the `speed` profile −0.0154 (35 / 58, p = 0.014) — so the tier that shipped was, for a query whose answer shares its language, worse than asking for nothing. The cost is paid in the order the project ranks things: 1522 ms against 359, a quarter of the throughput, 571 MB loaded against 119. `--rerank fast` and `--rerank off` buy it back for a workspace that has to.
+
+**Exempting graph-reached candidates from the pass was measured and dropped.** The relational group scores lower through the shipped path than through fusion alone, and the mechanism is specific: such an answer is relevant because *another* memory mentions it, which a cross-encoder reading the query and that one memory cannot see. The engine already exempts candidates with lexical evidence, so exempting candidates with graph evidence on the same terms was the obvious rule, priced at the `fast` tier from one shipped run by replaying both. It recovered relational (+0.0259, 4 / 0, p = 0.12) and cost cross-lingual (−0.0108, 0 / 10, p = 0.0018): it moved the loss rather than removing it.
 
 A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
 
