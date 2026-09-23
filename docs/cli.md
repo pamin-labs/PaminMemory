@@ -1004,12 +1004,23 @@ authority store, not the index.
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
 
-It is also how a grown project resizes its vector segments. The index sizes
-them from the number of memories it holds when it is created, which for a
-project starting from nothing is the smallest size; a project that has since
-grown by orders of magnitude keeps that size until it is rebuilt. Rebuilding
-recomputes it from what the project holds now, so a project that has outgrown
-its layout searches faster afterwards.
+It is also how a grown project resizes its vector segments when no server is
+running. The index sizes them from the number of memories it holds when it is
+created, which for a project starting from nothing is the smallest size; a
+project that has since grown by orders of magnitude keeps that size until the
+index is recreated. Rebuilding recomputes it from what the project holds now,
+so a project that has outgrown its layout searches faster afterwards. Where the
+old index was built the way a new one is, a memory whose text has not changed
+keeps the vector it already has rather than being embedded again.
+
+A running server does this on its own. Once a project's index is spread over
+more than twice the segments it should be, the server copies it into the right
+shape in the background — reading it a batch at a time while it goes on
+answering searches and writes, and building the copy's vector graph with the
+index free — then swaps the copy in. Writes made during the copy are carried
+over before the swap. Nothing is embedded, and for the length of the copy the
+disk holds the index twice. `pamin cascade drain` reports a badly shaped index
+either way.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
@@ -1095,6 +1106,14 @@ loaded an embedding model before it did any work of its own.
 `pamin serve` runs it in the foreground instead, which is useful when you want
 to watch it. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
+
+Between requests it looks after the indexes it holds open: it makes applied
+writes durable, compacts an index spread over too many files, and reshapes one
+spread over too many segments, as `pamin reindex` describes. A reshape logs
+`reshaping the index` when it starts and `reshaped the index` with the segment
+counts and its duration when it finishes, at the `info` level that
+`PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
+default, and leaves the index it was copying in service.
 
 One server serves many projects, and it keeps the sixteen most recently used
 indexes open; the seventeenth closes the one nobody has touched for longest.
