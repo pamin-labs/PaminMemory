@@ -605,18 +605,22 @@ impl Engine {
         let documents = repository::topic_count(database.pool(), project.id).await?;
 
         // A rebuild waits out a reshape of this index, and holds it off until
-        // `reindex` finishes: both move the directory. Anything else opening
-        // it only has to put back what a reshape that died mid-swap left
-        // aside -- and not while one is running here, when the directory is
-        // that reshape's to move.
+        // `reindex` finishes: both move the directory. Every open first puts
+        // back what a reshape that died mid-swap left aside, so a rebuild can
+        // lend its vectors and anything else finds the index rather than
+        // creating an empty one -- but not while a reshape is running here,
+        // when the directory is that reshape's to move.
+        let exclusion = crate::reshape::exclusive(&dir);
         let exclusive = if discard {
-            Some(crate::reshape::exclusive(&dir).lock_owned().await)
+            Some(exclusion.lock_owned().await)
         } else {
-            if let Ok(_running) = crate::reshape::exclusive(&dir).try_lock_owned() {
-                off_the_runtime(|| pamin_index::Reshape::recover(&dir))?;
-            }
-            None
+            exclusion.try_lock_owned().ok()
         };
+        if exclusive.is_some() {
+            off_the_runtime(|| pamin_index::Reshape::recover(&dir))?;
+        }
+        // Only a rebuild keeps it past the open.
+        let exclusive = exclusive.filter(|_| discard);
 
         let (index, previous) = off_the_runtime(|| {
             // Set aside rather than deleted, so the rebuild can take the
