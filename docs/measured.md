@@ -439,6 +439,23 @@ weight from query features -- the shape of DAT and MoR -- turns lexical off on
 fusion (Bruch et al., TOIS 2023; DAT and MoR, 2025) reports gains inside one
 benchmark mix; the held-out-corpus test is the one that fails here.
 
+**The one lead the fit left was tested on the shipped path and refuted.**
+Offline, the graph at half weight without its support rule moved MuSiQue's
+recall@20 by +0.0175. Through `search_reranked_with`, every question paired
+against what ships (the `GRAPH_VARIANTS` arm this was measured with is
+deleted):
+
+| | own, cross-lingual | own, relational | MuSiQue, 1,000 two-hop |
+| --- | --- | --- | --- |
+| graph 0.50, no support rule | −0.0060, 0W/6L, p = 0.035 | +0.0201, n.s. | −0.0026, 86W/85L, n.s. |
+| graph 0.50 | −0.0030, 0W/6L, p = 0.035 | +0.0201, n.s. | −0.0023, 85W/83L, n.s. |
+| graph 0.30, no support rule | ±0, every query tied | ±0 | ±0, every query tied |
+
+The recall the fit found in the fused list does not survive the reranker, and
+the last row says something else: at the shipped weight the support rule does
+nothing on 1,157 questions, including MuSiQue's 12,840-edge graph -- the dense
+case it was kept for.
+
 **Nothing has changed default.** Reciprocal rank fusion still ships at the
 weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
 same-language queries on the same 1,190 questions, and it has to report before

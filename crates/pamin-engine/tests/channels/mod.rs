@@ -876,44 +876,6 @@ pub struct Setting {
     pub depth: Option<usize>,
 }
 
-/// Graph-channel settings worth pairing against the shipped fusion on the path
-/// a user gets, reranker and all.
-///
-/// The lead they test came out of the offline fit in `features`: the graph at
-/// half weight with its support rule off moved MuSiQue's recall@20 by +0.0175
-/// with fused nDCG@10 unchanged. That was found after looking at the data, so
-/// it is a hypothesis until the reranked path says otherwise -- which is what
-/// [`compare_reranked`] asks.
-pub fn graph_variants() -> Vec<(String, Setting)> {
-    [
-        (
-            "graph 0.50, no support rule",
-            Fusion::default()
-                .with_weight(Channel::Graph, 0.5)
-                .needing_support([]),
-        ),
-        (
-            "graph 0.30, no support rule",
-            Fusion::default().needing_support([]),
-        ),
-        (
-            "graph 0.50",
-            Fusion::default().with_weight(Channel::Graph, 0.5),
-        ),
-    ]
-    .into_iter()
-    .map(|(name, fusion)| {
-        (
-            name.to_string(),
-            Setting {
-                fusion,
-                depth: None,
-            },
-        )
-    })
-    .collect()
-}
-
 /// How many candidates the reranker reads, around the shipped twenty.
 ///
 /// The constant was settled at the `fast` tier on sentences; the default is
@@ -935,16 +897,13 @@ pub fn depth_variants() -> Vec<(String, Setting)> {
         .collect()
 }
 
-/// The variants an arm was asked for: `GRAPH_VARIANTS` or `DEPTH_VARIANTS`.
+/// The variants an arm was asked for: `DEPTH_VARIANTS`.
+///
+/// A graph-channel set lived here too -- the graph at half weight without its
+/// support rule, a lead from the offline fit in `features` -- and was deleted
+/// once the shipped path refuted it; see `docs/measured.md`.
 pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
-    let mut variants = Vec::new();
-    if std::env::var("GRAPH_VARIANTS").is_ok() {
-        variants.extend(graph_variants());
-    }
-    if std::env::var("DEPTH_VARIANTS").is_ok() {
-        variants.extend(depth_variants());
-    }
-    (!variants.is_empty()).then_some(variants)
+    std::env::var("DEPTH_VARIANTS").is_ok().then(depth_variants)
 }
 
 /// Every question through `search_reranked_with` under the shipped setting and
