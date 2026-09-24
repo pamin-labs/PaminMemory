@@ -238,13 +238,6 @@ impl Passage {
 /// The encoding a new index is built with.
 const PASSAGE: Passage = Passage::Named;
 
-/// What one document in this index stands for.
-///
-/// Recorded beside the model because an index keyed by something else is not
-/// stale, it is silently empty: the old scheme's identifiers are read as the
-/// new scheme's, match nothing, and every search comes back with no results
-/// and no error anywhere. Changing what a document is keyed by means changing
-/// this, which turns that silence into a message naming `pamin reindex`.
 /// How many segments a collection is aimed at.
 ///
 /// Four, measured. Building 100,000 documents at several segment sizes, against
@@ -497,36 +490,15 @@ fn unindexed_budget() -> u64 {
     pamin_core::setting::positive("PAMIN_UNINDEXED_BUDGET").unwrap_or(UNINDEXED_BUDGET)
 }
 
+/// What one document in this index stands for.
+///
+/// Recorded beside the model because an index keyed by something else is not
+/// stale, it is silently empty: the old scheme's identifiers are read as the
+/// new scheme's, match nothing, and every search comes back with no results
+/// and no error anywhere. Changing what a document is keyed by means changing
+/// this, which turns that silence into a message naming `pamin reindex`.
 const DOCUMENT_GRAIN: &str = "topic";
 
-/// How many neighbours each document keeps in the vector graph.
-///
-/// Measured, on 50,000 clustered 1024-dimensional vectors, against exact
-/// nearest neighbours:
-///
-/// | m | ef_construction | ef | recall@10 | per query |
-/// |---|---|---|---|---|
-/// | 16 | 100 | 300 (default) | 0.689 | 2.4 ms |
-/// | 16 | 500 | 300 | 0.708 | 2.3 ms |
-/// | 16 | 500 | 1200 | 0.917 | 7.9 ms |
-/// | 16 | 500 | 2048 | 0.952 | 12.6 ms |
-/// | 32 | 500 | 300 | 0.862 | 4.3 ms |
-/// | **32** | **500** | **700** | **0.952** | **9.5 ms** |
-/// | 32 | 500 | 1200 | 0.985 | 13.4 ms |
-///
-/// The first row is what this shipped: nearly a third of a query's true
-/// nearest neighbours missed, on a corpus far smaller than the ones this store
-/// is for. Nothing reported it, because a vector channel returning the wrong
-/// neighbours returns plausible ones.
-///
-/// Sixteen to thirty-two doubles the graph, and the graph is the part of an
-/// index that quantizing the payload does not shrink. It is still the right
-/// trade. `ef` alone can buy most of the recall back on a smaller graph -- 16
-/// reaches 0.952 at ef 2048 -- but 2048 is the top of the range the engine
-/// accepts, and recall falls as a project grows (the same configuration scores
-/// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
-/// configuration that needs the maximum at fifty thousand has nothing left at
-/// seven million.
 /// How the stored vectors are kept.
 ///
 /// The vector field is the largest thing on disk: 64.2 MB of a 116 MB index
@@ -662,6 +634,34 @@ fn vector_storage() -> VectorStorage {
         .unwrap_or(VECTOR_STORAGE)
 }
 
+/// How many neighbours each document keeps in the vector graph.
+///
+/// Measured, on 50,000 clustered 1024-dimensional vectors, against exact
+/// nearest neighbours:
+///
+/// | m | ef_construction | ef | recall@10 | per query |
+/// |---|---|---|---|---|
+/// | 16 | 100 | 300 (default) | 0.689 | 2.4 ms |
+/// | 16 | 500 | 300 | 0.708 | 2.3 ms |
+/// | 16 | 500 | 1200 | 0.917 | 7.9 ms |
+/// | 16 | 500 | 2048 | 0.952 | 12.6 ms |
+/// | 32 | 500 | 300 | 0.862 | 4.3 ms |
+/// | **32** | **500** | **700** | **0.952** | **9.5 ms** |
+/// | 32 | 500 | 1200 | 0.985 | 13.4 ms |
+///
+/// The first row is what this shipped: nearly a third of a query's true
+/// nearest neighbours missed, on a corpus far smaller than the ones this store
+/// is for. Nothing reported it, because a vector channel returning the wrong
+/// neighbours returns plausible ones.
+///
+/// Sixteen to thirty-two doubles the graph, and the graph is the part of an
+/// index that quantizing the payload does not shrink. It is still the right
+/// trade. `ef` alone can buy most of the recall back on a smaller graph -- 16
+/// reaches 0.952 at ef 2048 -- but 2048 is the top of the range the engine
+/// accepts, and recall falls as a project grows (the same configuration scores
+/// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
+/// configuration that needs the maximum at fifty thousand has nothing left at
+/// seven million.
 const GRAPH_DEGREE: i32 = 32;
 
 /// How hard the build works to place each document in the graph.
@@ -1335,6 +1335,17 @@ impl Projection for ProjectionIndex {
         Ok(self.collection.stats()?.doc_count)
     }
 
+    /// How many documents the collection holds, and the segment size it
+    /// recorded when it was created.
+    fn segmentation(&self) -> Result<Segmentation> {
+        Ok(Segmentation {
+            documents: self.collection.stats()?.doc_count,
+            // What the collection actually recorded, not what the policy would
+            // have chosen: the point of reporting this is that the two differ.
+            recorded: self.collection.schema()?.max_doc_count_per_segment(),
+        })
+    }
+
     /// How many files the index is spread across, counted from the directory.
     ///
     /// The engine reports documents and index completeness and nothing about
@@ -1346,15 +1357,6 @@ impl Projection for ProjectionIndex {
     /// A directory that cannot be read counts as nothing to do. This decides
     /// whether to schedule maintenance, and failing a write over it would be a
     /// worse answer than scheduling it a little late.
-    fn segmentation(&self) -> Result<Segmentation> {
-        Ok(Segmentation {
-            documents: self.collection.stats()?.doc_count,
-            // What the collection actually recorded, not what the policy would
-            // have chosen: the point of reporting this is that the two differ.
-            recorded: self.collection.schema()?.max_doc_count_per_segment(),
-        })
-    }
-
     fn file_count(&self) -> Result<u64> {
         fn walk(dir: &std::path::Path) -> u64 {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1458,6 +1460,7 @@ fn jittered(wait: Duration) -> Duration {
 /// The key is a UUID this crate wrote, so an unparseable one means the index is
 /// corrupt in a way a single query cannot act on, and failing recall over it
 /// would take the whole search down for one bad row.
+///
 /// `orient` turns the engine's number into one where larger is better, which
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a

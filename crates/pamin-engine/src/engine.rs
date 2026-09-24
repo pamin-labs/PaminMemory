@@ -737,14 +737,6 @@ impl Engine {
         })?)
     }
 
-    /// How many documents this project's projection holds.
-    ///
-    /// Public for the same reason as
-    /// [`vector_index_completeness`](Self::vector_index_completeness), and it
-    /// is the half that stops the other one passing vacuously: an *empty*
-    /// projection reports a completeness of 1.0, because everything it holds
-    /// is indexed and it holds nothing. So "the graph covers everything" is
-    /// only a claim about a graph once something is in there.
     /// How this project's index is segmented, against what the policy wants.
     ///
     /// Resegmenting means recreating the collection --
@@ -756,6 +748,14 @@ impl Engine {
         Ok(self.index().segmentation()?)
     }
 
+    /// How many documents this project's projection holds.
+    ///
+    /// Public for the same reason as
+    /// [`vector_index_completeness`](Self::vector_index_completeness), and it
+    /// is the half that stops the other one passing vacuously: an *empty*
+    /// projection reports a completeness of 1.0, because everything it holds
+    /// is indexed and it holds nothing. So "the graph covers everything" is
+    /// only a claim about a graph once something is in there.
     pub fn indexed_documents(&self) -> Result<u64> {
         Ok(off_the_runtime(|| self.index().document_count())?)
     }
@@ -1311,6 +1311,17 @@ impl Engine {
             .count())
     }
 
+    /// What the reranker at `tier` has done in this process, or `None` if it
+    /// was never loaded.
+    ///
+    /// Here because three deferred decisions turn on these counters and none
+    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
+    /// wants them across a run reads them once at the end: they are lifetime
+    /// totals for the loaded model and are lost when an idle tier is released.
+    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+        self.models.counted(tier)
+    }
+
     /// Search, then reorder the head of the result with a cross-encoder.
     ///
     /// Only the candidates no lexical channel found, and only into the
@@ -1339,17 +1350,6 @@ impl Engine {
     /// rule that quietly does nothing on the commonest shape of query is worse
     /// than a slightly different rule, and this one asks only what the search
     /// already recorded.
-    /// What the reranker at `tier` has done in this process, or `None` if it
-    /// was never loaded.
-    ///
-    /// Here because three deferred decisions turn on these counters and none
-    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
-    /// wants them across a run reads them once at the end: they are lifetime
-    /// totals for the loaded model and are lost when an idle tier is released.
-    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        self.models.counted(tier)
-    }
-
     pub async fn search_reranked(
         &self,
         query: &str,
@@ -2247,7 +2247,6 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
     }
 }
 
-/// The first `limit` of a list that was fused deeper than the caller asked for.
 /// Whether reranking these positions can change what the caller is given.
 ///
 /// The pass reorders the candidates at `unlexical` *into the positions they
@@ -2307,6 +2306,7 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
         .is_some_and(|highest| *highest < limit as usize)
 }
 
+/// The first `limit` of a list that was fused deeper than the caller asked for.
 fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
     hits.truncate(limit as usize);
     hits
@@ -2381,12 +2381,6 @@ mod tests {
         assert!(!relevance.contains_key(&id(50)), "not a seed at all");
     }
 
-    /// A model in use is not idle, however long ago it was handed out.
-    ///
-    /// The pair that matters: the window has to be reached, and reaching it is
-    /// not enough on its own -- the caller checks that nothing holds the model
-    /// as well, because dropping the registry's handle while a search holds
-    /// its own frees nothing and makes the next search load a second copy.
     #[test]
     fn a_pass_over_candidates_below_the_limit_cannot_be_seen() {
         // Five results asked for, and the only candidates the pass may move
@@ -2460,6 +2454,12 @@ mod tests {
         assert!(loaded.loaded(1).is_some());
     }
 
+    /// A model in use is not idle, however long ago it was handed out.
+    ///
+    /// The pair that matters: the window has to be reached, and reaching it is
+    /// not enough on its own -- the caller checks that nothing holds the model
+    /// as well, because dropping the registry's handle while a search holds
+    /// its own frees nothing and makes the next search load a second copy.
     #[test]
     fn a_model_is_idle_only_once_the_window_has_passed() {
         let window = Duration::from_secs(300);
