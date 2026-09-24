@@ -766,10 +766,37 @@ returned byte-identical top tens for forty questions through
 back every state identically; so did a workspace the after build filled from
 scratch.
 
+**Every state also carried five columns nothing ever wrote.** `importance`,
+`worth_positive`, `worth_negative`, `access_count` and `last_accessed_at` held
+their defaults in every row any build produced, and were read into every state
+the store loaded for a field nothing read. The reads went first, and migration
+V11 drops the columns, refusing with the state named if any row holds anything
+but the default. On XQuAD-R's 2,640 paragraphs, written through the store's
+append functions into fresh workspaces by a scratch harness, then
+`VACUUM ANALYZE`:
+
+| | before | after V11 |
+| --- | --- | --- |
+| a `topic_states` row, `pg_column_size` | 136 bytes | **120 bytes** |
+| `topic_states` heap | 393,216 bytes | **352,256 bytes** |
+| `topic_states` with its indexes | 1,081,344 bytes | 1,040,384 bytes |
+| `current_states_of`, 150 topics, p50 | 3.95 ms (3.78–4.03) | **3.59 ms** (3.48–3.75) |
+
+The fetch figures are six paired processes, alternating which build went
+first, three rounds of 300 calls each; the build after was faster in six of
+six, by a median 0.32 ms. Almost all of that is the reads, not the smaller
+rows: the build that stops reading the columns without dropping them,
+alternated against the build before on the same workspace, was 0.37 ms
+faster, also six of six. Both harness and store were debug builds, which
+inflates exactly the per-column decoding removed here, on four cores at a
+load average near 13, and these fetches are slower than the table above for
+both reasons -- read the difference, not the level. Nothing ranked on the
+columns, so no result can move.
+
 **A migration does not make an existing file smaller.** Dropping a column marks
 it dropped, and a `DELETE` frees space for PostgreSQL to reuse; neither returns
 anything to the filesystem, and `VACUUM FULL` cannot run inside the
-transaction a migration runs in. So V9 and V10 stop the growth — every state
+transaction a migration runs in. So V9, V10 and V11 stop the growth — every state
 written afterwards is smaller, and the queue stops at the work owed — and the
 bytes already on disk stay until something rewrites the tables. Measured on the
 migrated before workspace with 15,840 states and 39,600 jobs owed: `topic_states`
