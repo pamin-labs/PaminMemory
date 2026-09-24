@@ -505,7 +505,7 @@ pub fn model_idle() -> Duration {
 }
 
 /// Overrides [`MODEL_IDLE`], in seconds.
-pub const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
+const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
 
 /// A memory's content hash, as the ledger stores it.
 ///

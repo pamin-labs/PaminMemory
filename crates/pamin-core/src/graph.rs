@@ -133,45 +133,9 @@ pub struct RelationshipVersion {
     pub tombstone_reason: Option<TombstoneReason>,
 }
 
-impl RelationshipVersion {
-    /// Whether this version is the one currently believed.
-    pub fn is_live(&self) -> bool {
-        self.invalidated_at.is_none()
-    }
-
-    /// Whether the relationship is asserted to hold at `at`.
-    pub fn holds_at(&self, at: OffsetDateTime) -> bool {
-        self.validity.holds_at(at)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn version(
-        valid_from: Option<OffsetDateTime>,
-        valid_to: Option<OffsetDateTime>,
-    ) -> RelationshipVersion {
-        let validity = Validity::new(valid_from, valid_to);
-        RelationshipVersion {
-            id: RelationshipVersionId::new(),
-            relationship_id: RelationshipId::new(),
-            version: 1,
-            validity,
-            created_at: OffsetDateTime::UNIX_EPOCH,
-            invalidated_at: None,
-            supersedes: None,
-            caused_by_topic_state: None,
-            confidence: 1.0,
-            derivation: Derivation::Explicit,
-            tombstone_reason: None,
-        }
-    }
-
-    fn at(seconds: i64) -> OffsetDateTime {
-        OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds)
-    }
 
     #[test]
     fn edge_kind_names_round_trip() {
@@ -179,39 +143,5 @@ mod tests {
             assert_eq!(EdgeKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(EdgeKind::parse("entangled_with"), None);
-    }
-
-    #[test]
-    fn an_unbounded_assertion_holds_at_every_instant() {
-        // Most relationships are stated without an end date. Treating an open
-        // bound as a closed one would make them invisible to every temporal
-        // query, which is the majority of the graph.
-        let unbounded = version(None, None);
-        assert!(unbounded.holds_at(at(0)));
-        assert!(unbounded.holds_at(at(1_000_000)));
-    }
-
-    #[test]
-    fn a_bounded_assertion_is_half_open() {
-        let bounded = version(Some(at(10)), Some(at(20)));
-        assert!(!bounded.holds_at(at(9)));
-        assert!(bounded.holds_at(at(10)), "the start is included");
-        assert!(bounded.holds_at(at(19)));
-        assert!(
-            !bounded.holds_at(at(20)),
-            "the end is excluded, so consecutive intervals do not overlap"
-        );
-    }
-
-    #[test]
-    fn closing_a_version_is_separate_from_the_truth_interval() {
-        // System validity and truth validity are different axes: retracting a
-        // claim says nothing about when the relationship held.
-        let mut closed = version(Some(at(10)), None);
-        closed.invalidated_at = Some(at(5));
-        closed.tombstone_reason = Some(TombstoneReason::Deleted);
-
-        assert!(!closed.is_live());
-        assert!(closed.holds_at(at(15)), "retraction is not an end date");
     }
 }

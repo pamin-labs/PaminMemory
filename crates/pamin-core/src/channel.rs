@@ -151,20 +151,6 @@ pub struct ChannelResults {
     pub candidates: Vec<Scored>,
 }
 
-impl Channel {
-    /// Whether this channel scores wording rather than meaning or structure.
-    ///
-    /// The pair is asked together wherever it is asked at all: they run BM25
-    /// over the same text, one over segmented words and one over character
-    /// n-grams, so they agree with each other far more than either agrees with
-    /// the vector or the graph. Naming the pair in one place keeps a third
-    /// lexical channel from being added to the fusion weights and forgotten
-    /// here.
-    pub fn is_lexical(self) -> bool {
-        matches!(self, Self::LexicalSegmented | Self::LexicalNgram)
-    }
-}
-
 impl ChannelResults {
     pub fn new(channel: Channel, candidates: Vec<Scored>) -> Self {
         Self {
@@ -180,13 +166,5 @@ impl ChannelResults {
             channel,
             candidates.into_iter().map(Scored::unscored).collect(),
         )
-    }
-
-    /// The candidates as topics, best first.
-    ///
-    /// For the callers that only need the ordering -- seeding the graph walk,
-    /// and anything asking which topics a channel proposed at all.
-    pub fn topics(&self) -> impl Iterator<Item = TopicId> + '_ {
-        self.candidates.iter().map(|candidate| candidate.topic)
     }
 }

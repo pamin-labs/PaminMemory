@@ -574,7 +574,6 @@ pub struct Ranked {
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
     model: Encoder,
-    tier: Rerank,
     device: Device,
     scores: Scores,
     lengths: Lengths,
@@ -675,7 +674,6 @@ impl Reranker {
 
         Ok(Self {
             model,
-            tier,
             device,
             scores: Scores::default(),
             lengths: Lengths::default(),
@@ -685,10 +683,6 @@ impl Reranker {
     /// Where this reranker's passes run. See [`Device`].
     pub fn device(&self) -> Device {
         self.device
-    }
-
-    pub fn tier(&self) -> Rerank {
-        self.tier
     }
 
     /// Orders `documents` best first, returning their original positions.

@@ -30,18 +30,6 @@ pub enum SourceKind {
     ChatLog,
 }
 
-/// A stable identity for something that produces evidence over time.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Source {
-    pub id: SourceId,
-    pub project_id: ProjectId,
-    pub kind: SourceKind,
-    /// Path, URI, or label. Unique per project, so re-ingesting the same file
-    /// appends a version instead of creating a second source.
-    pub locator: String,
-    pub created_at: OffsetDateTime,
-}
-
 /// What the sensory filter decided about a piece of evidence.
 ///
 /// The filter gates promotion to the retrieval surface, never persistence. A
@@ -110,6 +98,11 @@ pub struct Topic {
 /// two dates. Treating an absent bound as a closed one would hide the majority
 /// of the ledger from every temporal query.
 ///
+/// An interval is half-open: it includes `from` and excludes `to`, so
+/// consecutive intervals do not both contain the instant where one ends and
+/// the next begins. The store applies it in its SQL, as the `--at` graph walk
+/// in `pamin-store`'s `graph.rs` does.
+///
 /// The same type covers topic states and relationship versions, because it is
 /// the same question in both places. Writing it twice is how the two would
 /// come to disagree about whether an interval includes its end.
@@ -146,14 +139,6 @@ impl Validity {
 
     pub fn new(from: Option<OffsetDateTime>, to: Option<OffsetDateTime>) -> Self {
         Self { from, to }
-    }
-
-    /// Whether the claim is asserted to hold at `at`.
-    ///
-    /// Half-open, so consecutive intervals do not both contain the instant
-    /// where one ends and the next begins.
-    pub fn holds_at(&self, at: OffsetDateTime) -> bool {
-        self.from.is_none_or(|from| from <= at) && self.to.is_none_or(|to| at < to)
     }
 
     /// Whether the interval is stated backwards, which cannot mean anything.
