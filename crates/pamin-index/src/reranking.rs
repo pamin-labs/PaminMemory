@@ -227,6 +227,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tokenizers::Encoding;
 
 use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
@@ -320,35 +321,17 @@ fn tuned(name: &str, fallback: usize) -> usize {
         .unwrap_or(fallback)
 }
 
-/// How many candidates go through the model at once.
-///
-/// Eight, and the honest statement is that the corpus cannot separate it from
-/// the alternatives. A batch is padded to its longest member, so in principle a
-/// large batch pays for its longest candidate on every member, and an earlier
-/// sweep recorded eight at 151 ms against sixteen at 191. Swept again through
-/// the engine, at a depth of twenty:
-///
-/// | batch | cross-lingual | a search |
-/// |---|---|---|
-/// | 4 | 0.6102 | 226 ms |
-/// | **8** | **0.6091** | **217 ms** |
-/// | 16 | 0.6095 | 230 ms |
-/// | 20 | 0.6098 | 242 ms |
-///
-/// Eight is fastest here, but the spread across all four is eleven per cent and
-/// the same configuration measured in two separate runs differs by nineteen --
-/// so this says only that none of them is clearly better, not that eight wins.
-/// Separating them would need repeats inside one process, and nothing here
-/// turns on the answer.
-///
-/// The score column is not noise, though: it moves by up to 0.0011 across batch
-/// sizes because a quantized model scores a pair slightly differently depending
-/// on what it was padded alongside. Anything that changes how candidates are
-/// grouped moves the fourth decimal, which is worth knowing before attributing
-/// such a change to something else.
-const BATCH: usize = 8;
+/// How many padded tokens go through the model at once. MEASUREMENT PENDING.
+const BATCH_TOKENS: usize = 1024;
 
-/// How long a candidate the model reads, and how many at once. See [`tuned`].
+/// How many candidates go through the model at once, at most. MEASUREMENT PENDING.
+const BATCH: usize = 1024;
+
+/// How much the model reads at once, and how long a candidate. See [`tuned`].
+fn batch_tokens() -> usize {
+    tuned("PAMIN_RERANK_BATCH_TOKENS", BATCH_TOKENS)
+}
+
 fn batch() -> usize {
     tuned("PAMIN_RERANK_BATCH", BATCH)
 }
@@ -717,44 +700,27 @@ impl Reranker {
             .map(|key| self.scores.get(*key))
             .collect::<Vec<_>>();
 
-        // Only what has not been scored before goes through the model, and
-        // sorted by length, so that a batch is not padded to a length most of
-        // its members do not have.
-        //
-        // By characters rather than by bytes. What the padding is measured in
-        // is tokens, and `str::len` is UTF-8 bytes -- three per character for
-        // the Chinese and Thai in this corpus against one for the Latin, so a
-        // byte sort puts a short Thai candidate after a long English one and
-        // the batches it forms are not the ones the saving assumes. Characters
-        // are not tokens either, but they are within a small factor across
-        // scripts where bytes are within three.
-        //
-        // Not score-neutral, and it was first recorded as though it were:
-        // grouping candidates differently pads them differently, and a
-        // quantized model scores a pair slightly differently depending on what
-        // it shared a tensor with. Cross-lingual nDCG@10 moved from 0.6097 to
-        // 0.6091 when this changed -- the fourth decimal, and in the direction
-        // nobody would choose, but it is a real signed change rather than
-        // noise. Both figures are at the lexical weight of the day, a quarter;
-        // the same path scores 0.6480 at the eighth that ships now. See `BATCH`
-        // for the same effect across batch sizes.
-        let mut unscored: Vec<usize> = (0..documents.len())
+        // Only what has not been scored before goes through the model,
+        // tokenized once here so that `score` can group the pairs by their
+        // real length. BATCHING NOTE PENDING.
+        let unscored: Vec<usize> = (0..documents.len())
             .filter(|position| scores[*position].is_none())
             .collect();
-        unscored.sort_by_key(|position| documents[*position].chars().count());
 
         if !unscored.is_empty() {
-            let batch: Vec<&str> = unscored
-                .iter()
-                .map(|position| documents[*position])
-                .collect();
-            for document in &batch {
-                let characters = document.chars().count();
+            for position in &unscored {
+                let characters = documents[*position].chars().count();
                 self.lengths.total += characters as u64;
                 self.lengths.longest = self.lengths.longest.max(characters);
             }
-            let scored = score(&mut self.model, query, &batch, self::batch())
-                .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
+            let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
+            let pairs: Vec<(&str, &str)> = unscored
+                .iter()
+                .map(|position| (query, documents[*position]))
+                .collect();
+            let encodings = self.model.encode(pairs).map_err(reranking)?;
+            let scored =
+                score(&mut self.model, encodings, batch_tokens(), batch()).map_err(reranking)?;
             for (position, score) in unscored.iter().zip(scored) {
                 scores[*position] = Some(score);
                 self.scores.put(keys[*position], score);
@@ -810,17 +776,30 @@ impl Reranker {
     }
 }
 
-/// The model's score for `query` against each of `documents`, in their order.
+/// The model's score for each of `encodings` -- (query, document) pairs from
+/// [`Encoder::encode`] -- in their order.
 ///
-/// What `fastembed`'s `TextRerank::rerank` computed before this replaced it:
-/// the documents in consecutive chunks of `batch`, each chunk one forward pass
-/// over (query, document) pairs, and a pair's score the first column of its
-/// row of `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
-fn score(model: &mut Encoder, query: &str, documents: &[&str], batch: usize) -> Result<Vec<f32>> {
-    let mut scores = Vec::with_capacity(documents.len());
-    for chunk in documents.chunks(batch) {
-        let pairs: Vec<(&str, &str)> = chunk.iter().map(|document| (query, *document)).collect();
-        let outputs = model.run(pairs)?;
+/// Shortest first, in the batches [`batches`] makes of their lengths, each
+/// batch one forward pass and a pair's score the first column of its row of
+/// `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
+fn score(
+    model: &mut Encoder,
+    encodings: Vec<Encoding>,
+    budget: usize,
+    most: usize,
+) -> Result<Vec<f32>> {
+    let count = encodings.len();
+    // By length and then by position, so one shortlist is grouped the same way
+    // every time it is asked.
+    let mut sorted: Vec<(usize, Encoding)> = encodings.into_iter().enumerate().collect();
+    sorted.sort_by_key(|(position, encoding)| (encoding.len(), *position));
+    let lengths: Vec<usize> = sorted.iter().map(|(_, encoding)| encoding.len()).collect();
+
+    let mut scores = vec![f32::MIN; count];
+    let mut pending = sorted.into_iter();
+    for size in batches(&lengths, budget, most) {
+        let (positions, batch): (Vec<usize>, Vec<Encoding>) = pending.by_ref().take(size).unzip();
+        let outputs = model.run_encoded(batch)?;
         let logits = outputs
             .get("logits")
             .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
@@ -828,17 +807,43 @@ fn score(model: &mut Encoder, query: &str, documents: &[&str], batch: usize) -> 
             .try_extract_tensor::<f32>()
             .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
         let labels = match **shape {
-            [rows, labels] if rows as usize == chunk.len() && labels > 0 => labels as usize,
+            [rows, labels] if rows as usize == positions.len() && labels > 0 => labels as usize,
             _ => {
                 return Err(IndexError::Engine(format!(
                     "logits of shape {shape:?} for {} pairs",
-                    chunk.len()
+                    positions.len()
                 )));
             }
         };
-        scores.extend(values.chunks(labels).map(|row| row[0]));
+        for (position, row) in positions.iter().zip(values.chunks(labels)) {
+            scores[*position] = row[0];
+        }
     }
     Ok(scores)
+}
+
+/// How many pairs go in each batch, in order, for pairs of these `lengths`
+/// in tokens, shortest first.
+///
+/// A batch is padded to its longest member, which in ascending order is the
+/// last one it took, so a batch of `n` costs `n` times that length. Each takes
+/// the next pair while that stays within `budget` padded tokens and under
+/// `most` pairs. A pair longer than the budget on its own goes alone rather
+/// than not at all.
+fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
+    let mut sizes = Vec::new();
+    let mut size = 0;
+    for length in lengths {
+        if size > 0 && (size == most || (size + 1) * length > budget) {
+            sizes.push(size);
+            size = 0;
+        }
+        size += 1;
+    }
+    if size > 0 {
+        sizes.push(size);
+    }
+    sizes
 }
 
 #[cfg(test)]
@@ -932,5 +937,44 @@ mod tests {
                 tier.name()
             );
         }
+    }
+
+    /// Every pair lands in exactly one batch, in order, and no batch pads
+    /// past the budget unless it is one pair that is longer on its own.
+    #[test]
+    fn a_batch_stays_within_its_budget_and_every_pair_is_in_one() {
+        let lengths = [9, 20, 20, 31, 60, 64, 64, 64, 200, 300, 301];
+        for budget in [64, 128, 256, 512, 1024] {
+            for most in [1, 2, 4, 8, usize::MAX] {
+                let sizes = batches(&lengths, budget, most);
+                assert_eq!(sizes.iter().sum::<usize>(), lengths.len());
+                let mut start = 0;
+                for size in sizes {
+                    assert!(size > 0, "an empty batch");
+                    assert!(size <= most, "{size} pairs against a cap of {most}");
+                    let longest = lengths[start + size - 1];
+                    assert!(
+                        size * longest <= budget || size == 1,
+                        "{size} pairs padded to {longest} against a budget of {budget}"
+                    );
+                    start += size;
+                }
+            }
+        }
+    }
+
+    /// Greedy, not merely within budget: a batch closes only when the next
+    /// pair would not fit, so short pairs share a pass and a long one does not
+    /// drag them up to its length.
+    #[test]
+    fn short_pairs_share_a_pass_and_a_long_one_does_not_pad_them() {
+        assert_eq!(batches(&[30, 30, 30, 30, 250], 256, usize::MAX), vec![4, 1]);
+        assert_eq!(
+            batches(&[30, 30, 30, 30, 250], 1024, usize::MAX),
+            vec![4, 1]
+        );
+        assert_eq!(batches(&[30, 30, 30, 30, 250], 1024, 2), vec![2, 2, 1]);
+        assert_eq!(batches(&[100, 100, 100], 300, usize::MAX), vec![3]);
+        assert_eq!(batches(&[], 300, usize::MAX), Vec::<usize>::new());
     }
 }
