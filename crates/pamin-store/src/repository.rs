@@ -33,9 +33,6 @@ sql_enum!(FilterDecision {
 
 sql_enum!(SourceKind {
     Manual => "manual",
-    File => "file",
-    Directory => "directory",
-    ChatLog => "chat_log",
 });
 
 sql_enum!(EdgeKind {
