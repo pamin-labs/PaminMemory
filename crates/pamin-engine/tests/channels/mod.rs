@@ -380,6 +380,41 @@ pub fn sweep_table<T>(
     }
 }
 
+/// Writes every row of an offline sweep, query by query, to `path`: one line
+/// per setting, group and query, with its nDCG@10 and recall@50.
+///
+/// For a rule that has to see more than one corpus at once -- choosing on two
+/// and scoring on the third -- which no single harness run can apply. Queries
+/// are numbered in the order they were scored, which is the order every row
+/// scored them in, so the rows pair by position.
+fn write_sweep<T>(
+    path: &std::path::Path,
+    variants: &[(String, T)],
+    offline: &[BTreeMap<String, crate::scoring::Scores>],
+    groups: &[&str],
+) {
+    let mut lines = String::from("setting\tgroup\tquery\tndcg\trecall\n");
+    for ((label, _), row) in variants.iter().zip(offline) {
+        for group in groups {
+            let scores = &row[*group];
+            for (at, (ndcg, recall)) in scores
+                .per_query
+                .iter()
+                .zip(&scores.per_query_recall)
+                .enumerate()
+            {
+                lines.push_str(&format!("{label}\t{group}\t{at}\t{ndcg}\t{recall}\n"));
+            }
+        }
+    }
+    std::fs::write(path, lines)
+        .unwrap_or_else(|error| panic!("writing {}: {error}", path.display()));
+    println!(
+        "  every row of the sweep, query by query, written to {}",
+        path.display()
+    );
+}
+
 /// What choosing a setting from this sweep is worth, measured on queries the
 /// choice never saw.
 ///
@@ -424,6 +459,9 @@ pub fn cross_validated<T>(
         .collect();
     if groups.is_empty() {
         return;
+    }
+    if let Ok(path) = std::env::var("SWEEP_OUT") {
+        write_sweep(std::path::Path::new(&path), variants, offline, &groups);
     }
 
     let mut labels = Vec::new();

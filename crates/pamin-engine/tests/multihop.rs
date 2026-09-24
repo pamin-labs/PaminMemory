@@ -46,6 +46,7 @@
 //! | `MUSIQUE_QUESTIONS` | read only the first this many questions |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
+//! | `SWEEP_OUT` | with `CHANNELS`, a path: every row of that sweep, query by query, for a rule that chooses across corpora |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
