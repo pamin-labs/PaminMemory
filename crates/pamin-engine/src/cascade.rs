@@ -198,9 +198,7 @@ impl Engine {
             // Whatever a read job writes goes to the ledger, which commits it,
             // so nothing it does is waiting on a flush. It reads the index,
             // and what this round wrote is already there to be read.
-            for job in reads {
-                outcomes.push((job, self.run(job).await));
-            }
+            self.run_reads(&reads, &mut outcomes).await;
 
             // The round's completions go in one statement. Separately they
             // cost more than the work they record -- a thousand of them is 165
@@ -406,6 +404,62 @@ impl Engine {
                             .map_err(Into::into),
                     };
                     into.push((job, one));
+                }
+            }
+        }
+    }
+
+    /// Runs the jobs of a round that read the index back, restating every
+    /// memory's mentions together.
+    ///
+    /// The restatements are batched the way [`Self::sync_indexes`] batches the
+    /// writes, and for the same reason: each asked the same few statements with
+    /// different arguments, sixty-four times a round. One connection for all of
+    /// them, their states in one lookup, and the rest in
+    /// [`Engine::restate_mentions`]. The other kinds run one at a time as
+    /// before.
+    ///
+    /// **Each job still gets its own outcome.** A batch that fails is run again
+    /// one job at a time, so a memory that cannot be restated fails alone
+    /// rather than holding the rest of the round's jobs owed with it.
+    async fn run_reads<'j>(&self, jobs: &[&'j Job], into: &mut Vec<(&'j Job, Result<()>)>) {
+        let mut restating = Vec::new();
+        for job in jobs {
+            if job.kind != JobKind::DeriveMentions {
+                into.push((*job, self.run(job).await));
+                continue;
+            }
+            match subject(job) {
+                Ok(subject) => restating.push((*job, TopicId::from(subject))),
+                Err(error) => into.push((*job, Err(error))),
+            }
+        }
+        if restating.is_empty() {
+            return;
+        }
+
+        let batched = async {
+            let mut connection = self.database.pool().acquire().await?;
+            let topics: Vec<TopicId> = restating.iter().map(|(_, topic)| *topic).collect();
+            // A topic that resolves to nothing has nothing to restate, as
+            // one at a time.
+            let states =
+                pamin_store::repository::current_states_of(&mut *connection, self.project, &topics)
+                    .await?;
+            self.restate_mentions(&mut connection, &states).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match batched {
+            Ok(()) => {
+                for (job, _) in restating {
+                    into.push((job, Ok(())));
+                }
+            }
+            Err(_) => {
+                for (job, _) in restating {
+                    into.push((job, self.run(job).await));
                 }
             }
         }

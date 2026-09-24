@@ -16,7 +16,9 @@ use pamin_index::{
     Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
+use pamin_store::{
+    Connections, Database, PgConnection, PgExecutor, Workspace, graph, jobs, repository,
+};
 use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
@@ -1133,7 +1135,31 @@ impl Engine {
     /// unchanged and written nowhere, and only then is the rest closed, so
     /// re-deriving an unaltered memory still touches no row.
     pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
-        // Every run of tokens this memory contains that is short enough to be
+        let mut connection = self.database.pool().acquire().await?;
+        self.restate_mentions(&mut connection, std::slice::from_ref(state))
+            .await
+    }
+
+    /// [`derive_mentions`](Self::derive_mentions) for many states, asking each
+    /// of its questions once for all of them.
+    ///
+    /// A cascade round restates up to sixty-four memories, and one at a time
+    /// that was five statements each -- the widest name, the names in the
+    /// memory, the edges already there, and the retraction -- where each
+    /// question is the same for every memory in the round apart from its
+    /// arguments. So the runs of every memory go into one lookup, the edges
+    /// into one assertion and the retractions into one statement, and the run
+    /// each name matched is what says which memory it belongs to.
+    pub(crate) async fn restate_mentions(
+        &self,
+        connection: &mut PgConnection,
+        states: &[TopicState],
+    ) -> Result<usize> {
+        if states.is_empty() {
+            return Ok(0);
+        }
+
+        // Every run of tokens each memory contains that is short enough to be
         // somebody's name. A name matches only as a contiguous run, so this is
         // the complete set of things it could be naming -- and asking the index
         // for these is the same question the old loop asked of every topic in
@@ -1143,43 +1169,58 @@ impl Engine {
         // value can only be too low, and too low here does not mean a missed
         // edge -- what is not found below is closed as no longer named. See
         // [`Engine::widest_name`].
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
-        let runs = off_the_runtime(|| {
-            runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest)
+        let widest = repository::widest_topic_name(&mut *connection, self.project).await?;
+        let runs: Vec<Vec<String>> = off_the_runtime(|| {
+            states
+                .iter()
+                .map(|state| runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest))
+                .collect()
         });
+        let mut asked: Vec<String> = runs.iter().flatten().cloned().collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let mut naming: std::collections::HashMap<String, Vec<TopicId>> =
+            std::collections::HashMap::new();
+        for (run, topic) in
+            repository::names_matching(&mut *connection, self.project, &asked).await?
+        {
+            naming.entry(run).or_default().push(topic);
+        }
 
-        let mut named = repository::topics_named_by(self.database.pool(), self.project, &runs)
-            .await?
-            .into_iter()
-            // A topic naming itself is not a relationship, and the schema
-            // rejects the edge anyway.
-            .filter(|topic| *topic != state.topic_id)
-            .collect::<Vec<TopicId>>();
-        named.sort_unstable();
-        named.dedup();
-
-        let edges: Vec<_> = named
-            .iter()
-            .map(|target| {
+        let mut edges = Vec::new();
+        let mut named_now = Vec::with_capacity(states.len());
+        for (state, runs) in states.iter().zip(&runs) {
+            let mut named: Vec<TopicId> = runs
+                .iter()
+                .filter_map(|run| naming.get(run))
+                .flatten()
+                .copied()
+                // A topic naming itself is not a relationship, and the schema
+                // rejects the edge anyway.
+                .filter(|topic| *topic != state.topic_id)
+                .collect();
+            named.sort_unstable();
+            named.dedup();
+            edges.extend(named.iter().map(|target| {
                 (
                     state.topic_id,
                     *target,
                     EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE),
                 )
-            })
-            .collect();
+            }));
+            named_now.push((state.topic_id, named));
+        }
 
         // One transaction: the edges a memory derives are one statement about
         // what it says, and asserting them separately both cost a commit each
         // and let a crash tell half of it.
         let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
 
-        graph::retract_derived(
-            self.database.pool(),
+        graph::retract_derived_all(
+            &mut *connection,
             self.project,
-            state.topic_id,
             EdgeKind::Mentions,
-            &named,
+            &named_now,
         )
         .await?;
 

@@ -1229,12 +1229,29 @@ pub async fn topics_named_by(
     project: ProjectId,
     runs: &[String],
 ) -> Result<Vec<TopicId>> {
+    Ok(names_matching(executor, project, runs)
+        .await?
+        .into_iter()
+        .map(|(_, topic)| topic)
+        .collect())
+}
+
+/// [`topics_named_by`], with the run each topic's name matched.
+///
+/// For a caller asking on behalf of several texts at once: each text's runs
+/// go into one question, and the run beside each answer is what says which
+/// text it belongs to.
+pub async fn names_matching(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    runs: &[String],
+) -> Result<Vec<(String, TopicId)>> {
     if runs.is_empty() {
         return Ok(Vec::new());
     }
 
     let rows = sqlx::query(
-        "SELECT topic_id FROM topic_name_tokens
+        "SELECT name_key, topic_id FROM topic_name_tokens
          WHERE project_id = $1 AND name_key = ANY($2)",
     )
     .bind(project.0)
@@ -1244,7 +1261,12 @@ pub async fn topics_named_by(
 
     Ok(rows
         .iter()
-        .map(|row| row.get::<uuid::Uuid, _>("topic_id").into())
+        .map(|row| {
+            (
+                row.get("name_key"),
+                row.get::<uuid::Uuid, _>("topic_id").into(),
+            )
+        })
         .collect())
 }
 

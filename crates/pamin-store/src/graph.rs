@@ -514,7 +514,28 @@ pub async fn retract_derived(
     kind: EdgeKind,
     keep: &[TopicId],
 ) -> Result<u64> {
-    let kept: Vec<uuid::Uuid> = keep.iter().map(|topic| topic.0).collect();
+    retract_derived_all(executor, project, kind, &[(from, keep.to_vec())]).await
+}
+
+/// [`retract_derived`] for several topics, in one statement.
+///
+/// Each entry is a topic and what its content says now. What a topic keeps is
+/// passed as pairs, since the lists differ in length and an array of arrays
+/// in PostgreSQL has to be rectangular.
+pub async fn retract_derived_all(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    kind: EdgeKind,
+    keep: &[(TopicId, Vec<TopicId>)],
+) -> Result<u64> {
+    if keep.is_empty() {
+        return Ok(0);
+    }
+    let froms: Vec<uuid::Uuid> = keep.iter().map(|(from, _)| from.0).collect();
+    let (kept_from, kept_to): (Vec<uuid::Uuid>, Vec<uuid::Uuid>) = keep
+        .iter()
+        .flat_map(|(from, to)| to.iter().map(|to| (from.0, to.0)))
+        .unzip();
 
     let closed = sqlx::query(
         "UPDATE relationship_versions
@@ -522,18 +543,22 @@ pub async fn retract_derived(
           WHERE invalidated_at IS NULL
             AND derivation = $3
             AND relationship_id IN (
-                SELECT id FROM relationships
-                 WHERE project_id = $4 AND from_topic = $5 AND kind = $6
-                   AND NOT (to_topic = ANY($7))
+                SELECT r.id FROM relationships r
+                 WHERE r.project_id = $4 AND r.from_topic = ANY($5) AND r.kind = $6
+                   AND NOT EXISTS (
+                       SELECT 1 FROM unnest($7::uuid[], $8::uuid[]) AS kept (from_topic, to_topic)
+                        WHERE kept.from_topic = r.from_topic AND kept.to_topic = r.to_topic
+                   )
             )",
     )
     .bind(OffsetDateTime::now_utc())
     .bind(TombstoneReason::Closed.label())
     .bind(Derivation::Deterministic.label())
     .bind(project.0)
-    .bind(from.0)
+    .bind(&froms)
     .bind(kind.label())
-    .bind(&kept)
+    .bind(&kept_from)
+    .bind(&kept_to)
     .execute(executor)
     .await?;
 

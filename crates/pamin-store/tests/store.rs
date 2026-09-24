@@ -79,6 +79,7 @@ async fn the_ledger_holds_its_promises() {
     a_completion_names_the_claim_it_belongs_to(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
+    several_topics_restate_their_mentions_at_once(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
     evidence_and_the_span_over_it_are_one_write(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
@@ -2812,6 +2813,106 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
         jobs::complete(database.pool(), &owned.iter().collect::<Vec<_>>(), worker)
             .await
             .expect("complete");
+    }
+}
+
+/// The batched forms answer each topic as if it had been asked alone.
+///
+/// A cascade round restates many memories at once: their name lookups go in
+/// one statement, told apart by the run each name matched, and their
+/// retractions in another, each topic closing only what its own content
+/// stopped naming. Two topics here keep different targets out of the same
+/// three, so a retraction that mixed their lists up would close the wrong
+/// edge of one of them.
+async fn several_topics_restate_their_mentions_at_once(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "restate")
+        .await
+        .expect("ensure project");
+    let mut topics = Vec::new();
+    for name in ["left", "right", "alpha", "beta", "gamma"] {
+        let topic = committed!(database, repository::ensure_topic, project.id, name)
+            .expect("ensure topic")
+            .id;
+        repository::record_topic_name(database.pool(), project.id, topic, name, 1)
+            .await
+            .expect("record name");
+        topics.push(topic);
+    }
+    let (left, right, alpha, beta, gamma) = (topics[0], topics[1], topics[2], topics[3], topics[4]);
+
+    let matched = repository::names_matching(
+        database.pool(),
+        project.id,
+        &[
+            "alpha".to_string(),
+            "gamma".to_string(),
+            "nobody".to_string(),
+        ],
+    )
+    .await
+    .expect("names matching");
+    let mut matched: Vec<(String, pamin_core::TopicId)> = matched;
+    matched.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        matched,
+        vec![("alpha".to_string(), alpha), ("gamma".to_string(), gamma)]
+    );
+
+    let mut edges = Vec::new();
+    for from in [left, right] {
+        let state = write_state(
+            database,
+            project.id,
+            from,
+            &format!("restate-{from}"),
+            "alpha beta gamma",
+        )
+        .await;
+        for to in [alpha, beta, gamma] {
+            edges.push((
+                from,
+                to,
+                EdgeClaim::derived(EdgeKind::Mentions, state.id, 0.5),
+            ));
+        }
+    }
+    graph::assert_edges(database.pool(), project.id, &edges)
+        .await
+        .expect("assert the derived edges");
+
+    // `left` now names alpha alone; `right` names beta and gamma.
+    let closed = graph::retract_derived_all(
+        database.pool(),
+        project.id,
+        EdgeKind::Mentions,
+        &[(left, vec![alpha]), (right, vec![beta, gamma])],
+    )
+    .await
+    .expect("retract for both topics");
+    assert_eq!(closed, 3, "left's beta and gamma, and right's alpha");
+
+    for (from, to, live) in [
+        (left, alpha, true),
+        (left, beta, false),
+        (left, gamma, false),
+        (right, alpha, false),
+        (right, beta, true),
+        (right, gamma, true),
+    ] {
+        let relationship =
+            graph::find_relationship(database.pool(), project.id, from, to, EdgeKind::Mentions)
+                .await
+                .expect("find relationship")
+                .expect("the edge was asserted");
+        let version = graph::live_version(database.pool(), relationship.id)
+            .await
+            .expect("live version");
+        assert_eq!(
+            version.is_some(),
+            live,
+            "the edge {from} -> {to} should be {}",
+            if live { "live" } else { "closed" }
+        );
     }
 }
 
