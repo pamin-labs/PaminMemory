@@ -38,7 +38,7 @@ product defaults to.
 
 The exception is deliberate and worth stating when you take it: a *sweep* over a
 tunable has to call the layer that accepts the tunable. Sweeping fusion weights
-through a pass that reorders the top twenty afterwards would credit the
+through a pass that reorders the top of the list afterwards would credit the
 reranker's work to the weight. When you measure below the shipped entry point,
 say in the same breath why, and do not let that figure escape into a README.
 

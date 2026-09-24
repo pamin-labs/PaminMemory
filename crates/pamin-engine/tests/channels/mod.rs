@@ -255,10 +255,11 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 /// project argued about `k` and about the channel weights, both of them
 /// parameters *of* reciprocal rank fusion, and never wrote down that fusing
 /// ranks rather than normalised scores was a choice. Every 2025--2026 result
-/// found goes the other way -- see [`Combine`]. The score combiners and the
-/// per-channel confidence rule this grid used to sweep were measured and
-/// removed (`docs/adr/0001-tech-selection.md`); what is left is the band that
-/// ships against the reciprocal-rank baseline every figure is quoted against.
+/// found goes the other way -- see [`Combine`]. The score combiners, the
+/// per-channel confidence rule and the support rule this grid used to sweep
+/// were measured and removed (`docs/adr/0001-tech-selection.md`); what is left
+/// is the band that ships against the reciprocal-rank baseline every figure is
+/// quoted against.
 ///
 /// **The rank constant, once, to close the question.** The only real sweep of
 /// it in the recent literature (`arXiv:2604.01733`, 2026, 23,088 queries) puts
@@ -306,85 +307,6 @@ pub fn variants() -> Vec<(String, Fusion)> {
             format!("graph {graph:.2}"),
             Fusion::default().with_weight(Channel::Graph, graph),
         ));
-    }
-
-    // Requiring corroboration instead of cutting the weight. The weight rows
-    // above are a global constant that has to serve every group of a corpus;
-    // these condition on the candidate, so they can in principle take one
-    // group's gain without another's cost.
-    //
-    // **Two of these rows were measured once and the measurement was empty.**
-    // `support graph` and `support lex+graph` came back as bit-identical
-    // no-ops, and the rule was deleted partly on that reading -- when the
-    // reason was that the graph channel returned no candidates at all, on
-    // every corpus, because none of them had edges. That is the same premise
-    // failure that hid the graph channel's weight being wrong by a factor of
-    // three. The own corpus has a `relational` group now, so these two rows
-    // finally ask something.
-    //
-    // The graph channel is also the one this rule should bite hardest on, and
-    // for a structural reason rather than an empirical one: `recall_graph`
-    // returns topics reached across an edge, so a graph candidate is
-    // uncorroborated unless some other channel independently found it. It is
-    // the only channel whose candidates are *by construction* the case the
-    // rule exists for.
-    for (name, needy) in [
-        (
-            "lex",
-            vec![Channel::LexicalSegmented, Channel::LexicalNgram],
-        ),
-        ("seg", vec![Channel::LexicalSegmented]),
-        ("ngram", vec![Channel::LexicalNgram]),
-        ("graph", vec![Channel::Graph]),
-        (
-            "lex+graph",
-            vec![
-                Channel::LexicalSegmented,
-                Channel::LexicalNgram,
-                Channel::Graph,
-            ],
-        ),
-    ] {
-        variants.push((
-            format!("support {name}"),
-            Fusion::default().needing_support(needy.clone()),
-        ));
-
-        // Across the lexical weight, because at the shipped eighth the rule is
-        // a measured no-op on XQuAD-R and the arithmetic says why: an
-        // uncorroborated candidate is worth at most 0.0114 there and this
-        // floors it at 0.0069, a difference of 0.0045 that does not reorder a
-        // top ten. Where it does bite, it dominates the plain weight -- at a
-        // half, +0.0206 cross-lingual nDCG and +0.0335 recall; at one, +0.1986
-        // and +0.0836. The open question is whether any pair of these beats
-        // the shipped point, which needs both dials moved together.
-        if needy.iter().any(|channel| *channel != Channel::Graph) {
-            for lexical in [0.25, 0.5, 1.0] {
-                variants.push((
-                    format!("support {name} lex {lexical:.2}"),
-                    Fusion::default()
-                        .needing_support(needy.clone())
-                        .with_weight(Channel::LexicalSegmented, lexical)
-                        .with_weight(Channel::LexicalNgram, lexical),
-                ));
-            }
-        }
-
-        // And across the graph weight wherever the graph channel is named,
-        // because that weight has just moved from 1.0 to 0.30 and the rule and
-        // the weight are two ways of quieting the same channel. If
-        // corroboration is what the weight cut was standing in for, the graph
-        // channel should be worth more than three tenths with the rule on.
-        if needy.contains(&Channel::Graph) {
-            for graph in [0.30, 0.50, 1.0] {
-                variants.push((
-                    format!("support {name} graph {graph:.2}"),
-                    Fusion::default()
-                        .needing_support(needy.clone())
-                        .with_weight(Channel::Graph, graph),
-                ));
-            }
-        }
     }
 
     variants
@@ -864,6 +786,115 @@ impl Paired {
             }
         }
         println!();
+    }
+}
+
+/// One way to run the shipped search path: the fusion it uses, and how many
+/// candidates the reranker reads. `Setting::default()` is what ships.
+#[derive(Clone, Default)]
+pub struct Setting {
+    pub fusion: Fusion,
+    /// `PAMIN_RERANK_DEPTH` for the pass; `None` leaves the shipped depth.
+    pub depth: Option<usize>,
+}
+
+/// How many candidates the reranker reads, around the shipped twenty.
+///
+/// The constant was settled at the `fast` tier on sentences; the default is
+/// now `accurate`, whose pass is most of a search, on corpora of passages.
+/// Fewer candidates is the one latency lever that costs no model change, and
+/// more is the one accuracy lever that costs nothing but time.
+pub fn depth_variants() -> Vec<(String, Setting)> {
+    [10, 15, 30, 40]
+        .into_iter()
+        .map(|depth| {
+            (
+                format!("rerank depth {depth}"),
+                Setting {
+                    fusion: Fusion::default(),
+                    depth: Some(depth),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The variants an arm was asked for: `DEPTH_VARIANTS`.
+///
+/// A graph-channel set lived here too -- the graph at half weight without its
+/// support rule, a lead from the offline fit in `features` -- and was deleted
+/// once the shipped path refuted it; see `docs/measured.md`.
+pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
+    std::env::var("DEPTH_VARIANTS").is_ok().then(depth_variants)
+}
+
+/// Every question through `search_reranked_with` under the shipped setting and
+/// under each variant, scored by group and paired against the shipped one.
+///
+/// `questions` is each question's text and group; `score` ranks one
+/// question's hits into its group's `Scores`, the way the harness already does
+/// -- so the comparison scores exactly what the harness's own shipped row
+/// scores.
+///
+/// No time is reported, and that is deliberate. Every setting asks the same
+/// question in turn, and the reranker remembers each pair it has scored, so a
+/// setting that reranks a subset of what the shipped pass already scored
+/// costs nothing -- depths 10 and 15 measured 70 ms a question against 1,364
+/// for the shipped twenty on MIRACL, which is the cache and not the depth.
+/// What a depth costs is its pair count, which is the depth.
+pub async fn compare_reranked(
+    engine: &pamin_engine::Engine,
+    title: &str,
+    questions: &[(String, String)],
+    limit: u32,
+    depths: pamin_engine::Depths,
+    variants: &[(String, Setting)],
+    score: impl Fn(usize, &mut crate::scoring::Scores, &[SearchHit]),
+) {
+    let rerank = pamin_index::Rerank::default();
+    let settings: Vec<Setting> = std::iter::once(Setting::default())
+        .chain(variants.iter().map(|(_, setting)| setting.clone()))
+        .collect();
+    let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
+        vec![BTreeMap::new(); settings.len()];
+    for (index, (text, group)) in questions.iter().enumerate() {
+        for (setting, into) in settings.iter().zip(&mut measured) {
+            // SAFETY: the harness runs one test on one thread, and nothing
+            // else reads the environment while this is written.
+            match setting.depth {
+                Some(depth) => unsafe {
+                    std::env::set_var("PAMIN_RERANK_DEPTH", depth.to_string())
+                },
+                None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
+            }
+            let hits = engine
+                .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
+                .await
+                .expect("search");
+            score(index, into.entry(group.clone()).or_default(), &hits);
+        }
+    }
+    unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
+
+    println!("\n  {title}: the shipped search path under other settings, paired against it");
+    for (group, shipped) in &measured[0] {
+        println!(
+            "  {group:<16} {:<28} nDCG@{} {:.4}   recall@{} {:.4}",
+            "shipped",
+            crate::scoring::NDCG_AT,
+            shipped.mean_ndcg(),
+            crate::scoring::RECALL_AT,
+            shipped.mean_recall(),
+        );
+        for ((name, _), other) in variants.iter().zip(&measured[1..]) {
+            let other = &other[group];
+            println!(
+                "  {group:<16} {name:<28} {:.4} / {:.4}   {}",
+                other.mean_ndcg(),
+                other.mean_recall(),
+                crate::statistics::compare(&shipped.per_query, &other.per_query)
+            );
+        }
     }
 }
 

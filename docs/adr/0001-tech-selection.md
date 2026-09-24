@@ -658,7 +658,9 @@ does not reorder a top ten. Corroboration and the weight are the same
 suppression applied to overlapping sets, and an eighth weight has already
 applied it to everything. Read as a frontier, every corroboration setting lies
 on the weight's own curve to within 0.0017. The code was removed; this is the
-finding.
+finding. It came back later for the graph channel alone, measured as a no-op
+at the graph weight that ships, and was removed again — see *Fusion designs
+measured and removed*.
 
 That also closes the published form of the idea — dropping a lexical candidate
 whose dense similarity falls below a threshold. It is the same suppression with
@@ -722,7 +724,8 @@ own. The addition is the mechanism — at `k = 10` and an eighth weight a lexica
 first place is 0.0114, which cannot reach the head alone, but 0.04 + 0.0114
 moves a vector-fifteenth candidate to about eighth. Only a zero weight or a
 non-additive rule removes an addition, which is what `Fusion::needing_support`
-is for.
+was built to be; it measured as the same suppression as the weight and was
+removed — see *Fusion designs measured and removed* below.
 
 **This project's normaliser is the least stable variant in the canonical
 taxonomy.** `arXiv:2210.11934` (ACM TOIS 41(4), 2023, and still the systematic
@@ -757,7 +760,7 @@ heuristic at **−0.0161**. The best method in their study is training-free RRF 
 project had an oracle and was one step from building the predictor: **an oracle
 gap is not evidence that a predictor can close it.**
 
-This is why the remedy being measured here conditions on the *candidate* rather
+This is why the remedy measured here conditioned on the *candidate* rather
 than on the query. "Is this query cross-lingual" is not answerable from a query
 — on XQuAD-R because both groups are the same 1,190 queries scored against
 different answer keys, and in production because a user asking a question does
@@ -780,7 +783,7 @@ confirmation of anyone else's.
 
 ### Fusion designs measured and removed
 
-Each of these was built, swept offline against what ships, and deleted once the
+Each of these was built, measured against what ships, and deleted once the
 measurement was in. The code, its tests and its sweep rows are gone; what each
 was worth is recorded here so the question is not reopened without new
 evidence. `Combine::Banded` ships, and `Combine::Reciprocal` is kept, reachable
@@ -794,6 +797,7 @@ against.
 | TM2C2 (`Combine::Convex`, `arXiv:2210.11934`) | each channel on theoretical min-max — from its score's infimum, 0 for BM25 and −1 for a cosine, to the query's best — convexly weighted, no band | own cross-lingual **0.7791 → 0.5744**, 0 wins to 37 losses, at the paper's own alpha, and no lexical or graph weight in the sweep recovered it; XQuAD-R cross-lingual **−0.1480** | Anisotropy of the embedder. A query's fifty vector candidates sit in the top ~17% of the distance from the cosine infimum to the best of them (median), where BM25's spread across about three quarters of theirs. Read from −1, the vector channel's own ordering is flattened to a few hundredths, and the lexical and graph channels decide among its candidates. |
 | Band on theoretical min-max (`Combine::BandedTheoretical`) | `Banded`, with a candidate's place in its channel's band read from the infimum rather than from the channel's worst candidate | own cross-lingual **0.4214** against the shipped 0.7791 | The same anisotropy: every vector candidate lands at the top of its band, so the band keeps the range and loses the channel's ordering. |
 | Per-channel confidence (`Fusion::with_confidence`) | each channel's weight scaled by how far its best candidate stands above its own field, `(best − mean) / deviation` over a `spread`, clamped to a `floor` | on rank fusion +0.0118 at best (8 / 0, p = 0.0381) on a narrow plateau; 0.0000 on MIRACL at low spreads. Cross-validated over the whole sweep of about a hundred settings, nothing beats what ships on held-out queries (own p = 0.57, XQuAD-R p = 0.10), and the XQuAD-R choice, spread 5 floor 0.5, is a net loss on the own corpus | A standardised top score cannot exceed `sqrt(n − 1)`, 7.00 over fifty candidates, so a low spread clamps every channel to full weight. Above that, on MIRACL the mildly harmful lexical channels still look confident, so the measure cannot see what it was built to see; everywhere else its gains were trades between groups. |
+| Support rule (`Fusion::needing_support`) | a named channel's own last place, instead of what its rank was worth, for any candidate no unnamed channel returned; shipped naming the graph channel | at the shipped graph weight 0.30, 0.0000 on all four groups of the own corpus; bit-identical for the lexical channels at their eighth over 1,190 XQuAD-R queries. On MuSiQue — 10,785 memories, 12,840 live `mentions` edges, 1,000 two-hop questions through `search_reranked_with` with the `accurate` reranker — nDCG@10 0.6834 and `recall@50` 0.8435 with it and without it, **0 wins, 0 losses, 1,000 ties**; the own corpus through the same path, all 157 questions tied | It was kept as insurance for graphs denser than any corpus here, and the dense graph did not need it: three tenths already quiets the channel as far as the rule would. Its one measured benefit was at a graph weight of 1.0 (own cross-lingual 0.5109 → 0.5606), a weight that is itself refuted. It was a no-op by measurement, not by construction — it lowered every candidate only the graph returned, and when the graph returns fewer than about forty candidates that can change which make the top fifty, in principle the top ten — so removing it moved the scores of those candidates and no measured result. |
 
 The figures were taken while the code existed, by the harnesses of the time;
 nothing in the tree today can reproduce them, and that is the point of writing
@@ -1096,14 +1100,18 @@ The post-fusion modifiers this list used to carry — recency, importance and
 worth, source quality, a redundancy penalty — are gone, and the reason is worth
 recording because it is not the reason the list was shortened. Importance and
 worth were implemented: `Modifiers::apply` multiplied every result by
-`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both are columns the
-repository reads and **no code path anywhere writes**, so both factors were
+`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both were columns the
+repository read and **no code path anywhere wrote**, so both factors were
 exactly 1.0 on every search this project has ever run, and the trace lines for
 them were already suppressed on the grounds that they said nothing. A modifier
-over a constant is not a ranking signal; it is a multiplication. The columns
-stay, because they are the authority store's schema, and `RetrievalSignals` now
-says outright that nothing writes them — restoring the feature starts with a
-write path, not with a multiplier.
+over a constant is not a ranking signal; it is a multiplication. With the
+modifiers gone nothing read them either, so `RetrievalSignals`, which carried
+them and two access counters -- equally never written -- onto every state a
+search loaded, went too, and migration V11 drops the five columns -- after
+checking that every row still holds the default it was inserted with, and
+refusing with the state named if one does not. Restoring the feature starts
+with a write path, which can add back the column it writes, not with a
+multiplier.
 
 The projection holds one document per topic, carrying what that topic says now.
 An earlier version of this decision held one per state, and that put a topic's
@@ -1147,6 +1155,61 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 | Stored vector INT8 | Output embeddings stored as int8 rather than float32 | No recall loss at all, half the query and half the build, **30% more disk** | **Off, because it is a disk loss** — see below |
 
 Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half.
+
+### The embedder, surveyed again: one candidate, and the leaderboard would have picked wrong
+
+Surveyed in September 2026 against the models released since BGE-M3, with the
+licence read from each card's metadata. Scores are recomputed from the
+per-task files in `embeddings-benchmark/results`; "cross" averages the subsets
+whose query and document languages differ.
+
+| model | licence | MMTEB retrieval | MIRACL-HN | MLQA cross | Belebele cross |
+| --- | --- | --- | --- | --- | --- |
+| BGE-M3 (shipped) | MIT | 54.6 | **69.6** | 74.7 | 77.0 |
+| Harrier-0.6B (Microsoft, 2026) | MIT | **70.8** | 66.4 | 72.7 | 77.0 |
+| pplx-embed-v1-0.6b (Perplexity, 2026) | MIT | 65.4 | 68.6 | **79.1** | 72.7 |
+| granite-embedding-311m-multilingual-r2 | Apache-2.0 | 65.2 | 59.8 | 66.9 | 64.8 |
+| Qwen3-Embedding-0.6B | Apache-2.0 | 64.6 | 61.2 | 72.8 | 67.6 |
+| multilingual-e5-large-instruct | MIT | 57.1 | 57.7 | 76.0 | **79.9** |
+
+EmbeddingGemma (Gemma terms) and jina v3/v5 (CC-BY-NC-4.0) were excluded on
+licence. BGE-M3's low retrieval average is reasoning, English and long-context
+tasks; on the four multilingual Wikipedia tasks it is still the best under a
+billion parameters.
+
+Then measured offline, vector channel alone, exact cosine, one text per call
+as the product embeds, against BGE-M3's int8 export, nDCG@10, paired:
+
+| model | XQuAD-R cross | XQuAD-R same | MuSiQue | own, cross (43) |
+| --- | --- | --- | --- | --- |
+| BGE-M3 int8 | 0.6348 | 0.6725 | 0.6262 | 0.8275 |
+| pplx-embed-v1-0.6b, own int8 | **+0.0251**, p = 0.0002 | **+0.0457**, p = 0.0001 | **+0.0647**, p = 0.0001 | +0.050, p = 0.054 |
+| Harrier-0.6B, own int8 | **−0.378** | +0.185 | | −0.163 |
+| multilingual-e5-large-instruct | **−0.435** | +0.200 | −0.030 | −0.289 |
+| granite-311m-r2, IBM's int8 | −0.145 | −0.050 | −0.002 | +0.023 |
+
+The pipeline reproduces the engine's own BGE-M3 figures within 0.0013 on three
+arms and 0.0062 on XQuAD-R same-language, where the int8 export itself moves by
+that much with the runtime's optimisation level (cosine 0.985 between builds).
+
+**The two highest-ranked models collapse across languages**, and MTEB cannot
+see it: it scores each language pair against a corpus in one language, while a
+memory store holds all its languages in one pool. Harrier and mE5 rank a
+same-language non-answer above the answer in another language -- two thirds
+and three quarters of their cross-lingual top ten are in the query's own
+language, where a language-blind ranking would put one in eleven -- and
+removing their query instructions does not change it.
+
+**pplx-embed-v1-0.6b is the only candidate worth an end-to-end trial.** Its
+gains hold on every corpus, but four things stand between that and a default:
+it was measured on the vector channel alone, and fusion and the reranker
+already recover part of what a better vector buys; its published 8-bit export
+runs 8-10x slower on this CPU, so shipping it means shipping a quantization of
+our own (dynamic int8 on every layer but `down_proj`, cosine 0.995 to fp32,
+against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
+(p = 0.002, surviving correction over eleven languages); and a query costs
+about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
+to be re-embedded.
 
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
@@ -1992,9 +2055,10 @@ The trade is the first one on this page that is genuinely four-axis:
 **And the disk cost has a published answer, which is what makes the trade worth
 taking seriously**: ColBERTv2 and PLAID compress these embeddings to a centroid
 plus one or two bit residuals for roughly 20 to 30 times, which would put 5.5 GB
-at 200 to 400 MB — smaller than the duplicated column this project has already
-identified as removable. The compression is part of the same piece of work as
-the measurement, not a later optimisation.
+at 200 to 400 MB — about the size of the whole `topic_states` table on that
+workspace (239 MB), and two to four times the duplicated content column (94 MB)
+the store has since stopped keeping. The compression is part of the same piece
+of work as the measurement, not a later optimisation.
 
 #### The two product rulings that narrow all of this
 
