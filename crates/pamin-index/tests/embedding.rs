@@ -122,9 +122,12 @@ fn a_symmetric_model_is_left_alone() {
 /// default is `Profile::Accuracy`, which is `Model::Pooled` -- a different
 /// branch, and the quantized one -- so the profile the product actually runs
 /// was the one this did not cover. That matters now rather than in principle:
-/// `reindex` embeds in batches of 256 and the cascade embeds one document at a
-/// time, so if a batch changed a vector the two paths would already disagree
-/// about what the same text embeds to.
+/// `reindex` embeds in batches of 256, the cascade in rounds of up to 64 and a
+/// single write alone, so if a batch changed a vector those paths would
+/// disagree about what the same text embeds to. On `Profile::Accuracy` a batch
+/// also runs on different sessions from a single text -- one thread each,
+/// side by side, against every thread on one -- so this is what holds that
+/// the sessions and the thread count change nothing either.
 #[test]
 #[ignore = "downloads embedding model weights"]
 fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {

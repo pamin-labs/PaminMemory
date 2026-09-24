@@ -44,12 +44,17 @@ pub(crate) fn session(
     providers: Vec<ExecutionProviderDispatch>,
     model: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<Session> {
+    session_on(providers, intra_threads()?, model)
+}
+
+/// [`session`] on `threads` intra-op threads rather than [`intra_threads`].
+pub(crate) fn session_on(
+    providers: Vec<ExecutionProviderDispatch>,
+    threads: usize,
+    model: impl FnOnce() -> Result<PathBuf>,
+) -> Result<Session> {
     let unready =
         |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
-    let threads = match threads() {
-        Some(threads) => threads,
-        None => std::thread::available_parallelism()?.get(),
-    };
     let mut builder = Session::builder()
         .map_err(|error| unready(&error))?
         .with_execution_providers(providers)
@@ -62,6 +67,14 @@ pub(crate) fn session(
     builder
         .commit_from_file(&model)
         .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))
+}
+
+/// How many cores a forward pass may use: [`threads`], or one per core.
+pub(crate) fn intra_threads() -> Result<usize> {
+    Ok(match threads() {
+        Some(threads) => threads,
+        None => std::thread::available_parallelism()?.get(),
+    })
 }
 
 /// Intra-op threads per inference session, or `None` for one per core.

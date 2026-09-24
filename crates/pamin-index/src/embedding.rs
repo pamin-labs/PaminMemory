@@ -17,6 +17,7 @@
 //! that family.
 
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use ort::session::SessionOutputs;
 use serde::{Deserialize, Serialize};
 
 use crate::encoder::Encoder;
@@ -271,16 +272,17 @@ impl Embedder {
             .ok_or_else(|| IndexError::Engine("embedding produced no vector".into()))
     }
 
-    /// One forward pass, whichever model this profile loaded.
+    /// The forward passes for `texts`, whichever model this profile loaded.
     ///
-    /// pplx gives each text a pass of its own. Not batched, though batching
-    /// would not change a vector -- the graph quantizes activations a row at a
-    /// time, and 32 MuSiQue paragraphs came back bit for bit the same in a
-    /// batch of 32 as alone -- because there is nothing for a batch to spread.
-    /// Profiled through this crate's session (ONNX Runtime 1.28, four cores,
-    /// shared with another run), 83% of a pass is the int8 matrix products and
-    /// 7% attention, and a pass costs the same per token at 28 tokens as at
-    /// 292: no fixed cost per pass, only the padding a batch adds. Those 32
+    /// pplx gives each text a pass of its own, and a batch's passes run side
+    /// by side ([`Encoder::run_each`]). Not batched, though batching would not
+    /// change a vector -- the graph quantizes activations a row at a time, and
+    /// 32 MuSiQue paragraphs came back bit for bit the same in a batch of 32
+    /// as alone -- because there is nothing for a batch to spread. Profiled
+    /// through this crate's session (ONNX Runtime 1.28, four cores, shared
+    /// with another run), 83% of a pass is the int8 matrix products and 7%
+    /// attention, and a pass costs the same per token at 28 tokens as at 292:
+    /// no fixed cost per pass, only the padding a batch adds. Those 32
     /// paragraphs, 3,245 tokens, took 1.75 times as long in batches of up to
     /// 2,048 padded tokens, sorted by length, and 4 times as long as one batch.
     ///
@@ -290,7 +292,10 @@ impl Embedder {
         let failed = |error| IndexError::Engine(format!("embedding text: {error}"));
         match &mut self.model {
             Model::Text(model) => model.embed(texts, None).map_err(failed),
-            Model::Pooled(model) => texts.iter().map(|text| pooled(model, text)).collect(),
+            Model::Pooled(model) => {
+                let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+                model.run_each(&texts, pooled)
+            }
         }
     }
 }
@@ -379,13 +384,12 @@ fn pplx(cache_dir: &std::path::Path) -> Result<Encoder> {
     .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
 }
 
-/// One text's pplx vector, in one forward pass of its own, at unit length.
+/// One text's pplx vector, from a forward pass of its own, at unit length.
 ///
 /// The documented output is int8 and is compared by cosine, so it is scaled
 /// to unit length here; the vector channel's distance is the cosine, and a
 /// stored vector at unit length is what every other profile stores.
-fn pooled(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
-    let outputs = model.run(vec![text])?;
+fn pooled(outputs: &SessionOutputs<'_>) -> Result<Vec<f32>> {
     let output = outputs
         .get(PPLX_OUTPUT)
         .ok_or_else(|| IndexError::Engine(format!("the pplx export has no {PPLX_OUTPUT}")))?;
