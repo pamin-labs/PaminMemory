@@ -2051,9 +2051,10 @@ The trade is the first one on this page that is genuinely four-axis:
 **And the disk cost has a published answer, which is what makes the trade worth
 taking seriously**: ColBERTv2 and PLAID compress these embeddings to a centroid
 plus one or two bit residuals for roughly 20 to 30 times, which would put 5.5 GB
-at 200 to 400 MB — smaller than the duplicated column this project has already
-identified as removable. The compression is part of the same piece of work as
-the measurement, not a later optimisation.
+at 200 to 400 MB — about the size of the whole `topic_states` table on that
+workspace (239 MB), and two to four times the duplicated content column (94 MB)
+the store has since stopped keeping. The compression is part of the same piece
+of work as the measurement, not a later optimisation.
 
 #### The two product rulings that narrow all of this
 
