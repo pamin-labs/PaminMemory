@@ -85,6 +85,40 @@ async fn the_ledger_holds_its_promises() {
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
 
     drop(database);
+    a_stopped_server_is_started_again_without_waiting(&workspace).await;
+}
+
+/// Opening a workspace whose server was stopped starts it, promptly.
+///
+/// `stop` leaves the server record behind, as a reboot does. Asking whether
+/// that server was up by connecting to it found the port refused and retried
+/// for the pool's whole thirty-second acquire timeout before starting a new
+/// one, so the first command after either paid half a minute for nothing.
+/// Last, because it stops the cluster everything above shares.
+async fn a_stopped_server_is_started_again_without_waiting(workspace: &Workspace) {
+    pamin_store::database::stop(workspace)
+        .await
+        .expect("stop the server");
+    assert!(
+        workspace.read_server().expect("read the record").is_some(),
+        "the premise: the record outlives the cluster"
+    );
+
+    let started = std::time::Instant::now();
+    let reopened = Database::open(workspace, Connections::PerCommand)
+        .await
+        .expect("reopen a stopped workspace");
+    let waited = started.elapsed();
+    let (one,): (i32,) = sqlx::query_as("SELECT 1")
+        .fetch_one(reopened.pool())
+        .await
+        .expect("the restarted server answers");
+    assert_eq!(one, 1);
+    assert!(
+        waited < std::time::Duration::from_secs(20),
+        "reopening a stopped workspace took {waited:?}; starting the server takes seconds"
+    );
+    drop(reopened);
 }
 
 async fn migrations_create_every_table(database: &Database) {
