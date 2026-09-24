@@ -1403,18 +1403,22 @@ ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
 4,096, the fastest of three calls on one text (of two at 4,096). The window
 stays at 512.
 
-### pplx-embed-v1-0.6b on the shipped path: proposed, not adopted
+### pplx-embed-v1-0.6b on the shipped path: adopted
 
-**Status: proposed.** BGE-M3 remains the default. The maintainer has not
-decided, and four items are open; they are listed at the end of this section.
+**Status: decided.** pplx-embed-v1-0.6b is the `accuracy` profile's model and
+the default. The maintainer chose configuration C below -- pplx-embed's dense
+vector in BGE-M3's place, everything else as it shipped -- from the trial this
+section records as it was proposed. The trial left four items open; they are
+settled at the end of the section, followed by what ships, measured through
+the product. BGE-M3's dense path is gone from the code.
 
 The survey above named one candidate and four reasons it was not yet a
 default, the first being that it had been measured on the vector channel
 alone. The end-to-end trial ran it through `search_reranked` at the `accurate`
 tier on the XQuAD-R and MuSiQue harnesses. It used an experimental `pplx`
-profile over our own int8 export (52bc0d9) and a harness option that pairs one
-profile's saved per-question scores with another's (783551a), and neither is on
-the default branch. It ran at the rerank depth of twenty that shipped at the
+profile over our own int8 export (52bc0d9, never merged; the profile that ships
+replaced it) and a harness option that pairs one profile's saved per-question
+scores with another's (286f84f). It ran at the rerank depth of twenty that shipped at the
 time. Both indexes embed `name: content`:
 
 | | BGE-M3 | pplx | difference | wins / losses | p |
@@ -1445,7 +1449,7 @@ same harness, the encoding moves BGE-M3 from content to `name: content` by
 (141 / 80) and +0.0294 on MuSiQue (249 / 166), each at p = 0.0001. So the
 +0.0355 was +0.0193 of encoding and +0.0162 of model, and the +0.0029 was an
 encoding gain covering a model loss. The harness now refuses to pair runs over
-different encodings (783551a). The prediction for the encoding was wrong in
+different encodings (597a0dd). The prediction for the encoding was wrong in
 sign on XQuAD-R (−0.003 and −0.002, on the reasoning that names like `de:12:3`
 are noise to the model) and low on MuSiQue (+0.012). It also separates two
 decisions: a BGE-M3 workspace built before 0c2ff9f gains the encoding figures
@@ -1517,21 +1521,181 @@ significant) same-language on XQuAD-R where the product gave +0.0162. The
 proposal rests on the product-path table at the top of this section. The
 replay only ranks the combinations against one another.
 
-**Open, and each has to be settled before this becomes a default:**
+**Settled, one by one:**
 
-1. **The export.** Our dynamic int8 quantization (every MatMul except the 28
-   `down_proj`s, plus the token embedding; mean cosine 0.9957 to fp32 over 400
-   texts) is published nowhere, and Perplexity's own 8-bit export runs 8-10x
-   slower on this CPU. The trial profile reads it from a local directory, so
-   shipping it means hosting our own export for the model download to fetch.
-2. **Re-embedding existing workspaces.** A model change builds a new index,
-   so every workspace re-embeds through `pamin reindex`, at two to three
-   times BGE-M3's cost a passage.
-3. **Greek.** The survey measured Greek queries 0.071 worse (p = 0.002) on the
-   vector channel alone. That has not been re-taken per language on the
-   shipped path.
-4. **Fusion weights tuned for BGE-M3.** Every weight C runs at was chosen with
-   BGE-M3 in the vector channel and has not been re-swept with pplx there.
+**1. The export: Perplexity's own 8-bit one, set to compute in int8.** The
+survey read the published 8-bit export's slowness as the export's, and it is
+the runtime's reading of it. Every matrix product in it is a `MatMulNBits` node
+over 8-bit weights with no `accuracy_level`, which ONNX Runtime takes as level 0
+-- dequantize each block of weights to fp32 and multiply in fp32. At level 4 it
+quantizes each block of activations too and runs its integer kernels. The
+runtime has no session setting for the level, so the product rewrites the
+graph once on the user's machine, adding that one attribute to each of the 196
+nodes and touching nothing else (`crates/pamin-index/src/nbits.rs`), and loads
+it through the usual prepared copy. The weights are Perplexity's, fetched at a
+pinned revision; nothing is published by this project and nothing runs Python.
+
+Every export there is, against Perplexity's fp32 one, over 400 texts (330
+XQuAD-R sentences across eleven languages, 70 MuSiQue paragraphs), one text at
+a time on the documented `pooler_output_int8` output. Times are the median of
+per-text ratios to the trial's own export, the exports interleaved text by
+text (ONNX Runtime 1.30 in Python, 45 to 60 queries and 15 to 20 MuSiQue
+paragraphs, on the shared four-core machine; three runs, at load averages of
+about 8, 20 and 25):
+
+| export | mean cos | p5 | min | a query | a passage | heap after loading |
+| --- | --- | --- | --- | --- | --- | --- |
+| fp32, as published | 1 | 1 | 1 | 2.19x | 1.89x | 1,656 MiB |
+| 8-bit, as published | 0.99938\* | 0.99914\* | 0.99899\* | 6.54x, 9.58x | 4.43x, 4.48x | -- |
+| **8-bit, computed in int8 (ships)** | **0.99925** | **0.99886** | **0.99858** | 1.30x, 1.78x, 1.74x | 1.97x, 2.17x, 1.92x | 493 MiB |
+| 4-bit, as published | 0.90564 | 0.85726 | 0.81999 | 1.66x | 1.81x | -- |
+| the trial's dynamic int8 | 0.99571 | 0.99359 | 0.98931 | 1x | 1x | 642 MiB |
+
+\* Every fourth text, 100 of them, because the export as published takes
+seconds a text here; the shipped export scores 0.99925 / 0.99889 / 0.99883 on
+the same hundred, so computing in int8 costs about 0.00013 of cosine.
+
+The 4-bit export is a different model, near enough, and out. The 8-bit one as
+published is four to ten times slower than any other for no accuracy it can
+add over the one that ships. The fp32 one is the reference and costs about
+what the shipped export costs in time, but three and a half times its heap,
+2.4 GB to download, and a prepared copy at least that size. The shipped export
+is closer to fp32 than the trial's own quantization was -- the gap to it is
+a sixth of the trial's, 1 - cos 0.00075 against 0.00429 on average -- and it
+needs no one to publish anything.
+
+Through the product the two 8-bit exports are indistinguishable. Paired on
+XQuAD-R at the depth of twenty the trial ran at, the shipped export against the
+trial's: +0.0019 cross-lingual nDCG@10 (307 wins / 270 losses, p = 0.0967) and
++0.0009 same-language (28 / 31, p = 0.5038), with `recall@50` +0.0003 and
+0.0000.
+
+Through the product -- `Embedder::embed_query`, ONNX Runtime 1.28, both models
+in one process, every query once each in rounds that alternate which goes
+first, 375 queries a run, load average 23 to 30 -- a query costs 4.56x and
+4.51x BGE-M3's in two runs, against 2.22x and 2.88x for the trial's export in
+the two runs alternated with them. At each run's fastest query the gap is
+smaller: 72 to 74 ms against the trial export's 64 to 70 and BGE-M3's 28 to
+30. So the shipped export is the slower of the two on this machine, by about
+a tenth at best and by half to double under load.
+
+What the trial's export would still gain, if this project published it: that
+latency, and nothing on accuracy by this measure. It needs one upload -- the
+graph and its data file, `model.onnx` (692,613 bytes, SHA-256
+`1469d05c4677dfa77199de2c9e2bfa21177d6a14e2f39d2feaf22771f0bafc65`) and
+`model.onnx_data` (878,813,184 bytes,
+`23b4f8f45301788449c568091d8cf88336c442c8ae1dcecbd24b11ed358c664a`), beside
+Perplexity's four tokenizer files, which it uses unchanged -- and one edit, the
+`PPLX` constant in `crates/pamin-index/src/embedding.rs`: that repository, its
+revision, `graph: "model.onnx"`, `weights: &["model.onnx_data"]`,
+`int8_compute: false`. The identity changes with it, so an index built by the
+shipped export would be re-embedded as BGE-M3's is.
+
+**2. Re-embedding existing workspaces: on upgrade, in the background, and
+resumable.** An index records the model that embedded it, and a mismatch used
+to be refused with an error naming `pamin reindex` -- a foreground rebuild
+that could lend no vector across models, so every workspace would have sat
+unusable while it embedded every memory again. Now an index whose recorded
+model is one its profile replaced (`Profile::replaces`: BGE-M3's export, for
+`accuracy`) opens *stale*: every channel but the vector one answers, the vector
+channel returns nothing rather than distances between two models' vectors, and
+what is written to it is embedded by the current model in the current
+encoding. The server's upkeep then re-embeds it with the machinery a reshape
+already had -- a copy beside the served index, filled a batch at a time outside
+its lock, writes made meanwhile recorded and carried over, one swap
+(`Reshape::reembed`). What is new is that the copy is embedded rather than
+copied, from the text the served index holds and the name the ledger gives,
+and that it survives: each batch is flushed before the next, an abandoned or
+killed attempt leaves it, and the next attempt skips every topic the copy
+already holds under the same text. Another profile's index is still refused.
+
+The unit test builds an index as BGE-M3 left one, kills a re-embedding inside
+its second batch, edits and deletes a topic, and resumes: the second attempt
+calls the model 345 times -- 600 less the 256 the first flushed, plus the one
+edited since -- and the result holds exactly the current model's vector of
+every topic's name and text. On a real workspace it did the same: 676 MuSiQue
+memories (40 questions' worth) indexed by the trial's BGE-M3 build, its
+database two migrations behind, opened by this build through the MuSiQue
+harness. The database migrated, the project opened stale, and the
+re-embedding was killed with `SIGKILL` once its first batch of 256 was on
+disk. The next open re-embedded 420 -- the rest -- in 615 s on the shared
+machine and swapped the copy in; the index then recorded pplx-embed's
+identity and answered the 40 questions at 0.7705 nDCG@10 against BGE-M3's
+0.7442 before, which at 40 questions and two different rerank depths is a
+smoke test that the upgraded project searches, not a measurement.
+
+**3. Greek: the loss is real on the shipped path, smaller, and the only one.**
+XQuAD-R's 1,190 questions paired per query language, the shipped export
+against BGE-M3 at the shipped depth of thirty, Holm-corrected over the eleven
+languages within each group (`nDCG@10`):
+
+| query language | cross-lingual | p (Holm) | same-language | p (Holm) |
+| --- | --- | --- | --- | --- |
+| Greek | 0.6700 → 0.6188, **−0.0512**, 30 wins / 59 losses | 0.0006 (0.006) | 0.8366 → 0.8423, +0.0057 | 0.76 (1.0) |
+| Chinese | 0.5920 → 0.6605, **+0.0685**, 56 / 28 | 0.0001 (0.001) | 0.8351 → 0.8247, −0.0103 | 0.56 (1.0) |
+| the other nine | −0.024 to +0.021 | 0.039 or more (0.35 or more) | −0.003 to +0.039 | 0.030 or more (0.33 or more) |
+
+A Greek question looking for its answer in the other ten languages loses a
+twentieth of `nDCG@10`, against 0.071 on the vector channel alone in the
+survey, so fusion and the reranker recover about a quarter of it. It is the
+model's and not the export's: the trial's own export lost 0.0544 on the same
+queries at depth twenty (p = 0.0013), and the two exports are indistinguishable
+on Greek (+0.0059, p = 0.18). A Greek question looking for a Greek answer
+loses nothing, and Chinese gains more than Greek loses. Nothing in the
+retrieval path is language-specific enough to correct one language without
+reopening the others, so this is recorded as the price, not fixed. On its own
+it is the whole of the cross-lingual group's −0.0045 below: −0.0512 over 108
+of 1,190 questions is −0.0046.
+
+**4. Fusion weights, re-swept with pplx in the vector channel: they stay.**
+The rule was written down before any row was computed. One `CHANNELS` pass per
+corpus on the pplx index -- this project's own corpus (four groups), XQuAD-R
+(two) and MuSiQue (one) -- re-fuses every candidate offline through the
+engine's own `Fusion::fuse` at every setting of `channels::variants()` (the
+two lexical weights crossed over 0 to a half, the combiner, the rank constant,
+the graph weight), and `SWEEP_OUT` writes each setting's per-question nDCG@10
+and `recall@50`. Fusion is scored before the rerank, because a sweep has to
+call the layer that takes the weight. A setting is admissible on a set of
+corpora if no group of them is significantly worse than what ships on either
+metric (paired sign-flip, 10,000 draws, p < 0.05 unadjusted); among admissible
+settings the one with the highest mean over groups of the nDCG@10 gain is
+chosen, ties to what ships. Each corpus is held out in turn and its choice is
+scored on it. The weights change only if all three folds choose the same
+setting, the held-out gain pooled over every held-out question is positive at
+p < 0.05, and no held-out group is significantly worse.
+
+**No setting is adopted, as the prediction written with the rule said.** The
+three folds chose three settings. Held out, this project's corpus got a graph
+weight of a half, which cost its cross-lingual group 0.0243 of nDCG@10
+(p = 0.0001). XQuAD-R got the n-gram weight halved to 0.0625, which gained
+0.0078 cross-lingual and lost 0.0130 same-language (both p = 0.0001) -- the
+trade every lexical row makes on that corpus. MuSiQue got what ships, because
+no setting was both admissible and better on the other two. Pooled over the
+3,537 held-out questions, the procedure loses 0.0020 against what ships
+(p = 0.0023). Chosen in-sample instead, the five rows with the largest mean
+gain over the seven groups -- `k = 0` first, at +0.0024 -- are each
+significantly worse than what ships on some group; MuSiQue alone would choose
+`k = 0` in every fold (+0.0044, p = 0.0050), and it costs XQuAD-R's
+same-language group 0.0082 (p = 0.0001). So pplx-embed runs at the weights
+chosen with BGE-M3 in the vector channel: the two lexical channels at an
+eighth each, band fusion at `k = 10`, the graph at 0.3.
+
+**What ships, through the product.** The shipped export against BGE-M3 at the
+shipped rerank depth of thirty, both indexes embedding `name: content`, over
+XQuAD-R's 1,190 questions:
+
+| | BGE-M3 | pplx-embed | difference | wins / losses | p |
+| --- | --- | --- | --- | --- | --- |
+| cross-lingual, nDCG@10 | 0.6745 | 0.6699 | −0.0045 | 412 / 493 | 0.2445 |
+| cross-lingual, `recall@50` | 0.9005 | 0.8950 | −0.0055 | 173 / 181 | 0.2241 |
+| same-language, nDCG@10 | 0.8041 | 0.8199 | **+0.0157** | 162 / 111 | 0.0100 |
+| same-language, `recall@50` | 0.9605 | 0.9580 | −0.0025 | 13 / 16 | 0.7120 |
+
+That is the trial's result again -- +0.0162 same-language and −0.0072
+cross-lingual at depth twenty with the trial's export -- and Greek, item 3, is
+the whole of the cross-lingual difference. MuSiQue has not been re-taken at the
+shipped export and depth; the trial measured +0.0322 there (p = 0.0001), at
+depth twenty with its own export.
 
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
@@ -1623,15 +1787,20 @@ The embedding model is a profile, not a constant:
 | --- | --- | --- | --- | --- | --- |
 | `speed` | `multilingual-e5-small` | 384 | 465 MB | 13 ms | — |
 | `balanced` | `multilingual-e5-base` | 768 | 1.1 GB | 26 ms | 0.3383 |
-| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms | 0.6550 |
+| `accuracy`, until pplx-embed | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms | 0.6550 |
+| `accuracy` (default) | pplx-embed-v1-0.6b, 8-bit weights computed in int8 | 1024 | 797 MiB | 72 ms at best | — |
 
 The last column is a comparison between models and is frozen at the fusion of
 the day it was taken, `k = 10` with the lexical pair at half. The weight has
 been halved twice since; the default profile's own corpus figure is 0.7773
 today. The ordering the column exists to show does not move with it, because
-the weight applies to every row alike.
+the weight applies to every row alike. pplx-embed's row was measured beside
+BGE-M3 rather than on the machine of the other rows -- 797 MiB resident against
+BGE-M3's 628 there, and a query at 72 ms against 28 at each model's fastest,
+4.5 times BGE-M3's at the median -- and was never taken at that fusion; the
+pplx-embed section above has what it does through the product.
 
-BGE-M3 is the default, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
+BGE-M3 became the default, until pplx-embed replaced it, reversing this decision's original position. That position rested on two claims, and the evaluation harness contradicted both. Its cost per query is not an order of magnitude higher — quantized weights put it at 35 ms against 26, and at 560 MB it is *smaller* resident than the model it replaces. And the sparse arm that was supposed to be its main increment is not: only the dense representation is kept, and the dense representation alone roughly doubles cross-lingual retrieval on our corpus while matching same-language retrieval exactly.
 
 `multilingual-e5-small` is not the default because 384 dimensions is generally considered sufficient only when paired with a cross-encoder reranker, and the one Påmin Memory ships reorders only the candidates the lexical channels missed. It is not there to rescue a weaker embedding across the board, and cannot be relied on to. EmbeddingGemma scores well and supports Matryoshka truncation, but is governed by the Gemma Terms of Use, whose restrictions must be passed to downstream users; that is not an acceptable burden to attach to an open-source default. The E5 family and BGE-M3 are Apache-2.0 or MIT, as is the int8 export.
 
