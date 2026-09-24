@@ -1107,8 +1107,10 @@ them were already suppressed on the grounds that they said nothing. A modifier
 over a constant is not a ranking signal; it is a multiplication. With the
 modifiers gone nothing read them either, so `RetrievalSignals`, which carried
 them and two access counters -- equally never written -- onto every state a
-search loaded, went too. The columns stay, because they are the authority
-store's schema; restoring the feature starts with a write path, not with a
+search loaded, went too, and migration V11 drops the five columns -- after
+checking that every row still holds the default it was inserted with, and
+refusing with the state named if one does not. Restoring the feature starts
+with a write path, which can add back the column it writes, not with a
 multiplier.
 
 The projection holds one document per topic, carrying what that topic says now.

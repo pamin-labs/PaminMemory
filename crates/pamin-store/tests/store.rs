@@ -68,6 +68,7 @@ async fn the_ledger_holds_its_promises() {
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
     dropping_the_state_copy_loses_nothing_a_state_said(&database, &workspace).await;
     settled_jobs_go_and_owed_jobs_stay_through_the_migration(&database, &workspace).await;
+    dropping_the_signal_columns_loses_nothing_written(&database, &workspace).await;
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
@@ -1330,6 +1331,125 @@ async fn settled_jobs_go_and_owed_jobs_stay_through_the_migration(
         vec!["held", "owed"],
         "only the settled row should go; owed and in-flight work must survive"
     );
+
+    scratch.close().await;
+    sqlx::query(AssertSqlSafe(format!("DROP DATABASE {NAME}")))
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
+}
+
+/// V11 drops the retrieval-signal columns because nothing ever wrote them --
+/// and refuses to, rather than lose anything, when a state holds one.
+///
+/// Like V9's test, this runs against rows written before the migration, in a
+/// scratch database left at V10. The refusal is the half that would fail
+/// without its guard: dropping the columns unconditionally succeeds on the
+/// row that holds a value too, and takes the value with it.
+async fn dropping_the_signal_columns_loses_nothing_written(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const NAME: &str = "pamin_signal_columns_check";
+
+    /// One state over the whole of one piece of evidence, the way V10 stored
+    /// it, with `signal` -- an assignment such as `access_count = 3` -- set on
+    /// it when given.
+    async fn state_at_v10(pool: &sqlx::PgPool, evidence: &str, signal: Option<&str>) {
+        let (project, source, version, span, topic, state) = (
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        );
+        let set = signal
+            .map(|signal| format!("UPDATE topic_states SET {signal} WHERE id = '{state}';"))
+            .unwrap_or_default();
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "INSERT INTO projects VALUES ('{project}', '{project}', now());
+             INSERT INTO sources VALUES ('{source}', '{project}', 'manual', 'm', now());
+             INSERT INTO source_versions VALUES ('{version}', '{project}', '{source}', 1,
+                 $e${evidence}$e$, 'h', 'promoted', 'r', now());
+             INSERT INTO source_spans VALUES ('{span}', '{project}', '{version}',
+                 0, {}, NULL, NULL);
+             INSERT INTO topics (id, project_id, name, created_at)
+                 VALUES ('{topic}', '{project}', 't', now());
+             INSERT INTO topic_states (id, project_id, topic_id, version,
+                 source_span_id, observed_at, recorded_at)
+                 VALUES ('{state}', '{project}', '{topic}', 1, '{span}', now(), now());
+             UPDATE topics SET current_state_id = '{state}', current_version = 1
+              WHERE id = '{topic}';
+             {set}",
+            evidence.len()
+        )))
+        .execute(pool)
+        .await
+        .expect("write a state the way V10 stored it");
+    }
+
+    async fn signal_columns(pool: &sqlx::PgPool) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM information_schema.columns
+              WHERE table_schema = current_schema() AND table_name = 'topic_states'
+                AND column_name IN ('importance', 'worth_positive', 'worth_negative',
+                                    'access_count', 'last_accessed_at')",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("read the catalogue")
+    }
+
+    // A state that holds a signal, beside one that does not.
+    let scratch = database_left_at(database, workspace, NAME, 10).await;
+    state_at_v10(&scratch, "never touched", None).await;
+    state_at_v10(&scratch, "read three times", Some("access_count = 3")).await;
+
+    assert!(
+        pamin_store::migrate::run(&scratch).await.is_err(),
+        "a state holding a signal must stop the migration"
+    );
+    assert_eq!(
+        signal_columns(&scratch).await,
+        5,
+        "a refused migration must leave every column in place"
+    );
+    let kept: i32 = sqlx::query_scalar("SELECT max(access_count) FROM topic_states")
+        .fetch_one(&scratch)
+        .await
+        .expect("read the signal back");
+    assert_eq!(kept, 3);
+    scratch.close().await;
+
+    // The same data with the signal left at its default migrates, and every
+    // state still reads back.
+    let scratch = database_left_at(database, workspace, NAME, 10).await;
+    state_at_v10(&scratch, "never touched", None).await;
+    state_at_v10(&scratch, "read three times", None).await;
+
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("states holding only defaults should migrate");
+    assert_eq!(
+        signal_columns(&scratch).await,
+        0,
+        "the columns should be gone once nothing is in them"
+    );
+
+    let mut read: Vec<String> = Vec::new();
+    let projects: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM projects")
+        .fetch_all(&scratch)
+        .await
+        .expect("projects");
+    for project in projects {
+        let states = repository::all_current_topic_states(&scratch, project.into())
+            .await
+            .expect("read states through the store");
+        read.extend(states.into_iter().map(|state| state.content));
+    }
+    read.sort();
+    assert_eq!(read, vec!["never touched", "read three times"]);
 
     scratch.close().await;
     sqlx::query(AssertSqlSafe(format!("DROP DATABASE {NAME}")))
