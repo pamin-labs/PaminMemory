@@ -776,6 +776,12 @@ fn a_query_naming_a_topic_walks_out_from_it(cli: &Cli) {
 /// Its own workspace, because at a channel depth of one the graph keeps one
 /// neighbour, and in the shared one an unrelated edge of equal strength can
 /// take that place and make the test about tie-breaking instead.
+///
+/// Content that shares nothing with the query is not enough to keep the named
+/// topic out of the vector channel: a new index embeds `name: content`, so the
+/// name the query spells out puts the topic near it whatever the content says.
+/// That is why another memory asks the query's own question about something
+/// else -- it is what each channel's one slot goes to instead.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
@@ -785,7 +791,7 @@ fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
         "write",
         "--topic",
         "office_plants",
-        "the ficus by the window needs watering on thursdays",
+        "what does the ficus by the window need? watering on thursdays",
     ]);
     cli.run(&[
         "write",
