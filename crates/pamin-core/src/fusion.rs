@@ -48,10 +48,15 @@ const SEGMENTED_WEIGHT: f32 = 0.125;
 
 /// What character-n-gram BM25 is worth.
 ///
-/// The same eighth, and that is the part with no evidence under it. Every
-/// sweep this project has run moved both lexical channels together, so no
-/// measurement anywhere distinguishes these two numbers -- the grid was
-/// one-dimensional and the conclusion is being read as though it were two.
+/// The same eighth. The sweeps that chose it moved both lexical channels
+/// together, so they could not distinguish these two numbers -- the grid was
+/// one-dimensional and the conclusion was read as though it were two. The
+/// re-sweep with pplx-embed in the vector channel crossed them, each from 0 to
+/// a half on three corpora, and a leave-one-corpus-out rule written before it
+/// ran kept both at an eighth: the one split a fold chose, n-gram at 0.0625,
+/// cost the held-out XQuAD-R more same-language than it gained cross-lingual
+/// (`docs/adr/0001-tech-selection.md`, "pplx-embed-v1-0.6b on the shipped
+/// path", item 4).
 ///
 /// Two constants rather than one because the premise that justified sharing is
 /// refuted; see [`Fusion::default`]. Splitting them changes nothing on its own
