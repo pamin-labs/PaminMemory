@@ -67,6 +67,7 @@ async fn the_ledger_holds_its_promises() {
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
     dropping_the_state_copy_loses_nothing_a_state_said(&database, &workspace).await;
+    settled_jobs_go_and_owed_jobs_stay_through_the_migration(&database, &workspace).await;
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
@@ -1247,6 +1248,61 @@ async fn dropping_the_state_copy_loses_nothing_a_state_said(
         .expect("drop scratch database");
 }
 
+/// V10 deletes the settled rows an earlier build kept, and nothing else.
+///
+/// The migration identifies them by the column it then drops, so it is the
+/// last chance to tell a finished job from an owed one -- and getting it wrong
+/// in the other direction loses work silently: an owed job deleted here is a
+/// memory the index never hears about, with nothing left to say so. So a
+/// scratch database is left at V9 holding one of each, plus one held by a
+/// worker, and migrated.
+async fn settled_jobs_go_and_owed_jobs_stay_through_the_migration(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const NAME: &str = "pamin_settled_jobs_check";
+    let scratch = database_left_at(database, workspace, NAME, 9).await;
+
+    let project = uuid::Uuid::new_v4();
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "INSERT INTO projects VALUES ('{project}', '{project}', now());
+         INSERT INTO index_jobs (id, project_id, job_type, payload, idempotency_key,
+                                 available_at, created_at, completed_at,
+                                 claimed_at, claimed_by, priority)
+         VALUES
+           (gen_random_uuid(), '{project}', 'sync_topic_index', '{{}}', 'settled',
+            now(), now(), now(), NULL, NULL, 10),
+           (gen_random_uuid(), '{project}', 'sync_topic_index', '{{}}', 'owed',
+            now(), now(), NULL, NULL, NULL, 10),
+           (gen_random_uuid(), '{project}', 'derive_mentions', '{{}}', 'held',
+            now(), now(), NULL, now(), 'a worker', 20);"
+    )))
+    .execute(&scratch)
+    .await
+    .expect("write the queue the way V9 kept it");
+
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("migrate past V10");
+
+    let mut left: Vec<String> = sqlx::query_scalar("SELECT idempotency_key FROM index_jobs")
+        .fetch_all(&scratch)
+        .await
+        .expect("read the queue back");
+    left.sort();
+    assert_eq!(
+        left,
+        vec!["held", "owed"],
+        "only the settled row should go; owed and in-flight work must survive"
+    );
+
+    scratch.close().await;
+    sqlx::query(AssertSqlSafe(format!("DROP DATABASE {NAME}")))
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
+}
+
 /// A scratch database migrated through `through` by an earlier build, and no
 /// further.
 ///
@@ -2047,7 +2103,17 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
         "a job nobody re-requested completes"
     );
 
-    // Completing does not delete, and a later request revives the same row.
+    // Completing deletes the row: nothing is owed, so nothing is kept.
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("pending"),
+        0,
+        "a completed job should leave no row behind"
+    );
+
+    // And a later request is not swallowed by the work already done: it owes
+    // the work again, as a new row in the state a fresh request starts in.
     jobs::enqueue(
         database.pool(),
         project.id,
@@ -2060,8 +2126,17 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
         .await
         .expect("claim revived");
     assert_eq!(
+        revived.len(),
+        1,
+        "a request after completion should owe the work again"
+    );
+    assert_ne!(
         revived[0].id, claimed[0].id,
-        "a completed row should be revived rather than left to swallow the request"
+        "the completed row should be gone, so this is a new one"
+    );
+    assert_eq!(
+        revived[0].attempts, 1,
+        "a new request starts its attempts afresh"
     );
 
     // Attempts run out, and the job is then left pending with its error rather
