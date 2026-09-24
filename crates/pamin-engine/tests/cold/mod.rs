@@ -2,7 +2,7 @@
 //!
 //! A resident server gives back its indexes and both models after
 //! `PAMIN_MODEL_IDLE`, so the next `pamin search` opens the project's index,
-//! loads BGE-M3 and the reranker, and only then answers. That wait is the
+//! loads the embedder and the reranker, and only then answers. That wait is the
 //! latency a user sees after stepping away, and the parts of it are what
 //! decide what is worth making concurrent. So each round here starts from what
 //! a released server holds -- a database and nothing else -- and asks the
