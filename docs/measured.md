@@ -749,15 +749,16 @@ What it costs, paired and alternated between the two builds, five rounds of
 | | before | after |
 | --- | --- | --- |
 | one `remember`, median of five per-round medians | 1.93 ms (1.55–2.20) | 1.88 ms (1.67–2.25) |
-| `topic_states_by_id`, 150 states | 1.58 ms (1.39–1.82) | **1.89 ms** (1.71–2.07) |
+| `topic_states_by_id`, 150 states, since deleted: nothing called it | 1.58 ms (1.39–1.82) | **1.89 ms** (1.71–2.07) |
 | `current_states_of`, 150 topics | 1.70 ms (1.49–1.97) | **2.06 ms** (1.84–2.15) |
 | `current_content`, the write path's lookup | 0.100 ms | 0.111 ms, inside both ranges |
 
 The write is unchanged within the noise. **The state fetch is not free**: one
 more primary-key join, to `source_versions`, costs about 0.3 ms at the
 150-candidate ceiling, which is the price of storing each memory once. A
-search pays it at most twice — once for the channels' candidates and once for
-the graph's — so under a millisecond, against the 99 ms
+search pays it in up to three lookups — the channels' candidates, any topic the
+query names that no channel returned, and the graph's arrivals, at most fifty
+at the default depth — so under a millisecond, against the 99 ms
 [the CLI reference](cli.md) gives a search with reranking off and 1,522 ms at
 the default tier. The results
 themselves did not move: the before workspace, migrated by the after build,

@@ -483,9 +483,9 @@ fn content_of_span(row: &PgRow) -> String {
 /// same process, alternating: 1.00 ms median without it and 1.04 ms with, over
 /// three runs. The second costs more, because it is where the text is read:
 /// on XQuAD-R's 2,640 paragraphs, builds before and after it alternated over
-/// five rounds, `topic_states_by_id` at 150 states went from 1.58 ms to 1.89
-/// and `current_states_of` from 1.70 to 2.06. That is the price of keeping
-/// each memory's text once; `docs/measured.md` has the rest.
+/// five rounds, `current_states_of` at 150 topics went from 1.70 ms to 2.06.
+/// That is the price of keeping each memory's text once; `docs/measured.md`
+/// has the rest.
 macro_rules! span_columns {
     () => {
         ", sp.detected_language, sp.byte_start, sp.byte_end, sv.content AS evidence"
@@ -635,43 +635,6 @@ pub async fn current_topic_ids(
     .await?;
 
     Ok(ids.into_iter().map(TopicId::from).collect())
-}
-
-/// Loads these states, skipping any the ledger has soft deleted.
-///
-/// The search path's replacement for reading the project. What it needs is the
-/// states the recall channels actually returned, which is a few hundred rows
-/// whatever the project holds; loading every live state to answer that was the
-/// single largest thing a query did.
-///
-/// Soft-deleted states are dropped here rather than after ranking. Filtering
-/// afterwards meant a state the ledger had removed still occupied a place in
-/// each channel's candidate budget, so deleting content quietly reduced how
-/// much a search could find.
-pub async fn topic_states_by_id(
-    executor: impl PgExecutor<'_>,
-    project: ProjectId,
-    states: &[TopicStateId],
-) -> Result<Vec<TopicState>> {
-    if states.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let ids: Vec<uuid::Uuid> = states.iter().map(|state| state.0).collect();
-    let rows = sqlx::query(concat!(
-        "SELECT ",
-        state_columns!("ts."),
-        span_columns!(),
-        " FROM topic_states ts",
-        span_joins!(),
-        " WHERE ts.project_id = $1 AND ts.id = ANY($2) AND ts.deleted_at IS NULL"
-    ))
-    .bind(project.0)
-    .bind(&ids)
-    .fetch_all(executor)
-    .await?;
-
-    Ok(rows.iter().map(row_to_topic_state).collect())
 }
 
 /// Loads the states these topics currently resolve to.
