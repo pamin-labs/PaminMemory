@@ -468,9 +468,11 @@ async fn assert_within(
     let row = sqlx::query(concat!(
         "INSERT INTO relationship_versions (
              id, project_id, relationship_id, version, valid_from, valid_to,
-             created_at, supersedes, caused_by_topic_state, confidence, derivation
+             created_at, supersedes, caused_by_topic_state, confidence, derivation,
+             from_topic, to_topic, kind
          )
-         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10
+         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13
          FROM relationship_versions WHERE project_id = $2 AND relationship_id = $3
          RETURNING ",
         version_columns!()
@@ -485,6 +487,11 @@ async fn assert_within(
     .bind(claim.caused_by_topic_state.map(|id| id.0))
     .bind(claim.confidence)
     .bind(claim.derivation.label())
+    // The identity's own, copied so a walk can read a topic's strongest live
+    // edges from one index. See `V13__edge_endpoints_on_versions.sql`.
+    .bind(relationship.from_topic.0)
+    .bind(relationship.to_topic.0)
+    .bind(relationship.kind.label())
     .fetch_one(&mut **transaction)
     .await?;
 
