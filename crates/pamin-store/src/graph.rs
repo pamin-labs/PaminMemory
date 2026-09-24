@@ -260,16 +260,22 @@ pub async fn live_version(
 }
 
 /// Loads every version of an edge, oldest first.
+///
+/// Takes the project because the only index holding every version is keyed
+/// `(project_id, relationship_id, version)`; the one keyed by relationship
+/// alone holds live versions only.
 pub async fn edge_history(
     executor: impl PgExecutor<'_>,
+    project: ProjectId,
     relationship: RelationshipId,
 ) -> Result<Vec<RelationshipVersion>> {
     let rows = sqlx::query(concat!(
         "SELECT ",
         version_columns!(),
         " FROM relationship_versions
-          WHERE relationship_id = $1 ORDER BY version ASC"
+          WHERE project_id = $1 AND relationship_id = $2 ORDER BY version ASC"
     ))
+    .bind(project.0)
     .bind(relationship.0)
     .fetch_all(executor)
     .await?;
@@ -465,7 +471,7 @@ async fn assert_within(
              created_at, supersedes, caused_by_topic_state, confidence, derivation
          )
          SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10
-         FROM relationship_versions WHERE relationship_id = $3
+         FROM relationship_versions WHERE project_id = $2 AND relationship_id = $3
          RETURNING ",
         version_columns!()
     ))

@@ -190,7 +190,7 @@ pub async fn append_source_version(
              filter_decision, filter_reason, recorded_at
          )
          SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8
-         FROM source_versions WHERE source_id = $3
+         FROM source_versions WHERE project_id = $2 AND source_id = $3
          RETURNING id, version, recorded_at",
     )
     .bind(SourceVersionId::new().0)
@@ -358,7 +358,7 @@ pub async fn append_topic_state(
              observed_at, recorded_at, supersedes, valid_from, valid_to
          )
          SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9
-         FROM topic_states WHERE topic_id = $3
+         FROM topic_states WHERE project_id = $2 AND topic_id = $3
          RETURNING id, version, recorded_at",
     )
     .bind(TopicStateId::new().0)
@@ -562,8 +562,13 @@ pub async fn topic_versions(executor: impl PgExecutor<'_>, topic: TopicId) -> Re
 }
 
 /// Loads one version of a topic.
+///
+/// Takes the project because the key it reads is `(project_id, topic_id,
+/// version)`, and without its first column that is a walk of the whole index
+/// -- every project's states -- to find one row.
 pub async fn topic_state(
     executor: impl PgExecutor<'_>,
+    project: ProjectId,
     topic: TopicId,
     version: u32,
 ) -> Result<Option<TopicState>> {
@@ -573,8 +578,9 @@ pub async fn topic_state(
         span_columns!(),
         " FROM topic_states ts",
         span_joins!(),
-        " WHERE ts.topic_id = $1 AND ts.version = $2"
+        " WHERE ts.project_id = $1 AND ts.topic_id = $2 AND ts.version = $3"
     ))
+    .bind(project.0)
     .bind(topic.0)
     .bind(to_sql_version(version))
     .fetch_optional(executor)
@@ -839,16 +845,21 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
 ///
 /// Reads back the filter verdict, which is how a caller confirms that filtered
 /// content was still stored rather than discarded.
+///
+/// Takes the project for the reason [`topic_state`] does: both indexes over
+/// this table lead with it.
 pub async fn latest_source_version(
     executor: impl PgExecutor<'_>,
+    project: ProjectId,
     source: SourceId,
 ) -> Result<Option<SourceVersion>> {
     let row = sqlx::query(
         "SELECT id, project_id, source_id, version, content, content_hash,
                 filter_decision, filter_reason, recorded_at
-         FROM source_versions WHERE source_id = $1
+         FROM source_versions WHERE project_id = $1 AND source_id = $2
          ORDER BY version DESC LIMIT 1",
     )
+    .bind(project.0)
     .bind(source.0)
     .fetch_optional(executor)
     .await?;

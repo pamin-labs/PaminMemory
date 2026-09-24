@@ -74,7 +74,8 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Rea
         bail!("topic {} has no live versions", args.topic);
     };
 
-    let Some(state) = repository::topic_state(database.pool(), topic.id, resolved.version).await?
+    let Some(state) =
+        repository::topic_state(database.pool(), project, topic.id, resolved.version).await?
     else {
         bail!("version {} of {} is missing", resolved.version, args.topic);
     };

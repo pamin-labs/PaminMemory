@@ -78,6 +78,7 @@ async fn the_ledger_holds_its_promises() {
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
+    a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
 
     drop(database);
 }
@@ -202,7 +203,7 @@ async fn appending_versions_builds_a_supersession_chain(database: &Database) {
     assert_eq!(clamped.version, 1);
     assert_eq!(clamped.actual_offset, VersionOffset(1));
 
-    let loaded = repository::topic_state(database.pool(), topic.id, 1)
+    let loaded = repository::topic_state(database.pool(), project.id, topic.id, 1)
         .await
         .expect("load state")
         .expect("state exists");
@@ -232,7 +233,7 @@ async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &D
     assert!(latest.is_current, "the predecessor becomes current");
 
     // The row itself survives, so history and audit still reach it.
-    let still_there = repository::topic_state(database.pool(), topic.id, 2)
+    let still_there = repository::topic_state(database.pool(), project.id, topic.id, 2)
         .await
         .expect("load deleted state")
         .expect("deleted state is still stored");
@@ -286,7 +287,7 @@ async fn filtered_evidence_is_still_stored(database: &Database) {
     )
     .expect("append filtered evidence");
 
-    let stored = repository::latest_source_version(database.pool(), source)
+    let stored = repository::latest_source_version(database.pool(), project.id, source)
         .await
         .expect("read back")
         .expect("evidence exists despite being filtered");
@@ -376,7 +377,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &Database) {
             .expect("find relationship")
             .expect("relationship exists");
 
-    let history = graph::edge_history(database.pool(), relationship.id)
+    let history = graph::edge_history(database.pool(), project, relationship.id)
         .await
         .expect("history");
     assert_eq!(history.len(), 2);
@@ -406,7 +407,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &Database) {
         "nothing is believed after a retraction"
     );
     assert_eq!(
-        graph::edge_history(database.pool(), relationship.id)
+        graph::edge_history(database.pool(), project, relationship.id)
             .await
             .expect("history")
             .len(),
@@ -434,7 +435,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
 
     // service -> database -> backup_job, so backup_job is two hops from
     // service and is only reachable by following the second edge backwards.
-    let service_state = current_state(database, service).await;
+    let service_state = current_state(database, project, service).await;
     graph::assert_edge(
         database.pool(),
         project,
@@ -566,13 +567,14 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
 /// The current state of a topic, for edges that cite what caused them.
 async fn current_state(
     database: &Database,
+    project: pamin_core::ProjectId,
     topic: pamin_core::TopicId,
 ) -> pamin_core::TopicStateId {
     let versions = repository::topic_versions(database.pool(), topic)
         .await
         .expect("versions");
     let latest = resolve(&versions, VersionOffset::LATEST).expect("latest");
-    repository::topic_state(database.pool(), topic, latest.version)
+    repository::topic_state(database.pool(), project, topic, latest.version)
         .await
         .expect("load state")
         .expect("state exists")
@@ -1595,7 +1597,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     )
     .expect("append source version");
 
-    let read_back = repository::latest_source_version(database.pool(), source)
+    let read_back = repository::latest_source_version(database.pool(), project.id, source)
         .await
         .expect("latest source version")
         .expect("a version was written");
@@ -1643,7 +1645,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     )
     .expect("append topic state");
 
-    let stored = repository::topic_state(database.pool(), topic.id, state.version)
+    let stored = repository::topic_state(database.pool(), project.id, topic.id, state.version)
         .await
         .expect("read topic state")
         .expect("the state was written");
@@ -1872,7 +1874,7 @@ async fn assert_pointer_matches_the_ledger(
             "a topic resolving to nothing still points at a state"
         ),
         Some(expected) => {
-            let state = repository::topic_state(database.pool(), topic, expected)
+            let state = repository::topic_state(database.pool(), project, topic, expected)
                 .await
                 .expect("load the expected state")
                 .expect("the expected state exists");
@@ -2558,7 +2560,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
     .await
     .expect("find relationship")
     .expect("the edge was asserted");
-    let history = graph::edge_history(database.pool(), relationship.id)
+    let history = graph::edge_history(database.pool(), project.id, relationship.id)
         .await
         .expect("edge history");
     let retracted = history.last().expect("the edge has a version");
@@ -2736,4 +2738,279 @@ async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
             .any(|n| n.kind == EdgeKind::PartOf && ends(n) == (id["pipeline"], id["platform"])),
         "and the one edge that does point away from the pipeline still does"
     );
+}
+
+/// How many versions another project holds of one topic, one source and one
+/// edge, for [`a_version_is_numbered_and_read_from_its_own_key`].
+///
+/// Far more than any one key's own rows: a hundred thousand index entries are
+/// several hundred pages, where one key's are one leaf.
+const CROWD: i64 = 100_000;
+
+/// Numbering a version, and reading one back, touches that key's rows alone.
+///
+/// Every version table is keyed `(project_id, <owner>, version)` since V3, and
+/// PostgreSQL 17 cannot seek a b-tree on a later column alone: a statement
+/// that names the owner and leaves the project out walks the whole index, or
+/// the whole table, which is every project's rows. `MAX(version)` on the write
+/// path did exactly that -- once for the evidence, once for the state and once
+/// per appended edge -- so a write cost more the more anybody had ever written.
+///
+/// Counted rather than timed. The server's own statistics say how many pages
+/// of each table and its indexes a call touched, and another project holds
+/// [`CROWD`] versions of one topic, one source and one edge, so a call that
+/// leaves the project out walks all of theirs. Pages rather than rows, because
+/// a b-tree tests a condition on a later column inside the scan and returns
+/// only what passes: the rows-read counter says zero for a walk of the whole
+/// index. The calls run on a pool of exactly one connection because
+/// statistics are flushed per backend, and asking that backend to flush is
+/// what makes the count exact rather than a second late.
+async fn a_version_is_numbered_and_read_from_its_own_key(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    let crowd = repository::ensure_project(database.pool(), "crowd")
+        .await
+        .expect("ensure the crowded project");
+    let crowded =
+        committed!(database, repository::ensure_topic, crowd.id, "crowded").expect("ensure topic");
+    let other =
+        committed!(database, repository::ensure_topic, crowd.id, "other").expect("ensure topic");
+    let first = write_state(database, crowd.id, crowded.id, "crowd-source", "v1").await;
+    write_state(database, crowd.id, other.id, "crowd-other", "v1").await;
+    graph::assert_edge(
+        database.pool(),
+        crowd.id,
+        crowded.id,
+        other.id,
+        &EdgeClaim::explicit(EdgeKind::RelatedTo),
+    )
+    .await
+    .expect("assert the crowded edge");
+    let relationship = graph::find_relationship(
+        database.pool(),
+        crowd.id,
+        crowded.id,
+        other.id,
+        EdgeKind::RelatedTo,
+    )
+    .await
+    .expect("find relationship")
+    .expect("the edge exists");
+
+    // Setup, so in bulk: later versions of the one source, the one topic and
+    // the one edge, each numbered on from the first.
+    for statement in [
+        "INSERT INTO source_versions (id, project_id, source_id, version, content,
+             content_hash, filter_decision, filter_reason, recorded_at)
+         SELECT gen_random_uuid(), $1, sv.source_id, g, 'crowd', 'crowd', 'promoted',
+                'crowd', now()
+           FROM source_versions sv
+           JOIN source_spans sp ON sp.source_version_id = sv.id
+          CROSS JOIN generate_series(2, $4 + 1) AS g
+          WHERE sp.id = $2",
+        "INSERT INTO topic_states (id, project_id, topic_id, version, source_span_id,
+             observed_at, recorded_at)
+         SELECT gen_random_uuid(), $1, ts.topic_id, g, ts.source_span_id, now(), now()
+           FROM topic_states ts
+          CROSS JOIN generate_series(2, $4 + 1) AS g
+          WHERE ts.source_span_id = $2",
+        "INSERT INTO relationship_versions (id, project_id, relationship_id, version,
+             created_at, invalidated_at, tombstone_reason, confidence, derivation)
+         SELECT gen_random_uuid(), $1, $3, g, now(), now(), 'closed', 1, 'explicit'
+           FROM generate_series(2, $4 + 1) AS g",
+    ] {
+        sqlx::query(statement)
+            .bind(crowd.id.0)
+            .bind(first.source_span_id.0)
+            .bind(relationship.id.0)
+            .bind(CROWD)
+            .execute(database.pool())
+            .await
+            .expect("crowd the version tables");
+    }
+    sqlx::query("ANALYZE source_versions, topic_states, relationship_versions")
+        .execute(database.pool())
+        .await
+        .expect("analyze");
+
+    let server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+    let probe = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&server.url())
+        .await
+        .expect("a one-connection pool");
+
+    // At most this many pages of a table and its indexes for any one call
+    // below. Each touches a leaf or two of its own key, the pages it writes,
+    // and whatever its foreign keys check; leaving the project out walks
+    // hundreds.
+    const OWN: i64 = 100;
+
+    // The premise, asserted: a statement that does leave the project out walks
+    // the crowd, far enough past the bound that the two cannot be confused.
+    let before = pages_touched(&probe, "topic_states").await;
+    let _: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM topic_states WHERE topic_id = $1")
+            .bind(uuid::Uuid::new_v4())
+            .fetch_one(&probe)
+            .await
+            .expect("an unscoped maximum");
+    let unscoped = pages_touched(&probe, "topic_states").await - before;
+    assert!(
+        unscoped > 4 * OWN,
+        "numbering a topic without its project touched {unscoped} pages; the \
+         crowd is not where this test thinks it is"
+    );
+
+    let project = repository::ensure_project(database.pool(), "uncrowded")
+        .await
+        .expect("ensure project")
+        .id;
+    let mut transaction = probe.begin().await.expect("begin");
+    let topic = repository::ensure_topic(&mut transaction, project, "sparse")
+        .await
+        .expect("ensure topic");
+    let target = repository::ensure_topic(&mut transaction, project, "target")
+        .await
+        .expect("ensure topic");
+    let source = repository::ensure_source(&mut transaction, project, SourceKind::Manual, "sparse")
+        .await
+        .expect("ensure source");
+    transaction.commit().await.expect("commit");
+
+    macro_rules! reads_its_own_key {
+        ($table:literal, $call:literal, $work:expr) => {{
+            let before = pages_touched(&probe, $table).await;
+            let outcome = $work;
+            let touched = pages_touched(&probe, $table).await - before;
+            assert!(
+                touched < OWN,
+                "{} touched {touched} pages of {} with {CROWD} of another \
+                 project's rows there; it is not reading by the project's key",
+                $call,
+                $table,
+            );
+            outcome
+        }};
+    }
+
+    for round in 0..2u32 {
+        let evidence = reads_its_own_key!("source_versions", "append_source_version", {
+            let mut transaction = probe.begin().await.expect("begin");
+            let evidence = repository::append_source_version(
+                &mut transaction,
+                project,
+                source,
+                "sparse evidence",
+                "hash",
+                FilterDecision::Promoted,
+                "test fixture",
+            )
+            .await
+            .expect("append source version");
+            transaction.commit().await.expect("commit");
+            evidence
+        });
+        let span = repository::append_source_span(
+            &probe,
+            project,
+            evidence.id,
+            0,
+            evidence.content.len() as u32,
+            None,
+            None,
+        )
+        .await
+        .expect("append span");
+        let state = reads_its_own_key!("topic_states", "append_topic_state", {
+            let mut transaction = probe.begin().await.expect("begin");
+            let state = repository::append_topic_state(
+                &mut transaction,
+                project,
+                topic.id,
+                &evidence,
+                &span,
+                OffsetDateTime::now_utc(),
+                Validity::ALWAYS,
+            )
+            .await
+            .expect("append topic state");
+            transaction.commit().await.expect("commit");
+            state
+        });
+        assert_eq!(state.version, round + 1, "numbered from its own topic");
+
+        // A different claim each round, so each appends a version.
+        let mut claim = EdgeClaim::explicit(EdgeKind::RelatedTo);
+        claim.confidence = 1.0 - round as f32 / 4.0;
+        let asserted = reads_its_own_key!(
+            "relationship_versions",
+            "assert_edge",
+            graph::assert_edge(&probe, project, topic.id, target.id, &claim)
+                .await
+                .expect("assert edge")
+        );
+        assert_eq!(
+            asserted.version().version,
+            round + 1,
+            "numbered from its own edge"
+        );
+    }
+
+    let latest = reads_its_own_key!(
+        "source_versions",
+        "latest_source_version",
+        repository::latest_source_version(&probe, project, source)
+            .await
+            .expect("latest source version")
+            .expect("evidence exists")
+    );
+    assert_eq!(latest.version, 2);
+    let state = reads_its_own_key!(
+        "topic_states",
+        "topic_state",
+        repository::topic_state(&probe, project, topic.id, 1)
+            .await
+            .expect("topic state")
+            .expect("version one exists")
+    );
+    assert_eq!(state.version, 1);
+    let edge = graph::find_relationship(&probe, project, topic.id, target.id, EdgeKind::RelatedTo)
+        .await
+        .expect("find relationship")
+        .expect("the edge exists");
+    let history = reads_its_own_key!(
+        "relationship_versions",
+        "edge_history",
+        graph::edge_history(&probe, project, edge.id)
+            .await
+            .expect("edge history")
+    );
+    assert_eq!(history.len(), 2);
+}
+
+/// Pages of `table` and its indexes the server has touched so far, whether
+/// found in its buffers or read in.
+///
+/// A backend holds its counts until it is idle and a second has passed since
+/// it last reported, so they are flushed here first. That flushes the probe's
+/// own backend, which is why the calls being counted run on the probe.
+async fn pages_touched(probe: &sqlx::PgPool, table: &str) -> i64 {
+    sqlx::query("SELECT pg_stat_force_next_flush()")
+        .execute(probe)
+        .await
+        .expect("flush the statistics");
+    sqlx::query_scalar(
+        "SELECT heap_blks_read + heap_blks_hit
+              + COALESCE(idx_blks_read, 0) + COALESCE(idx_blks_hit, 0)
+           FROM pg_statio_user_tables WHERE relname = $1",
+    )
+    .bind(table)
+    .fetch_one(probe)
+    .await
+    .expect("read the table statistics")
 }
