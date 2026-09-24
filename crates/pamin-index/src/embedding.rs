@@ -312,10 +312,12 @@ const JOINT_MAX_TOKENS: usize = 512;
 /// falls back to the file itself when it cannot.
 fn joint(cache_dir: &std::path::Path) -> Result<Encoder> {
     let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
-    let source = repository.get(JOINT_FILE)?;
-    let copy = crate::prepared::prepared(&source, cache_dir);
+    let copy = || {
+        let source = repository.get(JOINT_FILE)?;
+        Ok(crate::prepared::prepared(&source, cache_dir))
+    };
     Encoder::load(
-        &copy,
+        copy,
         &repository,
         JOINT_MAX_TOKENS,
         vec![crate::inference::cpu()],

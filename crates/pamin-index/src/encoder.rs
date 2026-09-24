@@ -11,7 +11,7 @@
 //! member, its ids and attention mask fed as `i64` in the batch's shape, and
 //! token type ids only to a graph that declares an input of that name.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use ort::ep::ExecutionProviderDispatch;
 use ort::session::{Session, SessionOutputs};
@@ -31,14 +31,15 @@ pub(crate) struct Encoder {
 }
 
 impl Encoder {
-    /// The model at `model` on `providers`, with the tokenizer of the
+    /// The model `model` finds, on `providers`, with the tokenizer of the
     /// repository it came from, truncating at `max_length` tokens.
     ///
     /// The session first and the tokenizer second, as `fastembed` loaded them,
     /// so a device that will not take the model is found before a tokenizer is
-    /// read for nothing.
+    /// read for nothing -- and, since `model` is asked for only once the
+    /// device has registered, before its export is fetched for nothing.
     pub(crate) fn load(
-        model: &Path,
+        model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
         providers: Vec<ExecutionProviderDispatch>,

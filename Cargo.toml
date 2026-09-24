@@ -98,7 +98,7 @@ zvec-rust = "0.7.2"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 
 # Release profile aims at the binary-size budget gate in CI.
 [profile.release]

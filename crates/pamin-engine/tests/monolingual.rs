@@ -70,11 +70,13 @@
 //! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
 //! | `RERANK_RULES` | price blending the shipped tier's scores with fusion's, from one run |
 //! | `SWEEP` | run fusion settings instead of the shipped path |
+//! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
 //!
 //! The dataset is not vendored. The corpus is Wikipedia text under
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
 mod channels;
+mod features;
 mod memory;
 mod reranking;
 mod scoring;
@@ -150,6 +152,8 @@ struct Passage {
 
 /// One question and the passages judged relevant to it.
 struct Query {
+    /// MIRACL's own query id.
+    id: String,
     text: String,
     relevant: HashSet<String>,
 }
@@ -228,6 +232,7 @@ impl Corpus {
                 let (qid, text) = line.split_once('\t')?;
                 let relevant = judged.remove(qid)?;
                 (!relevant.is_empty()).then(|| Query {
+                    id: qid.to_string(),
                     text: text.to_string(),
                     relevant,
                 })
@@ -657,6 +662,33 @@ async fn search() {
 
     // `EFFORTS=700,2000`: every question at each graph search width, paired
     // against the first. Leaves the index as it is.
+    // `GRAPH_VARIANTS` / `DEPTH_VARIANTS`: every question through the shipped
+    // path under other settings, paired. See `channels::compare_reranked`.
+    if let Some(variants) = channels::requested_variants() {
+        let questions: Vec<(String, String)> = corpus
+            .queries
+            .iter()
+            .map(|query| (query.text.clone(), "miracl".to_string()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            "MIRACL",
+            &questions,
+            DEPTH as u32,
+            DEPTHS,
+            &variants,
+            |index, into, hits| {
+                let query = &corpus.queries[index];
+                let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+                into.add(&ranked, query.relevant.len(), |topic| {
+                    query.relevant.contains(topic)
+                });
+            },
+        )
+        .await;
+        return;
+    }
+
     if let Ok(efforts) = std::env::var("EFFORTS") {
         compare_efforts(&engine, &corpus, &efforts).await;
         return;
@@ -718,6 +750,31 @@ async fn search() {
         "the graph channel credited a hit, so the graph jobs this run left owed \
          would have changed these numbers"
     );
+
+    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
+    // fusion offline. See `features`.
+    if let Some(mut dump) = features::Features::from_env("miracl-sw") {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        for query in &corpus.queries {
+            let hits = engine
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let asked = features::Asked {
+                group: GROUP,
+                question: &query.id,
+                text: &query.text,
+                // What `write_corpus` labels every passage with.
+                language: Some("sw"),
+                judged: query.relevant.len(),
+            };
+            dump.observe(&asked, &hits, WIDE, |docid| {
+                Some(f64::from(query.relevant.contains(docid)))
+            });
+        }
+        dump.finish(corpus.queries.len());
+        return;
+    }
 
     // `CHANNELS` reports what each channel is worth on its own, and what the
     // fused list looks like with each one taken away. One run, not four: the

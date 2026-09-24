@@ -3,6 +3,22 @@
 //! Every identifier is a UUID rather than a sequence. Monotonic sequences are a
 //! coordination point that distributed PostgreSQL-compatible engines handle
 //! poorly, and swapping them out later would mean rewriting every foreign key.
+//!
+//! **Version 7, time-ordered, rather than version 4.** A random key lands on a
+//! random leaf of every B-tree it is indexed in, so each insert dirties a page
+//! nobody else is writing and splits leave them half full; a key that leads
+//! with its creation time lands on the rightmost leaf, next to the rows written
+//! just before it. Measured on PostgreSQL 17, 200,000 rows in batches of 5,000
+//! behind a primary key and a `(project, id)` index, three rounds each: 5.0-5.5 s
+//! with version 4 against 3.5-4.3 s with version 7, and a primary key of
+//! 8.5 MB against 8.1 MB. The shard key is `project_id`, not these bytes, so
+//! ordering them by time skews nothing.
+//!
+//! Identifiers already written stay version 4: a topic's id is also its key in
+//! the vector index, so rewriting one means rebuilding the index, and the gain
+//! is on where new rows land, which the old ones do not affect. Where ids break
+//! a tie -- equal fused scores, equal path strengths -- the older of two new
+//! topics now comes first, where before the order was arbitrary.
 
 use std::fmt;
 
@@ -19,7 +35,7 @@ macro_rules! typed_id {
         impl $name {
             /// Generates a fresh identifier.
             pub fn new() -> Self {
-                Self(Uuid::new_v4())
+                Self(Uuid::now_v7())
             }
         }
 

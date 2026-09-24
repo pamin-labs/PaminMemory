@@ -46,6 +46,7 @@
 //! | `MUSIQUE_QUESTIONS` | read only the first this many questions |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
+//! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
@@ -53,6 +54,7 @@
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
 
 mod channels;
+mod features;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -130,6 +132,8 @@ struct Memory {
 }
 
 struct Query {
+    /// The dataset's own id.
+    id: String,
     text: String,
     /// `2hop`, `3hop` or `4hop`, read from the question's id.
     group: String,
@@ -182,6 +186,7 @@ impl Corpus {
             }
             let hops = row.id.split("hop").next().unwrap_or("?");
             queries.push(Query {
+                id: row.id.clone(),
                 text: row.question.clone(),
                 group: format!("{hops}hop"),
                 relevant: row
@@ -400,6 +405,30 @@ async fn search_answers_questions_that_take_several_steps() {
         return;
     }
 
+    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
+    // fusion offline. See `features`.
+    if let Some(mut dump) = features::Features::from_env("musique") {
+        for query in &corpus.queries {
+            let hits = engine
+                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let asked = features::Asked {
+                group: &query.group,
+                question: &query.id,
+                text: &query.text,
+                // What `write_corpus` labels every memory with.
+                language: Some("eng"),
+                judged: query.relevant.len(),
+            };
+            dump.observe(&asked, &hits, WIDE, |title| {
+                Some(f64::from(query.relevant.contains(title)))
+            });
+        }
+        dump.finish(corpus.queries.len());
+        return;
+    }
+
     if std::env::var("CHANNELS").is_ok() {
         let mut diagnosis = channels::Diagnosis::default();
         for query in &corpus.queries {
@@ -413,6 +442,28 @@ async fn search_answers_questions_that_take_several_steps() {
             });
         }
         diagnosis.report(&format!("MuSiQue, {named}"), &edges);
+        return;
+    }
+
+    if let Some(variants) = channels::requested_variants() {
+        let questions: Vec<(String, String)> = corpus
+            .queries
+            .iter()
+            .map(|query| (query.text.clone(), query.group.clone()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            &format!("MuSiQue, {named}"),
+            &questions,
+            DEPTH as u32,
+            DEPTHS,
+            &variants,
+            |index, into, hits| {
+                let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+                score(into, &corpus.queries[index], &ranked);
+            },
+        )
+        .await;
         return;
     }
 
