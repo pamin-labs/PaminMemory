@@ -273,17 +273,19 @@ impl Embedder {
 
     /// One forward pass, whichever model this profile loaded.
     ///
-    /// pplx runs one text at a time. Its vectors do not depend on a batch's
-    /// other members -- a text embedded beside the longest and shortest of 64
-    /// MuSiQue paragraphs agrees with itself alone at cosine 0.9999993 -- so
-    /// this is not the correctness choice it was for the model before it,
-    /// whose int8 export moved a vector to cosine 0.98 when anything shared
-    /// its batch. It is a measured one: 32 paragraphs took 163 s in one batch
-    /// and 58 s one at a time (ONNX Runtime 1.30 in Python, on a shared
-    /// machine), because a batch is padded to its longest member and
-    /// attention pays for the padding. One at a time also keeps
-    /// what `reindex` and the cascade store for a text identical, whichever
-    /// other texts were in flight beside it.
+    /// pplx gives each text a pass of its own. Not batched, though batching
+    /// would not change a vector -- the graph quantizes activations a row at a
+    /// time, and 32 MuSiQue paragraphs came back bit for bit the same in a
+    /// batch of 32 as alone -- because there is nothing for a batch to spread.
+    /// Profiled through this crate's session (ONNX Runtime 1.28, four cores,
+    /// shared with another run), 83% of a pass is the int8 matrix products and
+    /// 7% attention, and a pass costs the same per token at 28 tokens as at
+    /// 292: no fixed cost per pass, only the padding a batch adds. Those 32
+    /// paragraphs, 3,245 tokens, took 1.75 times as long in batches of up to
+    /// 2,048 padded tokens, sorted by length, and 4 times as long as one batch.
+    ///
+    /// A pass of its own also keeps what `reindex` and the cascade store for a
+    /// text identical, whichever other texts were in flight beside it.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let failed = |error| IndexError::Engine(format!("embedding text: {error}"));
         match &mut self.model {
