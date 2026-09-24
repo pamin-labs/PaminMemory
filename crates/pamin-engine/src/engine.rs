@@ -273,19 +273,101 @@ struct Rebuilding {
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
-    loaded: Arc<Mutex<std::collections::HashMap<Profile, Held<Embedder>>>>,
+    embedders: Loaded<Profile, Embedder>,
     /// The same arrangement for rerankers, keyed by tier for the same reason:
     /// the tier is what decides which weights these are.
     ///
-    /// Each carries when it was last handed out, because unlike an embedder a
-    /// reranker can stop being wanted. Every search needs a query vector; a
-    /// reranker is a tier a caller chose once, and a workspace in one language
-    /// is told by `docs/cli.md` to choose `off`.
-    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held<Reranker>>>>,
+    /// A reranker can stop being wanted in a way an embedder mostly cannot.
+    /// Every search needs a query vector; a reranker is a tier a caller chose
+    /// once, and a workspace in one language is told by `docs/cli.md` to
+    /// choose `off`.
+    rerankers: Loaded<Rerank, Reranker>,
+}
+
+/// Loaded models of one kind, keyed by what decides their weights, each with
+/// when it was last handed out.
+///
+/// One registry for embedders and rerankers alike, because the two were the
+/// same code written twice: load on first ask under the lock, stamp every
+/// hand-out, and release what is both idle and unheld.
+struct Loaded<K, T> {
+    held: Arc<Mutex<std::collections::HashMap<K, Held<T>>>>,
 }
 
 /// A loaded model and when it was last handed out.
 type Held<T> = (Instant, Arc<Mutex<T>>);
+
+impl<K, T> Clone for Loaded<K, T> {
+    fn clone(&self) -> Self {
+        Self {
+            held: Arc::clone(&self.held),
+        }
+    }
+}
+
+impl<K, T> Default for Loaded<K, T> {
+    fn default() -> Self {
+        Self {
+            held: Arc::default(),
+        }
+    }
+}
+
+impl<K: Copy + Eq + std::hash::Hash, T> Loaded<K, T> {
+    fn lock(&self) -> MutexGuard<'_, std::collections::HashMap<K, Held<T>>> {
+        self.held
+            .lock()
+            .expect("the model registry lock is poisoned")
+    }
+
+    /// The model for `key`, loading it the first time it is asked for.
+    ///
+    /// Blocking, and the registry lock is held across the load. That makes a
+    /// second caller for the same key wait out the first one's download
+    /// instead of starting its own, which is the whole point; the wait it pays
+    /// is the wait it would have paid loading its own copy.
+    fn get<E>(&self, key: K, load: impl FnOnce() -> Result<T, E>) -> Result<Arc<Mutex<T>>, E> {
+        let mut held = self.lock();
+        if let Some((last_used, model)) = held.get_mut(&key) {
+            *last_used = Instant::now();
+            return Ok(Arc::clone(model));
+        }
+
+        let model = Arc::new(Mutex::new(load()?));
+        held.insert(key, (Instant::now(), Arc::clone(&model)));
+        Ok(model)
+    }
+
+    /// The model for `key` if it is loaded, without loading it or counting
+    /// this as a use.
+    fn loaded(&self, key: K) -> Option<Arc<Mutex<T>>> {
+        self.lock().get(&key).map(|(_, model)| Arc::clone(model))
+    }
+
+    /// Drops every model idle for [`model_idle`] that nothing else holds,
+    /// returning their keys.
+    ///
+    /// Idle alone is not enough: a model a caller still holds -- a search in
+    /// the middle of a pass, an engine that opened with it -- is in use
+    /// however long ago it was handed out, and dropping the registry's handle
+    /// would free nothing and make the next caller load a second copy.
+    fn release_idle(&self) -> Vec<K> {
+        let mut held = self.lock();
+        let now = Instant::now();
+        let idle: Vec<K> = held
+            .iter()
+            .filter(|(_, (last_used, model))| {
+                is_idle(*last_used, now, model_idle()) && Arc::strong_count(model) == 1
+            })
+            .map(|(key, _)| *key)
+            .collect();
+
+        for key in &idle {
+            held.remove(key);
+        }
+        idle
+    }
+}
 
 /// How long a model may sit unused before the process gives it back.
 ///
@@ -335,31 +417,15 @@ impl Models {
     pub fn in_workspace(workspace: &Workspace) -> Self {
         Self {
             dir: workspace.root().join("models"),
-            loaded: Arc::default(),
-            rerankers: Arc::default(),
+            embedders: Loaded::default(),
+            rerankers: Loaded::default(),
         }
     }
 
     /// The model for a profile, loading it the first time it is asked for.
-    ///
-    /// Blocking, and the registry lock is held across the load. That makes a
-    /// second caller for the same profile wait out the first one's download
-    /// instead of starting its own, which is the whole point; the wait it pays
-    /// is the wait it would have paid loading its own copy.
     fn get(&self, profile: Profile) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
-        let mut loaded = self
-            .loaded
-            .lock()
-            .expect("the model registry lock is poisoned");
-
-        if let Some((last_used, embedder)) = loaded.get_mut(&profile) {
-            *last_used = Instant::now();
-            return Ok(Arc::clone(embedder));
-        }
-
-        let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
-        loaded.insert(profile, (Instant::now(), Arc::clone(&embedder)));
-        Ok(embedder)
+        self.embedders
+            .get(profile, || Embedder::load(profile, &self.dir))
     }
 
     /// The reranker for a tier, loading it the first time it is asked for.
@@ -367,19 +433,7 @@ impl Models {
     /// Lazily rather than with the project: a workspace that never reranks
     /// never downloads one, and the tier is chosen per search.
     fn reranker(&self, tier: Rerank) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
-        let mut rerankers = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned");
-
-        if let Some((last_used, reranker)) = rerankers.get_mut(&tier) {
-            *last_used = Instant::now();
-            return Ok(Arc::clone(reranker));
-        }
-
-        let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
-        rerankers.insert(tier, (Instant::now(), Arc::clone(&reranker)));
-        Ok(reranker)
+        self.rerankers.get(tier, || Reranker::load(tier, &self.dir))
     }
 
     /// What a loaded reranker has been asked to do, or `None` if this process
@@ -390,14 +444,7 @@ impl Models {
     /// middle of a forward pass waits for that pass rather than for every
     /// other tier as well.
     fn counted(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        let held = {
-            let rerankers = self
-                .rerankers
-                .lock()
-                .expect("the reranker registry lock is poisoned");
-            let (_, reranker) = rerankers.get(&tier)?;
-            Arc::clone(reranker)
-        };
+        let held = self.rerankers.loaded(tier)?;
         Some(
             held.lock()
                 .expect("the reranker lock is poisoned")
@@ -430,24 +477,7 @@ impl Models {
     /// entries first; this is the second half of that, and on its own it
     /// releases nothing.
     pub fn release_idle_embedders(&self) -> Vec<Profile> {
-        let mut loaded = self
-            .loaded
-            .lock()
-            .expect("the model registry lock is poisoned");
-
-        let now = Instant::now();
-        let idle: Vec<Profile> = loaded
-            .iter()
-            .filter(|(_, (last_used, embedder))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(embedder) == 1
-            })
-            .map(|(profile, _)| *profile)
-            .collect();
-
-        for profile in &idle {
-            loaded.remove(profile);
-        }
-        idle
+        self.embedders.release_idle()
     }
 
     /// Gives back the rerankers nothing has asked for lately.
@@ -462,24 +492,7 @@ impl Models {
     /// would not free anything, it would only make the next search load a
     /// second copy alongside the first, which is the opposite of the point.
     pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
-        let mut rerankers = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned");
-
-        let now = Instant::now();
-        let idle: Vec<Rerank> = rerankers
-            .iter()
-            .filter(|(_, (last_used, reranker))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(reranker) == 1
-            })
-            .map(|(tier, _)| *tier)
-            .collect();
-
-        for tier in &idle {
-            rerankers.remove(tier);
-        }
-        idle
+        self.rerankers.release_idle()
     }
 }
 
@@ -2303,8 +2316,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_CANDIDATES, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle,
-        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
+        GRAPH_CANDIDATES, Loaded, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for,
+        is_idle, path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2411,6 +2424,36 @@ mod tests {
         // Even the worst case for the harness -- only the last two positions
         // of the head are unlexical -- is still inside 51.
         assert!(can_be_seen(&[18, 19], 51));
+    }
+
+    /// A model is loaded once however often it is asked for, and one handed
+    /// out a moment ago is not released.
+    #[test]
+    fn a_model_is_loaded_once_and_kept_while_it_is_wanted() {
+        let loaded: Loaded<u8, u32> = Loaded::default();
+        let mut loads = 0;
+        let first = loaded
+            .get(1, || {
+                loads += 1;
+                Ok::<_, ()>(7)
+            })
+            .expect("the first load");
+        let again = loaded
+            .get(1, || {
+                loads += 1;
+                Ok::<_, ()>(8)
+            })
+            .expect("the second ask");
+
+        assert_eq!(loads, 1, "the second ask loaded a second copy");
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        assert!(loaded.loaded(2).is_none(), "looking loaded something");
+        drop((first, again));
+        assert!(
+            loaded.release_idle().is_empty(),
+            "a model handed out just now was released"
+        );
+        assert!(loaded.loaded(1).is_some());
     }
 
     #[test]
