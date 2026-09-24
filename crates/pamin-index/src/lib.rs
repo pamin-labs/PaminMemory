@@ -23,7 +23,7 @@ pub use error::{IndexError, Result};
 pub use inference::Device;
 pub use projection::{
     Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorStorage,
-    is_fragmented, segment_documents, vector_index_lags,
+    is_fragmented, segment_documents, vector_index_lags, wastes_disk,
 };
 pub use reranking::{Ranked, Rerank, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
