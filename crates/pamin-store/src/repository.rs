@@ -273,7 +273,20 @@ pub async fn ensure_topic(
     if let Some(topic) = find_topic(&mut *connection, project, name).await? {
         return Ok(topic);
     }
+    create_topic(connection, project, name).await
+}
 
+/// Creates the topic with this name, or returns the one another writer created
+/// first.
+///
+/// The second half of [`ensure_topic`], for a caller that has already looked
+/// the name up and found nothing: asking again would be the same `SELECT` a
+/// second time in one transaction, and the insert settles a race without it.
+pub async fn create_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+) -> Result<Topic> {
     let inserted = sqlx::query(
         "INSERT INTO topics (id, project_id, name, created_at)
          VALUES ($1, $2, $3, $4)
