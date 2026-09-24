@@ -1018,25 +1018,18 @@ impl Engine {
 
         // Evidence first, always, and before the filter's verdict is acted on.
         // That ordering is what makes a rejection recoverable instead of a loss.
-        let evidence = repository::append_source_version(
+        let (evidence, span) = repository::append_evidence(
             &mut transaction,
             self.project,
             source,
-            request.content,
-            request.content_hash,
-            request.verdict,
-            request.reason,
-        )
-        .await?;
-
-        let span = repository::append_source_span(
-            &mut *transaction,
-            self.project,
-            evidence.id,
-            0,
-            request.content.len() as u32,
-            request.language,
-            request.language_confidence,
+            &repository::Evidence {
+                content: request.content,
+                content_hash: request.content_hash,
+                decision: request.verdict,
+                reason: request.reason,
+                language: request.language,
+                language_confidence: request.language_confidence,
+            },
         )
         .await?;
 
