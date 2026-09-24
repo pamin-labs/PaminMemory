@@ -50,8 +50,46 @@
 //!
 //! Only the CPU. An accelerator copies weights into its own memory whatever
 //! the file looks like, and loads the file the hub serves.
+//!
+//! A copy's key changes with the runtime and the CPU, so every upgrade of ONNX
+//! Runtime writes new copies and leaves the old ones -- 0.8 to 1.2 GB a model
+//! -- where nothing would otherwise remove them. Every load therefore
+//! collects, by one rule: **a copy is removed once no process holds it and
+//! none has loaded it for [`UNUSED_FOR`]**, whichever binary wrote it. Not by
+//! key: a key is a hash nobody can read an owner from, and two binaries built
+//! on different runtimes can share one model directory, each loading its own
+//! copy and each entitled to find it there.
+//!
+//! - *Holds.* A process that loads a copy holds its key's lock shared until
+//!   it exits, and removal takes that lock exclusively and gives up if it
+//!   cannot. So no process of this build or a later one has a copy removed
+//!   while it runs, however long ago it loaded the model: not the mapping it
+//!   is reading, which Linux and macOS would keep alive anyway and Windows
+//!   would refuse to delete, and not the copy it loads again after releasing
+//!   an idle model, which it would otherwise have to write again.
+//! - *When it was last loaded* is the latest of three times: the stamp a load
+//!   rewrites in the copy (`used`); the graph file's modification time, which
+//!   is when the copy was written; and the data file's access time, which the
+//!   kernel moves when a process maps it -- at most daily under `relatime`,
+//!   never under `noatime`. The last two are for binaries built before stamps
+//!   and holds existed, which do neither: while one of them keeps loading its
+//!   copy, the access time keeps that copy wherever the filesystem records it.
+//!
+//! A load checks for its copy and stamps it under the same lock, held shared,
+//! so a removal either sees the fresh stamp or has already happened and the
+//! load writes the copy again. A removal renames the copy to its key's partial
+//! directory first, so one that stops part way -- Windows will not delete a
+//! file a process has mapped -- leaves what the next writer clears rather than
+//! a copy that looks complete; and a partial directory no writer holds is
+//! removed with the rest. Lock files stay. They are empty, and deleting one
+//! that another process is about to open would let two writers each hold
+//! "the" lock.
 
+use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use ort::session::builder::GraphOptimizationLevel;
 use sha2::{Digest, Sha256};
@@ -78,6 +116,27 @@ pub(crate) const LEVEL: GraphOptimizationLevel = GraphOptimizationLevel::Level3;
 const MODEL: &str = "model.onnx";
 const DATA: &str = "model.onnx.data";
 
+/// The stamp a load leaves in a copy: an empty file whose modification time is
+/// when the copy was last handed out.
+const USED: &str = "used";
+
+/// How long a copy nothing holds may go without a load before a load of any
+/// model removes it.
+///
+/// A choice, not a measurement. Long enough that a binary run once a week
+/// keeps its copy between runs -- one running now is covered by its hold
+/// however long ago it loaded -- and short enough that an upgrade's leftovers
+/// are gone within a month. Removing a copy too early costs one rewrite the
+/// next time something loads it: a few seconds, with the source on the heap
+/// while it is written.
+const UNUSED_FOR: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+
+/// The lock of every copy this process has loaded, held shared until it exits
+/// so that no other process removes the copy (see the module's documentation).
+///
+/// Keyed by the copy's directory, one handle each however often it is loaded.
+static HELD: Mutex<BTreeMap<PathBuf, File>> = Mutex::new(BTreeMap::new());
+
 /// The path to load `source` from on the CPU: a mapped copy of it under
 /// `cache_dir`, written first if there is none yet.
 ///
@@ -91,8 +150,12 @@ pub(crate) fn prepared(source: &Path, cache_dir: &Path) -> PathBuf {
     if std::env::var("PAMIN_PREPARED").is_ok_and(|value| value.eq_ignore_ascii_case("off")) {
         return source.to_path_buf();
     }
-    match prepare(source, &cache_dir.join("prepared")) {
-        Ok(copy) => copy,
+    let root = cache_dir.join("prepared");
+    match prepare(source, &root) {
+        Ok(copy) => {
+            collect(&root, SystemTime::now());
+            copy
+        }
         Err(error) => {
             tracing::warn!(
                 source = %source.display(),
@@ -104,56 +167,194 @@ pub(crate) fn prepared(source: &Path, cache_dir: &Path) -> PathBuf {
     }
 }
 
-/// Finds or writes the copy of `source` under `root`.
+/// Finds or writes the copy of `source` under `root`, stamps it as used, and
+/// holds it for the rest of the process.
 ///
 /// A copy is written into `<key>.partial` and renamed to `<key>` only once both
 /// files are on disk, so a directory named by its key is always complete: a
 /// crash leaves a partial directory, never a half-written copy that loads.
-/// Writing happens under a lock on `<key>.lock`, so two processes loading the
-/// same model at once write it once -- the second waits and then finds the
-/// first's copy -- and a partial directory found while holding the lock is a
-/// crashed writer's and safe to remove.
+/// Writing happens under an exclusive lock on `<key>.lock`, so two processes
+/// loading the same model at once write it once -- the second waits and then
+/// finds the first's copy -- and a partial directory found while holding the
+/// lock is a crashed writer's and safe to remove. Finding a copy happens under
+/// the same lock held shared, which is what a removal waits on.
+///
+/// A model directory this process cannot write -- a lock it cannot open --
+/// still loads a copy that is already there. Nothing can remove it from such
+/// a directory either, so it needs no hold.
 fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
     let (key, described) = key(source)?;
     let done = root.join(&key);
     let copy = done.join(MODEL);
+    let lock = root.join(format!("{key}.lock"));
+
+    let shared = match std::fs::create_dir_all(root).and_then(|()| open(&lock)) {
+        Ok(shared) => shared,
+        Err(_) if copy.exists() => return Ok(copy),
+        Err(error) => return Err(error.into()),
+    };
+    shared.lock_shared()?;
     if copy.exists() {
+        stamp(&done);
+        hold(&done, shared);
         return Ok(copy);
     }
+    // Not holding it shared while waiting to write it, or this process would
+    // wait on itself: a copy it loaded before and somebody has since deleted.
+    drop(shared);
+    drop(held().remove(&done));
 
-    std::fs::create_dir_all(root)?;
-    let lock = std::fs::OpenOptions::new()
+    let exclusive = open(&lock)?;
+    exclusive.lock()?;
+    if !copy.exists() {
+        let partial = root.join(format!("{key}.partial"));
+        if partial.exists() {
+            std::fs::remove_dir_all(&partial)?;
+        }
+        std::fs::create_dir(&partial)?;
+        let started = std::time::Instant::now();
+        let written = write(source, &partial)
+            .and_then(|()| std::fs::rename(&partial, &done).map_err(IndexError::from));
+        if written.is_err() {
+            // Best effort: whatever is left is removed by the next writer anyway.
+            let _ = std::fs::remove_dir_all(&partial);
+        }
+        written?;
+
+        tracing::info!(
+            source = %source.display(),
+            copy = %copy.display(),
+            seconds = started.elapsed().as_secs_f64(),
+            key = %described,
+            "wrote a mapped copy of the model"
+        );
+    }
+    // Stamped before the lock is let go of, so a removal that takes it in
+    // between finds the copy in use.
+    stamp(&done);
+    exclusive.unlock()?;
+    exclusive.lock_shared()?;
+    hold(&done, exclusive);
+    Ok(copy)
+}
+
+/// Opens a key's lock file, creating it if it is not there.
+fn open(lock: &Path) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
-        .open(root.join(format!("{key}.lock")))?;
-    lock.lock()?;
-    if copy.exists() {
-        return Ok(copy);
+        .open(lock)
+}
+
+fn held() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, File>> {
+    HELD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Keeps `lock`, held shared on the copy at `done`, until the process exits.
+fn hold(done: &Path, lock: File) {
+    held().entry(done.to_path_buf()).or_insert(lock);
+}
+
+/// Records that the copy at `done` was just loaded.
+///
+/// Best effort: a stamp that cannot be written leaves the copy to be judged
+/// by when it was written and last mapped, and the hold covers this process.
+fn stamp(done: &Path) {
+    let stamped =
+        File::create(done.join(USED)).and_then(|used| used.set_modified(SystemTime::now()));
+    if let Err(error) = stamped {
+        tracing::debug!(copy = %done.display(), %error, "could not stamp a mapped copy as used");
+    }
+}
+
+/// When the copy at `done` was last loaded, as far as its files can say: the
+/// latest of its stamp, its graph's modification time and its data's access
+/// time. `None` if none of them can be read, which is never taken for old.
+fn last_used(done: &Path) -> Option<SystemTime> {
+    let time = |file: &str, read: fn(&std::fs::Metadata) -> std::io::Result<SystemTime>| {
+        std::fs::metadata(done.join(file))
+            .and_then(|metadata| read(&metadata))
+            .ok()
+    };
+    [
+        time(USED, std::fs::Metadata::modified),
+        time(MODEL, std::fs::Metadata::modified),
+        time(DATA, std::fs::Metadata::accessed),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
+/// Whether the copy at `done` has gone [`UNUSED_FOR`] without a load, at `now`.
+fn unused(done: &Path, now: SystemTime) -> bool {
+    last_used(done)
+        .and_then(|last| now.duration_since(last).ok())
+        .is_some_and(|idle| idle >= UNUSED_FOR)
+}
+
+/// Removes, from `root`, every copy that has gone [`UNUSED_FOR`] without a
+/// load and that no process holds, and every partial directory no writer
+/// holds. See the module's documentation for the rule and why it is safe.
+///
+/// Best effort, entry by entry: what cannot be removed now -- a copy Windows
+/// will not let go of, say -- is warned about and tried again on the next
+/// load, and stops nothing else from being removed.
+fn collect(root: &Path, now: SystemTime) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(root = %root.display(), %error, "could not list the mapped copies");
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Err(error) = collect_one(root, &path, now) {
+            tracing::warn!(copy = %path.display(), %error, "could not remove an unused mapped copy");
+        }
+    }
+}
+
+fn collect_one(root: &Path, path: &Path, now: SystemTime) -> std::io::Result<()> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    let (key, partial) = match name.strip_suffix(".partial") {
+        Some(key) => (key, true),
+        None => (name, false),
+    };
+    let is_key = key.len() == 32
+        && key
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+    if !is_key || !path.is_dir() || (!partial && !unused(path, now)) {
+        return Ok(());
     }
 
-    let partial = root.join(format!("{key}.partial"));
-    if partial.exists() {
-        std::fs::remove_dir_all(&partial)?;
+    let lock = open(&root.join(format!("{key}.lock")))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error),
     }
-    std::fs::create_dir(&partial)?;
-    let started = std::time::Instant::now();
-    let written = write(source, &partial)
-        .and_then(|()| std::fs::rename(&partial, &done).map_err(IndexError::from));
-    if written.is_err() {
-        // Best effort: whatever is left is removed by the next writer anyway.
-        let _ = std::fs::remove_dir_all(&partial);
+    if partial {
+        return std::fs::remove_dir_all(path);
     }
-    written?;
-
-    tracing::info!(
-        source = %source.display(),
-        copy = %copy.display(),
-        seconds = started.elapsed().as_secs_f64(),
-        key = %described,
-        "wrote a mapped copy of the model"
-    );
-    Ok(copy)
+    // Again under the lock: a load may have stamped it since.
+    if !unused(path, now) {
+        return Ok(());
+    }
+    let aside = root.join(format!("{key}.partial"));
+    if aside.exists() {
+        std::fs::remove_dir_all(&aside)?;
+    }
+    std::fs::rename(path, &aside)?;
+    std::fs::remove_dir_all(&aside)?;
+    tracing::info!(copy = %path.display(), "removed a mapped copy nothing had loaded for two weeks");
+    Ok(())
 }
 
 /// Writes the optimized graph and its external data into `into`.
@@ -384,5 +585,149 @@ mod tests {
 
         assert_eq!(key(&one).expect("key").0, key(&one).expect("key again").0);
         assert_ne!(key(&one).expect("key").0, key(&other).expect("key").0);
+    }
+
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    /// A fake copy under `root` whose times say it was written at `written`,
+    /// last mapped at `mapped`, and -- if `stamped` -- last loaded then.
+    fn fake_copy(
+        root: &Path,
+        key: &str,
+        written: SystemTime,
+        mapped: SystemTime,
+        stamped: Option<SystemTime>,
+    ) -> PathBuf {
+        let done = root.join(key);
+        std::fs::create_dir_all(&done).expect("make the copy");
+        let at = |file: &str, times: std::fs::FileTimes| {
+            let file = File::create(done.join(file)).expect("write a file of the copy");
+            file.set_times(times).expect("set its times");
+        };
+        at(MODEL, std::fs::FileTimes::new().set_modified(written));
+        at(
+            DATA,
+            std::fs::FileTimes::new()
+                .set_modified(written)
+                .set_accessed(mapped),
+        );
+        if let Some(stamped) = stamped {
+            at(USED, std::fs::FileTimes::new().set_modified(stamped));
+        }
+        open(&root.join(format!("{key}.lock"))).expect("its lock");
+        done
+    }
+
+    fn key_of(n: u8) -> String {
+        format!("{n:02x}").repeat(16)
+    }
+
+    /// Copies go by when they were last used, and only when nothing holds
+    /// them: the stamp a load leaves, and for a copy written before stamps
+    /// existed, when it was written and when it was last mapped. A partial
+    /// directory goes unless a writer holds its lock, and nothing that is not
+    /// a copy is touched.
+    ///
+    /// Each copy is the case one part of the rule exists for, so taking any
+    /// part out fails here: without the lock check the held copy goes, without
+    /// the access time the one an older binary still maps, and without the
+    /// stamp the one loaded yesterday.
+    #[test]
+    fn a_copy_goes_once_nothing_holds_it_or_has_used_it_for_two_weeks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let now = SystemTime::now();
+        let long_ago = now - 60 * DAY;
+
+        let loaded_yesterday = fake_copy(root, &key_of(1), long_ago, long_ago, Some(now - DAY));
+        let loaded_long_ago = fake_copy(root, &key_of(2), long_ago, long_ago, Some(now - 20 * DAY));
+        let written_long_ago = fake_copy(root, &key_of(3), now - 20 * DAY, now - 20 * DAY, None);
+        let mapped_recently = fake_copy(root, &key_of(4), long_ago, now - 2 * DAY, None);
+        let held = fake_copy(root, &key_of(5), long_ago, long_ago, Some(now - 20 * DAY));
+        let holder = open(&root.join(format!("{}.lock", key_of(5)))).expect("lock");
+        holder
+            .lock_shared()
+            .expect("hold it, as a process that loaded it does");
+
+        let crashed = root.join(format!("{}.partial", key_of(6)));
+        std::fs::create_dir_all(&crashed).expect("a crashed writer's partial directory");
+        let writing = root.join(format!("{}.partial", key_of(7)));
+        std::fs::create_dir_all(&writing).expect("a writer's partial directory");
+        let writer = open(&root.join(format!("{}.lock", key_of(7)))).expect("lock");
+        writer.lock().expect("hold it, as a writer does");
+        let other = root.join("not-a-copy");
+        std::fs::create_dir_all(&other).expect("something else in the directory");
+
+        collect(root, now);
+
+        assert!(
+            loaded_yesterday.exists(),
+            "a copy loaded yesterday was removed"
+        );
+        assert!(
+            !loaded_long_ago.exists(),
+            "a copy last loaded twenty days ago was kept"
+        );
+        assert!(
+            !written_long_ago.exists(),
+            "an unstamped copy written twenty days ago was kept"
+        );
+        assert!(
+            mapped_recently.exists(),
+            "a copy an older binary mapped two days ago was removed"
+        );
+        assert!(held.exists(), "a copy another process holds was removed");
+        assert!(
+            !crashed.exists(),
+            "a partial directory nothing is writing was kept"
+        );
+        assert!(
+            writing.exists(),
+            "a partial directory being written was removed"
+        );
+        assert!(other.exists(), "something that is not a copy was removed");
+        assert!(
+            !root.join(format!("{}.partial", key_of(2))).exists(),
+            "a removed copy was left aside"
+        );
+        assert!(
+            root.join(format!("{}.lock", key_of(2))).exists(),
+            "a removed copy's lock file was deleted"
+        );
+    }
+
+    /// A load stamps the copy it hands out and holds it, so a collection in
+    /// another process leaves it however long this one goes on using it.
+    ///
+    /// The collection runs in this process, on handles of its own, which the
+    /// lock treats as another process's: a lock is held per open file, not
+    /// per process.
+    #[test]
+    fn a_loaded_copy_is_stamped_and_held() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = not_a_model(dir.path());
+        let root = dir.path().join("prepared");
+        let (key, _) = key(&source).expect("key the source");
+        let now = SystemTime::now();
+        let done = fake_copy(
+            &root,
+            &key,
+            now - 60 * DAY,
+            now - 60 * DAY,
+            Some(now - 60 * DAY),
+        );
+        assert!(
+            unused(&done, now),
+            "the fixture's copy is not old enough to be collected"
+        );
+
+        prepare(&source, &root).expect("find the copy");
+        assert!(!unused(&done, now), "loading the copy did not stamp it");
+
+        collect(&root, now + 30 * DAY);
+        assert!(
+            done.join(MODEL).exists(),
+            "a copy this process holds was removed"
+        );
     }
 }
