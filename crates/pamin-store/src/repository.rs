@@ -109,18 +109,25 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
     })
 }
 
-/// Returns the source with this locator, creating it if it does not exist.
+/// Returns the source with this locator, creating it if it does not exist,
+/// and holds it locked until the transaction ends.
 ///
 /// Re-ingesting the same locator appends a version to the existing source
 /// rather than forking a second one, which is what keeps a file's history in a
 /// single chain.
+///
+/// The lock is what [`append_source_version`] numbers under, taken here
+/// because this is the statement that finds the row: locking it again by id
+/// was a second round trip for the same row. A row this call inserts is
+/// already held by the inserting transaction, so both paths leave it locked.
+/// Outside a transaction the lock lasts one statement and means nothing.
 pub async fn ensure_source(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     kind: SourceKind,
     locator: &str,
 ) -> Result<SourceId> {
-    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2";
+    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
 
     let found = sqlx::query(FIND)
         .bind(project.0)
@@ -164,12 +171,15 @@ pub async fn ensure_source(
 /// The verdict rides on a row that exists either way: the filter decides
 /// whether content reaches the retrieval surface, never whether it is kept.
 ///
-/// The version number is read and written under a lock on the source row, for
-/// the same reason `append_topic_state` locks the topic. Two agents writing to
-/// one source otherwise both read the same maximum and both claim the version
-/// after it, and only one of the two rows survives the uniqueness constraint.
-/// Losing the other is losing evidence, which is the one thing this store
-/// promises never to do.
+/// **Call it after [`ensure_source`], in the same transaction.** The version
+/// number is read and written under the lock that call takes on the source
+/// row. Two agents writing to one source otherwise both read the same maximum
+/// and both claim the version after it, and only one of the two rows survives
+/// the uniqueness constraint. Losing the other is losing evidence, which is
+/// the one thing this store promises never to do. The lock has to be taken in
+/// a statement before this one: a statement reads with the snapshot it began
+/// with, so one that waited for the lock inside itself would still number from
+/// what it saw before the wait.
 pub async fn append_source_version(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
@@ -179,11 +189,6 @@ pub async fn append_source_version(
     decision: FilterDecision,
     reason: &str,
 ) -> Result<SourceVersion> {
-    sqlx::query("SELECT id FROM sources WHERE id = $1 FOR UPDATE")
-        .bind(source.0)
-        .execute(&mut *connection)
-        .await?;
-
     let row = sqlx::query(
         "INSERT INTO source_versions (
              id, project_id, source_id, version, content, content_hash,
