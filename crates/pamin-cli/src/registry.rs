@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -48,6 +49,12 @@ struct Open<K, T> {
 struct Entry<T> {
     slot: Slot<T>,
     used: u64,
+    /// When it was last wanted, for the caller that closes idle entries.
+    ///
+    /// Beside the counter rather than replacing it: `used` orders eviction and
+    /// must not be able to go backwards, and this answers a different question
+    /// -- *how long* since anyone wanted this -- which a counter cannot.
+    at: Instant,
 }
 
 impl<K: Eq + Hash + Clone, T> Registry<K, T> {
@@ -102,6 +109,7 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
 
             if let Some(entry) = registry.slots.get_mut(&key) {
                 entry.used = now;
+                entry.at = Instant::now();
                 Arc::clone(&entry.slot)
             } else {
                 registry.make_room(self.capacity);
@@ -113,6 +121,7 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
                         // when a slot being opened looks idle to `make_room`.
                         slot: Arc::clone(&slot),
                         used: now,
+                        at: Instant::now(),
                     },
                 );
                 slot
@@ -150,6 +159,38 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
             .collect()
     }
 
+    /// Closes everything nothing has wanted for `idle`, and says what it closed.
+    ///
+    /// The capacity bound stops idle entries *accumulating*; it does nothing
+    /// about the ones already there. Sixteen indexes a server opened this
+    /// morning and has not been asked for since cost what sixteen busy ones
+    /// cost -- the module above this says so in as many words, *an open index
+    /// is not free and does not become free by being idle* -- and on the
+    /// shipping profile that is about 205 MB each. This is the half of the
+    /// policy that gives them back.
+    ///
+    /// Only entries nothing is using, by exactly the test [`Open::make_room`]
+    /// uses and for exactly the same reason: dropping the registry's handle
+    /// while a request holds its own frees nothing and costs the next caller
+    /// for that key a second open.
+    pub fn close_idle(&self, idle: Duration) -> Vec<K> {
+        let mut registry = self.open.lock().expect("the registry lock is poisoned");
+        let now = Instant::now();
+
+        let closing: Vec<K> = registry
+            .slots
+            .iter()
+            .filter(|(_, entry)| now.saturating_duration_since(entry.at) >= idle)
+            .filter(|(_, entry)| Open::<K, T>::is_unused(entry))
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        for key in &closing {
+            registry.slots.remove(key);
+        }
+        closing
+    }
+
     /// The value for this key if it is open and idle, without opening one.
     ///
     /// `None` while another caller holds the slot -- opening it, or rebuilding
@@ -179,23 +220,35 @@ impl<K: Eq + Hash + Clone, T> Open<K, T> {
             let idle = self
                 .slots
                 .iter()
-                .filter(|(_, entry)| Arc::strong_count(&entry.slot) == 1)
-                .filter(|(_, entry)| match entry.slot.try_lock() {
-                    // Empty means a load failed or has not run; there is
-                    // nothing to lose by dropping the place it holds.
-                    Ok(held) => held
-                        .as_ref()
-                        .is_none_or(|value| Arc::strong_count(value) == 1),
-                    // Somebody is inside it. Never wait for them here: this
-                    // runs under the map's lock, and the one lock order this
-                    // design must not invert is map-then-slot.
-                    Err(_) => false,
-                })
+                .filter(|(_, entry)| Self::is_unused(entry))
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone());
 
             let Some(idle) = idle else { return };
             self.slots.remove(&idle);
+        }
+    }
+
+    /// Whether dropping this entry would actually free what it holds.
+    ///
+    /// Shared by the two things that close entries, because getting it wrong
+    /// in either place is the same bug: a value a request still holds stays
+    /// alive whether or not the registry drops its handle, so closing it buys
+    /// nothing and costs the next caller for that key a second open.
+    fn is_unused(entry: &Entry<T>) -> bool {
+        if Arc::strong_count(&entry.slot) != 1 {
+            return false;
+        }
+        match entry.slot.try_lock() {
+            // Empty means a load failed or has not run; there is nothing to
+            // lose by dropping the place it holds.
+            Ok(held) => held
+                .as_ref()
+                .is_none_or(|value| Arc::strong_count(value) == 1),
+            // Somebody is inside it. Never wait for them here: this may run
+            // under the map's lock, and the one lock order this design must not
+            // invert is map-then-slot.
+            Err(_) => false,
         }
     }
 }
@@ -322,6 +375,72 @@ mod tests {
                 .expect("the second attempt"),
             3,
             "the key was poisoned by the first attempt"
+        );
+    }
+
+    /// An entry nothing has wanted for the window is closed; a fresh one is not.
+    ///
+    /// The capacity bound only stops idle entries accumulating. Sixteen
+    /// indexes a server opened this morning cost what sixteen busy ones cost,
+    /// about 205 MB each on the shipping profile, and nothing was giving them
+    /// back.
+    #[tokio::test]
+    async fn an_entry_nothing_has_wanted_is_closed_and_a_fresh_one_is_not() {
+        let registry: Registry<&str, u32> = Registry::with_capacity(16);
+        registry
+            .get_or_open("stale", || async { Ok(1) })
+            .await
+            .expect("opening");
+        // Long enough to be past any window this asks about, without sleeping.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        registry
+            .get_or_open("fresh", || async { Ok(2) })
+            .await
+            .expect("opening");
+
+        let closed = registry.close_idle(Duration::from_millis(30));
+
+        assert_eq!(closed, vec!["stale"], "the wrong set of keys was closed");
+        assert!(
+            registry.opened(&"stale").is_none(),
+            "the stale entry is still held"
+        );
+        assert_eq!(
+            registry.opened(&"fresh").map(|held| *held),
+            Some(2),
+            "an entry wanted a moment ago was closed"
+        );
+    }
+
+    /// An entry a request is holding is not closed, however old it looks.
+    ///
+    /// The half that is not about time. Dropping the registry's handle while a
+    /// caller holds its own frees nothing and makes the next caller for that
+    /// key open a second copy alongside the first, which is the opposite of
+    /// the point -- so `close_idle` applies the same in-use test the capacity
+    /// bound does, and this is what fails if it stops.
+    #[tokio::test]
+    async fn an_entry_a_caller_is_holding_is_not_closed() {
+        let registry: Registry<&str, u32> = Registry::with_capacity(16);
+        let held = registry
+            .get_or_open("busy", || async { Ok(5) })
+            .await
+            .expect("opening");
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let closed = registry.close_idle(Duration::from_millis(1));
+
+        assert!(
+            closed.is_empty(),
+            "an entry a caller still holds was closed: {closed:?}"
+        );
+        assert_eq!(*held, 5);
+        drop(held);
+
+        assert_eq!(
+            registry.close_idle(Duration::from_millis(1)),
+            vec!["busy"],
+            "the entry was not closed once nothing held it"
         );
     }
 

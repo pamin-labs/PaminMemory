@@ -19,6 +19,12 @@ pub enum IndexError {
     GrainMismatch { indexed: String, expected: String },
 
     #[error(
+        "this index stores its vectors as {indexed} and this build expects {requested}; \
+         run `pamin reindex` to rebuild it"
+    )]
+    VectorStorageMismatch { indexed: String, requested: String },
+
+    #[error(
         "this workspace has an index from before projects were separated; \
          run `pamin reindex` to rebuild it per project"
     )]
@@ -29,6 +35,12 @@ pub enum IndexError {
          release it in time ({0}); retry, or run one command at a time"
     )]
     Busy(String),
+
+    #[error(
+        "this project's index could not be reopened after it was reshaped ({0}); \
+         restart the server, or run `pamin reindex` to rebuild it"
+    )]
+    Unavailable(String),
 
     #[error("index io: {0}")]
     Io(#[from] std::io::Error),

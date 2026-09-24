@@ -246,18 +246,32 @@ under [benchmarks/results/](benchmarks/results).
 
 | | | measured on |
 | --- | --- | --- |
-| retrieval, one language | nDCG@10 **0.7359** | MIRACL Swahili dev, 131,924 passages |
-| retrieval, query and answer in different languages | nDCG@10 0.6097 | XQuAD-R, 13,014 sentences |
+| retrieval, one language | nDCG@10 **0.7654** | MIRACL Swahili dev, 131,924 passages, `accurate` reranking |
+| retrieval, query and answer in different languages | nDCG@10 0.6597 | XQuAD-R, 13,014 sentences, `accurate` reranking |
 | one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
-| one `pamin search` as a whole CLI invocation | 251 ms | XQuAD-R, `fast` reranking |
+| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, `accurate` reranking |
 | one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
 | resident, one project | 2,088 MB | model and index inside the server |
 
 Latency is a corpus and a tier before it is a number, which is why every row
 above names both and why the matrix is on the other page.
 
-Three findings belong in the summary rather than only in the detail, because
+Five findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
+
+**Fusing four channels ranked below one of them on cross-lingual queries.** The
+vector channel alone scores 0.8268 on this project's own cross-lingual group and
+0.6335 on XQuAD-R's, against 0.7985 and 0.6114 for all four fused. On the
+same-language queries of the same corpus the lexical channels earn their place
+outright, and by more than they cost — +0.1042 there against −0.0221 across the
+boundary, with segmented BM25 alone beating the vector channel 0.7299 to 0.6787
+— so the channels are not weak and one global weight could not tell the two
+cases apart. Letting each channel's own scores order its candidates, inside the
+band rank fusion already spanned, is worth +0.0037 cross-lingual and +0.0273
+same-language with recall unmoved, and it is the first change here that
+improves the same-language group rather than charging it.
+[measured.md](docs/measured.md) has both tables, including the version of this
+that looked better on nDCG and took cross-lingual recall from 0.8960 to 0.7765.
 
 **It is a tie, and reporting it as a win would be wrong.** At thirty passages
 the three systems are 0.628, 0.623 and 0.583, and paired McNemar separates no
@@ -286,6 +300,18 @@ writing the date into the passage text**, a free alternative that needs no
 columns: 0.900 against 0.814 is p = 0.0703, and re-running it with five reads a
 question returned the same p.
 
+**The MIRACL row above is older than the harness that will check it, and older
+than the fusion this now ships.** Every other figure on this page is produced by
+a test in this repository. That one was not: four pages quoted it and nothing in
+the tree could run it, because it came from a program that was never committed.
+The harness now exists — `cargo test -p pamin-engine --test monolingual --
+--ignored` — and the first thing it found was that on that corpus the four
+channels fused scored *below* the embedding model on its own. The fusion weight
+has been halved since, which puts fusion ahead there and takes the XQuAD-R row
+above past the model too, so until the row is re-taken it is a claim about a
+past run of a past configuration rather than something you can check.
+[measured.md](docs/measured.md) says which rows that covers.
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested.
@@ -297,12 +323,76 @@ and what has not, is stated in [Measured](#measured). Not built yet: source
 ingestion and page trees; curated notes and the session brief; passive
 optimization and forgetting; the MCP surface.
 
+### Known and not done
+
+Named here rather than left in a backlog, because each one is a measured gap
+rather than an idea.
+
+**The largest remaining accuracy gains are corpus-dependent and a single
+default cannot take them.** Over four groups of three corpora, three separate
+settings are worth far more than what ships and worth it in opposite
+directions: `CombMNZ` fusion is **+0.0700** on same-language queries and
+−0.0350 on cross-lingual ones (and was removed from the code for the recall it
+costs, so taking it back would mean restoring it); lexical weights at 0.25/0.50
+are +0.0656 same-language and −0.0806 cross-lingual; a rank constant of 60 is
++0.0681 same-language and −0.0724 cross-lingual. The shipped defaults are the
+compromise. What would collect the rest is letting a workspace say whether its
+memories are in one language or many, and applying the values already measured
+for that shape — configuration rather than a new algorithm, because that is
+what the measurements actually say.
+[measured.md](docs/measured.md) has every figure.
+
+**Two tables stored what nothing needed, and no longer do; most of the rest
+has never been examined.** `topic_states` stored every memory's text a
+second time beside the span it points at; it now reads it from the evidence,
+and a migration drops the copy after checking every row agrees. The work queue
+kept every finished job; it now deletes a job when it completes, and one index
+does the work of three. On a fresh workspace of 2,640 memories, drained and vacuumed,
+the database is 10.4 MB where it was 16.6; writes cost the same, search results are
+byte-identical, and fetching a search's candidate states costs about 0.3 ms
+more for the extra join. `source_versions` at 16.7% of the database has not
+been looked at once. [measured.md](docs/measured.md) has the figures.
+
+A caution that belongs with all of it: a migration returns nothing to the
+filesystem. Dropping a column and deleting rows stop a database growing and let
+it reuse what it holds; only `VACUUM FULL` makes an existing file smaller, and
+nothing here runs one.
+
+**Write latency has never been attributed.** Retrieval is divided into four
+stages and published; the write path is a single number, so there is nothing
+to say about which part of it a round trip would remove.
+
+**Resident memory is measured but not attributed.** 3.6 GB and 7.2 GB are
+published for two corpus sizes and neither is broken down, so nothing here can
+say what a reduction would have to target. Attribution is the first job on that
+axis rather than optimisation — model weights against index against vector
+graph against connection pools — because optimising the visible part rather
+than the large part is a mistake this project has already made once and
+recorded.
+
 ## Development
 
 ```bash
 cargo test --workspace                  # fast; no database, no model
 cargo test --workspace -- --ignored     # provisions postgres, downloads models
+cargo deny check licenses               # the crate graph against deny.toml
 ```
+
+## Licensing
+
+Apache-2.0, in [LICENSE](LICENSE).
+
+**No model weights are redistributed.** Nothing in this repository is a
+`.onnx`, `.safetensors` or `.bin`, and a release artifact is the `pamin`
+binary plus the native libraries it links — the size budget counts exactly
+that. Weights are fetched from the Hugging Face hub by the user's own machine
+the first time a command asks for one.
+
+[NOTICE](NOTICE) lists every model a profile or a reranker tier will download
+and the licence it carries, including the export that carries no tag of its
+own and the chain to a licensed source for it. [deny.toml](deny.toml)
+is the separate question of what the crate graph may be licensed under, which
+CI enforces.
 
 ## Maintainer Notes
 

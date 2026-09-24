@@ -113,6 +113,19 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Before anything opens an index, and for every command rather than for
+    // `serve` alone -- which is where this used to be, and the reason it moved.
+    // `PAMIN_NO_SERVER` runs the whole of a command in this process, and a
+    // command holding the descriptors a large index needs under the 1,024 a
+    // Linux process starts with does not degrade, it fails.
+    match pamin_index::raise_open_file_limit() {
+        Ok((before, after)) if after > before => {
+            tracing::info!(before, after, "raised the open-file limit")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
+    }
+
     let cli = Cli::parse();
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),
@@ -151,6 +164,15 @@ async fn main() -> Result<()> {
     // server has no standard input, and `git log | pamin write` is in the
     // reference.
     let call = fill_from_stdin(call)?;
+
+    // Before a server is started or a database provisioned. A misspelled tier
+    // is an error the caller can act on at once, and one that arrived after a
+    // PostgreSQL install -- leaving a workspace behind for a command that never
+    // ran -- would be a worse answer to the same question.
+    if let protocol::Call::Search(args) = &call {
+        pamin_index::Rerank::parse(&args.rerank)
+            .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
+    }
 
     if client::wanted() {
         let request = protocol::Request {
@@ -336,6 +358,113 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Variables the product reads and `docs/cli.md` deliberately omits.
+    ///
+    /// Each one shortens a window or a budget so that a test can reach a case
+    /// in seconds that the shipped value reaches in minutes or at twenty-five
+    /// thousand documents. A caller has no way to evaluate them, and a
+    /// documented knob is a knob somebody will turn -- so they stay out of the
+    /// table and in this list, where leaving one out is a failing test rather
+    /// than a silent omission.
+    const UNDOCUMENTED: &[&str] = &[
+        "PAMIN_EVAL_HOME",
+        "PAMIN_RERANK_BATCH",
+        "PAMIN_RERANK_DEPTH",
+        "PAMIN_RERANK_MAX_TOKENS",
+        "PAMIN_SEARCH_EFFORT",
+        "PAMIN_UNINDEXED_BUDGET",
+        "PAMIN_VECTOR_STORAGE",
+    ];
+
+    /// Every setting the product reads is documented, or listed as not.
+    ///
+    /// This repository has written a setting and not documented it more than
+    /// once, and the reader cannot tell an omission from a decision. The
+    /// source is the authority here: whatever `PAMIN_*` the crates read has to
+    /// appear in the options table or in [`UNDOCUMENTED`], and adding one
+    /// without doing either fails.
+    ///
+    /// Reads the tree rather than a list, because a list would be the thing
+    /// that goes stale. Names are taken from string literals, which is how all
+    /// of them are written -- a variable assembled at runtime would slip past
+    /// this, and nothing here does that.
+    #[test]
+    fn every_setting_is_documented_or_deliberately_not() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|crates| crates.parent())
+            .expect("the workspace root is two levels above this crate");
+        let documented =
+            std::fs::read_to_string(root.join("docs/cli.md")).expect("read docs/cli.md");
+
+        let mut found: Vec<String> = Vec::new();
+        collect_settings(&root.join("crates"), &mut found);
+        found.sort();
+        found.dedup();
+        assert!(
+            found.len() > 10,
+            "only found {} settings, so this test is not reading the source",
+            found.len()
+        );
+
+        let missing: Vec<&String> = found
+            .iter()
+            .filter(|name| !UNDOCUMENTED.contains(&name.as_str()))
+            .filter(|name| !documented.contains(name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "read by the product and in neither docs/cli.md nor UNDOCUMENTED: {missing:?}"
+        );
+
+        let gone: Vec<&&str> = UNDOCUMENTED
+            .iter()
+            .filter(|name| !found.contains(&(*name).to_string()))
+            .collect();
+        assert!(
+            gone.is_empty(),
+            "listed as deliberately undocumented but nothing reads them any more: {gone:?}"
+        );
+    }
+
+    /// Every `"PAMIN_..."` literal under a directory, recursively.
+    fn collect_settings(dir: &std::path::Path, into: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                // `tests/` holds evaluation harnesses, which are not the
+                // product and document their own variables in their own module
+                // documentation.
+                if path.file_name().is_some_and(|name| name == "tests") {
+                    continue;
+                }
+                collect_settings(&path, into);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let Ok(source) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (before, _) in source.match_indices("\"PAMIN_") {
+                    let rest = &source[before + 1..];
+                    let Some(end) = rest.find('"') else { continue };
+                    let name = &rest[..end];
+                    // Upper case and underscores only, which rules out the
+                    // `"PAMIN_..."` this very comment would otherwise
+                    // contribute -- a scanner that finds its own prose is a
+                    // scanner that fails for the wrong reason.
+                    if name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+                    {
+                        into.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
 
     /// The profile a command gets when nobody names one.
     ///

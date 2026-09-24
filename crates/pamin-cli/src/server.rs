@@ -9,11 +9,14 @@
 //! inherits the workspace's permissions and cannot be reached from off the
 //! machine by accident. No authentication, for the same reason.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
+use pamin_engine::Engine;
 use pamin_index::Profile;
 use pamin_store::{Connections, Workspace};
 use tokio::net::{UnixListener, UnixStream};
@@ -27,17 +30,6 @@ use crate::session::Session;
 pub async fn run(workspace: &Workspace) -> Result<()> {
     let path = socket_path(workspace);
     std::fs::create_dir_all(workspace.root())?;
-
-    // Before anything opens an index, and before the socket exists: a server
-    // that has to be restarted to serve its own corpus is worse than one that
-    // takes a moment longer to start.
-    match raise_open_file_limit() {
-        Ok((before, after)) if after > before => {
-            tracing::info!(before, after, "raised the open-file limit")
-        }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
-    }
 
     // Before the socket exists, so a client that connects finds a server that
     // can answer rather than one still starting the database.
@@ -95,39 +87,6 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
     }
 }
 
-/// Raises the open-file limit to what this process is already allowed.
-///
-/// A projection index keeps one file per segment, and a search reads across
-/// all of them: 131,924 documents is 2,111 segment files and 2,733 descriptors
-/// held at once, against the 1,024 a Linux process is given by default. The
-/// server does not degrade at that boundary, it fails the search outright with
-/// `Too many open files` -- and the corpus that does it is an ordinary one.
-///
-/// The soft limit is the process's to raise, up to the hard limit, with no
-/// privilege: this asks for what the kernel has already agreed to. Beyond the
-/// hard limit is the operator's to grant, so failing here is logged rather
-/// than fatal -- a smaller index still serves, and refusing to start would
-/// take away the case that works.
-fn raise_open_file_limit() -> Result<(u64, u64)> {
-    // SAFETY: both calls write only through the pointer given, which is a
-    // local of exactly the type they expect.
-    unsafe {
-        let mut limit = std::mem::zeroed::<libc::rlimit>();
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
-            return Err(std::io::Error::last_os_error()).context("reading the open-file limit");
-        }
-        let before = limit.rlim_cur;
-        if limit.rlim_cur >= limit.rlim_max {
-            return Ok((before, before));
-        }
-        limit.rlim_cur = limit.rlim_max;
-        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
-            return Err(std::io::Error::last_os_error()).context("raising the open-file limit");
-        }
-        Ok((before as u64, limit.rlim_max as u64))
-    }
-}
-
 /// How often the server looks for index upkeep to do.
 ///
 /// Not a pace for the work -- the work is scheduled by whoever caused it, and
@@ -155,14 +114,23 @@ const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 /// claims lapse and the ledger replays them. What is lost is the amortization,
 /// which is the entire reason the write did not flush for itself.
 async fn maintain(session: Arc<Session>) {
+    let mut reshapes = Reshapes::default();
     loop {
         tokio::time::sleep(UPKEEP).await;
+
+        // After the per-project work rather than before: flushing is what
+        // turns a write's claim into a completion, and closing an index that
+        // still owes one would leave the claim to lapse and be replayed. The
+        // idle window is minutes and this loop runs every few seconds, so
+        // anything owed has been drained long before a project looks idle.
 
         // One engine at a time, and taken by key. Holding all of them for the
         // length of a sweep makes every one of them look busy to eviction,
         // which then finds nothing to close and lets the registry grow past
         // its bound whenever a cold project arrives during a tick.
-        for key in session.opened_projects() {
+        let opened = session.opened_projects();
+        reshapes.forget_all_but(&opened);
+        for key in opened {
             let Some(engine) = session.opened_engine(&key) else {
                 // Being opened, or being rebuilt. Its upkeep waits for the
                 // next tick rather than this loop waiting for it.
@@ -178,9 +146,152 @@ async fn maintain(session: Arc<Session>) {
                 Ok(false) => {}
                 Err(error) => tracing::warn!(%error, "index upkeep failed"),
             }
+            // Beside the loop rather than in it: a reshape takes minutes, and
+            // every other project's flushes wait on this loop -- a claim held
+            // past its lease is replayed.
+            reshapes.consider(&key, engine);
+        }
+
+        // The engines above are dropped by now, so a project that has gone
+        // quiet can be closed and the weights it was pinning given back.
+        let (engines, embedders, rerankers) = session.close_what_is_idle();
+        if !engines.is_empty() || !embedders.is_empty() || !rerankers.is_empty() {
+            tracing::debug!(
+                ?engines,
+                ?embedders,
+                ?rerankers,
+                "gave back what nothing had asked for"
+            );
+            trim_heap();
         }
     }
 }
+
+/// How long after one reshape of a project the server will consider another.
+///
+/// A reshape is only started when the index is spread over more than twice
+/// the segments the policy wants, and one that finished leaves it at what the
+/// policy wants -- so the next is not due until the project has roughly
+/// doubled, and the interval is not what paces them. It is what paces a
+/// failure: a reshape that failed on something that has not changed would
+/// otherwise copy the whole index again every tick. An hour is a choice, not
+/// a measurement. Outside it a project is checked on every tick, which costs
+/// one read of the index's statistics under its lock.
+const RESHAPE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// The reshapes this server has started, one per project at most.
+///
+/// Held by the upkeep loop rather than the session, because nothing else
+/// starts one: `pamin reindex` is a rebuild, and waits for a reshape of its
+/// project to finish rather than being one.
+#[derive(Default)]
+struct Reshapes {
+    started: HashMap<(String, Profile), (Instant, tokio::task::JoinHandle<()>)>,
+}
+
+impl Reshapes {
+    /// Starts reshaping this project's index in the background, if its shape
+    /// is worth it and no reshape of it has started within the interval.
+    ///
+    /// Never two at once for one project: one still running is never
+    /// replaced, and the engine refuses a second on the same directory
+    /// besides.
+    fn consider(&mut self, key: &(String, Profile), engine: Arc<Engine>) {
+        if let Some((at, running)) = self.started.get(key)
+            && (!running.is_finished() || at.elapsed() < RESHAPE_INTERVAL)
+        {
+            return;
+        }
+        let shape = match engine.segmentation() {
+            Ok(shape) => shape,
+            Err(error) => {
+                tracing::warn!(%error, "reading the index's shape failed");
+                return;
+            }
+        };
+        if !shape.is_worth_rebuilding() {
+            return;
+        }
+
+        let project = key.0.clone();
+        tracing::info!(
+            %project,
+            documents = shape.documents,
+            segments = shape.segments(),
+            wanted = shape.wanted(),
+            "reshaping the index"
+        );
+        let running = tokio::spawn(async move {
+            let started = Instant::now();
+            match engine.reshape().await {
+                Ok(Some(reshaped)) => tracing::info!(
+                    %project,
+                    before = reshaped.before.segments(),
+                    after = reshaped.after.segments(),
+                    copied = reshaped.copied,
+                    caught_up = reshaped.caught_up,
+                    seconds = started.elapsed().as_secs_f64(),
+                    "reshaped the index"
+                ),
+                Ok(None) => tracing::info!(
+                    %project,
+                    "the index needed no reshaping, or something else was restructuring it"
+                ),
+                Err(error) => tracing::warn!(
+                    %project,
+                    %error,
+                    seconds = started.elapsed().as_secs_f64(),
+                    "reshaping the index failed; the index it was copying is still served"
+                ),
+            }
+        });
+        self.started.insert(key.clone(), (Instant::now(), running));
+    }
+
+    /// Forgets projects that are no longer open and have nothing running.
+    ///
+    /// A project closed and reopened is considered again at once, which is
+    /// what opening a project that grew without a server should do.
+    fn forget_all_but(&mut self, opened: &[(String, Profile)]) {
+        self.started
+            .retain(|key, (_, running)| !running.is_finished() || opened.contains(key));
+    }
+}
+
+/// Asks the allocator to hand back what the sweep just freed.
+///
+/// Dropping a model returns its pages to the C heap and not to the kernel, and
+/// the difference is a gigabyte. Measured on a server over the
+/// 13,014-document project: resident 2,263 MB after one `fast` search, 1,000
+/// MB once the idle sweep had released both models -- so 1,263 MB came back on
+/// its own and roughly a gigabyte of free heap stayed mapped. `malloc_trim`
+/// is what asks for that gigabyte.
+///
+/// Called only when the sweep released something, so a quiet server does not
+/// walk its arenas every five seconds for nothing. It is advisory: the
+/// allocator returns what it can and keeps what it cannot, and a return value
+/// of zero means it found nothing to give, which is not an error.
+///
+/// glibc only. Other libcs either do this themselves or do not offer it, and
+/// the fallback is the behaviour this had before -- which is why it is an
+/// empty function rather than a compile error.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn trim_heap() {
+    unsafe extern "C" {
+        /// glibc's own, declared here rather than through a crate: it is one
+        /// symbol, and `ci/budget.py` counts dependencies.
+        fn malloc_trim(pad: usize) -> i32;
+    }
+
+    // SAFETY: the call takes a byte count by value, returns a flag, and has no
+    // preconditions. What it touches is memory the allocator already considers
+    // free, so nothing safe Rust can observe changes.
+    let released = unsafe { malloc_trim(0) };
+    tracing::trace!(released, "asked the allocator for its free pages back");
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn trim_heap() {}
 
 /// Whether the connection asked the server to stop.
 enum Shutdown {
@@ -330,79 +441,4 @@ fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
 /// Where this workspace's socket lives.
 pub fn socket_path(workspace: &Workspace) -> PathBuf {
     workspace.root().join(SOCKET)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The process's current soft and hard open-file limits.
-    fn limits() -> (u64, u64) {
-        // SAFETY: writes only through the pointer given, to a local of the
-        // type the call expects.
-        unsafe {
-            let mut limit = std::mem::zeroed::<libc::rlimit>();
-            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
-            (limit.rlim_cur as u64, limit.rlim_max as u64)
-        }
-    }
-
-    fn set_soft(soft: u64, hard: u64) {
-        // SAFETY: reads only through the pointer given, from a local of the
-        // type the call expects.
-        unsafe {
-            let limit = libc::rlimit {
-                rlim_cur: soft as libc::rlim_t,
-                rlim_max: hard as libc::rlim_t,
-            };
-            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
-        }
-    }
-
-    /// The reproduction, at the mechanism rather than at the corpus.
-    ///
-    /// Indexing 131,924 documents to find out takes half an hour and four
-    /// gigabytes; what actually failed was a search running under a soft limit
-    /// of 1,024 while the kernel would have allowed twenty times that. This
-    /// lowers the limit, asks the server's startup to raise it, and checks the
-    /// process is really running under the higher one afterwards.
-    ///
-    /// The limit is process-wide, so it is put back. Every other test in this
-    /// crate is a pure function over strings, so none of them is holding
-    /// descriptors while this runs.
-    #[test]
-    fn the_server_takes_the_open_file_limit_the_kernel_already_allows() {
-        let (original, hard) = limits();
-        // A box whose hard limit is this low has nothing to raise, and the
-        // no-op is covered by the test below.
-        if hard <= 512 {
-            return;
-        }
-
-        set_soft(512, hard);
-        let (before, after) = raise_open_file_limit().expect("raising within the hard limit");
-        assert_eq!(before, 512, "reports the limit it found");
-        assert_eq!(after, hard, "takes everything the hard limit allows");
-        assert_eq!(
-            limits().0,
-            hard,
-            "the process is running under the raised limit, not merely told about it"
-        );
-
-        set_soft(original, hard);
-    }
-
-    /// Already at the ceiling is not a failure, and must not be reported as a
-    /// raise: the startup logs one only when the number actually moved.
-    #[test]
-    fn a_limit_already_at_the_ceiling_is_left_alone() {
-        let (original, hard) = limits();
-
-        set_soft(hard, hard);
-        let (before, after) = raise_open_file_limit().expect("a no-op still succeeds");
-        assert_eq!(before, hard);
-        assert_eq!(after, hard);
-
-        set_soft(original, hard);
-    }
 }

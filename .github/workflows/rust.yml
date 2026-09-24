@@ -46,6 +46,24 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  licences:
+    name: dependency licences
+    # Its own job rather than a step in the one above, because it needs no
+    # build: it reads the crate graph's metadata. Failing it should not cost a
+    # compile, and a compile failure should not hide it.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The action rather than `cargo install cargo-deny`, which is about two
+      # minutes of compiling a tool to read a TOML file.
+      - name: Check licences against deny.toml
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
   install:
     name: installed binary starts
     # Separate from the checks above because it builds in release and installs,

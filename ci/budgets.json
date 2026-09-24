@@ -25,12 +25,23 @@
     "The cold build and target size are the real costs of this stack, and they",
     "are one-time rather than per-edit: editing any workspace crate rechecks the",
     "whole workspace in under a second, because the heavy dependencies live",
-    "behind a crate boundary and do not rebuild."
+    "behind a crate boundary and do not rebuild.",
+    "",
+    "accelerator_bytes is the inference runtime's GPU execution providers,",
+    "shipped beside the binary on x86-64 Linux so a machine with an NVIDIA GPU",
+    "reranks on it: 79 MB of CUDA provider plus two small TensorRT ones, about",
+    "81.4 MB measured when it was added. It is gated on its own rather than folded",
+    "into distribution_bytes, because a machine without the GPU never loads these",
+    "and can delete them, and because 79 MB inside that budget would leave it",
+    "unable to notice the next heavyweight dependency. Zero on platforms whose",
+    "accelerator is linked in (Core ML) or a single system-backed DLL counted",
+    "with the rest (DirectML)."
   ],
   "gated": {
     "binary_bytes": 48000000,
     "total_dependencies": 470,
-    "distribution_bytes": 92000000
+    "distribution_bytes": 92000000,
+    "accelerator_bytes": 98000000
   },
   "reported": [
     "cold_build_seconds",

@@ -1,16 +1,12 @@
 //! `pamin write` — record a memory.
 
 use anyhow::{Context, Result};
-use pamin_core::SensoryFilter;
 use pamin_index::Profile;
-use pamin_store::repository;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
 
 use crate::command::validity;
 use crate::session::Session;
-use pamin_engine::{Engine, Owed, Write};
+use pamin_engine::{Engine, Owed};
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -66,13 +62,17 @@ pub async fn execute(
     // without having started a database.
     let validity = args.validity.parse()?;
 
-    let content = match args.content {
-        Some(content) => content,
-        None => std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?,
-    };
+    // Standard input is read by the front end, before dispatch, because the
+    // server has none -- `main::fill_from_stdin`. So this arm is not the
+    // fallback it reads as: on the in-process path the content is already
+    // here, and on the server path reading standard input would block the
+    // server on a descriptor nobody is going to write to.
+    let content = args
+        .content
+        .context("no content: pass it as an argument or on standard input")?;
 
     let engine = session.engine(project, profile).await?;
-    let (verdict, recorded) = record(&engine, &args.topic, &content, validity).await?;
+    let (verdict, recorded) = engine.remember(&args.topic, &content, validity).await?;
 
     // The projection catches up from the outbox rather than here. Draining now
     // keeps `write` then `search` working the way it reads, without the write
@@ -118,48 +118,6 @@ pub async fn execute(
     Ok(result)
 }
 
-/// Records one memory in the ledger, and nothing else.
-///
-/// Everything a memory costs except the index: the filter's verdict, the
-/// language, and one transaction. Shared with the bulk path, which differs only
-/// in how often it stops to let the projection catch up -- so an import cannot
-/// drift into recording memories by different rules from a write.
-pub(crate) async fn record(
-    engine: &Engine,
-    topic: &str,
-    content: &str,
-    validity: pamin_core::Validity,
-) -> Result<(pamin_core::Verdict, pamin_engine::Recorded)> {
-    // Looked up rather than created: a write the filter holds should leave no
-    // trace on the retrieval surface, and an empty topic is a trace. Promotion
-    // is what creates one, inside the write transaction.
-    let current =
-        repository::current_content(engine.database.pool(), engine.project, topic).await?;
-    let verdict = SensoryFilter::default().judge(content, current.as_deref());
-
-    let (language, confidence) = match pamin_index::detect_language(content) {
-        Some((language, confidence)) => (Some(language), Some(confidence)),
-        None => (None, None),
-    };
-
-    let recorded = engine
-        .write(&Write {
-            topic,
-            content,
-            content_hash: &hash(content),
-            verdict: verdict.decision,
-            reason: verdict.reason(),
-            promoted: verdict.is_promoted(),
-            language: language.as_deref(),
-            language_confidence: confidence,
-            observed_at: OffsetDateTime::now_utc(),
-            validity,
-        })
-        .await?;
-
-    Ok((verdict, recorded))
-}
-
 /// What the projection still owes that would change what a search finds.
 ///
 /// Not the same as what the queue still holds. A write whose document the index
@@ -198,8 +156,4 @@ pub fn render(result: &Written) -> String {
             result.reason, result.topic, result.source_version
         ),
     }
-}
-
-fn hash(content: &str) -> String {
-    format!("{:x}", Sha256::digest(content.as_bytes()))
 }

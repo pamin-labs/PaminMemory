@@ -1,0 +1,63 @@
+# What licences the crate graph is allowed to carry.
+#
+# This file is about crates, not about models. A crate is compiled into the
+# binary this project distributes; a model is downloaded by the user's own
+# machine on first use and is never in a release artifact. `NOTICE` covers the
+# models and says the same thing from the other side.
+#
+# Enforced by `cargo deny check licenses` in CI. Run it locally the same way
+# after `cargo install cargo-deny`.
+
+[licenses]
+# Every licence in the graph today, listed rather than globbed, so adding a
+# dependency with a new one is a decision somebody makes instead of a thing
+# that happens.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    # The PostgreSQL licence, from the `postgres` family. BSD-style.
+    "PostgreSQL",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# `r-efi` offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the first two are
+# in the allow list, so the choice resolves without the copyleft branch and
+# needs no entry here. It is named only because a reader scanning for LGPL in
+# `cargo metadata` output will find it and should not have to wonder.
+
+# MPL-2.0 is allowed for exactly one crate rather than in the list above, which
+# is the narrower reading and the one that survives review. `option-ext` is the
+# only crate in the graph under it, reached through `dirs`, and it is linked
+# unmodified from crates.io -- so its own files stay under its own terms with
+# their source public, which is all MPL-2.0's file-level copyleft asks. Vendor
+# and edit it and that stops being true, which is the case this entry exists to
+# make somebody re-examine rather than inherit.
+[[licenses.exceptions]]
+name = "option-ext"
+allow = ["MPL-2.0"]
+
+[bans]
+# Not gated. Duplicate versions are a build-time cost this project measures
+# through `ci/budget.py`'s dependency count instead, where the number is
+# visible rather than pass-or-fail.
+multiple-versions = "allow"
+
+[advisories]
+# Not gated here. A vulnerability database changes under a repository without
+# anybody touching it, so a build that was green yesterday would fail today
+# for a reason nobody introduced. Worth running; not worth blocking a merge
+# that changed nothing.
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

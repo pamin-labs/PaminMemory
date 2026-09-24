@@ -20,14 +20,15 @@ pub struct Project {
 }
 
 /// Where evidence came from.
+///
+/// One kind, because there is one ingest path. A file, directory or chat-log
+/// importer adds its kind when it exists; until then a variant nothing
+/// produces is a promise the schema cannot check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     /// Written directly through the CLI or API.
     Manual,
-    File,
-    Directory,
-    ChatLog,
 }
 
 /// A stable identity for something that produces evidence over time.
@@ -171,6 +172,8 @@ pub struct TopicState {
     /// Monotonic per topic. Gaps are expected, because soft deletes do not
     /// renumber the versions that survive.
     pub version: u32,
+    /// The text of `source_span_id`, read from the evidence it points into
+    /// rather than stored a second time.
     pub content: String,
     /// The span this state was derived from, so every claim can be traced back
     /// to bytes in a source.
@@ -190,21 +193,4 @@ pub struct TopicState {
     /// Set when soft deleted. Deleted states leave the default retrieval
     /// surface but stay available for audit and historical traversal.
     pub deleted_at: Option<OffsetDateTime>,
-    pub signals: RetrievalSignals,
-}
-
-/// Per-state signals that feed post-fusion modifiers.
-///
-/// These are modifiers rather than recall channels. Recency and importance used
-/// to appear as candidate channels as well, which counted the same evidence
-/// twice: once when it was recalled and again when it was reranked.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct RetrievalSignals {
-    pub importance: f32,
-    /// Times this state co-occurred with a successful outcome.
-    pub worth_positive: u32,
-    /// Times it co-occurred with a failed one.
-    pub worth_negative: u32,
-    pub access_count: u32,
-    pub last_accessed_at: Option<OffsetDateTime>,
 }

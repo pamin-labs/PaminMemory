@@ -62,8 +62,8 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
     let hits = index.recall_vector(&query, 2).expect("vector recall");
 
     assert_eq!(
-        hits.first(),
-        Some(&chinese),
+        hits.first().map(|hit| hit.topic),
+        Some(chinese),
         "an english query should reach the chinese memory first: {hits:?}"
     );
 }
@@ -116,11 +116,26 @@ fn a_symmetric_model_is_left_alone() {
     );
 }
 
+/// Batching has to be free of consequence, on every profile that ships.
+///
+/// It was asserted on `Profile::Speed` alone, which is `Model::Text`. The
+/// default is `Profile::Accuracy`, which is `Model::Joint` -- a different
+/// branch, and the quantized one -- so the profile the product actually runs
+/// was the one this did not cover. That matters now rather than in principle:
+/// `reindex` embeds in batches of 256 and the cascade embeds one document at a
+/// time, so if a batch changed a vector the two paths would already disagree
+/// about what the same text embeds to.
 #[test]
 #[ignore = "downloads embedding model weights"]
 fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
+    for profile in [Profile::Speed, Profile::Accuracy] {
+        a_batch_changes_nothing_on(profile);
+    }
+}
+
+fn a_batch_changes_nothing_on(profile: Profile) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(Profile::Speed, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(profile, dir.path()).expect("load model");
 
     let texts = [
         "the deployment pipeline runs on continuous integration",
@@ -141,6 +156,10 @@ fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
     // simply return the wrong memories.
     assert_eq!(together.len(), alone.len());
     for (index, (batched, single)) in together.iter().zip(&alone).enumerate() {
-        assert_eq!(batched, single, "{:?} came back changed", texts[index]);
+        assert_eq!(
+            batched, single,
+            "{profile:?}: {:?} came back changed",
+            texts[index]
+        );
     }
 }

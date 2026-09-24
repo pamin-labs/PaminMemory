@@ -13,6 +13,7 @@
 //! one open engine, and lets the projection catch up in rounds rather than per
 //! memory.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -20,7 +21,7 @@ use pamin_index::Profile;
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
-use crate::command::write::{pays_for_upkeep, record};
+use crate::command::write::pays_for_upkeep;
 use crate::session::Session;
 
 /// How many memories to record between checks on the queue.
@@ -32,6 +33,22 @@ use crate::session::Session;
 /// puts the queue no more than three thousand past the ceiling before anyone
 /// looks, against a ceiling of ten.
 const BETWEEN_CHECKS: usize = 1_000;
+
+/// How many topics to record at once.
+///
+/// Every memory is a read of the topic's current content followed by one
+/// transaction, and both are round trips this process spends waiting on the
+/// server. Recorded one after another they do not overlap, so an import of
+/// *n* memories costs *n* times the latency of one whatever the server's
+/// capacity.
+///
+/// Bounded by the pool rather than by a number of its own: `Connections`
+/// gives a command four connections, and concurrency past what the pool can
+/// serve is not concurrency -- the extra tasks queue on the pool instead of on
+/// the server, and the bound stops meaning anything. Derived from the pool at
+/// run time for that reason, with this as the floor for a pool that reports
+/// something unusable.
+const LEAST_AT_ONCE: usize = 2;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -68,6 +85,19 @@ pub struct Imported {
     cascade_lagging: bool,
 }
 
+/// The file's memories, grouped by topic, each group in the file's own order.
+///
+/// Extracted from `execute` so the invariant has a test that does not need a
+/// database: a group's order *is* the correctness condition, and the end-to-end
+/// check of it costs a PostgreSQL cluster and a model download.
+fn by_topic(memories: &[Memory]) -> Vec<Vec<&Memory>> {
+    let mut grouped: BTreeMap<&str, Vec<&Memory>> = BTreeMap::new();
+    for memory in memories {
+        grouped.entry(&memory.topic).or_default().push(memory);
+    }
+    grouped.into_values().collect()
+}
+
 pub async fn execute(
     session: &Session,
     project: &str,
@@ -98,16 +128,59 @@ pub async fn execute(
     let engine = session.engine(project, profile).await?;
     let upkeep = pays_for_upkeep(&engine);
 
+    // Grouped by topic, and **the grouping is what makes concurrency correct
+    // rather than faster**. `Engine::remember` reads the topic's current
+    // content and judges the new memory against it, and one of the verdicts it
+    // can return is `Restatement`. Two writes to one topic running at once
+    // both read the content from before either of them, so the second is
+    // judged against the wrong text and a restatement is promoted as though it
+    // said something new. That is not a torn row a transaction would catch --
+    // both transactions are serialisable and both commit -- it is two correct
+    // writes of a decision that was made on stale input.
+    //
+    // Within a group the order is the file's, because the same read makes each
+    // memory's verdict depend on the one before it. Across groups there is
+    // nothing shared: the read is keyed by topic, the source row is
+    // `manual:{topic}`, and the name and state rows are the topic's own. So
+    // topics run at once and memories do not.
+    let groups = by_topic(&memories);
+
+    let at_once = usize::try_from(engine.database.pool().options().get_max_connections())
+        .unwrap_or(LEAST_AT_ONCE)
+        .max(LEAST_AT_ONCE);
+
     let mut promoted = 0;
     let mut lagging = false;
+    let mut since_check = 0;
 
-    for (index, memory) in memories.iter().enumerate() {
-        let (verdict, _) = record(&engine, &memory.topic, &memory.content, validity).await?;
-        if verdict.is_promoted() {
-            promoted += 1;
-        }
+    // Chunked, so the queue check below still happens *between* writes rather
+    // than beside them. Draining the cascade while writes are in flight would
+    // have the importer paying down a queue the same import is still filling,
+    // and the check would report on a moment that never existed.
+    for chunk in groups.chunks(at_once) {
+        // Built eagerly and awaited together rather than streamed, because
+        // the chunk is already the bound: `try_join_all` over a chunk of
+        // `at_once` groups runs exactly `at_once` of them at a time, and the
+        // first error cancels the rest.
+        let counted = futures::future::try_join_all(chunk.iter().map(|group| async {
+            let mut promoted = 0;
+            for memory in group.iter() {
+                let (verdict, _) = engine
+                    .remember(&memory.topic, &memory.content, validity)
+                    .await?;
+                if verdict.is_promoted() {
+                    promoted += 1;
+                }
+            }
+            Ok::<usize, anyhow::Error>(promoted)
+        }))
+        .await?;
 
-        if index > 0 && index.is_multiple_of(BETWEEN_CHECKS) {
+        promoted += counted.iter().sum::<usize>();
+        since_check += chunk.iter().map(Vec::len).sum::<usize>();
+
+        if since_check >= BETWEEN_CHECKS {
+            since_check = 0;
             let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
             if !pamin_core::may_defer(behind) {
                 lagging = true;
@@ -144,4 +217,78 @@ pub fn render(result: &Imported) -> String {
         "Imported {} memories: {} written, {} held in evidence only",
         result.memories, result.promoted, result.held
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn memory(topic: &str, content: &str) -> Memory {
+        Memory {
+            topic: topic.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    /// A topic's memories stay in the file's order, and none of them moves
+    /// between topics.
+    ///
+    /// The whole correctness condition for recording several topics at once.
+    /// `Engine::remember` judges a memory against the topic's current content,
+    /// so the second memory under a topic depends on the first having been
+    /// recorded -- two of them at once are both judged against the text from
+    /// before either, and a restatement is promoted as though it said
+    /// something new. Nothing downstream can see that: both transactions
+    /// commit, and both are correct writes of a decision made on stale input.
+    ///
+    /// The file interleaves its repeats, so an implementation that grouped by
+    /// topic but sorted within a group, or that used a hash map's iteration
+    /// order for the group, would fail this.
+    #[test]
+    fn grouping_by_topic_keeps_each_topics_order() {
+        let memories = vec![
+            memory("deploy", "first thing about deploying"),
+            memory("oncall", "first thing about oncall"),
+            memory("deploy", "second thing about deploying"),
+            memory("rota", "the only thing about the rota"),
+            memory("deploy", "third thing about deploying"),
+            memory("oncall", "second thing about oncall"),
+        ];
+
+        let groups = by_topic(&memories);
+
+        assert_eq!(groups.len(), 3, "one group per distinct topic");
+        assert_eq!(
+            groups.iter().map(Vec::len).sum::<usize>(),
+            memories.len(),
+            "every memory is in exactly one group"
+        );
+        for group in &groups {
+            let topic = &group[0].topic;
+            assert!(
+                group.iter().all(|memory| &memory.topic == topic),
+                "a group mixed topics"
+            );
+            let contents: Vec<&str> = group.iter().map(|memory| memory.content.as_str()).collect();
+            let expected: Vec<&str> = memories
+                .iter()
+                .filter(|memory| &memory.topic == topic)
+                .map(|memory| memory.content.as_str())
+                .collect();
+            assert_eq!(
+                contents, expected,
+                "{topic} was not in the order the file gave it"
+            );
+        }
+    }
+
+    /// An empty file groups into nothing rather than into one empty group.
+    ///
+    /// `by_topic`'s result is chunked and each chunk awaited together, and a
+    /// group with no memories would be a task that does nothing -- harmless,
+    /// and a sign the grouping had invented a topic.
+    #[test]
+    fn nothing_groups_into_nothing() {
+        assert!(by_topic(&[]).is_empty());
+    }
 }

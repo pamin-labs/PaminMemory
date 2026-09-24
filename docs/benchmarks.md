@@ -7,6 +7,17 @@ Everything below was gathered from primary sources in September 2026. Each
 figure carries its source so it can be rechecked; this field moves fast and
 several of these numbers have already changed meaning once.
 
+**Every Påmin Memory retrieval figure on this page was taken with the lexical
+fusion weight at a quarter, which was halved to an eighth afterwards** on
+evidence from a third corpus — see [measured.md](measured.md) and
+[ADR 0001](adr/0001-tech-selection.md). The change reorders a fused list
+without changing which candidates are retrieved, so every latency figure here
+stands as taken and so does recall measured at the full fused depth. Anything
+decided by the order — nDCG, and a Recall@5 whose five the order picks — is
+not re-taken. The direction to expect is the one measured everywhere else:
+cross-language ranking up, and same-language ranking down only on questions
+written out of their answers' own wording.
+
 ## What the field publishes
 
 Agent-memory projects report **LLM-judge accuracy on conversational QA**:
@@ -379,6 +390,13 @@ primary source. Every figure below is over the same 131,924-passage corpus and
 the same `miracl-v1.0-sw` dev qrels, verified rather than assumed: the corpus
 file decompresses to exactly 131,924 lines, and the qrels hold 5,092 judgements
 over 482 queries, labels in {0, 1}, 910 positives, 1.89 per query.
+
+Those counts were checked by hand when this section was written and are now
+checked by the harness: `crates/pamin-engine/tests/monolingual.rs` loads the
+same three files and fails if the corpus is empty, if no query keeps a judged
+passage, or if the index does not hold every passage. Påmin Memory's own rows
+on this corpus predate that harness and have not yet been reproduced by it,
+which [measured.md](measured.md) states beside them.
 
 | | nDCG@10 | source |
 | --- | --- | --- |

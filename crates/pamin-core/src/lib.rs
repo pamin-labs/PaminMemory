@@ -15,16 +15,16 @@ pub mod ledger;
 pub mod version;
 
 pub use cascade::{JobKind, LAGGING_AT, MAX_ATTEMPTS, may_defer};
-pub use channel::{Channel, ChannelResults};
+pub use channel::{Channel, ChannelResults, Scored};
 pub use filter::{Rejection, SensoryFilter, Verdict};
-pub use fusion::{DEFAULT_K, FusedResult, Fusion, Modifier, Modifiers, Why, sort_results};
+pub use fusion::{Combine, DEFAULT_K, FusedResult, Fusion, Why, sort_results};
 pub use graph::{Derivation, EdgeKind, Relationship, RelationshipVersion, TombstoneReason};
 pub use id::{
     IndexJobId, ProjectId, RelationshipId, RelationshipVersionId, SourceId, SourceSpanId,
     SourceVersionId, TopicId, TopicStateId,
 };
 pub use ledger::{
-    FilterDecision, Project, RetrievalSignals, Source, SourceKind, SourceSpan, SourceVersion,
-    Topic, TopicState, Validity,
+    FilterDecision, Project, Source, SourceKind, SourceSpan, SourceVersion, Topic, TopicState,
+    Validity,
 };
 pub use version::{ResolvedVersion, VersionOffset, resolve};

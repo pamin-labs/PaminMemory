@@ -1,12 +1,11 @@
 //! `pamin link` — assert a relationship the text does not state.
 
 use anyhow::{Result, bail};
-use pamin_core::EdgeKind;
+use pamin_store::graph;
 use pamin_store::graph::EdgeClaim;
-use pamin_store::{Database, graph, repository};
 use serde::{Deserialize, Serialize};
 
-use crate::command::validity;
+use crate::command::{resolve, validity};
 
 use crate::session::Session;
 
@@ -41,15 +40,13 @@ pub struct Linked {
 }
 
 pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Linked> {
-    let Some(kind) = EdgeKind::parse(&args.kind) else {
-        bail!("unknown relationship kind {:?}", args.kind);
-    };
+    let kind = resolve::edge_kind(&args.kind)?;
 
     let database = session.database();
     let project = session.project(project).await?;
 
-    let from = require_topic(database, project, &args.from).await?;
-    let to = require_topic(database, project, &args.to).await?;
+    let from = resolve::topic_id(database, project, &args.from).await?;
+    let to = resolve::topic_id(database, project, &args.to).await?;
     if from == to {
         bail!("a topic cannot be related to itself");
     }
@@ -84,21 +81,5 @@ pub fn render(result: &Linked) -> String {
             "Already linked: {} --{}--> {} (v{})",
             result.from, result.kind, result.to, result.version
         )
-    }
-}
-
-/// Resolves a topic name, refusing to invent one.
-///
-/// Linking a topic that does not exist is almost always a typo, and creating it
-/// silently would leave an edge pointing at an empty identity that nothing can
-/// ever resolve to a state.
-async fn require_topic(
-    database: &Database,
-    project: pamin_core::ProjectId,
-    name: &str,
-) -> Result<pamin_core::TopicId> {
-    match repository::find_topic(database.pool(), project, name).await? {
-        Some(topic) => Ok(topic.id),
-        None => bail!("no topic named {name}"),
     }
 }
