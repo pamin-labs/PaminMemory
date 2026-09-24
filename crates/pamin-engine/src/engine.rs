@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
-    Scored, SourceKind, Topic, TopicId, TopicState, Validity, Why,
+    Scored, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
     Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
@@ -1495,6 +1495,24 @@ impl Engine {
         let (graph_list, paths) = self
             .recall_graph(query, &candidates, &lists, &mut working, depths)
             .await?;
+
+        // A path explains itself by the topics at both ends of its last edge,
+        // and at two hops the near end is the topic in the middle -- which the
+        // search need not have resolved: it can have been cut from the graph's
+        // list, or stand for nothing now. Named here, and only when a path
+        // needs it, so a one-hop walk still pays nothing.
+        let unnamed: Vec<TopicId> = paths
+            .values()
+            .map(|reached| reached.via)
+            .filter(|via| !working.names.contains_key(via))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !unnamed.is_empty() {
+            working.name(
+                repository::topics_by_id(self.database.pool(), self.project, &unnamed).await?,
+            );
+        }
         let mut lists = lists;
         lists.push(graph_list);
         let live = working;
@@ -1924,6 +1942,13 @@ impl WorkingSet {
         for (name, state) in states {
             self.names.insert(state.topic_id, name);
             self.current.insert(state.topic_id, state);
+        }
+    }
+
+    /// Records names for topics the search reached without resolving.
+    fn name(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
+        for (topic, name, _) in topics {
+            self.names.insert(topic, name);
         }
     }
 
