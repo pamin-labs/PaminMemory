@@ -59,7 +59,7 @@ pub struct Request {
 }
 
 /// A command and its arguments, as parsed.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Call {
     Init,

@@ -224,58 +224,17 @@ async fn run_here(
 
     let session = session::Session::open(workspace, Connections::PerCommand).await?;
 
-    match call {
-        protocol::Call::Stop => unreachable!("handled above"),
-        protocol::Call::Init => {
-            let result = command::init::execute(&session, project).await?;
-            format.emit(&result, || command::init::render(&result));
-        }
-        protocol::Call::Write(args) => {
-            let result = command::write::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::write::render(&result));
-        }
-        protocol::Call::Import(args) => {
-            let result = command::import::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::import::render(&result));
-        }
-        protocol::Call::Read(args) => {
-            let result = command::read::execute(&session, project, args).await?;
-            format.emit(&result, || command::read::render(&result));
-        }
-        protocol::Call::Search(args) => {
-            let results = command::search::execute(&session, project, profile, args).await?;
-            format.emit(&results, || command::search::render(&results));
-        }
-        protocol::Call::Grep(args) => {
-            let result = command::grep::execute(&session, project, args).await?;
-            format.emit(&result, || command::grep::render(&result));
-        }
-        protocol::Call::Link(args) => {
-            let result = command::link::execute(&session, project, args).await?;
-            format.emit(&result, || command::link::render(&result));
-        }
-        protocol::Call::Unlink(args) => {
-            let result = command::unlink::execute(&session, project, args).await?;
-            format.emit(&result, || command::unlink::render(&result));
-        }
-        protocol::Call::Neighbors(args) => {
-            let result = command::neighbors::execute(&session, project, args).await?;
-            format.emit(&result, || command::neighbors::render(&result));
-        }
-        protocol::Call::Topics(args) => {
-            let result = command::topics::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::topics::render(&result));
-        }
-        protocol::Call::Reindex(args) => {
-            let result = command::reindex::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::reindex::render(&result));
-        }
-        protocol::Call::Cascade(args) => {
-            command::cascade::execute(&session, project, profile, format, args).await?;
-        }
+    // The one call whose in-process form is not the served one: `cascade run`
+    // is a foreground loop a server refuses, and a drain here reports that no
+    // server answered, which changes what it tells the caller to do.
+    if let protocol::Call::Cascade(args) = call {
+        return command::cascade::execute(&session, project, profile, format, args).await;
     }
 
-    Ok(())
+    // Everything else is answered exactly as the server answers it, and
+    // rendered exactly as a client renders the server's answer.
+    let value = server::dispatch(&session, project, profile, call.clone()).await?;
+    render(&call, &value, format)
 }
 
 /// Prints what the server sent, in whichever form was asked for.

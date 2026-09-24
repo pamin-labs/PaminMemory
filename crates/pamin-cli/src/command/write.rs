@@ -8,7 +8,7 @@ use crate::command::validity;
 use crate::session::Session;
 use pamin_engine::{Engine, Owed};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic this memory belongs to.
     #[arg(long)]

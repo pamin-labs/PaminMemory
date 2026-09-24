@@ -14,7 +14,7 @@ use crate::session::Session;
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The exact string to find. Not a pattern.
     pub literal: String,

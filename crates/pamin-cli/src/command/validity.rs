@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Flags {
     /// When the claim starts holding, as RFC 3339. Open by default.
     #[arg(long)]

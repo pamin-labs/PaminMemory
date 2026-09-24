@@ -21,7 +21,7 @@ use crate::session::Session;
 use pamin_engine::Depths;
 use pamin_store::repository;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What the topic might be about, or be called. Omit to list recent ones.
     ///

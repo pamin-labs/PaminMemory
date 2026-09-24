@@ -50,7 +50,7 @@ const BETWEEN_CHECKS: usize = 1_000;
 /// something unusable.
 const LEAST_AT_ONCE: usize = 2;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// A file of memories, one JSON object per line: `{"topic": …, "content": …}`.
     ///

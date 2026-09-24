@@ -10,7 +10,7 @@ use crate::command::validity;
 use crate::session::Session;
 use pamin_engine::Depths;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What to search for, in any language.
     pub query: String,

@@ -23,13 +23,13 @@ use crate::session::Session;
 /// an idle worker is not a load.
 const IDLE: std::time::Duration = std::time::Duration::from_millis(250);
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Command,
 }
 
-#[derive(clap::Subcommand, Serialize, Deserialize)]
+#[derive(Clone, clap::Subcommand, Serialize, Deserialize)]
 pub enum Command {
     /// Run every job that is due, then stop.
     Drain,
