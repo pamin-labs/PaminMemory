@@ -12,6 +12,8 @@ use pamin_core::{
     Derivation, EdgeKind, FilterDecision, JobKind, SourceKind, TombstoneReason, Validity,
     VersionOffset, resolve,
 };
+mod common;
+
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Connections, Database, Workspace, graph, jobs, repository};
 // The table name is a literal from the list above, not caller input; the
@@ -83,6 +85,7 @@ async fn the_ledger_holds_its_promises() {
     several_topics_restate_their_mentions_at_once(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
     evidence_and_the_span_over_it_are_one_write(&database).await;
+    a_promoted_write_is_one_statement_after_its_locks(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
 
@@ -169,7 +172,10 @@ async fn reopening_reuses_the_running_server(workspace: &Workspace) {
     drop(reopened);
 }
 
-/// Writes evidence, a span over it, and a topic state derived from that span.
+/// Writes a memory to a topic the way the write path does: the source locked,
+/// the topic locked, and the evidence, its span and the state in one statement.
+///
+/// Queues nothing, so tests that count the queue see only what they queued.
 async fn write_state(
     database: &Database,
     project: pamin_core::ProjectId,
@@ -177,48 +183,134 @@ async fn write_state(
     locator: &str,
     content: &str,
 ) -> pamin_core::TopicState {
-    let source = committed!(
-        database,
-        repository::ensure_source,
-        project,
-        SourceKind::Manual,
-        locator
-    )
-    .expect("ensure source");
-    let version = committed!(
-        database,
-        repository::append_source_version,
+    let name = repository::topics_by_id(database.pool(), project, &[topic])
+        .await
+        .expect("name the topic")
+        .pop()
+        .expect("the topic exists")
+        .1;
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let source = repository::ensure_source(&mut transaction, project, SourceKind::Manual, locator)
+        .await
+        .expect("ensure source");
+    let locked = repository::lock_topic(&mut transaction, project, &name)
+        .await
+        .expect("lock topic")
+        .expect("the topic exists");
+    let (_, _, state) = repository::append_promoted(
+        &mut transaction,
         project,
         source,
-        content,
-        "hash",
-        FilterDecision::Promoted,
-        "test fixture"
-    )
-    .expect("append source version");
-    let span = repository::append_source_span(
-        database.pool(),
-        project,
-        version.id,
-        0,
-        content.len() as u32,
-        None,
-        None,
+        &repository::Evidence {
+            content,
+            content_hash: "hash",
+            decision: FilterDecision::Promoted,
+            reason: "test fixture",
+            language: None,
+            language_confidence: None,
+        },
+        &repository::Promotion {
+            topic: &locked,
+            observed_at: OffsetDateTime::now_utc(),
+            validity: Validity::ALWAYS,
+            owed: &[],
+        },
     )
     .await
-    .expect("append span");
+    .expect("append promoted");
+    transaction.commit().await.expect("commit");
+    state
+}
 
-    committed!(
-        database,
-        repository::append_topic_state,
-        project,
-        topic,
-        &version,
-        &span,
-        OffsetDateTime::now_utc(),
-        Validity::ALWAYS
+/// Records a span over part of a version, in the given language.
+///
+/// Nothing in the product writes one: every span it records covers the whole
+/// of its evidence (`append_evidence`, `append_promoted`). What reads a state
+/// still cuts it at its span's offsets, and checking that the cut is right
+/// needs a span that does not start at zero -- so tests make one here.
+async fn span_over(
+    database: &Database,
+    project: pamin_core::ProjectId,
+    evidence: &pamin_core::SourceVersion,
+    byte_start: u32,
+    byte_end: u32,
+    language: &str,
+) -> pamin_core::SourceSpan {
+    let id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO source_spans (id, project_id, source_version_id, byte_start, byte_end,
+             detected_language)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
-    .expect("append topic state")
+    .bind(id)
+    .bind(project.0)
+    .bind(evidence.id.0)
+    .bind(byte_start as i32)
+    .bind(byte_end as i32)
+    .bind(language)
+    .execute(database.pool())
+    .await
+    .expect("record a span over part of the evidence");
+    pamin_core::SourceSpan {
+        id: id.into(),
+        project_id: project,
+        source_version_id: evidence.id,
+        byte_start,
+        byte_end,
+        detected_language: Some(language.to_string()),
+        language_confidence: None,
+    }
+}
+
+/// Puts a state on a span that already exists, under the topic's lock, and
+/// reads it back.
+///
+/// Nothing in the product writes a state this way: a write appends its
+/// evidence, the span over all of it and the state in one statement
+/// (`append_promoted`). The read path still cuts a state out of whatever part
+/// of the evidence its span covers, and a span over part of the evidence is
+/// what these tests need to check that -- so they build one here.
+async fn state_over_span(
+    database: &Database,
+    project: pamin_core::ProjectId,
+    topic: pamin_core::TopicId,
+    span: &pamin_core::SourceSpan,
+) -> pamin_core::TopicState {
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let previous: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT current_state_id FROM topics WHERE id = $1 FOR UPDATE")
+            .bind(topic.0)
+            .fetch_one(&mut *transaction)
+            .await
+            .expect("lock the topic");
+    let version: i32 = sqlx::query_scalar(
+        "WITH state AS (
+             INSERT INTO topic_states (
+                 id, project_id, topic_id, version, source_span_id,
+                 observed_at, recorded_at, supersedes
+             )
+             SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, now(), now(), $5
+               FROM topic_states WHERE project_id = $2 AND topic_id = $3
+             RETURNING id, version
+         ), pointer AS (
+             UPDATE topics SET current_state_id = state.id, current_version = state.version
+               FROM state WHERE topics.id = $3
+         )
+         SELECT version FROM state",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(project.0)
+    .bind(topic.0)
+    .bind(span.id.0)
+    .bind(previous)
+    .fetch_one(&mut *transaction)
+    .await
+    .expect("append a state over the span");
+    transaction.commit().await.expect("commit");
+    repository::topic_state(database.pool(), project, topic, version as u32)
+        .await
+        .expect("read topic state")
+        .expect("the state was written")
 }
 
 async fn appending_versions_builds_a_supersession_chain(database: &Database) {
@@ -227,7 +319,7 @@ async fn appending_versions_builds_a_supersession_chain(database: &Database) {
         .expect("ensure project");
     let topic = committed!(
         database,
-        repository::ensure_topic,
+        common::ensure_topic,
         project.id,
         "deployment_pipeline"
     )
@@ -341,13 +433,17 @@ async fn filtered_evidence_is_still_stored(database: &Database) {
 
     committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "ok",
-        "hash",
-        FilterDecision::Filtered,
-        "no durable claim"
+        &repository::Evidence {
+            content: "ok",
+            content_hash: "hash",
+            decision: FilterDecision::Filtered,
+            reason: "no durable claim",
+            language: None,
+            language_confidence: None,
+        }
     )
     .expect("append filtered evidence");
 
@@ -380,7 +476,7 @@ async fn graph_fixture(
     let mut topics = Vec::new();
     for name in ["service", "database", "backup_job"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -662,13 +758,17 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
     // the projection index. Reaching it is the entire reason this exists.
     committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "the KILN reaches cone ten",
-        "hash",
-        FilterDecision::Filtered,
-        "no durable claim"
+        &repository::Evidence {
+            content: "the KILN reaches cone ten",
+            content_hash: "hash",
+            decision: FilterDecision::Filtered,
+            reason: "no durable claim",
+            language: None,
+            language_confidence: None,
+        }
     )
     .expect("append filtered evidence");
 
@@ -713,13 +813,17 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
     // language it arrived in. Either way of folding case has to agree.
     committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "窑炉温度达到 Cone Twelve 之后保持",
-        "hash-multibyte",
-        FilterDecision::Filtered,
-        "no durable claim"
+        &repository::Evidence {
+            content: "窑炉温度达到 Cone Twelve 之后保持",
+            content_hash: "hash-multibyte",
+            decision: FilterDecision::Filtered,
+            reason: "no durable claim",
+            language: None,
+            language_confidence: None,
+        }
     )
     .expect("append multi-byte evidence");
     for (needle, case_sensitive) in [("Cone Twelve", true), ("cone twelve", false)] {
@@ -766,7 +870,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
     let mut topics = Vec::new();
     for name in ["tenant_a", "tenant_b", "tenant_c"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -872,7 +976,7 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &Database) 
     let mut topics = Vec::new();
     for name in ["ring_a", "ring_b", "ring_c"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -1012,29 +1116,30 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
 
 /// Concurrent appends to one topic each supersede the state before them.
 ///
-/// `append_topic_state` reads its predecessor from the topic's current-state
-/// pointer, in the statement that locks the topic. That is right only if a
-/// writer that waited for the lock reads the pointer the writer before it
-/// moved: if it read the one from before the wait, two states would name the
-/// same predecessor and the chain would fork -- no error, just a history that
-/// says two things replaced one. So this checks the chain, not only the
-/// version numbers.
+/// An append reads its predecessor from the topic's current-state pointer, in
+/// the statement that locks the topic. That is right only if a writer that
+/// waited for the lock reads the pointer the writer before it moved: if it
+/// read the one from before the wait, two states would name the same
+/// predecessor and the chain would fork -- no error, just a history that says
+/// two things replaced one. So this checks the chain, not only the version
+/// numbers.
+///
+/// Each writer has a source of its own, so the source lock serializes nothing
+/// here and the topic lock is the only thing that can. The write path also
+/// queues its work in the same statement, and eight requests for one subject
+/// have to leave one row.
 async fn concurrent_appends_to_one_topic_form_one_chain(
     database: &Database,
     workspace: &Workspace,
 ) {
     const WRITERS: usize = 8;
 
-    let project = repository::ensure_project(database.pool(), "contended_topic")
+    let name = "contended_topic".to_string();
+    let project = repository::ensure_project(database.pool(), &name)
         .await
         .expect("ensure project");
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "contended_topic"
-    )
-    .expect("ensure topic");
+    let topic =
+        committed!(database, common::ensure_topic, project.id, &name).expect("ensure topic");
     let server = workspace
         .read_server()
         .expect("read server record")
@@ -1043,6 +1148,7 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
     let writers: Vec<_> = (0..WRITERS)
         .map(|writer| {
             let server = server.clone();
+            let name = name.clone();
             tokio::spawn(async move {
                 let database = Database::connect(&server, Connections::PerCommand)
                     .await
@@ -1052,34 +1158,34 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
                     &mut transaction,
                     project.id,
                     SourceKind::Manual,
-                    &format!("contended-topic-{writer}"),
+                    &format!("{name}-{writer}"),
                 )
                 .await
                 .expect("ensure source");
                 let content = format!("state from writer {writer}");
-                let (evidence, span) = repository::append_evidence(
+                let evidence = repository::Evidence {
+                    content: &content,
+                    content_hash: "hash",
+                    decision: FilterDecision::Promoted,
+                    reason: "test fixture",
+                    language: None,
+                    language_confidence: None,
+                };
+                let locked = repository::lock_topic(&mut transaction, project.id, &name)
+                    .await
+                    .expect("lock topic")
+                    .expect("the topic exists");
+                let (_, _, state) = repository::append_promoted(
                     &mut transaction,
                     project.id,
                     source,
-                    &repository::Evidence {
-                        content: &content,
-                        content_hash: "hash",
-                        decision: FilterDecision::Promoted,
-                        reason: "test fixture",
-                        language: None,
-                        language_confidence: None,
-                    },
-                )
-                .await
-                .expect("append evidence");
-                let state = repository::append_topic_state(
-                    &mut transaction,
-                    project.id,
-                    topic.id,
                     &evidence,
-                    &span,
-                    OffsetDateTime::now_utc(),
-                    Validity::ALWAYS,
+                    &repository::Promotion {
+                        topic: &locked,
+                        observed_at: OffsetDateTime::now_utc(),
+                        validity: Validity::ALWAYS,
+                        owed: &[JobKind::SyncTopicIndex],
+                    },
                 )
                 .await
                 .expect("every writer keeps its state");
@@ -1115,6 +1221,14 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
     }
     let newest = chain.last().map(|link| link.1 as u32);
     assert_pointer_matches_the_ledger(database, project.id, topic.id, newest).await;
+
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        1,
+        "{WRITERS} requests for one subject should coalesce onto one row"
+    );
 }
 
 /// Re-ensuring a project, source, topic or relationship leaves the row alone.
@@ -1141,9 +1255,8 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
     )
     .expect("ensure source");
     let from =
-        committed!(database, repository::ensure_topic, project.id, "from").expect("ensure topic");
-    let to =
-        committed!(database, repository::ensure_topic, project.id, "to").expect("ensure topic");
+        committed!(database, common::ensure_topic, project.id, "from").expect("ensure topic");
+    let to = committed!(database, common::ensure_topic, project.id, "to").expect("ensure topic");
     graph::assert_edge(
         database.pool(),
         project.id,
@@ -1174,7 +1287,18 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
         "idempotent-source"
     )
     .expect("re-ensure source");
-    committed!(database, repository::ensure_topic, project.id, "from").expect("re-ensure topic");
+    // The write path's two ways of arriving at a topic that exists: finding
+    // it, and losing the race to create it.
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let found = repository::lock_topic(&mut transaction, project.id, "from")
+        .await
+        .expect("lock topic")
+        .expect("the topic exists");
+    let raced = repository::create_topic_named(&mut transaction, project.id, "from", "from", 1)
+        .await
+        .expect("create a topic that exists");
+    transaction.commit().await.expect("commit");
+    assert_eq!((found.topic.id, raced.topic.id), (from.id, from.id));
     graph::assert_edge(
         database.pool(),
         project.id,
@@ -1224,7 +1348,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
     let mut topics = Vec::new();
     for name in ["first", "second", "third"] {
         topics.push(
-            committed!(database, repository::ensure_topic, project.id, name)
+            committed!(database, common::ensure_topic, project.id, name)
                 .expect("ensure topic")
                 .id,
         );
@@ -1882,17 +2006,21 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     )
     .expect("ensure source");
 
-    let evidence = committed!(
+    let (evidence, _) = committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "the content",
-        "the-hash",
-        FilterDecision::Filtered,
-        "the reason"
+        &repository::Evidence {
+            content: "the content",
+            content_hash: "the-hash",
+            decision: FilterDecision::Filtered,
+            reason: "the reason",
+            language: None,
+            language_confidence: None,
+        }
     )
-    .expect("append source version");
+    .expect("append evidence");
 
     let read_back = repository::latest_source_version(database.pool(), project.id, source)
         .await
@@ -1905,58 +2033,100 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     assert_eq!(read_back.source_id, source);
     assert_eq!(read_back.project_id, project.id);
 
-    let span = repository::append_source_span(
-        database.pool(),
+    let span = span_over(database, project.id, &evidence, 3, 11, "eng").await;
+
+    let topic = committed!(database, common::ensure_topic, project.id, "columns_topic")
+        .expect("ensure topic");
+    let partial = state_over_span(database, project.id, topic.id, &span).await;
+    // The span's text, read back through the evidence it points into -- the
+    // state has no copy of its own to read instead, so a span that is not the
+    // whole evidence reads back as exactly the part it covers.
+    assert_eq!(partial.content, " content");
+    assert_eq!(partial.source_span_id, span.id);
+    // The span's language, read back through the join the state reads take.
+    assert_eq!(partial.language.as_deref(), Some("eng"));
+
+    // The write path binds twenty-one arguments by position into one
+    // statement: a version, a span, a state and the jobs. Every value of a
+    // type here differs from every other of that type, and the content does
+    // not say "content", which the grep below counts on.
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let source = repository::ensure_source(
+        &mut transaction,
         project.id,
-        evidence.id,
-        3,
-        11,
-        Some("eng"),
-        Some(0.75),
+        SourceKind::Manual,
+        "columns-promoted",
     )
     .await
-    .expect("append source span");
-    assert_eq!(span.byte_start, 3);
-    assert_eq!(span.byte_end, 11);
-    assert_eq!(span.detected_language.as_deref(), Some("eng"));
+    .expect("ensure source");
+    let locked = repository::lock_topic(&mut transaction, project.id, "columns_topic")
+        .await
+        .expect("lock topic")
+        .expect("the topic exists");
+    assert_eq!(locked.current, Some(partial.id));
+    let (promoted, promoted_span, state) = repository::append_promoted(
+        &mut transaction,
+        project.id,
+        source,
+        &repository::Evidence {
+            content: "a promoted memory",
+            content_hash: "promoted-hash",
+            decision: FilterDecision::Promoted,
+            reason: "promoted reason",
+            language: Some("swe"),
+            language_confidence: Some(0.375),
+        },
+        &repository::Promotion {
+            topic: &locked,
+            observed_at: observed,
+            validity: Validity {
+                from: Some(valid_from),
+                to: Some(valid_to),
+            },
+            owed: &[],
+        },
+    )
+    .await
+    .expect("append promoted");
+    transaction.commit().await.expect("commit");
 
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "columns_topic"
+    let read_back = repository::latest_source_version(database.pool(), project.id, source)
+        .await
+        .expect("latest source version")
+        .expect("a version was written");
+    assert_eq!(read_back.id, promoted.id);
+    assert_eq!(read_back.content, "a promoted memory");
+    assert_eq!(read_back.content_hash, "promoted-hash");
+    assert_eq!(read_back.filter_reason, "promoted reason");
+    assert_eq!(read_back.filter_decision, FilterDecision::Promoted);
+    assert_eq!(read_back.source_id, source);
+    let stored_span: (uuid::Uuid, i32, i32, Option<String>, Option<f32>) = sqlx::query_as(
+        "SELECT source_version_id, byte_start, byte_end, detected_language, language_confidence
+           FROM source_spans WHERE id = $1",
     )
-    .expect("ensure topic");
-    let state = committed!(
-        database,
-        repository::append_topic_state,
-        project.id,
-        topic.id,
-        &evidence,
-        &span,
-        observed,
-        Validity {
-            from: Some(valid_from),
-            to: Some(valid_to),
-        }
-    )
-    .expect("append topic state");
+    .bind(promoted_span.id.0)
+    .fetch_one(database.pool())
+    .await
+    .expect("the span was written");
+    assert_eq!(
+        stored_span,
+        (
+            promoted.id.0,
+            0,
+            "a promoted memory".len() as i32,
+            Some("swe".to_string()),
+            Some(0.375)
+        )
+    );
 
     let stored = repository::topic_state(database.pool(), project.id, topic.id, state.version)
         .await
         .expect("read topic state")
         .expect("the state was written");
-    // The span's text, read back through the evidence it points into -- the
-    // state has no copy of its own to read instead, so a span that is not the
-    // whole evidence reads back as exactly the part it covers.
-    assert_eq!(state.content, " content");
-    assert_eq!(stored.content, " content");
-    assert_eq!(stored.source_span_id, span.id);
-    // The span's language, read back through the join -- and the first time
-    // anything reads `source_spans` at all. The assertion above on `span` is on
-    // the struct `append_source_span` built and handed back, so an INSERT that
-    // dropped this column would have passed it; this one would not.
-    assert_eq!(stored.language.as_deref(), Some("eng"));
+    assert_eq!(stored.id, state.id);
+    assert_eq!(stored.content, "a promoted memory");
+    assert_eq!(stored.source_span_id, promoted_span.id);
+    assert_eq!(stored.language.as_deref(), Some("swe"));
     assert_eq!(stored.observed_at, observed);
     assert_eq!(stored.validity.from, Some(valid_from));
     assert_eq!(stored.validity.to, Some(valid_to));
@@ -1964,17 +2134,12 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         stored.recorded_at > valid_to,
         "recorded_at should be now, not one of the stated instants"
     );
-    assert_eq!(stored.supersedes, None);
+    assert_eq!(stored.supersedes, Some(partial.id));
     assert_eq!(stored.deleted_at, None);
 
     // An edge carrying every field that could be transposed with another.
-    let other = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "columns_other"
-    )
-    .expect("ensure topic");
+    let other = committed!(database, common::ensure_topic, project.id, "columns_other")
+        .expect("ensure topic");
     let claim = EdgeClaim {
         kind: EdgeKind::DependsOn,
         derivation: Derivation::Model,
@@ -2047,13 +2212,8 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
     let project = repository::ensure_project(database.pool(), "pointer")
         .await
         .expect("ensure project");
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "pointer_topic"
-    )
-    .expect("ensure topic");
+    let topic = committed!(database, common::ensure_topic, project.id, "pointer_topic")
+        .expect("ensure topic");
 
     // A topic with no states yet points nowhere.
     assert_pointer_matches_the_ledger(database, project.id, topic.id, None).await;
@@ -2208,30 +2368,163 @@ async fn evidence_and_the_span_over_it_are_one_write(database: &Database) {
     assert_eq!(read_back.filter_decision, FilterDecision::Promoted);
     assert_eq!(read_back.filter_reason, "evidence reason");
 
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "evidence_topic"
-    )
-    .expect("ensure topic");
-    let state = committed!(
-        database,
-        repository::append_topic_state,
-        project.id,
-        topic.id,
-        &evidence,
-        &span,
-        OffsetDateTime::now_utc(),
-        Validity::ALWAYS
-    )
-    .expect("append topic state");
-    let stored = repository::topic_state(database.pool(), project.id, topic.id, state.version)
-        .await
-        .expect("read topic state")
-        .expect("the state was written");
+    let topic = committed!(database, common::ensure_topic, project.id, "evidence_topic")
+        .expect("ensure topic");
+    let stored = state_over_span(database, project.id, topic.id, &span).await;
     assert_eq!(stored.content, content);
     assert_eq!(stored.language.as_deref(), Some("swe"));
+}
+
+/// `append_promoted` writes what the write path's four statements wrote, and
+/// queues its work with the conflict behaviour `enqueue` has.
+///
+/// The rows are read back rather than the structs handed back, so a state
+/// pointing at a span the statement did not write, or a pointer left behind,
+/// fails here. The queue half is the part the shared fragment exists for: a
+/// write for a subject whose job a worker already holds must take the claim
+/// away, or the worker completes work requested after it started reading.
+async fn a_promoted_write_is_one_statement_after_its_locks(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "promoted")
+        .await
+        .expect("ensure project");
+
+    let mut transaction = database.pool().begin().await.expect("begin");
+    assert!(
+        repository::lock_topic(&mut transaction, project.id, "promoted_topic")
+            .await
+            .expect("lock topic")
+            .is_none(),
+        "a topic nobody created was found"
+    );
+    let created = repository::create_topic_named(
+        &mut transaction,
+        project.id,
+        "promoted_topic",
+        "promoted topic",
+        2,
+    )
+    .await
+    .expect("create topic");
+    assert!(created.current.is_none(), "a new topic points at a state");
+    transaction.commit().await.expect("commit");
+    let topic = created.topic.id;
+    assert_eq!(
+        repository::topics_named_by(database.pool(), project.id, &["promoted topic".to_string()])
+            .await
+            .expect("names"),
+        vec![topic],
+        "the topic was created without its name row"
+    );
+
+    // Racing a creation that already happened finds the winner, locked.
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let again = repository::create_topic_named(
+        &mut transaction,
+        project.id,
+        "promoted_topic",
+        "promoted topic",
+        2,
+    )
+    .await
+    .expect("create topic again");
+    transaction.commit().await.expect("commit");
+    assert_eq!(again.topic.id, topic, "a second topic took the name");
+
+    // A worker holds the topic's sync job when the write arrives.
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::SyncTopicIndex,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue");
+    let held = jobs::claim(database.pool(), project.id, "worker", 1, &JobKind::ALL)
+        .await
+        .expect("claim");
+    assert_eq!(held.len(), 1);
+
+    let mut states = Vec::new();
+    for (round, content) in ["först", "sedan"].into_iter().enumerate() {
+        let mut transaction = database.pool().begin().await.expect("begin");
+        let source = repository::ensure_source(
+            &mut transaction,
+            project.id,
+            SourceKind::Manual,
+            "manual:promoted_topic",
+        )
+        .await
+        .expect("ensure source");
+        let locked = repository::lock_topic(&mut transaction, project.id, "promoted_topic")
+            .await
+            .expect("lock topic")
+            .expect("the topic exists");
+        assert_eq!(
+            locked.current,
+            states.last().map(|state: &pamin_core::TopicState| state.id),
+            "the lock read a pointer other than the newest state"
+        );
+        let (version, span, state) = repository::append_promoted(
+            &mut transaction,
+            project.id,
+            source,
+            &repository::Evidence {
+                content,
+                content_hash: "promoted-hash",
+                decision: FilterDecision::Promoted,
+                reason: "promoted reason",
+                language: Some("swe"),
+                language_confidence: Some(0.5),
+            },
+            &repository::Promotion {
+                topic: &locked,
+                observed_at: OffsetDateTime::now_utc(),
+                validity: Validity::ALWAYS,
+                owed: &[JobKind::SyncTopicIndex, JobKind::DeriveMentions],
+            },
+        )
+        .await
+        .expect("append promoted");
+        transaction.commit().await.expect("commit");
+
+        assert_eq!(version.version, round as u32 + 1);
+        assert_eq!(state.version, round as u32 + 1);
+        assert_eq!(state.source_span_id, span.id);
+        assert_eq!(state.supersedes, locked.current);
+        let (span_version, byte_end): (uuid::Uuid, i32) =
+            sqlx::query_as("SELECT source_version_id, byte_end FROM source_spans WHERE id = $1")
+                .bind(span.id.0)
+                .fetch_one(database.pool())
+                .await
+                .expect("the span was written");
+        assert_eq!(span_version, version.id.0);
+        assert_eq!(byte_end as usize, content.len());
+        let stored = repository::topic_state(database.pool(), project.id, topic, state.version)
+            .await
+            .expect("read topic state")
+            .expect("the state was written");
+        assert_eq!(stored.id, state.id);
+        assert_eq!(stored.content, content);
+        assert_eq!(stored.language.as_deref(), Some("swe"));
+        assert_eq!(stored.supersedes, state.supersedes);
+        assert_pointer_matches_the_ledger(database, project.id, topic, Some(state.version)).await;
+        states.push(state);
+    }
+
+    assert!(
+        jobs::complete(database.pool(), &[&held[0]], "worker")
+            .await
+            .expect("complete")
+            .is_empty(),
+        "a job requested again by a write was completed by the attempt before it"
+    );
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        2,
+        "two writes owing two kinds for one subject should leave two rows"
+    );
 }
 
 /// Reads the stored pointer and checks it against the version it should hold.
@@ -2332,7 +2625,7 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         .expect("ensure project");
 
     let topic = |name: String| async move {
-        committed!(database, repository::ensure_topic, project.id, &name)
+        committed!(database, common::ensure_topic, project.id, &name)
             .expect("ensure topic")
             .id
     };
@@ -2424,14 +2717,9 @@ async fn what_a_topic_says_now_is_one_lookup(database: &Database) {
         "a topic nobody has written has nothing to compare against"
     );
 
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "edited_often"
-    )
-    .expect("ensure topic")
-    .id;
+    let topic = committed!(database, common::ensure_topic, project.id, "edited_often")
+        .expect("ensure topic")
+        .id;
 
     // Enough history that reading all of it would be a different answer from
     // reading none of it.
@@ -2478,7 +2766,7 @@ async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
         .expect("ensure project");
     let topic = committed!(
         database,
-        repository::ensure_topic,
+        common::ensure_topic,
         project.id,
         "reclaimed_topic"
     )
@@ -2595,14 +2883,9 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     let project = repository::ensure_project(database.pool(), "outbox")
         .await
         .expect("ensure project");
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "outbox_topic"
-    )
-    .expect("ensure topic")
-    .id;
+    let topic = committed!(database, common::ensure_topic, project.id, "outbox_topic")
+        .expect("ensure topic")
+        .id;
 
     // Coalescing: three requests for the same subject are one row.
     for _ in 0..3 {
@@ -2868,7 +3151,7 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
 
     let mut queued = Vec::new();
     for (project, name) in [(mine.id, "mine_topic"), (theirs.id, "theirs_topic")] {
-        let topic = committed!(database, repository::ensure_topic, project, name)
+        let topic = committed!(database, common::ensure_topic, project, name)
             .expect("ensure topic")
             .id;
         jobs::enqueue(
@@ -2937,12 +3220,16 @@ async fn several_topics_restate_their_mentions_at_once(database: &Database) {
         .expect("ensure project");
     let mut topics = Vec::new();
     for name in ["left", "right", "alpha", "beta", "gamma"] {
-        let topic = committed!(database, repository::ensure_topic, project.id, name)
+        let topic = committed!(database, common::ensure_topic, project.id, name)
             .expect("ensure topic")
             .id;
-        repository::record_topic_name(database.pool(), project.id, topic, name, 1)
-            .await
-            .expect("record name");
+        repository::record_topic_names(
+            database.pool(),
+            project.id,
+            &[(topic, name.to_string(), 1)],
+        )
+        .await
+        .expect("record name");
         topics.push(topic);
     }
     let (left, right, alpha, beta, gamma) = (topics[0], topics[1], topics[2], topics[3], topics[4]);
@@ -3031,7 +3318,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
     let mut topics = Vec::new();
     for name in ["deploy", "argo_cd", "flux", "runbook"] {
         topics.push(
-            committed!(database, repository::ensure_topic, project.id, name)
+            committed!(database, common::ensure_topic, project.id, name)
                 .expect("ensure topic")
                 .id,
         );
@@ -3082,12 +3369,11 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
     let kept_before = live(flux).await.expect("the kept edge is live");
 
     // The memory now names only `flux`.
-    let closed = graph::retract_derived(
+    let closed = graph::retract_derived_all(
         database.pool(),
         project.id,
-        deploy,
         EdgeKind::Mentions,
-        &[flux],
+        &[(deploy, vec![flux])],
     )
     .await
     .expect("retract what the content no longer says");
@@ -3182,7 +3468,7 @@ async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
     let mut id = std::collections::HashMap::new();
     for name in ["rota", "pipeline", "scheduler", "platform", "legacy"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -3334,9 +3620,9 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
         .await
         .expect("ensure the crowded project");
     let crowded =
-        committed!(database, repository::ensure_topic, crowd.id, "crowded").expect("ensure topic");
+        committed!(database, common::ensure_topic, crowd.id, "crowded").expect("ensure topic");
     let other =
-        committed!(database, repository::ensure_topic, crowd.id, "other").expect("ensure topic");
+        committed!(database, common::ensure_topic, crowd.id, "other").expect("ensure topic");
     let first = write_state(database, crowd.id, crowded.id, "crowd-source", "v1").await;
     write_state(database, crowd.id, other.id, "crowd-other", "v1").await;
     graph::assert_edge(
@@ -3432,10 +3718,10 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
         .expect("ensure project")
         .id;
     let mut transaction = probe.begin().await.expect("begin");
-    let topic = repository::ensure_topic(&mut transaction, project, "sparse")
+    let topic = common::ensure_topic(&mut transaction, project, "sparse")
         .await
         .expect("ensure topic");
-    let target = repository::ensure_topic(&mut transaction, project, "target")
+    let target = common::ensure_topic(&mut transaction, project, "target")
         .await
         .expect("ensure topic");
     let source = repository::ensure_source(&mut transaction, project, SourceKind::Manual, "sparse")
@@ -3460,49 +3746,50 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
     }
 
     for round in 0..2u32 {
-        let evidence = reads_its_own_key!("source_versions", "append_source_version", {
-            let mut transaction = probe.begin().await.expect("begin");
-            let evidence = repository::append_source_version(
-                &mut transaction,
-                project,
-                source,
-                "sparse evidence",
-                "hash",
-                FilterDecision::Promoted,
-                "test fixture",
-            )
-            .await
-            .expect("append source version");
-            transaction.commit().await.expect("commit");
-            evidence
-        });
-        let span = repository::append_source_span(
-            &probe,
-            project,
-            evidence.id,
-            0,
-            evidence.content.len() as u32,
-            None,
-            None,
-        )
-        .await
-        .expect("append span");
-        let state = reads_its_own_key!("topic_states", "append_topic_state", {
-            let mut transaction = probe.begin().await.expect("begin");
-            let state = repository::append_topic_state(
-                &mut transaction,
-                project,
-                topic.id,
-                &evidence,
-                &span,
-                OffsetDateTime::now_utc(),
-                Validity::ALWAYS,
-            )
-            .await
-            .expect("append topic state");
-            transaction.commit().await.expect("commit");
-            state
-        });
+        // Both tables the write numbers from, around one write: the version
+        // and the state are each numbered by a maximum over their own key.
+        let state = reads_its_own_key!(
+            "source_versions",
+            "append_promoted",
+            reads_its_own_key!("topic_states", "append_promoted", {
+                let mut transaction = probe.begin().await.expect("begin");
+                let source = repository::ensure_source(
+                    &mut transaction,
+                    project,
+                    SourceKind::Manual,
+                    "sparse",
+                )
+                .await
+                .expect("ensure source");
+                let locked = repository::lock_topic(&mut transaction, project, "sparse")
+                    .await
+                    .expect("lock topic")
+                    .expect("the topic exists");
+                let (_, _, state) = repository::append_promoted(
+                    &mut transaction,
+                    project,
+                    source,
+                    &repository::Evidence {
+                        content: "sparse evidence",
+                        content_hash: "hash",
+                        decision: FilterDecision::Promoted,
+                        reason: "test fixture",
+                        language: None,
+                        language_confidence: None,
+                    },
+                    &repository::Promotion {
+                        topic: &locked,
+                        observed_at: OffsetDateTime::now_utc(),
+                        validity: Validity::ALWAYS,
+                        owed: &[],
+                    },
+                )
+                .await
+                .expect("append promoted");
+                transaction.commit().await.expect("commit");
+                state
+            })
+        );
         assert_eq!(state.version, round + 1, "numbered from its own topic");
 
         // A different claim each round, so each appends a version.
