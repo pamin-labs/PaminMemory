@@ -1363,6 +1363,11 @@ async fn walk(
             let stops =
                 hop == options.depth || options.keep.is_some_and(|keep| reached.len() >= keep);
             if stops {
+                tracing::debug!(
+                    hop,
+                    cut = cuts.len(),
+                    "the walk read only the strongest edges of some topics"
+                );
                 // Every walk that stood on a cut topic, so the bound can be
                 // priced for each seed it might have credited.
                 for cut in &cuts {
