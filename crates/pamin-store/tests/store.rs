@@ -66,6 +66,7 @@ async fn the_ledger_holds_its_promises() {
     ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
+    dropping_the_state_copy_loses_nothing_a_state_said(&database, &workspace).await;
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
@@ -152,7 +153,7 @@ async fn write_state(
         repository::append_topic_state,
         project,
         topic,
-        content,
+        &version,
         &span,
         OffsetDateTime::now_utc(),
         Validity::ALWAYS
@@ -1072,74 +1073,9 @@ async fn a_workspace_the_previous_runner_migrated_is_adopted(
     database: &Database,
     workspace: &Workspace,
 ) {
-    sqlx::query("DROP DATABASE IF EXISTS pamin_adoption_check")
-        .execute(database.pool())
-        .await
-        .expect("drop scratch database");
-    sqlx::query("CREATE DATABASE pamin_adoption_check")
-        .execute(database.pool())
-        .await
-        .expect("create scratch database");
-
-    let mut server = workspace
-        .read_server()
-        .expect("read server record")
-        .expect("workspace has a server");
-    server.database = "pamin_adoption_check".to_string();
-
-    let scratch = sqlx::PgPool::connect(&server.url())
-        .await
-        .expect("connect to scratch database");
-
     // Built to the schema the old runner left, which is the three migrations
-    // that existed while it was in use -- not to today's schema. Applying the
-    // files directly is what makes this a database `refinery` could have
-    // produced, rather than one this runner produced and then relabelled.
-    for file in [
-        "V1__initial.sql",
-        "V2__relationships.sql",
-        "V3__shard_key_and_indexes.sql",
-    ] {
-        let sql = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("migrations")
-                .join(file),
-        )
-        .unwrap_or_else(|error| panic!("reading {file}: {error}"));
-
-        sqlx::raw_sql(AssertSqlSafe(sql))
-            .execute(&scratch)
-            .await
-            .unwrap_or_else(|error| panic!("applying {file}: {error}"));
-    }
-
-    sqlx::query(
-        "CREATE TABLE refinery_schema_history (
-             version    INTEGER PRIMARY KEY,
-             name       VARCHAR(255),
-             applied_on VARCHAR(255),
-             checksum   VARCHAR(255)
-         )",
-    )
-    .execute(&scratch)
-    .await
-    .expect("create the old bookkeeping");
-
-    for (version, name) in [
-        (1, "initial"),
-        (2, "relationships"),
-        (3, "shard_key_and_indexes"),
-    ] {
-        sqlx::query(
-            "INSERT INTO refinery_schema_history (version, name, applied_on, checksum)
-             VALUES ($1, $2, '2026-01-01T00:00:00Z', '1234567890')",
-        )
-        .bind(version)
-        .bind(name)
-        .execute(&scratch)
-        .await
-        .expect("record an applied migration");
-    }
+    // that existed while it was in use -- not to today's schema.
+    let scratch = database_left_at(database, workspace, "pamin_adoption_check", 3).await;
 
     pamin_store::migrate::run(&scratch)
         .await
@@ -1176,6 +1112,230 @@ async fn a_workspace_the_previous_runner_migrated_is_adopted(
         .execute(database.pool())
         .await
         .expect("drop scratch database");
+}
+
+/// V9 drops `topic_states.content` because every state's content is its span's
+/// text -- and refuses to, rather than lose anything, when one is not.
+///
+/// Both halves run against rows written *before* the migration, which is the
+/// only place it matters and the one a fresh workspace never reaches: a new
+/// workspace is created at the newest schema and has no column to drop. So a
+/// scratch database is left at V8, given states the old schema could hold, and
+/// migrated.
+///
+/// The refusal is the half that would fail without its guard. Dropping the
+/// column unconditionally succeeds on the disagreeing row too, and takes with
+/// it the only copy of what that state said.
+async fn dropping_the_state_copy_loses_nothing_a_state_said(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const NAME: &str = "pamin_state_content_check";
+
+    /// One state over a span of one piece of evidence, the way V8 stored it.
+    async fn state_at_v8(pool: &sqlx::PgPool, evidence: &str, span: (i32, i32), content: &str) {
+        let (project, source, version, span_id, topic, state) = (
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        );
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "INSERT INTO projects VALUES ('{project}', '{project}', now());
+             INSERT INTO sources VALUES ('{source}', '{project}', 'manual', 'm', now());
+             INSERT INTO source_versions VALUES ('{version}', '{project}', '{source}', 1,
+                 $e${evidence}$e$, 'h', 'promoted', 'r', now());
+             INSERT INTO source_spans VALUES ('{span_id}', '{project}', '{version}',
+                 {}, {}, NULL, NULL);
+             INSERT INTO topics (id, project_id, name, created_at)
+                 VALUES ('{topic}', '{project}', 't', now());
+             INSERT INTO topic_states (id, project_id, topic_id, version, content,
+                 source_span_id, observed_at, recorded_at)
+                 VALUES ('{state}', '{project}', '{topic}', 1, $c${content}$c$,
+                 '{span_id}', now(), now());
+             UPDATE topics SET current_state_id = '{state}', current_version = 1
+              WHERE id = '{topic}';",
+            span.0, span.1
+        )))
+        .execute(pool)
+        .await
+        .expect("write a state the way V8 stored it");
+    }
+
+    async fn has_content_column(pool: &sqlx::PgPool) -> bool {
+        sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = current_schema()
+                    AND table_name = 'topic_states' AND column_name = 'content'
+             )",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("read the catalogue")
+    }
+
+    // A state that says something its span does not.
+    let scratch = database_left_at(database, workspace, NAME, 8).await;
+    state_at_v8(&scratch, "Grüße: the content", (9, 20), "the content").await;
+    state_at_v8(
+        &scratch,
+        "what the evidence says",
+        (0, 22),
+        "something else",
+    )
+    .await;
+
+    let refused = pamin_store::migrate::run(&scratch).await;
+    assert!(
+        refused.is_err(),
+        "a state whose content is not its span's text must stop the migration"
+    );
+    assert!(
+        has_content_column(&scratch).await,
+        "a refused migration must leave the column, and the only copy of that state's content"
+    );
+    let kept: Vec<String> = sqlx::query_scalar("SELECT content FROM topic_states ORDER BY content")
+        .fetch_all(&scratch)
+        .await
+        .expect("read the states back");
+    assert_eq!(kept, vec!["something else", "the content"]);
+    scratch.close().await;
+
+    // The same data with the disagreement taken out migrates, and every state
+    // reads back what it said -- including one whose span starts past a
+    // character outside ASCII, which is where a cut by characters and a cut by
+    // bytes part company.
+    let scratch = database_left_at(database, workspace, NAME, 8).await;
+    state_at_v8(&scratch, "Grüße: the content", (9, 20), "the content").await;
+    state_at_v8(
+        &scratch,
+        "what the evidence says",
+        (0, 22),
+        "what the evidence says",
+    )
+    .await;
+
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("states that are their spans' text should migrate");
+    assert!(
+        !has_content_column(&scratch).await,
+        "the copy should be gone once nothing depends on it"
+    );
+
+    let mut read: Vec<String> = Vec::new();
+    let projects: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM projects")
+        .fetch_all(&scratch)
+        .await
+        .expect("projects");
+    for project in projects {
+        let states = repository::all_current_topic_states(&scratch, project.into())
+            .await
+            .expect("read states through the store");
+        read.extend(states.into_iter().map(|state| state.content));
+    }
+    read.sort();
+    assert_eq!(read, vec!["the content", "what the evidence says"]);
+
+    scratch.close().await;
+    sqlx::query(AssertSqlSafe(format!("DROP DATABASE {NAME}")))
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
+}
+
+/// A scratch database migrated through `through` by an earlier build, and no
+/// further.
+///
+/// The migration files are applied directly and recorded the way `refinery`
+/// recorded them, which is the one way this crate accepts a database it did not
+/// migrate itself: the runner adopts those books and applies only what comes
+/// after. So this is both a database `refinery` could have produced and one a
+/// build that stopped at `through` would have left -- which is what testing a
+/// migration against existing data needs, and what a fresh workspace, already
+/// at the newest schema, cannot give.
+async fn database_left_at(
+    database: &Database,
+    workspace: &Workspace,
+    name: &str,
+    through: i32,
+) -> sqlx::PgPool {
+    sqlx::query(AssertSqlSafe(format!("DROP DATABASE IF EXISTS {name}")))
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
+    sqlx::query(AssertSqlSafe(format!("CREATE DATABASE {name}")))
+        .execute(database.pool())
+        .await
+        .expect("create scratch database");
+
+    let mut server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+    server.database = name.to_string();
+
+    let scratch = sqlx::PgPool::connect(&server.url())
+        .await
+        .expect("connect to scratch database");
+
+    // Applying the files directly is what makes this a database an earlier
+    // runner produced, rather than one this runner produced and relabelled.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut files: Vec<(i32, String)> = std::fs::read_dir(&dir)
+        .expect("migrations directory")
+        .map(|entry| entry.expect("directory entry").file_name())
+        .filter_map(|file| {
+            let file = file.to_string_lossy().to_string();
+            let version = file.strip_prefix('V')?.split_once("__")?.0.parse().ok()?;
+            Some((version, file))
+        })
+        .filter(|(version, _)| *version <= through)
+        .collect();
+    files.sort();
+    assert_eq!(
+        files.len(),
+        through as usize,
+        "expected every migration up to V{through}"
+    );
+
+    for (_, file) in &files {
+        let sql = std::fs::read_to_string(dir.join(file))
+            .unwrap_or_else(|error| panic!("reading {file}: {error}"));
+        sqlx::raw_sql(AssertSqlSafe(sql))
+            .execute(&scratch)
+            .await
+            .unwrap_or_else(|error| panic!("applying {file}: {error}"));
+    }
+
+    sqlx::query(
+        "CREATE TABLE refinery_schema_history (
+             version    INTEGER PRIMARY KEY,
+             name       VARCHAR(255),
+             applied_on VARCHAR(255),
+             checksum   VARCHAR(255)
+         )",
+    )
+    .execute(&scratch)
+    .await
+    .expect("create the old bookkeeping");
+
+    for (version, file) in &files {
+        sqlx::query(
+            "INSERT INTO refinery_schema_history (version, name, applied_on, checksum)
+             VALUES ($1, $2, '2026-01-01T00:00:00Z', '1234567890')",
+        )
+        .bind(version)
+        .bind(file)
+        .execute(&scratch)
+        .await
+        .expect("record an applied migration");
+    }
+
+    scratch
 }
 
 /// Every value written comes back from the column it was written to.
@@ -1262,7 +1422,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         repository::append_topic_state,
         project.id,
         topic.id,
-        "the state content",
+        &evidence,
         &span,
         observed,
         Validity {
@@ -1276,7 +1436,11 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         .await
         .expect("read topic state")
         .expect("the state was written");
-    assert_eq!(stored.content, "the state content");
+    // The span's text, read back through the evidence it points into -- the
+    // state has no copy of its own to read instead, so a span that is not the
+    // whole evidence reads back as exactly the part it covers.
+    assert_eq!(state.content, " content");
+    assert_eq!(stored.content, " content");
     assert_eq!(stored.source_span_id, span.id);
     // The span's language, read back through the join -- and the first time
     // anything reads `source_spans` at all. The assertion above on `span` is on

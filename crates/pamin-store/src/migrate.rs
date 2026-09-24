@@ -62,6 +62,11 @@ fn migrations() -> Vec<Migration> {
             "topics_by_recency",
             include_str!("../migrations/V8__topics_by_recency.sql"),
         ),
+        migration(
+            9,
+            "state_content_from_span",
+            include_str!("../migrations/V9__state_content_from_span.sql"),
+        ),
     ]
 }
 
