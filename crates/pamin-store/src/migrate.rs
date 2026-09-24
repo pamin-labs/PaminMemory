@@ -87,6 +87,11 @@ fn migrations() -> Vec<Migration> {
             "edge_endpoints_on_versions",
             include_str!("../migrations/V13__edge_endpoints_on_versions.sql"),
         ),
+        migration(
+            14,
+            "source_versions_index_once",
+            include_str!("../migrations/V14__source_versions_index_once.sql"),
+        ),
     ]
 }
 

@@ -55,6 +55,7 @@ async fn the_ledger_holds_its_promises() {
         .expect("open workspace");
 
     migrations_create_every_table(&database).await;
+    no_index_repeats_another(&database).await;
     the_cluster_forces_what_it_writes_to_disk(&database).await;
     reopening_reuses_the_running_server(&workspace).await;
     appending_versions_builds_a_supersession_chain(&database).await;
@@ -145,6 +146,37 @@ async fn migrations_create_every_table(database: &Database) {
                 .unwrap_or_else(|error| panic!("querying {table}: {error}"));
         assert_eq!(count, 0, "{table} should start empty");
     }
+}
+
+/// No table carries two indexes over the same columns.
+///
+/// A btree scans backward as cheaply as forward, so an index that differs from
+/// another only in a column's direction answers nothing the other does not,
+/// and is written on every insert regardless. V1 and V3 left
+/// `source_versions` with one of those -- 59 MB on the evaluation workspace,
+/// never scanned -- and V14 dropped it. Partial indexes are left out: their
+/// predicate is what sets them apart.
+async fn no_index_repeats_another(database: &Database) {
+    let repeated: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT a.indrelid::regclass::text, a.indexrelid::regclass::text,
+                b.indexrelid::regclass::text
+           FROM pg_index a
+           JOIN pg_index b ON b.indrelid = a.indrelid
+                          AND b.indexrelid > a.indexrelid
+                          AND b.indkey::text = a.indkey::text
+           JOIN pg_class t ON t.oid = a.indrelid
+           JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = current_schema()
+            AND a.indpred IS NULL AND b.indpred IS NULL
+            AND a.indexprs IS NULL AND b.indexprs IS NULL",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("read the index catalog");
+    assert!(
+        repeated.is_empty(),
+        "indexes over the same columns of one table: {repeated:?}"
+    );
 }
 
 /// The running cluster flushes to disk, and does not make a commit wait for it.
