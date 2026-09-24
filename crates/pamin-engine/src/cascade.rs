@@ -294,7 +294,36 @@ impl Engine {
 
         let held: Vec<&Job> = waiting.iter().collect();
         let completed = jobs::complete(self.database.pool(), &held, &self.worker).await?;
+
+        // A flush is what leaves a vector block behind, so this is where to ask
+        // whether the blocks have outgrown the index -- here rather than in the
+        // drain, which asks before the flush it defers and so never sees the
+        // block from the last write a project gets. Queued like the drain's own
+        // tidy-up, for the upkeep that runs after this; a failure to ask costs
+        // disk until the next flush asks again, which is no reason to report
+        // writes that are durable as failed.
+        if let Err(error) = self.queue_compaction_if_wasteful().await {
+            tracing::warn!(%error, "asking whether the index wastes disk failed");
+        }
         Ok(completed.len())
+    }
+
+    /// Queues a compaction when unmerged vector blocks outweigh the index.
+    async fn queue_compaction_if_wasteful(&self) -> Result<()> {
+        let (blocks, documents) = crate::engine::off_the_runtime(|| -> Result<(u64, u64)> {
+            let index = self.index();
+            Ok((index.unmerged_blocks()?, index.document_count()?))
+        })?;
+        if pamin_index::wastes_disk(blocks, documents) {
+            jobs::enqueue(
+                self.database.pool(),
+                self.project,
+                JobKind::OptimizeIndex,
+                None,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Runs one job.
