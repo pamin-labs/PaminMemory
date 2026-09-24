@@ -63,6 +63,86 @@ Doing this now costs nothing. Doing it after a cloud tier exists is a migration.
 
 PostgreSQL is bundled rather than brought by the user. `pamin init` provisions and hosts a local instance through `postgresql_embedded`, so there is no Docker and no configuration. This changes only the distribution mechanism; PostgreSQL remains the sole authority.
 
+### The driver stays `sqlx`: pipelining measured
+
+`sqlx` sends a statement and waits for its result before it sends the next.
+The PostgreSQL protocol allows pipelining, which means sending several
+statements before reading any result, and `tokio-postgres` does it on one
+connection. So the question was whether the store pays for `sqlx` in round
+trips. Upstream, as of 2026-09-24, the `launchbadge/sqlx` issues this touches
+(#408 and #2798) are open, pull request #3891 was closed on 2026-09-14, and the
+pool redesign in #3582 is open.
+
+The harness is a scratch program outside the tree. It runs the statements of
+the write path verbatim, copied from `repository.rs` and `jobs.rs`: the twelve
+that rewriting an existing topic issues inside `Engine::write`'s transaction.
+It also runs the read that `current_states_of` makes, for 64 topics. The data
+is 20,000 seeded topics in a local PostgreSQL. `sqlx` 0.9.0 uses the
+product's pool options, and `tokio-postgres` 0.7 is the control. Each iteration
+runs every arm once, in an order rotated per iteration, for 7 rounds of 300
+iterations. Ratios are taken per iteration and then the median is reported.
+Each arm asserts its premise before it is timed:
+
+- a write arm must have produced the product's work, meaning that many new
+  states, each superseding its predecessor, with spans, queued jobs, and
+  pointers on the newest state;
+- a read arm must return exactly the reference rows;
+- both drivers must report the `synchronous_commit` the run asked for;
+- 64 pipelined `SELECT 1` must take under 0.7 of their sequential time. They
+  measured 0.16 to 0.24.
+
+An earlier run stopped on the premise that its pipelined reads overlap, and no
+figure here comes from it. The machine was the shared four-core one, at a load
+average of 8 to 13.
+
+| paired ratio | multi-thread runtime, `synchronous_commit=off` | multi-thread, `on` | current-thread, `off` |
+| --- | --- | --- | --- |
+| write, `tokio-postgres` pipelined along its dependencies (4 round trips) ÷ the same 12 statements one at a time | 0.92 | 1.03 | 0.83 |
+| write, merged into writable CTEs and pipelined (2 round trips) ÷ 12 one at a time, `tokio-postgres` | 0.82 | 1.03 | 0.65 |
+| write, `sqlx`, merged into writable CTEs (6 statements) ÷ `sqlx`'s 12 | 0.86 | 0.87 | 0.92 |
+| write, `sqlx`, one PL/pgSQL function ÷ `sqlx`'s 12 | 0.54 | 0.74 | 0.68 |
+| write, `tokio-postgres`'s 12 ÷ `sqlx`'s 12 | 0.59 | 0.64 | 0.91 |
+| 64 reads, `sqlx`, one `= ANY($1)` ÷ 64 statements on the pool | 0.07 | 0.07 | 0.08 |
+| 64 reads, `tokio-postgres` pipelined ÷ 64 `sqlx` statements on the pool | 0.14 | 0.15 | 0.25 |
+| 64 reads, `sqlx` on one held connection ÷ on the pool | 0.50 | 0.62 | 0.42 |
+| one `SELECT 1`, `sqlx` on a held connection ÷ on the pool | 0.64 | 0.65 | 0.69 |
+
+**Pipelining the write transaction is worth 0.83 to 1.03.** Its statements
+depend on each other: the locks need the ids the lookups return, the new state
+needs the previous one, and the pointer needs the new version. So twelve
+statements pipeline into four round trips at best. On a local socket a round
+trip is not the cost either. A `SELECT 1` takes 0.058 to 0.090 ms on
+`tokio-postgres`, and the whole write transaction on `sqlx` takes 10.7 to 13.7
+ms (medians). With commits flushed, which is PostgreSQL's default and the
+product does not change it, pipelining measured 1.03.
+
+**The reads are already batched, and batching beats pipelining.** The store
+reads current states in one `= ANY($2)` statement. The same shape on `sqlx`
+takes 0.915 ms against 1.831 ms for 64 reads pipelined on `tokio-postgres`
+(multi-thread runtime, `off`).
+
+**Part of the gap between the drivers is the pool, and part is not
+explained.** Every statement run on `&PgPool` acquires a connection and
+releases it, and `sqlx-core` 0.9.0 pings the connection on every release
+(`return_to_pool` in `pool/connection.rs`). `test_before_acquire(false)` does
+not turn that off. Holding one connection for 64 reads costs 0.42 to 0.62 of
+running them on the pool, so where a path runs several statements back to
+back outside a transaction, holding one connection is the fix, and `sqlx`
+already provides it. The write transaction already holds one connection, so the
+ping is not what makes `tokio-postgres` 0.59 to 0.91 of `sqlx` there. What
+does was not isolated.
+
+So the store stays on `sqlx`. Pipelining is worth close to nothing on the path
+that could use it. Switching drivers for the per-statement gap would bring back
+the second driver the Consequences below record removing. The largest single
+lever measured on `sqlx`, one server-side function at 0.54 to 0.74, is PL/pgSQL, and
+PL/pgSQL is not in the portable subset listed above. Writable CTEs are in that
+subset and are worth 0.86 to 0.92 on `sqlx` with no driver change, which makes
+them the lever to reach for if the write transaction's round trips ever matter.
+Revisit this when the database stops being local: every figure above has a
+round trip under a fifth of a millisecond. Revisit it too if `sqlx` ships
+pipelining or stops pinging on release.
+
 ### Retrieval engine: one engine, `zvec`
 
 `zvec` runs in-process and covers both channels we need from an index: BM25 full-text search and dense vectors, with write-ahead logging, per-field tokenizers, and index types that scale from memory to disk.
