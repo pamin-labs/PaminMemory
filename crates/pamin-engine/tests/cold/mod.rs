@@ -149,8 +149,18 @@ pub async fn report(
     );
 
     let mut samples = Samples::default();
-    for _ in 0..rounds() {
+    let mut paired = Vec::new();
+    for round in 0..rounds() {
+        // The warmed round goes first every other time, so the two it is
+        // paired with do not always run in the same order.
+        let early = if round % 2 == 1 {
+            Some(warmed(database, workspace, project, profile, tier, queries).await)
+        } else {
+            None
+        };
+
         let (open, search, warm) = cold(database, workspace, project, profile, tier, queries).await;
+        let cold_total = open + search;
         samples.record("cold: open the index", open);
         samples.record("cold: search, shipped tier", search);
         samples.record("cold: open + search", open + search);
@@ -161,6 +171,15 @@ pub async fn report(
         samples.record("serial: search, off", off);
         samples.record("serial: then the shipped tier", then);
         samples.record("serial: open + both", open + off + then);
+
+        let (first, until, then) = match early {
+            Some(early) => early,
+            None => warmed(database, workspace, project, profile, tier, queries).await,
+        };
+        samples.record("warmed: open + search", first);
+        samples.record("touched: until warm", until);
+        samples.record("touched: then search", then);
+        paired.push((cold_total.as_secs_f64() - first.as_secs_f64()) * 1e3);
 
         for (name, took) in parts(&models, profile, tier, queries) {
             samples.record(name, took);
@@ -175,7 +194,15 @@ pub async fn report(
     );
     samples.print();
     let saved = samples.median("serial: open + both") - samples.median("cold: open + search");
-    println!("\n  loading the reranker alongside retrieval saves {saved:.0} ms at the median\n");
+    println!("\n  loading the reranker alongside retrieval saves {saved:.0} ms at the median");
+    paired.sort_by(f64::total_cmp);
+    println!(
+        "  warming at the request saves {:.0} ms at the median of {} paired rounds ({:.0} to {:.0})\n",
+        paired[paired.len() / 2],
+        paired.len(),
+        paired[0],
+        paired[paired.len() - 1]
+    );
 }
 
 fn profile_name(profile: Profile) -> &'static str {
@@ -281,6 +308,79 @@ async fn cold(
     let search_cold = search(&engine, query, tier, 0).await;
     let warm = search(&engine, other, tier, scored(&engine, tier)).await;
     (open, search_cold, warm)
+}
+
+/// The cold path with the server's warm-up, twice over.
+///
+/// First as it is when the search is itself the first request: a resident
+/// server's `Session::warm` starts both models loading as the request
+/// arrives, beside the index's open, and the search then waits for loads
+/// already in flight. What is timed is open and search together, against the
+/// `cold` round's.
+///
+/// Then as it is when anything else came first: the warm-up is started, the
+/// time until both models are resident is taken -- how long an agent has to
+/// spend reading before its search finds them -- and a search after that.
+/// Each starts from a [`Models`] of its own, so nothing is loaded when it
+/// begins, and the second asserts that the reranker was resident before its
+/// search.
+async fn warmed(
+    database: &Database,
+    workspace: &Workspace,
+    project: &str,
+    profile: Profile,
+    tier: Rerank,
+    [query, other]: [&str; 2],
+) -> (Duration, Duration, Duration) {
+    let first = {
+        let models = Models::in_workspace(workspace);
+        let started = Instant::now();
+        let warming = {
+            let models = models.clone();
+            tokio::task::spawn_blocking(move || models.warm(profile, tier))
+        };
+        let engine = attached(database, &models, workspace, project, profile).await;
+        search(&engine, query, tier, 0).await;
+        let took = started.elapsed();
+        warming.await.expect("the warm-up panicked").expect("warm");
+        took
+    };
+
+    let models = Models::in_workspace(workspace);
+    let started = Instant::now();
+    let warming = {
+        let models = models.clone();
+        tokio::task::spawn_blocking(move || models.warm(profile, tier))
+    };
+    let engine = attached(database, &models, workspace, project, profile).await;
+    warming.await.expect("the warm-up panicked").expect("warm");
+    let until = started.elapsed();
+    assert!(
+        engine.reranked(tier).is_some(),
+        "the warm-up finished without the reranker resident"
+    );
+    let then = search(&engine, other, tier, 0).await;
+    (first, until, then)
+}
+
+/// The project against `models`, the way `Session::engine` opens it.
+async fn attached(
+    database: &Database,
+    models: &Models,
+    workspace: &Workspace,
+    project: &str,
+    profile: Profile,
+) -> Engine {
+    Engine::attached(
+        database.clone(),
+        models,
+        workspace,
+        project,
+        profile,
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the project")
 }
 
 /// The cold path with the reranker loaded only after retrieval: an `off`
