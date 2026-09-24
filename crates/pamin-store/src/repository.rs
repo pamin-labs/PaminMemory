@@ -189,37 +189,128 @@ pub async fn append_source_version(
     decision: FilterDecision,
     reason: &str,
 ) -> Result<SourceVersion> {
-    let row = sqlx::query(
+    let evidence = Evidence {
+        content,
+        content_hash,
+        decision,
+        reason,
+        language: None,
+        language_confidence: None,
+    };
+    let (version, _) = insert_evidence(connection, project, source, &evidence, false).await?;
+    Ok(version)
+}
+
+/// Evidence as the write path records it: the content, the filter's verdict
+/// on it, and the language detected over it.
+pub struct Evidence<'a> {
+    pub content: &'a str,
+    pub content_hash: &'a str,
+    pub decision: FilterDecision,
+    pub reason: &'a str,
+    pub language: Option<&'a str>,
+    pub language_confidence: Option<f32>,
+}
+
+/// Appends evidence and the span that covers all of it, in one statement.
+///
+/// What [`append_source_version`] followed by [`append_source_span`] over the
+/// whole content does, for the write path, which records exactly that: the two
+/// inserts were two round trips inside the write transaction, and the second
+/// needed nothing from the first but the id it had just chosen. Same
+/// precondition as [`append_source_version`]: call it after [`ensure_source`],
+/// in the same transaction.
+pub async fn append_evidence(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    source: SourceId,
+    evidence: &Evidence<'_>,
+) -> Result<(SourceVersion, SourceSpan)> {
+    let (version, span) = insert_evidence(connection, project, source, evidence, true).await?;
+    Ok((version, span.expect("asked for the span")))
+}
+
+/// Numbers and inserts a source version, the one statement both appends share.
+macro_rules! insert_source_version {
+    () => {
         "INSERT INTO source_versions (
              id, project_id, source_id, version, content, content_hash,
              filter_decision, filter_reason, recorded_at
          )
          SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8
          FROM source_versions WHERE project_id = $2 AND source_id = $3
-         RETURNING id, version, recorded_at",
-    )
-    .bind(SourceVersionId::new().0)
-    .bind(project.0)
-    .bind(source.0)
-    .bind(content)
-    .bind(content_hash)
-    .bind(decision.label())
-    .bind(reason)
-    .bind(OffsetDateTime::now_utc())
-    .fetch_one(connection)
-    .await?;
+         RETURNING id, version, recorded_at"
+    };
+}
 
-    Ok(SourceVersion {
+/// The version, and with `whole_span` the span over its whole content, written
+/// by one statement: a data-modifying `WITH` runs whether or not the outer
+/// query reads it, and the span's foreign key is checked at the end of the
+/// statement, by which point the version it names exists.
+async fn insert_evidence(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    source: SourceId,
+    evidence: &Evidence<'_>,
+    whole_span: bool,
+) -> Result<(SourceVersion, Option<SourceSpan>)> {
+    const VERSION: &str = insert_source_version!();
+    const WITH_SPAN: &str = concat!(
+        "WITH version AS (",
+        insert_source_version!(),
+        "), span AS (
+             INSERT INTO source_spans (
+                 id, project_id, source_version_id, byte_start, byte_end,
+                 detected_language, language_confidence
+             )
+             SELECT $9, $2, version.id, 0, $10, $11, $12 FROM version
+         )
+         SELECT id, version, recorded_at FROM version"
+    );
+
+    let span_id = SourceSpanId::new();
+    let byte_end = evidence.content.len() as u32;
+    let query = sqlx::query(if whole_span { WITH_SPAN } else { VERSION })
+        .bind(SourceVersionId::new().0)
+        .bind(project.0)
+        .bind(source.0)
+        .bind(evidence.content)
+        .bind(evidence.content_hash)
+        .bind(evidence.decision.label())
+        .bind(evidence.reason)
+        .bind(OffsetDateTime::now_utc());
+    let query = if whole_span {
+        query
+            .bind(span_id.0)
+            .bind(byte_end as i32)
+            .bind(evidence.language)
+            .bind(evidence.language_confidence)
+    } else {
+        query
+    };
+    let row = query.fetch_one(connection).await?;
+
+    let version = SourceVersion {
         id: row.get::<uuid::Uuid, _>("id").into(),
         project_id: project,
         source_id: source,
         version: from_sql_version(row.get("version")),
-        content: content.to_string(),
-        content_hash: content_hash.to_string(),
-        filter_decision: decision,
-        filter_reason: reason.to_string(),
+        content: evidence.content.to_string(),
+        content_hash: evidence.content_hash.to_string(),
+        filter_decision: evidence.decision,
+        filter_reason: evidence.reason.to_string(),
         recorded_at: row.get("recorded_at"),
-    })
+    };
+    let span = whole_span.then(|| SourceSpan {
+        id: span_id,
+        project_id: project,
+        source_version_id: version.id,
+        byte_start: 0,
+        byte_end,
+        detected_language: evidence.language.map(str::to_string),
+        language_confidence: evidence.language_confidence,
+    });
+    Ok((version, span))
 }
 
 /// Records a byte range into a source version, with any language detected for it.

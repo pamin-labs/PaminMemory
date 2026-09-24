@@ -79,6 +79,7 @@ async fn the_ledger_holds_its_promises() {
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
+    evidence_and_the_span_over_it_are_one_write(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
 
@@ -926,16 +927,22 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
                 .await
                 .expect("ensure source");
                 assert_eq!(found, source);
-                let appended = repository::append_source_version(
+                let content = format!("evidence from writer {writer}");
+                let appended = repository::append_evidence(
                     &mut transaction,
                     project.id,
                     source,
-                    &format!("evidence from writer {writer}"),
-                    "hash",
-                    FilterDecision::Promoted,
-                    "test fixture",
+                    &repository::Evidence {
+                        content: &content,
+                        content_hash: "hash",
+                        decision: FilterDecision::Promoted,
+                        reason: "test fixture",
+                        language: None,
+                        language_confidence: None,
+                    },
                 )
-                .await;
+                .await
+                .map(|(version, _)| version);
                 transaction.commit().await.expect("commit");
                 appended
             })
@@ -1864,6 +1871,110 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
         repaired, 0,
         "the write paths left {repaired} topics pointing at the wrong state"
     );
+}
+
+/// `append_evidence` writes the version and the span over all of it, and both
+/// read back as written.
+///
+/// The span is inserted by the same statement as the version it points into,
+/// so this reads the span's row itself rather than the struct handed back, and
+/// reads the state cut from it: multi-byte content, so a span measured in
+/// characters rather than bytes would cut it short.
+async fn evidence_and_the_span_over_it_are_one_write(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "evidence")
+        .await
+        .expect("ensure project");
+    let content = "ugnen når kon tolv, och håller den";
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let source = repository::ensure_source(
+        &mut transaction,
+        project.id,
+        SourceKind::Manual,
+        "evidence-locator",
+    )
+    .await
+    .expect("ensure source");
+    let (evidence, span) = repository::append_evidence(
+        &mut transaction,
+        project.id,
+        source,
+        &repository::Evidence {
+            content,
+            content_hash: "evidence-hash",
+            decision: FilterDecision::Promoted,
+            reason: "evidence reason",
+            language: Some("swe"),
+            language_confidence: Some(0.5),
+        },
+    )
+    .await
+    .expect("append evidence");
+    transaction.commit().await.expect("commit");
+
+    let stored: (
+        uuid::Uuid,
+        uuid::Uuid,
+        i32,
+        i32,
+        Option<String>,
+        Option<f32>,
+    ) = sqlx::query_as(
+        "SELECT id, source_version_id, byte_start, byte_end, detected_language,
+                language_confidence
+         FROM source_spans WHERE source_version_id = $1",
+    )
+    .bind(evidence.id.0)
+    .fetch_one(database.pool())
+    .await
+    .expect("the span was written with its version");
+    assert_eq!(
+        stored,
+        (
+            span.id.0,
+            evidence.id.0,
+            0,
+            content.len() as i32,
+            Some("swe".to_string()),
+            Some(0.5)
+        )
+    );
+    assert_eq!(span.byte_end as usize, content.len());
+
+    let read_back = repository::latest_source_version(database.pool(), project.id, source)
+        .await
+        .expect("latest source version")
+        .expect("the version was written");
+    assert_eq!(read_back.id, evidence.id);
+    assert_eq!(read_back.version, 1);
+    assert_eq!(read_back.content, content);
+    assert_eq!(read_back.content_hash, "evidence-hash");
+    assert_eq!(read_back.filter_decision, FilterDecision::Promoted);
+    assert_eq!(read_back.filter_reason, "evidence reason");
+
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "evidence_topic"
+    )
+    .expect("ensure topic");
+    let state = committed!(
+        database,
+        repository::append_topic_state,
+        project.id,
+        topic.id,
+        &evidence,
+        &span,
+        OffsetDateTime::now_utc(),
+        Validity::ALWAYS
+    )
+    .expect("append topic state");
+    let stored = repository::topic_state(database.pool(), project.id, topic.id, state.version)
+        .await
+        .expect("read topic state")
+        .expect("the state was written");
+    assert_eq!(stored.content, content);
+    assert_eq!(stored.language.as_deref(), Some("swe"));
 }
 
 /// Reads the stored pointer and checks it against the version it should hold.
