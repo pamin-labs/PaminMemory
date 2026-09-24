@@ -118,7 +118,10 @@ impl Engine {
                 // rather than called: maintenance is per-project work, and the
                 // outbox is what makes one worker run it rather than every
                 // worker racing to. The next round claims it.
-                if drained.completed > 0 && !tidied && self.index_is_fragmented()? {
+                if drained.completed > 0
+                    && !tidied
+                    && (self.index_is_fragmented()? || self.vector_index_lags()?)
+                {
                     tidied = true;
                     jobs::enqueue(
                         self.database.pool(),
@@ -151,9 +154,7 @@ impl Engine {
                 .partition(|job| job.kind == JobKind::SyncTopicIndex);
 
             let mut written: Vec<(&Job, Result<()>)> = Vec::with_capacity(claimed.len());
-            for job in writes {
-                written.push((job, self.run(job).await));
-            }
+            self.sync_indexes(&writes, &mut written).await;
 
             // What happens to the writes now is the difference between a
             // caller with somebody behind it and one without. Either way they
@@ -295,6 +296,108 @@ impl Engine {
         }
     }
 
+    /// Indexes every write job of a round in one forward pass.
+    ///
+    /// A round claims up to sixty-four jobs and this used to run them one at a
+    /// time, so a round that indexed sixty-four topics paid sixty-four forward
+    /// passes where the model can do one. The flush in this same round was
+    /// already batched -- see `BATCH` -- so the pass was the half that got
+    /// left, and `Embedder::embed_passages` had been sitting next to it all
+    /// along, used only by the rebuild.
+    ///
+    /// **Each job still gets its own outcome, and that is the part worth being
+    /// careful about.** The outbox retries per job, so a batch that failed as a
+    /// unit would turn one unindexable document into sixty-four jobs owed --
+    /// and the next round would batch the same sixty-four and fail again. So a
+    /// failed batch falls back to indexing one at a time, which costs the
+    /// passes only on the rounds that actually hit a problem and gives every
+    /// job the verdict it would have had before.
+    async fn sync_indexes<'j>(&self, jobs: &[&'j Job], into: &mut Vec<(&'j Job, Result<()>)>) {
+        // A job whose subject will not parse is its own failure and must not
+        // take the batch with it.
+        let mut topics = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            match subject(job) {
+                Ok(subject) => topics.push((*job, TopicId::from(subject))),
+                Err(error) => into.push((*job, Err(error))),
+            }
+        }
+        if topics.is_empty() {
+            return;
+        }
+
+        let wanted: Vec<TopicId> = topics.iter().map(|(_, topic)| *topic).collect();
+        let states = match pamin_store::repository::current_states_of(
+            self.database.pool(),
+            self.project,
+            &wanted,
+        )
+        .await
+        {
+            Ok(states) => states,
+            // The read failed for all of them, so it failed for all of them.
+            // Nothing was attempted, so nothing is half done. The message is
+            // formatted once and each job gets its own error, because the
+            // store's error is not `Clone` and a job's outcome has to be its
+            // own value.
+            Err(error) => {
+                let message = error.to_string();
+                for (job, _) in topics {
+                    into.push((
+                        job,
+                        Err(anyhow!("reading the states this round owes: {message}")),
+                    ));
+                }
+                return;
+            }
+        };
+
+        // A topic that resolves to nothing has its document removed instead,
+        // which is the same job because the projection holds one document per
+        // topic. Both halves are batched; both are all-or-nothing, which the
+        // fallback below is for.
+        let found: std::collections::HashMap<TopicId, &pamin_core::TopicState> =
+            states.iter().map(|state| (state.topic_id, state)).collect();
+        let (present, absent): (Vec<TopicId>, Vec<TopicId>) = wanted
+            .iter()
+            .copied()
+            .partition(|topic| found.contains_key(topic));
+        let indexing: Vec<pamin_core::TopicState> = present
+            .iter()
+            .filter_map(|topic| found.get(topic).map(|state| (*state).clone()))
+            .collect();
+
+        let batched = async {
+            self.index_states(&indexing).await?;
+            if !absent.is_empty() {
+                crate::engine::off_the_runtime(|| self.index().delete(&absent))?;
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match batched {
+            Ok(()) => {
+                for (job, _) in topics {
+                    into.push((job, Ok(())));
+                }
+            }
+            // One at a time, so the job that cannot be indexed is the only one
+            // recorded as failing. Costs the passes only on a round that hit a
+            // problem.
+            Err(_) => {
+                for (job, topic) in topics {
+                    let one = match found.get(&topic) {
+                        Some(state) => self.index_state(state).await,
+                        None => crate::engine::off_the_runtime(|| self.index().delete(&[topic]))
+                            .map_err(Into::into),
+                    };
+                    into.push((job, one));
+                }
+            }
+        }
+    }
+
     /// Writes a topic's current state into the projection.
     ///
     /// Reads the state at execution rather than taking one from the job, which
@@ -422,13 +525,32 @@ impl Engine {
     /// and twenty files, growing without bound, and a workspace used normally
     /// for a week died of `Too many open files`.
     ///
-    /// The graph needs no condition of its own any more. A segment seals after
-    /// thousands of writes and this fires every sixty or so, so by the time a
-    /// segment is due a graph the index has already been asked many times over
-    /// -- and asking when there is nothing to do costs 28 ms.
+    /// This condition is compaction's alone. It used to carry the graph as
+    /// well, on the argument that "a segment seals after thousands of writes
+    /// and this fires every sixty or so, so by the time a segment is due a
+    /// graph the index has already been asked many times over". That was true
+    /// when it was written and stopped being true in the same release that
+    /// moved the flush to the server: files then accumulate at about 0.045 a
+    /// write rather than two, so this fires roughly every five and a half
+    /// thousand writes instead of every sixty, and a project below that never
+    /// built a graph at all. See `vector_index_lags`.
     fn index_is_fragmented(&self) -> Result<bool> {
         let files = crate::engine::off_the_runtime(|| self.index().file_count())?;
         Ok(pamin_index::is_fragmented(files))
+    }
+
+    /// Whether enough documents sit outside the vector graph to build one.
+    ///
+    /// The graph's own condition, which it went a release without. Both
+    /// conditions queue the same job -- `optimize` compacts *and* builds -- so
+    /// this adds a reason to run it, not a second kind of maintenance.
+    fn vector_index_lags(&self) -> Result<bool> {
+        let (documents, completeness) =
+            crate::engine::off_the_runtime(|| -> Result<(u64, f32)> {
+                let index = self.index();
+                Ok((index.document_count()?, index.vector_index_completeness()?))
+            })?;
+        Ok(pamin_index::vector_index_lags(documents, completeness))
     }
 
     /// Compacts the index, and builds a graph over any segment that sealed.

@@ -18,10 +18,126 @@ The examples below are real output from a workspace built by the writes in
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
+| | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
+| | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
+| | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
+| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
+| | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
+| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
 the person who has piped it to a terminal.
+
+`PAMIN_POSTGRES_DIR` points at an installation prefix holding `bin/initdb` --
+`/usr/lib/postgresql/17` on Debian and Ubuntu, `$(brew --prefix
+postgresql@17)` on macOS. Unset, a workspace installs its own copy, which is
+the default because it is what makes `pamin` work with nothing else installed;
+set, that copy is not downloaded and not stored, which is several hundred
+megabytes a workspace does not spend. Two things to know before setting it.
+The version requirement is not checked -- you are vouching for the server, and
+the migrations expect PostgreSQL 17. And a figure measured against a server
+built by somebody else is a figure for that server: fine for checking
+behaviour, not interchangeable with the numbers in
+[measured.md](measured.md).
+
+`PAMIN_JIT=on` turns on PostgreSQL's LLVM compilation of query expressions.
+It is off by default because it is measurably unreachable at every size
+measured here, not because compiling is disliked: PostgreSQL only reaches for
+it above a plan cost of 100000, and on a 13,014-topic project the read path's
+hydration of fifty candidates plans at 84, the widest query the schema can
+state plans at 1313, and `pamin grep` plans at 56 because its `ORDER BY`
+matches an index and the scan stops early. The first of those does not grow
+with the project at all -- it is bounded by `--channel-depth`.
+
+One shape does grow. A `grep` for something the project barely contains has to
+walk its whole recency index, and that cost is linear: 995 at 15,224 stored
+versions, so roughly 65 for every thousand, reaching 100000 somewhere around a
+million and a half. A workspace an agent has been writing to for a year is
+exactly the one that gets there, which is why this is a switch and not a
+constant. Two notes: it applies at `pamin stop` and the next start, like every
+cluster-level setting here; and with it off, a workspace it installed itself
+does not keep the 25 MB of LLVM bitcode that only inlining reads.
+
+`PAMIN_MODEL_IDLE` is how long `pamin serve` keeps a model and the indexes
+pinning it after nothing has asked for them. It is a memory setting and the
+trade is measured on both sides: on a 13,014-document project a server holding
+the embedder and the `fast` reranker is 2,263 MB resident and 88-101 MB once it
+has given them back, so half an hour of quiet returns about 2.2 GB -- and the
+first search afterwards takes 4,528 ms instead of 116, which is 88% of what a
+server starting from nothing costs. Thirty minutes is where that stops being a
+close call: an agent working in bursts does not wait half an hour between
+searches, and a server left running overnight pays it once. Lower it on a
+machine where memory is scarcer than four seconds; raise it if a search every
+few minutes is worth 2.2 GB to you.
+
+`PAMIN_INFERENCE_THREADS` is how many threads one forward pass may use.
+Unset, the inference library uses one per core, which is right for a single
+query and wrong for a server: measured on four cores with nothing shared,
+throughput *falls* as callers are added, 182 embeddings a second at one worker
+to 54 at eight, because the second caller finds the first caller's threads
+rather than an idle core. Splitting the cores between callers instead of
+between the layers of one pass is the other way to divide them, and which wins
+is a property of the machine rather than of this program -- so it is a setting
+whose default is what the library already did.
+
+On the CPU, the first load of a model writes a second copy of it into
+`models/prepared/`, and every load after that reads the copy. The copy is the
+runtime's own optimized form of the graph with its weights in a separate data
+file, which the runtime maps from disk instead of copying onto the heap: the
+`accurate` reranker holds 271 MB of live memory rather than 822, the `accuracy`
+embedder 272 rather than 824, with scores and vectors bit-identical (see
+[measured.md](measured.md)). Most of what is left is the tokenizer's
+vocabulary, which the embedder and every reranker share: with both loaded, the
+two hold 330 MB rather than 582. What it costs is disk. Each copy is larger than the
+model it came from, because the weights are also stored in the layout the CPU's
+kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
+as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
+it makes that first load slower, 5.1 s for `accurate`. A copy belongs to the
+runtime version and the CPU that wrote it, so an upgrade, or a model directory
+moved to a different CPU, writes a new one and leaves the old one in place; it
+is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
+from the download, for a disk that cannot spare the second copy. When a copy
+cannot be written -- a full or read-only disk -- the model loads from the
+download anyway and the log says why.
+
+The reranker runs on a GPU when the machine has one, with no flag and no
+separate build. Each platform's inference runtime carries the accelerator that
+platform has -- CUDA on x86-64 Linux, Core ML on Apple silicon, DirectML on
+Windows -- and loading a reranker tries it first and falls back to the CPU when
+it will not start. On a GPU it runs the model's half-precision export rather
+than the CPU's int8 one, so the scores are close but not identical; which one
+ran is logged when the model loads. `PAMIN_DEVICE=cpu` keeps it on the CPU, for
+a comparison that has to be like for like or a GPU that belongs to something
+else. Embedding stays on the CPU either way: the index was built with the CPU's
+vectors and a query has to be embedded the same way to be compared with them.
+
+On Linux the CUDA path has two requirements the program cannot meet for you.
+The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
+provider libraries -- `libonnxruntime_providers_shared.so` and
+`libonnxruntime_providers_cuda.so`, 79 MB, built into `target/release` beside
+the binary -- have to sit in the same directory as `pamin`, which `cargo
+install` does not arrange: copy them next to the installed binary. Missing
+either, the reranker runs on the CPU exactly as before.
+
+On Windows the same holds for one file, `DirectML.dll` (18.5 MB), built beside
+`pamin.exe`. Without it the program still starts -- Windows 10 and later carry
+their own copy in System32 -- but that copy can be older than the runtime
+needs, in which case the reranker quietly stays on the CPU. On Apple silicon
+nothing needs copying: Core ML is linked into the binary from the system.
+
+What a GPU is worth has not been measured here, because nothing this project
+is measured on has one. The ordering is checked instead: `every_device_orders_like_the_cpu`
+in `crates/pamin-index/tests/reranking.rs` loads the reranker wherever it lands
+and again forced onto the CPU, and asserts the two order clearly separated
+candidates the same way.
+
+A handful of other `PAMIN_*` variables exist and are deliberately not listed
+here: they shorten a window or a budget so a test can reach a case, and a
+caller has no way to evaluate them. They are named where they are read, and a
+unit test checks that everything *not* on that list appears in the table
+above, so a setting cannot be added without being documented or deliberately
+excluded.
 
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
@@ -282,18 +398,79 @@ ranking internals it has no way to evaluate.
 
 | | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|
-| `off` | nothing | 53 ms | — | — |
-| `fast` | 113 MB | 264 ms | **+0.0381** | −0.0053 |
-| `accurate` | 570 MB | 1001 ms | **+0.0448** | +0.0017 |
+| `off` | nothing | 99 ms | 0.6114 | 0.7829 |
+| `fast` | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
+| `accurate` | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
 
-`fast` is the default, on latency: its pass costs 211 ms against `accurate`'s
-948. `accurate` scores better on both groups, so a workspace that can afford a
-second a search should ask for it. A workspace whose memories are all in
-one language should set `off` — only candidates the lexical channels missed are
-reranked, and those are overwhelmingly the ones written in another language.
+All three rows are one run over the same 1,190 queries, taken when a tier
+reranked twenty candidates; it now reranks thirty, which the `accurate` tier
+turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
+model pairs, and whose wall time has not been re-taken on a quiet machine. The
+rows can be read against each other; none of them can be read against a figure published before
+this table, and the `off` and `fast` rows moved when the fusion layer changed
+underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
+`p = 0.0001` for both tiers; same-language `p = 0.0008` for `fast` and not
+significant for `accurate`. `recall@50` is 0.8962 and 0.9571 in **every** arm,
+to four decimals — a reranker reorders a shortlist and never changes what is in
+it.
+
+Measured on XQuAD-R's 13,014 sentences in eleven languages, through
+`Engine::search_reranked` — the call this command makes, one layer below the
+process it runs in. [measured.md](measured.md) reports the same corpus and
+tiers as whole CLI invocations, 77/251/1241 ms, and the difference between the
+two sets of figures is the invocation; neither is wrong and they are not
+interchangeable.
+
+What the `off` row is is worth knowing before reading the other two as
+overhead. Most of it is not retrieval either: the four channels, fusion and
+reading the states back are about 16 ms of it, and the rest is the forward
+pass that turns your query into a vector — 68 ms on this profile's model, on
+four cores, for a query the server has not been asked before. A resident
+server remembers a query's vector, so asking the same thing twice costs the
+16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
+
+`accurate` is the default, on accuracy: it is the best tier on every corpus
+measured, and query by query against `fast` it is ahead by 0.0086 cross-lingual
+(`p = 0.0015`) and 0.0066 same-language (`p = 0.0001`) on XQuAD-R, and by
+0.0411 on MIRACL Swahili (83 queries better, 12 worse, `p = 0.0001`). What that
+costs is the latency column: 1522 ms against `fast`'s 359, about a quarter of
+the throughput, and 571 MB loaded against 119.
+
+`fast` was the default until it was measured against that order, and it is
+**the only tier that measurably damages same-language ranking** — −0.0060 at
+`p = 0.0008`, nineteen queries worse against three better, and on MIRACL at the
+`speed` profile −0.0154 against no reranking at all (35 better, 58 worse,
+`p = 0.014`). Ask for it when a search has to stay under half a second and the
+workspace is mostly cross-lingual, which is where it still earns its place.
+
+**That is not a reason to set `off` on a single-language workspace, and this
+page used to say it was.** The same-language column above comes from parallel
+text, where it is *the same 1,190 queries* as the cross-lingual column scored
+against a different answer key — so every query in it still has correct answers
+in ten other languages sitting in the index, which a real single-language
+workspace does not. On the one genuinely single-language corpus measured, at
+this profile, the pass **gains** 0.0201 at `fast` and 0.0496 at `accurate`. Set
+`off` to buy back the time if you want the latency; do not set it expecting
+better ranking.
+
+The same run measured two more tiers, `balanced` and `noncommercial`, and both
+were removed: `fast` beat each of them cross-lingual at under half the latency.
+[ADR 0001](adr/0001-tech-selection.md) keeps their rows. Every tier left is
+permissively licensed; [NOTICE](../NOTICE) lists what each one downloads and the
+chain behind it.
 
 The model is fetched the first time a search asks for one, into the same cache
 as the embedding model.
+
+It costs memory while it is loaded, and more than its download suggests: on a
+13,014-document project a server serving `off` is 1,625 MB resident, and one
+`fast` search takes it to 2,007 or 2,271 MB -- so between 380 MB and 645 MB for
+a 130 MB model, the difference being the inference runtime's arenas rather than
+the weights. `pamin serve` gives it back after five minutes with nothing asking
+for that tier, which returns 368 to 380 MB of it to the operating system; the
+arena growth above that stays. A workspace that sets `off` never pays it at
+all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
+and its resident cost has not been taken on its own.
 
 A reranker reads the query and a memory together, which is what lets it correct
 an order the channels got wrong, and what makes it cost a forward pass for
@@ -305,10 +482,11 @@ than by the hundredths the cross-lingual column moves. It does not hold the
 column still: a same-language answer the lexical channels happened to miss is
 an unlexical candidate like any other, and reordering can carry it down.
 
-That also means a workspace whose memories are all in one language gains
-almost nothing here and should set `off`: the candidates the lexical channels
-miss are overwhelmingly the ones in another language. The numbers above are
-from eleven languages at once.
+On a workspace in one language there are fewer such candidates, so there is
+less for the pass to do -- but less is not nothing. On MIRACL, one language
+throughout, `accurate` is still worth +0.0257 over `off` (67 queries better, 19
+worse, `p = 0.0001`, `speed` profile); it is `fast` that is worth less than
+nothing there.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
@@ -391,29 +569,96 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
 Three kinds of entry, and they answer different questions.
 
 **`channel`** — this result appeared in that channel at that rank, and
-contributed `weight / (10 + rank)` to the score. Neither the weight nor the
-contribution is sent: the weight is the constant in the table below and the
-contribution follows from it and the rank, and ten hits of both cost about
-seven hundred tokens to restate what the reader already has. There are four
-channels:
+contributed a share of its channel's weight to the score. Neither the weight
+nor the contribution is sent: the weight is the constant in the table below,
+and ten hits of both cost about seven hundred tokens to restate what the reader
+already has. Nor is the score the channel gave it, for a different reason —
+that is the channel's own quantity in the channel's own units, so a reader
+comparing a BM25 score against a cosine similarity would be comparing nothing.
+Fusion reads it to decide where inside its channel's share a candidate falls,
+and the result of that reaches you as the rank in the fused list. There are
+four channels:
 
 | Channel | What it matches | Weight |
 | --- | --- | --- |
-| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.25 |
-| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.25 |
+| `lexical_segmented` | Words, after segmentation. Works in languages written without spaces | 0.125 |
+| `lexical_ngram` | Substrings: file paths, error codes, function names, configuration keys | 0.125 |
 | `vector` | Meaning, across languages | 1.0 |
-| `graph` | Topics connected to what the other channels found | 1.0 |
+| `graph` | Topics connected to what the other channels found | 0.30 |
 
-Ranks travel between channels; scores do not. A BM25 score and a cosine distance
-are not comparable quantities, so fusion combines the ranks rather than
-pretending the scores share a scale.
+The graph channel's weight was 1.0 until it was measured, which needed a corpus
+with edges in it — every evaluation corpus here derived none, so the channel
+returned nothing and its weight could not matter. Given eleven edges to walk it
+turns out to cost 0.2794 nDCG@10 on a cross-lingual group at 1.0, against the
+0.1673 it earns on queries whose answers are only reachable across an edge.
+1.0 and 0.5 are significantly worse on the cross-lingual group once the whole
+sweep is priced as one family, and 0.15 and 0.30 cannot be told apart; 0.30 is
+kept because nothing supports moving it. `pamin_core::fusion` carries the sweep.
 
-The two lexical channels carry a quarter weight each because they are nearly the same
-channel: both match the literal text, one over segmented words and one over
-character n-grams, so they agree with each other far more often than either
-agrees with the vector or graph channel. At full weight that agreement counts
-twice, and the wording outvotes the meaning on exactly the queries where they
-differ. The `10` is likewise measured here rather than taken from the rank
+Its scores are also the only ones fusion does *not* rescale, and for the reason
+this table's own note gives about comparability. A path strength is
+`confidence × decay^(hops − 1)` over a `(0, 1]` confidence, so 0.5 means "one
+derived mention" on every query in every project — a quantity that means the
+same thing twice, which a BM25 score and a cosine similarity are not. Rescaling
+it inside one query would map whatever the best path happened to be onto the
+top of the band, so a single weak guess would vote as loudly as an explicit
+assertion.
+
+**Each channel's scores decide the order within its share, and the weights
+decide the shares.** A BM25 score and a cosine distance are not comparable, so
+a channel's scores are only ever compared against that channel's own — mapped
+onto the same narrow band that reciprocal rank fusion would have spanned over
+the same candidates, `[(k + 1) / (k + n), 1]`, where `n` is how many candidates
+the channel returned.
+
+The band is the part that matters, and it is derived rather than chosen. Over
+fifty candidates at `k = 10` it is a factor of 5.45, which is narrow enough
+that a channel's *weight* decides against another channel's position: a lexical
+channel's top hit at an eighth weight lands below the vector channel's
+fiftieth, so a strong channel's marginal candidate still makes the list and a
+weak channel's confident one does not displace it. Normalising onto `[0, 1]`
+instead spans a factor of infinity inside one channel, which inverts that — and
+measurably so. A plain weighted sum of standardised scores scores higher on
+nDCG@10 in three of four groups and takes XQuAD-R's cross-lingual `recall@50`
+from 0.8960 to 0.7765. Nothing recovers a memory that was never returned, so
+that trade is declined; `[ADR 0001](adr/0001-tech-selection.md)` has both
+tables.
+
+The two lexical channels carry an eighth of a weight each because at full
+weight the pair outvotes the other two on exactly the queries where the wording
+matches and the meaning does not. They were also once described here as nearly
+the same channel, and they are not: Kendall tau-b between their rankings is
+0.2816, 0.3188 and 0.2973 on the three corpora this project measures, so they
+agree about a third of the time. They share a field, not a ranking. The eighth
+each is one number doing the work of two — no sweep has ever moved them
+independently, and the n-gram channel is the weaker of the two wherever either
+is measured alone. An eighth rather than the quarter that shipped
+before because on MIRACL Swahili — 482 questions people asked, judged by
+people — the quarter ranked *worse* than the vector channel by itself, and
+because the quarter had never been compared against anything smaller than
+itself. Three corpora and the sweep behind that are in
+[ADR 0001](adr/0001-tech-selection.md).
+
+One weight serves every workspace, and the evidence says that is the wrong
+shape rather than the wrong value. What the lexical pair is worth depends on
+whether a query and its answer share a language at all: nothing across a
+boundary, and a great deal within one. Measured, fusing all four channels ranks
+*below* the vector channel alone on cross-lingual queries — 0.6114 against
+0.6335 on XQuAD-R, 481 wins to 35, p = 0.0001 — while on the same corpus's
+same-language queries the lexical channels are worth +0.1042 and segmented BM25
+alone beats the vector channel 0.7299 to 0.6787. A constant cannot be right
+about both, and the two costs are what decide which way it should be wrong.
+
+Reading the scores inside the band is what closes part of that gap without
+picking a side: over the same 1,190 questions it is worth +0.0037 cross-lingual
+and +0.0273 same-language, both significant, with recall unmoved. **It is the
+first change here that improves the same-language group rather than charging
+it** — every weight this project ever moved took something from that group to
+pay for the other one.
+
+A per-channel confidence was built for the same gap and is **off, because it
+was measured and refuted**: it makes the largest cross-lingual group
+significantly worse, which is the group it existed to help. The `10` is likewise measured here rather than taken from the rank
 fusion literature, which uses 60 for lists thousands of results deep; each
 channel proposes fifty, and 60 flattens fifty candidates to the point where
 being first says almost nothing.
@@ -441,14 +686,29 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 `derived_from` and `part_of` the direction *is* the claim, so it is stated
 rather than left to be inferred.
 
-**`modifier`** — a post-fusion adjustment, applied at most once each, and
-recorded only when it changed the result. `importance` and `worth` lift a
-result.
+**`reranked`** — the cross-encoder decided this result's position, and fusion
+did not. The example above carries no such entry, and correctly: a lexical
+channel found that result, so the pass left it where fusion put it. It carries nothing else, and the omission is the design rather than a
+shortcut: a cross-encoder's score is calibrated against nothing, so it
+separates the candidates of one shortlist and means nothing between two
+queries, and a number on the wire invites exactly the comparison it cannot
+support.
 
-The trace above has no `modifier` entry because none of them moved anything.
-`importance` and `worth` are read by the ranker and written by nothing yet, so
-today they are always one; a result that carries no `modifier` line is a result
-that ranked on its channels alone.
+What it does tell you is the part nothing exposed before. A result **with** this
+entry was reordered by the model. A result **without** it holds the place
+fusion gave it — either a lexical channel found it, so the pass deliberately
+left it alone, or it sat below the tier's depth and the model never saw it. So a
+line reading `vector#12 reranked` says the fused list had this twelfth and the
+model moved it, and a line reading `lexical_segmented#3 vector#7` says the two
+channels agreed and no model was consulted. Auditing a ranking needs that
+distinction, and before this it was not derivable from anything the command
+returned. `--rerank off` produces no entries of this kind at all.
+
+There is no fourth kind. There used to be a `modifier`, a post-fusion
+adjustment that lifted a result by its recorded `importance` and by the balance
+of outcomes it took part in. Both were read from columns nothing ever wrote, so
+each one multiplied every result by exactly 1.0 on every search anyone ran, and
+the adjustment was removed rather than left to look like a ranking signal.
 
 ## Relationships
 
@@ -724,12 +984,23 @@ authority store, not the index.
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
 
-It is also how a grown project resizes its vector segments. The index sizes
-them from the number of memories it holds when it is created, which for a
-project starting from nothing is the smallest size; a project that has since
-grown by orders of magnitude keeps that size until it is rebuilt. Rebuilding
-recomputes it from what the project holds now, so a project that has outgrown
-its layout searches faster afterwards.
+It is also how a grown project resizes its vector segments when no server is
+running. The index sizes them from the number of memories it holds when it is
+created, which for a project starting from nothing is the smallest size; a
+project that has since grown by orders of magnitude keeps that size until the
+index is recreated. Rebuilding recomputes it from what the project holds now,
+so a project that has outgrown its layout searches faster afterwards. Where the
+old index was built the way a new one is, a memory whose text has not changed
+keeps the vector it already has rather than being embedded again.
+
+A running server does this on its own. Once a project's index is spread over
+more than twice the segments it should be, the server copies it into the right
+shape in the background — reading it a batch at a time while it goes on
+answering searches and writes, and building the copy's vector graph with the
+index free — then swaps the copy in. Writes made during the copy are carried
+over before the swap. Nothing is embedded, and for the length of the copy the
+disk holds the index twice. `pamin cascade drain` reports a badly shaped index
+either way.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
@@ -815,6 +1086,14 @@ loaded an embedding model before it did any work of its own.
 `pamin serve` runs it in the foreground instead, which is useful when you want
 to watch it. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
+
+Between requests it looks after the indexes it holds open: it makes applied
+writes durable, compacts an index spread over too many files, and reshapes one
+spread over too many segments, as `pamin reindex` describes. A reshape logs
+`reshaping the index` when it starts and `reshaped the index` with the segment
+counts and its duration when it finishes, at the `info` level that
+`PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
+default, and leaves the index it was copying in service.
 
 One server serves many projects, and it keeps the sixteen most recently used
 indexes open; the seventeenth closes the one nobody has touched for longest.

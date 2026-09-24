@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use pamin_core::ProjectId;
 use pamin_engine::{Engine, Models};
-use pamin_index::{Access, Profile};
+use pamin_index::{Access, Profile, Rerank};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 use crate::registry::Registry;
@@ -115,6 +115,35 @@ impl Session {
 
     pub fn workspace(&self) -> &Workspace {
         &self.workspace
+    }
+
+    /// Gives back what this process has held open without being asked.
+    ///
+    /// Returns what it closed: the project-and-profile keys, then the model
+    /// profiles and reranker tiers, so a caller can say so in a log rather
+    /// than guess.
+    ///
+    /// **The order is the whole of it and cannot be swapped.** An engine holds
+    /// its profile's embedder for as long as it is open, so releasing models
+    /// first releases nothing; the indexes have to go before the weights they
+    /// pin become releasable. Doing it in one pass means an idle server gives
+    /// everything back on one tick rather than over two.
+    ///
+    /// What each half is worth, measured on this machine: an open index is
+    /// about 205 MB on the shipping profile, and the constant above says what
+    /// sixteen of them did to two benchmark servers; the embedder is 1,625 MB
+    /// against 29 MB for a server that has not loaded one, and the `fast`
+    /// reranker another 380 to 645 MB.
+    ///
+    /// Only the server calls this. A command that exits after one search gives
+    /// everything back by exiting, and closing an index it is about to use
+    /// again would be the opposite of the point.
+    pub fn close_what_is_idle(&self) -> (Vec<(String, Profile)>, Vec<Profile>, Vec<Rerank>) {
+        let idle = pamin_engine::model_idle();
+        let engines = self.engines.close_idle(idle);
+        let embedders = self.models.release_idle_embedders();
+        let rerankers = self.models.release_idle_rerankers();
+        (engines, embedders, rerankers)
     }
 
     /// The project row for this name, creating it if it is new.

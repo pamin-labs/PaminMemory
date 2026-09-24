@@ -56,6 +56,23 @@ pub struct Drained {
     failed: usize,
     /// Jobs still owed, including any not yet due.
     pending: i64,
+    /// Segments the index holds, and how many its own policy wants, when the
+    /// two differ enough to be worth a rebuild.
+    ///
+    /// Absent otherwise, so a healthy index says nothing. Here rather than in
+    /// a command of its own because whoever has just drained the cascade is
+    /// whoever cares what shape the index is in, and this is the only place
+    /// the answer was reachable from: a collection records its segment size
+    /// when it is created, a workspace is created empty, and nothing has ever
+    /// told anyone what that left them with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segments: Option<Segments>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Segments {
+    holds: u64,
+    wants: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,12 +136,7 @@ pub fn render_value(
     match args.command {
         Command::Drain => {
             let result: Drained = serde_json::from_str(value.get())?;
-            format.emit(&result, || {
-                format!(
-                    "Ran {} jobs, {} failed, {} still owed",
-                    result.completed, result.failed, result.pending
-                )
-            });
+            format.emit(&result, || render_drained(&result, Served::Yes));
         }
         Command::Failed => {
             let result: Failures = serde_json::from_str(value.get())?;
@@ -161,12 +173,7 @@ pub async fn execute(
     match args.command {
         Command::Drain => {
             let result = drain(session, project, profile).await?;
-            format.emit(&result, || {
-                format!(
-                    "Ran {} jobs, {} failed, {} still owed",
-                    result.completed, result.failed, result.pending
-                )
-            });
+            format.emit(&result, || render_drained(&result, Served::No));
         }
         Command::Run => keep_running(session, project, profile).await?,
         Command::Failed => {
@@ -187,14 +194,58 @@ pub async fn execute(
     Ok(())
 }
 
+/// Whether a server answered, which decides what fixes a badly shaped index.
+#[derive(Clone, Copy)]
+enum Served {
+    Yes,
+    No,
+}
+
+/// What a drain did, and what shape it left the index in if that is worth
+/// saying.
+///
+/// One rendering for both paths. The served one used to be the only one that
+/// mentioned the shape, so the same drain said less without a server -- where
+/// nothing reshapes the index on its own and the advice mattered most.
+fn render_drained(result: &Drained, served: Served) -> String {
+    let mut rendered = format!(
+        "Ran {} jobs, {} failed, {} still owed",
+        result.completed, result.failed, result.pending
+    );
+    if let Some(segments) = &result.segments {
+        let fix = match served {
+            Served::Yes => {
+                "the server reshapes it in the background, copying what it holds \
+                 rather than embedding it again; `pamin reindex` rebuilds it now"
+            }
+            Served::No => {
+                "`pamin reindex` rebuilds it at the right size, and a running server \
+                 reshapes it in the background on its own"
+            }
+        };
+        rendered.push_str(&format!(
+            "\nThis index is spread over {} segments where {} would do, because it \
+             recorded its segment size when it was empty. Searches pay for the extra \
+             segments; {fix}.",
+            segments.holds, segments.wants
+        ));
+    }
+    rendered
+}
+
 pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result<Drained> {
     let engine = session.engine(project, profile).await?;
     let drained = engine.drain_cascade(Owed::Everything).await?;
 
+    let shape = engine.segmentation()?;
     Ok(Drained {
         completed: drained.completed,
         failed: drained.failed,
         pending: drained.pending,
+        segments: shape.is_worth_rebuilding().then(|| Segments {
+            holds: shape.segments(),
+            wants: shape.wanted(),
+        }),
     })
 }
 

@@ -1,6 +1,6 @@
 //! Drives the projection index against the real engine.
 
-use pamin_core::TopicId;
+use pamin_core::{Scored, TopicId};
 use pamin_index::{Access, Profile, Projection, ProjectionIndex};
 
 const PROFILE: Profile = Profile::Speed;
@@ -18,6 +18,100 @@ fn id(byte: u8) -> TopicId {
 /// A distinct identifier per number, for the tests that write many documents.
 fn numbered(n: u128) -> TopicId {
     TopicId(uuid::Uuid::from_u128(n))
+}
+
+/// Whether a channel returned this topic at all, at any rank.
+fn holds(candidates: &[Scored], topic: TopicId) -> bool {
+    candidates.iter().any(|candidate| candidate.topic == topic)
+}
+
+/// Every channel scores what it returns, and returns it in that order.
+///
+/// The scores were being dropped on the floor: `collect_scored` reads them from
+/// the same result set the ranking already came out of, so nothing here is
+/// asking the index to work harder -- it is asking whether the accessor was
+/// wired to anything at all. A channel that returned `Some(0.0)` for every
+/// candidate would pass a test that only checked the ranking, and would make
+/// any judgement of that channel's confidence a judgement of the constant zero.
+#[test]
+fn every_channel_scores_what_it_returns_and_ranks_by_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    // Distinct embeddings, which is load-bearing: written with the same stub
+    // vector, every document is exactly as near the query as every other, so
+    // the vector channel reports one constant and an assertion that it orders
+    // by its score passes without checking anything. That is how this test
+    // first shipped, and it left the one channel whose metric could have been
+    // a distance rather than a similarity unchecked.
+    let leaning = |towards: usize| {
+        let mut vector = vec![0.1; PROFILE.dimensions() as usize];
+        vector[towards] = 1.0;
+        vector
+    };
+    for (n, text) in [
+        "the deployment pipeline runs on every merge to main",
+        "the deployment pipeline is described in database.rs",
+        "an unrelated memory about the weather",
+    ]
+    .iter()
+    .enumerate()
+    {
+        index
+            .upsert(numbered(n as u128 + 1), text, &leaning(n))
+            .expect("upsert");
+    }
+    index.flush().expect("flush");
+
+    // Nearest the first document by construction, so the vector channel has a
+    // real ordering to report and a real best candidate.
+    let query = leaning(0);
+    for (channel, candidates) in [
+        (
+            "segmented",
+            index.recall_segmented("deployment pipeline", 10).unwrap(),
+        ),
+        ("ngram", index.recall_ngram("pipeline", 10).unwrap()),
+        ("vector", index.recall_vector(&query, 10).unwrap()),
+    ] {
+        assert!(
+            !candidates.is_empty(),
+            "{channel} returned nothing to score"
+        );
+
+        let scores: Vec<f32> = candidates
+            .iter()
+            .map(|candidate| {
+                candidate
+                    .score
+                    .unwrap_or_else(|| panic!("{channel} returned a candidate with no score"))
+            })
+            .collect();
+
+        assert!(
+            scores.windows(2).all(|pair| pair[0] >= pair[1]),
+            "{channel} is not ordered by the score it reports, so the score is a distance \
+             rather than a similarity and anything that sums it is summing it backwards: \
+             {scores:?}"
+        );
+        assert!(
+            scores.windows(2).any(|pair| pair[0] > pair[1]),
+            "{channel} reported the same score for every candidate, so ordering by it asserts \
+             nothing: {scores:?}"
+        );
+        assert!(
+            scores.iter().any(|score| *score != 0.0),
+            "{channel} reported zero for every candidate, which is what an \
+             unwired accessor looks like: {scores:?}"
+        );
+    }
 }
 
 #[test]
@@ -66,25 +160,25 @@ fn lexical_recall_works_across_languages_and_on_exact_strings() {
     // Each language is searched in its own words, which is the whole point of
     // segmenting before indexing rather than falling back to n-grams.
     let hits = index.recall_segmented("deployment", 10).expect("english");
-    assert!(hits.contains(&english), "english recall failed: {hits:?}");
+    assert!(holds(&hits, english), "english recall failed: {hits:?}");
 
     let hits = index.recall_segmented("流水线", 10).expect("chinese");
-    assert!(hits.contains(&chinese), "chinese recall failed: {hits:?}");
+    assert!(holds(&hits, chinese), "chinese recall failed: {hits:?}");
 
     let hits = index.recall_segmented("東京", 10).expect("japanese");
-    assert!(hits.contains(&japanese), "japanese recall failed: {hits:?}");
+    assert!(holds(&hits, japanese), "japanese recall failed: {hits:?}");
 
     let hits = index.recall_segmented("ทำงาน", 10).expect("thai");
-    assert!(hits.contains(&thai), "thai recall failed: {hits:?}");
+    assert!(holds(&hits, thai), "thai recall failed: {hits:?}");
 
     // The n-gram field catches substrings of a path or an error code, which
     // word segmentation splits apart.
     let hits = index.recall_ngram("database.rs", 10).expect("path");
-    assert!(hits.contains(&identifier), "path recall failed: {hits:?}");
+    assert!(holds(&hits, identifier), "path recall failed: {hits:?}");
 
     let hits = index.recall_ngram("E1234", 10).expect("error code");
     assert!(
-        hits.contains(&identifier),
+        holds(&hits, identifier),
         "error code recall failed: {hits:?}"
     );
 
@@ -296,7 +390,8 @@ fn building_the_vector_index_loses_nothing() {
                     // whether it ranks first.
                     .recall_vector(&separated(*written), 3)
                     .expect("recall")
-                    .contains(&numbered(*written))
+                    .iter()
+                    .any(|candidate| candidate.topic == numbered(*written))
             })
             .collect();
 
@@ -470,6 +565,51 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
     );
 }
 
+/// An index built before names were embedded keeps being written the way it
+/// was built, and a new one embeds names.
+///
+/// The upgrade has to be silent in the right direction: an existing workspace
+/// must neither refuse to open nor start mixing `name: content` vectors into
+/// an index of content vectors, whose distances would then compare two
+/// different encodings and look fine. So the marker's missing line reads as
+/// the old encoding, and only a fresh index -- which is what `pamin reindex`
+/// builds -- gets the new one.
+#[test]
+fn an_index_built_before_names_keeps_its_encoding() {
+    use pamin_index::{Passage, Projection};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let legacy = dir.path().join("legacy");
+
+    let fresh = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0)
+        .expect("build one");
+    assert_eq!(fresh.passage(), Passage::Named, "a new index embeds names");
+    drop(fresh);
+
+    // What the marker held before the encoding was recorded.
+    std::fs::write(
+        dir.path().join("profile"),
+        format!("{}\ntopic\nfp32", PROFILE.model_id()),
+    )
+    .expect("age the marker");
+    let aged = ProjectionIndex::open(dir.path(), &legacy, PROFILE, Access::ReadWrite, 0)
+        .expect("an index from before the encoding line still opens");
+    assert_eq!(
+        aged.passage(),
+        Passage::Content,
+        "an index with no encoding line was built from content and must stay so"
+    );
+
+    assert_eq!(
+        Passage::Named.render("platform rota", "it pages ines"),
+        "platform rota: it pages ines"
+    );
+    assert_eq!(
+        Passage::Content.render("platform rota", "it pages ines"),
+        "it pages ines"
+    );
+}
+
 /// Rewriting the same few memories does not make the index grow for ever.
 ///
 /// The index spreads across about two more files with every write, whatever it
@@ -583,4 +723,135 @@ fn tokenizing_does_not_wait_for_the_index() {
     // Named rather than dropped at the end of scope, so it is visible that the
     // lock was still held for all of the above.
     drop(held);
+}
+
+/// A rebuild reuses a vector only where it is certainly the one it would compute.
+///
+/// The set-aside index lends a topic's stored vector when the text stored with
+/// it is the state's text exactly; a changed memory, or one the old index never
+/// held, is embedded again. An index whose vectors came from another encoding
+/// lends nothing and is gone, so nothing can mix two embedding spaces.
+#[test]
+fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
+    use pamin_index::Previous;
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("index");
+    let legacy = root.path().join("legacy");
+    let mut vector = stub();
+    vector[1] = 0.5;
+
+    let index = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+    index
+        .upsert_batch(&[
+            (
+                id(1),
+                "the release train leaves on thursdays",
+                vector.as_slice(),
+            ),
+            (id(2), "the oncall rota rotates weekly", stub().as_slice()),
+        ])
+        .expect("write");
+    index.flush().expect("flush");
+    drop(index);
+
+    let previous = Previous::set_aside(&dir, PROFILE)
+        .expect("set aside")
+        .expect("an index built now lends its vectors");
+    assert!(!dir.exists(), "the rebuild starts from an empty directory");
+
+    let wanted = [
+        (id(1), "the release train leaves on thursdays"),
+        (id(2), "the oncall rota rotates every fortnight"),
+        (id(3), "a topic the old index never held"),
+    ];
+    assert_eq!(previous.lends(&wanted).expect("count"), 1);
+    let lent = previous.vectors(&wanted).expect("lend");
+    assert_eq!(
+        lent[0].as_deref(),
+        Some(vector.as_slice()),
+        "unchanged text keeps its vector"
+    );
+    assert_eq!(lent[1], None, "changed text is embedded again");
+    assert_eq!(lent[2], None, "a topic the old index lacks is embedded");
+    previous.discard().expect("discard");
+    assert!(!dir.with_extension("previous").exists());
+
+    // Built from content alone: its vectors are not what an index built now
+    // computes, so it lends nothing and is discarded.
+    let index = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+    drop(index);
+    std::fs::write(
+        dir.join("profile"),
+        format!("{}\ntopic\nfp32\ncontent", PROFILE.model_id()),
+    )
+    .expect("age the marker");
+    assert!(
+        Previous::set_aside(&dir, PROFILE)
+            .expect("set aside")
+            .is_none(),
+        "vectors from another encoding were lent"
+    );
+    assert!(!dir.exists() && !dir.with_extension("previous").exists());
+}
+
+/// A document reads back as it was written -- the text and the vector both --
+/// whether or not a flush has reached it yet, and a topic the index does not
+/// hold reads back as absent rather than as an error.
+///
+/// Unflushed is the case that matters. A copy taken from a served index reads
+/// whatever the writes since the last flush left in its buffer, and a read
+/// that skipped the buffer would copy a memory as it was before its last edit.
+#[test]
+fn a_document_reads_back_as_it_was_written() {
+    use pamin_index::Stored;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+
+    index
+        .upsert(
+            id(1),
+            "the release train leaves on thursdays",
+            &separated(1),
+        )
+        .expect("upsert");
+    index.flush().expect("flush");
+    index
+        .upsert(id(2), "the oncall rota rotates weekly", &separated(2))
+        .expect("upsert, left unflushed");
+    index
+        .upsert(id(1), "the release train leaves on fridays", &separated(3))
+        .expect("an edit, left unflushed");
+
+    let stored = index.stored(&[id(1), id(2), id(3)]).expect("read back");
+    assert_eq!(
+        stored,
+        vec![
+            Some(Stored {
+                content: "the release train leaves on fridays".to_string(),
+                embedding: separated(3),
+            }),
+            Some(Stored {
+                content: "the oncall rota rotates weekly".to_string(),
+                embedding: separated(2),
+            }),
+            None,
+        ],
+        "an unflushed edit or write read back as something other than itself"
+    );
+
+    index.delete(&[id(2)]).expect("delete");
+    assert_eq!(
+        index.stored(&[id(2)]).expect("read back"),
+        vec![None],
+        "a deleted document still reads back"
+    );
 }

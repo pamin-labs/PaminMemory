@@ -74,26 +74,62 @@ fn priority(kind: JobKind) -> i32 {
 
 /// Schedules work, coalescing with anything already scheduled for it.
 ///
-/// One row per subject and kind, forever. A conflict means the same work is
-/// either still pending -- in which case this call is already represented by it
-/// -- or was completed earlier and is being asked for again, in which case the
-/// row is revived. Either way the queue never holds two rows saying the same
+/// At most one row per subject and kind, for as long as the work is owed. A
+/// conflict means the same work is still pending, so this call is already
+/// represented by it; work that was done has no row, and asking for it again
+/// inserts one. Either way the queue never holds two rows saying the same
 /// thing.
 ///
-/// Reviving clears the claim as well as the completion. That is what keeps a
-/// worker from marking work done that was requested after it started reading:
-/// [`complete`] only completes a job it still holds, and a claim cleared out
-/// from under it is exactly the signal that the state it read is stale.
+/// A conflict clears the claim. That is what keeps a worker from marking work
+/// done that was requested after it started reading: [`complete`] only
+/// completes a job it still holds, and a claim cleared out from under it is
+/// exactly the signal that the state it read is stale.
 pub async fn enqueue(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
     kind: JobKind,
     subject: Option<uuid::Uuid>,
 ) -> Result<()> {
-    let key = match subject {
-        Some(subject) => format!("{kind}:{subject}"),
-        None => format!("{kind}:"),
-    };
+    // Through the batched form with one kind in it, so the statement -- and
+    // with it the idempotency key and the conflict behaviour a replay depends
+    // on -- has one definition rather than two that have to be kept equal.
+    enqueue_all(executor, project, &[kind], subject).await
+}
+
+/// Enqueues several kinds against one subject, in one round trip.
+///
+/// A promoted write owes three: the projection wants the memory indexed, the
+/// graph wants the names inside it resolved, and a topic nobody had written
+/// before wants the memories that already named it found. Three is the right
+/// number -- they are different work at different priorities, and merging them
+/// would make every rewrite of an existing topic pay for a scan it does not
+/// need -- but three [`enqueue`] calls inside the write transaction is three
+/// round trips for three rows, and the write is holding a transaction open
+/// across all of them.
+///
+/// Same rows, same conflict behaviour, same idempotency keys. `unnest` turns
+/// the arrays into rows so the statement stays `'static`, which is the same
+/// reason the rest of this crate writes its `IN` lists that way.
+pub async fn enqueue_all(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    kinds: &[JobKind],
+    subject: Option<uuid::Uuid>,
+) -> Result<()> {
+    if kinds.is_empty() {
+        return Ok(());
+    }
+
+    let ids: Vec<uuid::Uuid> = kinds.iter().map(|_| IndexJobId::new().0).collect();
+    let labels: Vec<String> = kinds.iter().map(|kind| kind.label().to_string()).collect();
+    let keys: Vec<String> = kinds
+        .iter()
+        .map(|kind| match subject {
+            Some(subject) => format!("{kind}:{subject}"),
+            None => format!("{kind}:"),
+        })
+        .collect();
+    let priorities: Vec<i32> = kinds.iter().map(|kind| priority(*kind)).collect();
     let payload = serde_json::json!({ "subject": subject });
     let now = OffsetDateTime::now_utc();
 
@@ -101,22 +137,23 @@ pub async fn enqueue(
         "INSERT INTO index_jobs
              (id, project_id, job_type, payload, idempotency_key,
               available_at, created_at, priority)
-         VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+         SELECT job.id, $1, job.label, $2, job.key, $3, $3, job.priority
+           FROM unnest($4::uuid[], $5::text[], $6::text[], $7::int[])
+                AS job(id, label, key, priority)
          ON CONFLICT (project_id, idempotency_key) DO UPDATE
-             SET completed_at = NULL,
-                 available_at = $6,
+             SET available_at = $3,
                  claimed_at   = NULL,
                  claimed_by   = NULL,
                  last_error   = NULL,
                  attempts     = 0",
     )
-    .bind(IndexJobId::new().0)
     .bind(project.0)
-    .bind(kind.label())
     .bind(&payload)
-    .bind(&key)
     .bind(now)
-    .bind(priority(kind))
+    .bind(&ids)
+    .bind(&labels)
+    .bind(&keys)
+    .bind(&priorities)
     .execute(executor)
     .await?;
 
@@ -165,8 +202,7 @@ pub async fn claim(
                 available_at = $3
           WHERE id IN (
               SELECT id FROM index_jobs
-               WHERE completed_at IS NULL
-                 AND project_id = $6
+               WHERE project_id = $6
                  AND job_type = ANY($7)
                  AND available_at <= $1
                  -- A job that has used its attempts stays pending with its
@@ -193,7 +229,15 @@ pub async fn claim(
     Ok(rows.iter().map(row_to_job).collect())
 }
 
-/// Marks jobs done, and reports which of them this worker still held.
+/// Marks jobs done by deleting them, and reports which of them this worker
+/// still held.
+///
+/// Deleted rather than marked, because nothing reads a job once it is done.
+/// Settled rows used to be kept -- for an hour, and before that for ever -- and
+/// were 651,128 of the 1,054,646 rows in the evaluation workspace's queue, in
+/// a table that was 38.7% of the database. Keeping them bought one thing,
+/// `enqueue` reviving a settled row instead of inserting one, and the two
+/// leave a row in the same state.
 ///
 /// A job missing from the result was not completed, which happens two ways and
 /// means the same thing both times: it was requested again while this attempt
@@ -243,18 +287,15 @@ pub async fn complete(
     // answer.
     let claims: Vec<Option<OffsetDateTime>> = jobs.iter().map(|job| job.claimed_at).collect();
     let rows = sqlx::query(
-        "UPDATE index_jobs
-            SET completed_at = $3, claimed_at = NULL, claimed_by = NULL, last_error = NULL
-           FROM unnest($1::uuid[], $4::timestamptz[]) AS held (id, claimed_at)
+        "DELETE FROM index_jobs
+          USING unnest($1::uuid[], $3::timestamptz[]) AS held (id, claimed_at)
           WHERE index_jobs.id = held.id
             AND index_jobs.claimed_by = $2
             AND index_jobs.claimed_at = held.claimed_at
-            AND index_jobs.completed_at IS NULL
       RETURNING index_jobs.id",
     )
     .bind(&ids)
     .bind(worker)
-    .bind(OffsetDateTime::now_utc())
     .bind(&claims)
     .fetch_all(executor)
     .await?;
@@ -298,13 +339,11 @@ pub async fn fail(
 
 /// How many jobs are waiting, whether or not they are due yet.
 pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<i64> {
-    let (waiting,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM index_jobs
-          WHERE project_id = $1 AND completed_at IS NULL",
-    )
-    .bind(project.0)
-    .fetch_one(executor)
-    .await?;
+    let (waiting,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM index_jobs WHERE project_id = $1")
+            .bind(project.0)
+            .fetch_one(executor)
+            .await?;
 
     Ok(waiting)
 }
@@ -317,7 +356,7 @@ pub async fn exhausted(
     let rows = sqlx::query(
         "SELECT id, project_id, job_type, payload, attempts, claimed_at, last_error
            FROM index_jobs
-          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $2
+          WHERE project_id = $1 AND attempts >= $2
           ORDER BY priority, available_at",
     )
     .bind(project.0)
@@ -345,7 +384,7 @@ pub async fn replay(executor: impl PgExecutor<'_>, project: ProjectId) -> Result
     let revived = sqlx::query(
         "UPDATE index_jobs
             SET attempts = 0, available_at = $2, claimed_at = NULL, claimed_by = NULL
-          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $3",
+          WHERE project_id = $1 AND attempts >= $3",
     )
     .bind(project.0)
     .bind(OffsetDateTime::now_utc())
@@ -358,17 +397,15 @@ pub async fn replay(executor: impl PgExecutor<'_>, project: ProjectId) -> Result
 
 /// Abandons exhausted jobs, and returns how many.
 ///
-/// Completing them rather than deleting them keeps the row, so a later write to
-/// the same subject revives it rather than being coalesced onto a row that no
-/// longer means anything.
+/// Deleted, the way [`complete`] deletes: an abandoned job and a finished one
+/// are both work nobody owes any more, and a later write to the same subject
+/// inserts a fresh row for it either way.
 pub async fn discard(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
     let discarded = sqlx::query(
-        "UPDATE index_jobs
-            SET completed_at = $2, claimed_at = NULL, claimed_by = NULL
-          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $3",
+        "DELETE FROM index_jobs
+          WHERE project_id = $1 AND attempts >= $2",
     )
     .bind(project.0)
-    .bind(OffsetDateTime::now_utc())
     .bind(pamin_core::MAX_ATTEMPTS)
     .execute(executor)
     .await?;

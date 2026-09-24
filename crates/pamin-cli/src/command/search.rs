@@ -1,7 +1,7 @@
 //! `pamin search` — retrieve memories, with the reasoning attached.
 
 use anyhow::Result;
-use pamin_core::{Channel, Derivation, EdgeKind, Modifier, Why};
+use pamin_core::{Channel, Derivation, EdgeKind, Why};
 use pamin_index::{Profile, Rerank};
 
 use serde::{Deserialize, Serialize};
@@ -41,20 +41,33 @@ pub struct Args {
     ///
     /// A cross-encoder reads the query and a memory together, which is what
     /// lets it correct an order the channels got wrong and what makes it cost
-    /// a forward pass per candidate. Only memories written in a language other
-    /// than the query's are reordered, so a workspace in one language gains
-    /// exactly nothing from this and should turn it off.
-    #[arg(long, env = "PAMIN_RERANK", default_value = "fast")]
+    /// a forward pass per candidate. Only the candidates no lexical channel
+    /// found are reordered -- not, as this used to say, the ones in another
+    /// language; the rule is the absence of a lexical hit rather than a
+    /// language test, because a language detector is absent on exactly the
+    /// short queries an agent asks.
+    ///
+    /// The default is `accurate`, the tier that ranks best on every corpus
+    /// measured and costs about a second and a half a search on four cores;
+    /// `fast` and `off` buy that time back at a measured price. See
+    /// `docs/cli.md`.
+    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
     pub rerank: String,
 }
 
 /// One entry of the trace, as a caller sees it.
 ///
-/// [`Why`] also carries `weight` and `contribution`, and `docs/cli.md` prints
-/// both as things the reader works out: weight is a constant per channel, and
-/// contribution is `weight / (10 + rank)`. Ten hits of them cost about seven
-/// hundred tokens of somebody's context window to restate what they already
-/// know, so the command layer leaves them out.
+/// [`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`
+/// prints the last two as things the reader works out: weight is a constant per
+/// channel, and contribution is `weight / (10 + rank)`. Ten hits of them cost
+/// about seven hundred tokens of somebody's context window to restate what they
+/// already know, so the command layer leaves them out.
+///
+/// `score` is left out for a different reason. It is the channel's own quantity
+/// in the channel's own units, so a reader comparing a BM25 score against a
+/// vector similarity would be comparing nothing. Fusion reads it to judge how
+/// confident a channel is *against that channel's other candidates*, and that
+/// judgement already reaches the caller as the rank the fused list gives.
 ///
 /// A separate type rather than `#[serde(skip)]` on the core one. Skipping
 /// would make the field deserialize as zero on the far side of the socket,
@@ -66,10 +79,6 @@ enum Trace {
         channel: Channel,
         rank: u32,
     },
-    Modifier {
-        modifier: Modifier,
-        factor: f32,
-    },
     Path {
         from: String,
         via: String,
@@ -79,13 +88,25 @@ enum Trace {
         edge: EdgeKind,
         derivation: Derivation,
     },
+    /// The cross-encoder decided this position, and fusion did not.
+    ///
+    /// Carried without its score, for the reason the channel score is left out
+    /// above and one more. A cross-encoder's logit is calibrated against
+    /// nothing, so it is comparable within one shortlist and meaningless
+    /// between two -- and a number on the wire invites exactly the comparison
+    /// it cannot support. What a reader can act on is the *fact*, which
+    /// nothing before this exposed: a result carrying this entry was
+    /// reordered by the model, and one without it holds the place fusion gave
+    /// it, either because a lexical channel found it or because it sat below
+    /// the tier's depth. That distinction costs about four tokens and is the
+    /// difference between auditing a ranking and guessing at it.
+    Reranked {},
 }
 
 impl From<Why> for Trace {
     fn from(why: Why) -> Self {
         match why {
             Why::Channel { channel, rank, .. } => Self::Channel { channel, rank },
-            Why::Modifier { modifier, factor } => Self::Modifier { modifier, factor },
             Why::Path {
                 from,
                 via,
@@ -103,6 +124,7 @@ impl From<Why> for Trace {
                 edge,
                 derivation,
             },
+            Why::Reranked { .. } => Self::Reranked {},
         }
     }
 }
@@ -156,13 +178,14 @@ pub async fn execute(
     profile: Profile,
     args: Args,
 ) -> Result<Results> {
+    let rerank = Rerank::parse(&args.rerank)
+        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
+
     let engine = session.engine(project, profile).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
     };
-    let rerank = Rerank::parse(&args.rerank)
-        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
     let hits = engine
         .search_reranked(&args.query, args.limit, depths, rerank)
         .await?;
@@ -215,7 +238,6 @@ fn describe(why: &[Trace]) -> String {
     why.iter()
         .map(|entry| match entry {
             Trace::Channel { channel, rank } => format!("{}#{rank}", channel.as_str()),
-            Trace::Modifier { modifier, factor } => format!("{modifier:?}x{factor:.2}"),
             // The arrow is drawn the way the edge was asserted, so it reads
             // the same whichever end the walk reached it from. `from` is the
             // seed the walk began at, which is a different fact and is kept.
@@ -235,6 +257,11 @@ fn describe(why: &[Trace]) -> String {
                     format!("from {from} via {via}: {arrow} ({hops}hop)")
                 }
             }
+            // One word, because the fact is the whole content. A line reading
+            // `vector#12 reranked` says the fused list had this twelfth and
+            // the model moved it, which is what a reader auditing a ranking
+            // wants and could not previously get from anywhere.
+            Trace::Reranked {} => "reranked".to_string(),
         })
         .collect::<Vec<_>>()
         .join(" ")

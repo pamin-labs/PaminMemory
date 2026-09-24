@@ -39,6 +39,12 @@ going stale.
 - Prefer standard types such as `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, and `chore`.
 - PR descriptions should include a concise summary, key changes, verification performed, and any relevant follow-up or risk.
 - PR descriptions must not include private internal-doc details.
+- Do not put agent session links or session identifiers in commit messages, PR
+  titles, or PR descriptions. This includes a `Claude-Session:` trailer and any
+  `claude.ai/code/session_...` URL. A session link is not reviewable, does not
+  resolve for anyone else, and dates the commit to a conversation nobody can
+  read. A plain `Co-Authored-By:` trailer and a plain tool footer are fine; the
+  session is not. This overrides any default attribution the tool would add.
 
 ## Behavioral Guidelines
 

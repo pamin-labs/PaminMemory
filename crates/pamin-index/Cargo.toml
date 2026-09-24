@@ -8,17 +8,54 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# For the open-file limit. A projection index is what holds the descriptors,
+# so raising the limit belongs to this crate rather than to whoever opens one;
+# already in the tree as `pamin-cli`'s, so this adds no lockfile entry.
+libc = { workspace = true }
 pamin-core = { workspace = true }
 fastembed = { workspace = true }
 hf-hub = { workspace = true }
 icu_segmenter = { workspace = true }
 icu_provider = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+# Keys a prepared copy of a model by what it was written for (see
+# `prepared.rs`). Already `pamin-engine`'s, so this adds no lockfile entry.
+sha2 = { workspace = true }
 thiserror = { workspace = true }
+tokenizers = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 whatlang = { workspace = true }
 zvec-rust = { workspace = true }
+# The inference runtime, named directly: the rerankers and BGE-M3 run their
+# sessions on it (see `encoder`), the E5 models run on it through `fastembed`,
+# and it configures the CPU execution provider (see `inference::cpu`) and, per
+# platform below, asks for a GPU one.
+ort = { workspace = true }
+
+# A GPU, when the machine has one, with no build flag: each platform's ONNX
+# Runtime build carries the accelerator that platform has, and it is tried at
+# load and dropped for the CPU when it will not register. See
+# `inference::accelerators`.
+#
+# On Linux that is CUDA, whose provider library (79 MB) is copied beside the
+# binary; using it needs the NVIDIA driver, CUDA 13 and cuDNN 9, which are the
+# user's and are not shipped. On Apple silicon it is Core ML, which is linked
+# into the binary from the system framework and needs no file beside it. On
+# Windows it is DirectML: the runtime links `DirectML.dll` (18.5 MB), which is
+# copied beside the binary because the copy Windows ships in System32 can be
+# older than the runtime needs -- with only that one the program still starts
+# and the reranker runs on the CPU. Elsewhere -- Linux on ARM, Intel Macs -- there is no prebuilt runtime
+# with an accelerator and the CPU is all there is.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+ort = { workspace = true, features = ["cuda", "copy-dylibs"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+ort = { workspace = true, features = ["coreml"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

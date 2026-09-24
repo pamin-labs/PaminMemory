@@ -767,6 +767,76 @@ fn a_query_naming_a_topic_walks_out_from_it(cli: &Cli) {
     );
 }
 
+/// The case `a_query_naming_a_topic_walks_out_from_it` cannot reach: a named
+/// topic that no index channel returned. That one runs on a workspace small
+/// enough that every channel returns every topic, so the named topic was always
+/// a candidate anyway. At a channel depth of one it is not, and the walk has to
+/// start from the name alone -- which is the whole reason names are resolved.
+///
+/// Its own workspace, because at a channel depth of one the graph keeps one
+/// neighbour, and in the shared one an unrelated edge of equal strength can
+/// take that place and make the test about tie-breaking instead.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "office_plants",
+        "the ficus by the window needs watering on thursdays",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "quartz_vein",
+        "painted blue on thursdays",
+    ]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "mine_shaft",
+        "reachable only by the east ladder",
+    ]);
+    cli.run(&["link", "quartz_vein", "mine_shaft", "--kind", "depends_on"]);
+
+    let results = cli.json(&[
+        "search",
+        "what does quartz_vein need",
+        "--limit",
+        "8",
+        "--channel-depth",
+        "1",
+        "--rerank",
+        "off",
+    ]);
+
+    // The premise: no index channel returned the named topic, so only its
+    // name can seed the walk. If one did, this is the other test again.
+    if let Some(named) = hit_containing(&results, "painted blue") {
+        let credited = credited_channels(named);
+        assert!(
+            credited.iter().all(|channel| channel == "graph"),
+            "premise: an index channel returned the named topic ({credited:?}), so this \
+             does not test seeding from the name"
+        );
+    }
+
+    let reached = hit_containing(&results, "east ladder").unwrap_or_else(|| {
+        panic!(
+            "a topic the query names should seed the walk even when no channel \
+             returned it: {:?}",
+            contents(&results)
+        )
+    });
+    assert!(
+        credited_channels(reached).contains(&"graph".to_string()),
+        "and the graph is what reached it, got {:?}",
+        credited_channels(reached)
+    );
+}
+
 fn a_retraction_says_whether_the_claim_ended_or_was_wrong(cli: &Cli) {
     cli.run(&[
         "write",
@@ -1192,17 +1262,22 @@ fn topics_are_findable_before_you_know_their_names(cli: &Cli) {
             .collect()
     };
 
+    // `deploy_en`, not a topic named for the phrase in its content. These
+    // three asserted against `deployment_pipeline`, which no memory here is
+    // written under and none ever was -- so the first failed, the other two
+    // never ran, and the negative one in the middle is the whole point of the
+    // group. Nothing reported it because no workflow runs `--ignored`.
     assert!(
-        found("deployment pipeline", "name").contains(&"deployment_pipeline".to_string()),
+        found("deploy en", "name").contains(&"deploy_en".to_string()),
         "the whole name, in words, reaches the topic through the name index"
     );
     assert!(
-        !found("deploy pipeline", "name").contains(&"deployment_pipeline".to_string()),
-        "the name index matches whole tokens: `deploy` is not `deployment`, and \
-         claiming otherwise is what this asserts against"
+        !found("deploy", "name").contains(&"deploy_en".to_string()),
+        "the name index matches whole runs of tokens: `deploy` is not \
+         `deploy en`, and claiming otherwise is what this asserts against"
     );
     assert!(
-        found("deploy pipeline", "content").contains(&"deployment_pipeline".to_string()),
+        found("deploy", "content").contains(&"deploy_en".to_string()),
         "and the forgiving route is the one that catches a half-remembered name"
     );
 }
@@ -1214,6 +1289,10 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
 
     let rebuilt = cli.json(&["reindex"]);
     assert!(rebuilt["indexed"].as_u64().unwrap_or(0) >= MEMORIES.len() as u64);
+    assert_eq!(
+        rebuilt["reused"], 0,
+        "with the index deleted there is nothing to reuse: {rebuilt}"
+    );
 
     let after = contents(&cli.json(&["search", "流水线", "--limit", "1"]));
     assert_eq!(
@@ -1916,6 +1995,10 @@ fn a_topics_history_does_not_crowd_the_index() {
         rebuilt["indexed"], 2,
         "two topics is two documents, whatever their histories: {rebuilt}"
     );
+    assert_eq!(
+        rebuilt["reused"], 2,
+        "neither topic's text changed, so neither is embedded again: {rebuilt}"
+    );
 
     // And the ranked results agree: one entry for the topic, at what it says
     // now, rather than one per revision.
@@ -2007,6 +2090,50 @@ fn an_import_records_the_whole_file_or_none_of_it() {
     let again = cli.json(&["import", "--from", good.to_str().expect("a path")]);
     assert_eq!(again["promoted"], 0);
     assert_eq!(again["held"], 2);
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// Two memories under one topic keep the file's order, however they are run.
+///
+/// The invariant that makes importing several topics at once correct rather
+/// than merely faster. `Engine::remember` reads the topic's current content and
+/// judges the new memory against it, and one of the verdicts is `Restatement`.
+/// Two writes to one topic running at once both read the content from before
+/// either of them, so the second is judged against the wrong text and a
+/// restatement is promoted as though it said something new. No transaction
+/// catches that -- both commit, and both are correct writes of a decision made
+/// on stale input.
+///
+/// The file interleaves the repeat behind another topic, so an importer that
+/// kept the file's order and ran it straight through would pass this by
+/// accident. What has to hold is that the *second* line under `first` is
+/// judged against the *first* one whatever else is in flight.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn one_topic_is_recorded_in_the_files_order() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let file = cli.home().join("repeats.ndjson");
+    std::fs::write(
+        &file,
+        "{\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n\
+         {\"topic\": \"second\", \"content\": \"the oncall rota rotates on mondays\"}\n\
+         {\"topic\": \"first\", \"content\": \"the deployment pipeline runs on argo cd\"}\n",
+    )
+    .expect("writing the file");
+
+    let imported = cli.json(&["import", "--from", file.to_str().expect("a path")]);
+    assert_eq!(imported["memories"], 3);
+    assert_eq!(
+        imported["promoted"], 2,
+        "the repeat under `first` was promoted, so it was judged against the \
+         content from before its own topic's earlier write: {imported}"
+    );
+    assert_eq!(imported["held"], 1);
 
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");

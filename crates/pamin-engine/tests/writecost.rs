@@ -125,7 +125,7 @@ fn runs(tokens: usize, width: usize) -> usize {
 /// Inserts `count` topics and the name rows the lookup reads, in two statements.
 async fn fill(database: &Database, project: pamin_core::ProjectId, count: usize, width: usize) {
     let names = names(count, width);
-    let ids: Vec<uuid::Uuid> = (0..count).map(|_| uuid::Uuid::new_v4()).collect();
+    let ids: Vec<uuid::Uuid> = (0..count).map(|_| uuid::Uuid::now_v7()).collect();
     let now = time::OffsetDateTime::now_utc();
 
     sqlx::query(
@@ -208,7 +208,7 @@ async fn one_write_does_not_pay_for_the_whole_project() {
     for topics in SCALES {
         // A name nothing else uses, so a rerun measures a fresh project rather
         // than reopening one that already holds the topics from last time.
-        let name = format!("writecost-{topics}-{}", uuid::Uuid::new_v4());
+        let name = format!("writecost-{topics}-{}", uuid::Uuid::now_v7());
         let project = repository::ensure_project(database.pool(), &name)
             .await
             .expect("ensure project");
@@ -360,7 +360,7 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
 
     let mut costs = Vec::new();
     for width in WIDTHS {
-        let name = format!("widest-{width}-{}", uuid::Uuid::new_v4());
+        let name = format!("widest-{width}-{}", uuid::Uuid::now_v7());
         let project = repository::ensure_project(database.pool(), &name)
             .await
             .expect("ensure project");

@@ -1,10 +1,11 @@
 //! `pamin unlink` — retract a relationship without erasing that it was claimed.
 
-use anyhow::{Result, bail};
-use pamin_core::{EdgeKind, TombstoneReason};
-use pamin_store::{graph, repository};
+use anyhow::Result;
+use pamin_core::TombstoneReason;
+use pamin_store::graph;
 use serde::{Deserialize, Serialize};
 
+use crate::command::resolve;
 use crate::session::Session;
 
 #[derive(clap::Args, Serialize, Deserialize)]
@@ -39,19 +40,13 @@ pub struct Unlinked {
 }
 
 pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Unlinked> {
-    let Some(kind) = EdgeKind::parse(&args.kind) else {
-        bail!("unknown relationship kind {:?}", args.kind);
-    };
+    let kind = resolve::edge_kind(&args.kind)?;
 
     let database = session.database();
     let project = session.project(project).await?;
 
-    let Some(from) = repository::find_topic(database.pool(), project, &args.from).await? else {
-        bail!("no topic named {}", args.from);
-    };
-    let Some(to) = repository::find_topic(database.pool(), project, &args.to).await? else {
-        bail!("no topic named {}", args.to);
-    };
+    let from = resolve::topic_id(database, project, &args.from).await?;
+    let to = resolve::topic_id(database, project, &args.to).await?;
 
     // The reason is not bookkeeping. It decides whether a question about an
     // earlier instant still finds this edge: a relationship that ended did
@@ -66,7 +61,7 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Unl
 
     // The rows stay either way, so what was believed and when stays
     // answerable, and the truth interval is untouched.
-    let closed = graph::close_edge(database.pool(), project, from.id, to.id, kind, reason).await?;
+    let closed = graph::close_edge(database.pool(), project, from, to, kind, reason).await?;
 
     let result = Unlinked {
         from: args.from,
