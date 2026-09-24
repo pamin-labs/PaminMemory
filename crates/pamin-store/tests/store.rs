@@ -914,16 +914,30 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
                 let database = Database::connect(&server, Connections::PerCommand)
                     .await
                     .expect("connect");
-                committed!(
-                    &database,
-                    repository::append_source_version,
+                // The write path's sequence: find the source, which locks it,
+                // then append under that lock in the same transaction.
+                let mut transaction = database.pool().begin().await.expect("begin");
+                let found = repository::ensure_source(
+                    &mut transaction,
+                    project.id,
+                    SourceKind::Manual,
+                    "contended-source",
+                )
+                .await
+                .expect("ensure source");
+                assert_eq!(found, source);
+                let appended = repository::append_source_version(
+                    &mut transaction,
                     project.id,
                     source,
                     &format!("evidence from writer {writer}"),
                     "hash",
                     FilterDecision::Promoted,
-                    "test fixture"
+                    "test fixture",
                 )
+                .await;
+                transaction.commit().await.expect("commit");
+                appended
             })
         })
         .collect();
