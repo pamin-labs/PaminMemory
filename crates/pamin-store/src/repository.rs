@@ -4,9 +4,9 @@
 //! delete, which sets `deleted_at` and leaves the content intact.
 
 use pamin_core::{
-    Derivation, EdgeKind, FilterDecision, JobKind, Project, ProjectId, RetrievalSignals, SourceId,
-    SourceKind, SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic,
-    TopicId, TopicState, TopicStateId, Validity,
+    Derivation, EdgeKind, FilterDecision, JobKind, Project, ProjectId, SourceId, SourceKind,
+    SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic, TopicId,
+    TopicState, TopicStateId, Validity,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgExecutor, PgPool, Row};
@@ -33,9 +33,6 @@ sql_enum!(FilterDecision {
 
 sql_enum!(SourceKind {
     Manual => "manual",
-    File => "file",
-    Directory => "directory",
-    ChatLog => "chat_log",
 });
 
 sql_enum!(EdgeKind {
@@ -314,6 +311,13 @@ pub async fn ensure_topic(
 /// back instead (another `SELECT` in the transaction, or a scalar subquery in
 /// the `RETURNING`) would pay a round trip to save nothing.
 ///
+/// Takes the evidence rather than the content, because a state's content *is*
+/// its span of the evidence and is not stored a second time. It used to be: a
+/// `content` column on every state, which on the evaluation workspace equalled
+/// the span's slice of `source_versions.content` in all 425,916 rows. Asking
+/// the caller for the evidence instead of for a string is what keeps the two
+/// from being able to disagree.
+///
 /// Runs in a transaction that first locks the topic row. Without that lock, two
 /// concurrent writers can both read the same maximum version and race to insert
 /// it; one loses on the unique constraint, and the loser's content is dropped
@@ -323,11 +327,16 @@ pub async fn append_topic_state(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     topic: TopicId,
-    content: &str,
+    evidence: &SourceVersion,
     source_span: &SourceSpan,
     observed_at: OffsetDateTime,
     validity: Validity,
 ) -> Result<TopicState> {
+    debug_assert_eq!(
+        source_span.source_version_id, evidence.id,
+        "a state's span has to point into the evidence it is cut from"
+    );
+
     sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
         .bind(topic.0)
         .execute(&mut *connection)
@@ -345,17 +354,16 @@ pub async fn append_topic_state(
 
     let row = sqlx::query(
         "INSERT INTO topic_states (
-             id, project_id, topic_id, version, content, source_span_id,
+             id, project_id, topic_id, version, source_span_id,
              observed_at, recorded_at, supersedes, valid_from, valid_to
          )
-         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10
+         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9
          FROM topic_states WHERE topic_id = $3
          RETURNING id, version, recorded_at",
     )
     .bind(TopicStateId::new().0)
     .bind(project.0)
     .bind(topic.0)
-    .bind(content)
     .bind(source_span.id.0)
     .bind(observed_at)
     .bind(OffsetDateTime::now_utc())
@@ -370,7 +378,12 @@ pub async fn append_topic_state(
         project_id: project,
         topic_id: topic,
         version: from_sql_version(row.get("version")),
-        content: content.to_string(),
+        content: span_text(
+            &evidence.content,
+            source_span.byte_start,
+            source_span.byte_end,
+        )
+        .to_string(),
         source_span_id: source_span.id,
         language: source_span.detected_language.clone(),
         observed_at,
@@ -378,7 +391,6 @@ pub async fn append_topic_state(
         validity,
         supersedes: previous,
         deleted_at: None,
-        signals: RetrievalSignals::default(),
     };
 
     // The appended state is the newest surviving one by construction, so the
@@ -415,7 +427,7 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
         project_id: row.get::<uuid::Uuid, _>("project_id").into(),
         topic_id: row.get::<uuid::Uuid, _>("topic_id").into(),
         version: from_sql_version(row.get("version")),
-        content: row.get("content"),
+        content: content_of_span(row),
         source_span_id: row.get::<uuid::Uuid, _>("source_span_id").into(),
         language: row.get("detected_language"),
         observed_at: row.get("observed_at"),
@@ -425,17 +437,67 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
             .get::<Option<uuid::Uuid>, _>("supersedes")
             .map(Into::into),
         deleted_at: row.get("deleted_at"),
-        signals: RetrievalSignals {
-            importance: row.get("importance"),
-            worth_positive: row.get::<i32, _>("worth_positive") as u32,
-            worth_negative: row.get::<i32, _>("worth_negative") as u32,
-            access_count: row.get::<i32, _>("access_count") as u32,
-            last_accessed_at: row.get("last_accessed_at"),
-        },
     }
 }
 
-/// The columns `row_to_topic_state` reads.
+/// The text a span covers: `byte_start..byte_end` of its evidence.
+///
+/// Byte offsets, as `SourceSpan` defines them, which is why the cut is made
+/// here rather than with SQL's `substring` -- that counts characters, and the
+/// two part company at the first character outside ASCII.
+fn span_text(evidence: &str, byte_start: u32, byte_end: u32) -> &str {
+    &evidence[byte_start as usize..byte_end as usize]
+}
+
+/// A state's content, cut from the evidence the row joined in through
+/// `span_columns!`.
+///
+/// Every span the write path records covers its evidence whole, so the usual
+/// case hands the string over rather than copying it.
+fn content_of_span(row: &PgRow) -> String {
+    let evidence: String = row.get("evidence");
+    let (start, end) = (
+        row.get::<i32, _>("byte_start") as u32,
+        row.get::<i32, _>("byte_end") as u32,
+    );
+    if start == 0 && end as usize == evidence.len() {
+        evidence
+    } else {
+        span_text(&evidence, start, end).to_string()
+    }
+}
+
+/// The span columns every state read needs, spelled the way every statement
+/// below spells them: its language, and the evidence its content is cut from.
+///
+/// `topic_states.source_span_id` is `NOT NULL` and references `source_spans`,
+/// which references `source_versions` the same way, so the inner joins that
+/// bring these in cannot drop a state. What is nullable is the language:
+/// detection declines on content too short to be sure about.
+///
+/// Both joins are on a primary key. The first was measured on
+/// `current_states_of` at its hundred-and-fifty-candidate ceiling, same rows,
+/// same process, alternating: 1.00 ms median without it and 1.04 ms with, over
+/// three runs. The second costs more, because it is where the text is read:
+/// on XQuAD-R's 2,640 paragraphs, builds before and after it alternated over
+/// five rounds, `current_states_of` at 150 topics went from 1.70 ms to 2.06.
+/// That is the price of keeping each memory's text once; `docs/measured.md`
+/// has the rest.
+macro_rules! span_columns {
+    () => {
+        ", sp.detected_language, sp.byte_start, sp.byte_end, sv.content AS evidence"
+    };
+}
+
+/// The joins `span_columns!` reads from, off a `topic_states` aliased `ts`.
+macro_rules! span_joins {
+    () => {
+        " JOIN source_spans sp ON sp.id = ts.source_span_id
+          JOIN source_versions sv ON sv.id = sp.source_version_id"
+    };
+}
+
+/// The columns `row_to_topic_state` reads from `topic_states` itself.
 ///
 /// A macro rather than a constant so the statements below can be assembled with
 /// `concat!` and stay `&'static str`. sqlx accepts only a statement that is
@@ -448,24 +510,8 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
 /// ambiguous there. PostgreSQL raises that at execution, so only a query that
 /// actually runs finds it.
 ///
-/// The language column is not in here. It lives on the other table, so it takes
-/// a different alias and is spelled out at each call site instead.
-/// The language column, spelled the way every statement below spells it.
-///
-/// `topic_states.source_span_id` is `NOT NULL` and references `source_spans`,
-/// so the inner join that brings this in cannot drop a state. What is nullable
-/// is the value: detection declines on content too short to be sure about.
-///
-/// The join is on `source_spans`' primary key and costs about that much.
-/// Measured on `current_states_of` at its hundred-and-fifty-candidate ceiling,
-/// same rows, same process, alternating: 1.00 ms median without it and 1.04 ms
-/// with, over three runs.
-macro_rules! language_column {
-    () => {
-        ", sp.detected_language"
-    };
-}
-
+/// The content is not in here. It is the span's text, so it comes from the
+/// evidence through `span_columns!`.
 macro_rules! state_columns {
     ($alias:literal) => {
         concat!(
@@ -477,8 +523,6 @@ macro_rules! state_columns {
             "topic_id, ",
             $alias,
             "version, ",
-            $alias,
-            "content, ",
             $alias,
             "source_span_id, ",
             $alias,
@@ -492,17 +536,7 @@ macro_rules! state_columns {
             $alias,
             "supersedes, ",
             $alias,
-            "deleted_at, ",
-            $alias,
-            "importance, ",
-            $alias,
-            "worth_positive, ",
-            $alias,
-            "worth_negative, ",
-            $alias,
-            "access_count, ",
-            $alias,
-            "last_accessed_at"
+            "deleted_at"
         )
     };
 }
@@ -536,10 +570,10 @@ pub async fn topic_state(
     let row = sqlx::query(concat!(
         "SELECT ",
         state_columns!("ts."),
-        language_column!(),
-        " FROM topic_states ts
-          JOIN source_spans sp ON sp.id = ts.source_span_id
-          WHERE ts.topic_id = $1 AND ts.version = $2"
+        span_columns!(),
+        " FROM topic_states ts",
+        span_joins!(),
+        " WHERE ts.topic_id = $1 AND ts.version = $2"
     ))
     .bind(topic.0)
     .bind(to_sql_version(version))
@@ -562,11 +596,11 @@ pub async fn all_current_topic_states(
     let rows = sqlx::query(concat!(
         "SELECT ",
         state_columns!("ts."),
-        language_column!(),
+        span_columns!(),
         " FROM topics
-          JOIN topic_states ts ON ts.id = topics.current_state_id
-          JOIN source_spans sp ON sp.id = ts.source_span_id
-          WHERE topics.project_id = $1 AND ts.deleted_at IS NULL
+          JOIN topic_states ts ON ts.id = topics.current_state_id",
+        span_joins!(),
+        " WHERE topics.project_id = $1 AND ts.deleted_at IS NULL
           ORDER BY ts.topic_id ASC"
     ))
     .bind(project.0)
@@ -600,43 +634,6 @@ pub async fn current_topic_ids(
     Ok(ids.into_iter().map(TopicId::from).collect())
 }
 
-/// Loads these states, skipping any the ledger has soft deleted.
-///
-/// The search path's replacement for reading the project. What it needs is the
-/// states the recall channels actually returned, which is a few hundred rows
-/// whatever the project holds; loading every live state to answer that was the
-/// single largest thing a query did.
-///
-/// Soft-deleted states are dropped here rather than after ranking. Filtering
-/// afterwards meant a state the ledger had removed still occupied a place in
-/// each channel's candidate budget, so deleting content quietly reduced how
-/// much a search could find.
-pub async fn topic_states_by_id(
-    executor: impl PgExecutor<'_>,
-    project: ProjectId,
-    states: &[TopicStateId],
-) -> Result<Vec<TopicState>> {
-    if states.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let ids: Vec<uuid::Uuid> = states.iter().map(|state| state.0).collect();
-    let rows = sqlx::query(concat!(
-        "SELECT ",
-        state_columns!("ts."),
-        language_column!(),
-        " FROM topic_states ts
-          JOIN source_spans sp ON sp.id = ts.source_span_id
-          WHERE ts.project_id = $1 AND ts.id = ANY($2) AND ts.deleted_at IS NULL"
-    ))
-    .bind(project.0)
-    .bind(&ids)
-    .fetch_all(executor)
-    .await?;
-
-    Ok(rows.iter().map(row_to_topic_state).collect())
-}
-
 /// Loads the states these topics currently resolve to.
 ///
 /// Through the pointer on `topics`, so this is a primary key lookup per topic
@@ -659,11 +656,11 @@ pub async fn current_states_of(
     let rows = sqlx::query(concat!(
         "SELECT ",
         state_columns!("ts."),
-        language_column!(),
+        span_columns!(),
         " FROM topic_states ts
-          JOIN topics t ON t.current_state_id = ts.id
-          JOIN source_spans sp ON sp.id = ts.source_span_id
-          WHERE t.project_id = $1 AND t.id = ANY($2)"
+          JOIN topics t ON t.current_state_id = ts.id",
+        span_joins!(),
+        " WHERE t.project_id = $1 AND t.id = ANY($2)"
     ))
     .bind(project.0)
     .bind(&ids)
@@ -694,18 +691,19 @@ pub async fn current_content(
     project: ProjectId,
     name: &str,
 ) -> Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT ts.content
+    let row = sqlx::query(concat!(
+        "SELECT sp.byte_start, sp.byte_end, sv.content AS evidence
            FROM topics t
-           JOIN topic_states ts ON ts.id = t.current_state_id
-          WHERE t.project_id = $1 AND t.name = $2",
-    )
+           JOIN topic_states ts ON ts.id = t.current_state_id",
+        span_joins!(),
+        " WHERE t.project_id = $1 AND t.name = $2"
+    ))
     .bind(project.0)
     .bind(name)
     .fetch_optional(executor)
     .await?;
 
-    Ok(row.map(|(content,)| content))
+    Ok(row.as_ref().map(content_of_span))
 }
 
 /// Names these topics, and says which state each currently resolves to.
@@ -783,10 +781,10 @@ pub async fn soft_delete_topic_state(
     let surviving = sqlx::query(concat!(
         "SELECT ",
         state_columns!("ts."),
-        language_column!(),
-        " FROM topic_states ts
-          JOIN source_spans sp ON sp.id = ts.source_span_id
-          WHERE ts.topic_id = $1 AND ts.deleted_at IS NULL
+        span_columns!(),
+        " FROM topic_states ts",
+        span_joins!(),
+        " WHERE ts.topic_id = $1 AND ts.deleted_at IS NULL
           ORDER BY ts.version DESC LIMIT 1"
     ))
     .bind(topic.0)
@@ -944,24 +942,44 @@ pub async fn grep_evidence(
 
     Ok(rows
         .iter()
-        .map(|row| EvidenceMatch {
-            source_version: SourceVersion {
-                id: row.get::<uuid::Uuid, _>("id").into(),
-                project_id: row.get::<uuid::Uuid, _>("project_id").into(),
-                source_id: row.get::<uuid::Uuid, _>("source_id").into(),
-                version: from_sql_version(row.get("version")),
-                content: row.get("content"),
-                content_hash: row.get("content_hash"),
-                filter_decision: FilterDecision::from_label(row.get("filter_decision"))
-                    .unwrap_or(FilterDecision::Promoted),
-                filter_reason: row.get("filter_reason"),
-                recorded_at: row.get("recorded_at"),
-            },
-            locator: row.get("locator"),
-            // SQL positions are one-based; byte offsets are not.
-            offset: (row.get::<i32, _>("match_position") as usize).saturating_sub(1),
+        .map(|row| {
+            let content: String = row.get("content");
+            let offset = byte_offset(&content, row.get::<i32, _>("match_position") as usize);
+            EvidenceMatch {
+                source_version: SourceVersion {
+                    id: row.get::<uuid::Uuid, _>("id").into(),
+                    project_id: row.get::<uuid::Uuid, _>("project_id").into(),
+                    source_id: row.get::<uuid::Uuid, _>("source_id").into(),
+                    version: from_sql_version(row.get("version")),
+                    content,
+                    content_hash: row.get("content_hash"),
+                    filter_decision: FilterDecision::from_label(row.get("filter_decision"))
+                        .unwrap_or(FilterDecision::Promoted),
+                    filter_reason: row.get("filter_reason"),
+                    recorded_at: row.get("recorded_at"),
+                },
+                locator: row.get("locator"),
+                offset,
+            }
         })
         .collect())
+}
+
+/// Where the match SQL's `position` found starts, in bytes of `content`.
+///
+/// `position` answers in characters, counting from one, and an offset here is
+/// bytes -- the unit `span_text` cuts in and every caller slices with. The two
+/// agree only while everything before the match is ASCII. Counting the
+/// characters again in Rust is exact because the cluster is initialised UTF-8,
+/// where PostgreSQL's character is a code point and so is a Rust `char`. It
+/// holds for the folded search too: under the default libc provider `lower`
+/// maps one character to one, so a position in the folded text is the same
+/// position in the original.
+fn byte_offset(content: &str, position: usize) -> usize {
+    content
+        .char_indices()
+        .nth(position.saturating_sub(1))
+        .map_or(content.len(), |(byte, _)| byte)
 }
 
 /// Records how a topic's name tokenizes, for the name index.

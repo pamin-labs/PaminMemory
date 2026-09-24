@@ -161,6 +161,7 @@
 //! question and takes a eleventh of the time.
 
 mod channels;
+mod features;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -245,6 +246,8 @@ struct Sentence {
 /// not parallel, so a Thai paragraph holds 852 sentences where the German one
 /// holds 1,276 and nothing can be matched by position.
 struct Question {
+    /// The dataset's own id, the same in all eleven files.
+    id: String,
     /// The question text, per language.
     asked: HashMap<&'static str, String>,
     /// The key of the answering sentence, per language.
@@ -392,6 +395,7 @@ impl Corpus {
             .map(|id| Question {
                 asked: asked.remove(&id).expect("the question text"),
                 answers: answers.remove(&id).expect("the answering sentences"),
+                id,
             })
             // A question the eleven files do not agree on cannot be scored
             // cross-lingually. There are none today; this is what would happen
@@ -718,8 +722,7 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     // group the query's own language is *never* the answer -- the one gold
     // sentence in it is removed from the ranking -- so a channel whose head is
     // mostly the query's own language is spending its head on candidates that
-    // cannot be right, and it is the additive promotion of exactly those that
-    // `Fusion::needing_support` is a candidate remedy for.
+    // cannot be right.
     println!("  what language each channel's top {NDCG_AT} is in, {named}");
     println!("  channel                own language   of returned   share");
     println!("  ----------------------------------------------------------");
@@ -1206,6 +1209,35 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
+    // fusion offline. See `features`. Each query is written in both groups,
+    // and its question id is the dataset's, so every asking of one question
+    // can be kept in one fold.
+    if let Some(mut dump) = features::Features::from_env("xquad-r") {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        for query in &queries {
+            let hits = engine
+                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            for group in GROUPS {
+                let (relevant, drop) = query.relevant(group);
+                let asked = features::Asked {
+                    group,
+                    question: &format!("{}/{}", query.question.id, query.language),
+                    text: query.text(),
+                    language: Some(query.language),
+                    judged: relevant.len(),
+                };
+                dump.observe(&asked, &hits, WIDE, |topic| {
+                    (drop != Some(topic)).then(|| f64::from(relevant.contains(topic)))
+                });
+            }
+        }
+        dump.finish(queries.len() * GROUPS.len());
+        return;
+    }
+
     // `CHANNELS` reports what each channel is worth on its own, what the fused
     // list looks like with each one taken away, how far the two lexical
     // channels agree with each other, and whether the reranker keeps a query's
@@ -1213,6 +1245,36 @@ async fn search_reaches_across_languages() {
     // channel's rank for every candidate. See `channels`.
     if std::env::var("CHANNELS").is_ok() {
         report_channels(&engine, &queries, &named).await;
+        return;
+    }
+
+    // `DEPTH_VARIANTS`: every question through the shipped path at other
+    // rerank depths, paired. Each question is listed once per group, since the
+    // groups judge the same ranking differently; the second asking reranks
+    // from the reranker's own cache. See `channels::compare_reranked`.
+    if let Some(variants) = channels::requested_variants() {
+        let asked: Vec<(&Query<'_>, &str)> = queries
+            .iter()
+            .flat_map(|query| GROUPS.map(|group| (query, group)))
+            .collect();
+        let questions: Vec<(String, String)> = asked
+            .iter()
+            .map(|(query, group)| (query.text().to_string(), group.to_string()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            &format!("XQuAD-R, {named}"),
+            &questions,
+            DEPTH as u32,
+            DEPTHS,
+            &variants,
+            |index, into, hits| {
+                let (query, group) = asked[index];
+                let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+                score_group(into, query, group, &ranked);
+            },
+        )
+        .await;
         return;
     }
 

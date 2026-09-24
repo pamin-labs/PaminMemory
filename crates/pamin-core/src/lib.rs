@@ -24,7 +24,7 @@ pub use id::{
     SourceVersionId, TopicId, TopicStateId,
 };
 pub use ledger::{
-    FilterDecision, Project, RetrievalSignals, Source, SourceKind, SourceSpan, SourceVersion,
-    Topic, TopicState, Validity,
+    FilterDecision, Project, Source, SourceKind, SourceSpan, SourceVersion, Topic, TopicState,
+    Validity,
 };
 pub use version::{ResolvedVersion, VersionOffset, resolve};
