@@ -669,11 +669,18 @@ the test prints it:
 | model | from the download | from the copy | the copy's data file |
 | --- | --- | --- | --- |
 | `accurate` reranker | 822 | **271** | 833 |
-| BGE-M3, the `accuracy` embedder | 824 | **272** | 832 |
+| BGE-M3, the `accuracy` embedder until pplx-embed | 824 | **272** | 832 |
 | `fast` reranker | 385 | **268** | 133 |
 
 Every score and every vector is bit-identical, and the figures repeated to the
-megabyte across two runs. What the copy leaves is mostly not the weights: a
+megabyte across two runs. The embedder that replaced BGE-M3, pplx-embed from
+Perplexity's 8-bit export, was measured the same way after the change: 592 from
+the download, **66** from the copy, a data file of 1,199, bit-identical over
+5,120 outputs -- a small heap because its download keeps its weights in a data
+file the runtime maps as well, which also makes it the one model here whose
+copy saves less than half its data file (see `tests/prepared.rs`). The two
+rerankers, re-taken in the same run on a different machine load, came to 850
+against 292 and 395 against 279. What the copy leaves is mostly not the weights: a
 bare runtime session adds 139 MB loading the `fast` reranker's download and
 12 MB loading its copy, so most of the 268 is what a load holds besides its
 session. The data file is the price, on disk rather than in memory -- larger
@@ -688,11 +695,14 @@ process, 280 MiB for each. The `accurate`
 reranker describes exactly BGE-M3's model, every piece and score bit for bit, and `fast`
 differs only in leaving a default flag unstated, so a loaded model now finds
 one already built rather than building its own; see
-`crates/pamin-index/src/tokenizer.rs`.
-`crates/pamin-index/tests/shared_vocabulary.rs` measures it with BGE-M3 and
-the `accurate` reranker both loaded, as a server searching at the defaults
-holds them, through `Embedder::load` and `Reranker::load` against `fastembed`
-loading the same prepared copies the way the product did before. Each arm is a
+`crates/pamin-index/src/tokenizer.rs`. The table below measured it with BGE-M3
+and the `accurate` reranker both loaded, as a server searching at the defaults
+held them then, through `Embedder::load` and `Reranker::load` against
+`fastembed` loading the same prepared copies the way the product did before.
+pplx-embed has a vocabulary of its own, so at the defaults there is nothing to
+share now; the two reranker tiers still share theirs, and
+`crates/pamin-index/tests/shared_vocabulary.rs` measures that pair instead
+(not re-run since the change). Each arm is a
 fresh process; nine rounds across two runs, on four cores shared with another
 measurement, in MiB:
 

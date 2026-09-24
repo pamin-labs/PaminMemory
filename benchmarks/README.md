@@ -6,6 +6,15 @@ arm reads with the same model, and every arm that embeds uses the same weights.
 What is left varying is the memory system, which is the only way a number here
 says anything about memory systems.
 
+**That second premise is broken until the shim is updated.** The shim and
+`embedder.py` serve BGE-M3, which was Påmin Memory's own model when every
+result under `results/` was taken. Påmin Memory now embeds with pplx-embed in
+process, so a run today would give its arm one model and every other arm
+another. Serve pplx-embed the way the product runs it -- Perplexity's 8-bit
+export with every `MatMulNBits` node at `accuracy_level` 4, read from its
+`pooler_output_int8` output at unit length (see
+`crates/pamin-index/src/nbits.rs`) -- before comparing anything again.
+
 ## Layout
 
 ```

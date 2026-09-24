@@ -1066,8 +1066,10 @@ and RSS charges it to each of them — 326 MB summed as RSS against 78 MB as
 PSS, for the same ten processes. The `pamin` figure includes that cluster.
 
 The embedder column is an architectural difference, not an accounting one, and
-folding it into a single number would hide it. `pamin` loads BGE-M3 into its
-own process. mem0 calls out for embeddings — here to the shared endpoint, in
+folding it into a single number would hide it. `pamin` loaded BGE-M3 into its
+own process -- its model when this was measured; it loads pplx-embed now,
+measured at 797 MiB against BGE-M3's 628 on its own, and these rows have not
+been re-taken. mem0 calls out for embeddings — here to the shared endpoint, in
 its default deployment to a hosted API. So mem0 running its embedder locally
 is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
 177 MB locally plus a bill.

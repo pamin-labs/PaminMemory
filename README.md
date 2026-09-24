@@ -105,7 +105,9 @@ not embed nothing** — it embeds every turn it stores, 5,882 of them, more than
 MemPalace and about as many as mem0, because the other two distil first and it
 does not. And **the service is not one you must run**: all three can point at a
 local embedder, which is exactly what this benchmark does — the same BGE-M3,
-through the same endpoint, for all three. So the cost of these embeddings is
+through the same endpoint, for all three. (BGE-M3 was Påmin Memory's own model
+then; it now embeds with pplx-embed, and this comparison has not been re-run
+since.) So the cost of these embeddings is
 CPU in every case, and what the second row measures is not a bill but where the
 embedder lives: inside the process that holds the index, or across a socket.
 
@@ -138,7 +140,8 @@ the reader fewer tokens, 1,017 against 1,511, because rewritten facts are
 shorter than the passages they came from; that costs nothing in time here but
 it is real money at volume. And holding the embedding model in-process costs
 about 2 GB resident where a system calling out to an endpoint holds 177 MB and
-a bill.
+a bill — measured with BGE-M3; pplx-embed, the model now, held 170 MiB more
+than BGE-M3 measured alone.
 
 ## Quickstart
 

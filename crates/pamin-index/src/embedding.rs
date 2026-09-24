@@ -225,9 +225,10 @@ impl Embedder {
     /// Queries and passages take different prefixes, so this is not the same
     /// call as `embed_passage` even though both end in one forward pass.
     ///
-    /// Remembered, because the pass is the most expensive thing a search does
-    /// -- 16.9 ms of a search at the shipping profile -- and a query is a pure
-    /// function of the model and the text. What makes it worth remembering is
+    /// Remembered, because the pass is one of the most expensive things a
+    /// search does -- 16.9 ms of one when BGE-M3 was the model, and pplx-embed
+    /// measured about 4.5 times BGE-M3's -- and a query is a pure function of
+    /// the model and the text. What makes it worth remembering is
     /// the same thing that makes the reranker remember its scores: an agent
     /// retries, widens a limit, and asks again after writing something. Only
     /// queries. A passage is embedded once in its life, so a cache of those
