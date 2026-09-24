@@ -99,7 +99,13 @@ moved to a different CPU, writes a new one and leaves the old one in place; it
 is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
 from the download, for a disk that cannot spare the second copy. When a copy
 cannot be written -- a full or read-only disk -- the model loads from the
-download anyway and the log says why.
+download anyway and the log says why. Where the runtime left a model's
+attention as separate operators -- the `accurate` reranker's int8 export --
+the copy also gets a second graph, `attention.onnx`, with each layer's
+attention as one fused operator; it is kept only if it scores a probe
+bit-for-bit as the first does, and otherwise `attention.unfused` says why.
+`PAMIN_FUSED_ATTENTION=off` loads the unfused graph, for measuring one
+against the other.
 
 The reranker runs on a GPU when the machine has one, with no flag and no
 separate build. Each platform's inference runtime carries the accelerator that

@@ -671,6 +671,16 @@ impl Reranker {
         })
     }
 
+    /// Whether the tier's weights for the CPU are on disk already, so that
+    /// loading it reads a file rather than fetching half a gigabyte.
+    ///
+    /// For a caller loading a tier nobody has asked for yet -- a resident
+    /// server warming a project -- which should not be what downloads it.
+    pub fn is_downloaded(tier: Rerank, cache_dir: &Path) -> bool {
+        tier != Rerank::Off
+            && crate::hub::is_cached(cache_dir, tier.repository(), tier.onnx(Device::Cpu))
+    }
+
     /// Where this reranker's passes run. See [`Device`].
     pub fn device(&self) -> Device {
         self.device

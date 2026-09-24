@@ -151,6 +151,18 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
         // for one key share it rather than queueing on the registry.
     }
 
+    /// Whether this key has a place here, open or being opened.
+    ///
+    /// Does not count as a use, for the same reason [`Registry::opened`]
+    /// does not.
+    pub fn holds(&self, key: &K) -> bool {
+        self.open
+            .lock()
+            .expect("the registry lock is poisoned")
+            .slots
+            .contains_key(key)
+    }
+
     /// The keys currently held, for a caller that works through all of them.
     ///
     /// Keys rather than values, so that walking them does not pin every one

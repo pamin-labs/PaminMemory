@@ -24,9 +24,7 @@ impl Repository {
     /// not -- a mirror set for one and not the other, or two copies of the
     /// cache. Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
-        let cache_dir = std::env::var_os("HF_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| cache_dir.to_path_buf());
+        let cache_dir = cache_root(cache_dir);
         let mut builder = hf_hub::api::sync::ApiBuilder::new()
             .with_cache_dir(cache_dir)
             .with_progress(false);
@@ -50,4 +48,22 @@ impl Repository {
             IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
         })
     }
+}
+
+/// Where the hub's files are cached: `HF_HOME` when it is set, as
+/// [`Repository::open`] reads it, and the workspace's model directory
+/// otherwise.
+fn cache_root(cache_dir: &Path) -> PathBuf {
+    std::env::var_os("HF_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cache_dir.to_path_buf())
+}
+
+/// Whether `file` of repository `name` is already on disk, without asking the
+/// hub anything.
+pub(crate) fn is_cached(cache_dir: &Path, name: &str, file: &str) -> bool {
+    hf_hub::Cache::new(cache_root(cache_dir))
+        .model(name.to_string())
+        .get(file)
+        .is_some()
 }

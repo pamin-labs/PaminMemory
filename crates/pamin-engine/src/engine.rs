@@ -383,6 +383,44 @@ impl Models {
         Ok(reranker)
     }
 
+    /// Loads the embedder for `profile` and the reranker for `tier`, at once,
+    /// before anything has asked for either.
+    ///
+    /// For a resident server that has just been asked something about a
+    /// project it holds nothing for: most of the first search after an idle
+    /// release is these two loads (see the `COLD` arm of
+    /// `tests/retrieval.rs`), and started when the project is first touched
+    /// they run while that request is answered and while the agent reads the
+    /// answer, instead of in front of the search that needs them. What is
+    /// loaded is handed out and released like anything else here -- it is
+    /// stamped as used now, and given back after [`model_idle`] if nothing
+    /// asks for it -- so warming a model nobody then uses costs it for one
+    /// idle window and no longer.
+    ///
+    /// The reranker only if its weights are on disk already. A tier this
+    /// workspace has never searched at may be one it never will -- `off` is
+    /// what `docs/cli.md` tells a one-language workspace to choose -- and a
+    /// warm-up that fetched half a gigabyte for it would be the opposite of
+    /// the point. The embedder is loaded either way: every write and every
+    /// search needs it.
+    ///
+    /// Blocking, and both loads hold their registry's lock, so a search that
+    /// arrives meanwhile waits for the load in flight instead of starting a
+    /// second. Two threads because the two loads are independent: the `COLD`
+    /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
+    pub fn warm(&self, profile: Profile, tier: Rerank) -> Result<(), pamin_index::IndexError> {
+        std::thread::scope(|scope| {
+            let reranker = Reranker::is_downloaded(tier, &self.dir)
+                .then(|| scope.spawn(|| self.reranker(tier)));
+            let embedder = self.get(profile);
+            let reranker =
+                reranker.map(|loading| loading.join().expect("a reranker load panicked"));
+            embedder?;
+            reranker.transpose()?;
+            Ok(())
+        })
+    }
+
     /// What a loaded reranker has been asked to do, or `None` if this process
     /// never loaded that tier.
     ///
@@ -1373,10 +1411,10 @@ impl Engine {
     /// positions those candidates already hold.
     ///
     /// Fused deeper than it returns, because a reranker that only sees what the
-    /// caller asked for has nothing to work with. See [`fused_for`]: the tier's
-    /// depth was measured over a list of fifty and the default `--limit` is
-    /// five, so cutting first left it reordering five candidates and usually
-    /// declining to reorder at all.
+    /// caller asked for has nothing to work with: the tier's depth was measured
+    /// over a list of fifty and the default `--limit` is five, so cutting first
+    /// left it reordering five candidates and usually declining to reorder at
+    /// all.
     ///
     /// Every cross-encoder measured improves cross-lingual ranking and damages
     /// same-language ranking by about as much: fusion is already good at
@@ -1453,25 +1491,31 @@ impl Engine {
             drop(tokio::task::spawn_blocking(move || models.reranker(rerank)));
         }
 
-        let hits = self
-            .search_fused(query, fused_for(limit, rerank), depths, fusion)
-            .await?;
-        if rerank == Rerank::Off || hits.is_empty() {
-            return Ok(hits);
+        // The whole fused list rather than the caller's limit or the tier's
+        // head: the reranker is also shown the strongest candidates only the
+        // graph found, wherever fusion put them (see [`GRAPH_CANDIDATES`]).
+        // Every one of them is already resolved against the ledger. What is
+        // not made for all of them is the hit -- the state, the topic's name
+        // and the seed's content, copied -- which is made only for what the
+        // caller is given; the reranker reads the few it is shown in place.
+        let mut fused = self.fused(query, depths, fusion).await?;
+        if rerank == Rerank::Off || fused.results.is_empty() {
+            return Ok(fused.hits(limit));
         }
 
-        let traces: Vec<&[Why]> = hits.iter().map(|hit| hit.result.why.as_slice()).collect();
+        let traces: Vec<&[Why]> = fused
+            .results
+            .iter()
+            .map(|result| result.why.as_slice())
+            .collect();
         let unlexical = rerankable(&traces, rerank);
         if !can_be_seen(&unlexical, limit) {
-            return Ok(only(hits, limit));
+            return Ok(fused.hits(limit));
         }
 
         let shown: Vec<String> = unlexical
             .iter()
-            .map(|position| {
-                let hit = &hits[*position];
-                shown(&hit.topic, &hit.state.content, hit.seed.as_deref())
-            })
+            .map(|position| fused.shown(&fused.results[*position]))
             .collect();
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
@@ -1496,20 +1540,21 @@ impl Engine {
         // channel entries that answer the same question. A candidate the
         // reranker never saw carries no entry, which is how a reader -- and
         // the threshold sweep this unblocks -- tells the two cases apart.
-        let mut hits = hits;
         for ranked in &ordered {
-            hits[unlexical[ranked.position]]
-                .result
+            fused.results[unlexical[ranked.position]]
                 .why
                 .push(Why::Reranked {
                     score: ranked.score,
                 });
         }
         let best_first: Vec<usize> = ordered.iter().map(|ranked| ranked.position).collect();
-        Ok(only(
-            place(hits, &unlexical, rerank.depth(), &best_first),
-            limit,
-        ))
+        fused.results = place(
+            std::mem::take(&mut fused.results),
+            &unlexical,
+            rerank.depth(),
+            &best_first,
+        );
+        Ok(fused.hits(limit))
     }
 
     /// The same search, with the fusion settings supplied.
@@ -1531,6 +1576,12 @@ impl Engine {
         depths: Depths,
         fusion: Fusion,
     ) -> Result<Vec<SearchHit>> {
+        Ok(self.fused(query, depths, fusion).await?.hits(limit))
+    }
+
+    /// Every fused result, ranked and explained, with what it takes to make
+    /// any of them a [`SearchHit`].
+    async fn fused(&self, query: &str, depths: Depths, fusion: Fusion) -> Result<Fused> {
         let lists = off_the_runtime(|| {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
@@ -1634,23 +1685,11 @@ impl Engine {
         // No re-sort. `fuse` ordered these and nothing above changes a score --
         // the path entry is an explanation of a position, not a reason to move
         // one. Anything added here that does touch `score` has to sort again.
-        Ok(fused
-            .into_iter()
-            .take(limit as usize)
-            .map(|result| {
-                let state = live.state(result.topic).expect("retained above");
-                let seed = paths
-                    .get(&result.topic)
-                    .and_then(|reached| live.state(reached.origin))
-                    .map(|origin| origin.content.clone());
-                SearchHit {
-                    topic: live.topic_name(result.topic),
-                    state: state.clone(),
-                    result,
-                    seed,
-                }
-            })
-            .collect())
+        Ok(Fused {
+            results: fused,
+            live,
+            paths,
+        })
     }
 
     /// Expands the graph around what the other channels found.
@@ -2088,6 +2127,67 @@ pub struct SearchHit {
     pub seed: Option<String>,
 }
 
+/// A search's fused results, best first, and what it resolved on the way.
+///
+/// Kept apart from [`SearchHit`] because a hit copies its state, its topic's
+/// name and its seed's content, and the rerank path fuses every candidate
+/// while reading only a few of them: the head's and the graph's that the
+/// reranker is shown, and the ones the caller is given.
+struct Fused {
+    results: Vec<FusedResult>,
+    live: WorkingSet,
+    paths: std::collections::HashMap<TopicId, Neighbor>,
+}
+
+impl Fused {
+    /// The first `limit` results as hits.
+    fn hits(self, limit: u32) -> Vec<SearchHit> {
+        let Self {
+            results,
+            live,
+            paths,
+        } = self;
+        results
+            .into_iter()
+            .take(limit as usize)
+            .map(|result| {
+                let state = live.state(result.topic).expect("retained by `fused`");
+                let seed = seed(&live, &paths, result.topic).map(str::to_string);
+                SearchHit {
+                    topic: live.topic_name(result.topic),
+                    state: state.clone(),
+                    result,
+                    seed,
+                }
+            })
+            .collect()
+    }
+
+    /// What the reranker is shown of `result`.
+    fn shown(&self, result: &FusedResult) -> String {
+        let state = self.live.state(result.topic).expect("retained by `fused`");
+        shown(
+            &self.live.topic_name(result.topic),
+            &state.content,
+            seed(&self.live, &self.paths, result.topic),
+        )
+    }
+}
+
+/// For a topic the graph reached, the content of the memory the walk started
+/// from. Taken from every state the search resolved rather than from the
+/// results, so it does not depend on how many were asked for.
+fn seed<'a>(
+    live: &'a WorkingSet,
+    paths: &std::collections::HashMap<TopicId, Neighbor>,
+    topic: TopicId,
+) -> Option<&'a str> {
+    paths
+        .get(&topic)
+        .and_then(|reached| live.state(reached.origin))
+        .map(|origin| origin.content.as_str())
+}
+
 /// The channels' candidates in one order, best first, without duplicates.
 ///
 /// Round-robin by rank rather than one list after another: the lists are three
@@ -2320,35 +2420,6 @@ pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]
         .collect()
 }
 
-/// How deep to fuse when a reranker is going to reorder the head.
-///
-/// A cross-encoder can only reorder what it is shown, so the list it works on
-/// has to be at least as long as the tier's depth even when the caller wants
-/// five results. Cutting to the caller's limit first is what made the tuned
-/// depth unreachable: `--limit` defaults to five, the tier's depth is twenty,
-/// and the sweep that chose twenty was run over a list of fifty. What arrived
-/// at the reranker was five candidates, of which the two it needs to find
-/// unlexical are usually not among them -- so the shipped default reordered
-/// nothing and returned the ranking a search with reranking off would have.
-///
-/// Deeper costs the fusion nothing extra: every channel already contributes
-/// [`Depths::channel`] candidates and all of them are already resolved against
-/// the ledger. What grows is the hydration, by the difference between the two
-/// numbers.
-///
-/// And then the whole list rather than the head: the reranker is also shown the
-/// strongest candidates only the graph found, wherever fusion put them (see
-/// [`GRAPH_CANDIDATES`]), so a list cut at the head would have cut them off.
-/// Every fused result is already resolved by then; what the depth costs is one
-/// `SearchHit` a result, and the caller's limit is applied after the pass.
-fn fused_for(limit: u32, rerank: Rerank) -> u32 {
-    match rerank {
-        Rerank::Off => limit,
-        _ => u32::MAX,
-    }
-}
-
-/// The first `limit` of a list that was fused deeper than the caller asked for.
 /// Whether reranking these positions can change what the caller is given.
 ///
 /// The pass reorders the candidates at `unlexical` *into the positions they
@@ -2408,18 +2479,13 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
         .is_some_and(|highest| *highest < limit as usize)
 }
 
-fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
-    hits.truncate(limit as usize);
-    hits
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_CANDIDATES, MODEL_IDLE, best_first, can_be_seen, fused_for, is_idle, path_strength,
-        place, rerankable, runs_of_tokens, seed_relevance, shown,
+        GRAPH_CANDIDATES, MODEL_IDLE, best_first, can_be_seen, is_idle, path_strength, place,
+        rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2616,27 +2682,6 @@ mod tests {
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
-    /// A reranker is shown at least as many candidates as it was tuned for.
-    ///
-    /// The constant saying how many a tier looks at is measured, and before
-    /// this it was unreachable: the fused list was cut to the caller's limit
-    /// first, so at the default `--limit 5` the tier saw five candidates rather
-    /// than the twenty it then read, and the shipped default reordered nothing. This is the
-    /// arithmetic that was wrong, on its own, because the alternative is a test
-    /// that needs half a gigabyte of weights to observe a reordering that
-    /// silently did not happen.
-    #[test]
-    fn a_reranker_is_fused_at_least_as_deep_as_it_reads() {
-        for tier in [Rerank::Fast, Rerank::Accurate] {
-            assert!(
-                fused_for(5, tier) >= tier.depth() as u32,
-                "{tier:?} reads {} candidates and was handed {}",
-                tier.depth(),
-                fused_for(5, tier)
-            );
-        }
-    }
-
     /// The reranker is shown the head's unlexical candidates and the strongest
     /// graph-only ones below it -- not a lexical one, not a corroborated one
     /// from below the head, and no more graph ones than the cap.
@@ -2723,14 +2768,6 @@ mod tests {
         assert_eq!(raise(3), 3);
         assert_eq!(raise(5), 5, "a wider name did not raise it");
         assert_eq!(raise(2), 5, "a narrower name lowered it");
-    }
-
-    /// A caller wanting more than the reranker reads still gets what it asked.
-    #[test]
-    fn fusing_for_a_reranker_never_shortens_what_was_asked_for() {
-        assert!(fused_for(500, Rerank::Fast) >= 500);
-        // Nothing is going to reorder it, so nothing needs to be fused deep.
-        assert_eq!(fused_for(5, Rerank::Off), 5);
     }
 
     /// Every case the segmenter's own naming tests pin, and one that is not a
