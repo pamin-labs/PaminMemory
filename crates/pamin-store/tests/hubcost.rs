@@ -175,7 +175,7 @@ async fn a_walk_stops_once_the_caller_has_enough() {
 
         let started = Instant::now();
         let unbounded = graph::expand(
-            database.pool(),
+            &mut *connection(&database).await,
             project.id,
             &[left],
             &Expansion::to_depth(2),
@@ -186,7 +186,7 @@ async fn a_walk_stops_once_the_caller_has_enough() {
 
         let started = Instant::now();
         let bounded = graph::expand(
-            database.pool(),
+            &mut *connection(&database).await,
             project.id,
             &[left],
             &Expansion::to_depth(2).keeping(50),
@@ -221,4 +221,13 @@ async fn a_walk_stops_once_the_caller_has_enough() {
             bounded.len()
         );
     }
+}
+
+/// One connection, which `graph::expand` asks every hop on.
+async fn connection(database: &Database) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    database
+        .pool()
+        .acquire()
+        .await
+        .expect("acquire a connection")
 }
