@@ -6,13 +6,16 @@ use crate::id::TopicId;
 
 /// A source of candidates.
 ///
-/// There are three, and the list is short on purpose. Earlier designs also
+/// There are four, and the list is short on purpose. Earlier designs also
 /// treated recency and explicit importance as channels while applying them
-/// again as post-fusion modifiers, which counted the same signal twice. Notes
-/// and page nodes were channels too, although they live in the same projection
+/// again as post-fusion modifiers, which counted the same signal twice; the
+/// channels went first, and the modifiers followed once it was found that
+/// nothing wrote what they read (see [`RetrievalSignals`]). Notes and page
+/// nodes were channels too, although they would live in the same projection
 /// index as everything else, so querying them separately split one population
-/// into several and left the redundancy penalty reasoning across all of them.
-/// Both are now expressed as modifiers and document-type filters instead.
+/// into several; neither is built.
+///
+/// [`RetrievalSignals`]: crate::ledger::RetrievalSignals
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {

@@ -2057,17 +2057,20 @@ fn seed_relevance(
 
 /// How strongly the graph vouches for one arrival: edge confidence, per hop.
 ///
-/// **This is the one channel whose score is not its sort key, and the
-/// disagreement is real rather than an oversight.** `graph::expand` orders its
-/// neighbours lexicographically -- fewest hops first, then most confident, then
-/// by identifier -- and no single number reproduces a lexicographic order:
-/// a two-hop arrival at confidence 0.9 scores above a one-hop arrival at
-/// confidence 0.3 here, while the walk ranks the one-hop first. Reordering the
-/// channel by this number instead would be a ranking change nothing can measure
-/// -- the graph channel contributes exactly 0.0000 to every group of all three
-/// evaluation corpora -- so the order stays as the walk made it, and this
-/// number answers the separate question fusion needs: how far this channel's
-/// best arrival stands above its own field.
+/// Half of the graph channel's score and sort key: `recall_graph` multiplies
+/// it by how relevant the seed the arrival came from is to this query, orders
+/// the arrivals by that product, cuts them to the channel's depth, and hands
+/// fusion the same product as each candidate's score.
+///
+/// So the channel does not keep the order `graph::expand` returns. The walk
+/// orders its neighbours lexicographically -- fewest hops first, then most
+/// confident, then by identifier -- and no single number reproduces that: a
+/// two-hop arrival at confidence 0.9 scores above a one-hop arrival at 0.3
+/// here, where the walk ranks the one-hop first. This used to say the walk's
+/// order was kept; it stopped being true when the cut to the channel's depth
+/// began ordering by this first, because the walk's order, once every derived
+/// edge sits at one confidence, is identifier order and kept an arbitrary
+/// fifty.
 fn path_strength(neighbor: &Neighbor) -> f32 {
     neighbor.confidence * HOP_DECAY.powi(i32::from(neighbor.hops.saturating_sub(1)))
 }
@@ -2259,10 +2262,10 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
 /// And if every one of those positions sits at or past `limit`, the pass can
 /// only permute candidates the caller never sees. That is not a heuristic
 /// about when reranking is unlikely to help: the returned results are
-/// identical either way, because the only thing the pass produces is a
-/// permutation of those positions -- it attaches no score to a hit and writes
-/// nothing into the trace. So the work is not merely unlikely to pay, it is
-/// provably invisible.
+/// identical either way, because what the pass produces is a permutation of
+/// those positions and a `reranked` trace entry on each candidate it scored --
+/// and every one of those candidates is cut before the caller sees it. So the
+/// work is not merely unlikely to pay, it is provably invisible.
 ///
 /// This is worth nothing to the evaluation harnesses and something to every
 /// user. The harnesses ask for 51 results so they can measure recall@50, and

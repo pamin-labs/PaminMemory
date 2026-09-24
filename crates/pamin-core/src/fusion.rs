@@ -1,4 +1,5 @@
-//! Reciprocal rank fusion and the modifiers applied after it.
+//! Fusing the channels' candidate lists into one ranking, and the trace that
+//! says why each result holds its place.
 //!
 //! Fusion happens here rather than inside a retrieval engine, and that is a
 //! correctness requirement rather than a preference. The graph channel lives in
@@ -218,7 +219,8 @@ pub struct FusedResult {
 /// This project argued at length about `k` and about the channel weights --
 /// both of them parameters *of* reciprocal rank fusion -- and never recorded
 /// that fusing ranks rather than normalised scores was a choice at all. It is
-/// the load-bearing one, and it is the one that was never tested.
+/// the load-bearing one, and until the sweep recorded below it was the one
+/// that had never been tested.
 ///
 /// What the 2025--2026 work says about it, all of it against rank fusion:
 ///
@@ -391,10 +393,10 @@ impl Default for Fusion {
         // Two things about that table are worth distrusting, and both point the
         // same way -- that a single global constant is the wrong shape.
         //
-        // The MIRACL column is +0.0056 over the quarter. Nothing here has ever
-        // checked whether 482 queries support a difference that size; the
-        // harnesses only learned to ask in `statistics`, and until that
-        // comparison is re-run this row is a mean with no evidence under it.
+        // The MIRACL column is +0.0056 over the quarter, and 482 queries do not
+        // support a difference that size: paired, it is the 77 wins to 72
+        // losses at p = 0.2300 recorded above -- a mean with no result under
+        // it.
         //
         // And the published work predicts the opposite sign for that corpus.
         // MIRACL's own authors report a BM25-dense hybrid as the strongest

@@ -48,11 +48,12 @@ fn tier(name: &str) -> Result<Rerank, String> {
 
 /// One entry of the trace, as a caller sees it.
 ///
-/// [`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`
-/// prints the last two as things the reader works out: weight is a constant per
-/// channel, and contribution is `weight / (10 + rank)`. Ten hits of them cost
-/// about seven hundred tokens of somebody's context window to restate what they
-/// already know, so the command layer leaves them out.
+/// [`Why`] also carries `score`, `weight` and `contribution`. The weight is a
+/// constant per channel, which `docs/cli.md` tabulates, and the contribution is
+/// that weight times where the candidate falls inside its channel's band (see
+/// [`pamin_core::Combine::Banded`]) -- which reaches the caller as the fused
+/// rank. Ten hits of the two cost about seven hundred tokens of somebody's
+/// context window to restate that, so the command layer leaves them out.
 ///
 /// `score` is left out for a different reason. It is the channel's own quantity
 /// in the channel's own units, so a reader comparing a BM25 score against a
@@ -132,9 +133,9 @@ struct Hit {
     version: u32,
     content: String,
     score: f32,
-    /// The rank this result held in each channel it appeared in, and every
-    /// modifier applied afterwards. An agent can audit its own retrieval from
-    /// this without trusting the ranking.
+    /// The rank this result held in each channel it appeared in, the path the
+    /// graph reached it by, and whether the reranker moved it. An agent can
+    /// audit its own retrieval from this without trusting the ranking.
     why: Vec<Trace>,
     /// When this state was recorded, RFC 3339.
     ///
