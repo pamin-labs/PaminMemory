@@ -171,6 +171,8 @@ pub struct TopicState {
     /// Monotonic per topic. Gaps are expected, because soft deletes do not
     /// renumber the versions that survive.
     pub version: u32,
+    /// The text of `source_span_id`, read from the evidence it points into
+    /// rather than stored a second time.
     pub content: String,
     /// The span this state was derived from, so every claim can be traced back
     /// to bytes in a source.

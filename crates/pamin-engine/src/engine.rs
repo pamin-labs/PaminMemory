@@ -1061,7 +1061,7 @@ impl Engine {
                 &mut transaction,
                 self.project,
                 topic.id,
-                request.content,
+                &evidence,
                 &span,
                 request.observed_at,
                 request.validity,
