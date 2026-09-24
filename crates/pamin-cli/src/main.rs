@@ -370,6 +370,7 @@ mod tests {
     const UNDOCUMENTED: &[&str] = &[
         "PAMIN_EVAL_HOME",
         "PAMIN_RERANK_BATCH",
+        "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
         "PAMIN_SEARCH_EFFORT",
