@@ -1320,6 +1320,136 @@ ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
 4,096, the fastest of three calls on one text (of two at 4,096). The window
 stays at 512.
 
+### pplx-embed-v1-0.6b on the shipped path: proposed, not adopted
+
+**Status: proposed.** BGE-M3 remains the default. The maintainer has not
+decided, and four items are open; they are listed at the end of this section.
+
+The survey above named one candidate and four reasons it was not yet a
+default, the first being that it had been measured on the vector channel
+alone. The end-to-end trial ran it through `search_reranked` at the `accurate`
+tier on the XQuAD-R and MuSiQue harnesses. It used an experimental `pplx`
+profile over our own int8 export (52bc0d9) and a harness option that pairs one
+profile's saved per-question scores with another's (783551a), and neither is on
+the default branch. It ran at the rerank depth of twenty that shipped at the
+time. Both indexes embed `name: content`:
+
+| | BGE-M3 | pplx | difference | wins / losses | p |
+| --- | --- | --- | --- | --- | --- |
+| MuSiQue two-hop (1,000), nDCG@10 | 0.7129 | 0.7451 | **+0.0322** | 306 / 218 | 0.0001 |
+| MuSiQue two-hop, `recall@50` | 0.8570 | 0.8865 | **+0.0295** | 94 / 39 | 0.0001 |
+| XQuAD-R same-language (1,190), nDCG@10 | 0.8030 | 0.8193 | **+0.0162** | 168 / 118 | 0.0076 |
+| XQuAD-R same-language, `recall@50` | 0.9605 | 0.9580 | −0.0025 | 13 / 16 | 0.7137 |
+| XQuAD-R cross-lingual (1,190), nDCG@10 | 0.6714 | 0.6643 | −0.0072 | 421 / 486 | 0.0986 |
+| XQuAD-R cross-lingual, `recall@50` | 0.9005 | 0.8946 | −0.0059 | 175 / 180 | 0.1934 |
+
+**What survived fusion and the reranker is a third to a half of the model-alone
+gain within a language, and none of it across languages.** Alone, the vector
+channel had gained +0.0647 on MuSiQue, +0.0457 same-language and +0.0251
+cross-lingual. The prediction written before this run was +0.015 on MuSiQue (a
+range of −0.005 to +0.035), +0.035 same-language, and +0.005 cross-lingual, not
+significant. MuSiQue came in at the top of its range and same-language at half
+the prediction. Cross-lingual was not significant, as predicted, but its sign
+is negative.
+
+**The first figures this trial printed were wrong, and what was wrong was the
+baseline's text, not its model.** They were +0.0029 cross-lingual (p = 0.5351)
+and +0.0355 same-language (p = 0.0001) on XQuAD-R. Those paired pplx on a fresh
+index against BGE-M3 indexes built before 0c2ff9f, which embed content alone
+and keep doing so until `pamin reindex` rebuilds them. Measured alone on the
+same harness, the encoding moves BGE-M3 from content to `name: content` by
++0.0101 cross-lingual (444 wins / 321 losses), +0.0193 same-language
+(141 / 80) and +0.0294 on MuSiQue (249 / 166), each at p = 0.0001. So the
++0.0355 was +0.0193 of encoding and +0.0162 of model, and the +0.0029 was an
+encoding gain covering a model loss. The harness now refuses to pair runs over
+different encodings (783551a). The prediction for the encoding was wrong in
+sign on XQuAD-R (−0.003 and −0.002, on the reasoning that names like `de:12:3`
+are noise to the model) and low on MuSiQue (+0.012). It also separates two
+decisions: a BGE-M3 workspace built before 0c2ff9f gains the encoding figures
+from `pamin reindex` with no change of model.
+
+What it costs:
+
+| | BGE-M3, shipped | pplx, own int8 export |
+| --- | --- | --- |
+| query embedding | — | 2.24× to 3.02× BGE-M3's: the median per-query ratio in each of four runs of 375 queries |
+| resident after loading and 20 queries | 628 MiB (299 anonymous, 329 file-backed) | 886 MiB (167 anonymous, 720 file-backed) |
+| model on disk | 560 MiB | 850 MiB |
+| passage embedding | — | 2 to 3 times BGE-M3's, from the survey |
+
+The latency is the embedding call through the crate's own encoder, not a whole
+search. It was taken on the shared four-core machine at a load average of 17 to
+20, so only the per-query ratio is quoted: BGE-M3's own median moved between
+40.8 and 90.8 ms across the four runs. The resident figures are the median of
+three alternating rounds, one model per fresh process, which agree to within
+1.5 MiB.
+
+**Combining the two models was measured, and it is not proposed.** It used the
+same replay as the section above, with its MuSiQue caveat, under rules written
+before any combined result. Every arm keeps the two BM25 channels at 0.125 and
+the graph at 0.30:
+
+- **A** is what ships: BGE-M3 dense at 1.0, over an index of content, as the
+  benchmark workspaces were built. **A′** is A over a fresh BGE-M3 index of
+  `name: content`, which is what a new install builds.
+- **B** is A plus BGE-M3's sparse channel at 0.0625.
+- **C** is pplx's dense vector in place of BGE-M3's, at 1.0.
+- **D** is C plus BGE-M3's sparse channel at 0.0625.
+- **E** is BGE-M3 at 1.0, pplx at 0.5 and the sparse channel at 0.0625, and
+  **E′** is E over the fresh BGE-M3 index.
+
+D's and E's weights are what the rule chose on all three corpora. The
+leave-one-corpus-out folds disagreed, choosing a sparse weight of 0.125 for D
+and 0.25 for E with this project's corpus held out, so by the same rule neither
+arm has an established sparse weight. nDCG@10 after the rerank, at the depth of
+thirty that ships, paired against A:
+
+| arm | own cross-lingual (43) | own relational (20) | XQuAD-R cross-lingual | XQuAD-R same-language | MuSiQue two-hop |
+| --- | --- | --- | --- | --- | --- |
+| A | 0.8162 | 0.6480 | 0.6673 | 0.7844 | 0.6596 |
+| A′ | +0.0201, p = 0.0995 | +0.0353, p = 0.3065 | **+0.0051**, p = 0.0161 | **+0.0160**, p = 0.0001 | **+0.0218**, p = 0.0001 |
+| B | **−0.0078**, p = 0.0045 | −0.0020, p = 1.0000 | **−0.0114**, p = 0.0001 | **+0.0141**, p = 0.0001 | **+0.0035**, p = 0.0028 |
+| C | **+0.0644**, p = 0.0001 | −0.0135, p = 0.8611 | +0.0049, p = 0.2404 | **+0.0230**, p = 0.0005 | **+0.0679**, p = 0.0001 |
+| D | **+0.0471**, p = 0.0046 | −0.0320, p = 0.6664 | −0.0073, p = 0.0765 | **+0.0351**, p = 0.0001 | **+0.0695**, p = 0.0001 |
+| E | **+0.0347**, p = 0.0014 | −0.0054, p = 0.7534 | **+0.0085**, p = 0.0001 | **+0.0243**, p = 0.0001 | **+0.0359**, p = 0.0001 |
+| E′ | **+0.0478**, p = 0.0001 | +0.0312, p = 0.6124 | **+0.0135**, p = 0.0001 | **+0.0332**, p = 0.0001 | **+0.0458**, p = 0.0001 |
+
+The lexical group is 1.0000 in every arm, and the monolingual group is 0.9940
+in every arm except C, which is 0.9881 (one query, p = 1.0000). Against A′,
+the baseline a new install gets, C still has no group significantly worse:
++0.0443 own cross-lingual (p = 0.0023), −0.0002 and +0.0069 on XQuAD-R's two
+groups (p = 0.9557 and 0.2542), and +0.0461 on MuSiQue (p = 0.0001). D loses
+XQuAD-R cross-lingual to A′, −0.0124 (p = 0.0013). E and E′ have no group
+significantly worse than A or A′ either. But they need both models, 628 + 886
+MiB resident and 560 + 850 MiB on disk, and they score below C on MuSiQue
+(0.6955 and 0.7054 against 0.7275). D needs both as well, because its sparse
+channel is BGE-M3's, and B loses XQuAD-R cross-lingual. So among the arms that
+load one model, C is the only one with no group significantly worse than A or
+A′, and it is the configuration proposed.
+
+**The replay and the product agree on direction, not to the third decimal.**
+Paired against a named BGE-M3 index at depth twenty, the replay gives C
++0.0450 on MuSiQue where the product gave +0.0322, and +0.0069 (not
+significant) same-language on XQuAD-R where the product gave +0.0162. The
+proposal rests on the product-path table at the top of this section. The
+replay only ranks the combinations against one another.
+
+**Open, and each has to be settled before this becomes a default:**
+
+1. **The export.** Our dynamic int8 quantization (every MatMul except the 28
+   `down_proj`s, plus the token embedding; mean cosine 0.9957 to fp32 over 400
+   texts) is published nowhere, and Perplexity's own 8-bit export runs 8-10x
+   slower on this CPU. The trial profile reads it from a local directory, so
+   shipping it means hosting our own export for the model download to fetch.
+2. **Re-embedding existing workspaces.** A model change builds a new index,
+   so every workspace re-embeds through `pamin reindex`, at two to three
+   times BGE-M3's cost a passage.
+3. **Greek.** The survey measured Greek queries 0.071 worse (p = 0.002) on the
+   vector channel alone. That has not been re-taken per language on the
+   shipped path.
+4. **Fusion weights tuned for BGE-M3.** Every weight C runs at was chosen with
+   BGE-M3 in the vector channel and has not been re-swept with pplx there.
+
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
