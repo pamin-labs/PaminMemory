@@ -538,7 +538,11 @@ async fn search_answers_questions_that_take_several_steps() {
 
     // Kept, and paired under `AGAINST=<profile>` with that profile's saved
     // run over the same questions. See `scoring::save`.
-    scoring::save(&scoring::saved(workspace.root(), &project), &shipped);
+    scoring::save(
+        &scoring::saved(workspace.root(), &project),
+        engine.passage(),
+        &shipped,
+    );
     if let Ok(other) = std::env::var("AGAINST") {
         let theirs = scoring::saved(
             workspace.root(),
@@ -547,6 +551,7 @@ async fn search_answers_questions_that_take_several_steps() {
         scoring::against(
             &format!("the shipped search path, {other} before and {named} after, MuSiQue"),
             &scoring::load(&theirs),
+            engine.passage(),
             &shipped,
         );
     }

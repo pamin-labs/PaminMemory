@@ -1487,7 +1487,11 @@ async fn search_reaches_across_languages() {
     // Kept, so a run under another profile can be paired with this one
     // question by question; `AGAINST=<profile>` does the pairing, from that
     // profile's saved run over the same corpus. See `scoring::save`.
-    scoring::save(&scoring::saved(workspace.root(), &project), &groups);
+    scoring::save(
+        &scoring::saved(workspace.root(), &project),
+        engine.passage(),
+        &groups,
+    );
     if let Ok(other) = std::env::var("AGAINST") {
         let theirs = scoring::saved(
             workspace.root(),
@@ -1496,6 +1500,7 @@ async fn search_reaches_across_languages() {
         scoring::against(
             &format!("the shipped search path, {other} before and {named} after, XQuAD-R"),
             &scoring::load(&theirs),
+            engine.passage(),
             &groups,
         );
     }
