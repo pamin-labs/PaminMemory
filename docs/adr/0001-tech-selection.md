@@ -1211,7 +1211,7 @@ to be re-embedded.
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
 
-`PAMIN_VECTOR_STORAGE` builds the projection's vector field five ways. Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
+`PAMIN_VECTOR_STORAGE` built the projection's vector field five ways when this was measured; it builds four now, the RaBitQ row having been removed from the code as unreachable. Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
 
 | storage | recall@10 | per query | build | whole index |
 | --- | --- | --- | --- | --- |
@@ -1240,13 +1240,15 @@ The consequence was not accuracy. It was reproducibility: `reindex` embedded in 
 
 **Measured, because "it changes the vectors" and "it changes the answers" are different claims.** Re-running the model-alone arm of the cross-lingual harness on deterministic vectors returns 0.6335 cross-lingual and 0.6787 same-language nDCG@10, against 0.6351 and 0.6763 on the batch-perturbed ones — inside the run-to-run spread this harness already shows, and either side of the 0.6338 / 0.6748 recorded before. So the perturbation is systematic enough to leave the ranking alone, which is why it survived this long: nothing downstream looked wrong. It is fixed for determinism, not for quality, and the distinction belongs in the record.
 
+*What follows is this decision as it stood before the measurement above, kept as the record of it. Its trigger -- the binding exposing rotation -- has fired, and the section above is the revisit: `Int8` without rotation measures recall@10 0.9980 on `zvec-rust` 0.7.2, and the default stays fp32 because quantizing costs disk here, not because it returns wrong answers.*
+
 Stored vectors are float32. The original reasoning was about cost and benefit — a workspace of low millions of vectors makes the compression worth little, and the deterministic reranker has no cross-encoder to recover the accuracy it costs. At the scale this store now targets that reasoning would have expired, so the trade was measured rather than assumed.
 
 It does not work in this engine. On 50,000 clustered 1024-dimensional vectors, an index built with `hnsw_with_quantize(..., Int8)` returns recall@10 of **0.000** against exact search, with or without the refiner — ten results per query, the right number, none of them the right ones. It does not error and nothing about the output looks wrong.
 
 `enable_rotate`, which the engine's own benchmarks describe as what makes INT8 usable (Cohere-768 recall 92.87% unrotated against 94.01% rotated), was not exposed in the Rust binding at all when this was written. **It is now, and that was this row's trigger.** `zvec-rust` 0.7.2 adds `IndexParams::quantizer_enable_rotate` and `set_quantizer_enable_rotate`, and `QuantizeType` carries `Rabitq` beside `Fp16`, `Int8` and `Int4` — verified against the crate source rather than a release note, and absent from 0.7.0, which is the version the 0.000 result below was taken on. Rotation defaults to off, so it has to be asked for. What that changes is the shape of the work: quantization is reachable on the same HNSW graph through `hnsw_with_quantize`, without moving to an IVF index and invalidating the parameter table and recall floor this section rests on. What it does not change is the gate — the 0.000 was silent, so a recall run and an end-to-end nDCG run on a real corpus both have to clear before any of it ships. Whether that is the whole explanation is not established; what is established is that the configuration reachable from here is unusable. The refiner is likewise unavailable without quantization: on a full-precision index `is_using_refiner` fails the query outright rather than being ignored.
 
-Revisit when the binding exposes rotation, or when the measurement above changes. Until then this is not a decision about compression being unworthy — it is that the compression on offer returns the wrong answers.
+Revisit when the binding exposes rotation, or when the measurement above changes. (It has, and the revisit is the section above.)
 
 ### The graph is the memory floor, and it just doubled
 

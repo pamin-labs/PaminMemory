@@ -157,8 +157,9 @@ The default is the largest model because quantized weights make it the smallest
 download and because the gap it closes is the one Påmin Memory is about: on the
 evaluation corpus it roughly doubles cross-lingual retrieval against
 `balanced`, matches it on same-language queries, and costs nine milliseconds.
-`balanced` is kept for those nine milliseconds and for projects already indexed
-under it; there is no other reason left to choose it.
+`balanced` is deprecated: it is kept so that projects already indexed under it
+go on working without a rebuild, and for those nine milliseconds, and there is
+no other reason left to choose it. A new project should not.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -465,8 +466,8 @@ It costs memory while it is loaded, and more than its download suggests: on a
 13,014-document project a server serving `off` is 1,625 MB resident, and one
 `fast` search takes it to 2,007 or 2,271 MB -- so between 380 MB and 645 MB for
 a 130 MB model, the difference being the inference runtime's arenas rather than
-the weights. `pamin serve` gives it back after five minutes with nothing asking
-for that tier, which returns 368 to 380 MB of it to the operating system; the
+the weights. `pamin serve` gives it back after thirty minutes with nothing
+asking for that tier (`PAMIN_MODEL_IDLE` changes the window), which returns 368 to 380 MB of it to the operating system; the
 arena growth above that stays. A workspace that sets `off` never pays it at
 all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
 and its resident cost has not been taken on its own.

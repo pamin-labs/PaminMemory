@@ -413,10 +413,12 @@ own corpus and +0.0003 at p = 0.9057 on MIRACL. Two corpora, opposite readings,
 so ten stays — which is what the literature predicts for a constant worth one
 to three points against a normalisation worth three to eight.
 
-**Nothing has changed default.** Reciprocal rank fusion still ships at the
-weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
-same-language queries on the same 1,190 questions, and it has to report before
-any of this moves a default.
+**Nothing here changed a default.** When this sweep ran, reciprocal rank
+fusion still shipped at the weights it shipped at, and XQuAD-R -- the corpus
+that separates cross-lingual from same-language queries on the same 1,190
+questions -- had to report before any of it could move one. Banded fusion has
+shipped since, on the evidence under
+[What that mechanism, once stated, made shippable](#what-that-mechanism-once-stated-made-shippable).
 
 One thing the first attempt at this sweep is worth recording. Standardised
 fusion measured **0.0099 against 0.7910** — 0 wins, 43 losses — because zvec
