@@ -33,8 +33,17 @@ pub struct Args {
     /// measured and costs about a second and a half a search on four cores;
     /// `fast` and `off` buy that time back at a measured price. See
     /// `docs/cli.md`.
-    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
-    pub rerank: String,
+    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate", value_parser = tier)]
+    pub rerank: Rerank,
+}
+
+/// Reads a tier where the command line is parsed, which is the one place it
+/// is checked: before a server is started or a database provisioned, so a
+/// misspelled tier is an error the caller can act on at once rather than one
+/// that arrives after a PostgreSQL install. The socket carries the parsed
+/// tier, so the server never sees a name it would have to check again.
+fn tier(name: &str) -> Result<Rerank, String> {
+    Rerank::parse(name).ok_or_else(|| format!("unknown rerank tier {name:?}"))
 }
 
 /// One entry of the trace, as a caller sees it.
@@ -160,12 +169,9 @@ pub async fn execute(
     profile: Profile,
     args: Args,
 ) -> Result<Results> {
-    let rerank = Rerank::parse(&args.rerank)
-        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-
     let engine = session.engine(project, profile).await?;
     let hits = engine
-        .search_reranked(&args.query, args.limit, Depths::DEFAULT, rerank)
+        .search_reranked(&args.query, args.limit, Depths::DEFAULT, args.rerank)
         .await?;
 
     let results = Results {

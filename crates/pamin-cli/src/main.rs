@@ -165,15 +165,6 @@ async fn main() -> Result<()> {
     // reference.
     let call = fill_from_stdin(call)?;
 
-    // Before a server is started or a database provisioned. A misspelled tier
-    // is an error the caller can act on at once, and one that arrived after a
-    // PostgreSQL install -- leaving a workspace behind for a command that never
-    // ran -- would be a worse answer to the same question.
-    if let protocol::Call::Search(args) = &call {
-        pamin_index::Rerank::parse(&args.rerank)
-            .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-    }
-
     if client::wanted() {
         let request = protocol::Request {
             version: protocol::version(),
@@ -423,6 +414,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A rerank tier is read when the command line is parsed, and a name that
+    /// is not one is refused there -- the one check, made before anything is
+    /// started or provisioned.
+    #[test]
+    fn a_rerank_tier_is_checked_where_the_command_line_is_parsed() {
+        let parsed = Cli::try_parse_from(["pamin", "search", "q", "--rerank", "fast"])
+            .expect("a real tier parses");
+        let Command::Search(args) = parsed.command else {
+            panic!("parsed as another command");
+        };
+        assert_eq!(args.rerank, pamin_index::Rerank::Fast);
+
+        let refused = Cli::try_parse_from(["pamin", "search", "q", "--rerank", "fastest"]);
+        let error = refused
+            .err()
+            .expect("an unknown tier was accepted")
+            .to_string();
+        assert!(error.contains("fastest"), "{error}");
     }
 
     /// The profile a command gets when nobody names one.
