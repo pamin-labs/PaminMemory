@@ -864,6 +864,47 @@ the table 67.0 MB → 38.4 MB, the unique index 35.7–35.9 MB → 27.7–28.0 M
 the table with its indexes 135.7–135.9 MB → 99.5–99.7 MB, and an enqueue of
 three kinds p50 0.42–0.46 ms → 0.39–0.40 ms.
 
+**The first search on a new connection is slower, and nothing that can be
+moved off it pays.** A search's statements -- the states of sixty candidates,
+the names in the query, their states, a two-hop walk keeping fifty, the states
+it reached, the names at the ends of its paths -- asked on a freshly opened
+resident pool, then again on the same connection: 29 rounds a run, three runs
+a row, a project of 320 memories that name each other, debug build, four cores
+at a load average near 20. The figures are p10, because the medians of the
+same runs moved by up to two thirds:
+
+| | first | second | the warm-up itself |
+| --- | --- | --- | --- |
+| a new backend, nothing run on it | 9.8 -- 12.7 ms | 6.2 -- 7.5 ms | |
+| after the statements ran once, matching nothing | 7.1 ms | 6.1 -- 6.2 ms | 4.4 -- 4.6 ms |
+
+The server's statement log (`log_min_duration_statement = 0`) puts about three
+of the four to five milliseconds in the backend. Planning took 3.4 -- 3.6 ms
+against 1.5 -- 1.7 (17.7 in one of three traced rounds), parsing 0.6 -- 0.8 ms
+against 0.2 -- 0.3 for the same statements parsed again on the warm backend,
+and executing 1.3 -- 1.5 against 1.1 -- 1.2. Nearly all of it lands on the first
+statement to touch each table: `EXPLAIN (ANALYZE, SUMMARY)` of the state lookup
+in a new session plans in 1.8 -- 2.4 ms and in 0.3 -- 0.8 ms the next time. So
+it is the backend filling its catalog and relation caches, which also shows as
+423 minor page faults in the first run against 8 in the second. `sqlx`'s own
+share is the four statements it prepares, one round trip each, and clearing its
+cache on the warm backend puts that at 0.5 -- 1.0 ms. No index or model work is
+in these figures, because the harness asks only the store.
+
+Running the statements first does remove the cost from the search, and it
+costs as much as it removes: the caches have to be filled once per backend,
+whoever fills them. So the only question is where the cost lands. A resident
+server opens its first connection at start, and its first search in a project
+also opens that project's index and loads its model, which costs far more than
+five milliseconds. Every other connection is opened by a request that finds the
+pool busy. That request would pay a warm-up at the same moment it now pays for
+the cold statements, and if it were a write it would pay for a search's
+statements. Connections are kept for the server's life (`idle_timeout` and
+`max_lifetime` are off), so each backend is cold once. The server therefore
+does not warm its connections. One lead for a later change: every search plans
+each of its statements again, and planning is 1.5 of the 2.6 ms the warm
+backend spends.
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested — and the descriptor count is the first thing that would break: this
