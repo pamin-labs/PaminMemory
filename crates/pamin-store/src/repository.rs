@@ -121,6 +121,11 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
 /// was a second round trip for the same row. A row this call inserts is
 /// already held by the inserting transaction, so both paths leave it locked.
 /// Outside a transaction the lock lasts one statement and means nothing.
+///
+/// The lookup and the insert are one statement. The insert runs only when the
+/// lookup found nothing, which is a question the statement can ask itself, so
+/// a new source -- every first write to a topic -- no longer pays a round trip
+/// to learn that it has to ask a second question.
 pub async fn ensure_source(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
@@ -129,31 +134,33 @@ pub async fn ensure_source(
 ) -> Result<SourceId> {
     const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
 
-    let found = sqlx::query(FIND)
-        .bind(project.0)
-        .bind(locator)
-        .fetch_optional(&mut *connection)
-        .await?;
-    if let Some(row) = found {
-        return Ok(row.get::<uuid::Uuid, _>("id").into());
-    }
-
-    let inserted = sqlx::query(
-        "INSERT INTO sources (id, project_id, kind, locator, created_at)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (project_id, locator) DO NOTHING
-         RETURNING id",
+    let row = sqlx::query(
+        "WITH found AS (
+             SELECT id FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE
+         ), inserted AS (
+             INSERT INTO sources (id, project_id, kind, locator, created_at)
+             SELECT $3, $1, $4, $2, $5
+              WHERE NOT EXISTS (SELECT 1 FROM found)
+             ON CONFLICT (project_id, locator) DO NOTHING
+             RETURNING id
+         )
+         SELECT id FROM found
+         UNION ALL
+         SELECT id FROM inserted",
     )
-    .bind(SourceId::new().0)
     .bind(project.0)
-    .bind(kind.label())
     .bind(locator)
+    .bind(SourceId::new().0)
+    .bind(kind.label())
     .bind(OffsetDateTime::now_utc())
     .fetch_optional(&mut *connection)
     .await?;
 
-    let row = match inserted {
+    let row = match row {
         Some(row) => row,
+        // Another writer created it after this statement's snapshot was taken:
+        // the insert waited for that writer and then did nothing, and the
+        // lookup had already looked. A statement of its own sees the row.
         None => {
             sqlx::query(FIND)
                 .bind(project.0)
