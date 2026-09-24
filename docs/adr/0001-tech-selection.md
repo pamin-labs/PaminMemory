@@ -1348,6 +1348,18 @@ nDCG@10 −0.0081 in place of the segmented channel and −0.0128 in place of th
 n-gram one. No weight was admissible on any two corpora, so leave-one-corpus-out
 had nothing to carry to the third, and the rule says not to build it.
 
+**A sparse model that does cross languages exists, and its licence rules it
+out.** MILCO (`omai-research/milco-650m` and `-300m`, arXiv 2510.00671) maps
+every language into one English lexical space and reports MKQA `recall@100` of
+76.6 against BGE-M3 sparse's 45.3, which is the gap measured above. Its cards
+say `apache-2.0`, but both released checkpoints carry `naver/splade-v3`'s MLM
+head (24M parameters, CC-BY-NC-SA-4.0; its bias correlates with splade-v3's at
+1.0000 read from the released tensors), its second training stage distils
+scores from a `license: gemma` reranker, and its training code carries no
+licence. By the leaf-and-base rule above that is the same refusal as
+`bge-reranker-v2-gemma` and the splade-v3 family. It also has no ONNX export,
+and it would add a second XLM-R-large forward to every query and every write.
+
 Cost is not the reason. The sparse vector falls out of the forward pass the
 product already runs, and stores at 129 to 533 bytes a memory (a 32-bit id and
 weight per non-zero, on this project's corpus and MuSiQue) against 4,096 for
