@@ -285,7 +285,8 @@ pub enum Rerank {
 /// XQuAD-R cross-lingual -- "twenty is simply where it stops". The default is
 /// now `accurate`, a model fourteen times the size, and it keeps finding
 /// answers further down. Paired against twenty through `search_reranked`,
-/// nDCG@10 (the `DEPTH_VARIANTS` arm of each harness):
+/// nDCG@10 (the `DEPTH_VARIANTS` harness arm, which lives on the measurement
+/// branch of PR #83 rather than in this tree):
 ///
 /// | depth | XQuAD-R cross (1,190) | own cross (43) | MIRACL (482) | MuSiQue (1,000) |
 /// |---|---|---|---|---|

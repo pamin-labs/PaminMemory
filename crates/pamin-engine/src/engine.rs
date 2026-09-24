@@ -2124,7 +2124,7 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// needs because another memory names it -- and fusion, weighing it at 0.30,
 /// ranks those finds far below the head: on MuSiQue's 1,000 two-hop questions,
 /// 153 supporting titles were found by the graph alone and not one reached the
-/// reranker's twenty, at a median fused rank of 99. That rank was taken while
+/// reranker's twenty, its depth then, at a median fused rank of 99. That rank was taken while
 /// fusion also floored every candidate only the graph found; removing the
 /// floor can only raise them, and it left all 1,000 questions' nDCG@10 where
 /// it was. The reranker is the one stage that is shown the memory that
@@ -2223,8 +2223,9 @@ pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]
 /// A cross-encoder can only reorder what it is shown, so the list it works on
 /// has to be at least as long as the tier's depth even when the caller wants
 /// five results. Cutting to the caller's limit first is what made the tuned
-/// depth unreachable: `--limit` defaults to five, the tier's depth is twenty,
-/// and the sweep that chose twenty was run over a list of fifty. What arrived
+/// depth unreachable: `--limit` defaults to five, the tier's depth was then
+/// twenty (it is thirty now), and the sweep that chose twenty was run over a
+/// list of fifty. What arrived
 /// at the reranker was five candidates, of which the two it needs to find
 /// unlexical are usually not among them -- so the shipped default reordered
 /// nothing and returned the ranking a search with reranking off would have.
@@ -2266,7 +2267,7 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
 ///
 /// This is worth nothing to the evaluation harnesses and something to every
 /// user. The harnesses ask for 51 results so they can measure recall@50, and
-/// the reranker's head is 20, so every position it touches is inside what they
+/// the reranker's head is thirty, so every position it touches is inside what they
 /// read and this returns `true` on every query they run -- the accuracy
 /// figures cannot move, by construction rather than by measurement. `pamin
 /// search` defaults to five. On a query whose first five results all carry a
@@ -2414,16 +2415,19 @@ mod tests {
     #[test]
     fn the_evaluation_harnesses_never_skip_the_pass() {
         // Both harnesses ask for `RECALL_AT + 1` results so they can measure
-        // recall@50, and the reranker's head is 20. So every position it could
-        // touch is inside what they read, and the published accuracy figures
-        // cannot move because of this gate. Asserted rather than argued,
-        // because the argument is the whole reason the gate is allowed to be
-        // exact rather than swept.
-        let whole_head: Vec<usize> = (0..20).collect();
+        // recall@50, and the reranker's head is the shipped tier's depth. So
+        // every position it could touch is inside what they read, and the
+        // published accuracy figures cannot move because of this gate.
+        // Asserted rather than argued, because the argument is the whole
+        // reason the gate is allowed to be exact rather than swept -- and read
+        // off the tier, so a deeper head is checked against 51 rather than
+        // against the twenty this once hard-coded.
+        let depth = Rerank::default().depth();
+        let whole_head: Vec<usize> = (0..depth).collect();
         assert!(can_be_seen(&whole_head, 51));
         // Even the worst case for the harness -- only the last two positions
         // of the head are unlexical -- is still inside 51.
-        assert!(can_be_seen(&[18, 19], 51));
+        assert!(can_be_seen(&[depth - 2, depth - 1], 51));
     }
 
     /// A model is loaded once however often it is asked for, and one handed
