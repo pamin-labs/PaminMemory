@@ -58,13 +58,16 @@ pub fn raise_open_file_limit() -> std::io::Result<(u64, u64)> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::sync::Mutex;
-
     use super::raise_open_file_limit;
 
-    /// The limit is process-wide and the test harness runs tests on parallel
-    /// threads, so each test here holds this while it moves the limit.
-    static LIMIT: Mutex<()> = Mutex::new(());
+    /// Held by every test that changes the open-file limit.
+    ///
+    /// The limit is one per process and the test harness runs tests on
+    /// threads, so two tests that each set it and then read it back race: one
+    /// lowers it to 512, the other raises it to the ceiling in between, and
+    /// the first reads back a number it never set. That failed CI once on a
+    /// change that touched nothing here.
+    static LIMIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// The process's current soft and hard open-file limits.
     fn limits() -> (u64, u64) {
@@ -97,10 +100,8 @@ mod tests {
     /// lowers the limit, asks the server's startup to raise it, and checks the
     /// process is really running under the higher one afterwards.
     ///
-    /// The limit is process-wide, so it is put back, and the two tests here
-    /// take turns through `LIMIT`: run side by side, the other one's reset
-    /// landed between this one's lowering and its raise, and CI saw a
-    /// starting point of 65,536 where this set 512.
+    /// The limit is process-wide, so it is put back, and taken under
+    /// [`LIMIT`] so the other test here cannot move it in between.
     ///
     /// The corpus that produced the failure is in
     /// `pamin-engine/tests/monolingual.rs`, which found it: indexing MIRACL's
@@ -108,9 +109,9 @@ mod tests {
     /// under a soft limit of 1,024 that this call would have taken to 20,000.
     #[test]
     fn raising_takes_the_open_file_limit_the_kernel_already_allows() {
-        let _turn = LIMIT
+        let _held = LIMIT
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (original, hard) = limits();
         // A box whose hard limit is this low has nothing to raise, and the
         // no-op is covered by the test below.
@@ -135,9 +136,9 @@ mod tests {
     /// raise: the startup logs one only when the number actually moved.
     #[test]
     fn a_limit_already_at_the_ceiling_is_left_alone() {
-        let _turn = LIMIT
+        let _held = LIMIT
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (original, hard) = limits();
 
         set_soft(hard, hard);
