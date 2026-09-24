@@ -27,6 +27,14 @@ a reranker reorders a shortlist and never changes it. The XQuAD-R pair is from
 the later run under the fusion that ships, so it sits against 0.6114 with no
 reranking rather than against the rows above.
 
+Every figure above embedded with BGE-M3, and the embedder is now pplx-embed.
+Paired at the `accurate` tier and the shipped rerank depth of thirty, XQuAD-R
+measures 0.6699 cross-lingual and 0.8199 same-language nDCG@10 with it, against
+0.6745 (p = 0.24) and 0.8041 (p = 0.010) with BGE-M3; `recall@50` is 0.8950
+and 0.9580 against 0.9005 and 0.9605, neither difference significant. Greek
+queries are the one language that loses; [ADR 0001](adr/0001-tech-selection.md)
+has the per-language split and the rest of the change.
+
 Both corpora are fetched rather than vendored, and each has a harness in the
 repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
 XQuAD-R and `--test monolingual` for MIRACL.
