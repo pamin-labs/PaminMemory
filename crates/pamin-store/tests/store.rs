@@ -2121,6 +2121,23 @@ async fn assert_pointer_matches_the_ledger(
         pointed_at,
         "the topic resolves to a different state than its pointer names"
     );
+    // And through the search path's form, which also names the topic: the
+    // same state, beside the name the topic row holds.
+    let named = repository::current_states_named(database.pool(), project, &[topic])
+        .await
+        .expect("resolve the topic to its current state and name");
+    let name: String = sqlx::query_scalar("SELECT name FROM topics WHERE id = $1")
+        .bind(topic.0)
+        .fetch_one(database.pool())
+        .await
+        .expect("read the topic's name");
+    assert_eq!(
+        named
+            .first()
+            .map(|(named, state)| (named.clone(), state.id.0)),
+        pointed_at.map(|state| (name, state)),
+        "the named lookup disagrees with the pointer or the name"
+    );
     assert_eq!(
         version.map(|version| version as u32),
         expected,

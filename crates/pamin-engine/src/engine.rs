@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
-    Scored, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
+    Scored, SourceKind, Topic, TopicId, TopicState, Validity, Why,
 };
 use pamin_index::{
     Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
@@ -1486,7 +1486,8 @@ impl Engine {
         let candidates = best_first(&lists);
         let mut working = WorkingSet::default();
         working.add(
-            repository::current_states_of(self.database.pool(), self.project, &candidates).await?,
+            repository::current_states_named(self.database.pool(), self.project, &candidates)
+                .await?,
         );
 
         // The graph is the one channel the index cannot see, which is the
@@ -1496,12 +1497,6 @@ impl Engine {
             .await?;
         let mut lists = lists;
         lists.push(graph_list);
-
-        // Names, and which state each topic stands for now. Asked once, for the
-        // topics that actually produced a result, rather than for the project.
-        working.describe(
-            repository::topics_by_id(self.database.pool(), self.project, &working.topics()).await?,
-        );
         let live = working;
 
         let mut fused = fusion.fuse(&lists);
@@ -1594,7 +1589,7 @@ impl Engine {
             .collect();
         if !unresolved.is_empty() {
             working.add(
-                repository::current_states_of(self.database.pool(), self.project, &unresolved)
+                repository::current_states_named(self.database.pool(), self.project, &unresolved)
                     .await?,
             );
         }
@@ -1656,9 +1651,9 @@ impl Engine {
         // `topics`.
         let reached: Vec<TopicId> = neighbors.iter().map(|neighbor| neighbor.topic).collect();
         let states =
-            repository::current_states_of(self.database.pool(), self.project, &reached).await?;
+            repository::current_states_named(self.database.pool(), self.project, &reached).await?;
         let resolves: std::collections::HashSet<TopicId> =
-            states.iter().map(|state| state.topic_id).collect();
+            states.iter().map(|(_, state)| state.topic_id).collect();
         working.add(states);
 
         let mut candidates = Vec::new();
@@ -1911,8 +1906,8 @@ pub struct Rebuilt {
 ///
 /// It is filled in two steps because the search path finds its results in two
 /// steps: the index and then the graph, each naming topics. Both go in here,
-/// and the names are attached once at the end -- when the set of topics that
-/// produced a result is finally known.
+/// each state with its topic's name, which the lookup that resolves the state
+/// returns beside it.
 #[derive(Default)]
 struct WorkingSet {
     /// What each topic stands for now. Only current states are ranked, so
@@ -1923,24 +1918,13 @@ struct WorkingSet {
 }
 
 impl WorkingSet {
-    fn add(&mut self, states: Vec<TopicState>) {
-        for state in states {
+    /// Records states and what the ledger calls their topics, which arrive
+    /// together.
+    fn add(&mut self, states: Vec<(String, TopicState)>) {
+        for (name, state) in states {
+            self.names.insert(state.topic_id, name);
             self.current.insert(state.topic_id, state);
         }
-    }
-
-    /// Records what the ledger calls these topics.
-    fn describe(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
-        for (topic, name, _) in topics {
-            self.names.insert(topic, name);
-        }
-    }
-
-    /// The topics found so far.
-    fn topics(&self) -> Vec<TopicId> {
-        let mut topics: Vec<TopicId> = self.current.keys().copied().collect();
-        topics.sort_unstable_by_key(|topic| topic.0);
-        topics
     }
 
     fn state(&self, topic: TopicId) -> Option<&TopicState> {

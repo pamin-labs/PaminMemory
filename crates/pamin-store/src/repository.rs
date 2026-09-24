@@ -765,6 +765,24 @@ pub async fn current_states_of(
     project: ProjectId,
     topics: &[TopicId],
 ) -> Result<Vec<TopicState>> {
+    Ok(current_states_named(executor, project, topics)
+        .await?
+        .into_iter()
+        .map(|(_, state)| state)
+        .collect())
+}
+
+/// [`current_states_of`], with each topic's name beside its state.
+///
+/// The statement already joins `topics` to follow the pointer, so the name is
+/// a column away. The search path needs both -- the state to rank and the name
+/// to show -- and asked for the name in a second round trip over the same
+/// rows.
+pub async fn current_states_named(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topics: &[TopicId],
+) -> Result<Vec<(String, TopicState)>> {
     if topics.is_empty() {
         return Ok(Vec::new());
     }
@@ -774,7 +792,8 @@ pub async fn current_states_of(
         "SELECT ",
         state_columns!("ts."),
         span_columns!(),
-        " FROM topic_states ts
+        ", t.name AS topic_name
+          FROM topic_states ts
           JOIN topics t ON t.current_state_id = ts.id",
         span_joins!(),
         " WHERE t.project_id = $1 AND t.id = ANY($2)"
@@ -784,7 +803,10 @@ pub async fn current_states_of(
     .fetch_all(executor)
     .await?;
 
-    Ok(rows.iter().map(row_to_topic_state).collect())
+    Ok(rows
+        .iter()
+        .map(|row| (row.get("topic_name"), row_to_topic_state(row)))
+        .collect())
 }
 
 /// What one topic currently says, found by name.
