@@ -193,8 +193,19 @@ pub fn saved(root: &std::path::Path, project: &str) -> std::path::PathBuf {
 /// -- two models and two indexes -- or at one moment, when another run may hold
 /// one of them. Written whole and renamed into place, so a run that dies
 /// leaves the previous file rather than half of a new one.
-pub fn save(path: &std::path::Path, groups: &std::collections::BTreeMap<String, Scores>) {
-    let mut lines = String::new();
+///
+/// The first line names what the project's vectors were embedded from, because
+/// two projects over one corpus can differ in that as well as in their model:
+/// an index built before names were embedded goes on being written from
+/// content, so one profile's old project and another profile's new one differ
+/// by two changes, and a pairing of them credits the model with both.
+/// [`against`] refuses that pair.
+pub fn save(
+    path: &std::path::Path,
+    passage: pamin_index::Passage,
+    groups: &std::collections::BTreeMap<String, Scores>,
+) {
+    let mut lines = format!("passage\t{passage:?}\n");
     for (group, scores) in groups {
         for (ndcg, recall) in scores.per_query.iter().zip(&scores.per_query_recall) {
             // `{}` on an `f64` is its shortest round-trip form, so what is
@@ -210,13 +221,29 @@ pub fn save(path: &std::path::Path, groups: &std::collections::BTreeMap<String, 
     println!("  per-question scores saved to {}", path.display());
 }
 
+/// A run [`save`] kept: what its project's vectors were embedded from, and
+/// its scores.
+pub struct Saved {
+    pub passage: String,
+    pub groups: std::collections::BTreeMap<String, Scores>,
+}
+
 /// Reads back what [`save`] wrote. `deep` and `with_work` are not kept, so
 /// they read as zero.
-pub fn load(path: &std::path::Path) -> std::collections::BTreeMap<String, Scores> {
+pub fn load(path: &std::path::Path) -> Saved {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    let mut lines = text.lines();
+    let passage = match lines.next().and_then(|line| line.split_once('\t')) {
+        Some(("passage", passage)) => passage.to_string(),
+        _ => panic!(
+            "{} does not say what its vectors were embedded from, so it cannot be \
+             paired with anything: run it again",
+            path.display()
+        ),
+    };
     let mut groups: std::collections::BTreeMap<String, Scores> = Default::default();
-    for line in text.lines() {
+    for line in lines {
         let fields: Vec<&str> = line.split('\t').collect();
         let [group, ndcg, recall] = fields[..] else {
             panic!("{}: not a saved score: {line:?}", path.display());
@@ -233,7 +260,7 @@ pub fn load(path: &std::path::Path) -> std::collections::BTreeMap<String, Scores
         into.per_query.push(value(ndcg));
         into.per_query_recall.push(value(recall));
     }
-    groups
+    Saved { passage, groups }
 }
 
 /// This run against a saved one over the same questions, query by query, in
@@ -241,13 +268,29 @@ pub fn load(path: &std::path::Path) -> std::collections::BTreeMap<String, Scores
 ///
 /// Panics when a group is missing from either side or holds a different
 /// number of questions -- see `statistics::compare` -- because a pairing of
-/// two different question sets is not a comparison of anything.
+/// two different question sets is not a comparison of anything. And when the
+/// two projects embedded different text, because that pairing measures two
+/// changes and names one: the first pplx trial paired its new project with
+/// BGE-M3's, built from content before names were embedded, and credited the
+/// model with the encoding's share.
 pub fn against(
     title: &str,
-    before: &std::collections::BTreeMap<String, Scores>,
+    before: &Saved,
+    passage: pamin_index::Passage,
     after: &std::collections::BTreeMap<String, Scores>,
 ) {
     use crate::statistics::compare;
+
+    assert_eq!(
+        before.passage,
+        format!("{passage:?}"),
+        "the saved run's project embedded {} passages and this one {passage:?}, so \
+         the pairing would measure the encoding as well as the change it names. \
+         Rebuild the older project -- a fresh workspace, or `pamin reindex` -- and \
+         run it again",
+        before.passage
+    );
+    let before = &before.groups;
 
     let mut names: Vec<&String> = before.keys().chain(after.keys()).collect();
     names.sort();
@@ -395,16 +438,34 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let path = saved(dir.path(), "project");
-        save(&path, &groups);
+        save(&path, pamin_index::Passage::Named, &groups);
         let read = load(&path);
 
-        assert_eq!(read.len(), 2);
+        assert_eq!(read.passage, "Named");
+        assert_eq!(read.groups.len(), 2);
         for (group, scores) in &groups {
-            assert_eq!(read[group].queries, scores.queries);
-            assert_eq!(read[group].per_query, scores.per_query);
-            assert_eq!(read[group].per_query_recall, scores.per_query_recall);
-            assert_eq!(read[group].mean_ndcg(), scores.mean_ndcg());
+            let read = &read.groups[group];
+            assert_eq!(read.queries, scores.queries);
+            assert_eq!(read.per_query, scores.per_query);
+            assert_eq!(read.per_query_recall, scores.per_query_recall);
+            assert_eq!(read.mean_ndcg(), scores.mean_ndcg());
         }
+    }
+
+    /// A run over a project embedded from content is not paired with one
+    /// embedded from names: the difference would be two changes, reported
+    /// as one.
+    #[test]
+    #[should_panic(expected = "embedded Content passages and this one Named")]
+    fn runs_over_different_encodings_are_not_paired() {
+        let mut scores = Scores::default();
+        scores.add(&ranking(&["a"]), 1, |topic| topic == "a");
+        let groups = std::collections::BTreeMap::from([("group".to_string(), scores)]);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = saved(dir.path(), "project");
+        save(&path, pamin_index::Passage::Content, &groups);
+        against("title", &load(&path), pamin_index::Passage::Named, &groups);
     }
 
     /// What is inside the shortlist but below rank ten is a reranker's to fix.
