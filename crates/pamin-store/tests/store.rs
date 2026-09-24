@@ -2239,6 +2239,17 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
             .expect("count pending"),
         2
     );
+    // The write path's count stops at the bound it compares against, and is
+    // exact below it.
+    for (cap, counted) in [(0, 0), (1, 1), (2, 2), (5, 2)] {
+        assert_eq!(
+            jobs::pending_up_to(database.pool(), project.id, cap)
+                .await
+                .expect("count pending up to a cap"),
+            counted,
+            "two owed, counted up to {cap}"
+        );
+    }
 
     // Priority decides what a worker sees first: syncing the index for a memory
     // just written comes before deriving its edges.
