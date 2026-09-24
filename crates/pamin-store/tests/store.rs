@@ -1172,12 +1172,12 @@ async fn dropping_the_state_copy_loses_nothing_a_state_said(
     /// One state over a span of one piece of evidence, the way V8 stored it.
     async fn state_at_v8(pool: &sqlx::PgPool, evidence: &str, span: (i32, i32), content: &str) {
         let (project, source, version, span_id, topic, state) = (
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
         );
         sqlx::raw_sql(AssertSqlSafe(format!(
             "INSERT INTO projects VALUES ('{project}', '{project}', now());
@@ -1299,7 +1299,7 @@ async fn settled_jobs_go_and_owed_jobs_stay_through_the_migration(
     const NAME: &str = "pamin_settled_jobs_check";
     let scratch = database_left_at(database, workspace, NAME, 9).await;
 
-    let project = uuid::Uuid::new_v4();
+    let project = uuid::Uuid::now_v7();
     sqlx::raw_sql(AssertSqlSafe(format!(
         "INSERT INTO projects VALUES ('{project}', '{project}', now());
          INSERT INTO index_jobs (id, project_id, job_type, payload, idempotency_key,
@@ -1357,12 +1357,12 @@ async fn dropping_the_signal_columns_loses_nothing_written(
     /// it when given.
     async fn state_at_v10(pool: &sqlx::PgPool, evidence: &str, signal: Option<&str>) {
         let (project, source, version, span, topic, state) = (
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
-            uuid::Uuid::new_v4(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::now_v7(),
         );
         let set = signal
             .map(|signal| format!("UPDATE topic_states SET {signal} WHERE id = '{state}';"))

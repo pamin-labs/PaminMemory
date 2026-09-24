@@ -104,14 +104,14 @@ async fn one_statement_records_what_one_per_topic_did() {
     // anything the row-at-a-time write left behind.
     let singly = repository::ensure_project(
         database.pool(),
-        &format!("namebatch-single-{}", uuid::Uuid::new_v4()),
+        &format!("namebatch-single-{}", uuid::Uuid::now_v7()),
     )
     .await
     .expect("ensure project")
     .id;
     let batched = repository::ensure_project(
         database.pool(),
-        &format!("namebatch-batch-{}", uuid::Uuid::new_v4()),
+        &format!("namebatch-batch-{}", uuid::Uuid::now_v7()),
     )
     .await
     .expect("ensure project")
