@@ -318,7 +318,7 @@ macro_rules! insert_whole_span {
 }
 
 /// A topic's next state and the topic's pointer to it, as the two `WITH`
-/// queries `state` and `pointer` of whichever statement appends one.
+/// queries `state` and `pointer` of the statement that appends one.
 ///
 /// The state and the pointer to it in one statement: the appended state is
 /// the newest surviving one by construction, so the pointer moves with it
@@ -618,8 +618,7 @@ const LOCK_TOPIC: &str = "SELECT id, name, path, created_at, current_state_id FR
 /// statement that waits for a row lock reads the row as the holder left it, so
 /// this sees the pointer a concurrent append just moved, not the one before
 /// it. Every path that changes which states survive moves the pointer under
-/// this same lock ([`append_promoted`], [`append_topic_state`] and
-/// [`soft_delete_topic_state`]).
+/// this same lock ([`append_promoted`] and [`soft_delete_topic_state`]).
 pub async fn lock_topic(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
@@ -701,105 +700,6 @@ fn locked_topic(project: ProjectId, row: &PgRow) -> LockedTopic {
             .get::<Option<uuid::Uuid>, _>("current_state_id")
             .map(TopicStateId::from),
     }
-}
-
-/// Appends a new state to a topic.
-///
-/// Takes the whole span rather than its identifier, because the state records
-/// both what it points at and what language that span was found to be in, and
-/// the caller has the span in hand -- it just wrote it. Reading the language
-/// back instead (another `SELECT` in the transaction, or a scalar subquery in
-/// the `RETURNING`) would pay a round trip to save nothing.
-///
-/// Takes the evidence rather than the content, because a state's content *is*
-/// its span of the evidence and is not stored a second time. It used to be: a
-/// `content` column on every state, which on the evaluation workspace equalled
-/// the span's slice of `source_versions.content` in all 425,916 rows. Asking
-/// the caller for the evidence instead of for a string is what keeps the two
-/// from being able to disagree.
-///
-/// Runs in a transaction that first locks the topic row. Without that lock, two
-/// concurrent writers can both read the same maximum version and race to insert
-/// it; one loses on the unique constraint, and the loser's content is dropped
-/// rather than queued behind the winner. Locking the topic serializes appends
-/// per topic while leaving different topics free to proceed in parallel.
-pub async fn append_topic_state(
-    connection: &mut sqlx::PgConnection,
-    project: ProjectId,
-    topic: TopicId,
-    evidence: &SourceVersion,
-    source_span: &SourceSpan,
-    observed_at: OffsetDateTime,
-    validity: Validity,
-) -> Result<TopicState> {
-    debug_assert_eq!(
-        source_span.source_version_id, evidence.id,
-        "a state's span has to point into the evidence it is cut from"
-    );
-
-    // The lock and the predecessor in one statement. The predecessor is the
-    // newest surviving state, which is what `current_state_id` holds: every
-    // path that changes which states survive moves it under this same lock
-    // (this function, below, and `soft_delete_topic_state`). A statement that
-    // waits for a row lock reads the row as the holder left it, so this sees
-    // the pointer a concurrent append just moved, not the one before it.
-    let previous = sqlx::query("SELECT current_state_id FROM topics WHERE id = $1 FOR UPDATE")
-        .bind(topic.0)
-        .fetch_one(&mut *connection)
-        .await?
-        .get::<Option<uuid::Uuid>, _>("current_state_id")
-        .map(TopicStateId::from);
-
-    const APPEND: &str = concat!(
-        "WITH ",
-        append_state!(
-            id = "$1",
-            project = "$2",
-            topic = "$3",
-            span = "$4",
-            observed = "$5",
-            recorded = "$6",
-            supersedes = "$7",
-            valid_from = "$8",
-            valid_to = "$9",
-        ),
-        "
-         SELECT id, version, recorded_at FROM state"
-    );
-    let row = sqlx::query(APPEND)
-        .bind(TopicStateId::new().0)
-        .bind(project.0)
-        .bind(topic.0)
-        .bind(source_span.id.0)
-        .bind(observed_at)
-        .bind(OffsetDateTime::now_utc())
-        .bind(previous.map(|id| id.0))
-        .bind(validity.from)
-        .bind(validity.to)
-        .fetch_one(&mut *connection)
-        .await?;
-
-    let state = TopicState {
-        id: row.get::<uuid::Uuid, _>("id").into(),
-        project_id: project,
-        topic_id: topic,
-        version: from_sql_version(row.get("version")),
-        content: span_text(
-            &evidence.content,
-            source_span.byte_start,
-            source_span.byte_end,
-        )
-        .to_string(),
-        source_span_id: source_span.id,
-        language: source_span.detected_language.clone(),
-        observed_at,
-        recorded_at: row.get("recorded_at"),
-        validity,
-        supersedes: previous,
-        deleted_at: None,
-    };
-
-    Ok(state)
 }
 
 /// Sets the topic's current state, or clears it when nothing survives.
