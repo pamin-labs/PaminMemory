@@ -67,6 +67,11 @@ fn migrations() -> Vec<Migration> {
             "state_content_from_span",
             include_str!("../migrations/V9__state_content_from_span.sql"),
         ),
+        migration(
+            10,
+            "settled_jobs_leave",
+            include_str!("../migrations/V10__settled_jobs_leave.sql"),
+        ),
     ]
 }
 
