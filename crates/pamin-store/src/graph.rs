@@ -748,6 +748,23 @@ impl Expansion<'_> {
     }
 }
 
+/// The edges incident on a frontier, `$2`, of the kinds in `$3` (all of them
+/// when it is null), before the question of which versions count.
+///
+/// The version is joined on its project as well as its relationship, which is
+/// the prefix of its unique key.
+macro_rules! edges_touching {
+    () => {
+        "SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
+         FROM relationships r
+         JOIN relationship_versions v
+           ON v.project_id = r.project_id AND v.relationship_id = r.id
+         WHERE r.project_id = $1
+           AND (r.from_topic = ANY($2) OR r.to_topic = ANY($2))
+           AND ($3::TEXT[] IS NULL OR r.kind = ANY ($3))"
+    };
+}
+
 /// Walks outward from `seeds` through live edges.
 ///
 /// Seeds themselves are returned only when something else reaches them, which
@@ -825,38 +842,37 @@ pub async fn expand(
             positions
         };
 
-        let edges = sqlx::query(
-            "SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
-             FROM relationships r
-             JOIN relationship_versions v ON v.relationship_id = r.id
-             WHERE r.project_id = $1
-               AND (r.from_topic = ANY($2) OR r.to_topic = ANY($2))
-               AND ($3::TEXT[] IS NULL OR r.kind = ANY ($3))
-               -- Which edges are visible depends on whether a moment was asked
-               -- about. Without `--at` the question is what we still stand
-               -- behind, so only uninvalidated versions count. With `--at` the
-               -- question is what held then, which a later retraction does not
-               -- answer on its own: an edge closed because the relationship
-               -- ended still held before it was closed, one deleted because the
-               -- claim was wrong never held at all, and a superseded one is
-               -- answered by its successor. That distinction is what
-               -- tombstone_reason records, and ignoring it made every
-               -- retraction erase its own history.
-               AND CASE WHEN $4::TIMESTAMPTZ IS NULL
-                   THEN v.invalidated_at IS NULL
-                   ELSE (v.valid_from IS NULL OR v.valid_from <= $4)
-                        AND (v.valid_to IS NULL OR $4 < v.valid_to)
-                        AND (v.invalidated_at IS NULL
-                             OR (v.tombstone_reason = 'closed'
-                                 AND $4 < v.invalidated_at))
-                   END",
-        )
-        .bind(project.0)
-        .bind(&positions)
-        .bind(kind_labels.as_deref())
-        .bind(options.at)
-        .fetch_all(executor)
-        .await?;
+        // Which edges are visible depends on whether a moment was asked
+        // about, and the two questions are two statements rather than one
+        // with a `CASE` on the parameter. Without `--at` the question is what
+        // we still stand behind, so only uninvalidated versions count -- and
+        // said literally, that is the predicate of the partial index
+        // `relationship_versions_live`, which a prepared statement's generic
+        // plan can use only if the statement says it rather than a branch on
+        // a parameter the plan has not seen. With `--at` the question is what
+        // held then, which a later retraction does not answer on its own: an
+        // edge closed because the relationship ended still held before it was
+        // closed, one deleted because the claim was wrong never held at all,
+        // and a superseded one is answered by its successor. That distinction
+        // is what tombstone_reason records, and ignoring it made every
+        // retraction erase its own history.
+        const LIVE: &str = concat!(edges_touching!(), " AND v.invalidated_at IS NULL");
+        const AT: &str = concat!(
+            edges_touching!(),
+            " AND (v.valid_from IS NULL OR v.valid_from <= $4)
+              AND (v.valid_to IS NULL OR $4 < v.valid_to)
+              AND (v.invalidated_at IS NULL
+                   OR (v.tombstone_reason = 'closed' AND $4 < v.invalidated_at))"
+        );
+        let query = sqlx::query(if options.at.is_some() { AT } else { LIVE })
+            .bind(project.0)
+            .bind(&positions)
+            .bind(kind_labels.as_deref());
+        let query = match options.at {
+            Some(at) => query.bind(at),
+            None => query,
+        };
+        let edges = query.fetch_all(executor).await?;
 
         // Undirected: both ends of a `depends_on` are relevant to recall, and
         // which way the arrow points is a fact about the relationship rather
