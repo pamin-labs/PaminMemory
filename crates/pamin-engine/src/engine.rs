@@ -1047,7 +1047,7 @@ impl Engine {
                 Some(topic) => topic,
                 None => {
                     let topic =
-                        repository::ensure_topic(&mut transaction, self.project, request.topic)
+                        repository::create_topic(&mut transaction, self.project, request.topic)
                             .await?;
                     // In the same transaction as the topic. A topic that exists
                     // and is missing from the name index is a topic no memory
