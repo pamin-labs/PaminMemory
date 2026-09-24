@@ -413,6 +413,51 @@ own corpus and +0.0003 at p = 0.9057 on MIRACL. Two corpora, opposite readings,
 so ten stays — which is what the literature predicts for a constant worth one
 to three points against a normalisation worth three to eight.
 
+**A learned fusion head was fitted and does not generalise.** The `FEATURES`
+arm (`pamin-engine/tests/features`) dumps every fused candidate with each
+channel's rank and score, and the shipped combiner rebuilt from the dump alone
+matches the engine bit for bit on all 3,537 question-groups of the own corpus,
+XQuAD-R and MuSiQue. The rule, written before any table was read: a head ships
+only if, trained on two corpora, it beats the shipped combiner on recall@20 --
+what the reranker is handed -- in the third, every time, and loses no group
+significantly. Held out by corpus, recall@20 against the shipped combiner:
+
+| head | own | XQuAD-R | MuSiQue |
+| --- | --- | --- | --- |
+| per-group weights, fitted in sample (an upper bound) | +0.0172 | +0.0117 | +0.0050 |
+| the shipped weights re-tuned on the other two | +0.0115 | −0.0013 | ±0 |
+| logistic regression | +0.0013 | −0.0131 | **−0.2375** |
+| pairwise linear | +0.0096 | −0.0037 | **−0.1180** |
+| gradient-boosted LambdaRank, monotone | +0.0054 | −0.0070 | +0.0200 |
+
+None passes. Three reasons, each visible in the data: only MuSiQue has a graph
+worth weighting, so any head trained without it gets the graph wrong; XQuAD-R's
+two groups are the same queries with opposite optima for the lexical weight, so
+any head can only pick a point on that trade, and a script feature buys
+cross-lingual +0.028 for same-language −0.050; and even the in-sample oracle is
+worth under two points of recall@20. A per-query gate choosing the lexical
+weight from query features -- the shape of DAT and MoR -- turns lexical off on
+3,506 of 3,537 queries and loses on both external corpora. Published learned
+fusion (Bruch et al., TOIS 2023; DAT and MoR, 2025) reports gains inside one
+benchmark mix; the held-out-corpus test is the one that fails here.
+
+**The one lead the fit left was tested on the shipped path and refuted.**
+Offline, the graph at half weight without its support rule moved MuSiQue's
+recall@20 by +0.0175. Through `search_reranked_with`, every question paired
+against what ships (the `GRAPH_VARIANTS` arm this was measured with is
+deleted):
+
+| | own, cross-lingual | own, relational | MuSiQue, 1,000 two-hop |
+| --- | --- | --- | --- |
+| graph 0.50, no support rule | −0.0060, 0W/6L, p = 0.035 | +0.0201, n.s. | −0.0026, 86W/85L, n.s. |
+| graph 0.50 | −0.0030, 0W/6L, p = 0.035 | +0.0201, n.s. | −0.0023, 85W/83L, n.s. |
+| graph 0.30, no support rule | ±0, every query tied | ±0 | ±0, every query tied |
+
+The recall the fit found in the fused list does not survive the reranker, and
+the last row says something else: at the shipped weight the support rule does
+nothing on 1,157 questions, including MuSiQue's 12,840-edge graph -- the dense
+case it was kept for.
+
 **Nothing here changed a default.** When this sweep ran, reciprocal rank
 fusion still shipped at the weights it shipped at, and XQuAD-R -- the corpus
 that separates cross-lingual from same-language queries on the same 1,190
@@ -671,7 +716,7 @@ median -2.5%, while one arm's own rounds moved by up to 40%.
 
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
-evaluation workspace, 1.7 GB across its projects:
+evaluation workspace, 1.7 GB across its projects, before either change below:
 
 | table | total | share |
 | --- | --- | --- |
@@ -683,25 +728,135 @@ evaluation workspace, 1.7 GB across its projects:
 | `sources` | 94 MB | 5.8% |
 | `source_spans` | 81 MB | 4.9% |
 
-**The largest table is the work queue, and the corpus had finished indexing.**
+**The largest table was the work queue, and the corpus had finished indexing.**
 `index_jobs` held 651,128 settled rows out of 1,054,646, completed the day
 before and pruned by nothing since — because nothing had been written since.
 `jobs::prune` existed and worked; its call sat behind `drained.completed > 0`,
 so a drain cleaned the queue only when it had found work, and skipped it in
-exactly the state that needs it. A workspace that imports a corpus and goes
-quiet leaves the queue at its high-water mark indefinitely. Fixed, with a test
-about the empty drain specifically.
+exactly the state that needs it.
 
-Two things to read carefully there. Payloads are 57 MB of the 632; the rest is
-row overhead and six indexes over a million rows, so the cost of a queue row is
-mostly not the work it describes. And a `DELETE` returns space to PostgreSQL for
-reuse rather than to the filesystem — the database stops climbing and reuses
-what it holds, and only `VACUUM FULL` shrinks the file. "38.7%" is growth
-avoided, not a file about to get smaller.
+That was fixed, and then the question behind it was asked: **why keep a settled
+row at all?** Nothing read one. Every statement over the table asks about work
+still owed, and `enqueue` inserting a fresh row leaves it in the same state as
+reviving a settled one did. So a job is now deleted when it completes, and
+migration V10 deletes the settled rows an earlier build kept.
+
+The indexes were the other half: payloads were 57 MB of the 632, and the rest
+was row overhead and six indexes. `EXPLAIN ANALYZE` of every statement in
+`jobs.rs`, on a synthetic queue shaped like that one (1,054,646 rows, 651,128
+settled, five projects), found one of the six used by nothing and two
+answering questions a single index answers:
+
+| index | used by | now |
+| --- | --- | --- |
+| primary key | claim, complete, fail | kept |
+| `(project_id, idempotency_key)` unique | the enqueue conflict | kept |
+| `by_priority (priority, available_at, project_id)` | the claim, leading with the wrong column since claims became per-project | replaced |
+| `claimable (project_id, available_at)` | `pending`, `failed`, `replay`, `discard`, through `project_id` alone | replaced |
+| `exhausted` partial on `last_error IS NOT NULL` | nothing — no statement says that, so no plan can use it | dropped |
+| the TOAST table's | PostgreSQL | kept |
+
+`index_jobs_claim_order (project_id, priority, available_at)` replaces the
+middle three: the claim reads it in order and the per-project statements by its
+prefix. On the synthetic queue the three were 55 MB, and the one index is
+20 MB over the 403,518 rows still owed.
+
+**`topic_states` kept a second copy of every memory.** This page used to say
+it duplicated `topics.content`, which has never existed; the column was
+`topic_states.content`, and what it duplicated was the span it points at.
+Commit 39b60c5 checked all 425,916 states of the evaluation workspace and found
+every one equal to its span's slice of `source_versions.content`, 94 MB of
+content bytes. A state's content is now read from the evidence through the
+span, cut at its byte offsets, and migration V9 drops the column — after
+checking every row, and refusing with the offending state named if any
+disagrees.
+
+Both measured on fresh temporary workspaces, as an unprivileged user on four
+cores shared with other measurements, by a scratch harness that drives
+`Engine::remember` and `drain_cascade` at the default profile: XQuAD-R's 2,640
+distinct paragraphs in eleven languages, one topic each, before the change
+and after it, sizes from `pg_total_relation_size`:
+
+| | before | after |
+| --- | --- | --- |
+| `topic_states`, 2,640 states | 3.92 MB | **1.06 MB** |
+| `index_jobs`, 7,920 jobs owed | 4.09 MB | 3.91 MB |
+| `index_jobs`, once drained | 5.45 MB, every row kept | 4.01 MB, **no rows** |
+| `index_jobs`, drained and vacuumed | 5.45 MB | 2.14 MB |
+| whole database, drained and vacuumed | 16.6 MB | **10.4 MB** |
+
+`topic_states` falls by 73% on this corpus because its paragraphs are long —
+1,237 bytes on average — and the table now holds a row's bookkeeping and no
+text. The evaluation workspace's memories are shorter, so there the column
+was 94 MB of a 239 MB table rather than most of it.
+
+What it costs, paired and alternated between the two builds, five rounds of
+2,640 writes each and three read rounds per round:
+
+| | before | after |
+| --- | --- | --- |
+| one `remember`, median of five per-round medians | 1.93 ms (1.55–2.20) | 1.88 ms (1.67–2.25) |
+| `topic_states_by_id`, 150 states, since deleted: nothing called it | 1.58 ms (1.39–1.82) | **1.89 ms** (1.71–2.07) |
+| `current_states_of`, 150 topics | 1.70 ms (1.49–1.97) | **2.06 ms** (1.84–2.15) |
+| `current_content`, the write path's lookup | 0.100 ms | 0.111 ms, inside both ranges |
+
+The write is unchanged within the noise. **The state fetch is not free**: one
+more primary-key join, to `source_versions`, costs about 0.3 ms at the
+150-candidate ceiling, which is the price of storing each memory once. A
+search pays it in up to three lookups — the channels' candidates, any topic the
+query names that no channel returned, and the graph's arrivals, at most fifty
+at the default depth — so under a millisecond, against the 99 ms
+[the CLI reference](cli.md) gives a search with reranking off and 1,522 ms at
+the default tier. The results
+themselves did not move: the before workspace, migrated by the after build,
+returned byte-identical top tens for forty questions through
+`Engine::search_reranked` at its defaults, scores to six decimals, and read
+back every state identically; so did a workspace the after build filled from
+scratch.
+
+**Every state also carried five columns nothing ever wrote.** `importance`,
+`worth_positive`, `worth_negative`, `access_count` and `last_accessed_at` held
+their defaults in every row any build produced, and were read into every state
+the store loaded for a field nothing read. The reads went first, and migration
+V11 drops the columns, refusing with the state named if any row holds anything
+but the default. On XQuAD-R's 2,640 paragraphs, written through the store's
+append functions into fresh workspaces by a scratch harness, then
+`VACUUM ANALYZE`:
+
+| | before | after V11 |
+| --- | --- | --- |
+| a `topic_states` row, `pg_column_size` | 136 bytes | **120 bytes** |
+| `topic_states` heap | 393,216 bytes | **352,256 bytes** |
+| `topic_states` with its indexes | 1,081,344 bytes | 1,040,384 bytes |
+| `current_states_of`, 150 topics, p50 | 3.95 ms (3.78–4.03) | **3.59 ms** (3.48–3.75) |
+
+The fetch figures are six paired processes, alternating which build went
+first, three rounds of 300 calls each; the build after was faster in six of
+six, by a median 0.32 ms. Almost all of that is the reads, not the smaller
+rows: the build that stops reading the columns without dropping them,
+alternated against the build before on the same workspace, was 0.37 ms
+faster, also six of six. Both harness and store were debug builds, which
+inflates exactly the per-column decoding removed here, on four cores at a
+load average near 13, and these fetches are slower than the table above for
+both reasons -- read the difference, not the level. Nothing ranked on the
+columns, so no result can move.
+
+**A migration does not make an existing file smaller.** Dropping a column marks
+it dropped, and a `DELETE` frees space for PostgreSQL to reuse; neither returns
+anything to the filesystem, and `VACUUM FULL` cannot run inside the
+transaction a migration runs in. So V9, V10 and V11 stop the growth — every state
+written afterwards is smaller, and the queue stops at the work owed — and the
+bytes already on disk stay until something rewrites the tables. Measured on the
+migrated before workspace with 15,840 states and 39,600 jobs owed: `topic_states`
+22.5 MB as migrated and 4.9 MB after `VACUUM FULL topic_states`; `index_jobs`
+21.5 MB and 16.3 MB. Nothing in the product runs one.
 
 What is still unattributed on this axis: `source_versions` at 16.7% has not been
-looked at, and `topic_states` carries a duplicate of `topics.content` measured
-at 10.2% of a workspace elsewhere. Neither is done.
+looked at, and it is now the only copy of every memory's text. The queue's rows
+also still carry their subject twice, once in `payload` and once inside
+`idempotency_key` — 59 MB and 57 MB on the synthetic queue, where the unique
+index over the key was the largest index at 126 MB — which is the next thing
+to narrow.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,

@@ -20,14 +20,15 @@ pub struct Project {
 }
 
 /// Where evidence came from.
+///
+/// One kind, because there is one ingest path. A file, directory or chat-log
+/// importer adds its kind when it exists; until then a variant nothing
+/// produces is a promise the schema cannot check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     /// Written directly through the CLI or API.
     Manual,
-    File,
-    Directory,
-    ChatLog,
 }
 
 /// What the sensory filter decided about a piece of evidence.
@@ -156,6 +157,8 @@ pub struct TopicState {
     /// Monotonic per topic. Gaps are expected, because soft deletes do not
     /// renumber the versions that survive.
     pub version: u32,
+    /// The text of `source_span_id`, read from the evidence it points into
+    /// rather than stored a second time.
     pub content: String,
     /// The span this state was derived from, so every claim can be traced back
     /// to bytes in a source.
@@ -175,33 +178,4 @@ pub struct TopicState {
     /// Set when soft deleted. Deleted states leave the default retrieval
     /// surface but stay available for audit and historical traversal.
     pub deleted_at: Option<OffsetDateTime>,
-    pub signals: RetrievalSignals,
-}
-
-/// Per-state signals read alongside a retrieved state.
-///
-/// They were designed as post-fusion modifiers, and not as recall channels:
-/// recency and importance used to appear as candidate channels as well, which
-/// counted the same evidence twice, once when it was recalled and again when it
-/// was reranked.
-///
-/// **Nothing ranks on the first three any more, because nothing writes them.**
-/// `importance`, `worth_positive` and `worth_negative` are `DEFAULT 0` columns
-/// that the repository reads and no code path ever updates, so the modifiers
-/// that multiplied by them multiplied every result by exactly 1.0 on every
-/// search this project has ever run. The modifiers are gone; the columns stay,
-/// because they are the authority store's schema and dropping them is a
-/// migration rather than a ranking change. Restoring the feature means writing
-/// them first -- a modifier over a constant is not a ranking signal, it is a
-/// multiplication.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct RetrievalSignals {
-    /// Explicit importance. Never written; see the type's note.
-    pub importance: f32,
-    /// Times this state co-occurred with a successful outcome. Never written.
-    pub worth_positive: u32,
-    /// Times it co-occurred with a failed one. Never written.
-    pub worth_negative: u32,
-    pub access_count: u32,
-    pub last_accessed_at: Option<OffsetDateTime>,
 }

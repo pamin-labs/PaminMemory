@@ -626,15 +626,17 @@ impl Reranker {
         let repository = Repository::open(cache_dir, tier.repository())?;
 
         let session = |device: Device, providers| -> Result<Encoder> {
-            let source = repository.get(tier.onnx(device))?;
-            // The file the hub serves is copied onto the heap whole; on the
-            // CPU, the prepared copy is mapped instead -- see
-            // `crate::prepared` for what that saves.
-            let model = match device {
-                Device::Cpu => crate::prepared::prepared(&source, cache_dir),
-                _ => source,
+            let model = || {
+                let source = repository.get(tier.onnx(device))?;
+                // The file the hub serves is copied onto the heap whole; on
+                // the CPU, the prepared copy is mapped instead -- see
+                // `crate::prepared` for what that saves.
+                Ok(match device {
+                    Device::Cpu => crate::prepared::prepared(&source, cache_dir),
+                    _ => source,
+                })
             };
-            Encoder::load(&model, &repository, max_tokens(), providers)
+            Encoder::load(model, &repository, max_tokens(), providers)
                 .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
         };
 

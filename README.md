@@ -342,19 +342,20 @@ for that shape — configuration rather than a new algorithm, because that is
 what the measurements actually say.
 [measured.md](docs/measured.md) has every figure.
 
-**One table is provably storing the same bytes twice, and most of the rest has
-never been examined.** `topic_states.content` is **100% derivable from the span
-it already points at** — verified byte-for-byte across all 425,916 rows of the
-evaluation workspace, with no exceptions, at 94 MB of content. The read path
-already joins `source_spans`; what is missing is one join to `source_versions`,
-a substring in the column macro, and a migration to drop the column. It is
-scoped as its own change because a schema migration does not belong in a branch
-about anything else. `source_versions` at 16.7% of the database has not been
-looked at once. The queue that used to be 38.7% is fixed.
+**Two tables stored what nothing needed, and no longer do; most of the rest
+has never been examined.** `topic_states` stored every memory's text a
+second time beside the span it points at; it now reads it from the evidence,
+and a migration drops the copy after checking every row agrees. The work queue
+kept every finished job; it now deletes a job when it completes, and one index
+does the work of three. On a fresh workspace of 2,640 memories, drained and vacuumed,
+the database is 10.4 MB where it was 16.6; writes cost the same, search results are
+byte-identical, and fetching a search's candidate states costs about 0.3 ms
+more for the extra join. `source_versions` at 16.7% of the database has not
+been looked at once. [measured.md](docs/measured.md) has the figures.
 
-A caution that belongs with all of it: a `DELETE` returns space to PostgreSQL
-for reuse, not to the filesystem. Work on this axis stops a database growing
-and lets it reuse what it holds; only `VACUUM FULL` makes the file smaller, and
+A caution that belongs with all of it: a migration returns nothing to the
+filesystem. Dropping a column and deleting rows stop a database growing and let
+it reuse what it holds; only `VACUUM FULL` makes an existing file smaller, and
 nothing here runs one.
 
 **Write latency has never been attributed.** Retrieval is divided into four

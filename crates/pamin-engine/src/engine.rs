@@ -1070,7 +1070,7 @@ impl Engine {
                 &mut transaction,
                 self.project,
                 topic.id,
-                request.content,
+                &evidence,
                 &span,
                 request.observed_at,
                 request.validity,
@@ -1378,12 +1378,20 @@ impl Engine {
         // then the reranker's, one after the other -- the first search after
         // an idle release was measured at 4,528 ms against 116, at the `fast`
         // tier, and most of that is the two loads. Started here, it loads
-        // while the query is
-        // embedded and the channels run. The registry holds its lock across a
-        // load, so the call below either finds the model resident or waits for
-        // this one to finish -- it is never loaded twice. Nothing about the
-        // ranking changes; a failure here is the same failure the call below
-        // reports, so it is left to that one.
+        // while the query is embedded and the channels run. What that saves
+        // is the `COLD` arm of `tests/retrieval.rs`: 262 ms at the median of
+        // seven paired runs, -67 to 545, against an open and first search of
+        // 2,386 ms at the `accurate` tier, on four cores other work was
+        // sharing. That is less than the reranker's load because the two
+        // models share one vocabulary (see `pamin_index::tokenizer`), so the
+        // second to load finds it built, and because the two loads contend
+        // for the same cores.
+        //
+        // The registry holds its lock across a load, so the call below either
+        // finds the model resident or waits for this one to finish -- it is
+        // never loaded twice. Nothing about the ranking changes; a failure
+        // here is the same failure the call below reports, so it is left to
+        // that one.
         if rerank != Rerank::Off {
             let models = self.models.clone();
             drop(tokio::task::spawn_blocking(move || models.reranker(rerank)));

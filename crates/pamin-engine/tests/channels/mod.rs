@@ -789,6 +789,115 @@ impl Paired {
     }
 }
 
+/// One way to run the shipped search path: the fusion it uses, and how many
+/// candidates the reranker reads. `Setting::default()` is what ships.
+#[derive(Clone, Default)]
+pub struct Setting {
+    pub fusion: Fusion,
+    /// `PAMIN_RERANK_DEPTH` for the pass; `None` leaves the shipped depth.
+    pub depth: Option<usize>,
+}
+
+/// How many candidates the reranker reads, around the shipped twenty.
+///
+/// The constant was settled at the `fast` tier on sentences; the default is
+/// now `accurate`, whose pass is most of a search, on corpora of passages.
+/// Fewer candidates is the one latency lever that costs no model change, and
+/// more is the one accuracy lever that costs nothing but time.
+pub fn depth_variants() -> Vec<(String, Setting)> {
+    [10, 15, 30, 40]
+        .into_iter()
+        .map(|depth| {
+            (
+                format!("rerank depth {depth}"),
+                Setting {
+                    fusion: Fusion::default(),
+                    depth: Some(depth),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The variants an arm was asked for: `DEPTH_VARIANTS`.
+///
+/// A graph-channel set lived here too -- the graph at half weight without its
+/// support rule, a lead from the offline fit in `features` -- and was deleted
+/// once the shipped path refuted it; see `docs/measured.md`.
+pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
+    std::env::var("DEPTH_VARIANTS").is_ok().then(depth_variants)
+}
+
+/// Every question through `search_reranked_with` under the shipped setting and
+/// under each variant, scored by group and paired against the shipped one.
+///
+/// `questions` is each question's text and group; `score` ranks one
+/// question's hits into its group's `Scores`, the way the harness already does
+/// -- so the comparison scores exactly what the harness's own shipped row
+/// scores.
+///
+/// No time is reported, and that is deliberate. Every setting asks the same
+/// question in turn, and the reranker remembers each pair it has scored, so a
+/// setting that reranks a subset of what the shipped pass already scored
+/// costs nothing -- depths 10 and 15 measured 70 ms a question against 1,364
+/// for the shipped twenty on MIRACL, which is the cache and not the depth.
+/// What a depth costs is its pair count, which is the depth.
+pub async fn compare_reranked(
+    engine: &pamin_engine::Engine,
+    title: &str,
+    questions: &[(String, String)],
+    limit: u32,
+    depths: pamin_engine::Depths,
+    variants: &[(String, Setting)],
+    score: impl Fn(usize, &mut crate::scoring::Scores, &[SearchHit]),
+) {
+    let rerank = pamin_index::Rerank::default();
+    let settings: Vec<Setting> = std::iter::once(Setting::default())
+        .chain(variants.iter().map(|(_, setting)| setting.clone()))
+        .collect();
+    let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
+        vec![BTreeMap::new(); settings.len()];
+    for (index, (text, group)) in questions.iter().enumerate() {
+        for (setting, into) in settings.iter().zip(&mut measured) {
+            // SAFETY: the harness runs one test on one thread, and nothing
+            // else reads the environment while this is written.
+            match setting.depth {
+                Some(depth) => unsafe {
+                    std::env::set_var("PAMIN_RERANK_DEPTH", depth.to_string())
+                },
+                None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
+            }
+            let hits = engine
+                .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
+                .await
+                .expect("search");
+            score(index, into.entry(group.clone()).or_default(), &hits);
+        }
+    }
+    unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
+
+    println!("\n  {title}: the shipped search path under other settings, paired against it");
+    for (group, shipped) in &measured[0] {
+        println!(
+            "  {group:<16} {:<28} nDCG@{} {:.4}   recall@{} {:.4}",
+            "shipped",
+            crate::scoring::NDCG_AT,
+            shipped.mean_ndcg(),
+            crate::scoring::RECALL_AT,
+            shipped.mean_recall(),
+        );
+        for ((name, _), other) in variants.iter().zip(&measured[1..]) {
+            let other = &other[group];
+            println!(
+                "  {group:<16} {name:<28} {:.4} / {:.4}   {}",
+                other.mean_ndcg(),
+                other.mean_recall(),
+                crate::statistics::compare(&shipped.per_query, &other.per_query)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

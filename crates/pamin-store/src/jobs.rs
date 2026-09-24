@@ -74,16 +74,16 @@ fn priority(kind: JobKind) -> i32 {
 
 /// Schedules work, coalescing with anything already scheduled for it.
 ///
-/// One row per subject and kind, forever. A conflict means the same work is
-/// either still pending -- in which case this call is already represented by it
-/// -- or was completed earlier and is being asked for again, in which case the
-/// row is revived. Either way the queue never holds two rows saying the same
+/// At most one row per subject and kind, for as long as the work is owed. A
+/// conflict means the same work is still pending, so this call is already
+/// represented by it; work that was done has no row, and asking for it again
+/// inserts one. Either way the queue never holds two rows saying the same
 /// thing.
 ///
-/// Reviving clears the claim as well as the completion. That is what keeps a
-/// worker from marking work done that was requested after it started reading:
-/// [`complete`] only completes a job it still holds, and a claim cleared out
-/// from under it is exactly the signal that the state it read is stale.
+/// A conflict clears the claim. That is what keeps a worker from marking work
+/// done that was requested after it started reading: [`complete`] only
+/// completes a job it still holds, and a claim cleared out from under it is
+/// exactly the signal that the state it read is stale.
 pub async fn enqueue(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
@@ -141,8 +141,7 @@ pub async fn enqueue_all(
            FROM unnest($4::uuid[], $5::text[], $6::text[], $7::int[])
                 AS job(id, label, key, priority)
          ON CONFLICT (project_id, idempotency_key) DO UPDATE
-             SET completed_at = NULL,
-                 available_at = $3,
+             SET available_at = $3,
                  claimed_at   = NULL,
                  claimed_by   = NULL,
                  last_error   = NULL,
@@ -203,8 +202,7 @@ pub async fn claim(
                 available_at = $3
           WHERE id IN (
               SELECT id FROM index_jobs
-               WHERE completed_at IS NULL
-                 AND project_id = $6
+               WHERE project_id = $6
                  AND job_type = ANY($7)
                  AND available_at <= $1
                  -- A job that has used its attempts stays pending with its
@@ -231,7 +229,15 @@ pub async fn claim(
     Ok(rows.iter().map(row_to_job).collect())
 }
 
-/// Marks jobs done, and reports which of them this worker still held.
+/// Marks jobs done by deleting them, and reports which of them this worker
+/// still held.
+///
+/// Deleted rather than marked, because nothing reads a job once it is done.
+/// Settled rows used to be kept -- for an hour, and before that for ever -- and
+/// were 651,128 of the 1,054,646 rows in the evaluation workspace's queue, in
+/// a table that was 38.7% of the database. Keeping them bought one thing,
+/// `enqueue` reviving a settled row instead of inserting one, and the two
+/// leave a row in the same state.
 ///
 /// A job missing from the result was not completed, which happens two ways and
 /// means the same thing both times: it was requested again while this attempt
@@ -281,18 +287,15 @@ pub async fn complete(
     // answer.
     let claims: Vec<Option<OffsetDateTime>> = jobs.iter().map(|job| job.claimed_at).collect();
     let rows = sqlx::query(
-        "UPDATE index_jobs
-            SET completed_at = $3, claimed_at = NULL, claimed_by = NULL, last_error = NULL
-           FROM unnest($1::uuid[], $4::timestamptz[]) AS held (id, claimed_at)
+        "DELETE FROM index_jobs
+          USING unnest($1::uuid[], $3::timestamptz[]) AS held (id, claimed_at)
           WHERE index_jobs.id = held.id
             AND index_jobs.claimed_by = $2
             AND index_jobs.claimed_at = held.claimed_at
-            AND index_jobs.completed_at IS NULL
       RETURNING index_jobs.id",
     )
     .bind(&ids)
     .bind(worker)
-    .bind(OffsetDateTime::now_utc())
     .bind(&claims)
     .fetch_all(executor)
     .await?;
@@ -336,13 +339,11 @@ pub async fn fail(
 
 /// How many jobs are waiting, whether or not they are due yet.
 pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<i64> {
-    let (waiting,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM index_jobs
-          WHERE project_id = $1 AND completed_at IS NULL",
-    )
-    .bind(project.0)
-    .fetch_one(executor)
-    .await?;
+    let (waiting,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM index_jobs WHERE project_id = $1")
+            .bind(project.0)
+            .fetch_one(executor)
+            .await?;
 
     Ok(waiting)
 }
@@ -355,7 +356,7 @@ pub async fn exhausted(
     let rows = sqlx::query(
         "SELECT id, project_id, job_type, payload, attempts, claimed_at, last_error
            FROM index_jobs
-          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $2
+          WHERE project_id = $1 AND attempts >= $2
           ORDER BY priority, available_at",
     )
     .bind(project.0)
@@ -383,7 +384,7 @@ pub async fn replay(executor: impl PgExecutor<'_>, project: ProjectId) -> Result
     let revived = sqlx::query(
         "UPDATE index_jobs
             SET attempts = 0, available_at = $2, claimed_at = NULL, claimed_by = NULL
-          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $3",
+          WHERE project_id = $1 AND attempts >= $3",
     )
     .bind(project.0)
     .bind(OffsetDateTime::now_utc())
@@ -396,61 +397,20 @@ pub async fn replay(executor: impl PgExecutor<'_>, project: ProjectId) -> Result
 
 /// Abandons exhausted jobs, and returns how many.
 ///
-/// Completing them rather than deleting them keeps the row, so a later write to
-/// the same subject revives it rather than being coalesced onto a row that no
-/// longer means anything.
+/// Deleted, the way [`complete`] deletes: an abandoned job and a finished one
+/// are both work nobody owes any more, and a later write to the same subject
+/// inserts a fresh row for it either way.
 pub async fn discard(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
     let discarded = sqlx::query(
-        "UPDATE index_jobs
-            SET completed_at = $2, claimed_at = NULL, claimed_by = NULL
-          WHERE project_id = $1 AND completed_at IS NULL AND attempts >= $3",
+        "DELETE FROM index_jobs
+          WHERE project_id = $1 AND attempts >= $2",
     )
     .bind(project.0)
-    .bind(OffsetDateTime::now_utc())
     .bind(pamin_core::MAX_ATTEMPTS)
     .execute(executor)
     .await?;
 
     Ok(discarded.rows_affected())
-}
-
-/// How long a settled job is kept before it is deleted.
-///
-/// Long enough that `cascade status` can still show what a drain just did, and
-/// short enough that the queue does not become the largest thing in the
-/// database. It was: measured on a workspace of 13,014 documents, `index_jobs`
-/// held 39,043 rows, every one of them completed, at 14 MB of heap and 12 MB of
-/// indexes -- 26 MB, or 42% of a 62 MB database, none of it reachable work. The
-/// content those jobs indexed was 3.2 MB.
-const SETTLED_RETENTION: Duration = Duration::from_secs(60 * 60);
-
-/// Deletes settled jobs older than the retention window, and returns how many.
-///
-/// Rows used to be kept forever, and the reason was real: `enqueue` upserts on
-/// the idempotency key, so a completed row is *revived* by the next write to
-/// the same subject rather than joined by a second row saying the same thing.
-/// Deleting it is equivalent rather than a behaviour change -- the insert then
-/// takes the other branch and produces a row in the same state, since
-/// `completed_at`, `attempts` and the claim columns all start where the upsert
-/// would have reset them.
-///
-/// Only settled rows, so nothing in flight can be removed underneath a worker:
-/// a claimed job has `completed_at IS NULL`, which this never matches. That is
-/// also what keeps `complete`'s stale-claim check intact -- it compares the
-/// claim it holds, and this deletes no row that has one.
-pub async fn prune(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<u64> {
-    let deleted = sqlx::query(
-        "DELETE FROM index_jobs
-          WHERE project_id = $1
-            AND completed_at IS NOT NULL
-            AND completed_at < $2",
-    )
-    .bind(project.0)
-    .bind(OffsetDateTime::now_utc() - SETTLED_RETENTION)
-    .execute(executor)
-    .await?;
-
-    Ok(deleted.rows_affected())
 }
 
 fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
