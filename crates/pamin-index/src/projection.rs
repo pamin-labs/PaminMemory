@@ -571,16 +571,6 @@ pub enum VectorStorage {
     Int8,
     /// Half a byte a dimension.
     Int4,
-    /// A bit a dimension.
-    ///
-    /// Listed and not reachable: the engine refuses to train a RaBitQ
-    /// quantizer without a `raw_vector_provider`, which this binding does not
-    /// expose, so asking for it fails when the graph is built rather than
-    /// returning a worse index. Kept as a name so the refusal is recorded
-    /// where someone would look for it, and because it is the one storage
-    /// whose codes are small enough to change the disk answer -- see
-    /// `index_params`.
-    Rabitq,
 }
 
 impl VectorStorage {
@@ -591,7 +581,6 @@ impl VectorStorage {
             Self::Fp16 => "fp16",
             Self::Int8 => "int8",
             Self::Int4 => "int4",
-            Self::Rabitq => "rabitq",
         }
     }
 
@@ -601,7 +590,6 @@ impl VectorStorage {
             "fp16" => Some(Self::Fp16),
             "int8" => Some(Self::Int8),
             "int4" => Some(Self::Int4),
-            "rabitq" => Some(Self::Rabitq),
             _ => None,
         }
     }
@@ -612,7 +600,6 @@ impl VectorStorage {
             Self::Fp16 => Some(QuantizeType::Fp16),
             Self::Int8 => Some(QuantizeType::Int8),
             Self::Int4 => Some(QuantizeType::Int4),
-            Self::Rabitq => Some(QuantizeType::Rabitq),
         }
     }
 
