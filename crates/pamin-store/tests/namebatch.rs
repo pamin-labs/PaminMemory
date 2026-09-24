@@ -35,18 +35,51 @@ const NAMES: &[(&str, usize)] = &[
     ("部署 流水线", 2),
 ];
 
+/// One topic per name in `NAMES`, in that order.
+///
+/// `topic_name_tokens` references `topics`, so a name can only be recorded
+/// for a topic that exists, and a topic's identifier is unique across
+/// projects -- each project needs topics of its own.
+async fn topics_in(
+    database: &Database,
+    project: pamin_core::ProjectId,
+) -> Vec<pamin_core::TopicId> {
+    let mut connection = database.pool().acquire().await.expect("connection");
+    let mut topics = Vec::new();
+    for (name, _) in NAMES {
+        let topic = repository::ensure_topic(&mut connection, project, name)
+            .await
+            .expect("create the topic");
+        topics.push(topic.id);
+    }
+    topics
+}
+
+/// The rows recorded for `project`, each topic given as its position in
+/// `topics`. Position `i` is the same name in both projects, so a key
+/// recorded against the wrong topic reads back as a different row.
 async fn recorded(
     database: &Database,
     project: pamin_core::ProjectId,
-) -> Vec<(uuid::Uuid, String, i16)> {
-    sqlx::query_as(
+    topics: &[pamin_core::TopicId],
+) -> Vec<(usize, String, i16)> {
+    let rows: Vec<(uuid::Uuid, String, i16)> = sqlx::query_as(
         "SELECT topic_id, name_key, token_count FROM topic_name_tokens
           WHERE project_id = $1 ORDER BY name_key",
     )
     .bind(project.0)
     .fetch_all(database.pool())
     .await
-    .expect("read the recorded names")
+    .expect("read the recorded names");
+    rows.into_iter()
+        .map(|(topic, key, tokens)| {
+            let position = topics
+                .iter()
+                .position(|candidate| candidate.0 == topic)
+                .expect("every recorded topic is one of the project's");
+            (position, key, tokens)
+        })
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -84,19 +117,18 @@ async fn one_statement_records_what_one_per_topic_did() {
     .expect("ensure project")
     .id;
 
-    // The same topic identifiers in both projects, so the rows can be compared
-    // by identity rather than by position.
-    let topics: Vec<pamin_core::TopicId> = (0..NAMES.len())
-        .map(|_| pamin_core::TopicId::from(uuid::Uuid::new_v4()))
-        .collect();
+    // Each project has its own topics, created in the same order, so the rows
+    // are compared by which name each topic stands for.
+    let single_topics = topics_in(&database, singly).await;
+    let batched_topics = topics_in(&database, batched).await;
 
-    for (topic, (key, tokens)) in topics.iter().zip(NAMES) {
+    for (topic, (key, tokens)) in single_topics.iter().zip(NAMES) {
         repository::record_topic_name(database.pool(), singly, *topic, key, *tokens)
             .await
             .expect("record one name");
     }
 
-    let names: Vec<(pamin_core::TopicId, String, usize)> = topics
+    let names: Vec<(pamin_core::TopicId, String, usize)> = batched_topics
         .iter()
         .zip(NAMES)
         .map(|(topic, (key, tokens))| (*topic, (*key).to_string(), *tokens))
@@ -106,8 +138,8 @@ async fn one_statement_records_what_one_per_topic_did() {
         .expect("record the names in one statement");
 
     assert_eq!(
-        recorded(&database, singly).await,
-        recorded(&database, batched).await,
+        recorded(&database, singly, &single_topics).await,
+        recorded(&database, batched, &batched_topics).await,
         "the batched write recorded something different from the row-at-a-time write"
     );
 
@@ -118,7 +150,7 @@ async fn one_statement_records_what_one_per_topic_did() {
         .iter()
         .map(|(topic, key, tokens)| (*topic, format!("{key} again"), tokens + 1))
         .collect();
-    for (topic, key, tokens) in &renamed {
+    for (topic, (_, key, tokens)) in single_topics.iter().zip(&renamed) {
         repository::record_topic_name(database.pool(), singly, *topic, key, *tokens)
             .await
             .expect("re-record one name");
@@ -127,9 +159,9 @@ async fn one_statement_records_what_one_per_topic_did() {
         .await
         .expect("re-record the names in one statement");
 
-    let after = recorded(&database, batched).await;
+    let after = recorded(&database, batched, &batched_topics).await;
     assert_eq!(
-        recorded(&database, singly).await,
+        recorded(&database, singly, &single_topics).await,
         after,
         "the batched write took a different conflict path from the row-at-a-time write"
     );
@@ -143,7 +175,7 @@ async fn one_statement_records_what_one_per_topic_did() {
     repository::record_topic_names(database.pool(), batched, &[])
         .await
         .expect("an empty batch is a no-op");
-    assert_eq!(recorded(&database, batched).await, after);
+    assert_eq!(recorded(&database, batched, &batched_topics).await, after);
 
     println!("  the batched write matches the row-at-a-time write, insert and update");
 }
