@@ -50,13 +50,21 @@ const AWAITING_DURABILITY: usize = 128;
 pub struct Drained {
     /// Jobs that ran and were recorded as done.
     pub completed: usize,
-    /// Jobs still owed when the drain stopped.
+    /// Jobs still owed when the drain stopped, counted no further than
+    /// [`LAGGING_AT`](pamin_core::LAGGING_AT) past [`Drained::applied`].
     ///
     /// Counted from the queue, so it includes [`Drained::applied`] -- work this
     /// process has already done and is holding a claim on until a flush makes
     /// it durable. A caller asking "is this memory findable" wants the
     /// difference; a caller asking "what would replay after a power cut" wants
     /// this.
+    ///
+    /// Capped because every write drains, and the two questions a write asks
+    /// of the difference -- is it zero, is it past the lag bound -- are both
+    /// answered exactly below the cap. Counting a backlog in full costs a read
+    /// of all of it, on every write, exactly when the writer is behind. A
+    /// caller that reports the number, as `pamin cascade` does, counts it
+    /// with `jobs::pending`.
     pub pending: i64,
     /// Jobs that failed and will be tried again, or have run out of attempts.
     pub failed: usize,
@@ -237,7 +245,12 @@ impl Engine {
         // Counted as pending and then not as applied, it is reported owed,
         // which it is not, and every write says so.
         drained.applied = self.awaiting_durability();
-        drained.pending = jobs::pending(self.database.pool(), self.project).await?;
+        drained.pending = jobs::pending_up_to(
+            self.database.pool(),
+            self.project,
+            pamin_core::LAGGING_AT + drained.applied as i64,
+        )
+        .await?;
         Ok(drained)
     }
 

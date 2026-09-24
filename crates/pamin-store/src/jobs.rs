@@ -370,6 +370,35 @@ pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
     Ok(waiting)
 }
 
+/// How many jobs are waiting, counted no further than `cap`.
+///
+/// What a write asks, and it never needs more than this: whether anything is
+/// owed at all, and whether the queue is past [`pamin_core::LAGGING_AT`].
+/// [`pending`] answers both by counting every owed row, which on a backlog is
+/// the cost of the backlog -- a read of the whole of this project's part of the
+/// queue's index on every write, exactly when the writer is already behind.
+/// This stops at `cap` rows, so a write pays for at most the bound it compares
+/// against.
+///
+/// `pamin cascade` reports the exact figure and uses [`pending`].
+pub async fn pending_up_to(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    cap: i64,
+) -> Result<i64> {
+    let (waiting,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM (
+             SELECT 1 FROM index_jobs WHERE project_id = $1 LIMIT $2
+         ) AS owed",
+    )
+    .bind(project.0)
+    .bind(cap.max(0))
+    .fetch_one(executor)
+    .await?;
+
+    Ok(waiting)
+}
+
 /// Jobs that have used their attempts, with the error that stopped them.
 pub async fn exhausted(
     executor: impl PgExecutor<'_>,
