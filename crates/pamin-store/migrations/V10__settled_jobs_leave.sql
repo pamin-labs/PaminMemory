@@ -7,9 +7,11 @@
 -- rows were kept for nobody, and on the evaluation workspace they were 651,128
 -- of 1,054,646, in a table that was 38.7% of the database.
 --
--- The rows go first, while `completed_at` still says which they are. Nothing
--- in flight is touched: a claimed job has no completion.
-DELETE FROM index_jobs WHERE completed_at IS NOT NULL;
+-- The rows go while `completed_at` still says which they are, and after the
+-- three indexes below are dropped, so a delete of hundreds of thousands of rows
+-- maintains the two indexes that stay rather than five. Nothing in flight is
+-- touched: a claimed job has no completion. The new index is built last, over
+-- only the rows still owed.
 
 -- Three indexes answered two questions, and one answered none.
 --
@@ -32,6 +34,8 @@ DELETE FROM index_jobs WHERE completed_at IS NOT NULL;
 DROP INDEX index_jobs_by_priority;
 DROP INDEX index_jobs_claimable;
 DROP INDEX index_jobs_exhausted;
+
+DELETE FROM index_jobs WHERE completed_at IS NOT NULL;
 
 ALTER TABLE index_jobs DROP COLUMN completed_at;
 
