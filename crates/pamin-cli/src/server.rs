@@ -30,7 +30,6 @@ use crate::session::Session;
 pub async fn run(workspace: &Workspace) -> Result<()> {
     let path = socket_path(workspace);
     std::fs::create_dir_all(workspace.root())?;
-    map_large_blocks();
 
     // Before the socket exists, so a client that connects finds a server that
     // can answer rather than one still starting the database.
@@ -297,63 +296,6 @@ fn trim_heap() {
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn trim_heap() {}
-
-/// The size from which the allocator maps a block of its own, fixed here
-/// rather than left to move.
-///
-/// glibc starts at 128 KiB and raises the threshold to the size of any mapped
-/// block that is freed, up to 32 MiB, so after the first large block goes
-/// every later one is carved from the heap -- and a freed heap block stays
-/// resident until [`trim_heap`] asks for it. The index makes that the common
-/// case. Its full-text store keeps twelve RocksDB memtables per segment, each
-/// of which allocates and zeroes an 8,000,000-byte hash-bucket array when it
-/// is created: 92 MiB an open segment whatever it holds, one document or
-/// forty. Closing an index therefore handed 92 MiB to the heap and none of it
-/// to the operating system. Measured on the harness that opens six one-document
-/// indexes and closes them again:
-///
-/// ```text
-///                            resident after closing   malloc_trim then
-///   glibc's moving threshold             561 MiB          57 to 108 ms
-///   fixed at 1 MiB                        27 MiB           1.3 to 1.9 ms
-/// ```
-///
-/// Through a server, the hundred-project end-to-end test with sixteen indexes
-/// open reached 4,765 and 4,793 MiB anonymous at the last project with the
-/// moving threshold, against 3,135 and 3,351 MiB with the threshold fixed at
-/// 4 MiB, and grew by 1,124 and 1,137 MiB between the sixteenth project and
-/// the hundredth against 148 and 80.
-///
-/// Four MiB rather than one: half the bucket arrays' size, so they are always
-/// mapped, and high enough that the smaller blocks a forward pass allocates
-/// and frees on every search stay on the heap and are reused rather than
-/// mapped and faulted in again each time.
-const MMAP_THRESHOLD: i32 = 4 * 1024 * 1024;
-
-/// Fixes the allocator's mmap threshold at [`MMAP_THRESHOLD`].
-///
-/// Called once, before anything is opened. glibc only, like [`trim_heap`], and
-/// for the same reason an empty function elsewhere.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn map_large_blocks() {
-    unsafe extern "C" {
-        /// glibc's own, declared here for the reason `malloc_trim` is.
-        fn mallopt(param: i32, value: i32) -> i32;
-    }
-    /// `M_MMAP_THRESHOLD` in glibc's `malloc.h`.
-    const M_MMAP_THRESHOLD: i32 = -3;
-
-    // SAFETY: takes two integers by value and changes a tunable the allocator
-    // reads on its next large allocation; no memory is touched. Setting it
-    // also stops glibc adjusting it, which is the point.
-    let set = unsafe { mallopt(M_MMAP_THRESHOLD, MMAP_THRESHOLD) };
-    if set != 1 {
-        tracing::warn!("the allocator refused a fixed mmap threshold");
-    }
-}
-
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-fn map_large_blocks() {}
 
 /// Whether the connection asked the server to stop.
 enum Shutdown {
