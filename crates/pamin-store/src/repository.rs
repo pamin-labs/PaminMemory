@@ -4,9 +4,9 @@
 //! delete, which sets `deleted_at` and leaves the content intact.
 
 use pamin_core::{
-    Derivation, EdgeKind, FilterDecision, JobKind, Project, ProjectId, RetrievalSignals, SourceId,
-    SourceKind, SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic,
-    TopicId, TopicState, TopicStateId, Validity,
+    Derivation, EdgeKind, FilterDecision, JobKind, Project, ProjectId, SourceId, SourceKind,
+    SourceSpan, SourceSpanId, SourceVersion, SourceVersionId, TombstoneReason, Topic, TopicId,
+    TopicState, TopicStateId, Validity,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgExecutor, PgPool, Row};
@@ -394,7 +394,6 @@ pub async fn append_topic_state(
         validity,
         supersedes: previous,
         deleted_at: None,
-        signals: RetrievalSignals::default(),
     };
 
     // The appended state is the newest surviving one by construction, so the
@@ -441,13 +440,6 @@ fn row_to_topic_state(row: &PgRow) -> TopicState {
             .get::<Option<uuid::Uuid>, _>("supersedes")
             .map(Into::into),
         deleted_at: row.get("deleted_at"),
-        signals: RetrievalSignals {
-            importance: row.get("importance"),
-            worth_positive: row.get::<i32, _>("worth_positive") as u32,
-            worth_negative: row.get::<i32, _>("worth_negative") as u32,
-            access_count: row.get::<i32, _>("access_count") as u32,
-            last_accessed_at: row.get("last_accessed_at"),
-        },
     }
 }
 
@@ -547,17 +539,7 @@ macro_rules! state_columns {
             $alias,
             "supersedes, ",
             $alias,
-            "deleted_at, ",
-            $alias,
-            "importance, ",
-            $alias,
-            "worth_positive, ",
-            $alias,
-            "worth_negative, ",
-            $alias,
-            "access_count, ",
-            $alias,
-            "last_accessed_at"
+            "deleted_at"
         )
     };
 }

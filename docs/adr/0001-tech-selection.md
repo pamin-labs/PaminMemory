@@ -1100,14 +1100,16 @@ The post-fusion modifiers this list used to carry — recency, importance and
 worth, source quality, a redundancy penalty — are gone, and the reason is worth
 recording because it is not the reason the list was shortened. Importance and
 worth were implemented: `Modifiers::apply` multiplied every result by
-`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both are columns the
-repository reads and **no code path anywhere writes**, so both factors were
+`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both were columns the
+repository read and **no code path anywhere wrote**, so both factors were
 exactly 1.0 on every search this project has ever run, and the trace lines for
 them were already suppressed on the grounds that they said nothing. A modifier
-over a constant is not a ranking signal; it is a multiplication. The columns
-stay, because they are the authority store's schema, and `RetrievalSignals` now
-says outright that nothing writes them — restoring the feature starts with a
-write path, not with a multiplier.
+over a constant is not a ranking signal; it is a multiplication. With the
+modifiers gone nothing read them either, so `RetrievalSignals`, which carried
+them and two access counters -- equally never written -- onto every state a
+search loaded, went too. The columns stay, because they are the authority
+store's schema; restoring the feature starts with a write path, not with a
+multiplier.
 
 The projection holds one document per topic, carrying what that topic says now.
 An earlier version of this decision held one per state, and that put a topic's
