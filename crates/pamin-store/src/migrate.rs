@@ -97,6 +97,17 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     let migrations = migrations();
     adopt_refinery_history(pool, &migrations).await?;
 
+    // Said before the run, because the run is what takes the time: a
+    // migration that rewrites a table holds the first command after an
+    // upgrade for seconds, and without this nothing says why.
+    let pending = pending(pool, &migrations).await?;
+    if !pending.is_empty() {
+        tracing::info!(
+            ?pending,
+            "applying schema migrations; the first start after an upgrade can take a while"
+        );
+    }
+
     let mut migrator = Migrator::with_migrations(migrations);
 
     // `sqlx` takes a `pg_advisory_lock` around the run by default, and advisory
@@ -115,6 +126,30 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     migrator.run(pool).await?;
 
     Ok(())
+}
+
+/// The versions this database has not applied yet.
+///
+/// Read from the table `sqlx` keeps, which a database nothing has migrated does
+/// not have yet: then every migration is pending.
+async fn pending(pool: &PgPool, migrations: &[Migration]) -> Result<Vec<i64>> {
+    let applied: Vec<i64> =
+        match sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(applied) => applied,
+            Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("42P01") => {
+                Vec::new()
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+    Ok(migrations
+        .iter()
+        .map(|migration| migration.version)
+        .filter(|version| !applied.contains(version))
+        .collect())
 }
 
 /// Records migrations a previous `refinery` run applied, so `sqlx` skips them.
