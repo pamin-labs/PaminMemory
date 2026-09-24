@@ -747,6 +747,13 @@ impl Engine {
         Ok(self.index().segmentation()?)
     }
 
+    /// Whether this project's vectors were embedded by a model its profile
+    /// has replaced, and are waiting for [`reshape`](Self::reshape) to embed
+    /// them again. Until it does, search runs without its vector channel.
+    pub fn stale(&self) -> bool {
+        self.index().stale()
+    }
+
     pub fn indexed_documents(&self) -> Result<u64> {
         Ok(off_the_runtime(|| self.index().document_count())?)
     }
@@ -1469,8 +1476,14 @@ impl Engine {
         let lists = off_the_runtime(|| {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
-            // one slow inference into a queue for every reader.
-            let embedding = self.embedding()?.embed_query(query)?;
+            // one slow inference into a queue for every reader. Not embedded
+            // at all for an index whose vectors a replaced model embedded,
+            // which has nothing to compare the query's vector with.
+            let embedding = if self.stale() {
+                None
+            } else {
+                Some(self.embedding()?.embed_query(query)?)
+            };
             let index = self.index();
             Ok::<_, pamin_index::IndexError>(vec![
                 ChannelResults::new(
@@ -1483,7 +1496,10 @@ impl Engine {
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector(&embedding, depths.channel)?,
+                    match &embedding {
+                        Some(embedding) => index.recall_vector(embedding, depths.channel)?,
+                        None => Vec::new(),
+                    },
                 ),
             ])
         })?;

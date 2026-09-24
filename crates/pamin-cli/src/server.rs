@@ -191,11 +191,17 @@ struct Reshapes {
 
 impl Reshapes {
     /// Starts reshaping this project's index in the background, if its shape
-    /// is worth it and no reshape of it has started within the interval.
+    /// is worth it or its vectors are stale, and no reshape of it has started
+    /// within the interval.
     ///
     /// Never two at once for one project: one still running is never
     /// replaced, and the engine refuses a second on the same directory
     /// besides.
+    ///
+    /// A stale index -- one a replaced model embedded -- is how an upgrade of
+    /// the embedding model reaches a workspace, and it is re-embedded here
+    /// whatever its shape. Only a server does it; `pamin reindex` is the same
+    /// work done in the foreground, for a workspace that runs without one.
     fn consider(&mut self, key: &(String, Profile), engine: Arc<Engine>) {
         if let Some((at, running)) = self.started.get(key)
             && (!running.is_finished() || at.elapsed() < RESHAPE_INTERVAL)
@@ -209,7 +215,8 @@ impl Reshapes {
                 return;
             }
         };
-        if !shape.is_worth_rebuilding() {
+        let stale = engine.stale();
+        if !stale && !shape.is_worth_rebuilding() {
             return;
         }
 
@@ -219,6 +226,7 @@ impl Reshapes {
             documents = shape.documents,
             segments = shape.segments(),
             wanted = shape.wanted(),
+            stale,
             "reshaping the index"
         );
         let running = tokio::spawn(async move {
@@ -229,6 +237,7 @@ impl Reshapes {
                     before = reshaped.before.segments(),
                     after = reshaped.after.segments(),
                     copied = reshaped.copied,
+                    embedded = reshaped.embedded,
                     caught_up = reshaped.caught_up,
                     seconds = started.elapsed().as_secs_f64(),
                     "reshaped the index"
