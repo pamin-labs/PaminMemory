@@ -695,6 +695,7 @@ async fn search() {
     }
 
     write_corpus(&engine, &corpus).await;
+    scoring::embedded_by_the_current_model(&engine).await;
 
     // Every arm asserts its own premise. A vector channel over an index with
     // no graph is a full scan of a different object, and a count that is short

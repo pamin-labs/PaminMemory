@@ -222,6 +222,7 @@ async fn retrieval_quality_by_group() {
     // not is written once and re-read. Writing is idempotent per topic either
     // way: the same content produces the same state.
     write_corpus(&mut engine, &corpus).await;
+    scoring::embedded_by_the_current_model(&engine).await;
 
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.

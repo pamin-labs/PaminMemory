@@ -1114,6 +1114,7 @@ async fn search_reaches_across_languages() {
         .expect("open the engine");
 
     write_corpus(&engine, &corpus).await;
+    scoring::embedded_by_the_current_model(&engine).await;
 
     // `PASSAGES`: the same memories in a second project whose vectors embed
     // the topic's name, asked every question alongside this one. See

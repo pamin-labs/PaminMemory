@@ -377,6 +377,7 @@ async fn search_ranks_product_listings() {
         .expect("open the engine");
 
     write_corpus(&engine, &corpus).await;
+    scoring::embedded_by_the_current_model(&engine).await;
 
     if std::env::var("CHANNELS").is_ok() {
         report_channels(&engine, &corpus, &named).await;

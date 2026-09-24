@@ -303,6 +303,7 @@ async fn search_answers_questions_that_take_several_steps() {
         .await
         .expect("open the engine");
     write_corpus(&engine, &corpus).await;
+    scoring::embedded_by_the_current_model(&engine).await;
 
     let edges = channels::live_edges(&engine).await;
     let total: i64 = edges.iter().map(|(_, count)| count).sum();

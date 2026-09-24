@@ -16,6 +16,36 @@
 // file and each one's compilation sees the others' helpers as dead. The
 // alternative is a helper per harness, which is what this module exists to undo.
 #![allow(dead_code)]
+/// Embeds a project again if a model its profile has replaced built it, the
+/// way a server would, before anything is measured on it.
+///
+/// A harness names its project by profile, so a change of the profile's model
+/// finds the old model's project under the new model's name. That project
+/// opens -- stale, answering without its vector channel -- and every figure
+/// taken on it would be a figure for a search with one channel missing and
+/// nothing to say so. Re-embedding it is what the product does on upgrade, so
+/// that is what this does, and the assertion is the premise every figure after
+/// it rests on.
+pub async fn embedded_by_the_current_model(engine: &pamin_engine::Engine) {
+    if engine.stale() {
+        let started = std::time::Instant::now();
+        let reshaped = engine
+            .reshape()
+            .await
+            .expect("re-embed the project")
+            .expect("a stale project is re-embedded");
+        println!(
+            "  re-embedded {} documents a replaced model had embedded, in {:.0} s",
+            reshaped.embedded,
+            started.elapsed().as_secs_f64()
+        );
+    }
+    assert!(
+        !engine.stale(),
+        "the project's vectors are still a replaced model's, so the vector channel is off"
+    );
+}
+
 /// Where the ranking quality is read.
 ///
 /// Ten, because that is roughly what fits in a context window a caller would
