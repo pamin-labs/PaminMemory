@@ -15,7 +15,9 @@
 use std::time::Duration;
 
 use pamin_core::{IndexJobId, JobKind, ProjectId};
-use sqlx::{PgExecutor, PgPool, Row};
+use sqlx::postgres::PgArguments;
+use sqlx::query::Query;
+use sqlx::{PgExecutor, PgPool, Postgres, Row};
 use time::OffsetDateTime;
 
 use crate::error::Result;
@@ -81,6 +83,78 @@ fn priority(kind: JobKind) -> i32 {
     }
 }
 
+/// The statement that queues work, as a fragment for whatever statement
+/// carries it.
+///
+/// [`enqueue_all`] runs it alone. The write transaction runs it as one more
+/// data-modifying `WITH` of the statement that appends the state it is about,
+/// because that was the last statement of the transaction and needed nothing
+/// from the one before it but the topic it already had. Both are built from
+/// this, so the conflict behaviour a replay and a completion depend on has one
+/// definition rather than two that have to be kept equal.
+///
+/// The arguments name the placeholders each value is bound to: the project,
+/// the subject, the time the work is due and was asked for, and the three
+/// arrays [`Queued::bind`] binds -- ids, kinds, priorities -- in that order.
+///
+/// The conflict target is the work itself -- project, kind, subject -- and a
+/// job without a subject conflicts with another without one, because the
+/// constraint treats nulls as equal. See V12. A conflict means the same work
+/// is still pending, so the request is already represented by it; it clears
+/// the claim, which is what keeps a worker from marking work done that was
+/// requested after it started reading: [`complete`] only completes a job it
+/// still holds.
+#[rustfmt::skip] // One argument per line would bury the statement.
+macro_rules! enqueue_jobs {
+    (
+        project = $project:literal,
+        subject = $subject:literal,
+        at = $at:literal,
+        rows = [$ids:literal, $kinds:literal, $priorities:literal $(,)?] $(,)?
+    ) => {
+        concat!(
+            "INSERT INTO index_jobs
+                 (id, project_id, job_type, subject, available_at, created_at, priority)
+             SELECT job.id, ", $project, ", job.label, ", $subject, ", ", $at, ", ", $at, ", job.priority
+               FROM unnest(", $ids, "::uuid[], ", $kinds, "::text[], ", $priorities, "::int[])
+                 AS job(id, label, priority)
+             ON CONFLICT (project_id, job_type, subject) DO UPDATE
+                 SET available_at = ", $at, ",
+                     claimed_at   = NULL,
+                     claimed_by   = NULL,
+                     last_error   = NULL,
+                     attempts     = 0"
+        )
+    };
+}
+
+pub(crate) use enqueue_jobs;
+
+/// The rows a set of kinds queues, for the arrays [`enqueue_jobs!`] reads.
+pub(crate) struct Queued {
+    ids: Vec<uuid::Uuid>,
+    kinds: Vec<&'static str>,
+    priorities: Vec<i32>,
+}
+
+impl Queued {
+    pub(crate) fn of(kinds: &[JobKind]) -> Self {
+        Self {
+            ids: kinds.iter().map(|_| IndexJobId::new().0).collect(),
+            kinds: kinds.iter().map(|kind| kind.label()).collect(),
+            priorities: kinds.iter().map(|kind| priority(*kind)).collect(),
+        }
+    }
+
+    /// Binds the three arrays, next after whatever `query` has bound so far.
+    pub(crate) fn bind<'q>(
+        self,
+        query: Query<'q, Postgres, PgArguments>,
+    ) -> Query<'q, Postgres, PgArguments> {
+        query.bind(self.ids).bind(self.kinds).bind(self.priorities)
+    }
+}
+
 /// Schedules work, coalescing with anything already scheduled for it.
 ///
 /// At most one row per subject and kind, for as long as the work is owed. A
@@ -112,13 +186,12 @@ pub async fn enqueue(
 /// before wants the memories that already named it found. Three is the right
 /// number -- they are different work at different priorities, and merging them
 /// would make every rewrite of an existing topic pay for a scan it does not
-/// need -- but three [`enqueue`] calls inside the write transaction is three
-/// round trips for three rows, and the write is holding a transaction open
-/// across all of them.
+/// need. The write queues them inside its own statement, from the same
+/// `enqueue_jobs!` fragment this runs, so there is one definition of what
+/// queueing a job means.
 ///
-/// Same rows, same conflict behaviour. `unnest` turns
-/// the arrays into rows so the statement stays `'static`, which is the same
-/// reason the rest of this crate writes its `IN` lists that way.
+/// `unnest` turns the arrays into rows so the statement stays `'static`, which
+/// is the same reason the rest of this crate writes its `IN` lists that way.
 pub async fn enqueue_all(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
@@ -129,34 +202,17 @@ pub async fn enqueue_all(
         return Ok(());
     }
 
-    let ids: Vec<uuid::Uuid> = kinds.iter().map(|_| IndexJobId::new().0).collect();
-    let labels: Vec<String> = kinds.iter().map(|kind| kind.label().to_string()).collect();
-    let priorities: Vec<i32> = kinds.iter().map(|kind| priority(*kind)).collect();
-    let now = OffsetDateTime::now_utc();
-
-    // The conflict target is the work itself -- project, kind, subject -- and
-    // a job without a subject conflicts with another without one, because the
-    // constraint treats nulls as equal. See V12.
-    sqlx::query(
-        "INSERT INTO index_jobs
-             (id, project_id, job_type, subject, available_at, created_at, priority)
-         SELECT job.id, $1, job.label, $2, $3, $3, job.priority
-           FROM unnest($4::uuid[], $5::text[], $6::int[]) AS job(id, label, priority)
-         ON CONFLICT (project_id, job_type, subject) DO UPDATE
-             SET available_at = $3,
-                 claimed_at   = NULL,
-                 claimed_by   = NULL,
-                 last_error   = NULL,
-                 attempts     = 0",
-    )
-    .bind(project.0)
-    .bind(subject)
-    .bind(now)
-    .bind(&ids)
-    .bind(&labels)
-    .bind(&priorities)
-    .execute(executor)
-    .await?;
+    const ENQUEUE: &str = enqueue_jobs!(
+        project = "$1",
+        subject = "$2",
+        at = "$3",
+        rows = ["$4", "$5", "$6"]
+    );
+    let query = sqlx::query(ENQUEUE)
+        .bind(project.0)
+        .bind(subject)
+        .bind(OffsetDateTime::now_utc());
+    Queued::of(kinds).bind(query).execute(executor).await?;
 
     Ok(())
 }
