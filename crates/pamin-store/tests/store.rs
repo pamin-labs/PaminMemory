@@ -53,6 +53,7 @@ async fn the_ledger_holds_its_promises() {
         .expect("open workspace");
 
     migrations_create_every_table(&database).await;
+    the_cluster_forces_what_it_writes_to_disk(&database).await;
     reopening_reuses_the_running_server(&workspace).await;
     appending_versions_builds_a_supersession_chain(&database).await;
     soft_deleting_the_current_version_promotes_its_predecessor(&database).await;
@@ -101,6 +102,23 @@ async fn migrations_create_every_table(database: &Database) {
                 .await
                 .unwrap_or_else(|error| panic!("querying {table}: {error}"));
         assert_eq!(count, 0, "{table} should start empty");
+    }
+}
+
+/// The running cluster flushes to disk, and does not make a commit wait for it.
+///
+/// Asked of the server rather than of the settings map, because the setting
+/// that decides it is not in the map: `postgresql_embedded` passes `-F` on the
+/// command line, which turns `fsync` off, and only an override given after it
+/// turns it back on. A map entry the server never honoured would pass a test
+/// that read the map.
+async fn the_cluster_forces_what_it_writes_to_disk(database: &Database) {
+    for (setting, expected) in [("fsync", "on"), ("synchronous_commit", "off")] {
+        let value: String = sqlx::query_scalar(AssertSqlSafe(format!("SHOW {setting}")))
+            .fetch_one(database.pool())
+            .await
+            .unwrap_or_else(|error| panic!("SHOW {setting}: {error}"));
+        assert_eq!(value, expected, "the cluster runs with {setting} = {value}");
     }
 }
 

@@ -267,11 +267,17 @@ pub async fn claim(
 ///
 /// The second row is the change this replaced, and it is a regression: a
 /// transaction to hold `SET LOCAL synchronous_commit = off` costs four round
-/// trips where the statement it wraps costs one, and the flush it skips is
-/// worth less than the three it adds. The fourth row is why the relaxation is
-/// not here at all -- batched, one flush already covers sixty-four completions,
-/// so there is nothing left for it to save and no reason to give up the
-/// guarantee. Amortizing the commit is the whole of the win.
+/// trips where the statement it wraps costs one. Amortizing the commit is the
+/// whole of the win.
+///
+/// **The "durability relaxed" rows measured nothing**, which is worth knowing
+/// before reading them as a verdict on `synchronous_commit`. The cluster they
+/// were taken on ran with `fsync` off -- `postgresql_embedded` starts every
+/// cluster with `-F` -- so a synchronous commit never waited for a disk either,
+/// and relaxing it had no flush to skip. The cluster now runs with `fsync` on
+/// and `synchronous_commit` off for every statement (see `database::settings`),
+/// so a completion neither waits for a flush nor needs a transaction to avoid
+/// one, and the batching above is still what makes a thousand of them cheap.
 pub async fn complete(
     executor: impl PgExecutor<'_>,
     jobs: &[&Job],
