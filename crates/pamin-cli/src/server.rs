@@ -300,7 +300,7 @@ enum Shutdown {
 }
 
 /// Reads requests from one client until it hangs up.
-async fn serve_connection(session: &Session, stream: UnixStream) -> Result<Shutdown> {
+async fn serve_connection(session: &Arc<Session>, stream: UnixStream) -> Result<Shutdown> {
     let mut framed = Framed::new(stream, LinesCodec::new_with_max_length(MAX_REQUEST));
 
     while let Some(line) = framed.next().await {
@@ -368,7 +368,7 @@ const MAX_REQUEST: usize = 16 * 1024 * 1024;
 /// The dispatch is a match rather than a trait because there is exactly one
 /// implementation of each arm and the compiler checking that every command has
 /// one is worth more than the indirection would be.
-async fn answer(session: &Session, request: Request) -> Result<Payload> {
+async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
     let Request {
         project,
         profile,
@@ -378,6 +378,19 @@ async fn answer(session: &Session, request: Request) -> Result<Payload> {
 
     let profile =
         Profile::parse(&profile).ok_or_else(|| anyhow::anyhow!("unknown profile {profile:?}"))?;
+
+    // Before the request, not after it: the loads are what the next search
+    // would wait for, and this request is the earliest sign one is coming.
+    // Not for `stop`, which is about to end the process, nor for `reindex`,
+    // which discards the index a warm-up would be holding open.
+    if let Call::Search(args) = &call
+        && let Some(tier) = pamin_index::Rerank::parse(&args.rerank)
+    {
+        session.searched_at(tier);
+    }
+    if !matches!(call, Call::Stop | Call::Reindex(_)) {
+        session.warm(&project, profile);
+    }
 
     let value = match call {
         Call::Init => json(command::init::execute(session, &project).await?)?,

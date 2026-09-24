@@ -74,12 +74,18 @@ impl Cli {
     /// server did rather than only what it returned has to ask for it. The log
     /// is `serve.log` in the workspace either way.
     fn serve_logging(&self, filter: &str) -> std::process::Child {
+        self.serve_with(filter, &[])
+    }
+
+    /// A server with `env` set as well, for a test that shortens a window.
+    fn serve_with(&self, filter: &str, env: &[(&str, &str)]) -> std::process::Child {
         let log = std::fs::File::create(self.home().join("serve.log")).expect("server log");
         let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(["serve"])
             .env("PAMIN_HOME", self.home())
             .env("PAMIN_PROFILE", PROFILE)
             .env("PAMIN_LOG", filter)
+            .envs(env.iter().copied())
             .stdout(log.try_clone().expect("a second handle on the log"))
             .stderr(log)
             .spawn()
@@ -1934,6 +1940,62 @@ fn a_hundred_projects_are_served_by_one_process() {
         serving < filling,
         "the second fifty projects cost {serving} KiB against the first fifty's {filling} KiB, \
          so nothing is being let go of"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// A project is warmed by whatever touches it first, and the warm-up is given
+/// back like anything else.
+///
+/// The first search after a server starts, or after it has released a
+/// project, used to open the index and load the models in front of the
+/// caller. A resident server now starts that when the project is first asked
+/// anything, so a `grep` -- which embeds nothing -- leaves the model loaded
+/// for the search that tends to follow it. What must not change is the other
+/// half: a server nobody is using gives its memory back, and a model loaded
+/// for a search that never came is no exception.
+///
+/// Before the warm-up, the `grep` loaded nothing and no warm-up was ever
+/// logged, so the first assertion is the one that fails.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_warmed_project_is_given_back_when_idle() {
+    const IDLE_SECONDS: &str = "15";
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(300);
+
+    let cli = Cli::new();
+    let mut server = cli.serve_with("pamin=debug", &[("PAMIN_MODEL_IDLE", IDLE_SECONDS)]);
+    let log = || std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+    let wait_for = |line: &str| {
+        let deadline = Instant::now() + GIVE_UP_AFTER;
+        while !log().contains(line) {
+            assert!(
+                Instant::now() < deadline,
+                "the server never logged {line:?}:\n{}",
+                log()
+            );
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+
+    let before = resident_kib(&server);
+    cli.run(&["grep", "marmalade"]);
+    wait_for("warmed");
+    let warmed = resident_kib(&server);
+    assert!(
+        warmed > before + 20 * 1024,
+        "the warm-up logged success but the server grew from {before} KiB only to {warmed} KiB"
+    );
+
+    wait_for("gave back what nothing had asked for");
+    let released = resident_kib(&server);
+    println!("  resident KiB: started {before}, warmed {warmed}, after the idle window {released}");
+    assert!(
+        released < warmed - (warmed - before) / 2,
+        "the server held {released} KiB after the idle window, against {warmed} warmed and \
+         {before} before, so the warm-up was not given back"
     );
 
     server.kill().expect("stopping the server");
