@@ -1000,24 +1000,44 @@ pub async fn grep_evidence(
 
     Ok(rows
         .iter()
-        .map(|row| EvidenceMatch {
-            source_version: SourceVersion {
-                id: row.get::<uuid::Uuid, _>("id").into(),
-                project_id: row.get::<uuid::Uuid, _>("project_id").into(),
-                source_id: row.get::<uuid::Uuid, _>("source_id").into(),
-                version: from_sql_version(row.get("version")),
-                content: row.get("content"),
-                content_hash: row.get("content_hash"),
-                filter_decision: FilterDecision::from_label(row.get("filter_decision"))
-                    .unwrap_or(FilterDecision::Promoted),
-                filter_reason: row.get("filter_reason"),
-                recorded_at: row.get("recorded_at"),
-            },
-            locator: row.get("locator"),
-            // SQL positions are one-based; byte offsets are not.
-            offset: (row.get::<i32, _>("match_position") as usize).saturating_sub(1),
+        .map(|row| {
+            let content: String = row.get("content");
+            let offset = byte_offset(&content, row.get::<i32, _>("match_position") as usize);
+            EvidenceMatch {
+                source_version: SourceVersion {
+                    id: row.get::<uuid::Uuid, _>("id").into(),
+                    project_id: row.get::<uuid::Uuid, _>("project_id").into(),
+                    source_id: row.get::<uuid::Uuid, _>("source_id").into(),
+                    version: from_sql_version(row.get("version")),
+                    content,
+                    content_hash: row.get("content_hash"),
+                    filter_decision: FilterDecision::from_label(row.get("filter_decision"))
+                        .unwrap_or(FilterDecision::Promoted),
+                    filter_reason: row.get("filter_reason"),
+                    recorded_at: row.get("recorded_at"),
+                },
+                locator: row.get("locator"),
+                offset,
+            }
         })
         .collect())
+}
+
+/// Where the match SQL's `position` found starts, in bytes of `content`.
+///
+/// `position` answers in characters, counting from one, and an offset here is
+/// bytes -- the unit `span_text` cuts in and every caller slices with. The two
+/// agree only while everything before the match is ASCII. Counting the
+/// characters again in Rust is exact because the cluster is initialised UTF-8,
+/// where PostgreSQL's character is a code point and so is a Rust `char`. It
+/// holds for the folded search too: under the default libc provider `lower`
+/// maps one character to one, so a position in the folded text is the same
+/// position in the original.
+fn byte_offset(content: &str, position: usize) -> usize {
+    content
+        .char_indices()
+        .nth(position.saturating_sub(1))
+        .map_or(content.len(), |(byte, _)| byte)
 }
 
 /// Records how a topic's name tokenizes, for the name index.
