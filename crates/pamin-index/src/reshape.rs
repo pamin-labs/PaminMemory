@@ -64,7 +64,7 @@ const COPY_BATCH: usize = 256;
 const PATIENCE: Duration = Duration::from_millis(100);
 
 /// Where the copy is built, beside the index it will replace.
-fn sibling(live: &Path) -> PathBuf {
+pub(crate) fn sibling(live: &Path) -> PathBuf {
     live.with_extension("reshaping")
 }
 
@@ -95,6 +95,11 @@ pub struct Reshaped {
     pub after: Segmentation,
     /// Documents copied a batch at a time.
     pub copied: u64,
+    /// Documents embedded again rather than copied, by a re-embedding.
+    ///
+    /// Only this attempt's: a re-embedding that resumed one an earlier
+    /// attempt did not finish does not embed what that attempt already had.
+    pub embedded: u64,
     /// Topics written while the copy ran, read again and applied to it.
     pub caught_up: u64,
 }
@@ -124,7 +129,11 @@ pub struct Reshape {
     live: PathBuf,
     profile: Profile,
     before: Segmentation,
+    /// Whether this is a re-embedding, whose copy outlives an abandoned
+    /// attempt so the next one can resume it. See [`Reshape::reembed`].
+    reembedding: bool,
     copied: u64,
+    embedded: u64,
     caught_up: u64,
 }
 
@@ -136,13 +145,66 @@ impl Reshape {
     /// written before the recording starts is in the served index by then, so
     /// listing afterwards finds it; one written after is recorded. Listing
     /// first would miss a topic created and indexed between the two.
+    ///
+    /// A stale index is never reshaped: its vectors are the one thing a copy
+    /// would carry that the index is waiting to be rid of. It is re-embedded
+    /// instead.
     pub fn begin(held: &Arc<Held>, live: &Path, profile: Profile) -> Result<Option<Self>> {
-        let before = lock(held).segmentation()?;
+        let before = {
+            let served = lock(held);
+            if served.stale() {
+                return Ok(None);
+            }
+            served.segmentation()?
+        };
         if !before.is_worth_rebuilding() {
             return Ok(None);
         }
 
         let next = ProjectionIndex::create_beside(live, &sibling(live), profile, before.documents)?;
+        Ok(Some(Self::start(held, live, profile, before, next, false)))
+    }
+
+    /// Starts embedding the index served from `held` again, if its vectors
+    /// were embedded by a model `profile` has replaced; `None` if they were
+    /// not.
+    ///
+    /// The upgrade path for a change of model: the index keeps being served,
+    /// without its vector channel (see [`Projection::stale`]), while
+    /// [`embed`](Self::embed) writes every document into a sibling under the
+    /// current model, and the sibling replaces it through the same
+    /// [`build`](Self::build) and [`swap`](Self::swap) a reshape takes.
+    /// Writes made meanwhile are recorded and copied across as a reshape
+    /// copies them, which is right here because a stale index is written
+    /// with the current model in the current encoding.
+    ///
+    /// Resumable, because embedding a large project again takes hours. The
+    /// sibling is kept when an attempt is abandoned or its process dies, and
+    /// the next attempt opens it rather than starting again: whatever it
+    /// already holds under the text the served index holds is not embedded a
+    /// second time. The ledger lists the topics as a reshape's caller lists
+    /// them -- after this returns.
+    pub fn reembed(held: &Arc<Held>, live: &Path, profile: Profile) -> Result<Option<Self>> {
+        let before = {
+            let served = lock(held);
+            if !served.stale() {
+                return Ok(None);
+            }
+            served.segmentation()?
+        };
+        let next = ProjectionIndex::resume_or_create(&sibling(live), profile, before.documents)?;
+        Ok(Some(Self::start(held, live, profile, before, next, true)))
+    }
+
+    /// Wraps the served index to record writes, and holds the copy.
+    fn start(
+        held: &Arc<Held>,
+        live: &Path,
+        profile: Profile,
+        before: Segmentation,
+        next: ProjectionIndex,
+        reembedding: bool,
+    ) -> Self {
         let recording = {
             let mut served = lock(held);
             let recording = Arc::new(Recording {
@@ -153,16 +215,18 @@ impl Reshape {
             recording
         };
 
-        Ok(Some(Self {
+        Self {
             held: Arc::clone(held),
             recording: Some(recording),
             next: Some(next),
             live: live.to_path_buf(),
             profile,
             before,
+            reembedding,
             copied: 0,
+            embedded: 0,
             caught_up: 0,
-        }))
+        }
     }
 
     /// Copies these topics from the served index into the sibling.
@@ -176,6 +240,56 @@ impl Reshape {
         for chunk in topics.chunks(COPY_BATCH) {
             let stored = lock(&self.held).stored(chunk)?;
             self.copied += self.apply(chunk, &stored)?;
+        }
+        Ok(())
+    }
+
+    /// Embeds these topics into the sibling again, each from the text the
+    /// served index holds for it, a batch per lock; `topics` pairs each with
+    /// its name, which the current encoding embeds (see [`Passage`]).
+    ///
+    /// `embed` is the model, and is called with no lock of this crate's held,
+    /// so a caller that takes its model's lock inside it keeps the model-first
+    /// order every other caller does. A topic the sibling already holds under
+    /// the same text is skipped -- an earlier attempt embedded it -- and one
+    /// the served index does not hold is removed from the sibling. Each batch
+    /// is made durable before the next, so an interrupted attempt loses at
+    /// most the batch it was on.
+    pub fn embed(
+        &mut self,
+        topics: &[(TopicId, &str)],
+        mut embed: impl FnMut(&str) -> Result<Vec<f32>>,
+    ) -> Result<()> {
+        for chunk in topics.chunks(COPY_BATCH) {
+            let ids: Vec<TopicId> = chunk.iter().map(|(topic, _)| *topic).collect();
+            let served = lock(&self.held).stored(&ids)?;
+            let next = self.next();
+            let done = next.stored(&ids)?;
+            let passage = next.passage();
+
+            let mut present: Vec<(TopicId, String, Vec<f32>)> = Vec::new();
+            let mut absent: Vec<TopicId> = Vec::new();
+            for ((topic, name), (served, done)) in chunk.iter().zip(served.iter().zip(&done)) {
+                match (served, done) {
+                    (None, _) => absent.push(*topic),
+                    (Some(served), Some(done)) if done.content == served.content => {}
+                    (Some(served), _) => {
+                        let vector = embed(&passage.render(name, &served.content))?;
+                        present.push((*topic, served.content.clone(), vector));
+                    }
+                }
+            }
+
+            let documents: Vec<(TopicId, &str, &[f32])> = present
+                .iter()
+                .map(|(topic, content, vector)| (*topic, content.as_str(), vector.as_slice()))
+                .collect();
+            next.upsert_batch(&documents)?;
+            if !absent.is_empty() {
+                next.delete(&absent)?;
+            }
+            next.flush()?;
+            self.embedded += present.len() as u64;
         }
         Ok(())
     }
@@ -274,6 +388,7 @@ impl Reshape {
                         before: self.before,
                         after: after?,
                         copied: self.copied,
+                        embedded: self.embedded,
                         caught_up: self.caught_up,
                     });
                 }
@@ -354,7 +469,8 @@ impl Reshape {
 }
 
 impl Drop for Reshape {
-    /// Abandons the copy, if the swap has not taken it.
+    /// Abandons the copy, if the swap has not taken it -- or, for a
+    /// re-embedding, sets it down durable for the next attempt to resume.
     fn drop(&mut self) {
         if let Some(recording) = self.recording.take() {
             let mut served = self.held.lock().unwrap_or_else(PoisonError::into_inner);
@@ -362,7 +478,18 @@ impl Drop for Reshape {
                 *served = Arc::clone(&recording.inner);
             }
         }
-        drop(self.next.take());
+        let next = self.next.take();
+        if self.reembedding {
+            // Hours of embedding, kept. What the served index was written with
+            // meanwhile is not recorded anywhere now, and does not need to be:
+            // the next attempt compares every topic's text with the served
+            // index's and embeds whatever differs.
+            if let Some(Err(error)) = next.as_ref().map(ProjectionIndex::flush) {
+                tracing::warn!(%error, "could not make an abandoned re-embedding durable");
+            }
+            return;
+        }
+        drop(next);
         // Left for the next reshape to discard if this fails: it discards the
         // sibling before creating one.
         if let Err(error) = ProjectionIndex::discard(&sibling(&self.live)) {
@@ -494,6 +621,10 @@ impl Projection for Recording {
     fn passage(&self) -> Passage {
         self.inner.passage()
     }
+
+    fn stale(&self) -> bool {
+        self.inner.stale()
+    }
 }
 
 /// What the lock holds while no index is open behind it.
@@ -577,6 +708,10 @@ impl Projection for Closed {
     fn passage(&self) -> Passage {
         self.passage
     }
+
+    fn stale(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -605,11 +740,16 @@ mod tests {
     /// A deterministic unit vector nearly orthogonal to every other one this
     /// makes, so a document that does not answer its own vector is missing.
     fn vector(seed: u128) -> Vec<f32> {
+        vector_of(seed, PROFILE)
+    }
+
+    /// [`vector`], as wide as `profile`'s.
+    fn vector_of(seed: u128, profile: Profile) -> Vec<f32> {
         let mut state = (seed as u64)
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add(1);
-        let mut vector = Vec::with_capacity(PROFILE.dimensions() as usize);
-        for _ in 0..PROFILE.dimensions() {
+        let mut vector = Vec::with_capacity(profile.dimensions() as usize);
+        for _ in 0..profile.dimensions() {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
@@ -871,5 +1011,184 @@ mod tests {
         std::fs::create_dir_all(replaced(&live)).expect("a finished swap's leftover");
         Reshape::recover(&live).expect("recover");
         assert!(live.exists() && !replaced(&live).exists());
+    }
+
+    /// The upgrade path for a change of model. An index a replaced model
+    /// embedded is served without its vector channel, embedded again beside
+    /// itself, and swapped for the copy; an attempt that is interrupted is
+    /// resumed rather than started again.
+    ///
+    /// Counting the model's calls is what makes "resumed" a claim with a
+    /// number: the second attempt embeds everything but the batch the first
+    /// one finished -- plus the one topic edited in between, whose text the
+    /// copy no longer matches. Keeping the abandoned copy and skipping what it
+    /// holds are separate steps, and taking out either makes the second
+    /// attempt embed every topic again. The writes made while the second
+    /// attempt runs are the other half: without the catch-up the new topic is
+    /// lost.
+    #[test]
+    fn a_stale_index_is_embedded_again_and_an_interrupted_attempt_resumes() {
+        const NEW: Profile = Profile::Accuracy;
+        const REPLACED: &str = "gpahal/bge-m3-onnx-int8";
+        const TOPICS: u128 = 600;
+        let name = |n: u128| format!("topic {n}");
+
+        let root = tempfile::tempdir().expect("temp dir");
+        let live = root.path().join("index");
+        std::fs::create_dir_all(&live).expect("index dir");
+        std::fs::write(
+            live.join("profile"),
+            format!("{REPLACED}\ntopic\nfp32\ncontent"),
+        )
+        .expect("marker");
+
+        // Another profile's model is still a mistake to report.
+        assert!(matches!(
+            ProjectionIndex::open_sized(&live, Profile::Speed, Access::ReadWrite, TINY_SEGMENT),
+            Err(IndexError::ProfileMismatch { .. })
+        ));
+
+        // What the replaced model left: its vectors, over content alone.
+        let index = ProjectionIndex::open_sized(&live, NEW, Access::ReadWrite, TINY_SEGMENT)
+            .expect("an index a replaced model built opens");
+        assert!(index.stale());
+        assert_eq!(
+            index.passage(),
+            Passage::Named,
+            "a stale index is written in the encoding its copy will have"
+        );
+        let contents: Vec<String> = (1..=TOPICS).map(content).collect();
+        let old: Vec<Vec<f32>> = (1..=TOPICS).map(|n| vector_of(n, NEW)).collect();
+        let documents: Vec<(TopicId, &str, &[f32])> = (1..=TOPICS)
+            .map(|n| {
+                let at = (n - 1) as usize;
+                (topic(n), contents[at].as_str(), old[at].as_slice())
+            })
+            .collect();
+        index.upsert_batch(&documents).expect("write");
+        index.flush().expect("flush");
+        assert!(
+            index.recall_vector(&old[2], 5).expect("recall").is_empty(),
+            "a stale index answered by vector"
+        );
+        let held: Arc<Held> = Arc::new(Mutex::new(Arc::new(index)));
+        let original = Arc::as_ptr(&*lock(&held));
+
+        // The model: a vector that depends on the whole text it is shown.
+        let embedded = |text: &str| -> Vec<f32> {
+            let seed = text.bytes().fold(0xCBF2_9CE4_8422_2325_u128, |hash, byte| {
+                (hash ^ u128::from(byte)).wrapping_mul(0x0100_0000_01B3)
+            });
+            vector_of(seed, NEW)
+        };
+        let passage = |n: u128, content: &str| Passage::Named.render(&name(n), content);
+        let names: Vec<String> = (1..=TOPICS + 1).map(name).collect();
+        let listed = |upto: u128| -> Vec<(TopicId, &str)> {
+            (1..=upto)
+                .map(|n| (topic(n), names[(n - 1) as usize].as_str()))
+                .collect()
+        };
+
+        // The first attempt dies inside its second batch.
+        let mut first = Reshape::reembed(&held, &live, NEW)
+            .expect("begin")
+            .expect("a stale index is re-embedded");
+        let mut calls = 0;
+        let died = first.embed(&listed(TOPICS), |text| {
+            calls += 1;
+            if calls > COPY_BATCH + 10 {
+                return Err(IndexError::Engine("the process died".into()));
+            }
+            Ok(embedded(text))
+        });
+        assert!(died.is_err());
+        drop(first);
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(&*lock(&held)), original),
+            "the served index is still wrapped, or was replaced"
+        );
+        assert!(
+            sibling(&live).exists(),
+            "the abandoned copy was thrown away"
+        );
+
+        // Written between the attempts, as the engine writes a stale index:
+        // with the current model, in the current encoding.
+        {
+            let served = lock(&held);
+            served
+                .upsert(
+                    topic(1),
+                    "memory number 1 was edited",
+                    &embedded(&passage(1, "memory number 1 was edited")),
+                )
+                .expect("edit");
+            served.delete(&[topic(2)]).expect("delete");
+        }
+
+        let mut second = Reshape::reembed(&held, &live, NEW)
+            .expect("begin")
+            .expect("still stale");
+        let mut calls = 0_u64;
+        second
+            .embed(&listed(TOPICS), |text| {
+                calls += 1;
+                Ok(embedded(text))
+            })
+            .expect("embed");
+        assert_eq!(
+            calls,
+            TOPICS as u64 - COPY_BATCH as u64 + 1,
+            "the second attempt did not resume the first"
+        );
+        lock(&held)
+            .upsert(
+                topic(TOPICS + 1),
+                &content(TOPICS + 1),
+                &embedded(&passage(TOPICS + 1, &content(TOPICS + 1))),
+            )
+            .expect("write a new topic");
+        second.build().expect("build");
+        let reshaped = second.swap().expect("swap");
+        assert_eq!(reshaped.embedded, calls);
+
+        let served = lock(&held);
+        assert!(!served.stale(), "the copy is still stale");
+        assert_eq!(served.passage(), Passage::Named);
+        assert_eq!(
+            std::fs::read_to_string(live.join("profile"))
+                .expect("marker")
+                .lines()
+                .next(),
+            Some(NEW.model_id()),
+            "the copy does not record the model that embedded it"
+        );
+        let everything: Vec<TopicId> = (1..=TOPICS + 1).map(topic).collect();
+        let stored = served.stored(&everything).expect("read back");
+        for (n, got) in (1..=TOPICS + 1).zip(&stored) {
+            let want = match n {
+                1 => Some("memory number 1 was edited".to_string()),
+                2 => None,
+                _ => Some(content(n)),
+            };
+            assert_eq!(
+                got.as_ref().map(|document| document.content.clone()),
+                want,
+                "topic {n} did not survive the re-embedding"
+            );
+            if let (Some(got), Some(want)) = (got, want) {
+                assert_eq!(
+                    got.embedding,
+                    embedded(&passage(n, &want)),
+                    "topic {n} holds a vector the current model did not embed from its name and text"
+                );
+            }
+        }
+        let found = served
+            .recall_vector(&embedded(&passage(9, &content(9))), 3)
+            .expect("recall");
+        assert!(found.iter().any(|hit| hit.topic == topic(9)));
+        drop(served);
+        assert!(!sibling(&live).exists(), "the copy's directory is left");
     }
 }

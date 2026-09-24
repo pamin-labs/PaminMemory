@@ -164,6 +164,15 @@ pub trait Projection {
     /// What text this index's vectors are embedded from, which every write to
     /// it has to follow.
     fn passage(&self) -> Passage;
+
+    /// Whether the vectors this index holds were embedded by a model its
+    /// profile has since replaced, and are waiting to be embedded again.
+    ///
+    /// Such an index still answers everything but the vector channel, which
+    /// has nothing to answer with -- a distance between two models' vectors
+    /// means nothing and looks fine -- so it returns no candidates until a
+    /// re-embedding ([`crate::Reshape::reembed`]) replaces the index.
+    fn stale(&self) -> bool;
 }
 
 /// One document as an index holds it.
@@ -188,6 +197,8 @@ pub struct ProjectionIndex {
     storage: VectorStorage,
     /// What this index's vectors were embedded from. See [`Passage`].
     passage: Passage,
+    /// See [`Projection::stale`].
+    stale: bool,
 }
 
 /// What text a document's vector was embedded from.
@@ -757,6 +768,7 @@ impl ProjectionIndex {
     ) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let storage = vector_storage();
+        let mut stale = false;
         let passage = match Marker::read(dir)? {
             Some(recorded) => {
                 if recorded.storage != storage {
@@ -766,10 +778,19 @@ impl ProjectionIndex {
                     });
                 }
                 if recorded.model != profile.model_id() {
-                    return Err(IndexError::ProfileMismatch {
-                        indexed: recorded.model,
-                        requested: profile.model_id().to_string(),
-                    });
+                    // A model this profile used to run is an upgrade, not a
+                    // mistake: the index opens, answers without its vectors,
+                    // and is embedded again beside itself (see
+                    // `crate::Reshape::reembed`). Any other model is a
+                    // different profile, and opening its index here would
+                    // throw away an index somebody chose.
+                    if !profile.replaces(&recorded.model) {
+                        return Err(IndexError::ProfileMismatch {
+                            indexed: recorded.model,
+                            requested: profile.model_id().to_string(),
+                        });
+                    }
+                    stale = true;
                 }
                 if recorded.grain != DOCUMENT_GRAIN {
                     return Err(IndexError::GrainMismatch {
@@ -784,7 +805,12 @@ impl ProjectionIndex {
                         expected: DOCUMENT_GRAIN.to_string(),
                     });
                 }
-                recorded.passage
+                // Every write to a stale index is embedded by the current
+                // model, so it is embedded in the current encoding too: what
+                // it writes is then exactly what the re-embedding would, and
+                // can be copied into it rather than embedded twice. The old
+                // vectors it is written beside are answered by nothing.
+                if stale { PASSAGE } else { recorded.passage }
             }
             None => {
                 // What was actually built, not what was asked for. The two are
@@ -799,6 +825,7 @@ impl ProjectionIndex {
 
         let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
         index.passage = passage;
+        index.stale = stale;
         Ok(index)
     }
 
@@ -822,6 +849,26 @@ impl ProjectionIndex {
         Self::discard(dir)?;
         std::fs::create_dir_all(dir)?;
         std::fs::copy(source.join(Marker::FILE), dir.join(Marker::FILE))?;
+        Self::open_sized(
+            dir,
+            profile,
+            Access::ReadWrite,
+            segment_documents(documents),
+        )
+    }
+
+    /// Opens the index at `dir` if an index built now for `profile` would be
+    /// the same kind of index, and creates an empty one sized for `documents`
+    /// in its place otherwise.
+    ///
+    /// For a copy that is filled a batch at a time and has to survive being
+    /// interrupted: what an earlier attempt wrote is kept only when its marker
+    /// says its vectors are the ones this build computes, and is otherwise --
+    /// a copy some other kind of restructuring left, or none -- discarded.
+    pub(crate) fn resume_or_create(dir: &Path, profile: Profile, documents: u64) -> Result<Self> {
+        if !Marker::is_current(dir, profile)? {
+            Self::discard(dir)?;
+        }
         Self::open_sized(
             dir,
             profile,
@@ -907,6 +954,7 @@ impl ProjectionIndex {
             dir: dir.to_path_buf(),
             storage: vector_storage(),
             passage: PASSAGE,
+            stale: false,
         })
     }
 
@@ -1059,14 +1107,17 @@ impl Marker {
         Ok(())
     }
 
-    /// Whether a vector this index holds is the vector an index built now
-    /// would compute for the same text: same model, same storage, same
-    /// encoding, same keys.
-    fn matches(&self, other: &Self) -> bool {
-        self.model == other.model
-            && self.grain == other.grain
-            && self.storage == other.storage
-            && self.passage == other.passage
+    /// Whether a vector the index in `dir` holds is the vector an index built
+    /// now would compute for the same text: same model, same storage, same
+    /// encoding, same keys. `false` when there is no index.
+    fn is_current(dir: &Path, profile: Profile) -> Result<bool> {
+        let current = Self::current(profile);
+        Ok(Self::read(dir)?.is_some_and(|recorded| {
+            recorded.model == current.model
+                && recorded.grain == current.grain
+                && recorded.storage == current.storage
+                && recorded.passage == current.passage
+        }))
     }
 }
 
@@ -1104,9 +1155,10 @@ impl Previous {
     pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let lends =
-            Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&Marker::current(profile)));
-        if !lends {
+        // And a re-embedding that did not finish: the rebuild embeds whatever
+        // it cannot lend, and nothing would ever resume that copy after it.
+        ProjectionIndex::discard(&crate::reshape::sibling(dir))?;
+        if !Marker::is_current(dir, profile)? {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
         }
@@ -1164,6 +1216,10 @@ impl Previous {
 impl Projection for ProjectionIndex {
     fn passage(&self) -> Passage {
         self.passage
+    }
+
+    fn stale(&self) -> bool {
+        self.stale
     }
 
     /// The segmenter this index tokenizes with.
@@ -1279,6 +1335,9 @@ impl Projection for ProjectionIndex {
     /// only evidence of whether *that* channel is confident, which is a question
     /// ranks cannot answer. See [`pamin_core::ChannelResults`].
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+        if self.stale {
+            return Ok(Vec::new());
+        }
         let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
         search.set_output_fields(&[FIELD_ID])?;
         search.set_include_vector(false)?;
