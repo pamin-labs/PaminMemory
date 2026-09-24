@@ -383,6 +383,44 @@ impl Models {
         Ok(reranker)
     }
 
+    /// Loads the embedder for `profile` and the reranker for `tier`, at once,
+    /// before anything has asked for either.
+    ///
+    /// For a resident server that has just been asked something about a
+    /// project it holds nothing for: most of the first search after an idle
+    /// release is these two loads (see the `COLD` arm of
+    /// `tests/retrieval.rs`), and started when the project is first touched
+    /// they run while that request is answered and while the agent reads the
+    /// answer, instead of in front of the search that needs them. What is
+    /// loaded is handed out and released like anything else here -- it is
+    /// stamped as used now, and given back after [`model_idle`] if nothing
+    /// asks for it -- so warming a model nobody then uses costs it for one
+    /// idle window and no longer.
+    ///
+    /// The reranker only if its weights are on disk already. A tier this
+    /// workspace has never searched at may be one it never will -- `off` is
+    /// what `docs/cli.md` tells a one-language workspace to choose -- and a
+    /// warm-up that fetched half a gigabyte for it would be the opposite of
+    /// the point. The embedder is loaded either way: every write and every
+    /// search needs it.
+    ///
+    /// Blocking, and both loads hold their registry's lock, so a search that
+    /// arrives meanwhile waits for the load in flight instead of starting a
+    /// second. Two threads because the two loads are independent: the `COLD`
+    /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
+    pub fn warm(&self, profile: Profile, tier: Rerank) -> Result<(), pamin_index::IndexError> {
+        std::thread::scope(|scope| {
+            let reranker = Reranker::is_downloaded(tier, &self.dir)
+                .then(|| scope.spawn(|| self.reranker(tier)));
+            let embedder = self.get(profile);
+            let reranker =
+                reranker.map(|loading| loading.join().expect("a reranker load panicked"));
+            embedder?;
+            reranker.transpose()?;
+            Ok(())
+        })
+    }
+
     /// What a loaded reranker has been asked to do, or `None` if this process
     /// never loaded that tier.
     ///
