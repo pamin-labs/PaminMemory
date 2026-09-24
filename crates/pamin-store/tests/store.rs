@@ -3377,9 +3377,12 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
           CROSS JOIN generate_series(2, $4 + 1) AS g
           WHERE ts.source_span_id = $2",
         "INSERT INTO relationship_versions (id, project_id, relationship_id, version,
-             created_at, invalidated_at, tombstone_reason, confidence, derivation)
-         SELECT gen_random_uuid(), $1, $3, g, now(), now(), 'closed', 1, 'explicit'
-           FROM generate_series(2, $4 + 1) AS g",
+             created_at, invalidated_at, tombstone_reason, confidence, derivation,
+             from_topic, to_topic, kind)
+         SELECT gen_random_uuid(), $1, $3, g, now(), now(), 'closed', 1, 'explicit',
+                r.from_topic, r.to_topic, r.kind
+           FROM generate_series(2, $4 + 1) AS g
+           JOIN relationships r ON r.id = $3",
     ] {
         sqlx::query(statement)
             .bind(crowd.id.0)

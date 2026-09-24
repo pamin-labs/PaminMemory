@@ -73,14 +73,17 @@ async fn hubs(database: &Database, project: ProjectId, spokes: usize) -> TopicId
         .collect();
     sqlx::query(
         "INSERT INTO relationship_versions
-             (id, project_id, relationship_id, version, created_at, confidence, derivation)
-         SELECT id, $3, r, 1, $4, 1.0, 'explicit'
-           FROM unnest($1::uuid[], $2::uuid[]) AS v (id, r)",
+             (id, project_id, relationship_id, version, created_at, confidence, derivation,
+              from_topic, to_topic, kind)
+         SELECT id, $3, r, 1, $4, 1.0, 'explicit', f, t, 'related_to'
+           FROM unnest($1::uuid[], $2::uuid[], $5::uuid[], $6::uuid[]) AS v (id, r, f, t)",
     )
     .bind(&versions)
     .bind(&relationships)
     .bind(project.0)
     .bind(now)
+    .bind(&from)
+    .bind(&to)
     .execute(database.pool())
     .await
     .expect("insert relationship versions");
