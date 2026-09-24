@@ -31,9 +31,11 @@ Embedding models
   intfloat/multilingual-e5-base                        MIT
     Profile `balanced`.
 
-  gpahal/bge-m3-onnx-int8                              MIT
-    Profile `accuracy`, the default. An int8 export of BAAI/bge-m3, itself
-    MIT.
+  perplexity-ai/pplx-embed-v1-0.6b                     MIT
+    Profile `accuracy`, the default. Perplexity's own 8-bit ONNX export,
+    read at a pinned revision; its graph is rewritten on the user's machine
+    to compute in int8 (one attribute per matrix product), and the weights
+    are used as downloaded.
 
 Reranker models
 ---------------

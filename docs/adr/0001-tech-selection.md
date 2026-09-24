@@ -25,7 +25,7 @@ One rule ran through all of it:
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | ONNX Runtime through `ort` and `tokenizers`, BGE-M3 with int8 weights by default; the E5 profiles through `fastembed` |
+| Embeddings | ONNX Runtime through `ort` and `tokenizers`, pplx-embed-v1-0.6b by default (Perplexity's 8-bit export, computed in int8); the E5 profiles through `fastembed` |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -1236,7 +1236,7 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 | Model weight INT8 | ONNX weights quantized for CPU inference | 2.7–3.4x faster, under 0.5% MTEB | **On, by default** |
 | Stored vector INT8 | Output embeddings stored as int8 rather than float32 | No recall loss at all, half the query and half the build, **30% more disk** | **Off, because it is a disk loss** — see below |
 
-Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half.
+Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It was available for BGE-M3, the default until pplx-embed replaced it, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what made that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half. pplx-embed runs Perplexity's own 8-bit weights; how, and what the other exports would have cost, is in the pplx section below.
 
 ### The embedder, surveyed again: one candidate, and the leaderboard would have picked wrong
 
@@ -1291,7 +1291,8 @@ our own (dynamic int8 on every layer but `down_proj`, cosine 0.995 to fp32,
 against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
 (p = 0.002, surviving correction over eleven languages); and a query costs
 about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
-to be re-embedded.
+to be re-embedded. The trial below settled all four, and pplx-embed is the
+default now.
 
 ### BGE-M3's other outputs, measured: none of them ships
 
