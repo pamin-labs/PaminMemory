@@ -73,7 +73,7 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Nei
 
     let at = validity::parse(args.at.as_deref(), "--at")?;
     let neighbors = graph::expand(
-        database.pool(),
+        &mut *database.pool().acquire().await?,
         project,
         &[topic.id],
         &Expansion {

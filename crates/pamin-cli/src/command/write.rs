@@ -91,7 +91,13 @@ pub async fn execute(
     let pays_for_upkeep = pays_for_upkeep(&engine);
 
     let (behind, owed) = if args.defer {
-        let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
+        // Counted only as far as the bound it is compared with.
+        let behind = pamin_store::jobs::pending_up_to(
+            engine.database.pool(),
+            engine.project,
+            pamin_core::LAGGING_AT,
+        )
+        .await?;
         let owed = if pamin_core::may_defer(behind) {
             behind
         } else {

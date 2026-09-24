@@ -50,13 +50,21 @@ const AWAITING_DURABILITY: usize = 128;
 pub struct Drained {
     /// Jobs that ran and were recorded as done.
     pub completed: usize,
-    /// Jobs still owed when the drain stopped.
+    /// Jobs still owed when the drain stopped, counted no further than
+    /// [`LAGGING_AT`](pamin_core::LAGGING_AT) past [`Drained::applied`].
     ///
     /// Counted from the queue, so it includes [`Drained::applied`] -- work this
     /// process has already done and is holding a claim on until a flush makes
     /// it durable. A caller asking "is this memory findable" wants the
     /// difference; a caller asking "what would replay after a power cut" wants
     /// this.
+    ///
+    /// Capped because every write drains, and the two questions a write asks
+    /// of the difference -- is it zero, is it past the lag bound -- are both
+    /// answered exactly below the cap. Counting a backlog in full costs a read
+    /// of all of it, on every write, exactly when the writer is behind. A
+    /// caller that reports the number, as `pamin cascade` does, counts it
+    /// with `jobs::pending`.
     pub pending: i64,
     /// Jobs that failed and will be tried again, or have run out of attempts.
     pub failed: usize,
@@ -190,9 +198,7 @@ impl Engine {
             // Whatever a read job writes goes to the ledger, which commits it,
             // so nothing it does is waiting on a flush. It reads the index,
             // and what this round wrote is already there to be read.
-            for job in reads {
-                outcomes.push((job, self.run(job).await));
-            }
+            self.run_reads(&reads, &mut outcomes).await;
 
             // The round's completions go in one statement. Separately they
             // cost more than the work they record -- a thousand of them is 165
@@ -237,7 +243,12 @@ impl Engine {
         // Counted as pending and then not as applied, it is reported owed,
         // which it is not, and every write says so.
         drained.applied = self.awaiting_durability();
-        drained.pending = jobs::pending(self.database.pool(), self.project).await?;
+        drained.pending = jobs::pending_up_to(
+            self.database.pool(),
+            self.project,
+            pamin_core::LAGGING_AT + drained.applied as i64,
+        )
+        .await?;
         Ok(drained)
     }
 
@@ -393,6 +404,84 @@ impl Engine {
                             .map_err(Into::into),
                     };
                     into.push((job, one));
+                }
+            }
+        }
+    }
+
+    /// Runs the jobs of a round that read the index back, restating every
+    /// memory's mentions together and backfilling every new topic together.
+    ///
+    /// Batched the way [`Self::sync_indexes`] batches the writes, and for the
+    /// same reason: each job asked the same few statements with different
+    /// arguments, sixty-four times a round. One connection for all of them,
+    /// the states to restate in one lookup and the names to backfill in
+    /// another, and the rest in [`Engine::restate_mentions`] and
+    /// [`Engine::backfill_all`]. Maintenance runs one job at a time as before.
+    ///
+    /// **Each job still gets its own outcome.** A batch that fails is run again
+    /// one job at a time, so a memory that cannot be restated fails alone
+    /// rather than holding the rest of the round's jobs owed with it.
+    async fn run_reads<'j>(&self, jobs: &[&'j Job], into: &mut Vec<(&'j Job, Result<()>)>) {
+        let mut batch = Vec::new();
+        for job in jobs {
+            if !matches!(
+                job.kind,
+                JobKind::DeriveMentions | JobKind::BackfillMentions
+            ) {
+                into.push((*job, self.run(job).await));
+                continue;
+            }
+            match subject(job) {
+                Ok(subject) => batch.push((*job, TopicId::from(subject))),
+                Err(error) => into.push((*job, Err(error))),
+            }
+        }
+        if batch.is_empty() {
+            return;
+        }
+
+        let of_kind = |kind: JobKind| -> Vec<TopicId> {
+            batch
+                .iter()
+                .filter(|(job, _)| job.kind == kind)
+                .map(|(_, topic)| *topic)
+                .collect()
+        };
+        let batched = async {
+            let mut connection = self.database.pool().acquire().await?;
+            // A topic that resolves to nothing has nothing to restate, and one
+            // that does not exist has no name to backfill, as one at a time.
+            let states = pamin_store::repository::current_states_of(
+                &mut *connection,
+                self.project,
+                &of_kind(JobKind::DeriveMentions),
+            )
+            .await?;
+            self.restate_mentions(&mut connection, &states).await?;
+            let named: Vec<(TopicId, String)> = pamin_store::repository::topics_by_id(
+                &mut *connection,
+                self.project,
+                &of_kind(JobKind::BackfillMentions),
+            )
+            .await?
+            .into_iter()
+            .map(|(topic, name, _)| (topic, name))
+            .collect();
+            self.backfill_all(&mut connection, &named).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match batched {
+            Ok(()) => {
+                for (job, _) in batch {
+                    into.push((job, Ok(())));
+                }
+            }
+            Err(_) => {
+                for (job, _) in batch {
+                    into.push((job, self.run(job).await));
                 }
             }
         }

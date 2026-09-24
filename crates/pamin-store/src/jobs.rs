@@ -15,7 +15,9 @@
 use std::time::Duration;
 
 use pamin_core::{IndexJobId, JobKind, ProjectId};
-use sqlx::{PgExecutor, PgPool, Row};
+use sqlx::postgres::PgArguments;
+use sqlx::query::Query;
+use sqlx::{PgExecutor, PgPool, Postgres, Row};
 use time::OffsetDateTime;
 
 use crate::error::Result;
@@ -63,12 +65,93 @@ pub struct Job {
 /// rebuilding a vector index in the background. Without an ordering the
 /// background work goes first as often as not, and the write the user is
 /// waiting on is behind it.
+///
+/// **A function of the kind and nothing else, and [`claim`] depends on it.**
+/// The claim names the priorities of the kinds it wants as well as the kinds,
+/// because the queue's index leads with priority and not with kind. So these
+/// numbers are stored in every queued row and read back as a key: changing one
+/// strands every row already queued under the old value, which no claim for
+/// that kind would reach again. A change here needs a migration rewriting
+/// `index_jobs.priority`, and the test below pins the values so that the
+/// change cannot be made without noticing.
 fn priority(kind: JobKind) -> i32 {
     match kind {
         JobKind::SyncTopicIndex => 10,
         JobKind::DeriveMentions => 20,
         JobKind::BackfillMentions => 50,
         JobKind::OptimizeIndex => 100,
+    }
+}
+
+/// The statement that queues work, as a fragment for whatever statement
+/// carries it.
+///
+/// [`enqueue_all`] runs it alone. The write transaction runs it as one more
+/// data-modifying `WITH` of the statement that appends the state it is about,
+/// because that was the last statement of the transaction and needed nothing
+/// from the one before it but the topic it already had. Both are built from
+/// this, so the conflict behaviour a replay and a completion depend on has one
+/// definition rather than two that have to be kept equal.
+///
+/// The arguments name the placeholders each value is bound to: the project,
+/// the subject, the time the work is due and was asked for, and the three
+/// arrays [`Queued::bind`] binds -- ids, kinds, priorities -- in that order.
+///
+/// The conflict target is the work itself -- project, kind, subject -- and a
+/// job without a subject conflicts with another without one, because the
+/// constraint treats nulls as equal. See V12. A conflict means the same work
+/// is still pending, so the request is already represented by it; it clears
+/// the claim, which is what keeps a worker from marking work done that was
+/// requested after it started reading: [`complete`] only completes a job it
+/// still holds.
+#[rustfmt::skip] // One argument per line would bury the statement.
+macro_rules! enqueue_jobs {
+    (
+        project = $project:literal,
+        subject = $subject:literal,
+        at = $at:literal,
+        rows = [$ids:literal, $kinds:literal, $priorities:literal $(,)?] $(,)?
+    ) => {
+        concat!(
+            "INSERT INTO index_jobs
+                 (id, project_id, job_type, subject, available_at, created_at, priority)
+             SELECT job.id, ", $project, ", job.label, ", $subject, ", ", $at, ", ", $at, ", job.priority
+               FROM unnest(", $ids, "::uuid[], ", $kinds, "::text[], ", $priorities, "::int[])
+                 AS job(id, label, priority)
+             ON CONFLICT (project_id, job_type, subject) DO UPDATE
+                 SET available_at = ", $at, ",
+                     claimed_at   = NULL,
+                     claimed_by   = NULL,
+                     last_error   = NULL,
+                     attempts     = 0"
+        )
+    };
+}
+
+pub(crate) use enqueue_jobs;
+
+/// The rows a set of kinds queues, for the arrays [`enqueue_jobs!`] reads.
+pub(crate) struct Queued {
+    ids: Vec<uuid::Uuid>,
+    kinds: Vec<&'static str>,
+    priorities: Vec<i32>,
+}
+
+impl Queued {
+    pub(crate) fn of(kinds: &[JobKind]) -> Self {
+        Self {
+            ids: kinds.iter().map(|_| IndexJobId::new().0).collect(),
+            kinds: kinds.iter().map(|kind| kind.label()).collect(),
+            priorities: kinds.iter().map(|kind| priority(*kind)).collect(),
+        }
+    }
+
+    /// Binds the three arrays, next after whatever `query` has bound so far.
+    pub(crate) fn bind<'q>(
+        self,
+        query: Query<'q, Postgres, PgArguments>,
+    ) -> Query<'q, Postgres, PgArguments> {
+        query.bind(self.ids).bind(self.kinds).bind(self.priorities)
     }
 }
 
@@ -91,8 +174,8 @@ pub async fn enqueue(
     subject: Option<uuid::Uuid>,
 ) -> Result<()> {
     // Through the batched form with one kind in it, so the statement -- and
-    // with it the idempotency key and the conflict behaviour a replay depends
-    // on -- has one definition rather than two that have to be kept equal.
+    // with it the conflict behaviour a replay depends on -- has one
+    // definition rather than two that have to be kept equal.
     enqueue_all(executor, project, &[kind], subject).await
 }
 
@@ -103,13 +186,12 @@ pub async fn enqueue(
 /// before wants the memories that already named it found. Three is the right
 /// number -- they are different work at different priorities, and merging them
 /// would make every rewrite of an existing topic pay for a scan it does not
-/// need -- but three [`enqueue`] calls inside the write transaction is three
-/// round trips for three rows, and the write is holding a transaction open
-/// across all of them.
+/// need. The write queues them inside its own statement, from the same
+/// `enqueue_jobs!` fragment this runs, so there is one definition of what
+/// queueing a job means.
 ///
-/// Same rows, same conflict behaviour, same idempotency keys. `unnest` turns
-/// the arrays into rows so the statement stays `'static`, which is the same
-/// reason the rest of this crate writes its `IN` lists that way.
+/// `unnest` turns the arrays into rows so the statement stays `'static`, which
+/// is the same reason the rest of this crate writes its `IN` lists that way.
 pub async fn enqueue_all(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
@@ -120,42 +202,17 @@ pub async fn enqueue_all(
         return Ok(());
     }
 
-    let ids: Vec<uuid::Uuid> = kinds.iter().map(|_| IndexJobId::new().0).collect();
-    let labels: Vec<String> = kinds.iter().map(|kind| kind.label().to_string()).collect();
-    let keys: Vec<String> = kinds
-        .iter()
-        .map(|kind| match subject {
-            Some(subject) => format!("{kind}:{subject}"),
-            None => format!("{kind}:"),
-        })
-        .collect();
-    let priorities: Vec<i32> = kinds.iter().map(|kind| priority(*kind)).collect();
-    let payload = serde_json::json!({ "subject": subject });
-    let now = OffsetDateTime::now_utc();
-
-    sqlx::query(
-        "INSERT INTO index_jobs
-             (id, project_id, job_type, payload, idempotency_key,
-              available_at, created_at, priority)
-         SELECT job.id, $1, job.label, $2, job.key, $3, $3, job.priority
-           FROM unnest($4::uuid[], $5::text[], $6::text[], $7::int[])
-                AS job(id, label, key, priority)
-         ON CONFLICT (project_id, idempotency_key) DO UPDATE
-             SET available_at = $3,
-                 claimed_at   = NULL,
-                 claimed_by   = NULL,
-                 last_error   = NULL,
-                 attempts     = 0",
-    )
-    .bind(project.0)
-    .bind(&payload)
-    .bind(now)
-    .bind(&ids)
-    .bind(&labels)
-    .bind(&keys)
-    .bind(&priorities)
-    .execute(executor)
-    .await?;
+    const ENQUEUE: &str = enqueue_jobs!(
+        project = "$1",
+        subject = "$2",
+        at = "$3",
+        rows = ["$4", "$5", "$6"]
+    );
+    let query = sqlx::query(ENQUEUE)
+        .bind(project.0)
+        .bind(subject)
+        .bind(OffsetDateTime::now_utc());
+    Queued::of(kinds).bind(query).execute(executor).await?;
 
     Ok(())
 }
@@ -204,6 +261,12 @@ pub async fn claim(
               SELECT id FROM index_jobs
                WHERE project_id = $6
                  AND job_type = ANY($7)
+                 -- Says nothing `job_type` does not, since priority is a
+                 -- function of kind -- except to the index, which is ordered
+                 -- by project and priority and cannot see kind at all.
+                 -- Without it a claim for upkeep read every owed row to find
+                 -- none of its own.
+                 AND priority = ANY($8)
                  AND available_at <= $1
                  -- A job that has used its attempts stays pending with its
                  -- error rather than coming round again. Retrying for ever
@@ -214,7 +277,7 @@ pub async fn claim(
                  FOR UPDATE SKIP LOCKED
                LIMIT $4
           )
-      RETURNING id, project_id, job_type, payload, attempts, claimed_at",
+      RETURNING id, project_id, job_type, subject, attempts, claimed_at",
     )
     .bind(now)
     .bind(worker)
@@ -223,6 +286,7 @@ pub async fn claim(
     .bind(pamin_core::MAX_ATTEMPTS)
     .bind(project.0)
     .bind(kinds.iter().map(|kind| kind.label()).collect::<Vec<_>>())
+    .bind(kinds.iter().map(|kind| priority(*kind)).collect::<Vec<_>>())
     .fetch_all(pool)
     .await?;
 
@@ -267,11 +331,17 @@ pub async fn claim(
 ///
 /// The second row is the change this replaced, and it is a regression: a
 /// transaction to hold `SET LOCAL synchronous_commit = off` costs four round
-/// trips where the statement it wraps costs one, and the flush it skips is
-/// worth less than the three it adds. The fourth row is why the relaxation is
-/// not here at all -- batched, one flush already covers sixty-four completions,
-/// so there is nothing left for it to save and no reason to give up the
-/// guarantee. Amortizing the commit is the whole of the win.
+/// trips where the statement it wraps costs one. Amortizing the commit is the
+/// whole of the win.
+///
+/// **The "durability relaxed" rows measured nothing**, which is worth knowing
+/// before reading them as a verdict on `synchronous_commit`. The cluster they
+/// were taken on ran with `fsync` off -- `postgresql_embedded` starts every
+/// cluster with `-F` -- so a synchronous commit never waited for a disk either,
+/// and relaxing it had no flush to skip. The cluster now runs with `fsync` on
+/// and `synchronous_commit` off for every statement (see `database::settings`),
+/// so a completion neither waits for a flush nor needs a transaction to avoid
+/// one, and the batching above is still what makes a thousand of them cheap.
 pub async fn complete(
     executor: impl PgExecutor<'_>,
     jobs: &[&Job],
@@ -348,13 +418,42 @@ pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
     Ok(waiting)
 }
 
+/// How many jobs are waiting, counted no further than `cap`.
+///
+/// What a write asks, and it never needs more than this: whether anything is
+/// owed at all, and whether the queue is past [`pamin_core::LAGGING_AT`].
+/// [`pending`] answers both by counting every owed row, which on a backlog is
+/// the cost of the backlog -- a read of the whole of this project's part of the
+/// queue's index on every write, exactly when the writer is already behind.
+/// This stops at `cap` rows, so a write pays for at most the bound it compares
+/// against.
+///
+/// `pamin cascade` reports the exact figure and uses [`pending`].
+pub async fn pending_up_to(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    cap: i64,
+) -> Result<i64> {
+    let (waiting,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM (
+             SELECT 1 FROM index_jobs WHERE project_id = $1 LIMIT $2
+         ) AS owed",
+    )
+    .bind(project.0)
+    .bind(cap.max(0))
+    .fetch_one(executor)
+    .await?;
+
+    Ok(waiting)
+}
+
 /// Jobs that have used their attempts, with the error that stopped them.
 pub async fn exhausted(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
 ) -> Result<Vec<(Job, String)>> {
     let rows = sqlx::query(
-        "SELECT id, project_id, job_type, payload, attempts, claimed_at, last_error
+        "SELECT id, project_id, job_type, subject, attempts, claimed_at, last_error
            FROM index_jobs
           WHERE project_id = $1 AND attempts >= $2
           ORDER BY priority, available_at",
@@ -414,19 +513,41 @@ pub async fn discard(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
 }
 
 fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
-    let payload: serde_json::Value = row.get("payload");
-
     Job {
         id: row.get::<uuid::Uuid, _>("id").into(),
         project_id: row.get::<uuid::Uuid, _>("project_id").into(),
         // The column's CHECK constraint admits nothing else, and the drift test
         // holds it to the same list this parses from.
         kind: JobKind::from_label(row.get("job_type")).unwrap_or(JobKind::SyncTopicIndex),
-        subject: payload
-            .get("subject")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|subject| uuid::Uuid::parse_str(subject).ok()),
+        subject: row.get("subject"),
         attempts: row.get("attempts"),
         claimed_at: row.get("claimed_at"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pamin_core::JobKind;
+
+    use super::priority;
+
+    /// The priorities rows are queued with, which a claim reads back as a key.
+    ///
+    /// Pinned because a queued row keeps the number it was written with and a
+    /// claim asks for the number the code says now: moving one strands every
+    /// row already owed at the old value. Changing a value here is changing
+    /// the schema, and needs a migration that rewrites `index_jobs.priority`.
+    #[test]
+    fn a_kinds_priority_is_the_one_its_queued_rows_hold() {
+        let pinned = [
+            (JobKind::SyncTopicIndex, 10),
+            (JobKind::DeriveMentions, 20),
+            (JobKind::BackfillMentions, 50),
+            (JobKind::OptimizeIndex, 100),
+        ];
+        assert_eq!(pinned.len(), JobKind::ALL.len(), "a kind without a pin");
+        for (kind, expected) in pinned {
+            assert_eq!(priority(kind), expected, "{kind}'s priority moved");
+        }
     }
 }

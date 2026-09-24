@@ -80,13 +80,27 @@ impl Database {
     ///
     /// Safe to call repeatedly. The first call installs and initializes the
     /// cluster; later calls reuse the running server.
+    ///
+    /// Whether the recorded server is up is asked of its port, and then the
+    /// pool this returns makes the first connection. It used to be asked by
+    /// opening a throwaway pool, which cost a connection on every command and,
+    /// when nothing was listening -- a record left behind by `pamin stop` or a
+    /// reboot -- retried the refused connection for its whole thirty-second
+    /// acquire timeout before starting the server.
     pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
-        let server = match workspace.read_server()? {
-            Some(existing) if can_connect(&existing).await => existing,
-            _ => start_server(workspace).await?,
+        let running = match workspace.read_server()? {
+            Some(existing) if listening(existing.port) => {
+                // Refused credentials or anything else that is not this
+                // workspace's cluster: start it, as before.
+                Self::connect(&existing, connections).await.ok()
+            }
+            _ => None,
+        };
+        let database = match running {
+            Some(database) => database,
+            None => Self::connect(&start_server(workspace).await?, connections).await?,
         };
 
-        let database = Self::connect(&server, connections).await?;
         crate::migrate::run(&database.pool).await?;
         Ok(database)
     }
@@ -149,20 +163,6 @@ async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
     Ok(pool)
 }
 
-/// Returns true when a server is already listening with these credentials.
-///
-/// The pool is closed again rather than kept: this answers whether to start a
-/// cluster, and the caller opens its own once it knows.
-async fn can_connect(server: &LocalServer) -> bool {
-    match PgPool::connect(&server.url()).await {
-        Ok(pool) => {
-            pool.close().await;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 /// What this cluster is started with.
 ///
 /// Defaults chosen for a general-purpose server that somebody administers.
@@ -205,6 +205,21 @@ fn settings() -> HashMap<String, String> {
             "autovacuum_vacuum_scale_factor".to_string(),
             "0.02".to_string(),
         ),
+        // `postgresql_embedded` starts every cluster with `-F`, which is
+        // `fsync=off`: nothing the server writes is ever forced to disk, so a
+        // power cut can leave the data directory corrupt rather than merely
+        // behind -- the ledger this project calls the sole authority, lost to
+        // the one event it exists to survive. A `-c` given after `-F` wins
+        // (`postgres -F -c fsync=on -C fsync` prints `on`), and these are
+        // passed after it.
+        ("fsync".to_string(), "on".to_string()),
+        // What is given up instead is the last moments, not the cluster. A
+        // commit returns before its WAL is flushed and the WAL writer flushes
+        // within a few hundred milliseconds, so a crash can lose the writes
+        // of that window and never leaves the database inconsistent. Waiting
+        // for the flush on every commit is what `fsync` would otherwise cost a
+        // write; see the ADR for both figures.
+        ("synchronous_commit".to_string(), "off".to_string()),
     ])
 }
 
@@ -543,15 +558,16 @@ fn stale_pid_file(data_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     // Line four, counting from one: the port. The format is PostgreSQL's and
     // has carried the port in that position since 9.1.
     let port: u16 = contents.lines().nth(3)?.trim().parse().ok()?;
-    let listening = std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        PROBE,
-    )
-    .is_ok();
-    (!listening).then_some(path)
+    (!listening(port)).then_some(path)
 }
 
-/// How long to wait for the port in a lock file to answer.
+/// Whether anything accepts connections on this loopback port.
+fn listening(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), PROBE)
+        .is_ok()
+}
+
+/// How long to wait for a loopback port to answer.
 ///
 /// The connection is to the loopback interface of this machine, where a
 /// listener answers immediately and an unused port is refused immediately.
