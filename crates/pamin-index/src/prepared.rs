@@ -78,6 +78,16 @@ pub(crate) const LEVEL: GraphOptimizationLevel = GraphOptimizationLevel::Level3;
 const MODEL: &str = "model.onnx";
 const DATA: &str = "model.onnx.data";
 
+/// The same graph with its attention fused (see `crate::attention`), beside
+/// the one ONNX Runtime wrote and reading the same data file. Present only
+/// once it has scored a probe bit-identically to [`MODEL`].
+const FUSED: &str = "attention.onnx";
+
+/// Written instead of [`FUSED`] when there is nothing to fuse or the fused
+/// graph did not score identically, saying which, so no later load asks
+/// again. The copy then loads [`MODEL`].
+const UNFUSED: &str = "attention.unfused";
+
 /// The path to load `source` from on the CPU: a mapped copy of it under
 /// `cache_dir`, written first if there is none yet.
 ///
@@ -87,11 +97,16 @@ const DATA: &str = "model.onnx.data";
 /// the way it did before copies existed, which costs memory and nothing else.
 /// `PAMIN_PREPARED=off` asks for that on purpose, for a measurement that needs
 /// the unmapped load or a disk that cannot spare the second copy.
+///
+/// The copy's graph with its attention fused, where that scored identically,
+/// and `PAMIN_FUSED_ATTENTION=off` asks for the graph as ONNX Runtime wrote
+/// it -- the other arm of a measurement of what the fusion is worth.
 pub(crate) fn prepared(source: &Path, cache_dir: &Path) -> PathBuf {
     if std::env::var("PAMIN_PREPARED").is_ok_and(|value| value.eq_ignore_ascii_case("off")) {
         return source.to_path_buf();
     }
     match prepare(source, &cache_dir.join("prepared")) {
+        Ok(copy) if copy.ends_with(FUSED) && !fusion_wanted() => copy.with_file_name(MODEL),
         Ok(copy) => copy,
         Err(error) => {
             tracing::warn!(
@@ -113,12 +128,17 @@ pub(crate) fn prepared(source: &Path, cache_dir: &Path) -> PathBuf {
 /// same model at once write it once -- the second waits and then finds the
 /// first's copy -- and a partial directory found while holding the lock is a
 /// crashed writer's and safe to remove.
+///
+/// The attention fusion is settled under the same lock, once per copy -- for
+/// a copy written before the fusion existed, on the first load that finds
+/// it -- and the path returned is the graph to load: [`FUSED`] if it was
+/// kept, [`MODEL`] if not.
 fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
     let (key, described) = key(source)?;
     let done = root.join(&key);
     let copy = done.join(MODEL);
-    if copy.exists() {
-        return Ok(copy);
+    if let Some(settled) = settled(&done) {
+        return Ok(settled);
     }
 
     std::fs::create_dir_all(root)?;
@@ -128,8 +148,11 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
         .truncate(false)
         .open(root.join(format!("{key}.lock")))?;
     lock.lock()?;
+    if let Some(settled) = settled(&done) {
+        return Ok(settled);
+    }
     if copy.exists() {
-        return Ok(copy);
+        return Ok(fuse(&done));
     }
 
     let partial = root.join(format!("{key}.partial"));
@@ -153,7 +176,161 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
         key = %described,
         "wrote a mapped copy of the model"
     );
-    Ok(copy)
+    Ok(fuse(&done))
+}
+
+/// The graph to load from a complete copy whose fusion has been settled, or
+/// `None` if either is still to do.
+fn settled(copy: &Path) -> Option<PathBuf> {
+    let fused = copy.join(FUSED);
+    if fused.exists() {
+        return Some(fused);
+    }
+    (copy.join(UNFUSED).exists() && copy.join(MODEL).exists()).then(|| copy.join(MODEL))
+}
+
+/// Whether a caller wants the fused graph where there is one: unless
+/// `PAMIN_FUSED_ATTENTION=off`, which exists so the two can be measured
+/// against each other through the product's own load.
+fn fusion_wanted() -> bool {
+    !std::env::var("PAMIN_FUSED_ATTENTION").is_ok_and(|value| value.eq_ignore_ascii_case("off"))
+}
+
+/// Fuses the attention of the complete copy in `copy`, keeps the result only
+/// if it scores a probe exactly as the unfused graph does, and returns the
+/// graph to load. Called under the copy's lock.
+///
+/// Never fails the copy. Whatever goes wrong -- nothing to fuse, a probe
+/// that differs, a graph the runtime refuses -- is written to [`UNFUSED`]
+/// and logged, and the copy loads the graph ONNX Runtime wrote, which is what
+/// it loaded before this existed.
+fn fuse(copy: &Path) -> PathBuf {
+    let model = copy.join(MODEL);
+    let started = std::time::Instant::now();
+    match try_fuse(copy) {
+        Ok((layers, (before, after))) => {
+            tracing::info!(
+                copy = %copy.display(),
+                layers,
+                nodes_before = before,
+                nodes_after = after,
+                seconds = started.elapsed().as_secs_f64(),
+                "fused the attention of a mapped copy; it scored a probe bit-identically"
+            );
+            copy.join(FUSED)
+        }
+        Err(reason) => {
+            tracing::info!(copy = %copy.display(), %reason, "left the attention of a mapped copy unfused");
+            // Best effort: without it the next load asks again, which costs
+            // time and changes nothing it loads.
+            let _ = std::fs::write(copy.join(UNFUSED), format!("{reason}\n"));
+            model
+        }
+    }
+}
+
+/// The fusion itself: the rewrite, written beside the graph it came from,
+/// checked, and renamed into place only once it has passed.
+fn try_fuse(copy: &Path) -> std::result::Result<(usize, (usize, usize)), String> {
+    let model = copy.join(MODEL);
+    let original = std::fs::read(&model).map_err(|error| format!("reading the graph: {error}"))?;
+    let fused = crate::attention::fuse(&original)?;
+    let candidate = copy.join(format!("{FUSED}.partial"));
+    let written = std::fs::write(&candidate, &fused.model)
+        .and_then(|()| std::fs::File::open(&candidate)?.sync_all())
+        .map_err(|error| format!("writing the fused graph: {error}"))
+        .and_then(|()| same_on_a_probe(&model, &candidate))
+        .and_then(|()| {
+            std::fs::rename(&candidate, copy.join(FUSED))
+                .map_err(|error| format!("renaming the fused graph into place: {error}"))
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&candidate);
+    }
+    written.map(|()| (fused.layers, fused.nodes))
+}
+
+/// Whether two graphs return the same bits on a probe, as the product runs
+/// them: a CPU session at [`LEVEL`], and every output compared.
+///
+/// Two rows, the second padded, because the padding is what the fused
+/// kernel reads differently -- a key padding mask where the graph it
+/// replaces added a bias -- and a probe with none would not exercise it.
+/// The token ids are arbitrary: any ids below a thousand are in every
+/// vocabulary these models have, and the question is whether the two graphs
+/// agree, not what either one thinks of the text.
+fn same_on_a_probe(expected: &Path, candidate: &Path) -> std::result::Result<(), String> {
+    const LENGTH: usize = 24;
+    const PADDED_FROM: usize = 13;
+    let ids: Vec<i64> = (0..2 * LENGTH)
+        .map(|at| match at % LENGTH {
+            0 => 0,
+            position if at >= LENGTH && position >= PADDED_FROM => 1,
+            position if position == LENGTH - 1 || (at >= LENGTH && position == PADDED_FROM - 1) => {
+                2
+            }
+            position => 5 + (at as i64 * 37 + position as i64 * 11) % 900,
+        })
+        .collect();
+    let mask: Vec<i64> = (0..2 * LENGTH)
+        .map(|at| i64::from(at < LENGTH || at % LENGTH < PADDED_FROM))
+        .collect();
+
+    let outputs = |path: &Path| -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
+        let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+        let mut session =
+            crate::inference::session(vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
+                .map_err(|error| failed(&error))?;
+        let mut feed = Vec::new();
+        for input in session.inputs() {
+            let values = match input.name() {
+                "input_ids" => ids.clone(),
+                "attention_mask" => mask.clone(),
+                "token_type_ids" => vec![0; ids.len()],
+                other => return Err(failed(&format!("no probe for an input named {other}"))),
+            };
+            let tensor = ort::value::Tensor::from_array(([2, LENGTH], values))
+                .map_err(|error| failed(&error))?;
+            feed.push((input.name().to_string(), tensor));
+        }
+        let names: Vec<String> = session
+            .outputs()
+            .iter()
+            .map(|output| output.name().to_string())
+            .collect();
+        let ran = session.run(feed).map_err(|error| failed(&error))?;
+        names
+            .into_iter()
+            .map(|name| {
+                let (_, values) = ran[name.as_str()]
+                    .try_extract_tensor::<f32>()
+                    .map_err(|error| failed(&format!("output {name}: {error}")))?;
+                Ok((name, values.iter().map(|value| value.to_bits()).collect()))
+            })
+            .collect()
+    };
+
+    let expected = outputs(expected)?;
+    let candidate = outputs(candidate)?;
+    if expected != candidate {
+        let differing = expected
+            .iter()
+            .zip(&candidate)
+            .map(|((name, one), (_, other))| {
+                let count = one
+                    .iter()
+                    .zip(other)
+                    .filter(|(one, other)| one != other)
+                    .count();
+                format!("{name}: {count} of {} values", one.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "the fused graph scored the probe differently ({differing})"
+        ));
+    }
+    Ok(())
 }
 
 /// Writes the optimized graph and its external data into `into`.

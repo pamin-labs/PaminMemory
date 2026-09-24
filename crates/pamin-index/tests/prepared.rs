@@ -78,6 +78,22 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
             / 1024;
         let prepared = run(model, &cache, true);
 
+        // Which graph the copy loads: attention fused, or as the runtime
+        // wrote it -- see `attention.rs`. The `accurate` reranker is the one
+        // export whose attention the fusion was written for and checked on,
+        // so a copy of it that stopped fusing has lost the speed-up without
+        // any score saying so; the others fuse or not by what their graphs
+        // hold, and the bit-identical scores above are what matters there.
+        let fused = copy.join("attention.onnx").exists();
+        let unfused = std::fs::read_to_string(copy.join("attention.unfused")).ok();
+        if *model == "accurate" && cfg!(target_arch = "x86_64") {
+            assert!(
+                fused,
+                "the accurate copy's attention was not fused: {}",
+                unfused.as_deref().unwrap_or("no reason recorded").trim()
+            );
+        }
+
         assert_eq!(
             source.bits, writing.bits,
             "the {model} copy, loaded in the process that wrote it, is not bit-identical \
@@ -90,7 +106,8 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
 
         println!(
             "  {model}: {} outputs bit-identical; anonymous MiB, source against copy: \
-             after load {} / {}, after a pass {} / {}, live {} / {}; copy data file {} MiB",
+             after load {} / {}, after a pass {} / {}, live {} / {}; copy data file {} MiB; \
+             attention {}",
             source.bits.len(),
             mebibytes(source.loaded),
             mebibytes(prepared.loaded),
@@ -99,6 +116,11 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
             mebibytes(source.held),
             mebibytes(prepared.held),
             data / 1024,
+            match (fused, &unfused) {
+                (true, _) => "fused".to_string(),
+                (false, Some(reason)) => format!("unfused ({})", reason.trim()),
+                (false, None) => "unsettled".to_string(),
+            },
         );
 
         // What the copy keeps off the heap, against what it maps.
