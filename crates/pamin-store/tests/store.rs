@@ -12,6 +12,8 @@ use pamin_core::{
     Derivation, EdgeKind, FilterDecision, JobKind, SourceKind, TombstoneReason, Validity,
     VersionOffset, resolve,
 };
+mod common;
+
 use pamin_store::graph::{EdgeClaim, Expansion};
 use pamin_store::{Connections, Database, Workspace, graph, jobs, repository};
 // The table name is a literal from the list above, not caller input; the
@@ -220,6 +222,46 @@ async fn write_state(
     state
 }
 
+/// Records a span over part of a version, in the given language.
+///
+/// Nothing in the product writes one: every span it records covers the whole
+/// of its evidence (`append_evidence`, `append_promoted`). What reads a state
+/// still cuts it at its span's offsets, and checking that the cut is right
+/// needs a span that does not start at zero -- so tests make one here.
+async fn span_over(
+    database: &Database,
+    project: pamin_core::ProjectId,
+    evidence: &pamin_core::SourceVersion,
+    byte_start: u32,
+    byte_end: u32,
+    language: &str,
+) -> pamin_core::SourceSpan {
+    let id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO source_spans (id, project_id, source_version_id, byte_start, byte_end,
+             detected_language)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(id)
+    .bind(project.0)
+    .bind(evidence.id.0)
+    .bind(byte_start as i32)
+    .bind(byte_end as i32)
+    .bind(language)
+    .execute(database.pool())
+    .await
+    .expect("record a span over part of the evidence");
+    pamin_core::SourceSpan {
+        id: id.into(),
+        project_id: project,
+        source_version_id: evidence.id,
+        byte_start,
+        byte_end,
+        detected_language: Some(language.to_string()),
+        language_confidence: None,
+    }
+}
+
 /// Puts a state on a span that already exists, under the topic's lock, and
 /// reads it back.
 ///
@@ -277,7 +319,7 @@ async fn appending_versions_builds_a_supersession_chain(database: &Database) {
         .expect("ensure project");
     let topic = committed!(
         database,
-        repository::ensure_topic,
+        common::ensure_topic,
         project.id,
         "deployment_pipeline"
     )
@@ -391,13 +433,17 @@ async fn filtered_evidence_is_still_stored(database: &Database) {
 
     committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "ok",
-        "hash",
-        FilterDecision::Filtered,
-        "no durable claim"
+        &repository::Evidence {
+            content: "ok",
+            content_hash: "hash",
+            decision: FilterDecision::Filtered,
+            reason: "no durable claim",
+            language: None,
+            language_confidence: None,
+        }
     )
     .expect("append filtered evidence");
 
@@ -430,7 +476,7 @@ async fn graph_fixture(
     let mut topics = Vec::new();
     for name in ["service", "database", "backup_job"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -712,13 +758,17 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
     // the projection index. Reaching it is the entire reason this exists.
     committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "the KILN reaches cone ten",
-        "hash",
-        FilterDecision::Filtered,
-        "no durable claim"
+        &repository::Evidence {
+            content: "the KILN reaches cone ten",
+            content_hash: "hash",
+            decision: FilterDecision::Filtered,
+            reason: "no durable claim",
+            language: None,
+            language_confidence: None,
+        }
     )
     .expect("append filtered evidence");
 
@@ -763,13 +813,17 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
     // language it arrived in. Either way of folding case has to agree.
     committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "窑炉温度达到 Cone Twelve 之后保持",
-        "hash-multibyte",
-        FilterDecision::Filtered,
-        "no durable claim"
+        &repository::Evidence {
+            content: "窑炉温度达到 Cone Twelve 之后保持",
+            content_hash: "hash-multibyte",
+            decision: FilterDecision::Filtered,
+            reason: "no durable claim",
+            language: None,
+            language_confidence: None,
+        }
     )
     .expect("append multi-byte evidence");
     for (needle, case_sensitive) in [("Cone Twelve", true), ("cone twelve", false)] {
@@ -816,7 +870,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
     let mut topics = Vec::new();
     for name in ["tenant_a", "tenant_b", "tenant_c"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -922,7 +976,7 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &Database) 
     let mut topics = Vec::new();
     for name in ["ring_a", "ring_b", "ring_c"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -1085,7 +1139,7 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
         .await
         .expect("ensure project");
     let topic =
-        committed!(database, repository::ensure_topic, project.id, &name).expect("ensure topic");
+        committed!(database, common::ensure_topic, project.id, &name).expect("ensure topic");
     let server = workspace
         .read_server()
         .expect("read server record")
@@ -1201,9 +1255,8 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
     )
     .expect("ensure source");
     let from =
-        committed!(database, repository::ensure_topic, project.id, "from").expect("ensure topic");
-    let to =
-        committed!(database, repository::ensure_topic, project.id, "to").expect("ensure topic");
+        committed!(database, common::ensure_topic, project.id, "from").expect("ensure topic");
+    let to = committed!(database, common::ensure_topic, project.id, "to").expect("ensure topic");
     graph::assert_edge(
         database.pool(),
         project.id,
@@ -1234,7 +1287,18 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
         "idempotent-source"
     )
     .expect("re-ensure source");
-    committed!(database, repository::ensure_topic, project.id, "from").expect("re-ensure topic");
+    // The write path's two ways of arriving at a topic that exists: finding
+    // it, and losing the race to create it.
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let found = repository::lock_topic(&mut transaction, project.id, "from")
+        .await
+        .expect("lock topic")
+        .expect("the topic exists");
+    let raced = repository::create_topic_named(&mut transaction, project.id, "from", "from", 1)
+        .await
+        .expect("create a topic that exists");
+    transaction.commit().await.expect("commit");
+    assert_eq!((found.topic.id, raced.topic.id), (from.id, from.id));
     graph::assert_edge(
         database.pool(),
         project.id,
@@ -1284,7 +1348,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
     let mut topics = Vec::new();
     for name in ["first", "second", "third"] {
         topics.push(
-            committed!(database, repository::ensure_topic, project.id, name)
+            committed!(database, common::ensure_topic, project.id, name)
                 .expect("ensure topic")
                 .id,
         );
@@ -1942,17 +2006,21 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     )
     .expect("ensure source");
 
-    let evidence = committed!(
+    let (evidence, _) = committed!(
         database,
-        repository::append_source_version,
+        repository::append_evidence,
         project.id,
         source,
-        "the content",
-        "the-hash",
-        FilterDecision::Filtered,
-        "the reason"
+        &repository::Evidence {
+            content: "the content",
+            content_hash: "the-hash",
+            decision: FilterDecision::Filtered,
+            reason: "the reason",
+            language: None,
+            language_confidence: None,
+        }
     )
-    .expect("append source version");
+    .expect("append evidence");
 
     let read_back = repository::latest_source_version(database.pool(), project.id, source)
         .await
@@ -1965,38 +2033,17 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     assert_eq!(read_back.source_id, source);
     assert_eq!(read_back.project_id, project.id);
 
-    let span = repository::append_source_span(
-        database.pool(),
-        project.id,
-        evidence.id,
-        3,
-        11,
-        Some("eng"),
-        Some(0.75),
-    )
-    .await
-    .expect("append source span");
-    assert_eq!(span.byte_start, 3);
-    assert_eq!(span.byte_end, 11);
-    assert_eq!(span.detected_language.as_deref(), Some("eng"));
+    let span = span_over(database, project.id, &evidence, 3, 11, "eng").await;
 
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "columns_topic"
-    )
-    .expect("ensure topic");
+    let topic = committed!(database, common::ensure_topic, project.id, "columns_topic")
+        .expect("ensure topic");
     let partial = state_over_span(database, project.id, topic.id, &span).await;
     // The span's text, read back through the evidence it points into -- the
     // state has no copy of its own to read instead, so a span that is not the
     // whole evidence reads back as exactly the part it covers.
     assert_eq!(partial.content, " content");
     assert_eq!(partial.source_span_id, span.id);
-    // The span's language, read back through the join -- and the first time
-    // anything reads `source_spans` at all. The assertion above on `span` is on
-    // the struct `append_source_span` built and handed back, so an INSERT that
-    // dropped this column would have passed it; this one would not.
+    // The span's language, read back through the join the state reads take.
     assert_eq!(partial.language.as_deref(), Some("eng"));
 
     // The write path binds twenty-one arguments by position into one
@@ -2091,13 +2138,8 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
     assert_eq!(stored.deleted_at, None);
 
     // An edge carrying every field that could be transposed with another.
-    let other = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "columns_other"
-    )
-    .expect("ensure topic");
+    let other = committed!(database, common::ensure_topic, project.id, "columns_other")
+        .expect("ensure topic");
     let claim = EdgeClaim {
         kind: EdgeKind::DependsOn,
         derivation: Derivation::Model,
@@ -2170,13 +2212,8 @@ async fn the_current_state_pointer_follows_every_write(database: &Database) {
     let project = repository::ensure_project(database.pool(), "pointer")
         .await
         .expect("ensure project");
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "pointer_topic"
-    )
-    .expect("ensure topic");
+    let topic = committed!(database, common::ensure_topic, project.id, "pointer_topic")
+        .expect("ensure topic");
 
     // A topic with no states yet points nowhere.
     assert_pointer_matches_the_ledger(database, project.id, topic.id, None).await;
@@ -2331,13 +2368,8 @@ async fn evidence_and_the_span_over_it_are_one_write(database: &Database) {
     assert_eq!(read_back.filter_decision, FilterDecision::Promoted);
     assert_eq!(read_back.filter_reason, "evidence reason");
 
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "evidence_topic"
-    )
-    .expect("ensure topic");
+    let topic = committed!(database, common::ensure_topic, project.id, "evidence_topic")
+        .expect("ensure topic");
     let stored = state_over_span(database, project.id, topic.id, &span).await;
     assert_eq!(stored.content, content);
     assert_eq!(stored.language.as_deref(), Some("swe"));
@@ -2593,7 +2625,7 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         .expect("ensure project");
 
     let topic = |name: String| async move {
-        committed!(database, repository::ensure_topic, project.id, &name)
+        committed!(database, common::ensure_topic, project.id, &name)
             .expect("ensure topic")
             .id
     };
@@ -2685,14 +2717,9 @@ async fn what_a_topic_says_now_is_one_lookup(database: &Database) {
         "a topic nobody has written has nothing to compare against"
     );
 
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "edited_often"
-    )
-    .expect("ensure topic")
-    .id;
+    let topic = committed!(database, common::ensure_topic, project.id, "edited_often")
+        .expect("ensure topic")
+        .id;
 
     // Enough history that reading all of it would be a different answer from
     // reading none of it.
@@ -2739,7 +2766,7 @@ async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
         .expect("ensure project");
     let topic = committed!(
         database,
-        repository::ensure_topic,
+        common::ensure_topic,
         project.id,
         "reclaimed_topic"
     )
@@ -2856,14 +2883,9 @@ async fn the_outbox_coalesces_claims_and_survives_a_lost_worker(database: &Datab
     let project = repository::ensure_project(database.pool(), "outbox")
         .await
         .expect("ensure project");
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "outbox_topic"
-    )
-    .expect("ensure topic")
-    .id;
+    let topic = committed!(database, common::ensure_topic, project.id, "outbox_topic")
+        .expect("ensure topic")
+        .id;
 
     // Coalescing: three requests for the same subject are one row.
     for _ in 0..3 {
@@ -3129,7 +3151,7 @@ async fn one_projects_worker_never_takes_anothers_work(database: &Database) {
 
     let mut queued = Vec::new();
     for (project, name) in [(mine.id, "mine_topic"), (theirs.id, "theirs_topic")] {
-        let topic = committed!(database, repository::ensure_topic, project, name)
+        let topic = committed!(database, common::ensure_topic, project, name)
             .expect("ensure topic")
             .id;
         jobs::enqueue(
@@ -3198,12 +3220,16 @@ async fn several_topics_restate_their_mentions_at_once(database: &Database) {
         .expect("ensure project");
     let mut topics = Vec::new();
     for name in ["left", "right", "alpha", "beta", "gamma"] {
-        let topic = committed!(database, repository::ensure_topic, project.id, name)
+        let topic = committed!(database, common::ensure_topic, project.id, name)
             .expect("ensure topic")
             .id;
-        repository::record_topic_name(database.pool(), project.id, topic, name, 1)
-            .await
-            .expect("record name");
+        repository::record_topic_names(
+            database.pool(),
+            project.id,
+            &[(topic, name.to_string(), 1)],
+        )
+        .await
+        .expect("record name");
         topics.push(topic);
     }
     let (left, right, alpha, beta, gamma) = (topics[0], topics[1], topics[2], topics[3], topics[4]);
@@ -3292,7 +3318,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
     let mut topics = Vec::new();
     for name in ["deploy", "argo_cd", "flux", "runbook"] {
         topics.push(
-            committed!(database, repository::ensure_topic, project.id, name)
+            committed!(database, common::ensure_topic, project.id, name)
                 .expect("ensure topic")
                 .id,
         );
@@ -3343,12 +3369,11 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
     let kept_before = live(flux).await.expect("the kept edge is live");
 
     // The memory now names only `flux`.
-    let closed = graph::retract_derived(
+    let closed = graph::retract_derived_all(
         database.pool(),
         project.id,
-        deploy,
         EdgeKind::Mentions,
-        &[flux],
+        &[(deploy, vec![flux])],
     )
     .await
     .expect("retract what the content no longer says");
@@ -3443,7 +3468,7 @@ async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
     let mut id = std::collections::HashMap::new();
     for name in ["rota", "pipeline", "scheduler", "platform", "legacy"] {
         let topic =
-            committed!(database, repository::ensure_topic, project.id, name).expect("ensure topic");
+            committed!(database, common::ensure_topic, project.id, name).expect("ensure topic");
         write_state(
             database,
             project.id,
@@ -3595,9 +3620,9 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
         .await
         .expect("ensure the crowded project");
     let crowded =
-        committed!(database, repository::ensure_topic, crowd.id, "crowded").expect("ensure topic");
+        committed!(database, common::ensure_topic, crowd.id, "crowded").expect("ensure topic");
     let other =
-        committed!(database, repository::ensure_topic, crowd.id, "other").expect("ensure topic");
+        committed!(database, common::ensure_topic, crowd.id, "other").expect("ensure topic");
     let first = write_state(database, crowd.id, crowded.id, "crowd-source", "v1").await;
     write_state(database, crowd.id, other.id, "crowd-other", "v1").await;
     graph::assert_edge(
@@ -3696,10 +3721,10 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
         .expect("ensure project")
         .id;
     let mut transaction = probe.begin().await.expect("begin");
-    let topic = repository::ensure_topic(&mut transaction, project, "sparse")
+    let topic = common::ensure_topic(&mut transaction, project, "sparse")
         .await
         .expect("ensure topic");
-    let target = repository::ensure_topic(&mut transaction, project, "target")
+    let target = common::ensure_topic(&mut transaction, project, "target")
         .await
         .expect("ensure topic");
     let source = repository::ensure_source(&mut transaction, project, SourceKind::Manual, "sparse")
