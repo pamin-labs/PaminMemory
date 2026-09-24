@@ -146,6 +146,14 @@ impl Session {
         (engines, embedders, rerankers)
     }
 
+    /// How many indexes the open-index bound has closed since the last call.
+    ///
+    /// The bound closes one on the way to opening another, inside a request,
+    /// so giving the freed heap back is left to the server's upkeep.
+    pub fn take_evicted(&self) -> usize {
+        self.engines.take_evicted()
+    }
+
     /// The project row for this name, creating it if it is new.
     pub async fn project(&self, name: &str) -> Result<ProjectId> {
         let mut projects = self.projects.lock().await;

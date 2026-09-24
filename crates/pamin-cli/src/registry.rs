@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -37,6 +38,9 @@ pub struct Registry<K, T> {
     /// prevent, turned from a convention into a compiler error.
     open: std::sync::Mutex<Open<K, T>>,
     capacity: usize,
+    /// How many entries the capacity bound has closed since
+    /// [`take_evicted`](Self::take_evicted) last asked.
+    evicted: AtomicUsize,
 }
 
 struct Open<K, T> {
@@ -66,6 +70,7 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
                 uses: 0,
             }),
             capacity,
+            evicted: AtomicUsize::new(0),
         }
     }
 
@@ -112,7 +117,8 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
                 entry.at = Instant::now();
                 Arc::clone(&entry.slot)
             } else {
-                registry.make_room(self.capacity);
+                let evicted = registry.make_room(self.capacity);
+                self.evicted.fetch_add(evicted, Ordering::Relaxed);
                 let slot = Slot::default();
                 registry.slots.insert(
                     key,
@@ -157,6 +163,15 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
             .keys()
             .cloned()
             .collect()
+    }
+
+    /// How many entries the capacity bound has closed since the last call.
+    ///
+    /// For the caller that gives freed memory back to the operating system,
+    /// which a request should not wait for: the bound closes an entry on the
+    /// way to opening another, and that request has somewhere to be.
+    pub fn take_evicted(&self) -> usize {
+        self.evicted.swap(0, Ordering::Relaxed)
     }
 
     /// Closes everything nothing has wanted for `idle`, and says what it closed.
@@ -215,7 +230,10 @@ impl<K: Eq + Hash + Clone, T> Open<K, T> {
     /// buy nothing and cost the next caller for that key a second open. When
     /// everything is busy the bound gives way rather than the request -- it
     /// exists to stop idle values accumulating, not to cap concurrency.
-    fn make_room(&mut self, capacity: usize) {
+    ///
+    /// Returns how many it closed.
+    fn make_room(&mut self, capacity: usize) -> usize {
+        let mut closed = 0;
         while self.slots.len() >= capacity {
             let idle = self
                 .slots
@@ -224,9 +242,11 @@ impl<K: Eq + Hash + Clone, T> Open<K, T> {
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone());
 
-            let Some(idle) = idle else { return };
+            let Some(idle) = idle else { return closed };
             self.slots.remove(&idle);
+            closed += 1;
         }
+        closed
     }
 
     /// Whether dropping this entry would actually free what it holds.
@@ -441,6 +461,35 @@ mod tests {
             registry.close_idle(Duration::from_millis(1)),
             vec!["busy"],
             "the entry was not closed once nothing held it"
+        );
+    }
+
+    /// What the capacity bound closes is counted, once.
+    ///
+    /// The server gives the heap back after an eviction rather than during
+    /// one, so the request that caused it does not wait for the allocator; the
+    /// count is how it learns there was one. Counting idle closes here too
+    /// would trim twice for one close, and never counting would leave an
+    /// evicted index's heap mapped until the idle sweep, which is the growth
+    /// this exists to stop.
+    #[tokio::test]
+    async fn what_the_bound_closes_is_counted_once() {
+        let registry: Registry<u32, u32> = Registry::with_capacity(2);
+        for key in 0..3 {
+            registry
+                .get_or_open(key, || async move { Ok(key) })
+                .await
+                .expect("opening");
+        }
+        assert_eq!(registry.take_evicted(), 1, "the third key closed one");
+        assert_eq!(registry.take_evicted(), 0, "and it is not counted again");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(registry.close_idle(Duration::from_millis(1)).len(), 2);
+        assert_eq!(
+            registry.take_evicted(),
+            0,
+            "closing idle entries is not eviction"
         );
     }
 
