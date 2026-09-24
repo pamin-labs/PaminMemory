@@ -150,14 +150,22 @@ the error rather than silently mixing two spaces.
 | --- | --- | --- | --- | --- |
 | `speed` | multilingual-e5-small | 384 | 465 MB | 13 ms |
 | `balanced` | multilingual-e5-base | 768 | 1.1 GB | 26 ms |
-| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms |
+| `accuracy` (default) | pplx-embed-v1-0.6b, 8-bit weights computed in int8 | 1024 | 797 MiB | 72 ms at best |
 
-The default is the largest model because quantized weights make it the smallest
-download and because the gap it closes is the one Påmin Memory is about: on the
-evaluation corpus it roughly doubles cross-lingual retrieval against
-`balanced`, matches it on same-language queries, and costs nine milliseconds.
-`balanced` is kept for those nine milliseconds and for projects already indexed
-under it; there is no other reason left to choose it.
+The `accuracy` row is not measured the way the other two were. Its model
+replaced BGE-M3, which this table listed at 560 MB and 35 ms, and the two were
+measured side by side instead, on a four-core machine other work was sharing:
+797 MiB resident after twenty queries against BGE-M3's 628 MiB, most of it the
+mapped weights (148 MiB of it anonymous, against 299); and a query embedding
+4.5 times BGE-M3's at the median of every query timed on both in one process,
+72 ms against 28 at each model's fastest. [ADR 0001](adr/0001-tech-selection.md) has the runs.
+
+The default is the most accurate model the project has measured, and the gap
+it closes is the one Påmin Memory is about: BGE-M3 roughly doubled
+cross-lingual retrieval against `balanced`, and pplx-embed beat BGE-M3 through
+the whole search path on the corpora measured, at the cost above.
+`balanced` is kept for its lower latency and for projects already indexed under
+it.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -1006,6 +1014,21 @@ A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
 search nothing, so commands report it and `pamin reindex` migrates it.
 
+**An upgrade that changes a profile's model re-embeds the project instead of
+refusing it.** A project indexed by BGE-M3, the `accuracy` profile's model
+before pplx-embed replaced it, opens as it did: every memory is there, and a
+search answers from the two lexical channels and the graph, reranked as usual,
+without the vector channel -- a distance between two models' vectors would mean
+nothing. A running server then embeds every memory again in the background,
+into a copy beside the index, and swaps the copy in when it is done, the way it
+reshapes one: writes made meanwhile are embedded by the new model and carried
+over, and the index is read a batch at a time, so a search waits behind one
+batch rather than behind the whole project. It is resumable: a server stopped part way keeps what it had
+embedded and starts from there the next time the project is opened. `pamin
+reindex` does the same work in the foreground, for a workspace that runs
+without a server. Opening an index under a *different* profile than the one it
+was built with is still refused.
+
 ## `pamin cascade`
 
 Runs the work a write left for the projection.
@@ -1088,8 +1111,9 @@ to watch it. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
 
 Between requests it looks after the indexes it holds open: it makes applied
-writes durable, compacts an index spread over too many files, and reshapes one
-spread over too many segments, as `pamin reindex` describes. A reshape logs
+writes durable, compacts an index spread over too many files, reshapes one
+spread over too many segments, and re-embeds one a replaced model built, as
+`pamin reindex` describes. A reshape logs
 `reshaping the index` when it starts and `reshaped the index` with the segment
 counts and its duration when it finishes, at the `info` level that
 `PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
