@@ -72,6 +72,15 @@ pub struct Session {
 /// figure the paragraph above used to quote, 100 MB, was the smallest
 /// profile's, and nothing said so.
 ///
+/// Most of the first row is a floor rather than a function of size. The
+/// full-text store is a RocksDB with twelve column families, and zvec gives
+/// each one's memtable a hash index of a million buckets, an 8,000,000-byte
+/// array allocated and zeroed when the memtable is: 96 MB before the first
+/// memory is written. A one-memory `speed` index measured 93 MiB anonymous
+/// (98 MB), and nothing pamin configures changes the bucket count. In the
+/// hundred-project end-to-end test, one-memory `accuracy` indexes added 103 to
+/// 152 MiB apiece while the first sixteen opened.
+///
 /// A count cannot be made to mean bytes here: what an index costs depends on
 /// the profile, the quantization, and how much has been written, and this
 /// process learns the last of those only by opening it. So the number stays a
@@ -221,6 +230,14 @@ impl Session {
         let embedders = self.models.release_idle_embedders();
         let rerankers = self.models.release_idle_rerankers();
         (engines, embedders, rerankers)
+    }
+
+    /// How many indexes the open-index bound has closed since the last call.
+    ///
+    /// The bound closes one on the way to opening another, inside a request,
+    /// so giving the freed heap back is left to the server's upkeep.
+    pub fn take_evicted(&self) -> usize {
+        self.engines.take_evicted()
     }
 
     /// The project row for this name, creating it if it is new.

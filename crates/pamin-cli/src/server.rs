@@ -155,11 +155,15 @@ async fn maintain(session: Arc<Session>) {
         // The engines above are dropped by now, so a project that has gone
         // quiet can be closed and the weights it was pinning given back.
         let (engines, embedders, rerankers) = session.close_what_is_idle();
-        if !engines.is_empty() || !embedders.is_empty() || !rerankers.is_empty() {
+        // And an index the open-index bound closed since the last tick. It was
+        // closed inside a request, which is no place to wait on the allocator.
+        let evicted = session.take_evicted();
+        if !engines.is_empty() || !embedders.is_empty() || !rerankers.is_empty() || evicted > 0 {
             tracing::debug!(
                 ?engines,
                 ?embedders,
                 ?rerankers,
+                evicted,
                 "gave back what nothing had asked for"
             );
             trim_heap();
