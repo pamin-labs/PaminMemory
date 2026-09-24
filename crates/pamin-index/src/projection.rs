@@ -158,6 +158,12 @@ pub trait Projection {
     /// counting, and it is what decides when the index is asked to tidy up.
     fn file_count(&self) -> Result<u64>;
 
+    /// How many vector blocks flushes have left that no compaction has merged.
+    ///
+    /// What disk is spent on, where [`file_count`](Self::file_count) is what
+    /// descriptors are spent on. See [`wastes_disk`].
+    fn unmerged_blocks(&self) -> Result<u64>;
+
     /// How this index is segmented, against what the policy would choose.
     fn segmentation(&self) -> Result<Segmentation>;
 
@@ -444,6 +450,48 @@ const MAX_FILES: u64 = 256;
 /// Whether an index is spread across more files than it should be.
 pub fn is_fragmented(files: u64) -> bool {
     files > MAX_FILES
+}
+
+/// How many unmerged vector blocks an index may hold whatever its size.
+///
+/// A flush writes the vectors it carries into a block of their own, and the
+/// engine sizes that block for a segment rather than for what is in it: 5 MB
+/// apparent and 1.06 MB allocated whether it holds one document or forty. So
+/// a project written a memory at a time spends a megabyte of disk a flush
+/// until something compacts it, and [`MAX_FILES`] is not that something for a
+/// small one: a flush leaves about six files, so the file budget is reached
+/// after some forty flushes. Measured on the `speed` profile, one write and
+/// one flush at a time, with nothing compacting until the end:
+///
+/// ```text
+///   writes   files   allocated   compacted   after closing
+///       40     238     45.5 MB      3.4 MB          1.9 MB
+///      300   1,538    333.3 MB      7.0 MB          5.6 MB
+/// ```
+///
+/// Compacting changed none of the thirty top-ten lists the three channels
+/// returned for ten queries, at eight, forty and three hundred writes.
+///
+/// Eight blocks is about eight megabytes, which is what a project may carry
+/// before anything is spent on it: small enough that a hundred small projects
+/// are not four gigabytes of padding, and large enough that one written a
+/// memory at a time is not compacted on every flush.
+const BLOCK_FLOOR: u64 = 8;
+
+/// Documents per unmerged block an index may carry above [`BLOCK_FLOOR`].
+///
+/// Scales the allowance with the index, so the waste stays in proportion to
+/// what compacting it costs. A compacted index is about 9 KB a document on
+/// the shipping profile -- 116 MB over 13,014 -- and a block about a
+/// megabyte, so one block per 128 documents lets the waste grow to roughly the
+/// size of the index itself before a compaction is asked for. Past about five
+/// thousand documents [`MAX_FILES`] is reached first, so this changes nothing
+/// for a project that size or larger.
+const DOCUMENTS_PER_BLOCK: u64 = 128;
+
+/// Whether an index holds more unmerged vector blocks than its size warrants.
+pub fn wastes_disk(blocks: u64, documents: u64) -> bool {
+    blocks > BLOCK_FLOOR.max(documents / DOCUMENTS_PER_BLOCK)
 }
 
 /// How many documents may sit outside the vector graph before one is built.
@@ -1386,6 +1434,35 @@ impl Projection for ProjectionIndex {
 
         Ok(walk(&self.dir))
     }
+
+    /// Counted from the directory, as [`file_count`](Self::file_count) is:
+    /// the engine keeps each segment in a directory of its own, writes one
+    /// `embedding.index.<n>.proxima` there per flush, and leaves one per
+    /// segment once it has compacted. So every block past a segment's first is
+    /// one a compaction would merge.
+    fn unmerged_blocks(&self) -> Result<u64> {
+        let prefix = format!("{FIELD_VECTOR}.index.");
+        let Ok(segments) = std::fs::read_dir(self.dir.join(COLLECTION)) else {
+            return Ok(0);
+        };
+        Ok(segments
+            .flatten()
+            .filter(|segment| segment.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|segment| {
+                let blocks = std::fs::read_dir(segment.path()).map_or(0, |files| {
+                    files
+                        .flatten()
+                        .filter(|file| {
+                            let name = file.file_name();
+                            let name = name.to_string_lossy();
+                            name.starts_with(&prefix) && name.ends_with(".proxima")
+                        })
+                        .count() as u64
+                });
+                blocks.saturating_sub(1)
+            })
+            .sum())
+    }
 }
 
 /// The engine's open options for this access mode.
@@ -1488,7 +1565,7 @@ fn collect_scored(docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
 
 #[cfg(test)]
 mod upkeep {
-    use super::{Segmentation, is_fragmented, segment_documents, vector_index_lags};
+    use super::{Segmentation, is_fragmented, segment_documents, vector_index_lags, wastes_disk};
 
     /// A workspace that grew from empty holds the floor's segments, and the
     /// report says so; one built knowing its size does not.
@@ -1596,6 +1673,20 @@ mod upkeep {
         // The bound is on the remainder, not on the project: the size that
         // never fired as a threshold is fully indexed here.
         assert!(!vector_index_lags(1_000_000, 1.0));
+    }
+
+    /// A small index is compacted after a few flushes, not after the file
+    /// budget's forty; a large one keeps a larger allowance of blocks.
+    #[test]
+    fn unmerged_blocks_are_bounded_by_the_index_size() {
+        assert!(!wastes_disk(8, 1), "eight blocks is the floor");
+        assert!(wastes_disk(9, 43), "a ninth on a small index is waste");
+        assert!(
+            !is_fragmented(9 * 6),
+            "and the file budget would not have asked yet"
+        );
+        assert!(!wastes_disk(100, 13_014), "a large index is allowed more");
+        assert!(wastes_disk(102, 13_014));
     }
 
     /// A completeness outside 0.0..=1.0 must not read as a negative remainder.
