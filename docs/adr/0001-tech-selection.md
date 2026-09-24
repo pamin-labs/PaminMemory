@@ -1402,10 +1402,12 @@ ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
 4,096, the fastest of three calls on one text (of two at 4,096). The window
 stays at 512.
 
-### pplx-embed-v1-0.6b on the shipped path: proposed, not adopted
+### pplx-embed-v1-0.6b on the shipped path: measured, not adopted
 
-**Status: proposed.** BGE-M3 remains the default. The maintainer has not
-decided, and four items are open; they are listed at the end of this section.
+**Status: rejected.** BGE-M3 remains the default. The accuracy gain held up
+with the export a product would ship, but the maintainer weighed it against a
+3.4× slower write path and chose BGE-M3; the decision and the figures it rests
+on close this section.
 
 The survey above named one candidate and four reasons it was not yet a
 default, the first being that it had been measured on the vector channel
@@ -1507,30 +1509,67 @@ MiB resident and 560 + 850 MiB on disk, and they score below C on MuSiQue
 (0.6955 and 0.7054 against 0.7275). D needs both as well, because its sparse
 channel is BGE-M3's, and B loses XQuAD-R cross-lingual. So among the arms that
 load one model, C is the only one with no group significantly worse than A or
-A′, and it is the configuration proposed.
+A′, and it was the configuration taken to a decision.
 
 **The replay and the product agree on direction, not to the third decimal.**
 Paired against a named BGE-M3 index at depth twenty, the replay gives C
 +0.0450 on MuSiQue where the product gave +0.0322, and +0.0069 (not
 significant) same-language on XQuAD-R where the product gave +0.0162. The
-proposal rests on the product-path table at the top of this section. The
-replay only ranks the combinations against one another.
+decision rests on the product-path tables in this section. The replay only
+ranks the combinations against one another.
 
-**Open, and each has to be settled before this becomes a default:**
+**The four open items were settled before the decision** (the adoption
+branch, `claude/perf-33-pplx-default-7gafc1`, and its PR #98 were closed
+unmerged and hold the code and logs):
 
-1. **The export.** Our dynamic int8 quantization (every MatMul except the 28
-   `down_proj`s, plus the token embedding; mean cosine 0.9957 to fp32 over 400
-   texts) is published nowhere, and Perplexity's own 8-bit export runs 8-10x
-   slower on this CPU. The trial profile reads it from a local directory, so
-   shipping it means hosting our own export for the model download to fetch.
-2. **Re-embedding existing workspaces.** A model change builds a new index,
-   so every workspace re-embeds through `pamin reindex`, at two to three
-   times BGE-M3's cost a passage.
-3. **Greek.** The survey measured Greek queries 0.071 worse (p = 0.002) on the
-   vector channel alone. That has not been re-taken per language on the
-   shipped path.
-4. **Fusion weights tuned for BGE-M3.** Every weight C runs at was chosen with
-   BGE-M3 in the vector channel and has not been re-swept with pplx there.
+1. **The export.** Perplexity's own 8-bit ONNX export at a pinned revision
+   runs fast once each of its 196 `MatMulNBits` nodes is told to compute in
+   int8 (accuracy level 4), set at load time with no Python. Against the
+   full-precision export over 400 texts its mean cosine is 0.99925, above our
+   own export's 0.99571, and on the XQuAD-R path the two exports do not differ
+   (+0.0019 cross-lingual, p = 0.097; +0.0009 same-language, p = 0.50).
+2. **Re-embedding.** A replaced model's index can be rebuilt beside the old
+   one in the background while the old one serves.
+3. **Greek.** Per query language on the shipped path, Holm-corrected across
+   eleven languages, Greek cross-lingual is −0.0512 (30 wins / 59 losses,
+   corrected p = 0.006) and Chinese cross-lingual +0.0685 (corrected p = 0.001);
+   nothing else moves. Greek alone accounts for the whole cross-lingual −0.0045.
+4. **Fusion weights.** A leave-one-corpus-out re-sweep written before it ran
+   kept every weight: the three folds each chose a different setting, and the
+   procedure lost −0.0020 pooled over 3,537 held-out questions (p = 0.0023).
+
+**The decision, on the export that would ship, at the shipped depth of
+thirty.** Accuracy, paired per question:
+
+| | BGE-M3 | pplx | difference | wins / losses | p |
+| --- | --- | --- | --- | --- | --- |
+| MuSiQue two-hop (1,000), nDCG@10 | 0.7131 | 0.7470 | **+0.0339** | 300 / 211 | 0.0001 |
+| MuSiQue two-hop, `recall@50` | 0.8570 | 0.8855 | **+0.0285** | 93 / 41 | 0.0001 |
+| XQuAD-R same-language (1,190), nDCG@10 | 0.8041 | 0.8199 | **+0.0157** | 162 / 111 | 0.010 |
+| XQuAD-R cross-lingual (1,190), nDCG@10 | 0.6745 | 0.6699 | −0.0045 | 412 / 493 | 0.24 |
+
+Cost, in two long-lived processes opened as `pamin serve` opens them, the two
+models alternated per query on 100 MuSiQue and 100 XQuAD-R queries at the CLI
+defaults (load average 5.6 to 7.2 on four cores):
+
+| | BGE-M3 | pplx | ratio |
+| --- | --- | --- | --- |
+| query embedding, median | 46–47 ms | 119–138 ms | 2.5–3.1×, p = 0.0001 |
+| whole search, both corpora, median | 2,062 ms | 2,112 ms | 1.02× (geometric mean of per-query ratios), p = 0.83 |
+| passage embedding, a write | 135 ms | 523 ms; 459 ms with the passes of a batch run side by side | 3.4–4.1× |
+| resident | 628 MiB | 797 MiB | |
+
+**Why the whole search did not slow down, and why that did not decide it.**
+The query embedding is 1 to 7% of a search that reranks, and pplx changed how
+often the reranker runs at all (57 of 100 MuSiQue queries against 66). But
+every memory written pays the passage cost before it becomes searchable, and
+the cost sits in the kernel: this export's `MatMulNBits` runs on MLAS's
+AVX512-VNNI path, while the AMX path serves only the `MatMulInteger` that
+BGE-M3's export uses. Batching does not recover it, since a pass's cost per
+token is flat and each passage already runs alone. Only a per-column int8
+export of our own reaches AMX, which means hosting weights. With accuracy and
+latency weighed about equally, a 4.8% relative multi-hop gain did not buy a
+3.4× slower write path, and BGE-M3 stays.
 
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
