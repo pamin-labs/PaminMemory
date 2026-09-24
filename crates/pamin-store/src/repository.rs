@@ -446,29 +446,37 @@ pub async fn append_topic_state(
         "a state's span has to point into the evidence it is cut from"
     );
 
-    sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
+    // The lock and the predecessor in one statement. The predecessor is the
+    // newest surviving state, which is what `current_state_id` holds: every
+    // path that changes which states survive moves it under this same lock
+    // (this function, below, and `soft_delete_topic_state`). A statement that
+    // waits for a row lock reads the row as the holder left it, so this sees
+    // the pointer a concurrent append just moved, not the one before it.
+    let previous = sqlx::query("SELECT current_state_id FROM topics WHERE id = $1 FOR UPDATE")
         .bind(topic.0)
-        .execute(&mut *connection)
-        .await?;
+        .fetch_one(&mut *connection)
+        .await?
+        .get::<Option<uuid::Uuid>, _>("current_state_id")
+        .map(TopicStateId::from);
 
-    let previous = sqlx::query(
-        "SELECT id FROM topic_states
-         WHERE topic_id = $1 AND deleted_at IS NULL
-         ORDER BY version DESC LIMIT 1",
-    )
-    .bind(topic.0)
-    .fetch_optional(&mut *connection)
-    .await?
-    .map(|row| TopicStateId::from(row.get::<uuid::Uuid, _>("id")));
-
+    // The state and the pointer to it in one statement: the appended state is
+    // the newest surviving one by construction, so the pointer moves with it
+    // rather than being recomputed, and there is no moment at which the topic
+    // points at the state before this one.
     let row = sqlx::query(
-        "INSERT INTO topic_states (
-             id, project_id, topic_id, version, source_span_id,
-             observed_at, recorded_at, supersedes, valid_from, valid_to
+        "WITH state AS (
+             INSERT INTO topic_states (
+                 id, project_id, topic_id, version, source_span_id,
+                 observed_at, recorded_at, supersedes, valid_from, valid_to
+             )
+             SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9
+             FROM topic_states WHERE project_id = $2 AND topic_id = $3
+             RETURNING id, version, recorded_at
+         ), pointer AS (
+             UPDATE topics SET current_state_id = state.id, current_version = state.version
+             FROM state WHERE topics.id = $3
          )
-         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9
-         FROM topic_states WHERE project_id = $2 AND topic_id = $3
-         RETURNING id, version, recorded_at",
+         SELECT id, version, recorded_at FROM state",
     )
     .bind(TopicStateId::new().0)
     .bind(project.0)
@@ -501,12 +509,6 @@ pub async fn append_topic_state(
         supersedes: previous,
         deleted_at: None,
     };
-
-    // The appended state is the newest surviving one by construction, so the
-    // pointer moves here rather than being recomputed. Same transaction, same
-    // lock: there is no window where the topic points at the state before this
-    // one.
-    point_at(connection, topic, Some(&state)).await?;
 
     Ok(state)
 }

@@ -64,6 +64,7 @@ async fn the_ledger_holds_its_promises() {
     a_retraction_reason_decides_what_history_keeps(&database).await;
     a_seed_never_reaches_itself_however_deep_the_walk(&database).await;
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
+    concurrent_appends_to_one_topic_form_one_chain(&database, &workspace).await;
     ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
@@ -263,6 +264,13 @@ async fn soft_deleting_the_current_version_promotes_its_predecessor(database: &D
     // A new append continues the numbering rather than reusing the freed one.
     let next = write_state(database, project.id, topic.id, "note-3", "deploys via cd").await;
     assert_eq!(next.version, 3, "version numbers are never reused");
+    // And supersedes the newest state that survives, which is the one the
+    // topic's pointer names, not the deleted version numbered before it.
+    let survivor = repository::topic_state(database.pool(), project.id, topic.id, 1)
+        .await
+        .expect("load the survivor")
+        .expect("version 1 is stored");
+    assert_eq!(next.supersedes, Some(survivor.id));
 
     // The identifiers alone name exactly the topics whose states a rebuild
     // indexes, so a reshape and a rebuild agree on what the index holds.
@@ -964,6 +972,113 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
         (1..=WRITERS as u32).collect::<Vec<_>>(),
         "concurrent writers should take consecutive versions"
     );
+}
+
+/// Concurrent appends to one topic each supersede the state before them.
+///
+/// `append_topic_state` reads its predecessor from the topic's current-state
+/// pointer, in the statement that locks the topic. That is right only if a
+/// writer that waited for the lock reads the pointer the writer before it
+/// moved: if it read the one from before the wait, two states would name the
+/// same predecessor and the chain would fork -- no error, just a history that
+/// says two things replaced one. So this checks the chain, not only the
+/// version numbers.
+async fn concurrent_appends_to_one_topic_form_one_chain(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const WRITERS: usize = 8;
+
+    let project = repository::ensure_project(database.pool(), "contended_topic")
+        .await
+        .expect("ensure project");
+    let topic = committed!(
+        database,
+        repository::ensure_topic,
+        project.id,
+        "contended_topic"
+    )
+    .expect("ensure topic");
+    let server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|writer| {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let database = Database::connect(&server, Connections::PerCommand)
+                    .await
+                    .expect("connect");
+                let mut transaction = database.pool().begin().await.expect("begin");
+                let source = repository::ensure_source(
+                    &mut transaction,
+                    project.id,
+                    SourceKind::Manual,
+                    &format!("contended-topic-{writer}"),
+                )
+                .await
+                .expect("ensure source");
+                let content = format!("state from writer {writer}");
+                let (evidence, span) = repository::append_evidence(
+                    &mut transaction,
+                    project.id,
+                    source,
+                    &repository::Evidence {
+                        content: &content,
+                        content_hash: "hash",
+                        decision: FilterDecision::Promoted,
+                        reason: "test fixture",
+                        language: None,
+                        language_confidence: None,
+                    },
+                )
+                .await
+                .expect("append evidence");
+                let state = repository::append_topic_state(
+                    &mut transaction,
+                    project.id,
+                    topic.id,
+                    &evidence,
+                    &span,
+                    OffsetDateTime::now_utc(),
+                    Validity::ALWAYS,
+                )
+                .await
+                .expect("every writer keeps its state");
+                transaction.commit().await.expect("commit");
+                state
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.await.expect("writer task");
+    }
+
+    let chain: Vec<(uuid::Uuid, i32, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT id, version, supersedes FROM topic_states
+         WHERE topic_id = $1 ORDER BY version",
+    )
+    .bind(topic.id.0)
+    .fetch_all(database.pool())
+    .await
+    .expect("read the chain");
+    assert_eq!(
+        chain.iter().map(|link| link.1).collect::<Vec<_>>(),
+        (1..=WRITERS as i32).collect::<Vec<_>>(),
+        "concurrent writers should take consecutive versions"
+    );
+    let mut previous = None;
+    for (id, version, supersedes) in &chain {
+        assert_eq!(
+            *supersedes, previous,
+            "version {version} supersedes a state other than the one before it"
+        );
+        previous = Some(*id);
+    }
+    let newest = chain.last().map(|link| link.1 as u32);
+    assert_pointer_matches_the_ledger(database, project.id, topic.id, newest).await;
 }
 
 /// Re-ensuring a project, source, topic or relationship leaves the row alone.
