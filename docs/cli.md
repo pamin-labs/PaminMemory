@@ -95,8 +95,10 @@ kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
 as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
 it makes that first load slower, 5.1 s for `accurate`. A copy belongs to the
 runtime version and the CPU that wrote it, so an upgrade, or a model directory
-moved to a different CPU, writes a new one and leaves the old one in place; it
-is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
+moved to a different CPU, writes a new one. The old one is removed by a later
+load once no running process has it loaded and none has loaded it for two
+weeks, so a directory shared by two versions keeps both copies while both are
+in use. It is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
 from the download, for a disk that cannot spare the second copy. When a copy
 cannot be written -- a full or read-only disk -- the model loads from the
 download anyway and the log says why.
