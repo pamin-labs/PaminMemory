@@ -100,8 +100,8 @@ pub async fn enqueue(
     subject: Option<uuid::Uuid>,
 ) -> Result<()> {
     // Through the batched form with one kind in it, so the statement -- and
-    // with it the idempotency key and the conflict behaviour a replay depends
-    // on -- has one definition rather than two that have to be kept equal.
+    // with it the conflict behaviour a replay depends on -- has one
+    // definition rather than two that have to be kept equal.
     enqueue_all(executor, project, &[kind], subject).await
 }
 
@@ -116,7 +116,7 @@ pub async fn enqueue(
 /// round trips for three rows, and the write is holding a transaction open
 /// across all of them.
 ///
-/// Same rows, same conflict behaviour, same idempotency keys. `unnest` turns
+/// Same rows, same conflict behaviour. `unnest` turns
 /// the arrays into rows so the statement stays `'static`, which is the same
 /// reason the rest of this crate writes its `IN` lists that way.
 pub async fn enqueue_all(
@@ -131,25 +131,18 @@ pub async fn enqueue_all(
 
     let ids: Vec<uuid::Uuid> = kinds.iter().map(|_| IndexJobId::new().0).collect();
     let labels: Vec<String> = kinds.iter().map(|kind| kind.label().to_string()).collect();
-    let keys: Vec<String> = kinds
-        .iter()
-        .map(|kind| match subject {
-            Some(subject) => format!("{kind}:{subject}"),
-            None => format!("{kind}:"),
-        })
-        .collect();
     let priorities: Vec<i32> = kinds.iter().map(|kind| priority(*kind)).collect();
-    let payload = serde_json::json!({ "subject": subject });
     let now = OffsetDateTime::now_utc();
 
+    // The conflict target is the work itself -- project, kind, subject -- and
+    // a job without a subject conflicts with another without one, because the
+    // constraint treats nulls as equal. See V12.
     sqlx::query(
         "INSERT INTO index_jobs
-             (id, project_id, job_type, payload, idempotency_key,
-              available_at, created_at, priority)
-         SELECT job.id, $1, job.label, $2, job.key, $3, $3, job.priority
-           FROM unnest($4::uuid[], $5::text[], $6::text[], $7::int[])
-                AS job(id, label, key, priority)
-         ON CONFLICT (project_id, idempotency_key) DO UPDATE
+             (id, project_id, job_type, subject, available_at, created_at, priority)
+         SELECT job.id, $1, job.label, $2, $3, $3, job.priority
+           FROM unnest($4::uuid[], $5::text[], $6::int[]) AS job(id, label, priority)
+         ON CONFLICT (project_id, job_type, subject) DO UPDATE
              SET available_at = $3,
                  claimed_at   = NULL,
                  claimed_by   = NULL,
@@ -157,11 +150,10 @@ pub async fn enqueue_all(
                  attempts     = 0",
     )
     .bind(project.0)
-    .bind(&payload)
+    .bind(subject)
     .bind(now)
     .bind(&ids)
     .bind(&labels)
-    .bind(&keys)
     .bind(&priorities)
     .execute(executor)
     .await?;
@@ -229,7 +221,7 @@ pub async fn claim(
                  FOR UPDATE SKIP LOCKED
                LIMIT $4
           )
-      RETURNING id, project_id, job_type, payload, attempts, claimed_at",
+      RETURNING id, project_id, job_type, subject, attempts, claimed_at",
     )
     .bind(now)
     .bind(worker)
@@ -405,7 +397,7 @@ pub async fn exhausted(
     project: ProjectId,
 ) -> Result<Vec<(Job, String)>> {
     let rows = sqlx::query(
-        "SELECT id, project_id, job_type, payload, attempts, claimed_at, last_error
+        "SELECT id, project_id, job_type, subject, attempts, claimed_at, last_error
            FROM index_jobs
           WHERE project_id = $1 AND attempts >= $2
           ORDER BY priority, available_at",
@@ -465,18 +457,13 @@ pub async fn discard(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
 }
 
 fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
-    let payload: serde_json::Value = row.get("payload");
-
     Job {
         id: row.get::<uuid::Uuid, _>("id").into(),
         project_id: row.get::<uuid::Uuid, _>("project_id").into(),
         // The column's CHECK constraint admits nothing else, and the drift test
         // holds it to the same list this parses from.
         kind: JobKind::from_label(row.get("job_type")).unwrap_or(JobKind::SyncTopicIndex),
-        subject: payload
-            .get("subject")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|subject| uuid::Uuid::parse_str(subject).ok()),
+        subject: row.get("subject"),
         attempts: row.get("attempts"),
         claimed_at: row.get("claimed_at"),
     }

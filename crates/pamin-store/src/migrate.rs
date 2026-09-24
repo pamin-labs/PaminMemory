@@ -77,6 +77,11 @@ fn migrations() -> Vec<Migration> {
             "retrieval_signals_leave",
             include_str!("../migrations/V11__retrieval_signals_leave.sql"),
         ),
+        migration(
+            12,
+            "job_subject_once",
+            include_str!("../migrations/V12__job_subject_once.sql"),
+        ),
     ]
 }
 

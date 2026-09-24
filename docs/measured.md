@@ -805,11 +805,19 @@ migrated before workspace with 15,840 states and 39,600 jobs owed: `topic_states
 21.5 MB and 16.3 MB. Nothing in the product runs one.
 
 What is still unattributed on this axis: `source_versions` at 16.7% has not been
-looked at, and it is now the only copy of every memory's text. The queue's rows
-also still carry their subject twice, once in `payload` and once inside
-`idempotency_key` — 59 MB and 57 MB on the synthetic queue, where the unique
-index over the key was the largest index at 126 MB — which is the next thing
-to narrow.
+looked at, and it is now the only copy of every memory's text.
+
+**The queue said each job's subject three times.** Once in `payload` as JSON,
+once inside `idempotency_key` as `<kind>:<subject>` text, and the kind again in
+`job_type` — 59 MB of payloads and 57 MB of keys on the synthetic queue, where
+the unique index over the key was the largest index at 126 MB. Migration V12
+gives the subject a column and states the uniqueness on
+`(project_id, job_type, subject)`, nulls not distinct so project-wide work
+still coalesces. Filled through `jobs::enqueue_all` on a fresh cluster with
+300,001 owed rows (100,000 subjects, three kinds each), two runs a build:
+the table 67.0 MB → 38.4 MB, the unique index 35.7–35.9 MB → 27.7–28.0 MB,
+the table with its indexes 135.7–135.9 MB → 99.5–99.7 MB, and an enqueue of
+three kinds p50 0.42–0.46 ms → 0.39–0.40 ms.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
