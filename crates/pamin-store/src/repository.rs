@@ -489,7 +489,11 @@ fn content_of_span(row: &PgRow) -> String {
 /// Both joins are on a primary key. The first was measured on
 /// `current_states_of` at its hundred-and-fifty-candidate ceiling, same rows,
 /// same process, alternating: 1.00 ms median without it and 1.04 ms with, over
-/// three runs.
+/// three runs. The second costs more, because it is where the text is read:
+/// on XQuAD-R's 2,640 paragraphs, builds before and after it alternated over
+/// five rounds, `topic_states_by_id` at 150 states went from 1.58 ms to 1.89
+/// and `current_states_of` from 1.70 to 2.06. That is the price of keeping
+/// each memory's text once; `docs/measured.md` has the rest.
 macro_rules! span_columns {
     () => {
         ", sp.detected_language, sp.byte_start, sp.byte_end, sv.content AS evidence"
