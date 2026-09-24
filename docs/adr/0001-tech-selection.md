@@ -1211,6 +1211,115 @@ against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
 about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
 to be re-embedded.
 
+### BGE-M3's other outputs, measured: none of them ships
+
+One forward pass of BGE-M3 returns three things — a dense vector, a sparse
+vector of per-token lexical weights, and one multi-vector (ColBERT) embedding
+per token — and the model was trained on passages up to 8,192 tokens. The
+product keeps the dense vector and truncates at 512 (`JOINT_MAX_TOKENS`). Each
+of the other three was measured in September 2026 against what ships, under
+selection rules written down before any of it was computed.
+
+Every comparison is paired per question: sign-flip randomisation, 10,000
+draws, two-sided, so 0.0001 is the floor. "Significantly worse" means a
+negative mean at p < 0.05 without correction, which is deliberately strict
+against the change. The groups are this project's own four, XQuAD-R's two and
+MuSiQue's 1,000 two-hop questions.
+
+**This was measured below the entry point, and the reason is the tunable.** A
+channel weight and a reordering of the shortlist are not settings `pamin
+search` accepts, so a replay stands in for the last two stages: `Banded`
+fusion, `engine::rerankable` and `engine::place` over the engine's own
+per-channel candidates, with the `accurate` cross-encoder scoring the same
+shown set at 256 tokens in length-sorted batches of eight. On XQuAD-R the
+replay reproduces the product, 0.6608 / 0.7842 against 0.6613 / 0.7838 at a
+rerank depth of twenty. On MuSiQue it reads 0.6634 against the product's
+0.6834: the replay leaves out the graph seed text the engine shows the
+cross-encoder, and MuSiQue is the only corpus of the two with a graph. So its
+MuSiQue figures are differences between arms of the same replay, not product
+figures. Everything below is at the rerank depth of thirty that ships; for the
+sparse channel, twenty gives the same signs.
+
+**The sparse channel helps within a language and hurts across one.** Added as
+a fifth channel, banded like the two BM25 channels, nDCG@10 after the rerank
+against what ships:
+
+| sparse weight | own cross-lingual (43) | XQuAD-R cross-lingual (1,190) | XQuAD-R same-language (1,190) | MuSiQue two-hop (1,000) |
+| --- | --- | --- | --- | --- |
+| 0.0625 | **−0.0078**, p = 0.0045 | **−0.0114**, p = 0.0001, 25 wins / 373 losses | **+0.0141**, p = 0.0001, 91 / 9 | **+0.0035**, p = 0.0028 |
+| 0.125 | **−0.0248**, p = 0.0002 | **−0.0213**, p = 0.0001 | **+0.0229**, p = 0.0001 | **+0.0051**, p = 0.0018 |
+| 0.25 | **−0.0549**, p = 0.0001 | **−0.0415**, p = 0.0001 | **+0.0340**, p = 0.0001 | **+0.0097**, p = 0.0001 |
+
+The relational, lexical and monolingual groups do not move significantly at
+any weight in the table. The cause is visible in the channel alone: it scores
+0.7684 nDCG@10 on XQuAD-R's same-language group and 0.0864 on its cross-lingual
+one.
+It is a third lexical channel, it matches tokens, and a token does not cross a
+language. Every weight trades one group for another, and the smallest weight
+still costs the cross-lingual group 373 queries against 25.
+
+The rule chose on what the reranker is handed, `recall@30` of the fused list,
+and there the sparse channel is significantly worse on XQuAD-R cross-lingual at
+every weight (−0.0021 at 0.0625, p < 0.001). Using it to replace one of the
+two BM25 channels instead of adding it is significantly worse there too, fused
+nDCG@10 −0.0081 in place of the segmented channel and −0.0128 in place of the
+n-gram one. No weight was admissible on any two corpora, so leave-one-corpus-out
+had nothing to carry to the third, and the rule says not to build it.
+
+Cost is not the reason. The sparse vector falls out of the forward pass the
+product already runs, and stores at 129 to 533 bytes a memory (a 32-bit id and
+weight per non-zero, on this project's corpus and MuSiQue) against 4,096 for
+the dense vector. The index could not hold it as things stand anyway:
+`zvec-rust` 0.7.2 declares sparse field types and accepts a sparse sub-query,
+but its `Doc` has no setter for a sparse field, so writing one would go
+through the raw FFI.
+
+**The multi-vector output loses to the cross-encoder it would replace.**
+Reordering the same shown set, nDCG@10 against the shipped `accurate` tier:
+
+| reordered by | own cross-lingual | XQuAD-R cross-lingual | XQuAD-R same-language | MuSiQue two-hop |
+| --- | --- | --- | --- | --- |
+| `accurate` cross-encoder, shipped | 0.8162 | 0.6673 | 0.7844 | 0.6596 |
+| M3 "All", the card's 0.4 dense + 0.2 sparse + 0.4 multi-vector | −0.0033, p = 0.8344 | **−0.0527**, p = 0.0001 | +0.0006, p = 0.7164 | **−0.0167**, p = 0.0001 |
+| M3 multi-vector alone | −0.0030, p = 0.8337 | **−0.0531**, p = 0.0001 | −0.0025, p = 0.1758 | **−0.0200**, p = 0.0001 |
+| cross-encoder and "All", rank-fused, weight 0.25 | −0.0030, p = 0.4786 | +0.0011, p = 0.1294 | −0.0000, p = 1.0000 | **−0.0022**, p = 0.0101 |
+| the same at 0.5 | −0.0006, p = 0.8988 | **−0.0030**, p = 0.0177 | +0.0004, p = 0.5800 | −0.0025, p = 0.0812 |
+| the same at 1.0 | +0.0121, p = 0.2832 | **−0.0110**, p = 0.0001 | +0.0009, p = 0.3549 | **−0.0080**, p = 0.0001 |
+
+The paper's weights (1, 0.3, 1) give −0.0501 and −0.0172 on the two groups
+that move. Against fusion with no rerank at all, "All" gains nothing
+significant on XQuAD-R cross-lingual (+0.0032, p = 0.1553) and loses MuSiQue
+(−0.0070, p = 0.0001). That is the `mLateOn` result recorded below, from a
+second model: late interaction reorders this pipeline's candidates no better
+than the fusion order it replaces. The rank-fused weight was chosen
+leave-one-corpus-out, and the choice does not hold out: no weight was
+admissible on the other two corpora with this project's own held out, and the
+two folds that chose one lose on the corpus they did not see — XQuAD-R
+cross-lingual −0.0030 (p = 0.0177) at 0.5, MuSiQue −0.0022 (p = 0.0101) at
+0.25.
+
+**And it is not cheaper either way it could be built.** Stored, the per-token
+vectors at int8 are 19.3 KiB a memory on this project's corpus, 42.9 KiB on
+XQuAD-R and 117.7 KiB on MuSiQue — 545 MiB and 1,240 MiB for the two external
+corpora, against 4 KiB of dense vector a memory. Computed at query time
+instead, each candidate not cached needs a BGE-M3 forward pass, which costs
+about what the cross-encoder's pair does: 130.8 ms against 134.8 on XQuAD-R
+sentences and 376.2 against 299.0 on MuSiQue paragraphs, medians at batch one
+from a single run. A cache of those vectors over the harness's stream of
+questions hits 46% of reranked candidates on XQuAD-R and 38% on MuSiQue at 500
+entries, and 64% and 77% with no bound.
+
+**The longer window buys nothing these corpora can see.** None of this
+project's 230 memories or XQuAD-R's 13,014 sentences exceeds 512 tokens. On
+MuSiQue 32 of 10,785 paragraphs do (0.3%), the longest at 597. On the 46
+questions whose relevant paragraph is one of those, embedding it whole moves
+the vector channel alone, exact search, from 0.5323 to 0.5348 nDCG@10 (+0.0025,
+p = 0.820, 4 wins, 3 losses), with `recall@50` unchanged; the sparse output
+moves by +0.0010 (p = 1.000). The forward pass grows faster than the text: 223
+ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
+4,096, the fastest of three calls on one text (of two at 4,096). The window
+stays at 512.
+
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
