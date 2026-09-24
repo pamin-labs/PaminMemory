@@ -224,40 +224,14 @@
 //! divide the gain differently -- is now the MIRACL section above. It does
 //! divide it differently, and not in the direction the caveat guessed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use fastembed::{
-    OnnxSource, RerankInitOptionsUserDefined, TextRerank, TokenizerFiles, UserDefinedRerankingModel,
-};
 use serde::{Deserialize, Serialize};
 
+use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
+use crate::hub::Repository;
 use crate::inference::Device;
-
-/// What a tier's weights may be used for.
-///
-/// Carried in the type rather than looked up in a document, because the one
-/// consequence that matters is a refusal: a tier whose weights are not free for
-/// commercial use has to be asked for on purpose, and a caller cannot be
-/// expected to have read `NOTICE` first.
-///
-/// This project redistributes no weights -- every model is fetched from the hub
-/// by the user's own machine on first use -- so what is described here is what
-/// the user acquires, not what we ship. That is also why a missing licence tag
-/// is not one of the variants: an export with no tag of its own is usable when
-/// the chain to a licensed source is readable, and two of the shipped models
-/// are in exactly that position, with their chains written down in `NOTICE`.
-/// What cannot be left to a document is a term that restricts what the user may
-/// do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Licence {
-    /// Free for any use, commercial included. Apache-2.0 or MIT, directly or
-    /// through a readable chain.
-    Permissive,
-    /// Free for research and personal use, not for commercial use. Asking for a
-    /// tier under this is an explicit act; see [`Rerank::licence`].
-    NonCommercial,
-}
 
 /// How much to spend reordering the shortlist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -301,80 +275,34 @@ pub enum Rerank {
     /// that decided it.
     #[default]
     Accurate,
-    /// GTE multilingual reranker base, twelve layers of 768, 341 MB.
-    /// Seventy-plus languages.
-    ///
-    /// Between the two above by every structural measure and here to find out
-    /// whether it is between them by score. Non-embedding parameters are the
-    /// number that predicts compute -- a 250,000-row embedding table is a
-    /// lookup and not a matrix multiply, so a card's total is misleading --
-    /// and by that count this is 84.9M against `fast`'s 21.2M and
-    /// `accurate`'s 302M: four times the one and a third of the other. The
-    /// int8 export is 341 MB against 119 and 571, which is the same ordering
-    /// and is what a user actually waits for on first use.
-    ///
-    /// The reason to measure it is that `accurate` is where the gain is and
-    /// the latency is why nobody can have it. If four times `fast`'s compute
-    /// buys most of fourteen times' worth, the tier that ships as the quality
-    /// option should be this one.
-    ///
-    /// Apache-2.0 through the same shape of chain as `accurate`: the export
-    /// carries no tag, `Alibaba-NLP/gte-multilingual-reranker-base` under it
-    /// is Apache-2.0. Read from the hub API rather than from card prose, and
-    /// written down in `NOTICE`.
-    Balanced,
-    /// Jina reranker v2, twelve layers of 768, 280 MB. **CC-BY-NC-4.0: not for
-    /// commercial use.**
-    ///
-    /// The tier the licence relaxation was for, and the one the relaxation
-    /// probably does not need. It is the *same shape* as `balanced` -- 12x768,
-    /// 84.9M non-embedding -- so there is no compute argument for it at all.
-    /// Either its training makes it better at the same cost, in which case a
-    /// non-commercial option is worth offering, or it does not, in which case
-    /// this is a tier with no reason to exist and saying so is more useful
-    /// than leaving it in the table looking like a choice. That prediction is
-    /// recorded here before the measurement rather than after it.
-    ///
-    /// Asking for it prints the terms once and then runs -- see
-    /// [`Rerank::licence`] and `caution` in the `search` command. The weights
-    /// are free for research and personal use and not for commercial use, and
-    /// a caller cannot be assumed to have read `NOTICE`; whether a given use
-    /// is inside those terms depends on their situation and is not something
-    /// this program can decide for them.
-    Noncommercial,
 }
 
 /// How many of the fused results a tier looks at.
 ///
-/// Twenty for both, which is where the gain stops. Swept through
-/// `search_reranked` on the `fast` model, 1,190 XQuAD-R queries, against a
-/// baseline of 0.5722 cross-lingual with reranking off:
+/// Thirty, and it was twenty until the default tier was measured at it. The
+/// twenty was settled on the `fast` model, where thirty bought +0.0009 of
+/// XQuAD-R cross-lingual -- "twenty is simply where it stops". The default is
+/// now `accurate`, a model fourteen times the size, and it keeps finding
+/// answers further down. Paired against twenty through `search_reranked`,
+/// nDCG@10 (the `DEPTH_VARIANTS` arm of each harness):
 ///
-/// | depth | cross-lingual | gain | same-language |
-/// |---|---|---|---|
-/// | 10 | 0.5831 | +0.0110 | 0.8005 |
-/// | 15 | 0.6047 | +0.0325 | 0.7987 |
-/// | **20** | **0.6091** | **+0.0369** | **0.7974** |
-/// | 30 | 0.6099 | +0.0378 | 0.7967 |
-/// | 50 | 0.6055 | +0.0333 | 0.7957 |
+/// | depth | XQuAD-R cross (1,190) | own cross (43) | MIRACL (482) | MuSiQue (1,000) |
+/// |---|---|---|---|---|
+/// | 10 | **−0.0365**, p = 0.0001 | −0.0144 | −0.0021 | −0.0031, p = 0.069 |
+/// | 15 | **−0.0096**, p = 0.0001 | +0.0027 | +0.0015 | −0.0004 |
+/// | **30** | **+0.0063**, 192W/134L, p = 0.0001 | +0.0117 | −0.0008 | +0.0011 |
+/// | 40 | **+0.0076**, p = 0.0001 | +0.0235, p = 0.062 | +0.0002 | +0.0007 |
 ///
-/// The constant is unchanged and the reason for it is not. An earlier sweep,
-/// on the scratch harness whose figures ran about half again high, put twenty
-/// at +0.0572 and thirty at +0.0667 and recorded thirty as the better score
-/// given up for latency. Measured through the engine, thirty buys +0.0009 --
-/// a tenth of what was recorded, for sixteen per cent more latency. There is
-/// no trade to make; twenty is simply where it stops.
-///
-/// Taken when the lexical weight was a quarter. It is now an eighth, and the
-/// baseline this sweep measured against moved with it, 0.5722 to 0.6077: the
-/// reranker has less dilution to undo, so where the gain stops could have
-/// moved too. Re-running the five depths is five passes of the corpus, about
-/// three quarters of an hour, and it has not been done.
-///
-/// Same-language ranking falls monotonically with depth, which is the same
-/// effect the tier table describes: more candidates reranked means more of the
-/// ones the lexical channels missed being carried down.
-const DEPTH: usize = 20;
+/// Unmarked cells are not significant, and XQuAD-R's same-language group
+/// moves by under 0.0006 at every depth. So shallower is refused -- fifteen
+/// looked free on MIRACL and MuSiQue and costs a hundredth where the
+/// reranker matters most -- and deeper is a significant gain on the
+/// cross-lingual group and a loss nowhere. Thirty takes five sixths of forty's
+/// gain for half its extra pairs: accuracy decides the direction and latency
+/// the distance, and forty's last 0.0013 is not worth another third of the
+/// reranker's time. The pass costs half again what it did at twenty in model
+/// pairs; its wall time has not been re-measured on a quiet machine.
+const DEPTH: usize = 30;
 
 /// The tuning constants above, overridable for a sweep.
 ///
@@ -441,8 +369,8 @@ fn max_tokens() -> usize {
 /// | **256** | **0.6091** | **0.7974** | **217 ms** |
 ///
 /// Both halves were wrong. The saving is five per cent rather than twenty, and
-/// it costs 0.0014 of cross-lingual ranking rather than nothing. `fastembed`
-/// pads a batch to its longest member and not to this limit, so the limit only
+/// it costs 0.0014 of cross-lingual ranking rather than nothing. A batch is
+/// padded to its longest member and not to this limit, so the limit only
 /// truncates the candidates that genuinely exceed it -- on a corpus of
 /// sentences, few of them. It earns its place by bounding the worst case rather
 /// than by shaping the ordinary one: one long memory cannot make one query
@@ -471,8 +399,6 @@ impl Rerank {
             "off" => Some(Self::Off),
             "fast" => Some(Self::Fast),
             "accurate" => Some(Self::Accurate),
-            "balanced" => Some(Self::Balanced),
-            "noncommercial" => Some(Self::Noncommercial),
             _ => None,
         }
     }
@@ -482,8 +408,6 @@ impl Rerank {
             Self::Off => "off",
             Self::Fast => "fast",
             Self::Accurate => "accurate",
-            Self::Balanced => "balanced",
-            Self::Noncommercial => "noncommercial",
         }
     }
 
@@ -491,40 +415,7 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate | Self::Balanced | Self::Noncommercial => {
-                tuned("PAMIN_RERANK_DEPTH", DEPTH)
-            }
-        }
-    }
-
-    /// What this tier's weights may be used for.
-    ///
-    /// `Off` has none, which is a real answer rather than a missing one, so it
-    /// is `None` and every tier that loads a model has a `Some`.
-    ///
-    /// The distinction this draws is narrow on purpose: whether the licence
-    /// restricts what the user may do with the results. A permissive tier and a
-    /// tier whose export carries no tag but descends from a permissive model
-    /// are the same answer to that question, and `NOTICE` is where the chains
-    /// are written down.
-    pub fn licence(self) -> Option<Licence> {
-        match self {
-            Self::Off => None,
-            // Apache-2.0. Distilled from a model with no tag of its own, whose
-            // source is Microsoft's MIT MiniLMv2 recipe; see `NOTICE`.
-            Self::Fast => Some(Licence::Permissive),
-            // The export carries no tag; `BAAI/bge-reranker-v2-m3` under it is
-            // Apache-2.0. See `NOTICE`.
-            Self::Accurate => Some(Licence::Permissive),
-            // Same shape of chain: no tag on the export,
-            // `Alibaba-NLP/gte-multilingual-reranker-base` under it is
-            // Apache-2.0. See `NOTICE`.
-            Self::Balanced => Some(Licence::Permissive),
-            // Tagged `cc-by-nc-4.0` on the model itself. Not a chain to read:
-            // the restriction is the model's own.
-            Self::Noncommercial => Some(Licence::NonCommercial),
-            // Apache-2.0 on the export and Apache-2.0 upstream. An independent
-            // port rather than an official release, which `NOTICE` says.
+            Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
         }
     }
 
@@ -533,8 +424,6 @@ impl Rerank {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             Self::Fast => "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
             Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
-            Self::Balanced => "onnx-community/gte-multilingual-reranker-base",
-            Self::Noncommercial => "jinaai/jina-reranker-v2-base-multilingual",
         }
     }
 
@@ -556,14 +445,14 @@ impl Rerank {
             return match self {
                 Self::Off => unreachable!("nothing is loaded for the off tier"),
                 Self::Fast => "onnx/model.onnx",
-                Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_fp16.onnx",
+                Self::Accurate => "onnx/model_fp16.onnx",
             };
         }
         match self {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
             // One int8 export, not one per instruction set, so there is
             // nothing to detect at runtime the way `fast` has to.
-            Self::Accurate | Self::Balanced | Self::Noncommercial => "onnx/model_int8.onnx",
+            Self::Accurate => "onnx/model_int8.onnx",
             Self::Fast => {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -688,7 +577,7 @@ pub struct Ranked {
 
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
-    model: TextRerank,
+    model: Encoder,
     tier: Rerank,
     device: Device,
     scores: Scores,
@@ -741,50 +630,19 @@ impl Reranker {
         debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
         std::fs::create_dir_all(cache_dir)?;
 
-        let repository = hf_hub::api::sync::ApiBuilder::new()
-            .with_cache_dir(cache_dir.to_path_buf())
-            .with_progress(false)
-            .build()
-            .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
-            .model(tier.repository().to_string());
+        let repository = Repository::open(cache_dir, tier.repository())?;
 
-        let fetch = |name: &str| -> Result<PathBuf> {
-            repository.get(name).map_err(|error| {
-                IndexError::Engine(format!(
-                    "fetching {name} for the {} reranker: {error}",
-                    tier.name()
-                ))
-            })
-        };
-        let read = |name: &str| -> Result<Vec<u8>> { Ok(std::fs::read(fetch(name)?)?) };
-
-        let session = |device: Device, providers| -> Result<TextRerank> {
-            TextRerank::try_new_from_user_defined(
-                UserDefinedRerankingModel::new(
-                    // By path rather than by bytes: the session maps the file,
-                    // and handing it a copy of half a gigabyte first serves no
-                    // purpose.
-                    OnnxSource::File(fetch(tier.onnx(device))?),
-                    TokenizerFiles {
-                        tokenizer_file: read("tokenizer.json")?,
-                        config_file: read("config.json")?,
-                        special_tokens_map_file: read("special_tokens_map.json")?,
-                        tokenizer_config_file: read("tokenizer_config.json")?,
-                    },
-                ),
-                {
-                    let mut options = RerankInitOptionsUserDefined::new()
-                        .with_max_length(max_tokens())
-                        .with_execution_providers(providers);
-                    // Same setting as the embedder's, and for the same reason:
-                    // see `crate::inference`.
-                    if let Some(threads) = crate::inference::threads() {
-                        options = options.with_intra_threads(threads);
-                    }
-                    options
-                },
-            )
-            .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
+        let session = |device: Device, providers| -> Result<Encoder> {
+            let source = repository.get(tier.onnx(device))?;
+            // The file the hub serves is copied onto the heap whole; on the
+            // CPU, the prepared copy is mapped instead -- see
+            // `crate::prepared` for what that saves.
+            let model = match device {
+                Device::Cpu => crate::prepared::prepared(&source, cache_dir),
+                _ => source,
+            };
+            Encoder::load(&model, &repository, max_tokens(), providers)
+                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
         };
 
         // Each accelerator this build carries, then the CPU. An accelerator
@@ -893,14 +751,11 @@ impl Reranker {
                 self.lengths.total += characters as u64;
                 self.lengths.longest = self.lengths.longest.max(characters);
             }
-            let scored = self
-                .model
-                .rerank(query, &batch, false, Some(self::batch()))
+            let scored = score(&mut self.model, query, &batch, self::batch())
                 .map_err(|error| IndexError::Engine(format!("reranking: {error}")))?;
-            for result in scored {
-                let position = unscored[result.index];
-                scores[position] = Some(result.score);
-                self.scores.put(keys[position], result.score);
+            for (position, score) in unscored.iter().zip(scored) {
+                scores[*position] = Some(score);
+                self.scores.put(keys[*position], score);
             }
         }
 
@@ -951,6 +806,37 @@ impl Reranker {
             longest: self.lengths.longest,
         }
     }
+}
+
+/// The model's score for `query` against each of `documents`, in their order.
+///
+/// What `fastembed`'s `TextRerank::rerank` computed before this replaced it:
+/// the documents in consecutive chunks of `batch`, each chunk one forward pass
+/// over (query, document) pairs, and a pair's score the first column of its
+/// row of `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
+fn score(model: &mut Encoder, query: &str, documents: &[&str], batch: usize) -> Result<Vec<f32>> {
+    let mut scores = Vec::with_capacity(documents.len());
+    for chunk in documents.chunks(batch) {
+        let pairs: Vec<(&str, &str)> = chunk.iter().map(|document| (query, *document)).collect();
+        let outputs = model.run(pairs)?;
+        let logits = outputs
+            .get("logits")
+            .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
+        let (shape, values) = logits
+            .try_extract_tensor::<f32>()
+            .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
+        let labels = match **shape {
+            [rows, labels] if rows as usize == chunk.len() && labels > 0 => labels as usize,
+            _ => {
+                return Err(IndexError::Engine(format!(
+                    "logits of shape {shape:?} for {} pairs",
+                    chunk.len()
+                )));
+            }
+        };
+        scores.extend(values.chunks(labels).map(|row| row[0]));
+    }
+    Ok(scores)
 }
 
 #[cfg(test)]
@@ -1029,47 +915,14 @@ mod tests {
         assert_eq!(scores.get(key), Some(99.0));
     }
 
-    /// Every tier that loads a model says what its weights may be used for.
-    ///
-    /// The point of asserting it rather than trusting the match is that adding
-    /// a tier is a six-arm edit and the compiler catches five of them. This
-    /// catches the sixth if it is ever written as a permissive default by
-    /// reflex: a tier that loads weights must have an answer, and `off` must
-    /// not, because "no weights" is a different statement from "weights you may
-    /// use freely".
-    #[test]
-    fn every_tier_that_loads_weights_declares_what_they_may_be_used_for() {
-        assert_eq!(Rerank::Off.licence(), None, "the off tier loads nothing");
-        for tier in [
-            Rerank::Fast,
-            Rerank::Accurate,
-            Rerank::Balanced,
-            Rerank::Noncommercial,
-        ] {
-            assert!(
-                tier.licence().is_some(),
-                "the {} tier downloads weights and does not say under what terms",
-                tier.name()
-            );
-        }
-    }
-
     /// Whatever a tier parses from, it round-trips through its own name.
     ///
     /// Guards the pair of matches that a new tier has to touch together. The
     /// wire protocol is this string, so a name that parses to a different tier
-    /// than it prints would route a caller to a model they did not ask for --
-    /// and with a non-commercial tier in the list that is a licence question
-    /// rather than a ranking one.
+    /// than it prints would route a caller to a model they did not ask for.
     #[test]
     fn a_tier_parses_from_the_name_it_prints() {
-        for tier in [
-            Rerank::Off,
-            Rerank::Fast,
-            Rerank::Accurate,
-            Rerank::Balanced,
-            Rerank::Noncommercial,
-        ] {
+        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
             assert_eq!(
                 Rerank::parse(tier.name()),
                 Some(tier),

@@ -1,8 +1,9 @@
 //! How much of the machine one forward pass is allowed to use.
 //!
-//! Both models in this crate run on ONNX Runtime through `fastembed`, and
-//! neither set this, so both inherited the library's default: intra-op threads
-//! equal to `available_parallelism()`. One pass therefore takes every core.
+//! Every model in this crate runs on ONNX Runtime, some through `fastembed`
+//! and the rest through [`session`], and neither set this at first, so all
+//! inherited `fastembed`'s default: intra-op threads equal to
+//! `available_parallelism()`. One pass therefore takes every core.
 //!
 //! That is the right default for a single query and the wrong one for a server.
 //! Measured on four cores with nothing shared -- one model per worker, no lock
@@ -15,12 +16,48 @@
 //!
 //! So it is a setting, and its default is what the library already did.
 
+use std::path::Path;
+
+use ort::ep::ExecutionProviderDispatch;
+use ort::session::Session;
+
+use crate::error::{IndexError, Result};
+
+/// An ONNX Runtime session over `model`, built the way `fastembed` 6.1 builds
+/// one.
+///
+/// The reranker and BGE-M3 were loaded by `fastembed` until they needed a
+/// tokenizer it would not let them share (see `crate::tokenizer`), and what
+/// its builder chose decides the scores: the execution providers in order,
+/// ONNX Runtime's layout optimizations, and [`threads`] or one per core. So
+/// those are what this chooses, in the order it chose them. It asked for
+/// nothing else on these platforms -- its DirectML adjustments are behind a
+/// feature of its own that this build does not enable.
+pub(crate) fn session(providers: Vec<ExecutionProviderDispatch>, model: &Path) -> Result<Session> {
+    let failed = |error: &dyn std::fmt::Display| {
+        IndexError::Engine(format!("loading {}: {error}", model.display()))
+    };
+    let threads = match threads() {
+        Some(threads) => threads,
+        None => std::thread::available_parallelism()?.get(),
+    };
+    Session::builder()
+        .map_err(|error| failed(&error))?
+        .with_execution_providers(providers)
+        .map_err(|error| failed(&error))?
+        .with_optimization_level(crate::prepared::LEVEL)
+        .map_err(|error| failed(&error))?
+        .with_intra_threads(threads)
+        .map_err(|error| failed(&error))?
+        .commit_from_file(model)
+        .map_err(|error| failed(&error))
+}
+
 /// Intra-op threads per inference session, or `None` for one per core.
 ///
-/// Read from `PAMIN_INFERENCE_THREADS`. Unset -- the default -- leaves
-/// `fastembed` to use `available_parallelism()`, which is what this crate did
-/// before the setting existed, so an unconfigured workspace behaves exactly as
-/// it used to.
+/// Read from `PAMIN_INFERENCE_THREADS`. Unset -- the default -- means
+/// `available_parallelism()`, which is what this crate did before the setting
+/// existed, so an unconfigured workspace behaves exactly as it used to.
 ///
 /// A value that is not a positive number is ignored rather than refused: this
 /// is a performance knob, and a typo in it should not stop a search from
@@ -74,7 +111,13 @@ impl Device {
 /// shorter pairs. The embedder saves nothing measurable there, since a query
 /// is one short text; it takes the same setting because its largest batch is
 /// a bulk write's, which that arm does not exercise.
-pub(crate) fn cpu() -> fastembed::ExecutionProviderDispatch {
+///
+/// The arena holds activations. The weights are the other half, and loaded
+/// from the file the hub serves they are copied onto the heap: +664 MB
+/// anonymous for the `accurate` reranker's 570 MB export in a bare session.
+/// So a CPU session loads a prepared copy whose weights ONNX Runtime maps
+/// from disk instead, +11 MB in the same session -- see `crate::prepared`.
+pub(crate) fn cpu() -> ExecutionProviderDispatch {
     ort::ep::CPU::default().with_arena_allocator(false).build()
 }
 
@@ -93,7 +136,7 @@ pub(crate) fn cpu() -> fastembed::ExecutionProviderDispatch {
 /// the GPU's fp16 export onto the CPU -- slower than the int8 one it was
 /// chosen over -- and report nothing; failing here lets the caller load the
 /// CPU's own export instead and record that it did.
-pub(crate) fn accelerators() -> Vec<(Device, fastembed::ExecutionProviderDispatch)> {
+pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
     if std::env::var("PAMIN_DEVICE").is_ok_and(|device| device.eq_ignore_ascii_case("cpu")) {
         return Vec::new();
     }

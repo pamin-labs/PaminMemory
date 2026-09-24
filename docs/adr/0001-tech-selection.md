@@ -25,7 +25,7 @@ One rule ran through all of it:
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | `fastembed` over ONNX Runtime, BGE-M3 with int8 weights by default |
+| Embeddings | ONNX Runtime through `ort` and `tokenizers`, BGE-M3 with int8 weights by default; the E5 profiles through `fastembed` |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -658,7 +658,9 @@ does not reorder a top ten. Corroboration and the weight are the same
 suppression applied to overlapping sets, and an eighth weight has already
 applied it to everything. Read as a frontier, every corroboration setting lies
 on the weight's own curve to within 0.0017. The code was removed; this is the
-finding.
+finding. It came back later for the graph channel alone, measured as a no-op
+at the graph weight that ships, and was removed again — see *Fusion designs
+measured and removed*.
 
 That also closes the published form of the idea — dropping a lexical candidate
 whose dense similarity falls below a threshold. It is the same suppression with
@@ -722,7 +724,8 @@ own. The addition is the mechanism — at `k = 10` and an eighth weight a lexica
 first place is 0.0114, which cannot reach the head alone, but 0.04 + 0.0114
 moves a vector-fifteenth candidate to about eighth. Only a zero weight or a
 non-additive rule removes an addition, which is what `Fusion::needing_support`
-is for.
+was built to be; it measured as the same suppression as the weight and was
+removed — see *Fusion designs measured and removed* below.
 
 **This project's normaliser is the least stable variant in the canonical
 taxonomy.** `arXiv:2210.11934` (ACM TOIS 41(4), 2023, and still the systematic
@@ -757,7 +760,7 @@ heuristic at **−0.0161**. The best method in their study is training-free RRF 
 project had an oracle and was one step from building the predictor: **an oracle
 gap is not evidence that a predictor can close it.**
 
-This is why the remedy being measured here conditions on the *candidate* rather
+This is why the remedy measured here conditioned on the *candidate* rather
 than on the query. "Is this query cross-lingual" is not answerable from a query
 — on XQuAD-R because both groups are the same 1,190 queries scored against
 different answer keys, and in production because a user asking a question does
@@ -780,7 +783,7 @@ confirmation of anyone else's.
 
 ### Fusion designs measured and removed
 
-Each of these was built, swept offline against what ships, and deleted once the
+Each of these was built, measured against what ships, and deleted once the
 measurement was in. The code, its tests and its sweep rows are gone; what each
 was worth is recorded here so the question is not reopened without new
 evidence. `Combine::Banded` ships, and `Combine::Reciprocal` is kept, reachable
@@ -794,6 +797,7 @@ against.
 | TM2C2 (`Combine::Convex`, `arXiv:2210.11934`) | each channel on theoretical min-max — from its score's infimum, 0 for BM25 and −1 for a cosine, to the query's best — convexly weighted, no band | own cross-lingual **0.7791 → 0.5744**, 0 wins to 37 losses, at the paper's own alpha, and no lexical or graph weight in the sweep recovered it; XQuAD-R cross-lingual **−0.1480** | Anisotropy of the embedder. A query's fifty vector candidates sit in the top ~17% of the distance from the cosine infimum to the best of them (median), where BM25's spread across about three quarters of theirs. Read from −1, the vector channel's own ordering is flattened to a few hundredths, and the lexical and graph channels decide among its candidates. |
 | Band on theoretical min-max (`Combine::BandedTheoretical`) | `Banded`, with a candidate's place in its channel's band read from the infimum rather than from the channel's worst candidate | own cross-lingual **0.4214** against the shipped 0.7791 | The same anisotropy: every vector candidate lands at the top of its band, so the band keeps the range and loses the channel's ordering. |
 | Per-channel confidence (`Fusion::with_confidence`) | each channel's weight scaled by how far its best candidate stands above its own field, `(best − mean) / deviation` over a `spread`, clamped to a `floor` | on rank fusion +0.0118 at best (8 / 0, p = 0.0381) on a narrow plateau; 0.0000 on MIRACL at low spreads. Cross-validated over the whole sweep of about a hundred settings, nothing beats what ships on held-out queries (own p = 0.57, XQuAD-R p = 0.10), and the XQuAD-R choice, spread 5 floor 0.5, is a net loss on the own corpus | A standardised top score cannot exceed `sqrt(n − 1)`, 7.00 over fifty candidates, so a low spread clamps every channel to full weight. Above that, on MIRACL the mildly harmful lexical channels still look confident, so the measure cannot see what it was built to see; everywhere else its gains were trades between groups. |
+| Support rule (`Fusion::needing_support`) | a named channel's own last place, instead of what its rank was worth, for any candidate no unnamed channel returned; shipped naming the graph channel | at the shipped graph weight 0.30, 0.0000 on all four groups of the own corpus; bit-identical for the lexical channels at their eighth over 1,190 XQuAD-R queries. On MuSiQue — 10,785 memories, 12,840 live `mentions` edges, 1,000 two-hop questions through `search_reranked_with` with the `accurate` reranker — nDCG@10 0.6834 and `recall@50` 0.8435 with it and without it, **0 wins, 0 losses, 1,000 ties**; the own corpus through the same path, all 157 questions tied | It was kept as insurance for graphs denser than any corpus here, and the dense graph did not need it: three tenths already quiets the channel as far as the rule would. Its one measured benefit was at a graph weight of 1.0 (own cross-lingual 0.5109 → 0.5606), a weight that is itself refuted. It was a no-op by measurement, not by construction — it lowered every candidate only the graph returned, and when the graph returns fewer than about forty candidates that can change which make the top fifty, in principle the top ten — so removing it moved the scores of those candidates and no measured result. |
 
 The figures were taken while the code existed, by the harnesses of the time;
 nothing in the tree today can reproduce them, and that is the point of writing
@@ -1096,14 +1100,18 @@ The post-fusion modifiers this list used to carry — recency, importance and
 worth, source quality, a redundancy penalty — are gone, and the reason is worth
 recording because it is not the reason the list was shortened. Importance and
 worth were implemented: `Modifiers::apply` multiplied every result by
-`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both are columns the
-repository reads and **no code path anywhere writes**, so both factors were
+`1 + 0.2 * importance` and by `1 + 0.2 * worth`. Both were columns the
+repository read and **no code path anywhere wrote**, so both factors were
 exactly 1.0 on every search this project has ever run, and the trace lines for
 them were already suppressed on the grounds that they said nothing. A modifier
-over a constant is not a ranking signal; it is a multiplication. The columns
-stay, because they are the authority store's schema, and `RetrievalSignals` now
-says outright that nothing writes them — restoring the feature starts with a
-write path, not with a multiplier.
+over a constant is not a ranking signal; it is a multiplication. With the
+modifiers gone nothing read them either, so `RetrievalSignals`, which carried
+them and two access counters -- equally never written -- onto every state a
+search loaded, went too, and migration V11 drops the five columns -- after
+checking that every row still holds the default it was inserted with, and
+refusing with the state named if one does not. Restoring the feature starts
+with a write path, which can add back the column it writes, not with a
+multiplier.
 
 The projection holds one document per topic, carrying what that topic says now.
 An earlier version of this decision held one per state, and that put a topic's
@@ -1148,6 +1156,61 @@ A second full-text field indexes the raw text with the `ngram` tokenizer, coveri
 
 Weight quantization is a trade worth taking, and the default profile takes it. The registry publishes no quantized variant for multilingual E5, which is why the two E5 profiles still run full precision and why an earlier version of this decision recorded the trade as unavailable. It is available for BGE-M3, through a joint int8 export (`gpahal/bge-m3-onnx-int8`, MIT, exported from the MIT-licensed base model), and the difference is what makes that profile the default: 560 MB resident against the full-precision export's 2.2 GB, 35 ms a query, and 0.6550 cross-lingual nDCG@10 on Påmin Memory's evaluation corpus against the full-precision 0.6720 — both at the lexical weight of that day, a half.
 
+### The embedder, surveyed again: one candidate, and the leaderboard would have picked wrong
+
+Surveyed in September 2026 against the models released since BGE-M3, with the
+licence read from each card's metadata. Scores are recomputed from the
+per-task files in `embeddings-benchmark/results`; "cross" averages the subsets
+whose query and document languages differ.
+
+| model | licence | MMTEB retrieval | MIRACL-HN | MLQA cross | Belebele cross |
+| --- | --- | --- | --- | --- | --- |
+| BGE-M3 (shipped) | MIT | 54.6 | **69.6** | 74.7 | 77.0 |
+| Harrier-0.6B (Microsoft, 2026) | MIT | **70.8** | 66.4 | 72.7 | 77.0 |
+| pplx-embed-v1-0.6b (Perplexity, 2026) | MIT | 65.4 | 68.6 | **79.1** | 72.7 |
+| granite-embedding-311m-multilingual-r2 | Apache-2.0 | 65.2 | 59.8 | 66.9 | 64.8 |
+| Qwen3-Embedding-0.6B | Apache-2.0 | 64.6 | 61.2 | 72.8 | 67.6 |
+| multilingual-e5-large-instruct | MIT | 57.1 | 57.7 | 76.0 | **79.9** |
+
+EmbeddingGemma (Gemma terms) and jina v3/v5 (CC-BY-NC-4.0) were excluded on
+licence. BGE-M3's low retrieval average is reasoning, English and long-context
+tasks; on the four multilingual Wikipedia tasks it is still the best under a
+billion parameters.
+
+Then measured offline, vector channel alone, exact cosine, one text per call
+as the product embeds, against BGE-M3's int8 export, nDCG@10, paired:
+
+| model | XQuAD-R cross | XQuAD-R same | MuSiQue | own, cross (43) |
+| --- | --- | --- | --- | --- |
+| BGE-M3 int8 | 0.6348 | 0.6725 | 0.6262 | 0.8275 |
+| pplx-embed-v1-0.6b, own int8 | **+0.0251**, p = 0.0002 | **+0.0457**, p = 0.0001 | **+0.0647**, p = 0.0001 | +0.050, p = 0.054 |
+| Harrier-0.6B, own int8 | **−0.378** | +0.185 | | −0.163 |
+| multilingual-e5-large-instruct | **−0.435** | +0.200 | −0.030 | −0.289 |
+| granite-311m-r2, IBM's int8 | −0.145 | −0.050 | −0.002 | +0.023 |
+
+The pipeline reproduces the engine's own BGE-M3 figures within 0.0013 on three
+arms and 0.0062 on XQuAD-R same-language, where the int8 export itself moves by
+that much with the runtime's optimisation level (cosine 0.985 between builds).
+
+**The two highest-ranked models collapse across languages**, and MTEB cannot
+see it: it scores each language pair against a corpus in one language, while a
+memory store holds all its languages in one pool. Harrier and mE5 rank a
+same-language non-answer above the answer in another language -- two thirds
+and three quarters of their cross-lingual top ten are in the query's own
+language, where a language-blind ranking would put one in eleven -- and
+removing their query instructions does not change it.
+
+**pplx-embed-v1-0.6b is the only candidate worth an end-to-end trial.** Its
+gains hold on every corpus, but four things stand between that and a default:
+it was measured on the vector channel alone, and fusion and the reranker
+already recover part of what a better vector buys; its published 8-bit export
+runs 8-10x slower on this CPU, so shipping it means shipping a quantization of
+our own (dynamic int8 on every layer but `down_proj`, cosine 0.995 to fp32,
+against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
+(p = 0.002, surviving correction over eleven languages); and a query costs
+about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
+to be re-embedded.
+
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
@@ -1175,7 +1238,7 @@ The measurement could not be made by reading the code. Whether a refiner stores 
 
 Same bytes, same build time, same query time. This is the failure shape recorded above from the previous quantization attempt — an index returning plausible neighbours that are not the nearest ones, with no error anywhere — and it was reproduced here only because the harness reports recall rather than whether the calls succeeded. Rotation needs a fitted transform and nothing supplies one; the binding's RaBitQ path is explicit about it, refusing to train without a `raw_vector_provider` the binding does not expose. It is off, and `crates/pamin-index/tests/scratch_quantize.rs` is what would notice if it came back.
 
-**The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not fastembed's Rust code either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
+**The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not the tokenization either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
 
 The consequence was not accuracy. It was reproducibility: `reindex` embedded in batches of 256 and the cascade embeds one document at a time, so a rebuild did not reproduce the index it replaced, and a document's vector depended on which other documents happened to be in flight beside it. So the joint export now runs one text at a time, which costs the batching win on this profile — thirty-two texts together take 190 ms against 409 ms one at a time, so `reindex` is roughly twice the wall clock here.
 
@@ -1336,9 +1399,9 @@ On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between ra
 | --- | --- | --- | --- | --- | --- |
 | `off` | nothing | 99 ms | — | 0.6114 | 0.7829 |
 | `fast` | 119 MB | 359 ms | 260 ms | **+0.0397** `p=0.0001` | **−0.0060** `p=0.0008` |
-| `balanced` | 341 MB | 821 ms | 722 ms | +0.0094 `p=0.0146` | +0.0029 `p=0.0293` |
+| `balanced`, removed | 341 MB | 821 ms | 722 ms | +0.0094 `p=0.0146` | +0.0029 `p=0.0293` |
 | `accurate` (default) | 571 MB | 1522 ms | 1423 ms | **+0.0482** `p=0.0001` | +0.0006 *ns* |
-| `noncommercial` | 280 MB | 905 ms | 806 ms | +0.0279 `p=0.0001` | +0.0003 *ns* |
+| `noncommercial`, removed | 280 MB | 905 ms | 806 ms | +0.0279 `p=0.0001` | +0.0003 *ns* |
 
 Five arms, one run, the same 1,190 queries, paired bootstrap at 10,000
 resamples. Nothing in this table may be read against a figure published before
@@ -1359,13 +1422,25 @@ architecture at the same size*, twelve layers of width 768, yet differ by 0.0185
 cross-lingual, which is twice `balanced`'s entire gain. What is being chosen at
 this size is the training, not the model's shape.
 
-**Relaxing the licence bought nothing, and the experiment is kept for that.**
-`noncommercial` exists to answer one question — whether accepting CC-BY-NC buys
-accuracy that a permissive licence cannot — and the answer is no. The prediction
-written before the run was that it would be indistinguishable from `balanced`;
-it is better than `balanced` and still worse than the permissive default at a
+**Relaxing the licence bought nothing, and the experiment is recorded for
+that.** `noncommercial` existed to answer one question — whether accepting
+CC-BY-NC buys accuracy that a permissive licence cannot — and the answer is no.
+The prediction written before the run was that it would be indistinguishable
+from `balanced`; it is better than `balanced` and still worse than `fast` at a
 quarter of its size. Half the prediction held and the more interesting half did
 not.
+
+**`balanced` and `noncommercial` were removed on these rows.** They were
+`onnx-community/gte-multilingual-reranker-base` and
+`jinaai/jina-reranker-v2-base-multilingual`, and neither has a place on the
+trade a tier is chosen on: `fast` beats each of them cross-lingual at under half
+the download and under half the latency, and `accurate` beats everything
+cross-lingual. `balanced`'s one distinction, the only significant *positive* on
+same-language, is +0.0029 and not worth 821 ms. They were kept for a while so
+the product's own tier table could say so; the numbers are here instead, and
+with the non-commercial tier went the licence notice and the
+`PAMIN_ACCEPT_NONCOMMERCIAL` variable that existed only for it. Asking for
+either tier by name is now the unknown-tier error.
 
 Measured through `Engine::search_reranked`, the entry point `pamin search`
 calls, with `TIERS=1` on the cross-lingual harness over all 1,190 queries. The
@@ -1466,34 +1541,32 @@ Licences were checked at the leaf and at the base, because a fine-tune's card ca
 | tier | model | licence | base |
 | --- | --- | --- | --- |
 | `fast` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | `apache-2.0`, declared on the card | `nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large`, **no licence tag**; MiniLMv2 originates in `microsoft/unilm`, MIT |
-| `balanced` | `onnx-community/gte-multilingual-reranker-base` | **no licence tag** — `library_name` and `base_model` and nothing else | `Alibaba-NLP/gte-multilingual-reranker-base`, `apache-2.0` |
 | `accurate` | `onnx-community/bge-reranker-v2-m3-ONNX` | **no licence tag** — its front matter is `library_name` and `base_model` and nothing else | `BAAI/bge-reranker-v2-m3`, `apache-2.0` |
-| `noncommercial` | `jinaai/jina-reranker-v2-base-multilingual` | **`cc-by-nc-4.0`**, declared on the card | its own weights; the whole Jina reranker line is non-commercial |
 
-Three of the four permissive chains are defensible and **none of those three states its licence where it is shipped from** — two of the exports carry no front matter but `library_name` and `base_model`, and the third's base is itself untagged. A re-export with no tag is usable when the chain to a licensed source is readable, which is the rule this project settled on, and every chain above is given in [`NOTICE`](../../NOTICE) so that a reader does not have to re-derive it. It is still worth an upstream request or a self-controlled export, and it is recorded here rather than left to be rediscovered.
+Both chains are defensible and **neither states its licence where it is shipped from** — `accurate`'s export carries no front matter but `library_name` and `base_model`, and `fast`'s base is itself untagged. A re-export with no tag is usable when the chain to a licensed source is readable, which is the rule this project settled on, and every chain above is given in [`NOTICE`](../../NOTICE) so that a reader does not have to re-derive it. It is still worth an upstream request or a self-controlled export, and it is recorded here rather than left to be rediscovered.
 
-`noncommercial` is the one tier whose licence restricts what may be done with the *output* rather than only how the weights may be redistributed. It is not a default, nothing reaches it without being named, and naming it prints the terms once and then runs — the reasoning for warning rather than refusing is in [cli.md](../cli.md).
+`balanced` and `noncommercial` shipped for a while and were removed on their measurements; both are in the survey below. `balanced`'s export carried no tag over an `apache-2.0` base. `noncommercial` was `cc-by-nc-4.0` on its own card, the only tier whose licence restricted what may be done with the *output* rather than how the weights may be redistributed, and it printed the terms once and then ran rather than refusing. Every tier that ships now is permissive, so nothing is left to warn about.
 
 **The survey against them, and the reason none of it changed the default.** Every candidate below was checked for a readable permissive licence first, because a model that cannot be shipped does not need measuring.
 
 | candidate | licence | why not |
 | --- | --- | --- |
-| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `jina-reranker-m0`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial, so never a default. `v2` **is** now measurable and is shipped as the opt-in `noncommercial` tier; see below for what it was worth. `v3` and `m0` are not runnable here at all |
+| `jinaai/jina-reranker-v2-base-multilingual`, `-v3`, `jina-reranker-m0`, `jina-colbert-v2` | **CC-BY-NC-4.0**, the whole line | Non-commercial, so never a default. `v2` was shipped as the opt-in `noncommercial` tier to measure it, and removed; see below for what it was worth. `v3` and `m0` are not runnable here at all |
 | `BAAI/bge-reranker-v2-gemma` | card says `apache-2.0`; base `google/gemma-2b` is `license: gemma`, gated | The Gemma rider follows the derivative — the same reason EmbeddingGemma was refused above |
 | `BAAI/bge-reranker-v2-minicpm-layerwise` | card says `apache-2.0`; base MiniCPM weights carry the General Model License with a commercial-authorization requirement | Painful, because its 8–40 selectable output layers are exactly the early-exit mechanism the latency problem wants |
 | `naver/splade-v3` family | CC-BY-NC-SA-4.0 | Non-commercial and share-alike. `Splade_PP_en_v1` is Apache-2.0 and English |
 | `Qwen/Qwen3-Reranker-0.6B` | `apache-2.0` — the cleanest licence and the best multilingual quality in the field | A decoder at roughly twenty times the compute-relevant parameters of `fast`. Estimated seconds a query on four cores; three to six times the `accurate` tier, which is already not an interactive budget |
 | `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | MIRACL 28.56. Not a multilingual reranker in the sense this product needs, whatever the language count says |
-| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one |
+| `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one, and it was removed |
 | `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
 
 **What the non-commercial licence actually buys, now that it has been paid.**
 The survey above ruled the whole Jina line out as non-commercial and left it
-there. The rule has since changed — CC-BY-NC is acceptable as a named, opt-in,
+there. The rule was then relaxed — CC-BY-NC acceptable as a named, opt-in,
 non-default tier — so the question became answerable and was answered rather
-than argued: `jina-reranker-v2-base-multilingual` ships as `noncommercial` and
+than argued: `jina-reranker-v2-base-multilingual` shipped as `noncommercial` and
 its figures are in the tier table above. **It scores +0.0279 cross-lingual where
-the permissive default scores +0.0397, at four times the parameters and 2.5
+`fast` scores +0.0397, at four times the parameters and 2.5
 times the latency.** Accepting the licence bought nothing.
 
 And it is the *best case* for the hypothesis, not a weak instance of it. It is
@@ -1510,7 +1583,7 @@ further away rather than closer:
 | `openjev/openjev` | `cc-by-nc-4.0` | `Qwen3_5ForConditionalGeneration` | **none** | not a ranker head |
 
 `v3` and `m0` are the decoder class this record already priced out, and neither
-publishes a single `.onnx` file, so `fastembed` cannot load them, there is no
+publishes a single `.onnx` file, so there is nothing for a session to load, there is no
 quantized export to fall back on, and adopting one means both a raw `ort` path
 *and* an export nobody has made. `openjev` has 159 downloads and is a
 conditional-generation model rather than a ranking head.
@@ -1518,9 +1591,9 @@ conditional-generation model rather than a ranking head.
 **So the non-commercial licence does not correlate with accuracy here. It
 correlates with size and with a hosted-API business model** — the line moved to
 0.6B and 2B decoders, which are out of an interactive budget on four CPU cores
-whatever their terms say. That is the generalisable finding, and it is the
-reason the `noncommercial` tier is documented as buying nothing rather than
-quietly removed.
+whatever their terms say. That is the generalisable finding, and it is why the
+`noncommercial` tier's result is recorded here now that the tier is gone rather
+than dropped along with it.
 
 One caveat, stated because it is the arm that was not run: the measured export
 is `onnx/model_int8.onnx`. `fast` and `accurate` are quantized too, so the
@@ -1566,12 +1639,13 @@ rejected, on grounds that a larger budget does not touch.
 **The two `apache-2.0` decoders are blocked on latency, and on nothing else.**
 The earlier reading here put shape first. Shape is a real difference — both
 rerank by prompting and comparing the logits of a "yes" and a "no" token, so the
-graph returns a vocabulary-sized tensor where `fastembed`'s `TextRerank` drives
-a sequence classifier — but it costs much less than this record assumed, because
+graph returns a vocabulary-sized tensor where the reranker's encoder reads one
+logit from a sequence classifier — but it costs much less than this record assumed, because
 the two things it was thought to cost are already paid:
 
 - **`ort` 2.0.0-rc.13 and `tokenizers` 0.23.2 are already in the lockfile**,
-  reached transitively through `fastembed`. A raw session is a module, not a new
+  and every reranker already runs on a raw session over them
+  (`crates/pamin-index/src/encoder.rs`). Another shape is a module, not a new
   dependency, and it does not move the size budget.
 - **The export already exists, permissively licensed.**
   `onnx-community/Qwen3-Reranker-0.6B-ONNX` is `apache-2.0` with single-file
@@ -1625,8 +1699,8 @@ narrower than it read.** What `head_max_len` of 256 tokens rules out is the
 document goes in the state, within `max_len` of 1024, and only two short option
 labels go in the head budget. Its `noul` question type returns the probability of
 one of two options, with a per-option-bucket temperature and a confidence over a
-bounded answer space. `fastembed` cannot supply the marker positions and query
-type that graph wants; a raw session can.
+bounded answer space. The reranker's encoder does not supply the marker
+positions and query type that graph wants; a session built for it can.
 
 **And the port is bounded rather than a reverse engineering job, because both
 halves are published.** The export is `mizchi/laya-multilingual-onnx` —
@@ -1692,7 +1766,7 @@ forward pass*, which would be a different cost model if it meant shared
 encoding. It does not. The released `rl_agent_api.py` builds one sequence per
 question and stacks them into a batch, so the state is re-encoded for every
 question — one *launch*, not one *encode*, which is what this project already
-gets from `fastembed` for a shortlist. The published latencies say the same
+gets from its reranker for a shortlist. The published latencies say the same
 thing: 39.5 ms for one question, 158.6 ms for ten and 771 ms for fifty is 5.0
 times the questions for 4.86 times the time between the last two, linear once
 the GPU is full. And its `head_max_len` of 256 tokens is smaller than the
@@ -1981,9 +2055,10 @@ The trade is the first one on this page that is genuinely four-axis:
 **And the disk cost has a published answer, which is what makes the trade worth
 taking seriously**: ColBERTv2 and PLAID compress these embeddings to a centroid
 plus one or two bit residuals for roughly 20 to 30 times, which would put 5.5 GB
-at 200 to 400 MB — smaller than the duplicated column this project has already
-identified as removable. The compression is part of the same piece of work as
-the measurement, not a later optimisation.
+at 200 to 400 MB — about the size of the whole `topic_states` table on that
+workspace (239 MB), and two to four times the duplicated content column (94 MB)
+the store has since stopped keeping. The compression is part of the same piece
+of work as the measurement, not a later optimisation.
 
 #### The two product rulings that narrow all of this
 

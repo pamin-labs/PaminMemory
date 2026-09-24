@@ -15,12 +15,12 @@
 //! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
 //! because the model registry publishes no quantized variant for that family.
 
-use fastembed::{
-    Bgem3Embedding, Bgem3InitOptions, Bgem3Model, EmbeddingModel, TextEmbedding, TextInitOptions,
-};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use serde::{Deserialize, Serialize};
 
+use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
+use crate::hub::Repository;
 
 /// Which embedding model to run.
 ///
@@ -146,16 +146,17 @@ pub struct Embedder {
 
 /// The loaded model, which is not the same type for every profile.
 ///
-/// BGE-M3 ships as a joint export producing three representations at once, and
-/// the library loads it through its own type rather than the general text one.
-/// That is also the only path to its int8 weights, which is most of why the
-/// profile is usable at all.
+/// BGE-M3 ships as a joint export producing three representations at once,
+/// its int8 weights -- most of why the profile is usable at all -- only in
+/// that export, and its vocabulary shared with the `accurate` reranker's. So
+/// it runs through this crate's own [`Encoder`], which can share that
+/// vocabulary, where the E5 pair run through `fastembed`'s general text type.
 ///
 /// Both boxed. Each is over a kilobyte of session and tokenizer state, and an
 /// unboxed enum is the size of its largest variant everywhere it appears.
 enum Model {
     Text(Box<TextEmbedding>),
-    Joint(Box<Bgem3Embedding>),
+    Joint(Box<Encoder>),
 }
 
 impl Embedder {
@@ -172,18 +173,7 @@ impl Embedder {
         let threads = crate::inference::threads();
 
         let model = match profile {
-            Profile::Accuracy => {
-                let mut options = Bgem3InitOptions::new(Bgem3Model::BGEM3Q)
-                    .with_cache_dir(cache_dir.to_path_buf())
-                    .with_show_download_progress(false)
-                    .with_execution_providers(vec![crate::inference::cpu()]);
-                if let Some(threads) = threads {
-                    options = options.with_intra_threads(threads);
-                }
-                Model::Joint(Box::new(Bgem3Embedding::try_new(options).map_err(
-                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
-                )?))
-            }
+            Profile::Accuracy => Model::Joint(Box::new(joint(cache_dir)?)),
             _ => {
                 let mut options = TextInitOptions::new(profile.model())
                     .with_cache_dir(cache_dir.to_path_buf())
@@ -279,7 +269,7 @@ impl Embedder {
     /// identical to a single call, so it is the presence of a neighbour that
     /// does it, not the batching API.
     ///
-    /// It is not fastembed's Rust code: the tokenizer pads to the batch's
+    /// It is not the tokenization: the tokenizer pads to the batch's
     /// longest member, so a text that *is* the longest gets byte-identical
     /// ids and mask either way, and the mask is passed to the session. Only
     /// the batch dimension differs, so what changes the answer is the export
@@ -297,21 +287,63 @@ impl Embedder {
         let failed = |error| IndexError::Engine(format!("embedding text: {error}"));
         match &mut self.model {
             Model::Text(model) => model.embed(texts, None).map_err(failed),
-            // The sparse and ColBERT representations come back from the same
-            // pass and are dropped here. They are not free -- the pass
-            // computes them -- but neither is wanted, and no cheaper export of
-            // this model's int8 weights exists.
-            Model::Joint(model) => {
-                let mut vectors = Vec::with_capacity(texts.len());
-                for text in texts {
-                    let mut dense = model.embed(vec![text], None).map_err(failed)?.dense;
-                    vectors.push(dense.pop().ok_or_else(|| {
-                        IndexError::Engine("the joint export returned no dense vector".into())
-                    })?);
-                }
-                Ok(vectors)
-            }
+            Model::Joint(model) => texts.iter().map(|text| dense(model, text)).collect(),
         }
+    }
+}
+
+/// Where BGE-M3's int8 export is published, and which of its files it is.
+const JOINT_REPOSITORY: &str = "gpahal/bge-m3-onnx-int8";
+const JOINT_FILE: &str = "model_quantized.onnx";
+
+/// The longest text BGE-M3 reads, in tokens.
+///
+/// What `fastembed` truncated it at when it loaded this model, and so what
+/// every vector stored under this profile was made with. A passage past it
+/// embeds as its first 512 tokens; changing it would change the vectors of
+/// exactly those passages and nothing would say so, so it is kept.
+const JOINT_MAX_TOKENS: usize = 512;
+
+/// Loads the joint BGE-M3 export on the CPU, from its prepared copy.
+///
+/// Its int8 export is 570 MB, and loaded from the file the hub serves it is
+/// copied onto the heap whole and its matrix weights packed into a second copy
+/// -- see `crate::prepared`, which writes a copy the runtime maps instead, and
+/// falls back to the file itself when it cannot.
+fn joint(cache_dir: &std::path::Path) -> Result<Encoder> {
+    let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
+    let source = repository.get(JOINT_FILE)?;
+    let copy = crate::prepared::prepared(&source, cache_dir);
+    Encoder::load(
+        &copy,
+        &repository,
+        JOINT_MAX_TOKENS,
+        vec![crate::inference::cpu()],
+    )
+    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
+}
+
+/// One text's dense BGE-M3 vector, in one forward pass of its own.
+///
+/// The export's first output, as `fastembed` read it: the graph pools and
+/// normalizes the vector itself, so it is used as it comes. The sparse and
+/// ColBERT representations come back from the same pass and are dropped. They
+/// are not free -- the pass computes them -- but neither is wanted, and no
+/// cheaper export of this model's int8 weights exists.
+fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
+    let outputs = model.run(vec![text])?;
+    let first = outputs
+        .values()
+        .next()
+        .ok_or_else(|| IndexError::Engine("the joint export returned nothing".into()))?;
+    let (shape, values) = first
+        .try_extract_tensor::<f32>()
+        .map_err(|error| IndexError::Engine(format!("reading the dense vector: {error}")))?;
+    match **shape {
+        [1, width] if width > 0 => Ok(values.to_vec()),
+        _ => Err(IndexError::Engine(format!(
+            "a dense output of shape {shape:?} for one text"
+        ))),
     }
 }
 
