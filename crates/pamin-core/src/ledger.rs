@@ -20,14 +20,15 @@ pub struct Project {
 }
 
 /// Where evidence came from.
+///
+/// One kind, because there is one ingest path. A file, directory or chat-log
+/// importer adds its kind when it exists; until then a variant nothing
+/// produces is a promise the schema cannot check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     /// Written directly through the CLI or API.
     Manual,
-    File,
-    Directory,
-    ChatLog,
 }
 
 /// A stable identity for something that produces evidence over time.
