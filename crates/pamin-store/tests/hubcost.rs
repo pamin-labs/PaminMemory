@@ -19,8 +19,8 @@ use std::time::Instant;
 
 /// Builds two hubs, each with `spokes` spokes, and an edge between the hubs.
 async fn hubs(database: &Database, project: ProjectId, spokes: usize) -> TopicId {
-    let left = TopicId(uuid::Uuid::new_v4());
-    let right = TopicId(uuid::Uuid::new_v4());
+    let left = TopicId(uuid::Uuid::now_v7());
+    let right = TopicId(uuid::Uuid::now_v7());
 
     let mut ids: Vec<uuid::Uuid> = vec![left.0, right.0];
     let mut names: Vec<String> = vec!["hub_left".into(), "hub_right".into()];
@@ -28,8 +28,8 @@ async fn hubs(database: &Database, project: ProjectId, spokes: usize) -> TopicId
     let mut to: Vec<uuid::Uuid> = vec![right.0];
 
     for spoke in 0..spokes {
-        let on_left = uuid::Uuid::new_v4();
-        let on_right = uuid::Uuid::new_v4();
+        let on_left = uuid::Uuid::now_v7();
+        let on_right = uuid::Uuid::now_v7();
         ids.push(on_left);
         names.push(format!("left_{spoke}"));
         ids.push(on_right);
@@ -53,7 +53,7 @@ async fn hubs(database: &Database, project: ProjectId, spokes: usize) -> TopicId
     .await
     .expect("insert topics");
 
-    let relationships: Vec<uuid::Uuid> = (0..from.len()).map(|_| uuid::Uuid::new_v4()).collect();
+    let relationships: Vec<uuid::Uuid> = (0..from.len()).map(|_| uuid::Uuid::now_v7()).collect();
     sqlx::query(
         "INSERT INTO relationships (id, project_id, from_topic, to_topic, kind, created_at)
          SELECT id, $4, f, t, 'related_to', $5
@@ -69,7 +69,7 @@ async fn hubs(database: &Database, project: ProjectId, spokes: usize) -> TopicId
     .expect("insert relationships");
 
     let versions: Vec<uuid::Uuid> = (0..relationships.len())
-        .map(|_| uuid::Uuid::new_v4())
+        .map(|_| uuid::Uuid::now_v7())
         .collect();
     sqlx::query(
         "INSERT INTO relationship_versions
@@ -147,7 +147,7 @@ async fn a_walk_stops_once_the_caller_has_enough() {
     let database = Database::open(&workspace, Connections::PerCommand)
         .await
         .expect("open the database");
-    let run = uuid::Uuid::new_v4();
+    let run = uuid::Uuid::now_v7();
 
     println!(
         "{:>7}  {:>8}  {:>9}  {:>12}  {:>10}  {:>9}  {:>9}  {:>8}",

@@ -84,7 +84,7 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
 
     // A name nothing else uses, so a rerun builds a fresh projection rather
     // than reopening one a previous run already optimized.
-    let name = format!("graphupkeep-{}", uuid::Uuid::new_v4());
+    let name = format!("graphupkeep-{}", uuid::Uuid::now_v7());
     repository::ensure_project(database.pool(), &name)
         .await
         .expect("ensure project");

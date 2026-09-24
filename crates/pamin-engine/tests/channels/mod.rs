@@ -255,10 +255,11 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 /// project argued about `k` and about the channel weights, both of them
 /// parameters *of* reciprocal rank fusion, and never wrote down that fusing
 /// ranks rather than normalised scores was a choice. Every 2025--2026 result
-/// found goes the other way -- see [`Combine`]. The score combiners and the
-/// per-channel confidence rule this grid used to sweep were measured and
-/// removed (`docs/adr/0001-tech-selection.md`); what is left is the band that
-/// ships against the reciprocal-rank baseline every figure is quoted against.
+/// found goes the other way -- see [`Combine`]. The score combiners, the
+/// per-channel confidence rule and the support rule this grid used to sweep
+/// were measured and removed (`docs/adr/0001-tech-selection.md`); what is left
+/// is the band that ships against the reciprocal-rank baseline every figure is
+/// quoted against.
 ///
 /// **The rank constant, once, to close the question.** The only real sweep of
 /// it in the recent literature (`arXiv:2604.01733`, 2026, 23,088 queries) puts
@@ -306,85 +307,6 @@ pub fn variants() -> Vec<(String, Fusion)> {
             format!("graph {graph:.2}"),
             Fusion::default().with_weight(Channel::Graph, graph),
         ));
-    }
-
-    // Requiring corroboration instead of cutting the weight. The weight rows
-    // above are a global constant that has to serve every group of a corpus;
-    // these condition on the candidate, so they can in principle take one
-    // group's gain without another's cost.
-    //
-    // **Two of these rows were measured once and the measurement was empty.**
-    // `support graph` and `support lex+graph` came back as bit-identical
-    // no-ops, and the rule was deleted partly on that reading -- when the
-    // reason was that the graph channel returned no candidates at all, on
-    // every corpus, because none of them had edges. That is the same premise
-    // failure that hid the graph channel's weight being wrong by a factor of
-    // three. The own corpus has a `relational` group now, so these two rows
-    // finally ask something.
-    //
-    // The graph channel is also the one this rule should bite hardest on, and
-    // for a structural reason rather than an empirical one: `recall_graph`
-    // returns topics reached across an edge, so a graph candidate is
-    // uncorroborated unless some other channel independently found it. It is
-    // the only channel whose candidates are *by construction* the case the
-    // rule exists for.
-    for (name, needy) in [
-        (
-            "lex",
-            vec![Channel::LexicalSegmented, Channel::LexicalNgram],
-        ),
-        ("seg", vec![Channel::LexicalSegmented]),
-        ("ngram", vec![Channel::LexicalNgram]),
-        ("graph", vec![Channel::Graph]),
-        (
-            "lex+graph",
-            vec![
-                Channel::LexicalSegmented,
-                Channel::LexicalNgram,
-                Channel::Graph,
-            ],
-        ),
-    ] {
-        variants.push((
-            format!("support {name}"),
-            Fusion::default().needing_support(needy.clone()),
-        ));
-
-        // Across the lexical weight, because at the shipped eighth the rule is
-        // a measured no-op on XQuAD-R and the arithmetic says why: an
-        // uncorroborated candidate is worth at most 0.0114 there and this
-        // floors it at 0.0069, a difference of 0.0045 that does not reorder a
-        // top ten. Where it does bite, it dominates the plain weight -- at a
-        // half, +0.0206 cross-lingual nDCG and +0.0335 recall; at one, +0.1986
-        // and +0.0836. The open question is whether any pair of these beats
-        // the shipped point, which needs both dials moved together.
-        if needy.iter().any(|channel| *channel != Channel::Graph) {
-            for lexical in [0.25, 0.5, 1.0] {
-                variants.push((
-                    format!("support {name} lex {lexical:.2}"),
-                    Fusion::default()
-                        .needing_support(needy.clone())
-                        .with_weight(Channel::LexicalSegmented, lexical)
-                        .with_weight(Channel::LexicalNgram, lexical),
-                ));
-            }
-        }
-
-        // And across the graph weight wherever the graph channel is named,
-        // because that weight has just moved from 1.0 to 0.30 and the rule and
-        // the weight are two ways of quieting the same channel. If
-        // corroboration is what the weight cut was standing in for, the graph
-        // channel should be worth more than three tenths with the rule on.
-        if needy.contains(&Channel::Graph) {
-            for graph in [0.30, 0.50, 1.0] {
-                variants.push((
-                    format!("support {name} graph {graph:.2}"),
-                    Fusion::default()
-                        .needing_support(needy.clone())
-                        .with_weight(Channel::Graph, graph),
-                ));
-            }
-        }
     }
 
     variants
