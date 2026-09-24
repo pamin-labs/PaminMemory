@@ -797,6 +797,87 @@ macro_rules! edges_touching {
     };
 }
 
+/// The `$4` strongest live edges each way of every topic in `$2`, of the kinds
+/// in `$3` (all of them when it is null).
+///
+/// Strongest is most confident, then the topic on the other end in ascending
+/// order, which is the order [`crossing_order`] takes crossings in -- so what a
+/// topic's edges are cut to is exactly the head of the list the walk would
+/// have read, and what is left out is exactly its tail. Each side says which
+/// way it was read, so the walk can tell a side that ran out of edges from one
+/// the `LIMIT` cut.
+///
+/// Each side is served by a partial index in that order
+/// (`relationship_versions_live_from`, `relationship_versions_live_to`), so a
+/// hub's side costs `$4` index entries rather than its degree. Said as the
+/// index's own predicate, `invalidated_at IS NULL`, for the reason the live
+/// statement below says it: a generic plan can only use a partial index whose
+/// predicate the statement states.
+const STRONGEST: &str = "
+    SELECT p.topic AS standing, TRUE AS outward,
+           e.from_topic, e.to_topic, e.kind, e.confidence, e.derivation
+      FROM unnest($2::uuid[]) AS p (topic)
+     CROSS JOIN LATERAL (
+           SELECT v.from_topic, v.to_topic, v.kind, v.confidence, v.derivation
+             FROM relationship_versions v
+            WHERE v.project_id = $1 AND v.from_topic = p.topic
+              AND v.invalidated_at IS NULL
+              AND ($3::TEXT[] IS NULL OR v.kind = ANY ($3))
+            ORDER BY v.confidence DESC, v.to_topic
+            LIMIT $4) e
+    UNION ALL
+    SELECT p.topic, FALSE,
+           e.from_topic, e.to_topic, e.kind, e.confidence, e.derivation
+      FROM unnest($2::uuid[]) AS p (topic)
+     CROSS JOIN LATERAL (
+           SELECT v.from_topic, v.to_topic, v.kind, v.confidence, v.derivation
+             FROM relationship_versions v
+            WHERE v.project_id = $1 AND v.to_topic = p.topic
+              AND v.invalidated_at IS NULL
+              AND ($3::TEXT[] IS NULL OR v.kind = ANY ($3))
+            ORDER BY v.confidence DESC, v.from_topic
+            LIMIT $4) e";
+
+/// Every live edge between a topic in `$2` and a topic in `$3`, either way
+/// round, of the kinds in `$4`.
+///
+/// Through the identity's unique key, `(project_id, from_topic, to_topic,
+/// kind)`, so this costs the pairs asked about and not the degree of the hub
+/// that made them worth asking about.
+const BETWEEN: &str = "
+    SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
+      FROM relationships r
+      JOIN relationship_versions v
+        ON v.project_id = r.project_id AND v.relationship_id = r.id
+     WHERE r.project_id = $1
+       AND ((r.from_topic = ANY ($2) AND r.to_topic = ANY ($3))
+         OR (r.to_topic = ANY ($2) AND r.from_topic = ANY ($3)))
+       AND ($4::TEXT[] IS NULL OR r.kind = ANY ($4))
+       AND v.invalidated_at IS NULL";
+
+/// One live edge, as a hop reads it.
+#[derive(Clone, Copy)]
+struct Edge {
+    from: TopicId,
+    to: TopicId,
+    kind: EdgeKind,
+    derivation: Derivation,
+    confidence: f32,
+}
+
+impl Edge {
+    fn read(row: &PgRow) -> Self {
+        Self {
+            from: TopicId::from(row.get::<uuid::Uuid, _>("from_topic")),
+            to: TopicId::from(row.get::<uuid::Uuid, _>("to_topic")),
+            kind: EdgeKind::from_label(row.get("kind")).unwrap_or(EdgeKind::RelatedTo),
+            derivation: Derivation::from_label(row.get("derivation"))
+                .unwrap_or(Derivation::Imported),
+            confidence: row.get("confidence"),
+        }
+    }
+}
+
 /// The order a topic's crossings are taken in: most confident first, then by
 /// the topic on the other end, then by kind, then by which end asserted it.
 ///
@@ -809,7 +890,8 @@ macro_rules! edges_touching {
 /// It is also an order one statement could have returned every row in -- by
 /// confidence, then the lesser endpoint, the greater, the kind, and
 /// `from_topic` -- so a walk taking it is a walk the unordered statement could
-/// have produced.
+/// have produced. And its first two keys are the `ORDER BY` of [`STRONGEST`],
+/// which is what makes cutting a topic's edges there cut the tail of this list.
 fn crossing_order(
     standing: TopicId,
 ) -> impl Fn(&(TopicId, Crossing), &(TopicId, Crossing)) -> std::cmp::Ordering {
@@ -828,6 +910,258 @@ fn crossing_order(
             .then_with(|| one.kind.cmp(&other.kind))
             .then_with(|| asserted_from(left, one).cmp(&asserted_from(right, other)))
     }
+}
+
+/// The edges a frontier stands on, of every kind asked for and valid when
+/// asked about. The statement the walk had before it could be bounded.
+async fn every_edge(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    positions: &[uuid::Uuid],
+    kinds: Option<&[String]>,
+    at: Option<OffsetDateTime>,
+) -> Result<Vec<Edge>> {
+    // Which edges are visible depends on whether a moment was asked about,
+    // and the two questions are two statements rather than one with a
+    // `CASE` on the parameter. Without `--at` the question is what we still
+    // stand behind, so only uninvalidated versions count -- and said
+    // literally, that is the predicate of the partial index
+    // `relationship_versions_live`, which a prepared statement's generic plan
+    // can use only if the statement says it rather than a branch on a
+    // parameter the plan has not seen. With `--at` the question is what held
+    // then, which a later retraction does not answer on its own: an edge
+    // closed because the relationship ended still held before it was closed,
+    // one deleted because the claim was wrong never held at all, and a
+    // superseded one is answered by its successor. That distinction is what
+    // tombstone_reason records, and ignoring it made every retraction erase
+    // its own history.
+    const LIVE: &str = concat!(edges_touching!(), " AND v.invalidated_at IS NULL");
+    const AT: &str = concat!(
+        edges_touching!(),
+        " AND (v.valid_from IS NULL OR v.valid_from <= $4)
+          AND (v.valid_to IS NULL OR $4 < v.valid_to)
+          AND (v.invalidated_at IS NULL
+               OR (v.tombstone_reason = 'closed' AND $4 < v.invalidated_at))"
+    );
+    let query = sqlx::query(if at.is_some() { AT } else { LIVE })
+        .bind(project.0)
+        .bind(positions)
+        .bind(kinds);
+    let query = match at {
+        Some(at) => query.bind(at),
+        None => query,
+    };
+    Ok(query
+        .fetch_all(&mut *connection)
+        .await?
+        .iter()
+        .map(Edge::read)
+        .collect())
+}
+
+/// Where a bounded read stopped short on one topic: the last crossing it read
+/// on the side that was cut, and the earlier of the two when both were.
+struct Cut {
+    standing: TopicId,
+    confidence: f32,
+    after: TopicId,
+}
+
+/// A frontier's edges, at most `per_topic` of them each way per topic, and
+/// where that left something unread.
+///
+/// Cutting a topic's crossings to the head of their order drops arrivals that
+/// are not only its own. A topic the head *does* reach may be reached by
+/// another seed as well, and which of the two arrivals the walk keeps depends
+/// on both -- so the cut could change a topic that is in the result, not just
+/// leave one out. That is closed here: for every topic that was cut, every
+/// edge between it and any topic this hop read is read too, by pair, which
+/// costs the pairs rather than the degree. After that, every topic the walk
+/// reaches at this hop is reached exactly as it would have been without the
+/// cut, and what the cut can still hide is a topic nothing read reached.
+async fn strongest_edges(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    positions: &[uuid::Uuid],
+    kinds: Option<&[String]>,
+    per_topic: usize,
+) -> Result<(Vec<Edge>, Vec<Cut>)> {
+    let rows = sqlx::query(STRONGEST)
+        .bind(project.0)
+        .bind(positions)
+        .bind(kinds)
+        .bind(i64::try_from(per_topic).unwrap_or(i64::MAX))
+        .fetch_all(&mut *connection)
+        .await?;
+
+    // The last crossing each side read, and how many it read.
+    let mut sides: HashMap<(TopicId, bool), (usize, f32, TopicId)> = HashMap::new();
+    let mut edges = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let edge = Edge::read(row);
+        let standing = TopicId::from(row.get::<uuid::Uuid, _>("standing"));
+        let outward: bool = row.get("outward");
+        let other = if outward { edge.to } else { edge.from };
+        let side = sides
+            .entry((standing, outward))
+            .or_insert((0, edge.confidence, other));
+        side.0 += 1;
+        // Later in the order: less confident, or as confident and further on.
+        if edge.confidence < side.1 || (edge.confidence == side.1 && other.0 > side.2.0) {
+            side.1 = edge.confidence;
+            side.2 = other;
+        }
+        edges.push(edge);
+    }
+
+    // A side that read as many as it was allowed may have had more. One that
+    // read exactly that many and no more is counted as cut, which costs a
+    // lookup and loses nothing.
+    let mut cuts: HashMap<TopicId, Cut> = HashMap::new();
+    for ((standing, _), (read, confidence, after)) in sides {
+        if read < per_topic {
+            continue;
+        }
+        let cut = cuts.entry(standing).or_insert(Cut {
+            standing,
+            confidence,
+            after,
+        });
+        // The earlier of two cut sides bounds both: what either left unread
+        // comes after its own last crossing, so after the earlier one.
+        if confidence > cut.confidence || (confidence == cut.confidence && after.0 < cut.after.0) {
+            cut.confidence = confidence;
+            cut.after = after;
+        }
+    }
+    let mut cuts: Vec<Cut> = cuts.into_values().collect();
+    cuts.sort_by_key(|cut| cut.standing.0);
+
+    if !cuts.is_empty() {
+        let cut: Vec<uuid::Uuid> = cuts.iter().map(|cut| cut.standing.0).collect();
+        let touched: Vec<uuid::Uuid> = {
+            let mut touched: Vec<uuid::Uuid> = edges
+                .iter()
+                .flat_map(|edge| [edge.from.0, edge.to.0])
+                .collect();
+            touched.sort_unstable();
+            touched.dedup();
+            touched
+        };
+        let rows = sqlx::query(BETWEEN)
+            .bind(project.0)
+            .bind(&cut)
+            .bind(&touched)
+            .bind(kinds)
+            .fetch_all(&mut *connection)
+            .await?;
+        edges.extend(rows.iter().map(Edge::read));
+    }
+
+    // The same edge arrives once per side that read it, and again from the
+    // pairs above. One live version per identity, so the identity is the key.
+    let mut once = HashSet::new();
+    edges.retain(|edge| once.insert((edge.from, edge.to, edge.kind)));
+
+    Ok((edges, cuts))
+}
+
+/// Crosses one hop's edges from every position of the frontier.
+///
+/// Records what each walk reaches in `seen` and `reached`, and returns the
+/// positions the next hop would start from, each with the confidence of the
+/// edge that led there.
+fn cross(
+    hop: u8,
+    frontier: &[Step],
+    edges: &[Edge],
+    seen: &mut HashSet<(TopicId, TopicId)>,
+    reached: &mut HashMap<TopicId, Neighbor>,
+) -> Vec<(Step, f32)> {
+    // Undirected: both ends of a `depends_on` are relevant to recall, and
+    // which way the arrow points is a fact about the relationship rather than
+    // about who may find whom, so each edge is entered from both ends.
+    let mut neighbours: HashMap<TopicId, Vec<(TopicId, Crossing)>> = HashMap::new();
+    for edge in edges {
+        let crossing = Crossing {
+            kind: edge.kind,
+            derivation: edge.derivation,
+            confidence: edge.confidence,
+            outbound: true,
+        };
+
+        neighbours.entry(edge.from).or_default().push((
+            edge.to,
+            Crossing {
+                outbound: true,
+                ..crossing
+            },
+        ));
+        neighbours.entry(edge.to).or_default().push((
+            edge.from,
+            Crossing {
+                outbound: false,
+                ..crossing
+            },
+        ));
+    }
+    for (standing, crossings) in &mut neighbours {
+        crossings.sort_by(crossing_order(*standing));
+    }
+
+    let mut next: Vec<(Step, f32)> = Vec::new();
+    for step in frontier {
+        let Some(crossings) = neighbours.get(&step.topic) else {
+            continue;
+        };
+
+        for (neighbour, crossing) in crossings {
+            // Never back to where this walk started, and never straight back
+            // along the edge just taken. Both would return a topic already
+            // reached at a shorter distance; the first is the seed itself,
+            // which this channel must not hand back.
+            if hop > 1 && (*neighbour == step.origin || *neighbour == step.via) {
+                continue;
+            }
+
+            if !seen.insert((*neighbour, step.origin)) {
+                continue;
+            }
+
+            let arrival = Neighbor {
+                topic: *neighbour,
+                origin: step.origin,
+                hops: hop,
+                via: step.topic,
+                kind: crossing.kind,
+                derivation: crossing.derivation,
+                confidence: crossing.confidence,
+                outbound: crossing.outbound,
+            };
+
+            // Breadth first, so the first arrival is the shortest. Among
+            // arrivals at the same distance the most confident one wins, which
+            // is the order the ranking below expects.
+            reached
+                .entry(*neighbour)
+                .and_modify(|held| {
+                    if held.hops == hop && crossing.confidence > held.confidence {
+                        *held = arrival.clone();
+                    }
+                })
+                .or_insert_with(|| arrival.clone());
+
+            next.push((
+                Step {
+                    topic: *neighbour,
+                    origin: step.origin,
+                    via: step.topic,
+                },
+                crossing.confidence,
+            ));
+        }
+    }
+    next
 }
 
 /// Walks outward from `seeds` through live edges.
@@ -871,19 +1205,104 @@ fn crossing_order(
 /// Takes one connection and asks every hop on it: a statement run on the pool
 /// returns its connection afterwards, and sqlx checks a returned connection
 /// with a round trip of its own.
+///
+/// Reads every edge of every topic it stands on. [`expand_reading`] is the
+/// same walk reading only the strongest few, for a caller that ranks what it
+/// gets and keeps the head.
 pub async fn expand(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     seeds: &[TopicId],
     options: &Expansion<'_>,
 ) -> Result<Vec<Neighbor>> {
+    Ok(walk(connection, project, seeds, options, None)
+        .await?
+        .neighbors)
+}
+
+/// A walk that read at most `per_topic` of each topic's edges each way, and
+/// what it left unread.
+#[derive(Clone, Debug, Default)]
+pub struct Walk {
+    /// Every topic the walk reached, each exactly as [`expand`] reaches it:
+    /// same hop, same origin, same final edge.
+    pub neighbors: Vec<Neighbor>,
+    /// Where a topic's edges were cut. Empty when nothing was, and then
+    /// `neighbors` is everything [`expand`] returns.
+    pub unread: Vec<Unread>,
+}
+
+/// One topic whose edges a bounded walk did not read to the end.
+///
+/// The claim is about the topics [`expand`] would reach and [`Walk`] does not
+/// hold: every one of them was reached at `hops`, from `via`, by the walk of
+/// one of `origins`, over an edge less confident than `confidence` -- or as
+/// confident, to a topic whose identifier sorts after `after`. Nothing else is
+/// missing, and nothing present differs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unread {
+    pub hops: u8,
+    /// The topic whose edges were cut.
+    pub via: TopicId,
+    pub confidence: f32,
+    pub after: TopicId,
+    /// The seeds whose walks stood on `via` when it was cut.
+    pub origins: Vec<TopicId>,
+}
+
+/// [`expand`], reading at most `per_topic` of each topic's edges each way,
+/// strongest first.
+///
+/// **What this is for.** A hub carries thousands of edges and a caller keeping
+/// fifty ranked arrivals needs few of them, but reading them was the walk's
+/// cost: every edge of the hub, fetched, mapped twice and sorted, for a list
+/// cut to fifty afterwards.
+///
+/// **Why it is not a plain `LIMIT`.** What a caller ranks by -- confidence
+/// times how relevant the arrival's seed was, in the engine -- is not known
+/// here, and which of two seeds' arrivals at a topic the walk keeps is decided
+/// by confidence alone, so a cut on one seed can change a topic that another
+/// seed reached. So the cut is made where it can be stated and checked
+/// instead of assumed: every topic in [`Walk::neighbors`] is exactly what
+/// [`expand`] makes of it, and [`Walk::unread`] bounds every one that is
+/// missing. [`Walk::strongest`] then decides, for the caller's own ranking,
+/// whether anything missing could have ranked, and says so rather than guess.
+///
+/// The walk only keeps a cut hop when it stops there -- at `options.depth`, or
+/// with `options.keep` reached, which a cut topic's own edges nearly always
+/// see to. A cut hop the walk would have gone on from is read again in full:
+/// a hop's frontier is made of everything it reached, and past a cut that is
+/// not known.
+///
+/// With `--at` the bound is not used and every edge is read: the partial
+/// indexes this rests on hold live versions only, and what held at a moment
+/// is a different set.
+pub async fn expand_reading(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    seeds: &[TopicId],
+    options: &Expansion<'_>,
+    per_topic: usize,
+) -> Result<Walk> {
+    // At least one, so a cut side always has a last crossing to bound it by.
+    walk(connection, project, seeds, options, Some(per_topic.max(1))).await
+}
+
+async fn walk(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    seeds: &[TopicId],
+    options: &Expansion<'_>,
+    per_topic: Option<usize>,
+) -> Result<Walk> {
     if seeds.is_empty() || options.depth == 0 {
-        return Ok(Vec::new());
+        return Ok(Walk::default());
     }
 
     let kind_labels: Option<Vec<String>> = options
         .kinds
         .map(|kinds| kinds.iter().map(|kind| kind.label().to_string()).collect());
+    let per_topic = per_topic.filter(|_| options.at.is_none());
 
     // Keyed by the seed the walk began at, not by topic alone. Two seeds are
     // two walks: one may legitimately reach the other, and each is barred only
@@ -891,6 +1310,7 @@ pub async fn expand(
     // silently drop the case that carries the most evidence.
     let mut seen: HashSet<(TopicId, TopicId)> = HashSet::new();
     let mut reached: HashMap<TopicId, Neighbor> = HashMap::new();
+    let mut unread = Vec::new();
 
     // Each entry is one walk's position: where it is, where it started, and
     // what it came through.
@@ -911,125 +1331,73 @@ pub async fn expand(
             positions
         };
 
-        // Which edges are visible depends on whether a moment was asked
-        // about, and the two questions are two statements rather than one
-        // with a `CASE` on the parameter. Without `--at` the question is what
-        // we still stand behind, so only uninvalidated versions count -- and
-        // said literally, that is the predicate of the partial index
-        // `relationship_versions_live`, which a prepared statement's generic
-        // plan can use only if the statement says it rather than a branch on
-        // a parameter the plan has not seen. With `--at` the question is what
-        // held then, which a later retraction does not answer on its own: an
-        // edge closed because the relationship ended still held before it was
-        // closed, one deleted because the claim was wrong never held at all,
-        // and a superseded one is answered by its successor. That distinction
-        // is what tombstone_reason records, and ignoring it made every
-        // retraction erase its own history.
-        const LIVE: &str = concat!(edges_touching!(), " AND v.invalidated_at IS NULL");
-        const AT: &str = concat!(
-            edges_touching!(),
-            " AND (v.valid_from IS NULL OR v.valid_from <= $4)
-              AND (v.valid_to IS NULL OR $4 < v.valid_to)
-              AND (v.invalidated_at IS NULL
-                   OR (v.tombstone_reason = 'closed' AND $4 < v.invalidated_at))"
-        );
-        let query = sqlx::query(if options.at.is_some() { AT } else { LIVE })
-            .bind(project.0)
-            .bind(&positions)
-            .bind(kind_labels.as_deref());
-        let query = match options.at {
-            Some(at) => query.bind(at),
-            None => query,
-        };
-        let edges = query.fetch_all(&mut *connection).await?;
-
-        // Undirected: both ends of a `depends_on` are relevant to recall, and
-        // which way the arrow points is a fact about the relationship rather
-        // than about who may find whom, so each edge is entered from both ends.
-        let mut neighbours: HashMap<TopicId, Vec<(TopicId, Crossing)>> = HashMap::new();
-        for row in &edges {
-            let from = TopicId::from(row.get::<uuid::Uuid, _>("from_topic"));
-            let to = TopicId::from(row.get::<uuid::Uuid, _>("to_topic"));
-            let crossing = Crossing {
-                kind: EdgeKind::from_label(row.get("kind")).unwrap_or(EdgeKind::RelatedTo),
-                derivation: Derivation::from_label(row.get("derivation"))
-                    .unwrap_or(Derivation::Imported),
-                confidence: row.get("confidence"),
-                outbound: true,
-            };
-
-            neighbours.entry(from).or_default().push((
-                to,
-                Crossing {
-                    outbound: true,
-                    ..crossing
-                },
-            ));
-            neighbours.entry(to).or_default().push((
-                from,
-                Crossing {
-                    outbound: false,
-                    ..crossing
-                },
-            ));
-        }
-
-        for (standing, crossings) in &mut neighbours {
-            crossings.sort_by(crossing_order(*standing));
-        }
-
-        let mut next: Vec<(Step, f32)> = Vec::new();
-        for step in &frontier {
-            let Some(crossings) = neighbours.get(&step.topic) else {
-                continue;
-            };
-
-            for (neighbour, crossing) in crossings {
-                // Never back to where this walk started, and never straight
-                // back along the edge just taken. Both would return a topic
-                // already reached at a shorter distance; the first is the seed
-                // itself, which this channel must not hand back.
-                if hop > 1 && (*neighbour == step.origin || *neighbour == step.via) {
-                    continue;
-                }
-
-                if !seen.insert((*neighbour, step.origin)) {
-                    continue;
-                }
-
-                let arrival = Neighbor {
-                    topic: *neighbour,
-                    origin: step.origin,
-                    hops: hop,
-                    via: step.topic,
-                    kind: crossing.kind,
-                    derivation: crossing.derivation,
-                    confidence: crossing.confidence,
-                    outbound: crossing.outbound,
-                };
-
-                // Breadth first, so the first arrival is the shortest. Among
-                // arrivals at the same distance the most confident one wins,
-                // which is the order the ranking below expects.
-                reached
-                    .entry(*neighbour)
-                    .and_modify(|held| {
-                        if held.hops == hop && crossing.confidence > held.confidence {
-                            *held = arrival.clone();
-                        }
-                    })
-                    .or_insert_with(|| arrival.clone());
-
-                next.push((
-                    Step {
-                        topic: *neighbour,
-                        origin: step.origin,
-                        via: step.topic,
-                    },
-                    crossing.confidence,
-                ));
+        let (edges, cuts) = match per_topic {
+            Some(per_topic) => {
+                strongest_edges(
+                    &mut *connection,
+                    project,
+                    &positions,
+                    kind_labels.as_deref(),
+                    per_topic,
+                )
+                .await?
             }
-        }
+            None => (
+                every_edge(
+                    &mut *connection,
+                    project,
+                    &positions,
+                    kind_labels.as_deref(),
+                    options.at,
+                )
+                .await?,
+                Vec::new(),
+            ),
+        };
+
+        let mut next = if cuts.is_empty() {
+            cross(hop, &frontier, &edges, &mut seen, &mut reached)
+        } else {
+            let (seen_before, reached_before) = (seen.clone(), reached.clone());
+            let next = cross(hop, &frontier, &edges, &mut seen, &mut reached);
+            let stops =
+                hop == options.depth || options.keep.is_some_and(|keep| reached.len() >= keep);
+            if stops {
+                // Every walk that stood on a cut topic, so the bound can be
+                // priced for each seed it might have credited.
+                for cut in &cuts {
+                    let mut origins: Vec<TopicId> = frontier
+                        .iter()
+                        .filter(|step| step.topic == cut.standing)
+                        .map(|step| step.origin)
+                        .collect();
+                    origins.sort_unstable_by_key(|origin| origin.0);
+                    origins.dedup();
+                    unread.push(Unread {
+                        hops: hop,
+                        via: cut.standing,
+                        confidence: cut.confidence,
+                        after: cut.after,
+                        origins,
+                    });
+                }
+                next
+            } else {
+                // The walk goes on from here, and the next frontier is made
+                // of what this hop reached -- which past a cut is not known.
+                seen = seen_before;
+                reached = reached_before;
+                let edges = every_edge(
+                    &mut *connection,
+                    project,
+                    &positions,
+                    kind_labels.as_deref(),
+                    options.at,
+                )
+                .await?;
+                cross(hop, &frontier, &edges, &mut seen, &mut reached)
+            }
+        };
 
         if next.is_empty() {
             break;
@@ -1078,5 +1446,60 @@ pub async fn expand(
             .then_with(|| left.topic.0.cmp(&right.topic.0))
     });
 
-    Ok(neighbors)
+    Ok(Walk { neighbors, unread })
+}
+
+/// The `keep` arrivals `score` rates highest, highest first, ties by topic.
+///
+/// `score` is given an arrival's edge confidence, its hops and the seed it
+/// came from.
+pub fn strongest(
+    mut neighbors: Vec<Neighbor>,
+    keep: usize,
+    score: impl Fn(f32, u8, TopicId) -> f32,
+) -> Vec<Neighbor> {
+    let rate = |neighbor: &Neighbor| score(neighbor.confidence, neighbor.hops, neighbor.origin);
+    neighbors.sort_by(|left, right| {
+        rate(right)
+            .total_cmp(&rate(left))
+            .then_with(|| left.topic.0.cmp(&right.topic.0))
+    });
+    neighbors.truncate(keep);
+    neighbors
+}
+
+impl Walk {
+    /// [`strongest`], when what the walk left unread cannot change it, and
+    /// `None` when it might.
+    ///
+    /// `score` must depend on nothing but the three things it is given, and
+    /// must not fall as confidence rises. Then every topic missing from this
+    /// walk rates no higher than its [`Unread`] at that entry's confidence --
+    /// and, rating exactly that, sorts after `after` -- or no higher than the
+    /// next confidence down. So if the last arrival kept outranks all of that,
+    /// nothing missing could have been kept, and nothing kept differs from
+    /// what [`expand`] would have given.
+    ///
+    /// Fewer than `keep` arrivals is `None` whenever anything was cut, since
+    /// an unread edge could have filled the gap.
+    pub fn strongest(
+        self,
+        keep: usize,
+        score: impl Fn(f32, u8, TopicId) -> f32,
+    ) -> Option<Vec<Neighbor>> {
+        let ranked = strongest(self.neighbors, keep, &score);
+        if self.unread.is_empty() || keep == 0 {
+            return Some(ranked);
+        }
+        let last = ranked.get(keep - 1)?;
+        let floor = score(last.confidence, last.hops, last.origin);
+        let settled = self.unread.iter().all(|unread| {
+            unread.origins.iter().all(|origin| {
+                let bound = score(unread.confidence, unread.hops, *origin);
+                let below = score(unread.confidence.next_down(), unread.hops, *origin);
+                floor > bound || (floor == bound && last.topic.0 <= unread.after.0 && below < floor)
+            })
+        });
+        settled.then_some(ranked)
+    }
 }
