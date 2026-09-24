@@ -669,7 +669,7 @@ median -2.5%, while one arm's own rounds moved by up to 40%.
 
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
-evaluation workspace, 1.7 GB across its projects:
+evaluation workspace, 1.7 GB across its projects, before either change below:
 
 | table | total | share |
 | --- | --- | --- |
@@ -681,25 +681,107 @@ evaluation workspace, 1.7 GB across its projects:
 | `sources` | 94 MB | 5.8% |
 | `source_spans` | 81 MB | 4.9% |
 
-**The largest table is the work queue, and the corpus had finished indexing.**
+**The largest table was the work queue, and the corpus had finished indexing.**
 `index_jobs` held 651,128 settled rows out of 1,054,646, completed the day
 before and pruned by nothing since — because nothing had been written since.
 `jobs::prune` existed and worked; its call sat behind `drained.completed > 0`,
 so a drain cleaned the queue only when it had found work, and skipped it in
-exactly the state that needs it. A workspace that imports a corpus and goes
-quiet leaves the queue at its high-water mark indefinitely. Fixed, with a test
-about the empty drain specifically.
+exactly the state that needs it.
 
-Two things to read carefully there. Payloads are 57 MB of the 632; the rest is
-row overhead and six indexes over a million rows, so the cost of a queue row is
-mostly not the work it describes. And a `DELETE` returns space to PostgreSQL for
-reuse rather than to the filesystem — the database stops climbing and reuses
-what it holds, and only `VACUUM FULL` shrinks the file. "38.7%" is growth
-avoided, not a file about to get smaller.
+That was fixed, and then the question behind it was asked: **why keep a settled
+row at all?** Nothing read one. Every statement over the table asks about work
+still owed, and `enqueue` inserting a fresh row leaves it in the same state as
+reviving a settled one did. So a job is now deleted when it completes, and
+migration V10 deletes the settled rows an earlier build kept.
+
+The indexes were the other half: payloads were 57 MB of the 632, and the rest
+was row overhead and six indexes. `EXPLAIN ANALYZE` of every statement in
+`jobs.rs`, on a synthetic queue shaped like that one (1,054,646 rows, 651,128
+settled, five projects), found one of the six used by nothing and two
+answering questions a single index answers:
+
+| index | used by | now |
+| --- | --- | --- |
+| primary key | claim, complete, fail | kept |
+| `(project_id, idempotency_key)` unique | the enqueue conflict | kept |
+| `by_priority (priority, available_at, project_id)` | the claim, leading with the wrong column since claims became per-project | replaced |
+| `claimable (project_id, available_at)` | `pending`, `failed`, `replay`, `discard`, through `project_id` alone | replaced |
+| `exhausted` partial on `last_error IS NOT NULL` | nothing — no statement says that, so no plan can use it | dropped |
+| the TOAST table's | PostgreSQL | kept |
+
+`index_jobs_claim_order (project_id, priority, available_at)` replaces the
+middle three: the claim reads it in order and the per-project statements by its
+prefix. On the synthetic queue the three were 55 MB, and the one index is
+20 MB over the 403,518 rows still owed.
+
+**`topic_states` kept a second copy of every memory.** This page used to say
+it duplicated `topics.content`, which has never existed; the column was
+`topic_states.content`, and what it duplicated was the span it points at.
+Commit 39b60c5 checked all 425,916 states of the evaluation workspace and found
+every one equal to its span's slice of `source_versions.content`, 94 MB of
+content bytes. A state's content is now read from the evidence through the
+span, cut at its byte offsets, and migration V9 drops the column — after
+checking every row, and refusing with the offending state named if any
+disagrees.
+
+Both measured on fresh temporary workspaces, as an unprivileged user on four
+cores shared with other measurements, by a scratch harness that drives
+`Engine::remember` and `drain_cascade` at the default profile: XQuAD-R's 2,640
+distinct paragraphs in eleven languages, one topic each, before the change
+and after it, sizes from `pg_total_relation_size`:
+
+| | before | after |
+| --- | --- | --- |
+| `topic_states`, 2,640 states | 3.92 MB | **1.06 MB** |
+| `index_jobs`, 7,920 jobs owed | 4.09 MB | 3.91 MB |
+| `index_jobs`, once drained | 5.45 MB, every row kept | 4.01 MB, **no rows** |
+| `index_jobs`, drained and vacuumed | 5.45 MB | 2.14 MB |
+| whole database, drained and vacuumed | 16.6 MB | **10.4 MB** |
+
+`topic_states` falls by 73% on this corpus because its paragraphs are long —
+1,237 bytes on average — and the table now holds a row's bookkeeping and no
+text. The evaluation workspace's memories are shorter, so there the column
+was 94 MB of a 239 MB table rather than most of it.
+
+What it costs, paired and alternated between the two builds, five rounds of
+2,640 writes each and three read rounds per round:
+
+| | before | after |
+| --- | --- | --- |
+| one `remember`, median of five per-round medians | 1.93 ms (1.55–2.20) | 1.88 ms (1.67–2.25) |
+| `topic_states_by_id`, 150 states | 1.58 ms (1.39–1.82) | **1.89 ms** (1.71–2.07) |
+| `current_states_of`, 150 topics | 1.70 ms (1.49–1.97) | **2.06 ms** (1.84–2.15) |
+| `current_content`, the write path's lookup | 0.100 ms | 0.111 ms, inside both ranges |
+
+The write is unchanged within the noise. **The state fetch is not free**: one
+more primary-key join, to `source_versions`, costs about 0.3 ms at the
+150-candidate ceiling, which is the price of storing each memory once. A
+search pays it at most twice — once for the channels' candidates and once for
+the graph's — so under a millisecond, against the 99 ms
+[the CLI reference](cli.md) gives a search with reranking off and 1,522 ms at
+the default tier. The results
+themselves did not move: the before workspace, migrated by the after build,
+returned byte-identical top tens for forty questions through
+`Engine::search_reranked` at its defaults, scores to six decimals, and read
+back every state identically; so did a workspace the after build filled from
+scratch.
+
+**A migration does not make an existing file smaller.** Dropping a column marks
+it dropped, and a `DELETE` frees space for PostgreSQL to reuse; neither returns
+anything to the filesystem, and `VACUUM FULL` cannot run inside the
+transaction a migration runs in. So V9 and V10 stop the growth — every state
+written afterwards is smaller, and the queue stops at the work owed — and the
+bytes already on disk stay until something rewrites the tables. Measured on the
+migrated before workspace with 15,840 states and 39,600 jobs owed: `topic_states`
+22.5 MB as migrated and 4.9 MB after `VACUUM FULL topic_states`; `index_jobs`
+21.5 MB and 16.3 MB. Nothing in the product runs one.
 
 What is still unattributed on this axis: `source_versions` at 16.7% has not been
-looked at, and `topic_states` carries a duplicate of `topics.content` measured
-at 10.2% of a workspace elsewhere. Neither is done.
+looked at, and it is now the only copy of every memory's text. The queue's rows
+also still carry their subject twice, once in `payload` and once inside
+`idempotency_key` — 59 MB and 57 MB on the synthetic queue, where the unique
+index over the key was the largest index at 126 MB — which is the next thing
+to narrow.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
