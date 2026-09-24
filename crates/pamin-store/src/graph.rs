@@ -790,6 +790,39 @@ macro_rules! edges_touching {
     };
 }
 
+/// The order a topic's crossings are taken in: most confident first, then by
+/// the topic on the other end, then by kind, then by which end asserted it.
+///
+/// Every rule of the walk that chooses between two arrivals keeps the first it
+/// meets, so this order is what settles every tie. It used to be the order
+/// PostgreSQL happened to return rows in, which a statement without an
+/// `ORDER BY` does not promise: one topic reached from one seed over two edges
+/// kept whichever row came first, not the more confident one.
+///
+/// It is also an order one statement could have returned every row in -- by
+/// confidence, then the lesser endpoint, the greater, the kind, and
+/// `from_topic` -- so a walk taking it is a walk the unordered statement could
+/// have produced.
+fn crossing_order(
+    standing: TopicId,
+) -> impl Fn(&(TopicId, Crossing), &(TopicId, Crossing)) -> std::cmp::Ordering {
+    move |(left, one), (right, other)| {
+        let asserted_from = |neighbour: &TopicId, crossing: &Crossing| {
+            if crossing.outbound {
+                standing.0
+            } else {
+                neighbour.0
+            }
+        };
+        other
+            .confidence
+            .total_cmp(&one.confidence)
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| one.kind.cmp(&other.kind))
+            .then_with(|| asserted_from(left, one).cmp(&asserted_from(right, other)))
+    }
+}
+
 /// Walks outward from `seeds` through live edges.
 ///
 /// Seeds themselves are returned only when something else reaches them, which
@@ -932,6 +965,10 @@ pub async fn expand(
                     ..crossing
                 },
             ));
+        }
+
+        for (standing, crossings) in &mut neighbours {
+            crossings.sort_by(crossing_order(*standing));
         }
 
         let mut next: Vec<(Step, f32)> = Vec::new();
