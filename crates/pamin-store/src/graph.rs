@@ -491,7 +491,7 @@ async fn assert_within(
     Ok(Assertion::Appended(row_to_version(&row)))
 }
 
-/// Closes the derived edges of one kind out of a topic that are no longer
+/// Closes the derived edges of one kind out of each topic that are no longer
 /// claimed, and returns how many.
 ///
 /// Deriving edges only ever asserted them, so a memory rewritten from "uses
@@ -507,21 +507,10 @@ async fn assert_within(
 /// Closing rather than deleting, and `closed` rather than `deleted`: the claim
 /// is retracted from here on, not declared never to have held. What the memory
 /// said before is still true of before, which is what `--at` reads.
-pub async fn retract_derived(
-    executor: impl PgExecutor<'_>,
-    project: ProjectId,
-    from: TopicId,
-    kind: EdgeKind,
-    keep: &[TopicId],
-) -> Result<u64> {
-    retract_derived_all(executor, project, kind, &[(from, keep.to_vec())]).await
-}
-
-/// [`retract_derived`] for several topics, in one statement.
 ///
-/// Each entry is a topic and what its content says now. What a topic keeps is
-/// passed as pairs, since the lists differ in length and an array of arrays
-/// in PostgreSQL has to be rectangular.
+/// Several topics in one statement: each entry is a topic and what its content
+/// says now. What a topic keeps is passed as pairs, since the lists differ in
+/// length and an array of arrays in PostgreSQL has to be rectangular.
 pub async fn retract_derived_all(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
