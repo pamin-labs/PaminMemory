@@ -16,7 +16,9 @@ use pamin_index::{
     Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
+use pamin_store::{
+    Connections, Database, PgConnection, PgExecutor, Workspace, graph, jobs, repository,
+};
 use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
@@ -1018,25 +1020,18 @@ impl Engine {
 
         // Evidence first, always, and before the filter's verdict is acted on.
         // That ordering is what makes a rejection recoverable instead of a loss.
-        let evidence = repository::append_source_version(
+        let (evidence, span) = repository::append_evidence(
             &mut transaction,
             self.project,
             source,
-            request.content,
-            request.content_hash,
-            request.verdict,
-            request.reason,
-        )
-        .await?;
-
-        let span = repository::append_source_span(
-            &mut *transaction,
-            self.project,
-            evidence.id,
-            0,
-            request.content.len() as u32,
-            request.language,
-            request.language_confidence,
+            &repository::Evidence {
+                content: request.content,
+                content_hash: request.content_hash,
+                decision: request.verdict,
+                reason: request.reason,
+                language: request.language,
+                language_confidence: request.language_confidence,
+            },
         )
         .await?;
 
@@ -1047,7 +1042,7 @@ impl Engine {
                 Some(topic) => topic,
                 None => {
                     let topic =
-                        repository::ensure_topic(&mut transaction, self.project, request.topic)
+                        repository::create_topic(&mut transaction, self.project, request.topic)
                             .await?;
                     // In the same transaction as the topic. A topic that exists
                     // and is missing from the name index is a topic no memory
@@ -1140,7 +1135,31 @@ impl Engine {
     /// unchanged and written nowhere, and only then is the rest closed, so
     /// re-deriving an unaltered memory still touches no row.
     pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
-        // Every run of tokens this memory contains that is short enough to be
+        let mut connection = self.database.pool().acquire().await?;
+        self.restate_mentions(&mut connection, std::slice::from_ref(state))
+            .await
+    }
+
+    /// [`derive_mentions`](Self::derive_mentions) for many states, asking each
+    /// of its questions once for all of them.
+    ///
+    /// A cascade round restates up to sixty-four memories, and one at a time
+    /// that was five statements each -- the widest name, the names in the
+    /// memory, the edges already there, and the retraction -- where each
+    /// question is the same for every memory in the round apart from its
+    /// arguments. So the runs of every memory go into one lookup, the edges
+    /// into one assertion and the retractions into one statement, and the run
+    /// each name matched is what says which memory it belongs to.
+    pub(crate) async fn restate_mentions(
+        &self,
+        connection: &mut PgConnection,
+        states: &[TopicState],
+    ) -> Result<usize> {
+        if states.is_empty() {
+            return Ok(0);
+        }
+
+        // Every run of tokens each memory contains that is short enough to be
         // somebody's name. A name matches only as a contiguous run, so this is
         // the complete set of things it could be naming -- and asking the index
         // for these is the same question the old loop asked of every topic in
@@ -1150,43 +1169,58 @@ impl Engine {
         // value can only be too low, and too low here does not mean a missed
         // edge -- what is not found below is closed as no longer named. See
         // [`Engine::widest_name`].
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
-        let runs = off_the_runtime(|| {
-            runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest)
+        let widest = repository::widest_topic_name(&mut *connection, self.project).await?;
+        let runs: Vec<Vec<String>> = off_the_runtime(|| {
+            states
+                .iter()
+                .map(|state| runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest))
+                .collect()
         });
+        let mut asked: Vec<String> = runs.iter().flatten().cloned().collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let mut naming: std::collections::HashMap<String, Vec<TopicId>> =
+            std::collections::HashMap::new();
+        for (run, topic) in
+            repository::names_matching(&mut *connection, self.project, &asked).await?
+        {
+            naming.entry(run).or_default().push(topic);
+        }
 
-        let mut named = repository::topics_named_by(self.database.pool(), self.project, &runs)
-            .await?
-            .into_iter()
-            // A topic naming itself is not a relationship, and the schema
-            // rejects the edge anyway.
-            .filter(|topic| *topic != state.topic_id)
-            .collect::<Vec<TopicId>>();
-        named.sort_unstable();
-        named.dedup();
-
-        let edges: Vec<_> = named
-            .iter()
-            .map(|target| {
+        let mut edges = Vec::new();
+        let mut named_now = Vec::with_capacity(states.len());
+        for (state, runs) in states.iter().zip(&runs) {
+            let mut named: Vec<TopicId> = runs
+                .iter()
+                .filter_map(|run| naming.get(run))
+                .flatten()
+                .copied()
+                // A topic naming itself is not a relationship, and the schema
+                // rejects the edge anyway.
+                .filter(|topic| *topic != state.topic_id)
+                .collect();
+            named.sort_unstable();
+            named.dedup();
+            edges.extend(named.iter().map(|target| {
                 (
                     state.topic_id,
                     *target,
                     EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE),
                 )
-            })
-            .collect();
+            }));
+            named_now.push((state.topic_id, named));
+        }
 
         // One transaction: the edges a memory derives are one statement about
         // what it says, and asserting them separately both cost a commit each
         // and let a crash tell half of it.
         let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
 
-        graph::retract_derived(
-            self.database.pool(),
+        graph::retract_derived_all(
+            &mut *connection,
             self.project,
-            state.topic_id,
             EdgeKind::Mentions,
-            &named,
+            &named_now,
         )
         .await?;
 
@@ -1246,46 +1280,79 @@ impl Engine {
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
-        let candidates = off_the_runtime(|| self.index().recall_naming(name, BACKFILL_CANDIDATES))?;
+        let mut connection = self.database.pool().acquire().await?;
+        self.backfill_all(&mut connection, &[(topic, name.to_string())])
+            .await
+    }
 
-        let states =
-            repository::current_states_of(self.database.pool(), self.project, &candidates).await?;
+    /// [`backfill_mentions`](Self::backfill_mentions) for many new topics,
+    /// with one lookup of the states every probe returned and one assertion.
+    ///
+    /// The states are read through the pointer on `topics`, so every one of
+    /// them is the state its topic stands for now -- which the per-topic form
+    /// then asked the ledger a second time, in a second statement, and got
+    /// the same answer bar a write landing in between. That write queues its
+    /// own restatement, which is what decides the edges of the content it
+    /// wrote.
+    pub(crate) async fn backfill_all(
+        &self,
+        connection: &mut PgConnection,
+        topics: &[(TopicId, String)],
+    ) -> Result<usize> {
+        if topics.is_empty() {
+            return Ok(0);
+        }
 
-        // The probe returns states; the edge is about topics, and only the
-        // state a topic stands for now can support one.
-        let topics: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
-        let current: std::collections::HashSet<pamin_core::TopicStateId> =
-            repository::topics_by_id(self.database.pool(), self.project, &topics)
-                .await?
-                .into_iter()
-                .filter_map(|(_, _, current)| current)
-                .collect();
-
-        // Off the runtime because this segments every candidate the probe
-        // returned -- up to `BACKFILL_CANDIDATES` documents -- and that is tens
-        // of milliseconds of ICU work that would otherwise run on a runtime
-        // thread and stall every task sharing it.
-        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = off_the_runtime(|| {
-            let segmenter = &self.segmenter;
-            // The fixed side here is the name, so that is the side prepared.
-            let name = segmenter.name_sequence(name);
-            states
+        let candidates: Vec<Vec<TopicId>> = off_the_runtime(|| {
+            topics
                 .iter()
-                .filter(|state| state.topic_id != topic)
-                .filter(|state| current.contains(&state.id))
-                .filter(|state| {
-                    pamin_index::segmentation::names(
-                        &segmenter.name_sequence(&state.content),
-                        &name,
-                    )
-                })
-                .map(|state| (state.topic_id, state.id))
-                .collect()
+                .map(|(_, name)| self.index().recall_naming(name, BACKFILL_CANDIDATES))
+                .collect::<std::result::Result<Vec<_>, _>>()
+        })?;
+        let mut wanted: Vec<TopicId> = candidates.iter().flatten().copied().collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+
+        // Only current states are considered: the probe returns topics, and
+        // only the state a topic stands for now can support an edge.
+        let states = repository::current_states_of(&mut *connection, self.project, &wanted).await?;
+        let found: std::collections::HashMap<TopicId, &TopicState> =
+            states.iter().map(|state| (state.topic_id, state)).collect();
+
+        // Off the runtime because this segments every candidate the probes
+        // returned -- up to `BACKFILL_CANDIDATES` documents a topic -- and that
+        // is tens of milliseconds of ICU work that would otherwise run on a
+        // runtime thread and stall every task sharing it. Each candidate once,
+        // however many of the names it is a candidate for.
+        let naming: Vec<(TopicId, pamin_core::TopicStateId, TopicId)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
+            let sequences: std::collections::HashMap<TopicId, Vec<String>> = states
+                .iter()
+                .map(|state| (state.topic_id, segmenter.name_sequence(&state.content)))
+                .collect();
+            let mut naming = Vec::new();
+            for ((topic, name), candidates) in topics.iter().zip(&candidates) {
+                // The fixed side here is the name, so that is the side prepared.
+                let name = segmenter.name_sequence(name);
+                let mut seen = std::collections::HashSet::new();
+                for candidate in candidates {
+                    let Some(state) = found.get(candidate) else {
+                        continue;
+                    };
+                    if state.topic_id == *topic || !seen.insert(state.topic_id) {
+                        continue;
+                    }
+                    if pamin_index::segmentation::names(&sequences[&state.topic_id], &name) {
+                        naming.push((state.topic_id, state.id, *topic));
+                    }
+                }
+            }
+            naming
         });
 
         let edges: Vec<_> = naming
             .into_iter()
-            .map(|(from, caused_by)| {
+            .map(|(from, caused_by, topic)| {
                 (
                     from,
                     topic,
@@ -1499,24 +1566,46 @@ impl Engine {
         // one channel's whole list before another's first result. Fusion
         // cannot do the ordering: the graph is one of the lists it fuses.
         let candidates = best_first(&lists);
+        // Every statement below on one connection, taken once the index has
+        // answered rather than held through the embedding: each statement run
+        // on the pool returns its connection afterwards, and sqlx checks a
+        // returned connection with a round trip of its own.
+        let mut connection = self.database.pool().acquire().await?;
         let mut working = WorkingSet::default();
         working.add(
-            repository::current_states_of(self.database.pool(), self.project, &candidates).await?,
+            repository::current_states_named(&mut *connection, self.project, &candidates).await?,
         );
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
         let (graph_list, paths) = self
-            .recall_graph(query, &candidates, &lists, &mut working, depths)
+            .recall_graph(
+                &mut connection,
+                query,
+                &candidates,
+                &lists,
+                &mut working,
+                depths,
+            )
             .await?;
+
+        // A path explains itself by the topics at both ends of its last edge,
+        // and at two hops the near end is the topic in the middle -- which the
+        // search need not have resolved: it can have been cut from the graph's
+        // list, or stand for nothing now. Named here, and only when a path
+        // needs it, so a one-hop walk still pays nothing.
+        let unnamed: Vec<TopicId> = paths
+            .values()
+            .map(|reached| reached.via)
+            .filter(|via| !working.names.contains_key(via))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !unnamed.is_empty() {
+            working.name(repository::topics_by_id(&mut *connection, self.project, &unnamed).await?);
+        }
         let mut lists = lists;
         lists.push(graph_list);
-
-        // Names, and which state each topic stands for now. Asked once, for the
-        // topics that actually produced a result, rather than for the project.
-        working.describe(
-            repository::topics_by_id(self.database.pool(), self.project, &working.topics()).await?,
-        );
         let live = working;
 
         let mut fused = fusion.fuse(&lists);
@@ -1579,6 +1668,7 @@ impl Engine {
     /// state, so the trace can say why the graph could see it.
     async fn recall_graph(
         &self,
+        connection: &mut PgConnection,
         query: &str,
         ranked: &[TopicId],
         lists: &[ChannelResults],
@@ -1593,7 +1683,7 @@ impl Engine {
         // same index the same way.
         let widest = self.widest_name().await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
-        let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
+        let named = repository::topics_named_by(&mut *connection, self.project, &runs).await?;
         let relevance = seed_relevance(&named, lists);
 
         // A named topic no channel returned is not in the working set, and the
@@ -1609,7 +1699,7 @@ impl Engine {
             .collect();
         if !unresolved.is_empty() {
             working.add(
-                repository::current_states_of(self.database.pool(), self.project, &unresolved)
+                repository::current_states_named(&mut *connection, self.project, &unresolved)
                     .await?,
             );
         }
@@ -1634,7 +1724,7 @@ impl Engine {
         };
 
         let mut neighbors = graph::expand(
-            self.database.pool(),
+            &mut *connection,
             self.project,
             &seeds,
             // Bounded by what this channel keeps, so a hub-shaped project
@@ -1671,9 +1761,9 @@ impl Engine {
         // `topics`.
         let reached: Vec<TopicId> = neighbors.iter().map(|neighbor| neighbor.topic).collect();
         let states =
-            repository::current_states_of(self.database.pool(), self.project, &reached).await?;
+            repository::current_states_named(&mut *connection, self.project, &reached).await?;
         let resolves: std::collections::HashSet<TopicId> =
-            states.iter().map(|state| state.topic_id).collect();
+            states.iter().map(|(_, state)| state.topic_id).collect();
         working.add(states);
 
         let mut candidates = Vec::new();
@@ -1926,8 +2016,8 @@ pub struct Rebuilt {
 ///
 /// It is filled in two steps because the search path finds its results in two
 /// steps: the index and then the graph, each naming topics. Both go in here,
-/// and the names are attached once at the end -- when the set of topics that
-/// produced a result is finally known.
+/// each state with its topic's name, which the lookup that resolves the state
+/// returns beside it.
 #[derive(Default)]
 struct WorkingSet {
     /// What each topic stands for now. Only current states are ranked, so
@@ -1938,24 +2028,20 @@ struct WorkingSet {
 }
 
 impl WorkingSet {
-    fn add(&mut self, states: Vec<TopicState>) {
-        for state in states {
+    /// Records states and what the ledger calls their topics, which arrive
+    /// together.
+    fn add(&mut self, states: Vec<(String, TopicState)>) {
+        for (name, state) in states {
+            self.names.insert(state.topic_id, name);
             self.current.insert(state.topic_id, state);
         }
     }
 
-    /// Records what the ledger calls these topics.
-    fn describe(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
+    /// Records names for topics the search reached without resolving.
+    fn name(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
         for (topic, name, _) in topics {
             self.names.insert(topic, name);
         }
-    }
-
-    /// The topics found so far.
-    fn topics(&self) -> Vec<TopicId> {
-        let mut topics: Vec<TopicId> = self.current.keys().copied().collect();
-        topics.sort_unstable_by_key(|topic| topic.0);
-        topics
     }
 
     fn state(&self, topic: TopicId) -> Option<&TopicState> {

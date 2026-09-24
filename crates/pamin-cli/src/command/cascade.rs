@@ -241,7 +241,9 @@ pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result
     Ok(Drained {
         completed: drained.completed,
         failed: drained.failed,
-        pending: drained.pending,
+        // Counted in full: the drain's own figure stops at the lag bound,
+        // which is all a write needs and less than this command reports.
+        pending: jobs::pending(engine.database.pool(), engine.project).await?,
         segments: shape.is_worth_rebuilding().then(|| Segments {
             holds: shape.segments(),
             wants: shape.wanted(),
@@ -263,7 +265,7 @@ async fn keep_running(session: &Session, project: &str, profile: Profile) -> Res
             tracing::info!(
                 completed = drained.completed,
                 failed = drained.failed,
-                pending = drained.pending,
+                pending = jobs::pending(engine.database.pool(), engine.project).await?,
                 "cascade round"
             );
         }

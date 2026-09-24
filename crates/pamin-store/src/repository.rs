@@ -109,18 +109,25 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
     })
 }
 
-/// Returns the source with this locator, creating it if it does not exist.
+/// Returns the source with this locator, creating it if it does not exist,
+/// and holds it locked until the transaction ends.
 ///
 /// Re-ingesting the same locator appends a version to the existing source
 /// rather than forking a second one, which is what keeps a file's history in a
 /// single chain.
+///
+/// The lock is what [`append_source_version`] numbers under, taken here
+/// because this is the statement that finds the row: locking it again by id
+/// was a second round trip for the same row. A row this call inserts is
+/// already held by the inserting transaction, so both paths leave it locked.
+/// Outside a transaction the lock lasts one statement and means nothing.
 pub async fn ensure_source(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     kind: SourceKind,
     locator: &str,
 ) -> Result<SourceId> {
-    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2";
+    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
 
     let found = sqlx::query(FIND)
         .bind(project.0)
@@ -164,12 +171,15 @@ pub async fn ensure_source(
 /// The verdict rides on a row that exists either way: the filter decides
 /// whether content reaches the retrieval surface, never whether it is kept.
 ///
-/// The version number is read and written under a lock on the source row, for
-/// the same reason `append_topic_state` locks the topic. Two agents writing to
-/// one source otherwise both read the same maximum and both claim the version
-/// after it, and only one of the two rows survives the uniqueness constraint.
-/// Losing the other is losing evidence, which is the one thing this store
-/// promises never to do.
+/// **Call it after [`ensure_source`], in the same transaction.** The version
+/// number is read and written under the lock that call takes on the source
+/// row. Two agents writing to one source otherwise both read the same maximum
+/// and both claim the version after it, and only one of the two rows survives
+/// the uniqueness constraint. Losing the other is losing evidence, which is
+/// the one thing this store promises never to do. The lock has to be taken in
+/// a statement before this one: a statement reads with the snapshot it began
+/// with, so one that waited for the lock inside itself would still number from
+/// what it saw before the wait.
 pub async fn append_source_version(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
@@ -179,42 +189,128 @@ pub async fn append_source_version(
     decision: FilterDecision,
     reason: &str,
 ) -> Result<SourceVersion> {
-    sqlx::query("SELECT id FROM sources WHERE id = $1 FOR UPDATE")
-        .bind(source.0)
-        .execute(&mut *connection)
-        .await?;
+    let evidence = Evidence {
+        content,
+        content_hash,
+        decision,
+        reason,
+        language: None,
+        language_confidence: None,
+    };
+    let (version, _) = insert_evidence(connection, project, source, &evidence, false).await?;
+    Ok(version)
+}
 
-    let row = sqlx::query(
+/// Evidence as the write path records it: the content, the filter's verdict
+/// on it, and the language detected over it.
+pub struct Evidence<'a> {
+    pub content: &'a str,
+    pub content_hash: &'a str,
+    pub decision: FilterDecision,
+    pub reason: &'a str,
+    pub language: Option<&'a str>,
+    pub language_confidence: Option<f32>,
+}
+
+/// Appends evidence and the span that covers all of it, in one statement.
+///
+/// What [`append_source_version`] followed by [`append_source_span`] over the
+/// whole content does, for the write path, which records exactly that: the two
+/// inserts were two round trips inside the write transaction, and the second
+/// needed nothing from the first but the id it had just chosen. Same
+/// precondition as [`append_source_version`]: call it after [`ensure_source`],
+/// in the same transaction.
+pub async fn append_evidence(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    source: SourceId,
+    evidence: &Evidence<'_>,
+) -> Result<(SourceVersion, SourceSpan)> {
+    let (version, span) = insert_evidence(connection, project, source, evidence, true).await?;
+    Ok((version, span.expect("asked for the span")))
+}
+
+/// Numbers and inserts a source version, the one statement both appends share.
+macro_rules! insert_source_version {
+    () => {
         "INSERT INTO source_versions (
              id, project_id, source_id, version, content, content_hash,
              filter_decision, filter_reason, recorded_at
          )
          SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8
-         FROM source_versions WHERE source_id = $3
-         RETURNING id, version, recorded_at",
-    )
-    .bind(SourceVersionId::new().0)
-    .bind(project.0)
-    .bind(source.0)
-    .bind(content)
-    .bind(content_hash)
-    .bind(decision.label())
-    .bind(reason)
-    .bind(OffsetDateTime::now_utc())
-    .fetch_one(connection)
-    .await?;
+         FROM source_versions WHERE project_id = $2 AND source_id = $3
+         RETURNING id, version, recorded_at"
+    };
+}
 
-    Ok(SourceVersion {
+/// The version, and with `whole_span` the span over its whole content, written
+/// by one statement: a data-modifying `WITH` runs whether or not the outer
+/// query reads it, and the span's foreign key is checked at the end of the
+/// statement, by which point the version it names exists.
+async fn insert_evidence(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    source: SourceId,
+    evidence: &Evidence<'_>,
+    whole_span: bool,
+) -> Result<(SourceVersion, Option<SourceSpan>)> {
+    const VERSION: &str = insert_source_version!();
+    const WITH_SPAN: &str = concat!(
+        "WITH version AS (",
+        insert_source_version!(),
+        "), span AS (
+             INSERT INTO source_spans (
+                 id, project_id, source_version_id, byte_start, byte_end,
+                 detected_language, language_confidence
+             )
+             SELECT $9, $2, version.id, 0, $10, $11, $12 FROM version
+         )
+         SELECT id, version, recorded_at FROM version"
+    );
+
+    let span_id = SourceSpanId::new();
+    let byte_end = evidence.content.len() as u32;
+    let query = sqlx::query(if whole_span { WITH_SPAN } else { VERSION })
+        .bind(SourceVersionId::new().0)
+        .bind(project.0)
+        .bind(source.0)
+        .bind(evidence.content)
+        .bind(evidence.content_hash)
+        .bind(evidence.decision.label())
+        .bind(evidence.reason)
+        .bind(OffsetDateTime::now_utc());
+    let query = if whole_span {
+        query
+            .bind(span_id.0)
+            .bind(byte_end as i32)
+            .bind(evidence.language)
+            .bind(evidence.language_confidence)
+    } else {
+        query
+    };
+    let row = query.fetch_one(connection).await?;
+
+    let version = SourceVersion {
         id: row.get::<uuid::Uuid, _>("id").into(),
         project_id: project,
         source_id: source,
         version: from_sql_version(row.get("version")),
-        content: content.to_string(),
-        content_hash: content_hash.to_string(),
-        filter_decision: decision,
-        filter_reason: reason.to_string(),
+        content: evidence.content.to_string(),
+        content_hash: evidence.content_hash.to_string(),
+        filter_decision: evidence.decision,
+        filter_reason: evidence.reason.to_string(),
         recorded_at: row.get("recorded_at"),
-    })
+    };
+    let span = whole_span.then(|| SourceSpan {
+        id: span_id,
+        project_id: project,
+        source_version_id: version.id,
+        byte_start: 0,
+        byte_end,
+        detected_language: evidence.language.map(str::to_string),
+        language_confidence: evidence.language_confidence,
+    });
+    Ok((version, span))
 }
 
 /// Records a byte range into a source version, with any language detected for it.
@@ -268,7 +364,20 @@ pub async fn ensure_topic(
     if let Some(topic) = find_topic(&mut *connection, project, name).await? {
         return Ok(topic);
     }
+    create_topic(connection, project, name).await
+}
 
+/// Creates the topic with this name, or returns the one another writer created
+/// first.
+///
+/// The second half of [`ensure_topic`], for a caller that has already looked
+/// the name up and found nothing: asking again would be the same `SELECT` a
+/// second time in one transaction, and the insert settles a race without it.
+pub async fn create_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+) -> Result<Topic> {
     let inserted = sqlx::query(
         "INSERT INTO topics (id, project_id, name, created_at)
          VALUES ($1, $2, $3, $4)
@@ -337,29 +446,37 @@ pub async fn append_topic_state(
         "a state's span has to point into the evidence it is cut from"
     );
 
-    sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
+    // The lock and the predecessor in one statement. The predecessor is the
+    // newest surviving state, which is what `current_state_id` holds: every
+    // path that changes which states survive moves it under this same lock
+    // (this function, below, and `soft_delete_topic_state`). A statement that
+    // waits for a row lock reads the row as the holder left it, so this sees
+    // the pointer a concurrent append just moved, not the one before it.
+    let previous = sqlx::query("SELECT current_state_id FROM topics WHERE id = $1 FOR UPDATE")
         .bind(topic.0)
-        .execute(&mut *connection)
-        .await?;
+        .fetch_one(&mut *connection)
+        .await?
+        .get::<Option<uuid::Uuid>, _>("current_state_id")
+        .map(TopicStateId::from);
 
-    let previous = sqlx::query(
-        "SELECT id FROM topic_states
-         WHERE topic_id = $1 AND deleted_at IS NULL
-         ORDER BY version DESC LIMIT 1",
-    )
-    .bind(topic.0)
-    .fetch_optional(&mut *connection)
-    .await?
-    .map(|row| TopicStateId::from(row.get::<uuid::Uuid, _>("id")));
-
+    // The state and the pointer to it in one statement: the appended state is
+    // the newest surviving one by construction, so the pointer moves with it
+    // rather than being recomputed, and there is no moment at which the topic
+    // points at the state before this one.
     let row = sqlx::query(
-        "INSERT INTO topic_states (
-             id, project_id, topic_id, version, source_span_id,
-             observed_at, recorded_at, supersedes, valid_from, valid_to
+        "WITH state AS (
+             INSERT INTO topic_states (
+                 id, project_id, topic_id, version, source_span_id,
+                 observed_at, recorded_at, supersedes, valid_from, valid_to
+             )
+             SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9
+             FROM topic_states WHERE project_id = $2 AND topic_id = $3
+             RETURNING id, version, recorded_at
+         ), pointer AS (
+             UPDATE topics SET current_state_id = state.id, current_version = state.version
+             FROM state WHERE topics.id = $3
          )
-         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9
-         FROM topic_states WHERE topic_id = $3
-         RETURNING id, version, recorded_at",
+         SELECT id, version, recorded_at FROM state",
     )
     .bind(TopicStateId::new().0)
     .bind(project.0)
@@ -392,12 +509,6 @@ pub async fn append_topic_state(
         supersedes: previous,
         deleted_at: None,
     };
-
-    // The appended state is the newest surviving one by construction, so the
-    // pointer moves here rather than being recomputed. Same transaction, same
-    // lock: there is no window where the topic points at the state before this
-    // one.
-    point_at(connection, topic, Some(&state)).await?;
 
     Ok(state)
 }
@@ -562,8 +673,13 @@ pub async fn topic_versions(executor: impl PgExecutor<'_>, topic: TopicId) -> Re
 }
 
 /// Loads one version of a topic.
+///
+/// Takes the project because the key it reads is `(project_id, topic_id,
+/// version)`, and without its first column that is a walk of the whole index
+/// -- every project's states -- to find one row.
 pub async fn topic_state(
     executor: impl PgExecutor<'_>,
+    project: ProjectId,
     topic: TopicId,
     version: u32,
 ) -> Result<Option<TopicState>> {
@@ -573,8 +689,9 @@ pub async fn topic_state(
         span_columns!(),
         " FROM topic_states ts",
         span_joins!(),
-        " WHERE ts.topic_id = $1 AND ts.version = $2"
+        " WHERE ts.project_id = $1 AND ts.topic_id = $2 AND ts.version = $3"
     ))
+    .bind(project.0)
     .bind(topic.0)
     .bind(to_sql_version(version))
     .fetch_optional(executor)
@@ -648,6 +765,24 @@ pub async fn current_states_of(
     project: ProjectId,
     topics: &[TopicId],
 ) -> Result<Vec<TopicState>> {
+    Ok(current_states_named(executor, project, topics)
+        .await?
+        .into_iter()
+        .map(|(_, state)| state)
+        .collect())
+}
+
+/// [`current_states_of`], with each topic's name beside its state.
+///
+/// The statement already joins `topics` to follow the pointer, so the name is
+/// a column away. The search path needs both -- the state to rank and the name
+/// to show -- and asked for the name in a second round trip over the same
+/// rows.
+pub async fn current_states_named(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topics: &[TopicId],
+) -> Result<Vec<(String, TopicState)>> {
     if topics.is_empty() {
         return Ok(Vec::new());
     }
@@ -657,7 +792,8 @@ pub async fn current_states_of(
         "SELECT ",
         state_columns!("ts."),
         span_columns!(),
-        " FROM topic_states ts
+        ", t.name AS topic_name
+          FROM topic_states ts
           JOIN topics t ON t.current_state_id = ts.id",
         span_joins!(),
         " WHERE t.project_id = $1 AND t.id = ANY($2)"
@@ -667,7 +803,10 @@ pub async fn current_states_of(
     .fetch_all(executor)
     .await?;
 
-    Ok(rows.iter().map(row_to_topic_state).collect())
+    Ok(rows
+        .iter()
+        .map(|row| (row.get("topic_name"), row_to_topic_state(row)))
+        .collect())
 }
 
 /// What one topic currently says, found by name.
@@ -839,16 +978,21 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
 ///
 /// Reads back the filter verdict, which is how a caller confirms that filtered
 /// content was still stored rather than discarded.
+///
+/// Takes the project for the reason [`topic_state`] does: both indexes over
+/// this table lead with it.
 pub async fn latest_source_version(
     executor: impl PgExecutor<'_>,
+    project: ProjectId,
     source: SourceId,
 ) -> Result<Option<SourceVersion>> {
     let row = sqlx::query(
         "SELECT id, project_id, source_id, version, content, content_hash,
                 filter_decision, filter_reason, recorded_at
-         FROM source_versions WHERE source_id = $1
+         FROM source_versions WHERE project_id = $1 AND source_id = $2
          ORDER BY version DESC LIMIT 1",
     )
+    .bind(project.0)
     .bind(source.0)
     .fetch_optional(executor)
     .await?;
@@ -1085,12 +1229,29 @@ pub async fn topics_named_by(
     project: ProjectId,
     runs: &[String],
 ) -> Result<Vec<TopicId>> {
+    Ok(names_matching(executor, project, runs)
+        .await?
+        .into_iter()
+        .map(|(_, topic)| topic)
+        .collect())
+}
+
+/// [`topics_named_by`], with the run each topic's name matched.
+///
+/// For a caller asking on behalf of several texts at once: each text's runs
+/// go into one question, and the run beside each answer is what says which
+/// text it belongs to.
+pub async fn names_matching(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    runs: &[String],
+) -> Result<Vec<(String, TopicId)>> {
     if runs.is_empty() {
         return Ok(Vec::new());
     }
 
     let rows = sqlx::query(
-        "SELECT topic_id FROM topic_name_tokens
+        "SELECT name_key, topic_id FROM topic_name_tokens
          WHERE project_id = $1 AND name_key = ANY($2)",
     )
     .bind(project.0)
@@ -1100,7 +1261,12 @@ pub async fn topics_named_by(
 
     Ok(rows
         .iter()
-        .map(|row| row.get::<uuid::Uuid, _>("topic_id").into())
+        .map(|row| {
+            (
+                row.get("name_key"),
+                row.get::<uuid::Uuid, _>("topic_id").into(),
+            )
+        })
         .collect())
 }
 

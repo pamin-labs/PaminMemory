@@ -260,16 +260,22 @@ pub async fn live_version(
 }
 
 /// Loads every version of an edge, oldest first.
+///
+/// Takes the project because the only index holding every version is keyed
+/// `(project_id, relationship_id, version)`; the one keyed by relationship
+/// alone holds live versions only.
 pub async fn edge_history(
     executor: impl PgExecutor<'_>,
+    project: ProjectId,
     relationship: RelationshipId,
 ) -> Result<Vec<RelationshipVersion>> {
     let rows = sqlx::query(concat!(
         "SELECT ",
         version_columns!(),
         " FROM relationship_versions
-          WHERE relationship_id = $1 ORDER BY version ASC"
+          WHERE project_id = $1 AND relationship_id = $2 ORDER BY version ASC"
     ))
+    .bind(project.0)
     .bind(relationship.0)
     .fetch_all(executor)
     .await?;
@@ -465,7 +471,7 @@ async fn assert_within(
              created_at, supersedes, caused_by_topic_state, confidence, derivation
          )
          SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10
-         FROM relationship_versions WHERE relationship_id = $3
+         FROM relationship_versions WHERE project_id = $2 AND relationship_id = $3
          RETURNING ",
         version_columns!()
     ))
@@ -508,7 +514,28 @@ pub async fn retract_derived(
     kind: EdgeKind,
     keep: &[TopicId],
 ) -> Result<u64> {
-    let kept: Vec<uuid::Uuid> = keep.iter().map(|topic| topic.0).collect();
+    retract_derived_all(executor, project, kind, &[(from, keep.to_vec())]).await
+}
+
+/// [`retract_derived`] for several topics, in one statement.
+///
+/// Each entry is a topic and what its content says now. What a topic keeps is
+/// passed as pairs, since the lists differ in length and an array of arrays
+/// in PostgreSQL has to be rectangular.
+pub async fn retract_derived_all(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    kind: EdgeKind,
+    keep: &[(TopicId, Vec<TopicId>)],
+) -> Result<u64> {
+    if keep.is_empty() {
+        return Ok(0);
+    }
+    let froms: Vec<uuid::Uuid> = keep.iter().map(|(from, _)| from.0).collect();
+    let (kept_from, kept_to): (Vec<uuid::Uuid>, Vec<uuid::Uuid>) = keep
+        .iter()
+        .flat_map(|(from, to)| to.iter().map(|to| (from.0, to.0)))
+        .unzip();
 
     let closed = sqlx::query(
         "UPDATE relationship_versions
@@ -516,18 +543,22 @@ pub async fn retract_derived(
           WHERE invalidated_at IS NULL
             AND derivation = $3
             AND relationship_id IN (
-                SELECT id FROM relationships
-                 WHERE project_id = $4 AND from_topic = $5 AND kind = $6
-                   AND NOT (to_topic = ANY($7))
+                SELECT r.id FROM relationships r
+                 WHERE r.project_id = $4 AND r.from_topic = ANY($5) AND r.kind = $6
+                   AND NOT EXISTS (
+                       SELECT 1 FROM unnest($7::uuid[], $8::uuid[]) AS kept (from_topic, to_topic)
+                        WHERE kept.from_topic = r.from_topic AND kept.to_topic = r.to_topic
+                   )
             )",
     )
     .bind(OffsetDateTime::now_utc())
     .bind(TombstoneReason::Closed.label())
     .bind(Derivation::Deterministic.label())
     .bind(project.0)
-    .bind(from.0)
+    .bind(&froms)
     .bind(kind.label())
-    .bind(&kept)
+    .bind(&kept_from)
+    .bind(&kept_to)
     .execute(executor)
     .await?;
 
@@ -742,6 +773,23 @@ impl Expansion<'_> {
     }
 }
 
+/// The edges incident on a frontier, `$2`, of the kinds in `$3` (all of them
+/// when it is null), before the question of which versions count.
+///
+/// The version is joined on its project as well as its relationship, which is
+/// the prefix of its unique key.
+macro_rules! edges_touching {
+    () => {
+        "SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
+         FROM relationships r
+         JOIN relationship_versions v
+           ON v.project_id = r.project_id AND v.relationship_id = r.id
+         WHERE r.project_id = $1
+           AND (r.from_topic = ANY($2) OR r.to_topic = ANY($2))
+           AND ($3::TEXT[] IS NULL OR r.kind = ANY ($3))"
+    };
+}
+
 /// Walks outward from `seeds` through live edges.
 ///
 /// Seeds themselves are returned only when something else reaches them, which
@@ -779,8 +827,12 @@ impl Expansion<'_> {
 /// puts the walk where a bound can be stated: the frontier is capped, which the
 /// recursive form had no way to express. The extra round trips buy that, and
 /// there are at most [`MAX_DEPTH`] of them.
+///
+/// Takes one connection and asks every hop on it: a statement run on the pool
+/// returns its connection afterwards, and sqlx checks a returned connection
+/// with a round trip of its own.
 pub async fn expand(
-    executor: impl PgExecutor<'_> + Copy,
+    connection: &mut sqlx::PgConnection,
     project: ProjectId,
     seeds: &[TopicId],
     options: &Expansion<'_>,
@@ -819,38 +871,37 @@ pub async fn expand(
             positions
         };
 
-        let edges = sqlx::query(
-            "SELECT r.from_topic, r.to_topic, r.kind, v.confidence, v.derivation
-             FROM relationships r
-             JOIN relationship_versions v ON v.relationship_id = r.id
-             WHERE r.project_id = $1
-               AND (r.from_topic = ANY($2) OR r.to_topic = ANY($2))
-               AND ($3::TEXT[] IS NULL OR r.kind = ANY ($3))
-               -- Which edges are visible depends on whether a moment was asked
-               -- about. Without `--at` the question is what we still stand
-               -- behind, so only uninvalidated versions count. With `--at` the
-               -- question is what held then, which a later retraction does not
-               -- answer on its own: an edge closed because the relationship
-               -- ended still held before it was closed, one deleted because the
-               -- claim was wrong never held at all, and a superseded one is
-               -- answered by its successor. That distinction is what
-               -- tombstone_reason records, and ignoring it made every
-               -- retraction erase its own history.
-               AND CASE WHEN $4::TIMESTAMPTZ IS NULL
-                   THEN v.invalidated_at IS NULL
-                   ELSE (v.valid_from IS NULL OR v.valid_from <= $4)
-                        AND (v.valid_to IS NULL OR $4 < v.valid_to)
-                        AND (v.invalidated_at IS NULL
-                             OR (v.tombstone_reason = 'closed'
-                                 AND $4 < v.invalidated_at))
-                   END",
-        )
-        .bind(project.0)
-        .bind(&positions)
-        .bind(kind_labels.as_deref())
-        .bind(options.at)
-        .fetch_all(executor)
-        .await?;
+        // Which edges are visible depends on whether a moment was asked
+        // about, and the two questions are two statements rather than one
+        // with a `CASE` on the parameter. Without `--at` the question is what
+        // we still stand behind, so only uninvalidated versions count -- and
+        // said literally, that is the predicate of the partial index
+        // `relationship_versions_live`, which a prepared statement's generic
+        // plan can use only if the statement says it rather than a branch on
+        // a parameter the plan has not seen. With `--at` the question is what
+        // held then, which a later retraction does not answer on its own: an
+        // edge closed because the relationship ended still held before it was
+        // closed, one deleted because the claim was wrong never held at all,
+        // and a superseded one is answered by its successor. That distinction
+        // is what tombstone_reason records, and ignoring it made every
+        // retraction erase its own history.
+        const LIVE: &str = concat!(edges_touching!(), " AND v.invalidated_at IS NULL");
+        const AT: &str = concat!(
+            edges_touching!(),
+            " AND (v.valid_from IS NULL OR v.valid_from <= $4)
+              AND (v.valid_to IS NULL OR $4 < v.valid_to)
+              AND (v.invalidated_at IS NULL
+                   OR (v.tombstone_reason = 'closed' AND $4 < v.invalidated_at))"
+        );
+        let query = sqlx::query(if options.at.is_some() { AT } else { LIVE })
+            .bind(project.0)
+            .bind(&positions)
+            .bind(kind_labels.as_deref());
+        let query = match options.at {
+            Some(at) => query.bind(at),
+            None => query,
+        };
+        let edges = query.fetch_all(&mut *connection).await?;
 
         // Undirected: both ends of a `depends_on` are relevant to recall, and
         // which way the arrow points is a fact about the relationship rather
