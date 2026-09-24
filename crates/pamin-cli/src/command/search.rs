@@ -19,24 +19,6 @@ pub struct Args {
     #[arg(long, default_value_t = 5)]
     pub limit: u32,
 
-    /// How many candidates each channel contributes before fusion.
-    ///
-    /// For the evaluation harness, which the architecture names as the thing
-    /// that tunes this. An agent wanting control over retrieval should reach
-    /// for the primitives — `grep`, `read`, `neighbors` — rather than adjust
-    /// ranking internals it has no way to evaluate.
-    #[arg(long, env = "PAMIN_CHANNEL_DEPTH", default_value_t = Depths::default().channel)]
-    pub channel_depth: u32,
-
-    /// How many edges the graph channel walks out from its seeds.
-    #[arg(
-        long,
-        env = "PAMIN_GRAPH_DEPTH",
-        default_value_t = Depths::default().graph,
-        value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
-    )]
-    pub graph_depth: u8,
-
     /// How much to spend reordering the results: off, fast, or accurate.
     ///
     /// A cross-encoder reads the query and a memory together, which is what
@@ -182,12 +164,8 @@ pub async fn execute(
         .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
 
     let engine = session.engine(project, profile).await?;
-    let depths = Depths {
-        channel: args.channel_depth,
-        graph: args.graph_depth,
-    };
     let hits = engine
-        .search_reranked(&args.query, args.limit, depths, rerank)
+        .search_reranked(&args.query, args.limit, Depths::DEFAULT, rerank)
         .await?;
 
     let results = Results {

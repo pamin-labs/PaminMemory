@@ -770,12 +770,16 @@ fn a_query_naming_a_topic_walks_out_from_it(cli: &Cli) {
 /// The case `a_query_naming_a_topic_walks_out_from_it` cannot reach: a named
 /// topic that no index channel returned. That one runs on a workspace small
 /// enough that every channel returns every topic, so the named topic was always
-/// a candidate anyway. At a channel depth of one it is not, and the walk has to
-/// start from the name alone -- which is the whole reason names are resolved.
+/// a candidate anyway. Here more memories than a channel keeps crowd it out of
+/// every channel, and the walk has to start from the name alone -- which is
+/// the whole reason names are resolved.
 ///
-/// Its own workspace, because at a channel depth of one the graph keeps one
-/// neighbour, and in the shared one an unrelated edge of equal strength can
-/// take that place and make the test about tie-breaking instead.
+/// This used to shrink the channels to one candidate with `--channel-depth 1`
+/// instead. That flag is gone, so the workspace is made too big for the
+/// channels rather than the channels too small for the workspace, which is
+/// also the shape the case takes in a real project.
+///
+/// Its own workspace, so no edge but the one under test is there to reach.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
@@ -801,13 +805,37 @@ fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
     ]);
     cli.run(&["link", "quartz_vein", "mine_shaft", "--kind", "depends_on"]);
 
+    // More than a channel keeps, each sharing the query's wording and meaning
+    // more than the named topic does, and none naming a topic -- so they fill
+    // every channel ahead of it and add no edge to the walk.
+    let crowd = pamin_engine::Depths::DEFAULT.channel as usize + 10;
+    let file = cli.home().join("crowd.ndjson");
+    let lines: String = (0..crowd)
+        .map(|index| {
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "topic": format!("seam_log_{index}"),
+                    "content": format!("what does the quartz seam need before shift {index}"),
+                })
+            )
+        })
+        .collect();
+    std::fs::write(&file, lines).expect("writing the crowd");
+    let imported = cli.json(&["import", "--from", file.to_str().expect("a path")]);
+    assert_eq!(
+        imported["promoted"], crowd,
+        "premise: the crowd is searchable"
+    );
+
+    // Every result, so where fusion puts the graph's one arrival does not
+    // decide whether this can see it.
+    let limit = (crowd + 10).to_string();
     let results = cli.json(&[
         "search",
         "what does quartz_vein need",
         "--limit",
-        "8",
-        "--channel-depth",
-        "1",
+        &limit,
         "--rerank",
         "off",
     ]);
@@ -1330,24 +1358,22 @@ fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
 fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
     let home = tempfile::tempdir().expect("temp home");
 
-    for args in [
-        ["neighbors", "deploy", "--depth", "255"],
-        ["search", "deploy", "--graph-depth", "255"],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
-            .args(args)
-            .env("PAMIN_HOME", home.path())
-            .output()
-            .expect("running pamin");
+    // `search` took the same bound on `--graph-depth` until that flag was
+    // removed; its walk is now always two hops.
+    let args = ["neighbors", "deploy", "--depth", "255"];
+    let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        .args(args)
+        .env("PAMIN_HOME", home.path())
+        .output()
+        .expect("running pamin");
 
-        assert!(!output.status.success(), "{args:?} should be refused");
+    assert!(!output.status.success(), "{args:?} should be refused");
 
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            error.contains("255"),
-            "{args:?} refused without saying what was wrong: {error:?}"
-        );
-    }
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("255"),
+        "{args:?} refused without saying what was wrong: {error:?}"
+    );
 
     assert!(
         std::fs::read_dir(home.path())
@@ -1477,7 +1503,11 @@ fn one_project_cannot_crowd_another_out_of_its_own_index() {
     // to another one was fetched and then thrown away. A busy neighbour could
     // therefore consume a project's entire budget and leave it with nothing.
     //
-    // Asking for a depth of one makes that measurable instead of statistical.
+    // This used to ask for a depth of one, which made that measurable instead
+    // of statistical; the flag is gone. At the shipped fifty, six memories
+    // cannot exhaust a shared budget, so what is asserted below is the
+    // structure that makes crowding impossible -- a collection per project --
+    // and a search that sees this project's memory and nothing else.
     for (index, note) in [
         "the release checklist covers the release checklist steps",
         "the release checklist is reviewed before every release",
@@ -1514,16 +1544,32 @@ fn one_project_cannot_crowd_another_out_of_its_own_index() {
         "release checklist",
         "--limit",
         "8",
-        "--channel-depth",
-        "1",
     ]);
     let found = contents(&hits);
     assert_eq!(
         found.len(),
         1,
-        "one candidate per channel must be this project's own, got {found:?}"
+        "only this project's own memory may come back, got {found:?}"
     );
     assert!(found[0].contains("short here"));
+
+    // One collection shared by every project is the layout that let a
+    // neighbour spend this project's budget, and it is one directory where
+    // this must find two.
+    let index = cli.home().join("index");
+    let collections = std::fs::read_dir(&index)
+        .expect("the index directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .count();
+    assert!(
+        collections >= 2,
+        "two projects were written and {collections} collection(s) hold them"
+    );
+    assert!(
+        !index.join("memories").exists(),
+        "the shared collection of the old layout exists"
+    );
 
     // Rebuilding one project leaves the other alone, which holds because they
     // are separate directories rather than one index filtered after the fact.

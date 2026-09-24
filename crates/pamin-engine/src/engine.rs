@@ -21,10 +21,10 @@ use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
 ///
-/// These are inputs rather than constants because they are provisional: the
-/// evaluation harness exists to settle them, and it cannot sweep a value that
-/// is compiled in. The defaults are the ones the architecture specifies, so
-/// nothing changes for a caller that does not ask.
+/// An input to the engine rather than a constant inside it, so a harness can
+/// say what it searched with. Every search the product runs uses
+/// [`Depths::DEFAULT`], the values the architecture specifies; nothing has
+/// ever swept them, and the CLI flags that once exposed them are gone.
 #[derive(Clone, Copy, Debug)]
 pub struct Depths {
     /// Candidates each channel contributes.
@@ -40,13 +40,12 @@ pub struct Depths {
     pub graph: u8,
 }
 
-impl Default for Depths {
-    fn default() -> Self {
-        Self {
-            channel: 50,
-            graph: 2,
-        }
-    }
+impl Depths {
+    /// What every search the product runs uses.
+    pub const DEFAULT: Self = Self {
+        channel: 50,
+        graph: 2,
+    };
 }
 
 /// How much weight a derived mention carries against an asserted edge.
