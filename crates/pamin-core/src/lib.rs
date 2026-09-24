@@ -12,6 +12,7 @@ pub mod fusion;
 pub mod graph;
 pub mod id;
 pub mod ledger;
+pub mod setting;
 pub mod version;
 
 pub use cascade::{JobKind, LAGGING_AT, MAX_ATTEMPTS, may_defer};

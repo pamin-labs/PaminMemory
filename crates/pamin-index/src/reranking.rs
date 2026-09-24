@@ -304,7 +304,7 @@ pub enum Rerank {
 /// pairs; its wall time has not been re-measured on a quiet machine.
 const DEPTH: usize = 30;
 
-/// The tuning constants above, overridable for a sweep.
+/// A tuning constant, overridable for a sweep.
 ///
 /// `DEPTH`, `BATCH` and `MAX_TOKENS` were each settled by measurement, and two
 /// of the three were settled on the scratch harness whose figures turned out to
@@ -313,11 +313,7 @@ const DEPTH: usize = 30;
 /// evaluation's own `SWEEP` and `TIERS`: unset means the constant, so nothing a
 /// user runs is affected.
 fn tuned(name: &str, fallback: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(fallback)
+    pamin_core::setting::positive(name).unwrap_or(fallback)
 }
 
 /// How many candidates go through the model at once.

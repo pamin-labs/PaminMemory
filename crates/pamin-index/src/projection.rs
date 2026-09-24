@@ -494,11 +494,7 @@ pub fn vector_index_lags(documents: u64, completeness: f32) -> bool {
 /// affected. Undocumented on purpose -- it exists so a test does not have to
 /// edit the tree.
 fn unindexed_budget() -> u64 {
-    std::env::var("PAMIN_UNINDEXED_BUDGET")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(UNINDEXED_BUDGET)
+    pamin_core::setting::positive("PAMIN_UNINDEXED_BUDGET").unwrap_or(UNINDEXED_BUDGET)
 }
 
 const DOCUMENT_GRAIN: &str = "topic";
@@ -655,6 +651,10 @@ impl VectorStorage {
 }
 
 /// The storage this process will build and read with.
+///
+/// Read once per open and handed down from there, so the storage an index is
+/// built with, the one its marker records and the one its queries refine for
+/// are one reading of the environment rather than three.
 fn vector_storage() -> VectorStorage {
     std::env::var(PAMIN_VECTOR_STORAGE)
         .ok()
@@ -695,11 +695,7 @@ const SEARCH_EFFORT: i32 = 700;
 const PAMIN_SEARCH_EFFORT: &str = "PAMIN_SEARCH_EFFORT";
 
 fn search_effort() -> i32 {
-    std::env::var(PAMIN_SEARCH_EFFORT)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|effort| *effort > 0)
-        .unwrap_or(SEARCH_EFFORT)
+    pamin_core::setting::positive(PAMIN_SEARCH_EFFORT).unwrap_or(SEARCH_EFFORT)
 }
 
 impl ProjectionIndex {
@@ -779,12 +775,13 @@ impl ProjectionIndex {
                 // storage needs a capability the machine may not have, and a
                 // marker recording the request would then be read as a
                 // description of the index -- ADR 0001's silent wrong answer.
-                Marker::current(profile).write(dir)?;
+                Marker::current(profile, storage).write(dir)?;
                 PASSAGE
             }
         };
 
-        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
+        let mut index =
+            Self::open_with_dimensions(dir, profile.dimensions(), storage, access, segment)?;
         index.passage = passage;
         Ok(index)
     }
@@ -835,6 +832,7 @@ impl ProjectionIndex {
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
+        storage: VectorStorage,
         access: Access,
         segment: u64,
     ) -> Result<Self> {
@@ -866,7 +864,7 @@ impl ProjectionIndex {
                 FIELD_VECTOR,
                 DataType::VectorFp32,
                 dimensions,
-                vector_storage().index_params()?,
+                storage.index_params()?,
             )
             .max_doc_count_per_segment(segment)
             .build()?;
@@ -892,7 +890,7 @@ impl ProjectionIndex {
             collection,
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
-            storage: vector_storage(),
+            storage,
             passage: PASSAGE,
         })
     }
@@ -1000,12 +998,12 @@ struct Marker {
 impl Marker {
     const FILE: &str = "profile";
 
-    /// What an index built now, for this profile, is.
-    fn current(profile: Profile) -> Self {
+    /// What an index built now, for this profile and storage, is.
+    fn current(profile: Profile, storage: VectorStorage) -> Self {
         Self {
             model: profile.model_id().to_string(),
             grain: DOCUMENT_GRAIN.to_string(),
-            storage: vector_storage(),
+            storage,
             passage: PASSAGE,
         }
     }
@@ -1091,8 +1089,8 @@ impl Previous {
     pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let lends =
-            Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&Marker::current(profile)));
+        let current = Marker::current(profile, vector_storage());
+        let lends = Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&current));
         if !lends {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
@@ -1101,6 +1099,7 @@ impl Previous {
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
             profile.dimensions(),
+            current.storage,
             Access::ReadOnly,
             segment_documents(0),
         )?;
