@@ -73,6 +73,7 @@ async fn the_ledger_holds_its_promises() {
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
+    each_kind_is_claimed_by_its_own_priority(&database).await;
     what_a_topic_says_now_is_one_lookup(&database).await;
     a_completion_names_the_claim_it_belongs_to(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
@@ -2144,6 +2145,38 @@ async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
         vec![second[0].id],
         "the claim that still holds the job could not complete it"
     );
+}
+
+/// A claim for some kinds takes those kinds' work and nobody else's.
+///
+/// The claim names each kind's priority beside the kind, so the queue's index
+/// can find a kind's rows without reading everyone else's. That holds only
+/// while the priority a row was queued with is the one the claim asks for, and
+/// a claim that asked for the wrong number would find nothing and report the
+/// queue empty -- so each kind is claimed alone, with every other kind owed
+/// beside it.
+async fn each_kind_is_claimed_by_its_own_priority(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "claim-by-kind")
+        .await
+        .expect("ensure project");
+    let subject = uuid::Uuid::new_v4();
+    for kind in JobKind::ALL {
+        let subject = (kind != JobKind::OptimizeIndex).then_some(subject);
+        jobs::enqueue(database.pool(), project.id, kind, subject)
+            .await
+            .expect("enqueue");
+    }
+
+    for kind in JobKind::ALL {
+        let claimed = jobs::claim(database.pool(), project.id, "by-kind", 64, &[kind])
+            .await
+            .expect("claim one kind");
+        assert_eq!(
+            claimed.iter().map(|job| job.kind).collect::<Vec<_>>(),
+            vec![kind],
+            "a claim for {kind} alone"
+        );
+    }
 }
 
 /// What the outbox has to get right for the projection to stay correct.

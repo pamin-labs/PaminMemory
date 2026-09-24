@@ -63,6 +63,15 @@ pub struct Job {
 /// rebuilding a vector index in the background. Without an ordering the
 /// background work goes first as often as not, and the write the user is
 /// waiting on is behind it.
+///
+/// **A function of the kind and nothing else, and [`claim`] depends on it.**
+/// The claim names the priorities of the kinds it wants as well as the kinds,
+/// because the queue's index leads with priority and not with kind. So these
+/// numbers are stored in every queued row and read back as a key: changing one
+/// strands every row already queued under the old value, which no claim for
+/// that kind would reach again. A change here needs a migration rewriting
+/// `index_jobs.priority`, and the test below pins the values so that the
+/// change cannot be made without noticing.
 fn priority(kind: JobKind) -> i32 {
     match kind {
         JobKind::SyncTopicIndex => 10,
@@ -204,6 +213,12 @@ pub async fn claim(
               SELECT id FROM index_jobs
                WHERE project_id = $6
                  AND job_type = ANY($7)
+                 -- Says nothing `job_type` does not, since priority is a
+                 -- function of kind -- except to the index, which is ordered
+                 -- by project and priority and cannot see kind at all.
+                 -- Without it a claim for upkeep read every owed row to find
+                 -- none of its own.
+                 AND priority = ANY($8)
                  AND available_at <= $1
                  -- A job that has used its attempts stays pending with its
                  -- error rather than coming round again. Retrying for ever
@@ -223,6 +238,7 @@ pub async fn claim(
     .bind(pamin_core::MAX_ATTEMPTS)
     .bind(project.0)
     .bind(kinds.iter().map(|kind| kind.label()).collect::<Vec<_>>())
+    .bind(kinds.iter().map(|kind| priority(*kind)).collect::<Vec<_>>())
     .fetch_all(pool)
     .await?;
 
@@ -434,5 +450,32 @@ fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
             .and_then(|subject| uuid::Uuid::parse_str(subject).ok()),
         attempts: row.get("attempts"),
         claimed_at: row.get("claimed_at"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pamin_core::JobKind;
+
+    use super::priority;
+
+    /// The priorities rows are queued with, which a claim reads back as a key.
+    ///
+    /// Pinned because a queued row keeps the number it was written with and a
+    /// claim asks for the number the code says now: moving one strands every
+    /// row already owed at the old value. Changing a value here is changing
+    /// the schema, and needs a migration that rewrites `index_jobs.priority`.
+    #[test]
+    fn a_kinds_priority_is_the_one_its_queued_rows_hold() {
+        let pinned = [
+            (JobKind::SyncTopicIndex, 10),
+            (JobKind::DeriveMentions, 20),
+            (JobKind::BackfillMentions, 50),
+            (JobKind::OptimizeIndex, 100),
+        ];
+        assert_eq!(pinned.len(), JobKind::ALL.len(), "a kind without a pin");
+        for (kind, expected) in pinned {
+            assert_eq!(priority(kind), expected, "{kind}'s priority moved");
+        }
     }
 }
