@@ -318,7 +318,6 @@ mod tests {
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
     const UNDOCUMENTED: &[&str] = &[
-        "PAMIN_EVAL_HOME",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
@@ -397,6 +396,7 @@ mod tests {
                 let Ok(source) = std::fs::read_to_string(&path) else {
                     continue;
                 };
+                let source = without_the_list(&source);
                 for (before, _) in source.match_indices("\"PAMIN_") {
                     let rest = &source[before + 1..];
                     let Some(end) = rest.find('"') else { continue };
@@ -434,6 +434,34 @@ mod tests {
             .expect("an unknown tier was accepted")
             .to_string();
         assert!(error.contains("fastest"), "{error}");
+    }
+
+    /// `source` with [`UNDOCUMENTED`]'s own entries cut out.
+    ///
+    /// The list is written as `"PAMIN_..."` literals in this file, so a scan
+    /// that read it would find every name on it and the check that a listed
+    /// name is still read somewhere could never fail. `PAMIN_EVAL_HOME` sat on
+    /// the list for as long as that was so, read by nothing but harnesses.
+    fn without_the_list(source: &str) -> std::borrow::Cow<'_, str> {
+        let Some(start) = source.find("const UNDOCUMENTED: &[&str] = &[") else {
+            return source.into();
+        };
+        let end = source[start..]
+            .find("];")
+            .map_or(source.len(), |end| start + end);
+        format!("{}{}", &source[..start], &source[end..]).into()
+    }
+
+    /// A name only the list mentions is not found by the scan, which is what
+    /// lets the check that every listed name is still read actually fail.
+    #[test]
+    fn the_list_is_not_its_own_evidence() {
+        let source = "const UNDOCUMENTED: &[&str] = &[\n    \"PAMIN_ONLY_LISTED\",\n];\nread(\"PAMIN_READ\");";
+        let scanned = without_the_list(source);
+        assert_eq!(
+            scanned, "];\nread(\"PAMIN_READ\");",
+            "the list's entries survived, or the rest of the source did not"
+        );
     }
 
     /// The profile a command gets when nobody names one.
