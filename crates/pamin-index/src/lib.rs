@@ -3,6 +3,7 @@
 //! Everything here is derived data. Losing it costs a reindex, not a migration,
 //! which is what makes a pre-1.0 index engine an acceptable dependency.
 
+mod attention;
 mod descriptors;
 pub mod embedding;
 mod encoder;

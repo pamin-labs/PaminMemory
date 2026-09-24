@@ -39,6 +39,13 @@ pub struct Session {
     /// profiles against one project are two indexes, and the engine holding
     /// one cannot answer for the other.
     engines: Registry<(String, Profile), Engine>,
+    /// Projects being warmed in the background, so a burst of requests at one
+    /// cold project starts one warm-up rather than one each. See
+    /// [`Session::warm`].
+    warming: std::sync::Mutex<std::collections::HashSet<(String, Profile)>>,
+    /// The reranking tier a warm-up loads: the one the last search asked for,
+    /// or before any has, what `pamin search` would pass by default.
+    tier: std::sync::Mutex<Rerank>,
 }
 
 /// How many indexes stay open at once.
@@ -89,6 +96,16 @@ const OPEN_INDEXES: usize = 16;
 /// to start over a typo in an environment variable is the worse failure.
 const OPEN_INDEXES_VAR: &str = "PAMIN_OPEN_INDEXES";
 
+/// The tier `pamin search` passes when a caller names none: `PAMIN_RERANK`
+/// where the server was started with it, as a client started from the same
+/// environment reads it, and the shipped default otherwise.
+fn default_tier() -> Rerank {
+    std::env::var("PAMIN_RERANK")
+        .ok()
+        .and_then(|name| Rerank::parse(&name))
+        .unwrap_or_default()
+}
+
 fn open_indexes() -> usize {
     parse_open_indexes(std::env::var(OPEN_INDEXES_VAR).ok().as_deref())
 }
@@ -115,7 +132,67 @@ impl Session {
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),
+            warming: std::sync::Mutex::default(),
+            tier: std::sync::Mutex::new(default_tier()),
         })
+    }
+
+    /// Opens this project's index and loads its models in the background, if
+    /// this process holds nothing open for it -- without making the caller
+    /// wait for any of it.
+    ///
+    /// A server that has released a project, or never held it, answers the
+    /// first search by opening the index and loading both models in front of
+    /// it: 2,386 ms at the median of the `COLD` arm against 618 for the next
+    /// search. Whatever an agent asks first -- a `read`, a `write`, the search
+    /// itself -- is the first sign it is working on the project, so that is
+    /// when this starts. A search that arrives before it finishes waits for
+    /// the loads already in flight rather than starting its own, so it never
+    /// pays more than it would have, and one that arrives after pays nothing.
+    ///
+    /// Nothing here changes what is given back. The index is opened into the
+    /// same registry and the models into the same [`Models`], stamped as used
+    /// now, so a project warmed and then left alone is closed and its models
+    /// released one idle window later, as if a search had opened them.
+    pub fn warm(self: &Arc<Self>, project: &str, profile: Profile) {
+        let key = (project.to_string(), profile);
+        if self.engines.holds(&key) {
+            return;
+        }
+        if !self
+            .warming
+            .lock()
+            .expect("the warming set is poisoned")
+            .insert(key.clone())
+        {
+            return;
+        }
+        let tier = *self.tier.lock().expect("the tier lock is poisoned");
+        let session = Arc::clone(self);
+        tokio::spawn(async move {
+            let models = session.models.clone();
+            let loading = tokio::task::spawn_blocking(move || models.warm(profile, tier));
+            if let Err(error) = session.engine(&key.0, profile).await {
+                tracing::debug!(project = %key.0, %error, "warming: opening the project failed");
+            }
+            match loading.await {
+                Ok(Ok(())) => tracing::debug!(project = %key.0, tier = tier.name(), "warmed"),
+                Ok(Err(error)) => {
+                    tracing::debug!(project = %key.0, %error, "warming: loading a model failed");
+                }
+                Err(error) => tracing::warn!(%error, "warming: the load panicked"),
+            }
+            session
+                .warming
+                .lock()
+                .expect("the warming set is poisoned")
+                .remove(&key);
+        });
+    }
+
+    /// Records the tier a search asked for, as the one to warm next.
+    pub fn searched_at(&self, tier: Rerank) {
+        *self.tier.lock().expect("the tier lock is poisoned") = tier;
     }
 
     pub fn database(&self) -> &Database {
