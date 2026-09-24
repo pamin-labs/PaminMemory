@@ -2516,9 +2516,9 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
     let mut groups = BTreeMap::new();
     for query in queries {
         let hits = match &route {
-            // `DEPTH` is fifty-one and a tier's depth is twenty, so
-            // `fused_for` keeps the fifty-one this scores at and the reranker
-            // reorders the head. recall@50 is therefore the same list either
+            // `DEPTH` is fifty-one and a tier's depth is twenty, so the
+            // rerank path returns the fifty-one this scores at and the
+            // reranker reorders the head. recall@50 is therefore the same list either
             // way and only the ordering moves, which is what the tier claims
             // to change.
             Route::Shipped(rerank) => {
