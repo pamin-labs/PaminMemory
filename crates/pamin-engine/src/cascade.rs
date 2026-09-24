@@ -410,55 +410,77 @@ impl Engine {
     }
 
     /// Runs the jobs of a round that read the index back, restating every
-    /// memory's mentions together.
+    /// memory's mentions together and backfilling every new topic together.
     ///
-    /// The restatements are batched the way [`Self::sync_indexes`] batches the
-    /// writes, and for the same reason: each asked the same few statements with
-    /// different arguments, sixty-four times a round. One connection for all of
-    /// them, their states in one lookup, and the rest in
-    /// [`Engine::restate_mentions`]. The other kinds run one at a time as
-    /// before.
+    /// Batched the way [`Self::sync_indexes`] batches the writes, and for the
+    /// same reason: each job asked the same few statements with different
+    /// arguments, sixty-four times a round. One connection for all of them,
+    /// the states to restate in one lookup and the names to backfill in
+    /// another, and the rest in [`Engine::restate_mentions`] and
+    /// [`Engine::backfill_all`]. Maintenance runs one job at a time as before.
     ///
     /// **Each job still gets its own outcome.** A batch that fails is run again
     /// one job at a time, so a memory that cannot be restated fails alone
     /// rather than holding the rest of the round's jobs owed with it.
     async fn run_reads<'j>(&self, jobs: &[&'j Job], into: &mut Vec<(&'j Job, Result<()>)>) {
-        let mut restating = Vec::new();
+        let mut batch = Vec::new();
         for job in jobs {
-            if job.kind != JobKind::DeriveMentions {
+            if !matches!(
+                job.kind,
+                JobKind::DeriveMentions | JobKind::BackfillMentions
+            ) {
                 into.push((*job, self.run(job).await));
                 continue;
             }
             match subject(job) {
-                Ok(subject) => restating.push((*job, TopicId::from(subject))),
+                Ok(subject) => batch.push((*job, TopicId::from(subject))),
                 Err(error) => into.push((*job, Err(error))),
             }
         }
-        if restating.is_empty() {
+        if batch.is_empty() {
             return;
         }
 
+        let of_kind = |kind: JobKind| -> Vec<TopicId> {
+            batch
+                .iter()
+                .filter(|(job, _)| job.kind == kind)
+                .map(|(_, topic)| *topic)
+                .collect()
+        };
         let batched = async {
             let mut connection = self.database.pool().acquire().await?;
-            let topics: Vec<TopicId> = restating.iter().map(|(_, topic)| *topic).collect();
-            // A topic that resolves to nothing has nothing to restate, as
-            // one at a time.
-            let states =
-                pamin_store::repository::current_states_of(&mut *connection, self.project, &topics)
-                    .await?;
+            // A topic that resolves to nothing has nothing to restate, and one
+            // that does not exist has no name to backfill, as one at a time.
+            let states = pamin_store::repository::current_states_of(
+                &mut *connection,
+                self.project,
+                &of_kind(JobKind::DeriveMentions),
+            )
+            .await?;
             self.restate_mentions(&mut connection, &states).await?;
+            let named: Vec<(TopicId, String)> = pamin_store::repository::topics_by_id(
+                &mut *connection,
+                self.project,
+                &of_kind(JobKind::BackfillMentions),
+            )
+            .await?
+            .into_iter()
+            .map(|(topic, name, _)| (topic, name))
+            .collect();
+            self.backfill_all(&mut connection, &named).await?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
 
         match batched {
             Ok(()) => {
-                for (job, _) in restating {
+                for (job, _) in batch {
                     into.push((job, Ok(())));
                 }
             }
             Err(_) => {
-                for (job, _) in restating {
+                for (job, _) in batch {
                     into.push((job, self.run(job).await));
                 }
             }

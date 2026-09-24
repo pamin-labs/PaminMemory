@@ -1280,46 +1280,79 @@ impl Engine {
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
-        let candidates = off_the_runtime(|| self.index().recall_naming(name, BACKFILL_CANDIDATES))?;
+        let mut connection = self.database.pool().acquire().await?;
+        self.backfill_all(&mut connection, &[(topic, name.to_string())])
+            .await
+    }
 
-        let states =
-            repository::current_states_of(self.database.pool(), self.project, &candidates).await?;
+    /// [`backfill_mentions`](Self::backfill_mentions) for many new topics,
+    /// with one lookup of the states every probe returned and one assertion.
+    ///
+    /// The states are read through the pointer on `topics`, so every one of
+    /// them is the state its topic stands for now -- which the per-topic form
+    /// then asked the ledger a second time, in a second statement, and got
+    /// the same answer bar a write landing in between. That write queues its
+    /// own restatement, which is what decides the edges of the content it
+    /// wrote.
+    pub(crate) async fn backfill_all(
+        &self,
+        connection: &mut PgConnection,
+        topics: &[(TopicId, String)],
+    ) -> Result<usize> {
+        if topics.is_empty() {
+            return Ok(0);
+        }
 
-        // The probe returns states; the edge is about topics, and only the
-        // state a topic stands for now can support one.
-        let topics: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
-        let current: std::collections::HashSet<pamin_core::TopicStateId> =
-            repository::topics_by_id(self.database.pool(), self.project, &topics)
-                .await?
-                .into_iter()
-                .filter_map(|(_, _, current)| current)
-                .collect();
-
-        // Off the runtime because this segments every candidate the probe
-        // returned -- up to `BACKFILL_CANDIDATES` documents -- and that is tens
-        // of milliseconds of ICU work that would otherwise run on a runtime
-        // thread and stall every task sharing it.
-        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = off_the_runtime(|| {
-            let segmenter = &self.segmenter;
-            // The fixed side here is the name, so that is the side prepared.
-            let name = segmenter.name_sequence(name);
-            states
+        let candidates: Vec<Vec<TopicId>> = off_the_runtime(|| {
+            topics
                 .iter()
-                .filter(|state| state.topic_id != topic)
-                .filter(|state| current.contains(&state.id))
-                .filter(|state| {
-                    pamin_index::segmentation::names(
-                        &segmenter.name_sequence(&state.content),
-                        &name,
-                    )
-                })
-                .map(|state| (state.topic_id, state.id))
-                .collect()
+                .map(|(_, name)| self.index().recall_naming(name, BACKFILL_CANDIDATES))
+                .collect::<std::result::Result<Vec<_>, _>>()
+        })?;
+        let mut wanted: Vec<TopicId> = candidates.iter().flatten().copied().collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+
+        // Only current states are considered: the probe returns topics, and
+        // only the state a topic stands for now can support an edge.
+        let states = repository::current_states_of(&mut *connection, self.project, &wanted).await?;
+        let found: std::collections::HashMap<TopicId, &TopicState> =
+            states.iter().map(|state| (state.topic_id, state)).collect();
+
+        // Off the runtime because this segments every candidate the probes
+        // returned -- up to `BACKFILL_CANDIDATES` documents a topic -- and that
+        // is tens of milliseconds of ICU work that would otherwise run on a
+        // runtime thread and stall every task sharing it. Each candidate once,
+        // however many of the names it is a candidate for.
+        let naming: Vec<(TopicId, pamin_core::TopicStateId, TopicId)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
+            let sequences: std::collections::HashMap<TopicId, Vec<String>> = states
+                .iter()
+                .map(|state| (state.topic_id, segmenter.name_sequence(&state.content)))
+                .collect();
+            let mut naming = Vec::new();
+            for ((topic, name), candidates) in topics.iter().zip(&candidates) {
+                // The fixed side here is the name, so that is the side prepared.
+                let name = segmenter.name_sequence(name);
+                let mut seen = std::collections::HashSet::new();
+                for candidate in candidates {
+                    let Some(state) = found.get(candidate) else {
+                        continue;
+                    };
+                    if state.topic_id == *topic || !seen.insert(state.topic_id) {
+                        continue;
+                    }
+                    if pamin_index::segmentation::names(&sequences[&state.topic_id], &name) {
+                        naming.push((state.topic_id, state.id, *topic));
+                    }
+                }
+            }
+            naming
         });
 
         let edges: Vec<_> = naming
             .into_iter()
-            .map(|(from, caused_by)| {
+            .map(|(from, caused_by, topic)| {
                 (
                     from,
                     topic,
