@@ -10,15 +10,13 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
-    Scored, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
+    Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
     Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{
-    Connections, Database, PgConnection, PgExecutor, Workspace, graph, jobs, repository,
-};
+use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
@@ -1018,96 +1016,96 @@ impl Engine {
         )
         .await?;
 
-        // Evidence first, always, and before the filter's verdict is acted on.
-        // That ordering is what makes a rejection recoverable instead of a loss.
-        let (evidence, span) = repository::append_evidence(
-            &mut transaction,
-            self.project,
-            source,
-            &repository::Evidence {
-                content: request.content,
-                content_hash: request.content_hash,
-                decision: request.verdict,
-                reason: request.reason,
-                language: request.language,
-                language_confidence: request.language_confidence,
-            },
-        )
-        .await?;
-
-        let state = if request.promoted {
-            let existed =
-                repository::find_topic(&mut *transaction, self.project, request.topic).await?;
-            let topic = match existed.clone() {
-                Some(topic) => topic,
-                None => {
-                    let topic =
-                        repository::create_topic(&mut transaction, self.project, request.topic)
-                            .await?;
-                    // In the same transaction as the topic. A topic that exists
-                    // and is missing from the name index is a topic no memory
-                    // will ever derive an edge to, and nothing would report it.
-                    self.record_name(&mut *transaction, &topic).await?;
-                    topic
-                }
-            };
-
-            let state = repository::append_topic_state(
-                &mut transaction,
-                self.project,
-                topic.id,
-                &evidence,
-                &span,
-                request.observed_at,
-                request.validity,
-            )
-            .await?;
-
-            // Committed with the state rather than after it. A crash between
-            // the two would otherwise leave a memory the ledger knows about and
-            // the projection never hears of -- which is the failure an outbox
-            // exists to make impossible, and the one a `tokio::spawn` here
-            // would leave wide open.
-            //
-            // All of them in one statement, because this is inside the write
-            // transaction: three rows is the right number of rows and was
-            // three round trips with the transaction held open across them.
-            //
-            // The third is for a topic that did not exist a moment ago, which
-            // may already be named by memories written before it. Finding them
-            // is a scan, so it is scheduled rather than paid for by whoever
-            // created the topic -- and it is skipped entirely for a rewrite,
-            // which is why the three cannot simply be one kind.
-            let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
-            if existed.is_none() {
-                owed.push(JobKind::BackfillMentions);
-            }
-            jobs::enqueue_all(&mut *transaction, self.project, &owed, Some(topic.id.0)).await?;
-
-            Some(state)
-        } else {
-            None
+        // Evidence always, whatever the verdict. That is what makes a rejection
+        // recoverable instead of a loss.
+        let evidence = repository::Evidence {
+            content: request.content,
+            content_hash: request.content_hash,
+            decision: request.verdict,
+            reason: request.reason,
+            language: request.language,
+            language_confidence: request.language_confidence,
         };
+
+        let (version, state) =
+            if request.promoted {
+                let (topic, found) =
+                    match repository::lock_topic(&mut transaction, self.project, request.topic)
+                        .await?
+                    {
+                        Some(topic) => (topic, true),
+                        None => (
+                            self.create_topic(&mut transaction, request.topic).await?,
+                            false,
+                        ),
+                    };
+
+                // Committed with the state rather than after it. A crash between
+                // the two would otherwise leave a memory the ledger knows about and
+                // the projection never hears of -- which is the failure an outbox
+                // exists to make impossible, and the one a `tokio::spawn` here
+                // would leave wide open.
+                //
+                // The third is for a topic that did not exist a moment ago, which
+                // may already be named by memories written before it. Finding them
+                // is a scan, so it is scheduled rather than paid for by whoever
+                // created the topic -- and it is skipped entirely for a rewrite,
+                // which is why the three cannot simply be one kind.
+                let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
+                if !found {
+                    owed.push(JobKind::BackfillMentions);
+                }
+
+                // The evidence, its span, the state, the pointer and the jobs in
+                // one statement, now that both locks are held.
+                let (version, _, state) = repository::append_promoted(
+                    &mut transaction,
+                    self.project,
+                    source,
+                    &evidence,
+                    &repository::Promotion {
+                        topic: &topic,
+                        observed_at: request.observed_at,
+                        validity: request.validity,
+                        owed: &owed,
+                    },
+                )
+                .await?;
+                (version, Some(state))
+            } else {
+                let (version, _) =
+                    repository::append_evidence(&mut transaction, self.project, source, &evidence)
+                        .await?;
+                (version, None)
+            };
 
         transaction.commit().await?;
 
         Ok(Recorded {
-            source_version: evidence.version,
+            source_version: version.version,
             state,
         })
     }
 
-    /// Files a topic's name in the index that answers "who is named here".
+    /// Creates a topic and files its name in the index that answers "who is
+    /// named here", returning it locked.
     ///
     /// Tokenized here rather than in the store because the segmenter is what
     /// decides where a name begins and ends, and both sides of the eventual
-    /// comparison have to have gone through it.
-    async fn record_name(&self, executor: impl PgExecutor<'_>, topic: &Topic) -> Result<()> {
-        let tokens = off_the_runtime(|| self.segmenter.name_sequence(&topic.name));
-        repository::record_topic_name(
-            executor,
+    /// comparison have to have gone through it. In the same statement as the
+    /// topic, because a topic that exists and is missing from the name index
+    /// is a topic no memory will ever derive an edge to, and nothing would
+    /// report it.
+    async fn create_topic(
+        &self,
+        connection: &mut PgConnection,
+        name: &str,
+    ) -> Result<repository::LockedTopic> {
+        let tokens = off_the_runtime(|| self.segmenter.name_sequence(name));
+        let topic = repository::create_topic_named(
+            connection,
             self.project,
-            topic.id,
+            name,
             &tokens.join(" "),
             tokens.len(),
         )
@@ -1116,7 +1114,7 @@ impl Engine {
         // it had asked. Raising it here is what keeps the search path's
         // remembered value from going stale against writes made through it.
         self.remember_widest_name(tokens.len());
-        Ok(())
+        Ok(topic)
     }
 
     /// Restates the edges a topic's current content implies.

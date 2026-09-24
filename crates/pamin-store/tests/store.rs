@@ -64,7 +64,8 @@ async fn the_ledger_holds_its_promises() {
     a_retraction_reason_decides_what_history_keeps(&database).await;
     a_seed_never_reaches_itself_however_deep_the_walk(&database).await;
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
-    concurrent_appends_to_one_topic_form_one_chain(&database, &workspace).await;
+    concurrent_appends_to_one_topic_form_one_chain(&database, &workspace, Append::Promoted).await;
+    concurrent_appends_to_one_topic_form_one_chain(&database, &workspace, Append::Separately).await;
     ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
@@ -83,6 +84,7 @@ async fn the_ledger_holds_its_promises() {
     several_topics_restate_their_mentions_at_once(&database).await;
     every_column_holds_what_was_written_to_it(&database).await;
     evidence_and_the_span_over_it_are_one_write(&database).await;
+    a_promoted_write_is_one_statement_after_its_locks(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
 
@@ -1010,31 +1012,44 @@ async fn concurrent_writers_to_one_source_lose_no_evidence(
     );
 }
 
+/// How a test appends a state: the way the write path does, or through the
+/// primitive that takes evidence already written.
+#[derive(Clone, Copy, Debug)]
+enum Append {
+    /// `lock_topic` by name, then `append_promoted`: the write path.
+    Promoted,
+    /// `append_evidence`, then `append_topic_state`, which locks by id.
+    Separately,
+}
+
 /// Concurrent appends to one topic each supersede the state before them.
 ///
-/// `append_topic_state` reads its predecessor from the topic's current-state
-/// pointer, in the statement that locks the topic. That is right only if a
-/// writer that waited for the lock reads the pointer the writer before it
-/// moved: if it read the one from before the wait, two states would name the
-/// same predecessor and the chain would fork -- no error, just a history that
-/// says two things replaced one. So this checks the chain, not only the
-/// version numbers.
+/// An append reads its predecessor from the topic's current-state pointer, in
+/// the statement that locks the topic. That is right only if a writer that
+/// waited for the lock reads the pointer the writer before it moved: if it
+/// read the one from before the wait, two states would name the same
+/// predecessor and the chain would fork -- no error, just a history that says
+/// two things replaced one. So this checks the chain, not only the version
+/// numbers.
+///
+/// Each writer has a source of its own, so the source lock serializes nothing
+/// here and the topic lock is the only thing that can. Run once per way of
+/// appending, because each takes that lock in a statement of its own. The
+/// write path also queues its work in the same statement, and eight requests
+/// for one subject have to leave one row.
 async fn concurrent_appends_to_one_topic_form_one_chain(
     database: &Database,
     workspace: &Workspace,
+    append: Append,
 ) {
     const WRITERS: usize = 8;
 
-    let project = repository::ensure_project(database.pool(), "contended_topic")
+    let name = format!("contended_topic_{append:?}");
+    let project = repository::ensure_project(database.pool(), &name)
         .await
         .expect("ensure project");
-    let topic = committed!(
-        database,
-        repository::ensure_topic,
-        project.id,
-        "contended_topic"
-    )
-    .expect("ensure topic");
+    let topic =
+        committed!(database, repository::ensure_topic, project.id, &name).expect("ensure topic");
     let server = workspace
         .read_server()
         .expect("read server record")
@@ -1043,6 +1058,7 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
     let writers: Vec<_> = (0..WRITERS)
         .map(|writer| {
             let server = server.clone();
+            let name = name.clone();
             tokio::spawn(async move {
                 let database = Database::connect(&server, Connections::PerCommand)
                     .await
@@ -1052,37 +1068,63 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
                     &mut transaction,
                     project.id,
                     SourceKind::Manual,
-                    &format!("contended-topic-{writer}"),
+                    &format!("{name}-{writer}"),
                 )
                 .await
                 .expect("ensure source");
                 let content = format!("state from writer {writer}");
-                let (evidence, span) = repository::append_evidence(
-                    &mut transaction,
-                    project.id,
-                    source,
-                    &repository::Evidence {
-                        content: &content,
-                        content_hash: "hash",
-                        decision: FilterDecision::Promoted,
-                        reason: "test fixture",
-                        language: None,
-                        language_confidence: None,
-                    },
-                )
-                .await
-                .expect("append evidence");
-                let state = repository::append_topic_state(
-                    &mut transaction,
-                    project.id,
-                    topic.id,
-                    &evidence,
-                    &span,
-                    OffsetDateTime::now_utc(),
-                    Validity::ALWAYS,
-                )
-                .await
-                .expect("every writer keeps its state");
+                let evidence = repository::Evidence {
+                    content: &content,
+                    content_hash: "hash",
+                    decision: FilterDecision::Promoted,
+                    reason: "test fixture",
+                    language: None,
+                    language_confidence: None,
+                };
+                let state = match append {
+                    Append::Promoted => {
+                        let locked = repository::lock_topic(&mut transaction, project.id, &name)
+                            .await
+                            .expect("lock topic")
+                            .expect("the topic exists");
+                        repository::append_promoted(
+                            &mut transaction,
+                            project.id,
+                            source,
+                            &evidence,
+                            &repository::Promotion {
+                                topic: &locked,
+                                observed_at: OffsetDateTime::now_utc(),
+                                validity: Validity::ALWAYS,
+                                owed: &[JobKind::SyncTopicIndex],
+                            },
+                        )
+                        .await
+                        .expect("every writer keeps its state")
+                        .2
+                    }
+                    Append::Separately => {
+                        let (evidence, span) = repository::append_evidence(
+                            &mut transaction,
+                            project.id,
+                            source,
+                            &evidence,
+                        )
+                        .await
+                        .expect("append evidence");
+                        repository::append_topic_state(
+                            &mut transaction,
+                            project.id,
+                            topic.id,
+                            &evidence,
+                            &span,
+                            OffsetDateTime::now_utc(),
+                            Validity::ALWAYS,
+                        )
+                        .await
+                        .expect("every writer keeps its state")
+                    }
+                };
                 transaction.commit().await.expect("commit");
                 state
             })
@@ -1115,6 +1157,18 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
     }
     let newest = chain.last().map(|link| link.1 as u32);
     assert_pointer_matches_the_ledger(database, project.id, topic.id, newest).await;
+
+    let owed = match append {
+        Append::Promoted => 1,
+        Append::Separately => 0,
+    };
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        owed,
+        "{WRITERS} requests for one subject should coalesce onto one row"
+    );
 }
 
 /// Re-ensuring a project, source, topic or relationship leaves the row alone.
@@ -2232,6 +2286,158 @@ async fn evidence_and_the_span_over_it_are_one_write(database: &Database) {
         .expect("the state was written");
     assert_eq!(stored.content, content);
     assert_eq!(stored.language.as_deref(), Some("swe"));
+}
+
+/// `append_promoted` writes what the write path's four statements wrote, and
+/// queues its work with the conflict behaviour `enqueue` has.
+///
+/// The rows are read back rather than the structs handed back, so a state
+/// pointing at a span the statement did not write, or a pointer left behind,
+/// fails here. The queue half is the part the shared fragment exists for: a
+/// write for a subject whose job a worker already holds must take the claim
+/// away, or the worker completes work requested after it started reading.
+async fn a_promoted_write_is_one_statement_after_its_locks(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "promoted")
+        .await
+        .expect("ensure project");
+
+    let mut transaction = database.pool().begin().await.expect("begin");
+    assert!(
+        repository::lock_topic(&mut transaction, project.id, "promoted_topic")
+            .await
+            .expect("lock topic")
+            .is_none(),
+        "a topic nobody created was found"
+    );
+    let created = repository::create_topic_named(
+        &mut transaction,
+        project.id,
+        "promoted_topic",
+        "promoted topic",
+        2,
+    )
+    .await
+    .expect("create topic");
+    assert!(created.current.is_none(), "a new topic points at a state");
+    transaction.commit().await.expect("commit");
+    let topic = created.topic.id;
+    assert_eq!(
+        repository::topics_named_by(database.pool(), project.id, &["promoted topic".to_string()])
+            .await
+            .expect("names"),
+        vec![topic],
+        "the topic was created without its name row"
+    );
+
+    // Racing a creation that already happened finds the winner, locked.
+    let mut transaction = database.pool().begin().await.expect("begin");
+    let again = repository::create_topic_named(
+        &mut transaction,
+        project.id,
+        "promoted_topic",
+        "promoted topic",
+        2,
+    )
+    .await
+    .expect("create topic again");
+    transaction.commit().await.expect("commit");
+    assert_eq!(again.topic.id, topic, "a second topic took the name");
+
+    // A worker holds the topic's sync job when the write arrives.
+    jobs::enqueue(
+        database.pool(),
+        project.id,
+        JobKind::SyncTopicIndex,
+        Some(topic.0),
+    )
+    .await
+    .expect("enqueue");
+    let held = jobs::claim(database.pool(), project.id, "worker", 1, &JobKind::ALL)
+        .await
+        .expect("claim");
+    assert_eq!(held.len(), 1);
+
+    let mut states = Vec::new();
+    for (round, content) in ["först", "sedan"].into_iter().enumerate() {
+        let mut transaction = database.pool().begin().await.expect("begin");
+        let source = repository::ensure_source(
+            &mut transaction,
+            project.id,
+            SourceKind::Manual,
+            "manual:promoted_topic",
+        )
+        .await
+        .expect("ensure source");
+        let locked = repository::lock_topic(&mut transaction, project.id, "promoted_topic")
+            .await
+            .expect("lock topic")
+            .expect("the topic exists");
+        assert_eq!(
+            locked.current,
+            states.last().map(|state: &pamin_core::TopicState| state.id),
+            "the lock read a pointer other than the newest state"
+        );
+        let (version, span, state) = repository::append_promoted(
+            &mut transaction,
+            project.id,
+            source,
+            &repository::Evidence {
+                content,
+                content_hash: "promoted-hash",
+                decision: FilterDecision::Promoted,
+                reason: "promoted reason",
+                language: Some("swe"),
+                language_confidence: Some(0.5),
+            },
+            &repository::Promotion {
+                topic: &locked,
+                observed_at: OffsetDateTime::now_utc(),
+                validity: Validity::ALWAYS,
+                owed: &[JobKind::SyncTopicIndex, JobKind::DeriveMentions],
+            },
+        )
+        .await
+        .expect("append promoted");
+        transaction.commit().await.expect("commit");
+
+        assert_eq!(version.version, round as u32 + 1);
+        assert_eq!(state.version, round as u32 + 1);
+        assert_eq!(state.source_span_id, span.id);
+        assert_eq!(state.supersedes, locked.current);
+        let (span_version, byte_end): (uuid::Uuid, i32) =
+            sqlx::query_as("SELECT source_version_id, byte_end FROM source_spans WHERE id = $1")
+                .bind(span.id.0)
+                .fetch_one(database.pool())
+                .await
+                .expect("the span was written");
+        assert_eq!(span_version, version.id.0);
+        assert_eq!(byte_end as usize, content.len());
+        let stored = repository::topic_state(database.pool(), project.id, topic, state.version)
+            .await
+            .expect("read topic state")
+            .expect("the state was written");
+        assert_eq!(stored.id, state.id);
+        assert_eq!(stored.content, content);
+        assert_eq!(stored.language.as_deref(), Some("swe"));
+        assert_eq!(stored.supersedes, state.supersedes);
+        assert_pointer_matches_the_ledger(database, project.id, topic, Some(state.version)).await;
+        states.push(state);
+    }
+
+    assert!(
+        jobs::complete(database.pool(), &[&held[0]], "worker")
+            .await
+            .expect("complete")
+            .is_empty(),
+        "a job requested again by a write was completed by the attempt before it"
+    );
+    assert_eq!(
+        jobs::pending(database.pool(), project.id)
+            .await
+            .expect("count pending"),
+        2,
+        "two writes owing two kinds for one subject should leave two rows"
+    );
 }
 
 /// Reads the stored pointer and checks it against the version it should hold.
