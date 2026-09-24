@@ -1010,8 +1010,8 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
 /// Reads back the filter verdict, which is how a caller confirms that filtered
 /// content was still stored rather than discarded.
 ///
-/// Takes the project for the reason [`topic_state`] does: both indexes over
-/// this table lead with it.
+/// Takes the project for the reason [`topic_state`] does: the key it reads,
+/// `(project_id, source_id, version)`, leads with it.
 pub async fn latest_source_version(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
