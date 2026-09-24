@@ -238,13 +238,6 @@ impl Passage {
 /// The encoding a new index is built with.
 const PASSAGE: Passage = Passage::Named;
 
-/// What one document in this index stands for.
-///
-/// Recorded beside the model because an index keyed by something else is not
-/// stale, it is silently empty: the old scheme's identifiers are read as the
-/// new scheme's, match nothing, and every search comes back with no results
-/// and no error anywhere. Changing what a document is keyed by means changing
-/// this, which turns that silence into a message naming `pamin reindex`.
 /// How many segments a collection is aimed at.
 ///
 /// Four, measured. Building 100,000 documents at several segment sizes, against
@@ -494,43 +487,18 @@ pub fn vector_index_lags(documents: u64, completeness: f32) -> bool {
 /// affected. Undocumented on purpose -- it exists so a test does not have to
 /// edit the tree.
 fn unindexed_budget() -> u64 {
-    std::env::var("PAMIN_UNINDEXED_BUDGET")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(UNINDEXED_BUDGET)
+    pamin_core::setting::positive("PAMIN_UNINDEXED_BUDGET").unwrap_or(UNINDEXED_BUDGET)
 }
 
+/// What one document in this index stands for.
+///
+/// Recorded beside the model because an index keyed by something else is not
+/// stale, it is silently empty: the old scheme's identifiers are read as the
+/// new scheme's, match nothing, and every search comes back with no results
+/// and no error anywhere. Changing what a document is keyed by means changing
+/// this, which turns that silence into a message naming `pamin reindex`.
 const DOCUMENT_GRAIN: &str = "topic";
 
-/// How many neighbours each document keeps in the vector graph.
-///
-/// Measured, on 50,000 clustered 1024-dimensional vectors, against exact
-/// nearest neighbours:
-///
-/// | m | ef_construction | ef | recall@10 | per query |
-/// |---|---|---|---|---|
-/// | 16 | 100 | 300 (default) | 0.689 | 2.4 ms |
-/// | 16 | 500 | 300 | 0.708 | 2.3 ms |
-/// | 16 | 500 | 1200 | 0.917 | 7.9 ms |
-/// | 16 | 500 | 2048 | 0.952 | 12.6 ms |
-/// | 32 | 500 | 300 | 0.862 | 4.3 ms |
-/// | **32** | **500** | **700** | **0.952** | **9.5 ms** |
-/// | 32 | 500 | 1200 | 0.985 | 13.4 ms |
-///
-/// The first row is what this shipped: nearly a third of a query's true
-/// nearest neighbours missed, on a corpus far smaller than the ones this store
-/// is for. Nothing reported it, because a vector channel returning the wrong
-/// neighbours returns plausible ones.
-///
-/// Sixteen to thirty-two doubles the graph, and the graph is the part of an
-/// index that quantizing the payload does not shrink. It is still the right
-/// trade. `ef` alone can buy most of the recall back on a smaller graph -- 16
-/// reaches 0.952 at ef 2048 -- but 2048 is the top of the range the engine
-/// accepts, and recall falls as a project grows (the same configuration scores
-/// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
-/// configuration that needs the maximum at fifty thousand has nothing left at
-/// seven million.
 /// How the stored vectors are kept.
 ///
 /// The vector field is the largest thing on disk: 64.2 MB of a 116 MB index
@@ -571,16 +539,6 @@ pub enum VectorStorage {
     Int8,
     /// Half a byte a dimension.
     Int4,
-    /// A bit a dimension.
-    ///
-    /// Listed and not reachable: the engine refuses to train a RaBitQ
-    /// quantizer without a `raw_vector_provider`, which this binding does not
-    /// expose, so asking for it fails when the graph is built rather than
-    /// returning a worse index. Kept as a name so the refusal is recorded
-    /// where someone would look for it, and because it is the one storage
-    /// whose codes are small enough to change the disk answer -- see
-    /// `index_params`.
-    Rabitq,
 }
 
 impl VectorStorage {
@@ -591,7 +549,6 @@ impl VectorStorage {
             Self::Fp16 => "fp16",
             Self::Int8 => "int8",
             Self::Int4 => "int4",
-            Self::Rabitq => "rabitq",
         }
     }
 
@@ -601,7 +558,6 @@ impl VectorStorage {
             "fp16" => Some(Self::Fp16),
             "int8" => Some(Self::Int8),
             "int4" => Some(Self::Int4),
-            "rabitq" => Some(Self::Rabitq),
             _ => None,
         }
     }
@@ -612,7 +568,6 @@ impl VectorStorage {
             Self::Fp16 => Some(QuantizeType::Fp16),
             Self::Int8 => Some(QuantizeType::Int8),
             Self::Int4 => Some(QuantizeType::Int4),
-            Self::Rabitq => Some(QuantizeType::Rabitq),
         }
     }
 
@@ -668,6 +623,10 @@ impl VectorStorage {
 }
 
 /// The storage this process will build and read with.
+///
+/// Read once per open and handed down from there, so the storage an index is
+/// built with, the one its marker records and the one its queries refine for
+/// are one reading of the environment rather than three.
 fn vector_storage() -> VectorStorage {
     std::env::var(PAMIN_VECTOR_STORAGE)
         .ok()
@@ -675,6 +634,34 @@ fn vector_storage() -> VectorStorage {
         .unwrap_or(VECTOR_STORAGE)
 }
 
+/// How many neighbours each document keeps in the vector graph.
+///
+/// Measured, on 50,000 clustered 1024-dimensional vectors, against exact
+/// nearest neighbours:
+///
+/// | m | ef_construction | ef | recall@10 | per query |
+/// |---|---|---|---|---|
+/// | 16 | 100 | 300 (default) | 0.689 | 2.4 ms |
+/// | 16 | 500 | 300 | 0.708 | 2.3 ms |
+/// | 16 | 500 | 1200 | 0.917 | 7.9 ms |
+/// | 16 | 500 | 2048 | 0.952 | 12.6 ms |
+/// | 32 | 500 | 300 | 0.862 | 4.3 ms |
+/// | **32** | **500** | **700** | **0.952** | **9.5 ms** |
+/// | 32 | 500 | 1200 | 0.985 | 13.4 ms |
+///
+/// The first row is what this shipped: nearly a third of a query's true
+/// nearest neighbours missed, on a corpus far smaller than the ones this store
+/// is for. Nothing reported it, because a vector channel returning the wrong
+/// neighbours returns plausible ones.
+///
+/// Sixteen to thirty-two doubles the graph, and the graph is the part of an
+/// index that quantizing the payload does not shrink. It is still the right
+/// trade. `ef` alone can buy most of the recall back on a smaller graph -- 16
+/// reaches 0.952 at ef 2048 -- but 2048 is the top of the range the engine
+/// accepts, and recall falls as a project grows (the same configuration scores
+/// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
+/// configuration that needs the maximum at fifty thousand has nothing left at
+/// seven million.
 const GRAPH_DEGREE: i32 = 32;
 
 /// How hard the build works to place each document in the graph.
@@ -708,11 +695,7 @@ const SEARCH_EFFORT: i32 = 700;
 const PAMIN_SEARCH_EFFORT: &str = "PAMIN_SEARCH_EFFORT";
 
 fn search_effort() -> i32 {
-    std::env::var(PAMIN_SEARCH_EFFORT)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|effort| *effort > 0)
-        .unwrap_or(SEARCH_EFFORT)
+    pamin_core::setting::positive(PAMIN_SEARCH_EFFORT).unwrap_or(SEARCH_EFFORT)
 }
 
 impl ProjectionIndex {
@@ -792,12 +775,13 @@ impl ProjectionIndex {
                 // storage needs a capability the machine may not have, and a
                 // marker recording the request would then be read as a
                 // description of the index -- ADR 0001's silent wrong answer.
-                Marker::current(profile).write(dir)?;
+                Marker::current(profile, storage).write(dir)?;
                 PASSAGE
             }
         };
 
-        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
+        let mut index =
+            Self::open_with_dimensions(dir, profile.dimensions(), storage, access, segment)?;
         index.passage = passage;
         Ok(index)
     }
@@ -848,6 +832,7 @@ impl ProjectionIndex {
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
+        storage: VectorStorage,
         access: Access,
         segment: u64,
     ) -> Result<Self> {
@@ -879,7 +864,7 @@ impl ProjectionIndex {
                 FIELD_VECTOR,
                 DataType::VectorFp32,
                 dimensions,
-                vector_storage().index_params()?,
+                storage.index_params()?,
             )
             .max_doc_count_per_segment(segment)
             .build()?;
@@ -905,7 +890,7 @@ impl ProjectionIndex {
             collection,
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
-            storage: vector_storage(),
+            storage,
             passage: PASSAGE,
         })
     }
@@ -1013,12 +998,12 @@ struct Marker {
 impl Marker {
     const FILE: &str = "profile";
 
-    /// What an index built now, for this profile, is.
-    fn current(profile: Profile) -> Self {
+    /// What an index built now, for this profile and storage, is.
+    fn current(profile: Profile, storage: VectorStorage) -> Self {
         Self {
             model: profile.model_id().to_string(),
             grain: DOCUMENT_GRAIN.to_string(),
-            storage: vector_storage(),
+            storage,
             passage: PASSAGE,
         }
     }
@@ -1104,8 +1089,8 @@ impl Previous {
     pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let lends =
-            Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&Marker::current(profile)));
+        let current = Marker::current(profile, vector_storage());
+        let lends = Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&current));
         if !lends {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
@@ -1114,6 +1099,7 @@ impl Previous {
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
             profile.dimensions(),
+            current.storage,
             Access::ReadOnly,
             segment_documents(0),
         )?;
@@ -1349,6 +1335,17 @@ impl Projection for ProjectionIndex {
         Ok(self.collection.stats()?.doc_count)
     }
 
+    /// How many documents the collection holds, and the segment size it
+    /// recorded when it was created.
+    fn segmentation(&self) -> Result<Segmentation> {
+        Ok(Segmentation {
+            documents: self.collection.stats()?.doc_count,
+            // What the collection actually recorded, not what the policy would
+            // have chosen: the point of reporting this is that the two differ.
+            recorded: self.collection.schema()?.max_doc_count_per_segment(),
+        })
+    }
+
     /// How many files the index is spread across, counted from the directory.
     ///
     /// The engine reports documents and index completeness and nothing about
@@ -1360,15 +1357,6 @@ impl Projection for ProjectionIndex {
     /// A directory that cannot be read counts as nothing to do. This decides
     /// whether to schedule maintenance, and failing a write over it would be a
     /// worse answer than scheduling it a little late.
-    fn segmentation(&self) -> Result<Segmentation> {
-        Ok(Segmentation {
-            documents: self.collection.stats()?.doc_count,
-            // What the collection actually recorded, not what the policy would
-            // have chosen: the point of reporting this is that the two differ.
-            recorded: self.collection.schema()?.max_doc_count_per_segment(),
-        })
-    }
-
     fn file_count(&self) -> Result<u64> {
         fn walk(dir: &std::path::Path) -> u64 {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1472,6 +1460,7 @@ fn jittered(wait: Duration) -> Duration {
 /// The key is a UUID this crate wrote, so an unparseable one means the index is
 /// corrupt in a way a single query cannot act on, and failing recall over it
 /// would take the whole search down for one bad row.
+///
 /// `orient` turns the engine's number into one where larger is better, which
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a

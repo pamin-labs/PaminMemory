@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::command::{resolve, validity};
 use crate::session::Session;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic to read.
     pub topic: String,

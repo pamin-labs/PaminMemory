@@ -165,15 +165,6 @@ async fn main() -> Result<()> {
     // reference.
     let call = fill_from_stdin(call)?;
 
-    // Before a server is started or a database provisioned. A misspelled tier
-    // is an error the caller can act on at once, and one that arrived after a
-    // PostgreSQL install -- leaving a workspace behind for a command that never
-    // ran -- would be a worse answer to the same question.
-    if let protocol::Call::Search(args) = &call {
-        pamin_index::Rerank::parse(&args.rerank)
-            .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-    }
-
     if client::wanted() {
         let request = protocol::Request {
             version: protocol::version(),
@@ -224,58 +215,17 @@ async fn run_here(
 
     let session = session::Session::open(workspace, Connections::PerCommand).await?;
 
-    match call {
-        protocol::Call::Stop => unreachable!("handled above"),
-        protocol::Call::Init => {
-            let result = command::init::execute(&session, project).await?;
-            format.emit(&result, || command::init::render(&result));
-        }
-        protocol::Call::Write(args) => {
-            let result = command::write::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::write::render(&result));
-        }
-        protocol::Call::Import(args) => {
-            let result = command::import::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::import::render(&result));
-        }
-        protocol::Call::Read(args) => {
-            let result = command::read::execute(&session, project, args).await?;
-            format.emit(&result, || command::read::render(&result));
-        }
-        protocol::Call::Search(args) => {
-            let results = command::search::execute(&session, project, profile, args).await?;
-            format.emit(&results, || command::search::render(&results));
-        }
-        protocol::Call::Grep(args) => {
-            let result = command::grep::execute(&session, project, args).await?;
-            format.emit(&result, || command::grep::render(&result));
-        }
-        protocol::Call::Link(args) => {
-            let result = command::link::execute(&session, project, args).await?;
-            format.emit(&result, || command::link::render(&result));
-        }
-        protocol::Call::Unlink(args) => {
-            let result = command::unlink::execute(&session, project, args).await?;
-            format.emit(&result, || command::unlink::render(&result));
-        }
-        protocol::Call::Neighbors(args) => {
-            let result = command::neighbors::execute(&session, project, args).await?;
-            format.emit(&result, || command::neighbors::render(&result));
-        }
-        protocol::Call::Topics(args) => {
-            let result = command::topics::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::topics::render(&result));
-        }
-        protocol::Call::Reindex(args) => {
-            let result = command::reindex::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::reindex::render(&result));
-        }
-        protocol::Call::Cascade(args) => {
-            command::cascade::execute(&session, project, profile, format, args).await?;
-        }
+    // The one call whose in-process form is not the served one: `cascade run`
+    // is a foreground loop a server refuses, and a drain here reports that no
+    // server answered, which changes what it tells the caller to do.
+    if let protocol::Call::Cascade(args) = call {
+        return command::cascade::execute(&session, project, profile, format, args).await;
     }
 
-    Ok(())
+    // Everything else is answered exactly as the server answers it, and
+    // rendered exactly as a client renders the server's answer.
+    let value = server::dispatch(&session, project, profile, call.clone()).await?;
+    render(&call, &value, format)
 }
 
 /// Prints what the server sent, in whichever form was asked for.
@@ -368,7 +318,6 @@ mod tests {
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
     const UNDOCUMENTED: &[&str] = &[
-        "PAMIN_EVAL_HOME",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
@@ -447,6 +396,7 @@ mod tests {
                 let Ok(source) = std::fs::read_to_string(&path) else {
                     continue;
                 };
+                let source = without_the_list(&source);
                 for (before, _) in source.match_indices("\"PAMIN_") {
                     let rest = &source[before + 1..];
                     let Some(end) = rest.find('"') else { continue };
@@ -464,6 +414,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A rerank tier is read when the command line is parsed, and a name that
+    /// is not one is refused there -- the one check, made before anything is
+    /// started or provisioned.
+    #[test]
+    fn a_rerank_tier_is_checked_where_the_command_line_is_parsed() {
+        let parsed = Cli::try_parse_from(["pamin", "search", "q", "--rerank", "fast"])
+            .expect("a real tier parses");
+        let Command::Search(args) = parsed.command else {
+            panic!("parsed as another command");
+        };
+        assert_eq!(args.rerank, pamin_index::Rerank::Fast);
+
+        let refused = Cli::try_parse_from(["pamin", "search", "q", "--rerank", "fastest"]);
+        let error = refused
+            .err()
+            .expect("an unknown tier was accepted")
+            .to_string();
+        assert!(error.contains("fastest"), "{error}");
+    }
+
+    /// `source` with [`UNDOCUMENTED`]'s own entries cut out.
+    ///
+    /// The list is written as `"PAMIN_..."` literals in this file, so a scan
+    /// that read it would find every name on it and the check that a listed
+    /// name is still read somewhere could never fail. `PAMIN_EVAL_HOME` sat on
+    /// the list for as long as that was so, read by nothing but harnesses.
+    fn without_the_list(source: &str) -> std::borrow::Cow<'_, str> {
+        let Some(start) = source.find("const UNDOCUMENTED: &[&str] = &[") else {
+            return source.into();
+        };
+        let end = source[start..]
+            .find("];")
+            .map_or(source.len(), |end| start + end);
+        format!("{}{}", &source[..start], &source[end..]).into()
+    }
+
+    /// A name only the list mentions is not found by the scan, which is what
+    /// lets the check that every listed name is still read actually fail.
+    #[test]
+    fn the_list_is_not_its_own_evidence() {
+        let source = "const UNDOCUMENTED: &[&str] = &[\n    \"PAMIN_ONLY_LISTED\",\n];\nread(\"PAMIN_READ\");";
+        let scanned = without_the_list(source);
+        assert_eq!(
+            scanned, "];\nread(\"PAMIN_READ\");",
+            "the list's entries survived, or the rest of the source did not"
+        );
     }
 
     /// The profile a command gets when nobody names one.

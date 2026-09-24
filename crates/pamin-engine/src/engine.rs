@@ -21,10 +21,10 @@ use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
 ///
-/// These are inputs rather than constants because they are provisional: the
-/// evaluation harness exists to settle them, and it cannot sweep a value that
-/// is compiled in. The defaults are the ones the architecture specifies, so
-/// nothing changes for a caller that does not ask.
+/// An input to the engine rather than a constant inside it, so a harness can
+/// say what it searched with. Every search the product runs uses
+/// [`Depths::DEFAULT`], the values the architecture specifies; nothing has
+/// ever swept them, and the CLI flags that once exposed them are gone.
 #[derive(Clone, Copy, Debug)]
 pub struct Depths {
     /// Candidates each channel contributes.
@@ -40,13 +40,12 @@ pub struct Depths {
     pub graph: u8,
 }
 
-impl Default for Depths {
-    fn default() -> Self {
-        Self {
-            channel: 50,
-            graph: 2,
-        }
-    }
+impl Depths {
+    /// What every search the product runs uses.
+    pub const DEFAULT: Self = Self {
+        channel: 50,
+        graph: 2,
+    };
 }
 
 /// How much weight a derived mention carries against an asserted edge.
@@ -274,19 +273,101 @@ struct Rebuilding {
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
-    loaded: Arc<Mutex<std::collections::HashMap<Profile, Held<Embedder>>>>,
+    embedders: Loaded<Profile, Embedder>,
     /// The same arrangement for rerankers, keyed by tier for the same reason:
     /// the tier is what decides which weights these are.
     ///
-    /// Each carries when it was last handed out, because unlike an embedder a
-    /// reranker can stop being wanted. Every search needs a query vector; a
-    /// reranker is a tier a caller chose once, and a workspace in one language
-    /// is told by `docs/cli.md` to choose `off`.
-    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held<Reranker>>>>,
+    /// A reranker can stop being wanted in a way an embedder mostly cannot.
+    /// Every search needs a query vector; a reranker is a tier a caller chose
+    /// once, and a workspace in one language is told by `docs/cli.md` to
+    /// choose `off`.
+    rerankers: Loaded<Rerank, Reranker>,
+}
+
+/// Loaded models of one kind, keyed by what decides their weights, each with
+/// when it was last handed out.
+///
+/// One registry for embedders and rerankers alike, because the two were the
+/// same code written twice: load on first ask under the lock, stamp every
+/// hand-out, and release what is both idle and unheld.
+struct Loaded<K, T> {
+    held: Arc<Mutex<std::collections::HashMap<K, Held<T>>>>,
 }
 
 /// A loaded model and when it was last handed out.
 type Held<T> = (Instant, Arc<Mutex<T>>);
+
+impl<K, T> Clone for Loaded<K, T> {
+    fn clone(&self) -> Self {
+        Self {
+            held: Arc::clone(&self.held),
+        }
+    }
+}
+
+impl<K, T> Default for Loaded<K, T> {
+    fn default() -> Self {
+        Self {
+            held: Arc::default(),
+        }
+    }
+}
+
+impl<K: Copy + Eq + std::hash::Hash, T> Loaded<K, T> {
+    fn lock(&self) -> MutexGuard<'_, std::collections::HashMap<K, Held<T>>> {
+        self.held
+            .lock()
+            .expect("the model registry lock is poisoned")
+    }
+
+    /// The model for `key`, loading it the first time it is asked for.
+    ///
+    /// Blocking, and the registry lock is held across the load. That makes a
+    /// second caller for the same key wait out the first one's download
+    /// instead of starting its own, which is the whole point; the wait it pays
+    /// is the wait it would have paid loading its own copy.
+    fn get<E>(&self, key: K, load: impl FnOnce() -> Result<T, E>) -> Result<Arc<Mutex<T>>, E> {
+        let mut held = self.lock();
+        if let Some((last_used, model)) = held.get_mut(&key) {
+            *last_used = Instant::now();
+            return Ok(Arc::clone(model));
+        }
+
+        let model = Arc::new(Mutex::new(load()?));
+        held.insert(key, (Instant::now(), Arc::clone(&model)));
+        Ok(model)
+    }
+
+    /// The model for `key` if it is loaded, without loading it or counting
+    /// this as a use.
+    fn loaded(&self, key: K) -> Option<Arc<Mutex<T>>> {
+        self.lock().get(&key).map(|(_, model)| Arc::clone(model))
+    }
+
+    /// Drops every model idle for [`model_idle`] that nothing else holds,
+    /// returning their keys.
+    ///
+    /// Idle alone is not enough: a model a caller still holds -- a search in
+    /// the middle of a pass, an engine that opened with it -- is in use
+    /// however long ago it was handed out, and dropping the registry's handle
+    /// would free nothing and make the next caller load a second copy.
+    fn release_idle(&self) -> Vec<K> {
+        let mut held = self.lock();
+        let now = Instant::now();
+        let idle: Vec<K> = held
+            .iter()
+            .filter(|(_, (last_used, model))| {
+                is_idle(*last_used, now, model_idle()) && Arc::strong_count(model) == 1
+            })
+            .map(|(key, _)| *key)
+            .collect();
+
+        for key in &idle {
+            held.remove(key);
+        }
+        idle
+    }
+}
 
 /// How long a model may sit unused before the process gives it back.
 ///
@@ -336,31 +417,15 @@ impl Models {
     pub fn in_workspace(workspace: &Workspace) -> Self {
         Self {
             dir: workspace.root().join("models"),
-            loaded: Arc::default(),
-            rerankers: Arc::default(),
+            embedders: Loaded::default(),
+            rerankers: Loaded::default(),
         }
     }
 
     /// The model for a profile, loading it the first time it is asked for.
-    ///
-    /// Blocking, and the registry lock is held across the load. That makes a
-    /// second caller for the same profile wait out the first one's download
-    /// instead of starting its own, which is the whole point; the wait it pays
-    /// is the wait it would have paid loading its own copy.
     fn get(&self, profile: Profile) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
-        let mut loaded = self
-            .loaded
-            .lock()
-            .expect("the model registry lock is poisoned");
-
-        if let Some((last_used, embedder)) = loaded.get_mut(&profile) {
-            *last_used = Instant::now();
-            return Ok(Arc::clone(embedder));
-        }
-
-        let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
-        loaded.insert(profile, (Instant::now(), Arc::clone(&embedder)));
-        Ok(embedder)
+        self.embedders
+            .get(profile, || Embedder::load(profile, &self.dir))
     }
 
     /// The reranker for a tier, loading it the first time it is asked for.
@@ -368,19 +433,7 @@ impl Models {
     /// Lazily rather than with the project: a workspace that never reranks
     /// never downloads one, and the tier is chosen per search.
     fn reranker(&self, tier: Rerank) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
-        let mut rerankers = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned");
-
-        if let Some((last_used, reranker)) = rerankers.get_mut(&tier) {
-            *last_used = Instant::now();
-            return Ok(Arc::clone(reranker));
-        }
-
-        let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
-        rerankers.insert(tier, (Instant::now(), Arc::clone(&reranker)));
-        Ok(reranker)
+        self.rerankers.get(tier, || Reranker::load(tier, &self.dir))
     }
 
     /// What a loaded reranker has been asked to do, or `None` if this process
@@ -391,14 +444,7 @@ impl Models {
     /// middle of a forward pass waits for that pass rather than for every
     /// other tier as well.
     fn counted(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        let held = {
-            let rerankers = self
-                .rerankers
-                .lock()
-                .expect("the reranker registry lock is poisoned");
-            let (_, reranker) = rerankers.get(&tier)?;
-            Arc::clone(reranker)
-        };
+        let held = self.rerankers.loaded(tier)?;
         Some(
             held.lock()
                 .expect("the reranker lock is poisoned")
@@ -431,24 +477,7 @@ impl Models {
     /// entries first; this is the second half of that, and on its own it
     /// releases nothing.
     pub fn release_idle_embedders(&self) -> Vec<Profile> {
-        let mut loaded = self
-            .loaded
-            .lock()
-            .expect("the model registry lock is poisoned");
-
-        let now = Instant::now();
-        let idle: Vec<Profile> = loaded
-            .iter()
-            .filter(|(_, (last_used, embedder))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(embedder) == 1
-            })
-            .map(|(profile, _)| *profile)
-            .collect();
-
-        for profile in &idle {
-            loaded.remove(profile);
-        }
-        idle
+        self.embedders.release_idle()
     }
 
     /// Gives back the rerankers nothing has asked for lately.
@@ -463,24 +492,7 @@ impl Models {
     /// would not free anything, it would only make the next search load a
     /// second copy alongside the first, which is the opposite of the point.
     pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
-        let mut rerankers = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned");
-
-        let now = Instant::now();
-        let idle: Vec<Rerank> = rerankers
-            .iter()
-            .filter(|(_, (last_used, reranker))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(reranker) == 1
-            })
-            .map(|(tier, _)| *tier)
-            .collect();
-
-        for tier in &idle {
-            rerankers.remove(tier);
-        }
-        idle
+        self.rerankers.release_idle()
     }
 }
 
@@ -500,16 +512,13 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
 /// window releases a model the tick after it loads and turns every search into
 /// a model load.
 pub fn model_idle() -> Duration {
-    std::env::var(MODEL_IDLE_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
+    pamin_core::setting::positive(MODEL_IDLE_VAR)
         .map(Duration::from_secs)
         .unwrap_or(MODEL_IDLE)
 }
 
 /// Overrides [`MODEL_IDLE`], in seconds.
-pub const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
+const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
 
 /// A memory's content hash, as the ledger stores it.
 ///
@@ -728,14 +737,6 @@ impl Engine {
         })?)
     }
 
-    /// How many documents this project's projection holds.
-    ///
-    /// Public for the same reason as
-    /// [`vector_index_completeness`](Self::vector_index_completeness), and it
-    /// is the half that stops the other one passing vacuously: an *empty*
-    /// projection reports a completeness of 1.0, because everything it holds
-    /// is indexed and it holds nothing. So "the graph covers everything" is
-    /// only a claim about a graph once something is in there.
     /// How this project's index is segmented, against what the policy wants.
     ///
     /// Resegmenting means recreating the collection --
@@ -747,6 +748,14 @@ impl Engine {
         Ok(self.index().segmentation()?)
     }
 
+    /// How many documents this project's projection holds.
+    ///
+    /// Public for the same reason as
+    /// [`vector_index_completeness`](Self::vector_index_completeness), and it
+    /// is the half that stops the other one passing vacuously: an *empty*
+    /// projection reports a completeness of 1.0, because everything it holds
+    /// is indexed and it holds nothing. So "the graph covers everything" is
+    /// only a claim about a graph once something is in there.
     pub fn indexed_documents(&self) -> Result<u64> {
         Ok(off_the_runtime(|| self.index().document_count())?)
     }
@@ -1302,6 +1311,17 @@ impl Engine {
             .count())
     }
 
+    /// What the reranker at `tier` has done in this process, or `None` if it
+    /// was never loaded.
+    ///
+    /// Here because three deferred decisions turn on these counters and none
+    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
+    /// wants them across a run reads them once at the end: they are lifetime
+    /// totals for the loaded model and are lost when an idle tier is released.
+    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+        self.models.counted(tier)
+    }
+
     /// Search, then reorder the head of the result with a cross-encoder.
     ///
     /// Only the candidates no lexical channel found, and only into the
@@ -1330,17 +1350,6 @@ impl Engine {
     /// rule that quietly does nothing on the commonest shape of query is worse
     /// than a slightly different rule, and this one asks only what the search
     /// already recorded.
-    /// What the reranker at `tier` has done in this process, or `None` if it
-    /// was never loaded.
-    ///
-    /// Here because three deferred decisions turn on these counters and none
-    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
-    /// wants them across a run reads them once at the end: they are lifetime
-    /// totals for the loaded model and are lost when an idle tier is released.
-    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        self.models.counted(tier)
-    }
-
     pub async fn search_reranked(
         &self,
         query: &str,
@@ -2056,17 +2065,20 @@ fn seed_relevance(
 
 /// How strongly the graph vouches for one arrival: edge confidence, per hop.
 ///
-/// **This is the one channel whose score is not its sort key, and the
-/// disagreement is real rather than an oversight.** `graph::expand` orders its
-/// neighbours lexicographically -- fewest hops first, then most confident, then
-/// by identifier -- and no single number reproduces a lexicographic order:
-/// a two-hop arrival at confidence 0.9 scores above a one-hop arrival at
-/// confidence 0.3 here, while the walk ranks the one-hop first. Reordering the
-/// channel by this number instead would be a ranking change nothing can measure
-/// -- the graph channel contributes exactly 0.0000 to every group of all three
-/// evaluation corpora -- so the order stays as the walk made it, and this
-/// number answers the separate question fusion needs: how far this channel's
-/// best arrival stands above its own field.
+/// Half of the graph channel's score and sort key: `recall_graph` multiplies
+/// it by how relevant the seed the arrival came from is to this query, orders
+/// the arrivals by that product, cuts them to the channel's depth, and hands
+/// fusion the same product as each candidate's score.
+///
+/// So the channel does not keep the order `graph::expand` returns. The walk
+/// orders its neighbours lexicographically -- fewest hops first, then most
+/// confident, then by identifier -- and no single number reproduces that: a
+/// two-hop arrival at confidence 0.9 scores above a one-hop arrival at 0.3
+/// here, where the walk ranks the one-hop first. This used to say the walk's
+/// order was kept; it stopped being true when the cut to the channel's depth
+/// began ordering by this first, because the walk's order, once every derived
+/// edge sits at one confidence, is identifier order and kept an arbitrary
+/// fifty.
 fn path_strength(neighbor: &Neighbor) -> f32 {
     neighbor.confidence * HOP_DECAY.powi(i32::from(neighbor.hops.saturating_sub(1)))
 }
@@ -2123,7 +2135,7 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// needs because another memory names it -- and fusion, weighing it at 0.30,
 /// ranks those finds far below the head: on MuSiQue's 1,000 two-hop questions,
 /// 153 supporting titles were found by the graph alone and not one reached the
-/// reranker's twenty, at a median fused rank of 99. That rank was taken while
+/// reranker's twenty, its depth then, at a median fused rank of 99. That rank was taken while
 /// fusion also floored every candidate only the graph found; removing the
 /// floor can only raise them, and it left all 1,000 questions' nDCG@10 where
 /// it was. The reranker is the one stage that is shown the memory that
@@ -2222,8 +2234,9 @@ pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]
 /// A cross-encoder can only reorder what it is shown, so the list it works on
 /// has to be at least as long as the tier's depth even when the caller wants
 /// five results. Cutting to the caller's limit first is what made the tuned
-/// depth unreachable: `--limit` defaults to five, the tier's depth is twenty,
-/// and the sweep that chose twenty was run over a list of fifty. What arrived
+/// depth unreachable: `--limit` defaults to five, the tier's depth was then
+/// twenty (it is thirty now), and the sweep that chose twenty was run over a
+/// list of fifty. What arrived
 /// at the reranker was five candidates, of which the two it needs to find
 /// unlexical are usually not among them -- so the shipped default reordered
 /// nothing and returned the ranking a search with reranking off would have.
@@ -2245,7 +2258,6 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
     }
 }
 
-/// The first `limit` of a list that was fused deeper than the caller asked for.
 /// Whether reranking these positions can change what the caller is given.
 ///
 /// The pass reorders the candidates at `unlexical` *into the positions they
@@ -2258,14 +2270,14 @@ fn fused_for(limit: u32, rerank: Rerank) -> u32 {
 /// And if every one of those positions sits at or past `limit`, the pass can
 /// only permute candidates the caller never sees. That is not a heuristic
 /// about when reranking is unlikely to help: the returned results are
-/// identical either way, because the only thing the pass produces is a
-/// permutation of those positions -- it attaches no score to a hit and writes
-/// nothing into the trace. So the work is not merely unlikely to pay, it is
-/// provably invisible.
+/// identical either way, because what the pass produces is a permutation of
+/// those positions and a `reranked` trace entry on each candidate it scored --
+/// and every one of those candidates is cut before the caller sees it. So the
+/// work is not merely unlikely to pay, it is provably invisible.
 ///
 /// This is worth nothing to the evaluation harnesses and something to every
 /// user. The harnesses ask for 51 results so they can measure recall@50, and
-/// the reranker's head is 20, so every position it touches is inside what they
+/// the reranker's head is thirty, so every position it touches is inside what they
 /// read and this returns `true` on every query they run -- the accuracy
 /// figures cannot move, by construction rather than by measurement. `pamin
 /// search` defaults to five. On a query whose first five results all carry a
@@ -2305,6 +2317,7 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
         .is_some_and(|highest| *highest < limit as usize)
 }
 
+/// The first `limit` of a list that was fused deeper than the caller asked for.
 fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
     hits.truncate(limit as usize);
     hits
@@ -2315,8 +2328,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_CANDIDATES, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle,
-        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
+        GRAPH_CANDIDATES, Loaded, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for,
+        is_idle, path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2379,12 +2392,6 @@ mod tests {
         assert!(!relevance.contains_key(&id(50)), "not a seed at all");
     }
 
-    /// A model in use is not idle, however long ago it was handed out.
-    ///
-    /// The pair that matters: the window has to be reached, and reaching it is
-    /// not enough on its own -- the caller checks that nothing holds the model
-    /// as well, because dropping the registry's handle while a search holds
-    /// its own frees nothing and makes the next search load a second copy.
     #[test]
     fn a_pass_over_candidates_below_the_limit_cannot_be_seen() {
         // Five results asked for, and the only candidates the pass may move
@@ -2413,18 +2420,57 @@ mod tests {
     #[test]
     fn the_evaluation_harnesses_never_skip_the_pass() {
         // Both harnesses ask for `RECALL_AT + 1` results so they can measure
-        // recall@50, and the reranker's head is 20. So every position it could
-        // touch is inside what they read, and the published accuracy figures
-        // cannot move because of this gate. Asserted rather than argued,
-        // because the argument is the whole reason the gate is allowed to be
-        // exact rather than swept.
-        let whole_head: Vec<usize> = (0..20).collect();
+        // recall@50, and the reranker's head is the shipped tier's depth. So
+        // every position it could touch is inside what they read, and the
+        // published accuracy figures cannot move because of this gate.
+        // Asserted rather than argued, because the argument is the whole
+        // reason the gate is allowed to be exact rather than swept -- and read
+        // off the tier, so a deeper head is checked against 51 rather than
+        // against the twenty this once hard-coded.
+        let depth = Rerank::default().depth();
+        let whole_head: Vec<usize> = (0..depth).collect();
         assert!(can_be_seen(&whole_head, 51));
         // Even the worst case for the harness -- only the last two positions
         // of the head are unlexical -- is still inside 51.
-        assert!(can_be_seen(&[18, 19], 51));
+        assert!(can_be_seen(&[depth - 2, depth - 1], 51));
     }
 
+    /// A model is loaded once however often it is asked for, and one handed
+    /// out a moment ago is not released.
+    #[test]
+    fn a_model_is_loaded_once_and_kept_while_it_is_wanted() {
+        let loaded: Loaded<u8, u32> = Loaded::default();
+        let mut loads = 0;
+        let first = loaded
+            .get(1, || {
+                loads += 1;
+                Ok::<_, ()>(7)
+            })
+            .expect("the first load");
+        let again = loaded
+            .get(1, || {
+                loads += 1;
+                Ok::<_, ()>(8)
+            })
+            .expect("the second ask");
+
+        assert_eq!(loads, 1, "the second ask loaded a second copy");
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        assert!(loaded.loaded(2).is_none(), "looking loaded something");
+        drop((first, again));
+        assert!(
+            loaded.release_idle().is_empty(),
+            "a model handed out just now was released"
+        );
+        assert!(loaded.loaded(1).is_some());
+    }
+
+    /// A model in use is not idle, however long ago it was handed out.
+    ///
+    /// The pair that matters: the window has to be reached, and reaching it is
+    /// not enough on its own -- the caller checks that nothing holds the model
+    /// as well, because dropping the registry's handle while a search holds
+    /// its own frees nothing and makes the next search load a second copy.
     #[test]
     fn a_model_is_idle_only_once_the_window_has_passed() {
         let window = Duration::from_secs(300);

@@ -161,10 +161,11 @@ time back and is the one tier that costs same-language ranking. Only candidates
 that no lexical channel found are reordered, which is why a single-language
 workspace gains almost nothing.
 
-**Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
-evaluation harness. Raising them costs latency for recall you have no way to
-measure from outside. If you want more control over retrieval, use `grep`,
-`read` and `neighbors` — paths whose behaviour you can actually verify.
+**There is no depth to tune.** Each channel contributes fifty candidates and
+the graph walks two hops; `--channel-depth` and `--graph-depth` are gone, and a
+command that passes them is refused. If you want more control over retrieval,
+use `grep`, `read` and `neighbors` — paths whose behaviour you can actually
+verify.
 
 ## Relationships
 

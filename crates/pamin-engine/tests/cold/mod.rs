@@ -201,7 +201,7 @@ async fn reranked<'q>(
     for query in queries {
         let before = scored(&engine, tier);
         engine
-            .search_reranked(query, LIMIT, Depths::default(), tier)
+            .search_reranked(query, LIMIT, Depths::DEFAULT, tier)
             .await
             .expect("search");
         if scored(&engine, tier) > before {
@@ -243,7 +243,7 @@ async fn open(
 async fn search(engine: &Engine, query: &str, tier: Rerank, after: u64) -> Duration {
     let started = Instant::now();
     let hits = engine
-        .search_reranked(query, LIMIT, Depths::default(), tier)
+        .search_reranked(query, LIMIT, Depths::DEFAULT, tier)
         .await
         .expect("search");
     let took = started.elapsed();

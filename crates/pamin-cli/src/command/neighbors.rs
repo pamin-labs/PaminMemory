@@ -13,7 +13,7 @@ use crate::command::{resolve, validity};
 
 use crate::session::Session;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// The topic to walk out from.
     pub topic: String,

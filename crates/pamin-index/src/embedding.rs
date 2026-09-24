@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
+use crate::remembered::Remembered;
 
 /// Which embedding model to run.
 ///
@@ -141,7 +142,14 @@ pub struct Embedder {
     ///
     /// Shared with every project on this profile, because the vector depends on
     /// the model and the text and on nothing else.
-    remembered: Queries,
+    ///
+    /// Keyed by the query itself rather than by a hash of it. The reranker's
+    /// cache keys scores by a hash and accepts that a collision misorders a
+    /// result; a collision here would hand back another query's vector, and a
+    /// search for one thing would quietly answer another. A query is a few
+    /// dozen bytes against a four-kilobyte vector, so keeping it costs almost
+    /// nothing next to what it guards.
+    remembered: Remembered<String, Vec<f32>>,
 }
 
 /// The loaded model, which is not the same type for every profile.
@@ -191,7 +199,7 @@ impl Embedder {
         Ok(Self {
             model,
             profile,
-            remembered: Queries::default(),
+            remembered: Remembered::with_capacity(Self::REMEMBERED_QUERIES),
         })
     }
 
@@ -221,14 +229,14 @@ impl Embedder {
     /// would hold the corpus and never be read.
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
         if let Some(known) = self.remembered.get(text) {
-            return Ok(known);
+            return Ok(known.clone());
         }
 
         let vector = match self.profile.prefixes() {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }?;
-        self.remembered.put(text, &vector);
+        self.remembered.put(text.to_string(), vector.clone());
         Ok(vector)
     }
 
@@ -349,47 +357,6 @@ fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
     }
 }
 
-/// Query vectors already computed, oldest first.
-///
-/// Keyed by the query itself rather than by a hash of it. The reranker's cache
-/// keys scores by a hash and accepts that a collision misorders a result; a
-/// collision here would hand back another query's vector, and a search for one
-/// thing would quietly answer another. A query is a few dozen bytes against a
-/// four-kilobyte vector, so keeping it costs almost nothing next to what it
-/// guards.
-#[derive(Default)]
-struct Queries {
-    known: std::collections::HashMap<String, Vec<f32>>,
-    order: std::collections::VecDeque<String>,
-}
-
-impl Queries {
-    fn get(&self, query: &str) -> Option<Vec<f32>> {
-        self.known.get(query).cloned()
-    }
-
-    /// Remembers a vector, forgetting the oldest once full.
-    ///
-    /// Insertion order rather than use order, for the reason the reranker's is:
-    /// keeping a true LRU means writing on every hit, and a query asked twice
-    /// is asked twice close together.
-    fn put(&mut self, query: &str, vector: &[f32]) {
-        if self
-            .known
-            .insert(query.to_string(), vector.to_vec())
-            .is_some()
-        {
-            return;
-        }
-        self.order.push_back(query.to_string());
-        while self.order.len() > Embedder::REMEMBERED_QUERIES {
-            if let Some(oldest) = self.order.pop_front() {
-                self.known.remove(&oldest);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     /// A remembered query is the same vector, and a different one is not.
@@ -400,49 +367,22 @@ mod tests {
     /// one, and nothing downstream could tell.
     #[test]
     fn a_remembered_query_is_its_own() {
-        let mut queries = super::Queries::default();
+        let mut queries: super::Remembered<String, Vec<f32>> =
+            super::Remembered::with_capacity(super::Embedder::REMEMBERED_QUERIES);
         assert!(queries.get("how does deployment work").is_none());
 
-        queries.put("how does deployment work", &[1.0, 2.0, 3.0]);
-        queries.put("how does deployment fail", &[4.0, 5.0, 6.0]);
+        queries.put("how does deployment work".to_string(), vec![1.0, 2.0, 3.0]);
+        queries.put("how does deployment fail".to_string(), vec![4.0, 5.0, 6.0]);
 
         assert_eq!(
             queries.get("how does deployment work"),
-            Some(vec![1.0, 2.0, 3.0])
+            Some(&vec![1.0, 2.0, 3.0])
         );
         assert_eq!(
             queries.get("how does deployment fail"),
-            Some(vec![4.0, 5.0, 6.0])
+            Some(&vec![4.0, 5.0, 6.0])
         );
         assert!(queries.get("how does deployment").is_none());
-    }
-
-    /// The oldest is forgotten, and the cache stays the size it says.
-    #[test]
-    fn the_oldest_query_is_forgotten_once_it_is_full() {
-        let mut queries = super::Queries::default();
-        let cap = super::Embedder::REMEMBERED_QUERIES;
-        for i in 0..cap + 10 {
-            queries.put(&format!("query {i}"), &[i as f32]);
-        }
-        assert_eq!(queries.known.len(), cap);
-        assert!(queries.get("query 0").is_none(), "the oldest survived");
-        assert_eq!(
-            queries.get(&format!("query {}", cap + 9)),
-            Some(vec![(cap + 9) as f32]),
-            "the newest was lost"
-        );
-    }
-
-    /// Rewriting a query does not grow the queue behind it.
-    #[test]
-    fn remembering_a_query_twice_does_not_shorten_the_cache() {
-        let mut queries = super::Queries::default();
-        for _ in 0..super::Embedder::REMEMBERED_QUERIES * 2 {
-            queries.put("the same question", &[1.0]);
-        }
-        assert_eq!(queries.order.len(), 1);
-        assert_eq!(queries.get("the same question"), Some(vec![1.0]));
     }
 
     use super::*;

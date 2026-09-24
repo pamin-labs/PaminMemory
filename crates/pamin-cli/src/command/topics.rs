@@ -21,7 +21,7 @@ use crate::session::Session;
 use pamin_engine::Depths;
 use pamin_store::repository;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What the topic might be about, or be called. Omit to list recent ones.
     ///
@@ -90,7 +90,7 @@ pub async fn execute(
     // to run: this returns names, so reordering the ones that got through
     // would change which twenty came back and not which one is right.
     let hits = engine
-        .search_reranked(&query, args.limit, Depths::default(), Rerank::Off)
+        .search_reranked(&query, args.limit, Depths::DEFAULT, Rerank::Off)
         .await?;
 
     // Name matches first: a caller looking for what to call something wants

@@ -74,11 +74,7 @@ pub(crate) fn session(
 /// is a performance knob, and a typo in it should not stop a search from
 /// working.
 pub(crate) fn threads() -> Option<usize> {
-    std::env::var("PAMIN_INFERENCE_THREADS")
-        .ok()?
-        .parse::<usize>()
-        .ok()
-        .filter(|threads| *threads > 0)
+    pamin_core::setting::positive("PAMIN_INFERENCE_THREADS")
 }
 
 /// Where a model's forward passes run.

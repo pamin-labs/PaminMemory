@@ -12,6 +12,7 @@ pub mod fusion;
 pub mod graph;
 pub mod id;
 pub mod ledger;
+pub mod setting;
 pub mod version;
 
 pub use cascade::{JobKind, LAGGING_AT, MAX_ATTEMPTS, may_defer};
@@ -24,7 +25,6 @@ pub use id::{
     SourceVersionId, TopicId, TopicStateId,
 };
 pub use ledger::{
-    FilterDecision, Project, Source, SourceKind, SourceSpan, SourceVersion, Topic, TopicState,
-    Validity,
+    FilterDecision, Project, SourceKind, SourceSpan, SourceVersion, Topic, TopicState, Validity,
 };
 pub use version::{ResolvedVersion, VersionOffset, resolve};

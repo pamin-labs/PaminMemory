@@ -379,8 +379,9 @@ Places to look, in rough order of how often they are wrong:
 
 1. **Worked examples and sample output** — these encode behaviour precisely, so
    they break precisely. Recompute derived values rather than eyeballing them:
-   a fusion contribution is `weight / (10 + rank)`, so a weight change moves
-   every contribution and the score.
+   a fusion contribution is a channel's weight times the candidate's place in
+   that channel's band, so a weight change moves every contribution and the
+   score.
 2. **Prose next to a table you edited.** Correcting a number and leaving the
    paragraph that justified the old one is the single most common failure here.
 3. **Verdict cells** — "permanently", "never", "unavailable". Check them against

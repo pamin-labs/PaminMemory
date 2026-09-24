@@ -458,10 +458,12 @@ the last row says something else: at the shipped weight the support rule does
 nothing on 1,157 questions, including MuSiQue's 12,840-edge graph -- the dense
 case it was kept for.
 
-**Nothing has changed default.** Reciprocal rank fusion still ships at the
-weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
-same-language queries on the same 1,190 questions, and it has to report before
-any of this moves a default.
+**Nothing here changed a default.** When this sweep ran, reciprocal rank
+fusion still shipped at the weights it shipped at, and XQuAD-R -- the corpus
+that separates cross-lingual from same-language queries on the same 1,190
+questions -- had to report before any of it could move one. Banded fusion has
+shipped since, on the evidence under
+[What that mechanism, once stated, made shippable](#what-that-mechanism-once-stated-made-shippable).
 
 One thing the first attempt at this sweep is worth recording. Standardised
 fusion measured **0.0099 against 0.7910** — 0 wins, 43 losses — because zvec

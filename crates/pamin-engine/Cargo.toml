@@ -17,12 +17,11 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 # For a memory's content hash, which `remember` computes because it is part of
-# what recording a memory means. Already in the tree as `pamin-cli`'s, so this
+# what recording a memory means. Already in the tree as `pamin-index`'s, so this
 # adds no lockfile entry.
 sha2 = { workspace = true }
 
 [dev-dependencies]
-pamin-store = { workspace = true }
 # For the scale tests only, which build a project's topics in bulk rather than
 # one round trip at a time. Already in the tree as `pamin-store`'s driver, so
 # this adds no lockfile entry.
@@ -30,4 +29,3 @@ sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

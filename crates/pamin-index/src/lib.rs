@@ -11,6 +11,7 @@ mod hub;
 mod inference;
 mod prepared;
 pub mod projection;
+mod remembered;
 pub mod reranking;
 mod reshape;
 pub mod segmentation;

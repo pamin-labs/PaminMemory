@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::Session;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {}
 
 #[derive(Serialize, Deserialize)]

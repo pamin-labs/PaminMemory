@@ -232,6 +232,7 @@ use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 use crate::inference::Device;
+use crate::remembered::Remembered;
 
 /// How much to spend reordering the shortlist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -284,7 +285,8 @@ pub enum Rerank {
 /// XQuAD-R cross-lingual -- "twenty is simply where it stops". The default is
 /// now `accurate`, a model fourteen times the size, and it keeps finding
 /// answers further down. Paired against twenty through `search_reranked`,
-/// nDCG@10 (the `DEPTH_VARIANTS` arm of each harness):
+/// nDCG@10 (the `DEPTH_VARIANTS` harness arm, which lives on the measurement
+/// branch of PR #83 rather than in this tree):
 ///
 /// | depth | XQuAD-R cross (1,190) | own cross (43) | MIRACL (482) | MuSiQue (1,000) |
 /// |---|---|---|---|---|
@@ -304,7 +306,7 @@ pub enum Rerank {
 /// pairs; its wall time has not been re-measured on a quiet machine.
 const DEPTH: usize = 30;
 
-/// The tuning constants above, overridable for a sweep.
+/// A tuning constant, overridable for a sweep.
 ///
 /// `DEPTH`, `BATCH` and `MAX_TOKENS` were each settled by measurement, and two
 /// of the three were settled on the scratch harness whose figures turned out to
@@ -313,11 +315,7 @@ const DEPTH: usize = 30;
 /// evaluation's own `SWEEP` and `TIERS`: unset means the constant, so nothing a
 /// user runs is affected.
 fn tuned(name: &str, fallback: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(fallback)
+    pamin_core::setting::positive(name).unwrap_or(fallback)
 }
 
 /// How many candidates go through the model at once.
@@ -490,17 +488,15 @@ impl Rerank {
 /// resident process every command starts with an empty one.
 const REMEMBERED_SCORES: usize = 4096;
 
-/// Scores already computed, oldest first.
+/// Scores already computed, and how often one was found.
 ///
 /// Keyed by a 64-bit hash of the query and the document rather than by either:
 /// holding the text would cost more than the model saves, and the pair is what
 /// identifies a score. A collision returns one candidate's score for another,
 /// which misorders a result rather than breaking one, and at this size the
 /// chance of one is around a trillion to one per lookup.
-#[derive(Default)]
 struct Scores {
-    known: std::collections::HashMap<u64, f32>,
-    order: std::collections::VecDeque<u64>,
+    remembered: Remembered<u64, f32>,
     /// Lookups that found a score, and lookups that did not.
     ///
     /// Counted because the ADR makes them the evidence for a decision it has
@@ -511,6 +507,16 @@ struct Scores {
     /// nothing about how often it is read.
     hits: u64,
     misses: u64,
+}
+
+impl Default for Scores {
+    fn default() -> Self {
+        Self {
+            remembered: Remembered::with_capacity(REMEMBERED_SCORES),
+            hits: 0,
+            misses: 0,
+        }
+    }
 }
 
 impl Scores {
@@ -526,7 +532,7 @@ impl Scores {
     }
 
     fn get(&mut self, key: u64) -> Option<f32> {
-        let found = self.known.get(&key).copied();
+        let found = self.remembered.get(&key).copied();
         match found {
             Some(_) => self.hits += 1,
             None => self.misses += 1,
@@ -535,20 +541,8 @@ impl Scores {
     }
 
     /// Remembers a score, forgetting the oldest once full.
-    ///
-    /// Insertion order rather than use order. Keeping a true LRU means writing
-    /// to the queue on every hit, and what this protects is milliseconds of
-    /// inference; a query asked twice is asked twice close together.
     fn put(&mut self, key: u64, score: f32) {
-        if self.known.insert(key, score).is_some() {
-            return;
-        }
-        self.order.push_back(key);
-        while self.order.len() > REMEMBERED_SCORES {
-            if let Some(oldest) = self.order.pop_front() {
-                self.known.remove(&oldest);
-            }
-        }
+        self.remembered.put(key, score);
     }
 }
 
@@ -578,7 +572,6 @@ pub struct Ranked {
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
     model: Encoder,
-    tier: Rerank,
     device: Device,
     scores: Scores,
     lengths: Lengths,
@@ -681,7 +674,6 @@ impl Reranker {
 
         Ok(Self {
             model,
-            tier,
             device,
             scores: Scores::default(),
             lengths: Lengths::default(),
@@ -691,10 +683,6 @@ impl Reranker {
     /// Where this reranker's passes run. See [`Device`].
     pub fn device(&self) -> Device {
         self.device
-    }
-
-    pub fn tier(&self) -> Rerank {
-        self.tier
     }
 
     /// Orders `documents` best first, returning their original positions.
@@ -801,7 +789,7 @@ impl Reranker {
     /// often it is read.
     pub fn counted(&self) -> Reranked {
         Reranked {
-            remembered: self.scores.known.len(),
+            remembered: self.scores.remembered.len(),
             offered: self.scores.hits + self.scores.misses,
             scored: self.scores.misses,
             characters: self.lengths.total,
@@ -878,43 +866,6 @@ mod tests {
     #[test]
     fn where_the_query_ends_and_the_document_begins_is_part_of_the_key() {
         assert_ne!(Scores::key("ab", "c"), Scores::key("a", "bc"));
-    }
-
-    #[test]
-    fn the_oldest_score_is_forgotten_once_the_cache_is_full() {
-        let mut scores = Scores::default();
-        for n in 0..REMEMBERED_SCORES + 10 {
-            scores.put(Scores::key("query", &n.to_string()), n as f32);
-        }
-
-        assert_eq!(scores.known.len(), REMEMBERED_SCORES);
-        assert_eq!(
-            scores.get(Scores::key("query", "0")),
-            None,
-            "the first score written was still there after the cache filled"
-        );
-        assert_eq!(
-            scores.get(Scores::key("query", &(REMEMBERED_SCORES + 9).to_string())),
-            Some((REMEMBERED_SCORES + 9) as f32),
-            "the last score written was evicted"
-        );
-    }
-
-    /// Rewriting a score must not queue its key a second time.
-    ///
-    /// It would evict an entry per rewrite while leaving the rewritten one in
-    /// the map, so the cache would hold fewer and fewer live scores while
-    /// reporting itself full.
-    #[test]
-    fn rewriting_a_score_does_not_shorten_the_cache() {
-        let mut scores = Scores::default();
-        let key = Scores::key("query", "document");
-        for n in 0..100 {
-            scores.put(key, n as f32);
-        }
-
-        assert_eq!(scores.order.len(), 1);
-        assert_eq!(scores.get(key), Some(99.0));
     }
 
     /// Whatever a tier parses from, it round-trips through its own name.

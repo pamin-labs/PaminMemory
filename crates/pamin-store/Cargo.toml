@@ -15,9 +15,11 @@ sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The integration tests' runtime. The crate itself names no tokio item: it
+# runs on the runtime `sqlx` and `postgresql_embedded` bring.
+tokio = { workspace = true }

@@ -10,7 +10,7 @@ use crate::command::validity;
 use crate::session::Session;
 use pamin_engine::Depths;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What to search for, in any language.
     pub query: String,
@@ -18,24 +18,6 @@ pub struct Args {
     /// How many results to return.
     #[arg(long, default_value_t = 5)]
     pub limit: u32,
-
-    /// How many candidates each channel contributes before fusion.
-    ///
-    /// For the evaluation harness, which the architecture names as the thing
-    /// that tunes this. An agent wanting control over retrieval should reach
-    /// for the primitives — `grep`, `read`, `neighbors` — rather than adjust
-    /// ranking internals it has no way to evaluate.
-    #[arg(long, env = "PAMIN_CHANNEL_DEPTH", default_value_t = Depths::default().channel)]
-    pub channel_depth: u32,
-
-    /// How many edges the graph channel walks out from its seeds.
-    #[arg(
-        long,
-        env = "PAMIN_GRAPH_DEPTH",
-        default_value_t = Depths::default().graph,
-        value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
-    )]
-    pub graph_depth: u8,
 
     /// How much to spend reordering the results: off, fast, or accurate.
     ///
@@ -51,17 +33,27 @@ pub struct Args {
     /// measured and costs about a second and a half a search on four cores;
     /// `fast` and `off` buy that time back at a measured price. See
     /// `docs/cli.md`.
-    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
-    pub rerank: String,
+    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate", value_parser = tier)]
+    pub rerank: Rerank,
+}
+
+/// Reads a tier where the command line is parsed, which is the one place it
+/// is checked: before a server is started or a database provisioned, so a
+/// misspelled tier is an error the caller can act on at once rather than one
+/// that arrives after a PostgreSQL install. The socket carries the parsed
+/// tier, so the server never sees a name it would have to check again.
+fn tier(name: &str) -> Result<Rerank, String> {
+    Rerank::parse(name).ok_or_else(|| format!("unknown rerank tier {name:?}"))
 }
 
 /// One entry of the trace, as a caller sees it.
 ///
-/// [`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`
-/// prints the last two as things the reader works out: weight is a constant per
-/// channel, and contribution is `weight / (10 + rank)`. Ten hits of them cost
-/// about seven hundred tokens of somebody's context window to restate what they
-/// already know, so the command layer leaves them out.
+/// [`Why`] also carries `score`, `weight` and `contribution`. The weight is a
+/// constant per channel, which `docs/cli.md` tabulates, and the contribution is
+/// that weight times where the candidate falls inside its channel's band (see
+/// [`pamin_core::Combine::Banded`]) -- which reaches the caller as the fused
+/// rank. Ten hits of the two cost about seven hundred tokens of somebody's
+/// context window to restate that, so the command layer leaves them out.
 ///
 /// `score` is left out for a different reason. It is the channel's own quantity
 /// in the channel's own units, so a reader comparing a BM25 score against a
@@ -141,9 +133,9 @@ struct Hit {
     version: u32,
     content: String,
     score: f32,
-    /// The rank this result held in each channel it appeared in, and every
-    /// modifier applied afterwards. An agent can audit its own retrieval from
-    /// this without trusting the ranking.
+    /// The rank this result held in each channel it appeared in, the path the
+    /// graph reached it by, and whether the reranker moved it. An agent can
+    /// audit its own retrieval from this without trusting the ranking.
     why: Vec<Trace>,
     /// When this state was recorded, RFC 3339.
     ///
@@ -178,16 +170,9 @@ pub async fn execute(
     profile: Profile,
     args: Args,
 ) -> Result<Results> {
-    let rerank = Rerank::parse(&args.rerank)
-        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-
     let engine = session.engine(project, profile).await?;
-    let depths = Depths {
-        channel: args.channel_depth,
-        graph: args.graph_depth,
-    };
     let hits = engine
-        .search_reranked(&args.query, args.limit, depths, rerank)
+        .search_reranked(&args.query, args.limit, Depths::DEFAULT, args.rerank)
         .await?;
 
     let results = Results {

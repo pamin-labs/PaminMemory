@@ -6,13 +6,16 @@ use crate::id::TopicId;
 
 /// A source of candidates.
 ///
-/// There are three, and the list is short on purpose. Earlier designs also
+/// There are four, and the list is short on purpose. Earlier designs also
 /// treated recency and explicit importance as channels while applying them
-/// again as post-fusion modifiers, which counted the same signal twice. Notes
-/// and page nodes were channels too, although they live in the same projection
+/// again as post-fusion modifiers, which counted the same signal twice; the
+/// channels went first, and the modifiers followed once it was found that
+/// nothing wrote what they read (see [`RetrievalSignals`]). Notes and page
+/// nodes were channels too, although they would live in the same projection
 /// index as everything else, so querying them separately split one population
-/// into several and left the redundancy penalty reasoning across all of them.
-/// Both are now expressed as modifiers and document-type filters instead.
+/// into several; neither is built.
+///
+/// [`RetrievalSignals`]: crate::ledger::RetrievalSignals
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
@@ -151,20 +154,6 @@ pub struct ChannelResults {
     pub candidates: Vec<Scored>,
 }
 
-impl Channel {
-    /// Whether this channel scores wording rather than meaning or structure.
-    ///
-    /// The pair is asked together wherever it is asked at all: they run BM25
-    /// over the same text, one over segmented words and one over character
-    /// n-grams, so they agree with each other far more than either agrees with
-    /// the vector or the graph. Naming the pair in one place keeps a third
-    /// lexical channel from being added to the fusion weights and forgotten
-    /// here.
-    pub fn is_lexical(self) -> bool {
-        matches!(self, Self::LexicalSegmented | Self::LexicalNgram)
-    }
-}
-
 impl ChannelResults {
     pub fn new(channel: Channel, candidates: Vec<Scored>) -> Self {
         Self {
@@ -180,13 +169,5 @@ impl ChannelResults {
             channel,
             candidates.into_iter().map(Scored::unscored).collect(),
         )
-    }
-
-    /// The candidates as topics, best first.
-    ///
-    /// For the callers that only need the ordering -- seeding the graph walk,
-    /// and anything asking which topics a channel proposed at all.
-    pub fn topics(&self) -> impl Iterator<Item = TopicId> + '_ {
-        self.candidates.iter().map(|candidate| candidate.topic)
     }
 }

@@ -65,32 +65,14 @@ impl Segmenter {
         tokens
     }
 
-    /// Whether `text` names `needle`, comparing token sequences.
-    ///
-    /// This is the cheapest form of entity linking available: in a
-    /// topic-centred graph the topics are the entities, so a topic naming
-    /// another topic is a relationship the engine can derive with no model in
-    /// the path and no separate entity table.
-    ///
-    /// Matching runs on tokens rather than on raw substrings for two reasons.
-    /// Substring matching would find `db` inside `debt`, and in a language
-    /// written without spaces there are no substring boundaries to anchor to at
-    /// all. Both fall out of comparing the sequences the segmenter produced,
-    /// which is the same sequence the lexical index was built from.
-    ///
-    /// Case is folded, so a topic named `argo_cd` is found in prose that
-    /// capitalises it. An empty needle names nothing.
-    pub fn names(&self, text: &str, needle: &str) -> bool {
-        names(&self.name_sequence(text), &self.name_sequence(needle))
-    }
-
     /// Tokenizes once for repeated name matching.
     ///
     /// Deriving edges asks whether one memory names any of a project's topics,
-    /// which is one question per topic against the same text. Calling `names`
-    /// in that loop re-segments the text every time, so the cost of a single
-    /// write grows with the size of the project rather than with the length of
-    /// what was written. Preparing whichever side is fixed removes that factor.
+    /// which is one question per topic against the same text. Segmenting the
+    /// text inside that loop would make the cost of a single write grow with
+    /// the size of the project rather than with the length of what was
+    /// written, so whichever side is fixed is prepared once and compared with
+    /// [`names`].
     pub fn name_sequence(&self, text: &str) -> Vec<String> {
         self.name_tokens(text)
     }
@@ -125,11 +107,24 @@ impl Segmenter {
     }
 }
 
-/// Whether a prepared token sequence contains another, as `names` compares them.
+/// Whether a prepared token sequence contains another: whether `text` names
+/// `needle`.
 ///
-/// Both arguments come from [`Segmenter::name_sequence`]; comparing sequences
-/// produced any other way is what makes a name match and an index miss the
-/// same text.
+/// This is the cheapest form of entity linking available: in a topic-centred
+/// graph the topics are the entities, so a topic naming another topic is a
+/// relationship the engine can derive with no model in the path and no
+/// separate entity table.
+///
+/// Matching runs on tokens rather than on raw substrings for two reasons.
+/// Substring matching would find `db` inside `debt`, and in a language written
+/// without spaces there are no substring boundaries to anchor to at all. Both
+/// fall out of comparing the sequences the segmenter produced, which is the
+/// same sequence the lexical index was built from.
+///
+/// Both arguments come from [`Segmenter::name_sequence`], which folds case, so
+/// a topic named `argo_cd` is found in prose that capitalises it; comparing
+/// sequences produced any other way is what makes a name match and an index
+/// miss the same text. An empty needle names nothing.
 pub fn names(text: &[String], needle: &[String]) -> bool {
     if needle.is_empty() {
         return false;
@@ -155,6 +150,15 @@ pub fn detect_language(text: &str) -> Option<(String, f32)> {
 #[cfg(test)]
 mod naming {
     use super::Segmenter;
+
+    impl Segmenter {
+        /// Whether `text` names `needle`, both prepared the way the product
+        /// prepares them. The product prepares the text once and compares it
+        /// against many names, so this pairing exists only for the tests.
+        fn names(&self, text: &str, needle: &str) -> bool {
+            super::names(&self.name_sequence(text), &self.name_sequence(needle))
+        }
+    }
 
     #[test]
     fn a_topic_name_is_found_in_prose_that_uses_it() {

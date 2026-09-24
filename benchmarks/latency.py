@@ -75,7 +75,6 @@ class PaminSocket:
         self.file.write(json.dumps({
             "version": self.version, "project": project, "profile": "accuracy",
             "call": {"search": {"query": query, "limit": limit,
-                                "channel_depth": 50, "graph_depth": 2,
                                 "rerank": "fast"}},
         }) + "\n")
         self.file.flush()

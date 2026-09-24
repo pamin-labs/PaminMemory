@@ -363,11 +363,7 @@ async fn serve_connection(session: &Session, stream: UnixStream) -> Result<Shutd
 /// limit a client that never sends a newline holds the buffer open for ever.
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
 
-/// Runs one request against the in-process path.
-///
-/// The dispatch is a match rather than a trait because there is exactly one
-/// implementation of each arm and the compiler checking that every command has
-/// one is worth more than the indirection would be.
+/// Runs one request that arrived on the socket.
 async fn answer(session: &Session, request: Request) -> Result<Payload> {
     let Request {
         project,
@@ -379,30 +375,43 @@ async fn answer(session: &Session, request: Request) -> Result<Payload> {
     let profile =
         Profile::parse(&profile).ok_or_else(|| anyhow::anyhow!("unknown profile {profile:?}"))?;
 
+    dispatch(session, &project, profile, call).await
+}
+
+/// Runs one call and serializes its result: the one place a call becomes an
+/// answer, for the server and for a command running without one.
+///
+/// The dispatch is a match rather than a trait because there is exactly one
+/// implementation of each arm and the compiler checking that every command has
+/// one is worth more than the indirection would be.
+pub async fn dispatch(
+    session: &Session,
+    project: &str,
+    profile: Profile,
+    call: Call,
+) -> Result<Payload> {
     let value = match call {
-        Call::Init => json(command::init::execute(session, &project).await?)?,
-        Call::Write(args) => {
-            json(command::write::execute(session, &project, profile, args).await?)?
-        }
+        Call::Init => json(command::init::execute(session, project).await?)?,
+        Call::Write(args) => json(command::write::execute(session, project, profile, args).await?)?,
         Call::Import(args) => {
-            json(command::import::execute(session, &project, profile, args).await?)?
+            json(command::import::execute(session, project, profile, args).await?)?
         }
-        Call::Read(args) => json(command::read::execute(session, &project, args).await?)?,
+        Call::Read(args) => json(command::read::execute(session, project, args).await?)?,
         Call::Search(args) => {
-            json(command::search::execute(session, &project, profile, args).await?)?
+            json(command::search::execute(session, project, profile, args).await?)?
         }
-        Call::Grep(args) => json(command::grep::execute(session, &project, args).await?)?,
-        Call::Link(args) => json(command::link::execute(session, &project, args).await?)?,
-        Call::Unlink(args) => json(command::unlink::execute(session, &project, args).await?)?,
-        Call::Neighbors(args) => json(command::neighbors::execute(session, &project, args).await?)?,
+        Call::Grep(args) => json(command::grep::execute(session, project, args).await?)?,
+        Call::Link(args) => json(command::link::execute(session, project, args).await?)?,
+        Call::Unlink(args) => json(command::unlink::execute(session, project, args).await?)?,
+        Call::Neighbors(args) => json(command::neighbors::execute(session, project, args).await?)?,
         Call::Topics(args) => {
-            json(command::topics::execute(session, &project, profile, args).await?)?
+            json(command::topics::execute(session, project, profile, args).await?)?
         }
         Call::Reindex(args) => {
-            json(command::reindex::execute(session, &project, profile, args).await?)?
+            json(command::reindex::execute(session, project, profile, args).await?)?
         }
         Call::Cascade(args) => {
-            json(command::cascade::answer(session, &project, profile, args).await?)?
+            json(command::cascade::answer(session, project, profile, args).await?)?
         }
         Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
     };
@@ -411,7 +420,7 @@ async fn answer(session: &Session, request: Request) -> Result<Payload> {
 }
 
 /// A command's result, serialized once and never re-walked.
-type Payload = Box<serde_json::value::RawValue>;
+pub type Payload = Box<serde_json::value::RawValue>;
 
 /// The response as a line, refused here if it is one the client cannot read.
 ///

@@ -222,7 +222,7 @@ fn settings() -> HashMap<String, String> {
 /// | every topic joined to its current state, the widest this schema states | 1313 |
 /// | `pamin grep`, whose top node a matching `LIMIT` caps | 56 |
 ///
-/// The first is bounded by `channel_depth` rather than by the project, so it
+/// The first is bounded by the channel depth rather than by the project, so it
 /// does not grow at all, and the third is capped because the `ORDER BY`
 /// matches an index and the scan stops early. **One shape does grow**: a
 /// `grep` for something the project barely contains has to walk the whole

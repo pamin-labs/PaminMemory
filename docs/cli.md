@@ -48,7 +48,8 @@ it above a plan cost of 100000, and on a 13,014-topic project the read path's
 hydration of fifty candidates plans at 84, the widest query the schema can
 state plans at 1313, and `pamin grep` plans at 56 because its `ORDER BY`
 matches an index and the scan stops early. The first of those does not grow
-with the project at all -- it is bounded by `--channel-depth`.
+with the project at all -- it is bounded by the fifty candidates each channel
+contributes.
 
 One shape does grow. A `grep` for something the project barely contains has to
 walk its whole recency index, and that cost is linear: 995 at 15,224 stored
@@ -156,8 +157,9 @@ The default is the largest model because quantized weights make it the smallest
 download and because the gap it closes is the one Påmin Memory is about: on the
 evaluation corpus it roughly doubles cross-lingual retrieval against
 `balanced`, matches it on same-language queries, and costs nine milliseconds.
-`balanced` is kept for those nine milliseconds and for projects already indexed
-under it; there is no other reason left to choose it.
+`balanced` is deprecated: it is kept so that projects already indexed under it
+go on working without a rebuild, and for those nine milliseconds, and there is
+no other reason left to choose it. A new project should not.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -383,15 +385,13 @@ one. Earlier versions are read rather than ranked: `pamin read
 --version-offset` reaches them, and `pamin grep` reaches the evidence behind
 them, including what the filter never promoted.
 
-`--channel-depth` sets how many candidates each channel contributes before
-fusion (default 50) and `--graph-depth` how many edges the graph walks out
-(default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`.
-
-These exist for the evaluation harness, which is what settles them. They are
-not a tuning surface for ordinary use: raising the depth costs latency for
-recall you cannot measure from outside, and an agent that wants control over
-retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
-ranking internals it has no way to evaluate.
+Each channel contributes fifty candidates before fusion, and the graph walks
+two edges out from its seeds. Neither is a setting. They used to be, as
+`--channel-depth` and `--graph-depth`, for an evaluation harness that never
+swept them; raising either costs latency for recall you cannot measure from
+outside, and an agent that wants control over retrieval should reach for
+`grep`, `read`, and `neighbors` rather than adjust ranking internals it has no
+way to evaluate.
 
 `--rerank` chooses how much to spend reordering the results, and takes
 `PAMIN_RERANK`:
@@ -466,8 +466,8 @@ It costs memory while it is loaded, and more than its download suggests: on a
 13,014-document project a server serving `off` is 1,625 MB resident, and one
 `fast` search takes it to 2,007 or 2,271 MB -- so between 380 MB and 645 MB for
 a 130 MB model, the difference being the inference runtime's arenas rather than
-the weights. `pamin serve` gives it back after five minutes with nothing asking
-for that tier, which returns 368 to 380 MB of it to the operating system; the
+the weights. `pamin serve` gives it back after thirty minutes with nothing
+asking for that tier (`PAMIN_MODEL_IDLE` changes the window), which returns 368 to 380 MB of it to the operating system; the
 arena growth above that stays. A workspace that sets `off` never pays it at
 all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
 and its resident cost has not been taken on its own.
@@ -500,10 +500,10 @@ size are a few milliseconds per candidate rather than the ten measured here,
 and the difference is the core count; on an ordinary server `fast` is tens of
 milliseconds.
 
-`--graph-depth` accepts 0 to 4 and refuses anything larger. A topic's
-neighbourhood grows multiplicatively with each hop and hub topics reach five
-figures of degree, so a fifth hop is not a slower query but a differently sized
-one. The walk also starts from at most 64 seeds, keeping the topics the query
+The walk stops at two hops, and `pamin neighbors --depth` accepts 0 to 4 and
+refuses anything larger. A topic's neighbourhood grows multiplicatively with
+each hop and hub topics reach five figures of degree, so a fifth hop is not a
+slower query but a differently sized one. The walk also starts from at most 64 seeds, keeping the topics the query
 named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
