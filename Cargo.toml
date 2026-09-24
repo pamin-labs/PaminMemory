@@ -44,9 +44,9 @@ tokio = { version = "1", features = [
 # stops the build depending on that staying true.
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
-# `getrlimit`/`setrlimit`, for the server to raise its own open-file limit.
-# Already compiled -- it is under tokio and sqlx both -- so declaring it adds
-# nothing to the tree.
+# `getrlimit`/`setrlimit`, for `pamin-index` to raise the open-file limit a
+# large index needs. Already compiled -- it is under tokio and sqlx both -- so
+# declaring it adds nothing to the tree.
 libc = "0.2"
 # image-models is on by default and pulls a full image codec stack, including
 # an AVIF encoder, for models we do not use.
