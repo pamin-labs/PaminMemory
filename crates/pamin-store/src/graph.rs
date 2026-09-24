@@ -827,8 +827,12 @@ macro_rules! edges_touching {
 /// puts the walk where a bound can be stated: the frontier is capped, which the
 /// recursive form had no way to express. The extra round trips buy that, and
 /// there are at most [`MAX_DEPTH`] of them.
+///
+/// Takes one connection and asks every hop on it: a statement run on the pool
+/// returns its connection afterwards, and sqlx checks a returned connection
+/// with a round trip of its own.
 pub async fn expand(
-    executor: impl PgExecutor<'_> + Copy,
+    connection: &mut sqlx::PgConnection,
     project: ProjectId,
     seeds: &[TopicId],
     options: &Expansion<'_>,
@@ -897,7 +901,7 @@ pub async fn expand(
             Some(at) => query.bind(at),
             None => query,
         };
-        let edges = query.fetch_all(executor).await?;
+        let edges = query.fetch_all(&mut *connection).await?;
 
         // Undirected: both ends of a `depends_on` are relevant to recall, and
         // which way the arrow points is a fact about the relationship rather

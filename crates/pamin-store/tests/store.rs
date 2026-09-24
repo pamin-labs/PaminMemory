@@ -519,7 +519,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
     .expect("backup_job -> database");
 
     let one_hop = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project,
         &[service],
         &Expansion::to_depth(1),
@@ -537,7 +537,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
     assert_eq!(one_hop[0].derivation, Derivation::Deterministic);
 
     let two_hops = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project,
         &[service],
         &Expansion::to_depth(2),
@@ -562,7 +562,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
 
     // Restricting the edge kind removes the path that used the other kind.
     let mentions_only = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project,
         &[service],
         &Expansion {
@@ -591,7 +591,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
         .expect("bound the edge to the past");
 
     let now = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project,
         &[service],
         &Expansion {
@@ -609,7 +609,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
     );
 
     let back_then = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project,
         &[service],
         &Expansion {
@@ -821,7 +821,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
 
     // Neither is believed now, so neither is traversed now.
     let now = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project.id,
         &[root],
         &Expansion::to_depth(1),
@@ -835,7 +835,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
     // true never held. Treating both retractions alike erased that, which
     // meant retracting an edge deleted its history too.
     let earlier = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project.id,
         &[root],
         &Expansion {
@@ -900,7 +900,7 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &Database) 
 
     for depth in 1..=4 {
         let reached: Vec<_> = graph::expand(
-            database.pool(),
+            &mut *connection(database).await,
             project.id,
             &[a],
             &Expansion::to_depth(depth),
@@ -2246,7 +2246,7 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         .expect("build the hubs");
 
     let walked = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project.id,
         &[left],
         &Expansion::to_depth(2),
@@ -3025,7 +3025,7 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
         .expect("a closed version records when")
         - time::Duration::seconds(1);
     let reached = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project.id,
         &[deploy],
         &Expansion {
@@ -3120,7 +3120,7 @@ async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
         std::collections::HashMap::new();
     for seed in ["rota", "pipeline", "scheduler", "platform", "legacy"] {
         let reached = graph::expand(
-            database.pool(),
+            &mut *connection(database).await,
             project.id,
             &[id[seed]],
             &Expansion::to_depth(4),
@@ -3166,7 +3166,7 @@ async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
     // answers are one hop away and the edges point opposite ways, so reading
     // direction off the traversal returns the pipeline depending on them.
     let around_pipeline = graph::expand(
-        database.pool(),
+        &mut *connection(database).await,
         project.id,
         &[id["pipeline"]],
         &Expansion::to_depth(1),
@@ -3467,4 +3467,13 @@ async fn pages_touched(probe: &sqlx::PgPool, table: &str) -> i64 {
     .fetch_one(probe)
     .await
     .expect("read the table statistics")
+}
+
+/// One connection, which `graph::expand` asks every hop on.
+async fn connection(database: &Database) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    database
+        .pool()
+        .acquire()
+        .await
+        .expect("acquire a connection")
 }

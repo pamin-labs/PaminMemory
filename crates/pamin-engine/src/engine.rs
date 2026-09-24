@@ -1558,16 +1558,27 @@ impl Engine {
         // one channel's whole list before another's first result. Fusion
         // cannot do the ordering: the graph is one of the lists it fuses.
         let candidates = best_first(&lists);
+        // Every statement below on one connection, taken once the index has
+        // answered rather than held through the embedding: each statement run
+        // on the pool returns its connection afterwards, and sqlx checks a
+        // returned connection with a round trip of its own.
+        let mut connection = self.database.pool().acquire().await?;
         let mut working = WorkingSet::default();
         working.add(
-            repository::current_states_named(self.database.pool(), self.project, &candidates)
-                .await?,
+            repository::current_states_named(&mut *connection, self.project, &candidates).await?,
         );
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
         let (graph_list, paths) = self
-            .recall_graph(query, &candidates, &lists, &mut working, depths)
+            .recall_graph(
+                &mut connection,
+                query,
+                &candidates,
+                &lists,
+                &mut working,
+                depths,
+            )
             .await?;
 
         // A path explains itself by the topics at both ends of its last edge,
@@ -1583,9 +1594,7 @@ impl Engine {
             .into_iter()
             .collect();
         if !unnamed.is_empty() {
-            working.name(
-                repository::topics_by_id(self.database.pool(), self.project, &unnamed).await?,
-            );
+            working.name(repository::topics_by_id(&mut *connection, self.project, &unnamed).await?);
         }
         let mut lists = lists;
         lists.push(graph_list);
@@ -1651,6 +1660,7 @@ impl Engine {
     /// state, so the trace can say why the graph could see it.
     async fn recall_graph(
         &self,
+        connection: &mut PgConnection,
         query: &str,
         ranked: &[TopicId],
         lists: &[ChannelResults],
@@ -1665,7 +1675,7 @@ impl Engine {
         // same index the same way.
         let widest = self.widest_name().await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
-        let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
+        let named = repository::topics_named_by(&mut *connection, self.project, &runs).await?;
         let relevance = seed_relevance(&named, lists);
 
         // A named topic no channel returned is not in the working set, and the
@@ -1681,7 +1691,7 @@ impl Engine {
             .collect();
         if !unresolved.is_empty() {
             working.add(
-                repository::current_states_named(self.database.pool(), self.project, &unresolved)
+                repository::current_states_named(&mut *connection, self.project, &unresolved)
                     .await?,
             );
         }
@@ -1706,7 +1716,7 @@ impl Engine {
         };
 
         let mut neighbors = graph::expand(
-            self.database.pool(),
+            &mut *connection,
             self.project,
             &seeds,
             // Bounded by what this channel keeps, so a hub-shaped project
@@ -1743,7 +1753,7 @@ impl Engine {
         // `topics`.
         let reached: Vec<TopicId> = neighbors.iter().map(|neighbor| neighbor.topic).collect();
         let states =
-            repository::current_states_named(self.database.pool(), self.project, &reached).await?;
+            repository::current_states_named(&mut *connection, self.project, &reached).await?;
         let resolves: std::collections::HashSet<TopicId> =
             states.iter().map(|(_, state)| state.topic_id).collect();
         working.add(states);
