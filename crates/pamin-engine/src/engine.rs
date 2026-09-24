@@ -1723,16 +1723,6 @@ impl Engine {
                 .collect()
         };
 
-        let mut neighbors = graph::expand(
-            &mut *connection,
-            self.project,
-            &seeds,
-            // Bounded by what this channel keeps, so a hub-shaped project
-            // does not make the walk the whole cost of a search.
-            &Expansion::to_depth(depths.graph).keeping(depths.channel as usize),
-        )
-        .await?;
-
         // Ordered by what each arrival is worth to *this query* before the cut,
         // not by the order the walk returned them in. The walk's order is
         // fewest hops, then most confident edge, then topic identifier -- and
@@ -1740,20 +1730,49 @@ impl Engine {
         // at one hop, that is identifier order. Cutting it to the channel's
         // depth kept an arbitrary fifty and could drop every neighbour of the
         // seed that matched the query best.
-        let strength = |neighbor: &Neighbor| {
-            path_strength(neighbor) * relevance.get(&neighbor.origin).copied().unwrap_or(0.0)
+        let worth = |confidence: f32, hops: u8, origin: TopicId| {
+            path_strength(confidence, hops) * relevance.get(&origin).copied().unwrap_or(0.0)
         };
-        neighbors.sort_by(|left, right| {
-            strength(right)
-                .total_cmp(&strength(left))
-                .then_with(|| left.topic.0.cmp(&right.topic.0))
-        });
+        let strength =
+            |neighbor: &Neighbor| worth(neighbor.confidence, neighbor.hops, neighbor.origin);
 
         // Cut to the channel's depth before anything is resolved. Cutting after
         // meant every neighbour the walk found was looked up and given a path,
         // and the paths were not cut with the results -- so the list was bounded
         // and the work behind it was not.
-        neighbors.truncate(depths.channel as usize);
+        //
+        // Bounded by what this channel keeps, twice over: the walk stops once
+        // it has that many, so a hub-shaped project does not make it the whole
+        // cost of a search, and it reads only that many of each topic's edges
+        // each way, strongest first, so a hub's degree does not either. The
+        // second bound is checked rather than trusted -- the walk says what it
+        // left unread, `strongest` says whether any of that could have ranked
+        // here, and when it could the walk is made again reading everything.
+        let keep = depths.channel as usize;
+        let expansion = Expansion::to_depth(depths.graph).keeping(keep);
+        let neighbors = match graph::expand_reading(
+            &mut *connection,
+            self.project,
+            &seeds,
+            &expansion,
+            keep,
+        )
+        .await?
+        .strongest(keep, worth)
+        {
+            Some(neighbors) => neighbors,
+            None => {
+                tracing::debug!(
+                    seeds = seeds.len(),
+                    "an edge the bounded walk left unread could have ranked; walking again in full"
+                );
+                graph::strongest(
+                    graph::expand(&mut *connection, self.project, &seeds, &expansion).await?,
+                    keep,
+                    worth,
+                )
+            }
+        };
 
         // Resolved here rather than at the end, because a topic that stands
         // for nothing is not a result and should not take a place in this
@@ -2153,8 +2172,8 @@ fn seed_relevance(
 /// evaluation corpora -- so the order stays as the walk made it, and this
 /// number answers the separate question fusion needs: how far this channel's
 /// best arrival stands above its own field.
-fn path_strength(neighbor: &Neighbor) -> f32 {
-    neighbor.confidence * HOP_DECAY.powi(i32::from(neighbor.hops.saturating_sub(1)))
+fn path_strength(confidence: f32, hops: u8) -> f32 {
+    confidence * HOP_DECAY.powi(i32::from(hops.saturating_sub(1)))
 }
 
 /// Every contiguous run of up to `widest` tokens, as the name index stores them.
@@ -2401,8 +2420,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_CANDIDATES, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle,
-        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
+        GRAPH_CANDIDATES, MODEL_IDLE, best_first, can_be_seen, fused_for, is_idle, path_strength,
+        place, rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2785,23 +2804,12 @@ mod tests {
     /// derived edges away were scored identically apart from which came first.
     #[test]
     fn the_graph_vouches_less_for_each_hop_it_took() {
-        let reached = |hops: u8, confidence: f32| Neighbor {
-            topic: TopicId(uuid::Uuid::from_bytes([1; 16])),
-            origin: TopicId(uuid::Uuid::from_bytes([2; 16])),
-            hops,
-            via: TopicId(uuid::Uuid::from_bytes([3; 16])),
-            kind: pamin_core::EdgeKind::RelatedTo,
-            derivation: pamin_core::Derivation::Deterministic,
-            confidence,
-            outbound: true,
-        };
-
-        assert_eq!(path_strength(&reached(1, 1.0)), 1.0, "a certain first hop");
-        assert_eq!(path_strength(&reached(2, 1.0)), 0.5, "one hop further");
-        assert_eq!(path_strength(&reached(3, 1.0)), 0.25, "and one further");
+        assert_eq!(path_strength(1.0, 1), 1.0, "a certain first hop");
+        assert_eq!(path_strength(1.0, 2), 0.5, "one hop further");
+        assert_eq!(path_strength(1.0, 3), 0.25, "and one further");
         assert_eq!(
-            path_strength(&reached(1, 0.5)),
-            path_strength(&reached(2, 1.0)),
+            path_strength(0.5, 1),
+            path_strength(1.0, 2),
             "half the confidence at one hop is one certain hop further away"
         );
     }
