@@ -65,6 +65,86 @@ PostgreSQL is bundled rather than brought by the user. `pamin init` provisions a
 
 **The bundled cluster runs with `fsync` on and `synchronous_commit` off.** `postgresql_embedded` 0.21 starts every cluster with `-F`, which is `fsync=off`, and until this was noticed every workspace ran that way: nothing PostgreSQL wrote was forced to disk, so a power cut could leave the data directory corrupt, not merely behind. For the one store here that cannot be rebuilt from anything else that is the wrong trade at any price, and the store now passes `fsync=on` after the flag, which overrides it. What it gives up instead is the last moments: with `synchronous_commit` off a commit returns before its WAL is flushed, the WAL writer flushes within a few hundred milliseconds, and a crash can lose the commits of that window but cannot leave the cluster inconsistent. A memory lost that way is one whose write had returned, which is a real cost; its evidence is the agent's own recent output, which is the cheapest thing in the system to say again. Waiting for the flush on every commit was measured through `Engine::write` on a synthetic project of 152,000 topics, three runs alternating the two settings with `fsync` on, 100 writes each: p50 3.0-5.9 ms a write with synchronous commit against 2.3-2.7 ms without, on this machine's disk, in a debug build at a load average near 12. A laptop's flush can cost more or less than this container's; the direction is the same. A workspace that is already running keeps what it was started with until `pamin stop`.
 
+### The driver stays `sqlx`: pipelining measured
+
+`sqlx` sends a statement and waits for its result before it sends the next.
+The PostgreSQL protocol allows pipelining, which means sending several
+statements before reading any result, and `tokio-postgres` does it on one
+connection. So the question was whether the store pays for `sqlx` in round
+trips. Upstream, as of 2026-09-24, the `launchbadge/sqlx` issues this touches
+(#408 and #2798) are open, pull request #3891 was closed on 2026-09-14, and the
+pool redesign in #3582 is open.
+
+The harness is a scratch program outside the tree. It runs the statements of
+the write path verbatim, copied from `repository.rs` and `jobs.rs`: the twelve
+that rewriting an existing topic issues inside `Engine::write`'s transaction.
+It also runs the read that `current_states_of` makes, for 64 topics. The data
+is 20,000 seeded topics in a local PostgreSQL. `sqlx` 0.9.0 uses the
+product's pool options, and `tokio-postgres` 0.7 is the control. Each iteration
+runs every arm once, in an order rotated per iteration, for 7 rounds of 300
+iterations. Ratios are taken per iteration and then the median is reported.
+Each arm asserts its premise before it is timed:
+
+- a write arm must have produced the product's work, meaning that many new
+  states, each superseding its predecessor, with spans, queued jobs, and
+  pointers on the newest state;
+- a read arm must return exactly the reference rows;
+- both drivers must report the `synchronous_commit` the run asked for;
+- 64 pipelined `SELECT 1` must take under 0.7 of their sequential time. They
+  measured 0.16 to 0.24.
+
+An earlier run stopped on the premise that its pipelined reads overlap, and no
+figure here comes from it. The machine was the shared four-core one, at a load
+average of 8 to 13.
+
+| paired ratio | multi-thread runtime, `synchronous_commit=off` | multi-thread, `on` | current-thread, `off` |
+| --- | --- | --- | --- |
+| write, `tokio-postgres` pipelined along its dependencies (4 round trips) ÷ the same 12 statements one at a time | 0.92 | 1.03 | 0.83 |
+| write, merged into writable CTEs and pipelined (2 round trips) ÷ 12 one at a time, `tokio-postgres` | 0.82 | 1.03 | 0.65 |
+| write, `sqlx`, merged into writable CTEs (6 statements) ÷ `sqlx`'s 12 | 0.86 | 0.87 | 0.92 |
+| write, `sqlx`, one PL/pgSQL function ÷ `sqlx`'s 12 | 0.54 | 0.74 | 0.68 |
+| write, `tokio-postgres`'s 12 ÷ `sqlx`'s 12 | 0.59 | 0.64 | 0.91 |
+| 64 reads, `sqlx`, one `= ANY($1)` ÷ 64 statements on the pool | 0.07 | 0.07 | 0.08 |
+| 64 reads, `tokio-postgres` pipelined ÷ 64 `sqlx` statements on the pool | 0.14 | 0.15 | 0.25 |
+| 64 reads, `sqlx` on one held connection ÷ on the pool | 0.50 | 0.62 | 0.42 |
+| one `SELECT 1`, `sqlx` on a held connection ÷ on the pool | 0.64 | 0.65 | 0.69 |
+
+**Pipelining the write transaction is worth 0.83 to 1.03.** Its statements
+depend on each other: the locks need the ids the lookups return, the new state
+needs the previous one, and the pointer needs the new version. So twelve
+statements pipeline into four round trips at best. On a local socket a round
+trip is not the cost either. A `SELECT 1` takes 0.058 to 0.090 ms on
+`tokio-postgres`, and the whole write transaction on `sqlx` takes 10.7 to 13.7
+ms (medians). With commits flushed, which is PostgreSQL's default and the
+product does not change it, pipelining measured 1.03.
+
+**The reads are already batched, and batching beats pipelining.** The store
+reads current states in one `= ANY($2)` statement. The same shape on `sqlx`
+takes 0.915 ms against 1.831 ms for 64 reads pipelined on `tokio-postgres`
+(multi-thread runtime, `off`).
+
+**Part of the gap between the drivers is the pool, and part is not
+explained.** Every statement run on `&PgPool` acquires a connection and
+releases it, and `sqlx-core` 0.9.0 pings the connection on every release
+(`return_to_pool` in `pool/connection.rs`). `test_before_acquire(false)` does
+not turn that off. Holding one connection for 64 reads costs 0.42 to 0.62 of
+running them on the pool, so where a path runs several statements back to
+back outside a transaction, holding one connection is the fix, and `sqlx`
+already provides it. The write transaction already holds one connection, so the
+ping is not what makes `tokio-postgres` 0.59 to 0.91 of `sqlx` there. What
+does was not isolated.
+
+So the store stays on `sqlx`. Pipelining is worth close to nothing on the path
+that could use it. Switching drivers for the per-statement gap would bring back
+the second driver the Consequences below record removing. The largest single
+lever measured on `sqlx`, one server-side function at 0.54 to 0.74, is PL/pgSQL, and
+PL/pgSQL is not in the portable subset listed above. Writable CTEs are in that
+subset and are worth 0.86 to 0.92 on `sqlx` with no driver change, which makes
+them the lever to reach for if the write transaction's round trips ever matter.
+Revisit this when the database stops being local: every figure above has a
+round trip under a fifth of a millisecond. Revisit it too if `sqlx` ships
+pipelining or stops pinging on release.
+
 ### Retrieval engine: one engine, `zvec`
 
 `zvec` runs in-process and covers both channels we need from an index: BM25 full-text search and dense vectors, with write-ahead logging, per-field tokenizers, and index types that scale from memory to disk.
@@ -1212,6 +1292,245 @@ against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
 (p = 0.002, surviving correction over eleven languages); and a query costs
 about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
 to be re-embedded.
+
+### BGE-M3's other outputs, measured: none of them ships
+
+One forward pass of BGE-M3 returns three things — a dense vector, a sparse
+vector of per-token lexical weights, and one multi-vector (ColBERT) embedding
+per token — and the model was trained on passages up to 8,192 tokens. The
+product keeps the dense vector and truncates at 512 (`JOINT_MAX_TOKENS`). Each
+of the other three was measured in September 2026 against what ships, under
+selection rules written down before any of it was computed.
+
+Every comparison is paired per question: sign-flip randomisation, 10,000
+draws, two-sided, so 0.0001 is the floor. "Significantly worse" means a
+negative mean at p < 0.05 without correction, which is deliberately strict
+against the change. The groups are this project's own four, XQuAD-R's two and
+MuSiQue's 1,000 two-hop questions.
+
+**This was measured below the entry point, and the reason is the tunable.** A
+channel weight and a reordering of the shortlist are not settings `pamin
+search` accepts, so a replay stands in for the last two stages: `Banded`
+fusion, `engine::rerankable` and `engine::place` over the engine's own
+per-channel candidates, with the `accurate` cross-encoder scoring the same
+shown set at 256 tokens in length-sorted batches of eight. On XQuAD-R the
+replay reproduces the product, 0.6608 / 0.7842 against 0.6613 / 0.7838 at a
+rerank depth of twenty. On MuSiQue it reads 0.6634 against the product's
+0.6834: the replay leaves out the graph seed text the engine shows the
+cross-encoder, and MuSiQue is the only corpus of the two with a graph. So its
+MuSiQue figures are differences between arms of the same replay, not product
+figures. Everything below is at the rerank depth of thirty that ships; for the
+sparse channel, twenty gives the same signs.
+
+**The sparse channel helps within a language and hurts across one.** Added as
+a fifth channel, banded like the two BM25 channels, nDCG@10 after the rerank
+against what ships:
+
+| sparse weight | own cross-lingual (43) | XQuAD-R cross-lingual (1,190) | XQuAD-R same-language (1,190) | MuSiQue two-hop (1,000) |
+| --- | --- | --- | --- | --- |
+| 0.0625 | **−0.0078**, p = 0.0045 | **−0.0114**, p = 0.0001, 25 wins / 373 losses | **+0.0141**, p = 0.0001, 91 / 9 | **+0.0035**, p = 0.0028 |
+| 0.125 | **−0.0248**, p = 0.0002 | **−0.0213**, p = 0.0001 | **+0.0229**, p = 0.0001 | **+0.0051**, p = 0.0018 |
+| 0.25 | **−0.0549**, p = 0.0001 | **−0.0415**, p = 0.0001 | **+0.0340**, p = 0.0001 | **+0.0097**, p = 0.0001 |
+
+The relational, lexical and monolingual groups do not move significantly at
+any weight in the table. The cause is visible in the channel alone: it scores
+0.7684 nDCG@10 on XQuAD-R's same-language group and 0.0864 on its cross-lingual
+one.
+It is a third lexical channel, it matches tokens, and a token does not cross a
+language. Every weight trades one group for another, and the smallest weight
+still costs the cross-lingual group 373 queries against 25.
+
+The rule chose on what the reranker is handed, `recall@30` of the fused list,
+and there the sparse channel is significantly worse on XQuAD-R cross-lingual at
+every weight (−0.0021 at 0.0625, p < 0.001). Using it to replace one of the
+two BM25 channels instead of adding it is significantly worse there too, fused
+nDCG@10 −0.0081 in place of the segmented channel and −0.0128 in place of the
+n-gram one. No weight was admissible on any two corpora, so leave-one-corpus-out
+had nothing to carry to the third, and the rule says not to build it.
+
+Cost is not the reason. The sparse vector falls out of the forward pass the
+product already runs, and stores at 129 to 533 bytes a memory (a 32-bit id and
+weight per non-zero, on this project's corpus and MuSiQue) against 4,096 for
+the dense vector. The index could not hold it as things stand anyway:
+`zvec-rust` 0.7.2 declares sparse field types and accepts a sparse sub-query,
+but its `Doc` has no setter for a sparse field, so writing one would go
+through the raw FFI.
+
+**The multi-vector output loses to the cross-encoder it would replace.**
+Reordering the same shown set, nDCG@10 against the shipped `accurate` tier:
+
+| reordered by | own cross-lingual | XQuAD-R cross-lingual | XQuAD-R same-language | MuSiQue two-hop |
+| --- | --- | --- | --- | --- |
+| `accurate` cross-encoder, shipped | 0.8162 | 0.6673 | 0.7844 | 0.6596 |
+| M3 "All", the card's 0.4 dense + 0.2 sparse + 0.4 multi-vector | −0.0033, p = 0.8344 | **−0.0527**, p = 0.0001 | +0.0006, p = 0.7164 | **−0.0167**, p = 0.0001 |
+| M3 multi-vector alone | −0.0030, p = 0.8337 | **−0.0531**, p = 0.0001 | −0.0025, p = 0.1758 | **−0.0200**, p = 0.0001 |
+| cross-encoder and "All", rank-fused, weight 0.25 | −0.0030, p = 0.4786 | +0.0011, p = 0.1294 | −0.0000, p = 1.0000 | **−0.0022**, p = 0.0101 |
+| the same at 0.5 | −0.0006, p = 0.8988 | **−0.0030**, p = 0.0177 | +0.0004, p = 0.5800 | −0.0025, p = 0.0812 |
+| the same at 1.0 | +0.0121, p = 0.2832 | **−0.0110**, p = 0.0001 | +0.0009, p = 0.3549 | **−0.0080**, p = 0.0001 |
+
+The paper's weights (1, 0.3, 1) give −0.0501 and −0.0172 on the two groups
+that move. Against fusion with no rerank at all, "All" gains nothing
+significant on XQuAD-R cross-lingual (+0.0032, p = 0.1553) and loses MuSiQue
+(−0.0070, p = 0.0001). That is the `mLateOn` result recorded below, from a
+second model: late interaction reorders this pipeline's candidates no better
+than the fusion order it replaces. The rank-fused weight was chosen
+leave-one-corpus-out, and the choice does not hold out: no weight was
+admissible on the other two corpora with this project's own held out, and the
+two folds that chose one lose on the corpus they did not see — XQuAD-R
+cross-lingual −0.0030 (p = 0.0177) at 0.5, MuSiQue −0.0022 (p = 0.0101) at
+0.25.
+
+**And it is not cheaper either way it could be built.** Stored, the per-token
+vectors at int8 are 19.3 KiB a memory on this project's corpus, 42.9 KiB on
+XQuAD-R and 117.7 KiB on MuSiQue — 545 MiB and 1,240 MiB for the two external
+corpora, against 4 KiB of dense vector a memory. Computed at query time
+instead, each candidate not cached needs a BGE-M3 forward pass, which costs
+about what the cross-encoder's pair does: 130.8 ms against 134.8 on XQuAD-R
+sentences and 376.2 against 299.0 on MuSiQue paragraphs, medians at batch one
+from a single run. A cache of those vectors over the harness's stream of
+questions hits 46% of reranked candidates on XQuAD-R and 38% on MuSiQue at 500
+entries, and 64% and 77% with no bound.
+
+**The longer window buys nothing these corpora can see.** None of this
+project's 230 memories or XQuAD-R's 13,014 sentences exceeds 512 tokens. On
+MuSiQue 32 of 10,785 paragraphs do (0.3%), the longest at 597. On the 46
+questions whose relevant paragraph is one of those, embedding it whole moves
+the vector channel alone, exact search, from 0.5323 to 0.5348 nDCG@10 (+0.0025,
+p = 0.820, 4 wins, 3 losses), with `recall@50` unchanged; the sparse output
+moves by +0.0010 (p = 1.000). The forward pass grows faster than the text: 223
+ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
+4,096, the fastest of three calls on one text (of two at 4,096). The window
+stays at 512.
+
+### pplx-embed-v1-0.6b on the shipped path: proposed, not adopted
+
+**Status: proposed.** BGE-M3 remains the default. The maintainer has not
+decided, and four items are open; they are listed at the end of this section.
+
+The survey above named one candidate and four reasons it was not yet a
+default, the first being that it had been measured on the vector channel
+alone. The end-to-end trial ran it through `search_reranked` at the `accurate`
+tier on the XQuAD-R and MuSiQue harnesses. It used an experimental `pplx`
+profile over our own int8 export (52bc0d9) and a harness option that pairs one
+profile's saved per-question scores with another's (783551a), and neither is on
+the default branch. It ran at the rerank depth of twenty that shipped at the
+time. Both indexes embed `name: content`:
+
+| | BGE-M3 | pplx | difference | wins / losses | p |
+| --- | --- | --- | --- | --- | --- |
+| MuSiQue two-hop (1,000), nDCG@10 | 0.7129 | 0.7451 | **+0.0322** | 306 / 218 | 0.0001 |
+| MuSiQue two-hop, `recall@50` | 0.8570 | 0.8865 | **+0.0295** | 94 / 39 | 0.0001 |
+| XQuAD-R same-language (1,190), nDCG@10 | 0.8030 | 0.8193 | **+0.0162** | 168 / 118 | 0.0076 |
+| XQuAD-R same-language, `recall@50` | 0.9605 | 0.9580 | −0.0025 | 13 / 16 | 0.7137 |
+| XQuAD-R cross-lingual (1,190), nDCG@10 | 0.6714 | 0.6643 | −0.0072 | 421 / 486 | 0.0986 |
+| XQuAD-R cross-lingual, `recall@50` | 0.9005 | 0.8946 | −0.0059 | 175 / 180 | 0.1934 |
+
+**What survived fusion and the reranker is a third to a half of the model-alone
+gain within a language, and none of it across languages.** Alone, the vector
+channel had gained +0.0647 on MuSiQue, +0.0457 same-language and +0.0251
+cross-lingual. The prediction written before this run was +0.015 on MuSiQue (a
+range of −0.005 to +0.035), +0.035 same-language, and +0.005 cross-lingual, not
+significant. MuSiQue came in at the top of its range and same-language at half
+the prediction. Cross-lingual was not significant, as predicted, but its sign
+is negative.
+
+**The first figures this trial printed were wrong, and what was wrong was the
+baseline's text, not its model.** They were +0.0029 cross-lingual (p = 0.5351)
+and +0.0355 same-language (p = 0.0001) on XQuAD-R. Those paired pplx on a fresh
+index against BGE-M3 indexes built before 0c2ff9f, which embed content alone
+and keep doing so until `pamin reindex` rebuilds them. Measured alone on the
+same harness, the encoding moves BGE-M3 from content to `name: content` by
++0.0101 cross-lingual (444 wins / 321 losses), +0.0193 same-language
+(141 / 80) and +0.0294 on MuSiQue (249 / 166), each at p = 0.0001. So the
++0.0355 was +0.0193 of encoding and +0.0162 of model, and the +0.0029 was an
+encoding gain covering a model loss. The harness now refuses to pair runs over
+different encodings (783551a). The prediction for the encoding was wrong in
+sign on XQuAD-R (−0.003 and −0.002, on the reasoning that names like `de:12:3`
+are noise to the model) and low on MuSiQue (+0.012). It also separates two
+decisions: a BGE-M3 workspace built before 0c2ff9f gains the encoding figures
+from `pamin reindex` with no change of model.
+
+What it costs:
+
+| | BGE-M3, shipped | pplx, own int8 export |
+| --- | --- | --- |
+| query embedding | — | 2.24× to 3.02× BGE-M3's: the median per-query ratio in each of four runs of 375 queries |
+| resident after loading and 20 queries | 628 MiB (299 anonymous, 329 file-backed) | 886 MiB (167 anonymous, 720 file-backed) |
+| model on disk | 560 MiB | 850 MiB |
+| passage embedding | — | 2 to 3 times BGE-M3's, from the survey |
+
+The latency is the embedding call through the crate's own encoder, not a whole
+search. It was taken on the shared four-core machine at a load average of 17 to
+20, so only the per-query ratio is quoted: BGE-M3's own median moved between
+40.8 and 90.8 ms across the four runs. The resident figures are the median of
+three alternating rounds, one model per fresh process, which agree to within
+1.5 MiB.
+
+**Combining the two models was measured, and it is not proposed.** It used the
+same replay as the section above, with its MuSiQue caveat, under rules written
+before any combined result. Every arm keeps the two BM25 channels at 0.125 and
+the graph at 0.30:
+
+- **A** is what ships: BGE-M3 dense at 1.0, over an index of content, as the
+  benchmark workspaces were built. **A′** is A over a fresh BGE-M3 index of
+  `name: content`, which is what a new install builds.
+- **B** is A plus BGE-M3's sparse channel at 0.0625.
+- **C** is pplx's dense vector in place of BGE-M3's, at 1.0.
+- **D** is C plus BGE-M3's sparse channel at 0.0625.
+- **E** is BGE-M3 at 1.0, pplx at 0.5 and the sparse channel at 0.0625, and
+  **E′** is E over the fresh BGE-M3 index.
+
+D's and E's weights are what the rule chose on all three corpora. The
+leave-one-corpus-out folds disagreed, choosing a sparse weight of 0.125 for D
+and 0.25 for E with this project's corpus held out, so by the same rule neither
+arm has an established sparse weight. nDCG@10 after the rerank, at the depth of
+thirty that ships, paired against A:
+
+| arm | own cross-lingual (43) | own relational (20) | XQuAD-R cross-lingual | XQuAD-R same-language | MuSiQue two-hop |
+| --- | --- | --- | --- | --- | --- |
+| A | 0.8162 | 0.6480 | 0.6673 | 0.7844 | 0.6596 |
+| A′ | +0.0201, p = 0.0995 | +0.0353, p = 0.3065 | **+0.0051**, p = 0.0161 | **+0.0160**, p = 0.0001 | **+0.0218**, p = 0.0001 |
+| B | **−0.0078**, p = 0.0045 | −0.0020, p = 1.0000 | **−0.0114**, p = 0.0001 | **+0.0141**, p = 0.0001 | **+0.0035**, p = 0.0028 |
+| C | **+0.0644**, p = 0.0001 | −0.0135, p = 0.8611 | +0.0049, p = 0.2404 | **+0.0230**, p = 0.0005 | **+0.0679**, p = 0.0001 |
+| D | **+0.0471**, p = 0.0046 | −0.0320, p = 0.6664 | −0.0073, p = 0.0765 | **+0.0351**, p = 0.0001 | **+0.0695**, p = 0.0001 |
+| E | **+0.0347**, p = 0.0014 | −0.0054, p = 0.7534 | **+0.0085**, p = 0.0001 | **+0.0243**, p = 0.0001 | **+0.0359**, p = 0.0001 |
+| E′ | **+0.0478**, p = 0.0001 | +0.0312, p = 0.6124 | **+0.0135**, p = 0.0001 | **+0.0332**, p = 0.0001 | **+0.0458**, p = 0.0001 |
+
+The lexical group is 1.0000 in every arm, and the monolingual group is 0.9940
+in every arm except C, which is 0.9881 (one query, p = 1.0000). Against A′,
+the baseline a new install gets, C still has no group significantly worse:
++0.0443 own cross-lingual (p = 0.0023), −0.0002 and +0.0069 on XQuAD-R's two
+groups (p = 0.9557 and 0.2542), and +0.0461 on MuSiQue (p = 0.0001). D loses
+XQuAD-R cross-lingual to A′, −0.0124 (p = 0.0013). E and E′ have no group
+significantly worse than A or A′ either. But they need both models, 628 + 886
+MiB resident and 560 + 850 MiB on disk, and they score below C on MuSiQue
+(0.6955 and 0.7054 against 0.7275). D needs both as well, because its sparse
+channel is BGE-M3's, and B loses XQuAD-R cross-lingual. So among the arms that
+load one model, C is the only one with no group significantly worse than A or
+A′, and it is the configuration proposed.
+
+**The replay and the product agree on direction, not to the third decimal.**
+Paired against a named BGE-M3 index at depth twenty, the replay gives C
++0.0450 on MuSiQue where the product gave +0.0322, and +0.0069 (not
+significant) same-language on XQuAD-R where the product gave +0.0162. The
+proposal rests on the product-path table at the top of this section. The
+replay only ranks the combinations against one another.
+
+**Open, and each has to be settled before this becomes a default:**
+
+1. **The export.** Our dynamic int8 quantization (every MatMul except the 28
+   `down_proj`s, plus the token embedding; mean cosine 0.9957 to fp32 over 400
+   texts) is published nowhere, and Perplexity's own 8-bit export runs 8-10x
+   slower on this CPU. The trial profile reads it from a local directory, so
+   shipping it means hosting our own export for the model download to fetch.
+2. **Re-embedding existing workspaces.** A model change builds a new index,
+   so every workspace re-embeds through `pamin reindex`, at two to three
+   times BGE-M3's cost a passage.
+3. **Greek.** The survey measured Greek queries 0.071 worse (p = 0.002) on the
+   vector channel alone. That has not been re-taken per language on the
+   shipped path.
+4. **Fusion weights tuned for BGE-M3.** Every weight C runs at was chosen with
+   BGE-M3 in the vector channel and has not been re-swept with pplx there.
 
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 

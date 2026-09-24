@@ -131,6 +131,8 @@
 //! informative needs a larger corpus, not a different metric.
 
 mod channels;
+mod cold;
+mod features;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -221,6 +223,31 @@ async fn retrieval_quality_by_group() {
     // way: the same content produces the same state.
     write_corpus(&mut engine, &corpus).await;
 
+    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
+    // fusion offline. See `features`.
+    if let Some(mut dump) = features::Features::from_env("own") {
+        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        for (index, query) in queries.iter().enumerate() {
+            let hits = engine
+                .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+                .await
+                .expect("search");
+            let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+            let asked = features::Asked {
+                group: &query.group,
+                question: &format!("q{index:03}"),
+                text: &query.query,
+                language: None,
+                judged: relevant.len(),
+            };
+            dump.observe(&asked, &hits, WIDE, |topic| {
+                Some(f64::from(relevant.contains(topic)))
+            });
+        }
+        dump.finish(queries.len());
+        return;
+    }
+
     // `CHANNELS`: what each channel is worth alone, and what the fused list
     // looks like with each one taken away. See `channels`.
     //
@@ -235,6 +262,35 @@ async fn retrieval_quality_by_group() {
     // leaving the premise unstated.
     if std::env::var("CHANNELS").is_ok() {
         report_channels(&engine, &queries).await;
+        return;
+    }
+
+    if let Some(variants) = channels::requested_variants() {
+        let questions: Vec<(String, String)> = queries
+            .iter()
+            .map(|query| (query.query.clone(), query.group.clone()))
+            .collect();
+        channels::compare_reranked(
+            &engine,
+            "own corpus",
+            &questions,
+            SEARCH_LIMIT,
+            DEPTHS,
+            &variants,
+            |index, into, hits| {
+                let query = &queries[index];
+                let mut ranked: Vec<String> = Vec::new();
+                let mut seen = HashSet::new();
+                for hit in hits {
+                    if seen.insert(hit.topic.clone()) {
+                        ranked.push(hit.topic.clone());
+                    }
+                }
+                let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
+                into.add(&ranked, relevant.len(), |topic| relevant.contains(topic));
+            },
+        )
+        .await;
         return;
     }
 
@@ -315,6 +371,21 @@ async fn retrieval_quality_by_group() {
             "spending less on the {} reranker, own corpus, {named}",
             tier.name()
         ));
+        return;
+    }
+
+    // `COLD`: where the first search after an idle release spends its time.
+    // The harness's own engine is closed first, because it holds the index
+    // this reopens and a read-write handle excludes every other. See `cold`.
+    if std::env::var("COLD").is_ok() {
+        let database = engine.database.clone();
+        drop(engine);
+        let cross: Vec<&str> = queries
+            .iter()
+            .filter(|query| query.group == "cross_lingual")
+            .map(|query| query.query.as_str())
+            .collect();
+        cold::report(&database, &workspace, &project, profile, &cross).await;
         return;
     }
 

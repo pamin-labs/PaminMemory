@@ -47,14 +47,14 @@ async fn finished_work_leaves_no_row_and_live_work_stays() {
 
     let project = pamin_store::repository::ensure_project(
         database.pool(),
-        &format!("jobsettle-{}", uuid::Uuid::new_v4()),
+        &format!("jobsettle-{}", uuid::Uuid::now_v7()),
     )
     .await
     .expect("ensure project")
     .id;
 
     // Three subjects owe work. Two will be finished, one will not.
-    let subjects: Vec<uuid::Uuid> = (0..3).map(|_| uuid::Uuid::new_v4()).collect();
+    let subjects: Vec<uuid::Uuid> = (0..3).map(|_| uuid::Uuid::now_v7()).collect();
     for subject in &subjects {
         jobs::enqueue(
             database.pool(),
