@@ -18,7 +18,7 @@
 //! costing ten times more because the project around it grew ten times: that
 //! is the defect, and nothing else in this path has that shape.
 //!
-//! Topics are inserted in bulk rather than through `ensure_topic`, because
+//! Topics are inserted in bulk rather than through `Engine::write`, because
 //! building the project is setup and the API costs several round trips per
 //! topic.
 //!

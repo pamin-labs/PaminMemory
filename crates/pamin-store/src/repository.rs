@@ -116,7 +116,7 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
 /// rather than forking a second one, which is what keeps a file's history in a
 /// single chain.
 ///
-/// The lock is what [`append_source_version`] numbers under, taken here
+/// The lock is what [`append_evidence`] and [`append_promoted`] number under, taken here
 /// because this is the statement that finds the row: locking it again by id
 /// was a second round trip for the same row. A row this call inserts is
 /// already held by the inserting transaction, so both paths leave it locked.
@@ -173,42 +173,6 @@ pub async fn ensure_source(
     Ok(row.get::<uuid::Uuid, _>("id").into())
 }
 
-/// Appends evidence, along with the filter's verdict on it.
-///
-/// The verdict rides on a row that exists either way: the filter decides
-/// whether content reaches the retrieval surface, never whether it is kept.
-///
-/// **Call it after [`ensure_source`], in the same transaction.** The version
-/// number is read and written under the lock that call takes on the source
-/// row. Two agents writing to one source otherwise both read the same maximum
-/// and both claim the version after it, and only one of the two rows survives
-/// the uniqueness constraint. Losing the other is losing evidence, which is
-/// the one thing this store promises never to do. The lock has to be taken in
-/// a statement before this one: a statement reads with the snapshot it began
-/// with, so one that waited for the lock inside itself would still number from
-/// what it saw before the wait.
-pub async fn append_source_version(
-    connection: &mut sqlx::PgConnection,
-    project: ProjectId,
-    source: SourceId,
-    content: &str,
-    content_hash: &str,
-    decision: FilterDecision,
-    reason: &str,
-) -> Result<SourceVersion> {
-    let evidence = Evidence {
-        content,
-        content_hash,
-        decision,
-        reason,
-        language: None,
-        language_confidence: None,
-    };
-    let (version, _, _) =
-        insert_evidence(connection, project, source, &evidence, Along::Nothing).await?;
-    Ok(version)
-}
-
 /// Evidence as the write path records it: the content, the filter's verdict
 /// on it, and the language detected over it.
 pub struct Evidence<'a> {
@@ -220,23 +184,30 @@ pub struct Evidence<'a> {
     pub language_confidence: Option<f32>,
 }
 
-/// Appends evidence and the span that covers all of it, in one statement.
+/// Appends evidence and the span that covers all of it, in one statement,
+/// along with the filter's verdict on it.
 ///
-/// What [`append_source_version`] followed by [`append_source_span`] over the
-/// whole content does, for the write path, which records exactly that: the two
-/// inserts were two round trips inside the write transaction, and the second
-/// needed nothing from the first but the id it had just chosen. Same
-/// precondition as [`append_source_version`]: call it after [`ensure_source`],
-/// in the same transaction.
+/// What a write the filter holds records. The verdict rides on a row that
+/// exists either way: the filter decides whether content reaches the retrieval
+/// surface, never whether it is kept.
+///
+/// **Call it after [`ensure_source`], in the same transaction.** The version
+/// number is read and written under the lock that call takes on the source
+/// row. Two agents writing to one source otherwise both read the same maximum
+/// and both claim the version after it, and only one of the two rows survives
+/// the uniqueness constraint. Losing the other is losing evidence, which is
+/// the one thing this store promises never to do. The lock has to be taken in
+/// a statement before this one: a statement reads with the snapshot it began
+/// with, so one that waited for the lock inside itself would still number from
+/// what it saw before the wait.
 pub async fn append_evidence(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     source: SourceId,
     evidence: &Evidence<'_>,
 ) -> Result<(SourceVersion, SourceSpan)> {
-    let (version, span, _) =
-        insert_evidence(connection, project, source, evidence, Along::Span).await?;
-    Ok((version, span.expect("asked for the span")))
+    let (version, span, _) = insert_evidence(connection, project, source, evidence, None).await?;
+    Ok((version, span))
 }
 
 /// What a promoted write records beyond its evidence: the topic it is
@@ -277,23 +248,13 @@ pub async fn append_promoted(
     evidence: &Evidence<'_>,
     promotion: &Promotion<'_>,
 ) -> Result<(SourceVersion, SourceSpan, TopicState)> {
-    let (version, span, state) = insert_evidence(
-        connection,
-        project,
-        source,
-        evidence,
-        Along::State(promotion),
-    )
-    .await?;
-    Ok((
-        version,
-        span.expect("asked for the span"),
-        state.expect("asked for the state"),
-    ))
+    let (version, span, state) =
+        insert_evidence(connection, project, source, evidence, Some(promotion)).await?;
+    Ok((version, span, state.expect("asked for the state")))
 }
 
-/// Numbers and inserts a source version, the one statement every append of
-/// evidence starts from.
+/// Numbers and inserts a source version, the query every append of evidence
+/// starts from.
 macro_rules! insert_source_version {
     () => {
         "INSERT INTO source_versions (
@@ -358,24 +319,15 @@ macro_rules! append_state {
     };
 }
 
-/// What a statement that appends evidence writes besides the version.
-enum Along<'a> {
-    Nothing,
-    /// The span over the whole content.
-    Span,
-    /// The span, and a state of a topic cut from it.
-    State(&'a Promotion<'a>),
-}
-
-/// The version, and what `along` asks for with it, written by one statement.
+/// The version, the span over all of it, and with a `promotion` the state cut
+/// from that span, written by one statement.
 async fn insert_evidence(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
     source: SourceId,
     evidence: &Evidence<'_>,
-    along: Along<'_>,
-) -> Result<(SourceVersion, Option<SourceSpan>, Option<TopicState>)> {
-    const VERSION: &str = insert_source_version!();
+    promotion: Option<&Promotion<'_>>,
+) -> Result<(SourceVersion, SourceSpan, Option<TopicState>)> {
     const WITH_SPAN: &str = concat!(
         "WITH version AS (",
         insert_source_version!(),
@@ -416,10 +368,9 @@ async fn insert_evidence(
 
     let span_id = SourceSpanId::new();
     let byte_end = evidence.content.len() as u32;
-    let query = sqlx::query(match along {
-        Along::Nothing => VERSION,
-        Along::Span => WITH_SPAN,
-        Along::State(_) => PROMOTED,
+    let query = sqlx::query(match promotion {
+        None => WITH_SPAN,
+        Some(_) => PROMOTED,
     })
     .bind(SourceVersionId::new().0)
     .bind(project.0)
@@ -428,18 +379,14 @@ async fn insert_evidence(
     .bind(evidence.content_hash)
     .bind(evidence.decision.label())
     .bind(evidence.reason)
-    .bind(OffsetDateTime::now_utc());
-    let query = match along {
-        Along::Nothing => query,
-        Along::Span | Along::State(_) => query
-            .bind(span_id.0)
-            .bind(byte_end as i32)
-            .bind(evidence.language)
-            .bind(evidence.language_confidence),
-    };
-    let query = match along {
-        Along::Nothing | Along::Span => query,
-        Along::State(promotion) => crate::jobs::Queued::of(promotion.owed).bind(
+    .bind(OffsetDateTime::now_utc())
+    .bind(span_id.0)
+    .bind(byte_end as i32)
+    .bind(evidence.language)
+    .bind(evidence.language_confidence);
+    let query = match promotion {
+        None => query,
+        Some(promotion) => crate::jobs::Queued::of(promotion.owed).bind(
             query
                 .bind(TopicStateId::new().0)
                 .bind(promotion.topic.topic.id.0)
@@ -462,136 +409,31 @@ async fn insert_evidence(
         filter_reason: evidence.reason.to_string(),
         recorded_at: row.get("recorded_at"),
     };
-    let span = match along {
-        Along::Nothing => None,
-        Along::Span | Along::State(_) => Some(SourceSpan {
-            id: span_id,
-            project_id: project,
-            source_version_id: version.id,
-            byte_start: 0,
-            byte_end,
-            detected_language: evidence.language.map(str::to_string),
-            language_confidence: evidence.language_confidence,
-        }),
-    };
-    let state = match along {
-        Along::Nothing | Along::Span => None,
-        Along::State(promotion) => Some(TopicState {
-            id: row.get::<uuid::Uuid, _>("state_id").into(),
-            project_id: project,
-            topic_id: promotion.topic.topic.id,
-            version: from_sql_version(row.get("state_version")),
-            // The span is the whole of the evidence, so the state says all of it.
-            content: evidence.content.to_string(),
-            source_span_id: span_id,
-            language: evidence.language.map(str::to_string),
-            observed_at: promotion.observed_at,
-            recorded_at: version.recorded_at,
-            validity: promotion.validity,
-            supersedes: promotion.topic.current,
-            deleted_at: None,
-        }),
-    };
-    Ok((version, span, state))
-}
-
-/// Records a byte range into a source version, with any language detected for it.
-pub async fn append_source_span(
-    executor: impl PgExecutor<'_>,
-    project: ProjectId,
-    source_version: SourceVersionId,
-    byte_start: u32,
-    byte_end: u32,
-    detected_language: Option<&str>,
-    language_confidence: Option<f32>,
-) -> Result<SourceSpan> {
-    let id = SourceSpanId::new();
-    sqlx::query(
-        "INSERT INTO source_spans (
-             id, project_id, source_version_id, byte_start, byte_end,
-             detected_language, language_confidence
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    )
-    .bind(id.0)
-    .bind(project.0)
-    .bind(source_version.0)
-    .bind(byte_start as i32)
-    .bind(byte_end as i32)
-    .bind(detected_language)
-    .bind(language_confidence)
-    .execute(executor)
-    .await?;
-
-    Ok(SourceSpan {
-        id,
+    let span = SourceSpan {
+        id: span_id,
         project_id: project,
-        source_version_id: source_version,
-        byte_start,
+        source_version_id: version.id,
+        byte_start: 0,
         byte_end,
-        detected_language: detected_language.map(str::to_string),
-        language_confidence,
-    })
-}
-
-/// Returns the topic with this name, creating it if it does not exist.
-///
-/// Finds before it inserts, for the reason given on `ensure_project`: a topic
-/// is created once and named on every write afterwards, and rewriting the row
-/// to read it back is a lock and a dead tuple bought for nothing.
-pub async fn ensure_topic(
-    connection: &mut sqlx::PgConnection,
-    project: ProjectId,
-    name: &str,
-) -> Result<Topic> {
-    if let Some(topic) = find_topic(&mut *connection, project, name).await? {
-        return Ok(topic);
-    }
-    create_topic(connection, project, name).await
-}
-
-/// Creates the topic with this name, or returns the one another writer created
-/// first.
-///
-/// The second half of [`ensure_topic`], for a caller that has already looked
-/// the name up and found nothing: asking again would be the same `SELECT` a
-/// second time in one transaction, and the insert settles a race without it.
-pub async fn create_topic(
-    connection: &mut sqlx::PgConnection,
-    project: ProjectId,
-    name: &str,
-) -> Result<Topic> {
-    let inserted = sqlx::query(
-        "INSERT INTO topics (id, project_id, name, created_at)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (project_id, name) DO NOTHING
-         RETURNING id, name, path, created_at",
-    )
-    .bind(TopicId::new().0)
-    .bind(project.0)
-    .bind(name)
-    .bind(OffsetDateTime::now_utc())
-    .fetch_optional(&mut *connection)
-    .await?;
-
-    let row = match inserted {
-        Some(row) => row,
-        // Another writer created it in between.
-        None => {
-            sqlx::query(FIND_TOPIC)
-                .bind(project.0)
-                .bind(name)
-                .fetch_one(&mut *connection)
-                .await?
-        }
+        detected_language: evidence.language.map(str::to_string),
+        language_confidence: evidence.language_confidence,
     };
-
-    Ok(Topic {
-        id: row.get::<uuid::Uuid, _>("id").into(),
+    let state = promotion.map(|promotion| TopicState {
+        id: row.get::<uuid::Uuid, _>("state_id").into(),
         project_id: project,
-        name: row.get("name"),
-        path: row.get("path"),
-        created_at: row.get("created_at"),
-    })
+        topic_id: promotion.topic.topic.id,
+        version: from_sql_version(row.get("state_version")),
+        // The span is the whole of the evidence, so the state says all of it.
+        content: evidence.content.to_string(),
+        source_span_id: span_id,
+        language: evidence.language.map(str::to_string),
+        observed_at: promotion.observed_at,
+        recorded_at: version.recorded_at,
+        validity: promotion.validity,
+        supersedes: promotion.topic.current,
+        deleted_at: None,
+    });
+    Ok((version, span, state))
 }
 
 /// A topic held locked by the transaction that found it, with the state it
@@ -1315,47 +1157,19 @@ fn byte_offset(content: &str, position: usize) -> usize {
         .map_or(content.len(), |(byte, _)| byte)
 }
 
-/// Records how a topic's name tokenizes, for the name index.
-///
-/// The key is computed by the caller because tokenizing is the segmenter's
-/// job and the segmenter lives above this layer. What belongs here is that the
-/// row is written in the same transaction as the topic: a topic that exists
-/// and is not in this table is a topic nothing will ever derive an edge to.
-pub async fn record_topic_name(
-    executor: impl PgExecutor<'_>,
-    project: ProjectId,
-    topic: TopicId,
-    key: &str,
-    tokens: usize,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (project_id, topic_id) DO UPDATE
-             SET name_key = EXCLUDED.name_key, token_count = EXCLUDED.token_count",
-    )
-    .bind(project.0)
-    .bind(topic.0)
-    .bind(key)
-    .bind(tokens as i16)
-    .execute(executor)
-    .await?;
-
-    Ok(())
-}
-
 /// Records how many topics' names tokenize, in one statement.
 ///
-/// The single-row form above is what a write uses, because a write records one
-/// topic. This is what a rebuild uses, because a rebuild records all of them --
-/// and doing that a row at a time is one round trip per topic, which on the
-/// corpora this project measures is thirteen thousand of them for a table with
-/// no more rows than that.
+/// The key is computed by the caller because tokenizing is the segmenter's
+/// job and the segmenter lives above this layer. A write files its one name
+/// with the topic, in [`create_topic_named`]. This is what a rebuild uses,
+/// because a rebuild records all of them -- and doing that a row at a time is
+/// one round trip per topic, which on the corpora this project measures is
+/// thirteen thousand of them for a table with no more rows than that.
 ///
 /// `unnest` over three arrays, which is the same shape [`topics_named_by`] and
-/// `graph::live_versions_of` already use for their reads. The conflict clause
-/// is the single-row one unchanged, so a rebuild over a table that already has
-/// these rows updates them rather than failing -- which is what a rebuild is.
+/// `graph::live_versions_of` already use for their reads. A conflict updates
+/// the row, so a rebuild over a table that already has these rows rewrites
+/// them rather than failing -- which is what a rebuild is.
 pub async fn record_topic_names(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
