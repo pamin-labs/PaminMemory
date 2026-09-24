@@ -289,8 +289,14 @@ fn build(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A tokenizer built the way [`load`](super::load) builds one, over the
+    /// vocabulary below, for other modules' tests.
+    pub(crate) fn fixture() -> Tokenizer {
+        load(&tokenizer_json(STRIP, SCORES))
+    }
 
     /// A Unigram tokenizer over a handful of pieces, with a normalizer of the
     /// caller's choosing -- the one part two tokenizers sharing a model differ
