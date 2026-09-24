@@ -37,6 +37,10 @@ const MARK: &str = "prepared-arm-result";
 /// Models loaded by the product's own entry points, by name.
 const MODELS: &[&str] = &["fast", "accurate", "embedder"];
 
+/// Of those, the ones whose download keeps its weights in a separate data
+/// file rather than inside the graph.
+const EXTERNAL_DATA: &[&str] = &["embedder"];
+
 const QUERY: &str = "how does the deployment pipeline handle a failed migration";
 
 /// Of different lengths, so a reranker batch pads and an embedding runs at
@@ -113,13 +117,30 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
         // scores identically: written without them, a bare session over it
         // held 304 MiB against the source's 667, a saving of 363, under half.
         // Nothing but this assertion tells those two apart.
+        //
+        // Except for a source that keeps its weights in a data file of its
+        // own, as the embedder's export does: the runtime maps those from the
+        // download as well, so the copy saves only the packed weights -- 526
+        // MiB of live memory against a data file of 1,199 MiB for the
+        // embedder, bit-identically -- and what shows whether the copy's are
+        // mapped is its own heap, 66 MiB, where packing them there again would
+        // add the size of the weights.
         if let (Some(source), Some(prepared)) = (source.held, prepared.held) {
             let saved = source.saturating_sub(prepared);
-            assert!(
-                saved * 2 >= data,
-                "the {model} copy saves {saved} kB of live anonymous memory against the source, \
-                 under half of its {data} kB data file -- its weights are not being mapped"
-            );
+            if EXTERNAL_DATA.contains(model) {
+                assert!(
+                    prepared * 2 < data,
+                    "the {model} copy holds {prepared} kB of live anonymous memory, over half of \
+                     its {data} kB data file -- its weights are not being mapped"
+                );
+            } else {
+                assert!(
+                    saved * 2 >= data,
+                    "the {model} copy saves {saved} kB of live anonymous memory against the \
+                     source, under half of its {data} kB data file -- its weights are not being \
+                     mapped"
+                );
+            }
         }
 
         // The next model's copy is written on a disk that need not hold both.
