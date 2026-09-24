@@ -71,6 +71,7 @@ async fn the_ledger_holds_its_promises() {
     dropping_the_state_copy_loses_nothing_a_state_said(&database, &workspace).await;
     settled_jobs_go_and_owed_jobs_stay_through_the_migration(&database, &workspace).await;
     dropping_the_signal_columns_loses_nothing_written(&database, &workspace).await;
+    a_queued_jobs_subject_survives_losing_its_key(&database, &workspace).await;
     the_current_state_pointer_follows_every_write(&database).await;
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
@@ -1513,14 +1514,16 @@ async fn settled_jobs_go_and_owed_jobs_stay_through_the_migration(
         .await
         .expect("migrate past V10");
 
-    let mut left: Vec<String> = sqlx::query_scalar("SELECT idempotency_key FROM index_jobs")
+    // Read by kind: V12, which the run also applies, drops the key the rows
+    // were written with.
+    let mut left: Vec<String> = sqlx::query_scalar("SELECT job_type FROM index_jobs")
         .fetch_all(&scratch)
         .await
         .expect("read the queue back");
     left.sort();
     assert_eq!(
         left,
-        vec!["held", "owed"],
+        vec!["derive_mentions", "sync_topic_index"],
         "only the settled row should go; owed and in-flight work must survive"
     );
 
@@ -1531,6 +1534,110 @@ async fn settled_jobs_go_and_owed_jobs_stay_through_the_migration(
         .expect("drop scratch database");
 }
 
+/// V12 moves a queued job's subject into a column and drops the key and the
+/// payload that spelled it, and the work still coalesces afterwards.
+///
+/// The queue as V11 left it: a job with a subject, a project-wide job, and a
+/// row whose subject does not parse -- which the old reader made nothing of.
+/// After the migration each reads back through the store with the subject it
+/// had, and enqueueing the same work again finds the migrated row rather
+/// than adding a second, the project-wide one included: that is the
+/// uniqueness the key used to carry. Then the refusal: two rows that would
+/// name the same work once their keys are gone stop the migration, and the
+/// queue is left as it was.
+async fn a_queued_jobs_subject_survives_losing_its_key(database: &Database, workspace: &Workspace) {
+    const NAME: &str = "pamin_job_subject_check";
+    let project = uuid::Uuid::new_v4();
+    let topic = uuid::Uuid::new_v4();
+    let queue_at_v11 = |extra: &str| {
+        format!(
+            "INSERT INTO projects VALUES ('{project}', '{project}', now());
+             INSERT INTO index_jobs (id, project_id, job_type, payload, idempotency_key,
+                                     available_at, created_at, priority)
+             VALUES
+               (gen_random_uuid(), '{project}', 'sync_topic_index',
+                '{{\"subject\": \"{topic}\"}}', 'sync_topic_index:{topic}', now(), now(), 10),
+               (gen_random_uuid(), '{project}', 'optimize_index',
+                '{{\"subject\": null}}', 'optimize_index:', now(), now(), 100),
+               (gen_random_uuid(), '{project}', 'derive_mentions',
+                '{{\"subject\": \"not a uuid\"}}', 'derive_mentions:not a uuid', now(), now(), 20)
+               {extra};"
+        )
+    };
+
+    let scratch = database_left_at(database, workspace, NAME, 11).await;
+    sqlx::raw_sql(AssertSqlSafe(queue_at_v11("")))
+        .execute(&scratch)
+        .await
+        .expect("write the queue the way V11 kept it");
+    pamin_store::migrate::run(&scratch)
+        .await
+        .expect("migrate past V12");
+
+    let claimed = jobs::claim(&scratch, project.into(), "migrated", 10, &JobKind::ALL)
+        .await
+        .expect("claim the migrated jobs");
+    let mut read: Vec<(JobKind, Option<uuid::Uuid>)> =
+        claimed.iter().map(|job| (job.kind, job.subject)).collect();
+    read.sort_by_key(|(kind, _)| kind.as_str());
+    assert_eq!(
+        read,
+        vec![
+            (JobKind::DeriveMentions, None),
+            (JobKind::OptimizeIndex, None),
+            (JobKind::SyncTopicIndex, Some(topic)),
+        ]
+    );
+
+    jobs::enqueue(
+        &scratch,
+        project.into(),
+        JobKind::SyncTopicIndex,
+        Some(topic),
+    )
+    .await
+    .expect("enqueue a subject's work again");
+    jobs::enqueue(&scratch, project.into(), JobKind::OptimizeIndex, None)
+        .await
+        .expect("enqueue project-wide work again");
+    assert_eq!(
+        jobs::pending(&scratch, project.into())
+            .await
+            .expect("count"),
+        3,
+        "enqueueing work already queued should find the migrated row"
+    );
+    scratch.close().await;
+
+    // Two rows the key told apart and the columns do not.
+    let scratch = database_left_at(database, workspace, NAME, 11).await;
+    sqlx::raw_sql(AssertSqlSafe(queue_at_v11(&format!(
+        ", (gen_random_uuid(), '{project}', 'derive_mentions',
+            '{{\"subject\": \"also not a uuid\"}}', 'derive_mentions:also not a uuid',
+            now(), now(), 20)"
+    ))))
+    .execute(&scratch)
+    .await
+    .expect("write the colliding queue");
+    assert!(
+        pamin_store::migrate::run(&scratch).await.is_err(),
+        "two rows naming the same work must stop the migration"
+    );
+    let keys: i64 = sqlx::query_scalar("SELECT count(DISTINCT idempotency_key) FROM index_jobs")
+        .fetch_one(&scratch)
+        .await
+        .expect("the key column is still there");
+    assert_eq!(
+        keys, 4,
+        "a refused migration must leave the queue as it was"
+    );
+
+    scratch.close().await;
+    sqlx::query(AssertSqlSafe(format!("DROP DATABASE {NAME}")))
+        .execute(database.pool())
+        .await
+        .expect("drop scratch database");
+}
 /// V11 drops the retrieval-signal columns because nothing ever wrote them --
 /// and refuses to, rather than lose anything, when a state holds one.
 ///
