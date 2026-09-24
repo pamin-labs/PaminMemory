@@ -640,6 +640,41 @@ async fn grep_reaches_evidence_the_index_never_saw(database: &Database) {
         "a case-insensitive search does"
     );
 
+    // The offset is in bytes, the unit every caller slices with. SQL's
+    // `position` counts characters, and the two part company at the first
+    // character outside ASCII -- which is most evidence, stored in whatever
+    // language it arrived in. Either way of folding case has to agree.
+    committed!(
+        database,
+        repository::append_source_version,
+        project.id,
+        source,
+        "窑炉温度达到 Cone Twelve 之后保持",
+        "hash-multibyte",
+        FilterDecision::Filtered,
+        "no durable claim"
+    )
+    .expect("append multi-byte evidence");
+    for (needle, case_sensitive) in [("Cone Twelve", true), ("cone twelve", false)] {
+        let hits =
+            repository::grep_evidence(database.pool(), project.id, needle, case_sensitive, 10)
+                .await
+                .expect("grep");
+        let [hit] = hits.as_slice() else {
+            panic!(
+                "{needle:?} should match one piece of evidence, got {}",
+                hits.len()
+            );
+        };
+        assert_eq!(
+            hit.source_version
+                .content
+                .get(hit.offset..hit.offset + needle.len()),
+            Some("Cone Twelve"),
+            "the offset of {needle:?} is a byte offset into the evidence"
+        );
+    }
+
     // Superseded versions stay reachable, which is what makes this an audit
     // route rather than a second view of current state.
     let topic = repository::find_topic(database.pool(), project.id, "deployment_pipeline")
