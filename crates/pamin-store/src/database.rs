@@ -205,6 +205,21 @@ fn settings() -> HashMap<String, String> {
             "autovacuum_vacuum_scale_factor".to_string(),
             "0.02".to_string(),
         ),
+        // `postgresql_embedded` starts every cluster with `-F`, which is
+        // `fsync=off`: nothing the server writes is ever forced to disk, so a
+        // power cut can leave the data directory corrupt rather than merely
+        // behind -- the ledger this project calls the sole authority, lost to
+        // the one event it exists to survive. A `-c` given after `-F` wins
+        // (`postgres -F -c fsync=on -C fsync` prints `on`), and these are
+        // passed after it.
+        ("fsync".to_string(), "on".to_string()),
+        // What is given up instead is the last moments, not the cluster. A
+        // commit returns before its WAL is flushed and the WAL writer flushes
+        // within a few hundred milliseconds, so a crash can lose the writes
+        // of that window and never leaves the database inconsistent. Waiting
+        // for the flush on every commit is what `fsync` would otherwise cost a
+        // write; see the ADR for both figures.
+        ("synchronous_commit".to_string(), "off".to_string()),
     ])
 }
 
