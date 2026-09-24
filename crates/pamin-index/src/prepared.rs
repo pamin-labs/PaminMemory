@@ -23,9 +23,9 @@
 //! Through the loads the product makes -- `Reranker::load` and
 //! `Embedder::load`, each holding its tokenizer as well -- and counting only
 //! what is live once the allocator has returned what it freed, the copy takes
-//! the `accurate` reranker from 822 MB anonymous to 271, BGE-M3 from 824 to
-//! 272, and the `fast` reranker from 385 to 268, with every score and vector
-//! bit-identical. `tests/prepared.rs` is what measures that and fails if it
+//! the `accurate` reranker from 822 MB anonymous to 271, BGE-M3 -- the
+//! embedder then -- from 824 to 272, and the `fast` reranker from 385 to 268,
+//! with every score and vector bit-identical. `tests/prepared.rs` is what measures that and fails if it
 //! stops being true.
 //!
 //! What it costs is disk and one slow first load. The copy is written once per

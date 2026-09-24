@@ -9,6 +9,7 @@ mod encoder;
 pub mod error;
 mod hub;
 mod inference;
+mod nbits;
 mod prepared;
 pub mod projection;
 pub mod reranking;

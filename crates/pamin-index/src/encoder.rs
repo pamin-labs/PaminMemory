@@ -1,8 +1,9 @@
 //! A tokenizer and an ONNX Runtime session, and one forward pass through both.
 //!
-//! What the reranker and BGE-M3 used `fastembed` for, taken in here so that
-//! their tokenizers can share a vocabulary (see `crate::tokenizer`) -- its
-//! types own theirs and have no constructor that takes one. What each model
+//! What the rerankers and the embedder BGE-M3 used `fastembed` for, taken in
+//! here so that their tokenizers could share a vocabulary (see
+//! `crate::tokenizer`) -- its types own theirs and have no constructor that
+//! takes one. pplx-embed, which replaced BGE-M3, runs here too. What each model
 //! does with the outputs stays with the model: the reranker reads a logit per
 //! pair, the embedder a vector per text.
 //!

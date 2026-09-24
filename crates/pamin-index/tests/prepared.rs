@@ -2,7 +2,8 @@
 //! weights it holds are mapped rather than copied.
 //!
 //! Ignored by default: it needs the `fast` and `accurate` rerankers and the
-//! BGE-M3 embedder, 1.2 GB between them, and writes a copy of each. Run with
+//! `accuracy` profile's embedder, about 1.5 GB between them, and writes a copy
+//! of each. Run with
 //!
 //! ```sh
 //! cargo test -p pamin-index --test prepared -- --ignored --nocapture
@@ -52,7 +53,7 @@ const TEXTS: &[&str] = &[
 ];
 
 #[test]
-#[ignore = "downloads the fast and accurate rerankers and the BGE-M3 embedder"]
+#[ignore = "downloads the fast and accurate rerankers and the default embedder"]
 fn a_prepared_copy_scores_the_same_and_holds_less() {
     if let Ok(model) = std::env::var(ARM) {
         return child(&model, Path::new(&std::env::var(CACHE).expect("the cache")));

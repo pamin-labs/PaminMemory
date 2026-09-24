@@ -2,22 +2,24 @@
 //!
 //! With its weights mapped from a prepared copy (see `crate::prepared`), what
 //! an XLM-R-family model still holds is almost all tokenizer. Loading the
-//! 250,002-piece Unigram vocabulary that BGE-M3 and the `accurate` reranker
-//! both use adds 280 MiB of anonymous memory, and loading it a second time adds
-//! another 280: the `tokenizers` crate builds a trie over every piece, with a
-//! hash map in each of its nodes, and a model holds its own. Against that, a
-//! bare ONNX Runtime session over a prepared copy holds about 12 MiB.
+//! 250,002-piece Unigram vocabulary that both rerankers use adds 280 MiB of
+//! anonymous memory, and loading it a second time adds another 280: the
+//! `tokenizers` crate builds a trie over every piece, with a hash map in each
+//! of its nodes, and a model holds its own. Against that, a bare ONNX Runtime
+//! session over a prepared copy holds about 12 MiB.
 //!
-//! Every model that runs through `crate::encoder` uses that vocabulary. The
-//! `accurate` reranker's `tokenizer.json` describes the same model as
-//! BGE-M3's -- every piece and every score bit for bit, the same
-//! unknown-token id, no byte fallback -- and the `fast`
-//! reranker's differs only in leaving the byte-fallback flag unstated. What
-//! they differ in is around the model: the `accurate` reranker strips trailing
-//! whitespace and replaces a run of spaces with `▁` where the embedder
-//! replaces it with one space. So the model is what is shared, and the
-//! normalizer, pre-tokenizer, post-processor, added tokens, padding and
-//! truncation stay each tokenizer's own.
+//! The `fast` reranker's `tokenizer.json` describes the same model as the
+//! `accurate` one's -- every piece and every score bit for bit, the same
+//! unknown-token id -- and differs only in leaving the byte-fallback flag
+//! unstated. BGE-M3, the embedder before pplx-embed, used it too, and sharing
+//! it with the `accurate` reranker was what this was written for; pplx has a
+//! byte-level BPE vocabulary of its own and shares nothing, so what is left to
+//! share is the two tiers' one vocabulary, in a process asked for both. What
+//! tokenizers over one model differ in is around it -- the `accurate`
+//! reranker strips trailing whitespace and replaces a run of spaces with `▁`
+//! where BGE-M3 replaced it with one space -- so the model is what is shared,
+//! and the normalizer, pre-tokenizer, post-processor, added tokens, padding
+//! and truncation stay each tokenizer's own.
 //!
 //! Sharing it changes no output. A Unigram model segments the text it is
 //! handed as a function of its pieces and their scores; its one piece of
@@ -105,8 +107,8 @@ impl<'de> Deserialize<'de> for Shared {
 /// Only Unigram's, the one this crate's models use. Its parser reads four
 /// fields, ignores any other, takes a missing unknown-token id as none and a
 /// missing `byte_fallback` as false -- and the `fast` reranker's file and the
-/// E5 models' leave `byte_fallback` out where BGE-M3's states it, over the
-/// same 250,002 pieces and scores. The model is then built from this, not
+/// E5 models' leave `byte_fallback` out where the `accurate` reranker's states
+/// it, over the same 250,002 pieces and scores. The model is then built from this, not
 /// from the file, so the key is a digest of exactly what was built. Any other
 /// type is hashed as written, which can only miss a match, never make one.
 fn canonical(mut model: serde_json::Value) -> serde_json::Value {
@@ -354,8 +356,8 @@ mod tests {
             "two tokenizers with the same vocabulary hold two copies of it"
         );
 
-        // The `fast` reranker's file leaves this flag out where BGE-M3's
-        // states its default.
+        // The `fast` reranker's file leaves this flag out where the `accurate`
+        // one's states its default.
         let unstated = String::from_utf8(tokenizer_json("null", scores))
             .expect("utf-8")
             .replace(",\n                    \"byte_fallback\": false", "");

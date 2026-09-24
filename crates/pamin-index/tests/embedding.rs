@@ -112,14 +112,14 @@ fn a_symmetric_model_is_left_alone() {
     assert_eq!(
         embedder.embed_query(text).expect("embed query"),
         embedder.embed_passage(text).expect("embed passage"),
-        "BGE-M3 takes no prefixes; adding them would be a different kind of bug"
+        "pplx takes no prefixes; adding them would be a different kind of bug"
     );
 }
 
 /// Batching has to be free of consequence, on every profile that ships.
 ///
 /// It was asserted on `Profile::Speed` alone, which is `Model::Text`. The
-/// default is `Profile::Accuracy`, which is `Model::Joint` -- a different
+/// default is `Profile::Accuracy`, which is `Model::Pooled` -- a different
 /// branch, and the quantized one -- so the profile the product actually runs
 /// was the one this did not cover. That matters now rather than in principle:
 /// `reindex` embeds in batches of 256 and the cascade embeds one document at a

@@ -12,8 +12,9 @@
 //! vector channel ranked out of the list.
 //!
 //! Stored vectors are float32. Weights are quantized where a quantized export
-//! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
-//! because the model registry publishes no quantized variant for that family.
+//! exists: pplx-embed runs Perplexity's 8-bit export, and the E5 pair runs full
+//! precision because the model registry publishes no quantized variant for
+//! that family.
 
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use serde::{Deserialize, Serialize};
@@ -42,28 +43,25 @@ pub enum Profile {
     Speed,
     /// 768 dimensions, full-precision weights.
     ///
-    /// No longer the middle rung it was named for. The quantized BGE-M3 export
-    /// beats it on retrieval by a factor of two, is half its size in memory,
-    /// and costs nine milliseconds more per query -- so the only reason left
-    /// to choose this is those nine milliseconds. Kept because a project
+    /// No longer the middle rung it was named for. The model `accuracy` ran
+    /// before this one -- BGE-M3's int8 export -- already beat it on retrieval
+    /// by a factor of two at half its memory for nine milliseconds more a
+    /// query, and the one it runs now beats that. Kept because a project
     /// indexed under it should not have to rebuild to keep working.
     Balanced,
-    /// 1024 dimensions, int8 weights, and by a distance the best cross-lingual
-    /// recall of the three. The default.
+    /// 1024 dimensions: Perplexity's pplx-embed-v1-0.6b (MIT), run from its
+    /// published 8-bit export. The default.
     ///
-    /// Run through the joint BGE-M3 export, which produces dense, sparse and
-    /// ColBERT representations in one forward pass. Only the dense one is
-    /// kept. The sparse arm duplicates the two lexical channels already in
-    /// place and is worth 0.2 points of cross-lingual nDCG by its own authors'
-    /// ablation; the ColBERT arm is one 1024-wide vector per token, which for
-    /// a project of seven million documents is terabytes.
+    /// It replaced BGE-M3 (`docs/adr/0001-tech-selection.md`, "pplx-embed-v1-0.6b
+    /// on the shipped path"), the only model surveyed since that beat it on
+    /// every corpus here with the vector channel alone and kept a gain through
+    /// fusion and the reranker. An index built by BGE-M3 is not refused: it is
+    /// served without its vector channel while it is embedded again beside
+    /// itself (see [`Profile::replaces`]).
     ///
-    /// The default because it is not the trade its name implies. Against
-    /// `balanced` it doubles cross-lingual nDCG@10, matches it monolingually,
-    /// occupies 560 MB against 1.1 GB, and costs 35 ms per query against 26.
-    /// The int8 export is what makes all of that true at once; the
-    /// full-precision one is 2.2 GB and was the reason this profile used to be
-    /// described as an order of magnitude more expensive.
+    /// Mean-pooled over the attention mask by the graph itself; no instruction
+    /// on either side, because the model card says it was trained without
+    /// one.
     #[default]
     Accuracy,
 }
@@ -74,7 +72,9 @@ impl Profile {
         match self {
             Self::Speed => EmbeddingModel::MultilingualE5Small,
             Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy => unreachable!("the accuracy profile runs the joint BGE-M3 export"),
+            Self::Accuracy => {
+                unreachable!("the accuracy profile runs through this crate's encoder")
+            }
         }
     }
 
@@ -83,8 +83,8 @@ impl Profile {
     /// E5 is an asymmetric retrieval family: it was trained with `query: ` and
     /// `passage: ` in front of the text, and omitting them degrades recall
     /// without failing. The embedding library does not add them, so we do.
-    /// BGE-M3 uses none, which is why this belongs to the profile rather than
-    /// to the embedder.
+    /// pplx uses none, which is why this belongs to the profile rather than to
+    /// the embedder.
     fn prefixes(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
@@ -114,11 +114,26 @@ impl Profile {
             // so the recorded identity has to change with the encoding.
             Self::Speed => "intfloat/multilingual-e5-small+p1",
             Self::Balanced => "intfloat/multilingual-e5-base+p1",
-            // The quantized export rather than the base model: int8 weights
+            // The export rather than the base model: quantized weights
             // produce vectors close to the full-precision ones and not equal
             // to them, and the recorded identity is what stops two encodings
             // sharing one index.
-            Self::Accuracy => "gpahal/bge-m3-onnx-int8",
+            Self::Accuracy => PPLX.identity,
+        }
+    }
+
+    /// Whether `model` is an identity this profile used to record, so that an
+    /// index built by it is embedded again rather than refused.
+    ///
+    /// Only models this profile ran in an earlier release: a change of model
+    /// the user did not ask for is an upgrade to carry out, and one they did
+    /// ask for -- another profile's index, opened under this one -- is still a
+    /// mistake to report.
+    pub fn replaces(self, model: &str) -> bool {
+        match self {
+            // BGE-M3's int8 export, until pplx replaced it.
+            Self::Accuracy => model == "gpahal/bge-m3-onnx-int8",
+            Self::Speed | Self::Balanced => false,
         }
     }
 
@@ -146,17 +161,15 @@ pub struct Embedder {
 
 /// The loaded model, which is not the same type for every profile.
 ///
-/// BGE-M3 ships as a joint export producing three representations at once,
-/// its int8 weights -- most of why the profile is usable at all -- only in
-/// that export, and its vocabulary shared with the `accurate` reranker's. So
-/// it runs through this crate's own [`Encoder`], which can share that
-/// vocabulary, where the E5 pair run through `fastembed`'s general text type.
+/// pplx runs through this crate's own [`Encoder`], because the output it is
+/// read from is one `fastembed` does not know to read; the E5 pair run
+/// through `fastembed`'s general text type.
 ///
 /// Both boxed. Each is over a kilobyte of session and tokenizer state, and an
 /// unboxed enum is the size of its largest variant everywhere it appears.
 enum Model {
     Text(Box<TextEmbedding>),
-    Joint(Box<Encoder>),
+    Pooled(Box<Encoder>),
 }
 
 impl Embedder {
@@ -173,7 +186,7 @@ impl Embedder {
         let threads = crate::inference::threads();
 
         let model = match profile {
-            Profile::Accuracy => Model::Joint(Box::new(joint(cache_dir)?)),
+            Profile::Accuracy => Model::Pooled(Box::new(pplx(cache_dir)?)),
             _ => {
                 let mut options = TextInitOptions::new(profile.model())
                     .with_cache_dir(cache_dir.to_path_buf())
@@ -259,94 +272,140 @@ impl Embedder {
 
     /// One forward pass, whichever model this profile loaded.
     ///
-    /// The joint export runs one text at a time, and that is a correctness
-    /// choice rather than an oversight. Measured on this export: a text's
-    /// vector changes when anything else shares its batch. Against the same
-    /// text embedded alone, a batch of two returns cosine 0.9816 with a
-    /// shorter neighbour and 0.9859 with a longer one, and the two neighbours
-    /// disagree with each other at 0.9805 -- on 1024 dimensions that is a
-    /// different vector, not a rounding difference. A batch of one is
-    /// identical to a single call, so it is the presence of a neighbour that
-    /// does it, not the batching API.
-    ///
-    /// It is not the tokenization: the tokenizer pads to the batch's
-    /// longest member, so a text that *is* the longest gets byte-identical
-    /// ids and mask either way, and the mask is passed to the session. Only
-    /// the batch dimension differs, so what changes the answer is the export
-    /// or the runtime's INT8 kernels. `speed` and `balanced` are unaffected --
-    /// both return byte-identical vectors batched or alone -- which is why
-    /// this is scoped to the joint model.
-    ///
-    /// What it costs is the batching win on this profile: thirty-two texts
-    /// together take 190 ms against 409 ms one at a time, so `reindex` is
-    /// roughly twice the wall clock here. What it buys is that a document's
-    /// vector does not depend on which other documents happened to be in
-    /// flight beside it -- so `reindex` and the cascade agree, and the same
-    /// corpus written twice indexes to the same thing.
+    /// pplx runs one text at a time. Its vectors do not depend on a batch's
+    /// other members -- a text embedded beside the longest and shortest of 64
+    /// MuSiQue paragraphs agrees with itself alone at cosine 0.9999993 -- so
+    /// this is not the correctness choice it was for the model before it,
+    /// whose int8 export moved a vector to cosine 0.98 when anything shared
+    /// its batch. It is a measured one: 32 paragraphs took 163 s in one batch
+    /// and 58 s one at a time (ONNX Runtime 1.30 in Python, on a shared
+    /// machine), because a batch is padded to its longest member and
+    /// attention pays for the padding. One at a time also keeps
+    /// what `reindex` and the cascade store for a text identical, whichever
+    /// other texts were in flight beside it.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let failed = |error| IndexError::Engine(format!("embedding text: {error}"));
         match &mut self.model {
             Model::Text(model) => model.embed(texts, None).map_err(failed),
-            Model::Joint(model) => texts.iter().map(|text| dense(model, text)).collect(),
+            Model::Pooled(model) => texts.iter().map(|text| pooled(model, text)).collect(),
         }
     }
 }
 
-/// Where BGE-M3's int8 export is published, and which of its files it is.
-const JOINT_REPOSITORY: &str = "gpahal/bge-m3-onnx-int8";
-const JOINT_FILE: &str = "model_quantized.onnx";
-
-/// The longest text BGE-M3 reads, in tokens.
+/// Where the `accuracy` profile's weights come from.
 ///
-/// What `fastembed` truncated it at when it loaded this model, and so what
-/// every vector stored under this profile was made with. A passage past it
-/// embeds as its first 512 tokens; changing it would change the vectors of
-/// exactly those passages and nothing would say so, so it is kept.
-const JOINT_MAX_TOKENS: usize = 512;
+/// One constant, so that fetching the model from somewhere else -- another of
+/// Perplexity's exports, or one this project publishes -- is one edit, and the
+/// identity every stored vector is tagged with changes in the same edit.
+struct Export {
+    /// The model repository on the hub.
+    repository: &'static str,
+    /// The commit read from it. Pinned: an export replaced upstream under the
+    /// same file name would change every vector while the identity stayed, and
+    /// nothing downstream would look wrong.
+    revision: &'static str,
+    /// The graph, and the files it keeps its weights in, which have to be
+    /// beside it before it loads.
+    graph: &'static str,
+    weights: &'static [&'static str],
+    /// Whether the graph's `MatMulNBits` nodes are set to compute in int8
+    /// before it loads (see `crate::nbits`), which an export that states its
+    /// own level does not need.
+    int8_compute: bool,
+    /// What an index built with these weights records. See
+    /// [`Profile::model_id`].
+    identity: &'static str,
+}
 
-/// Loads the joint BGE-M3 export on the CPU, from its prepared copy.
+/// pplx-embed-v1-0.6b, as Perplexity publishes it: the 8-bit export, set to
+/// compute in int8.
 ///
-/// Its int8 export is 570 MB, and loaded from the file the hub serves it is
-/// copied onto the heap whole and its matrix weights packed into a second copy
-/// -- see `crate::prepared`, which writes a copy the runtime maps instead, and
-/// falls back to the file itself when it cannot.
-fn joint(cache_dir: &std::path::Path) -> Result<Encoder> {
-    let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
+/// Of the three exports Perplexity publishes, the only one both close to the
+/// full-precision model and fast enough to embed a query with. Over 400 texts
+/// the full-precision one is the reference; this one agrees with it at cosine
+/// 0.99925 on average, 0.9986 at the lowest, where the 4-bit export agrees at
+/// 0.906 -- a different model, near enough. Computing in int8 costs none of
+/// that and runs a query 5 times faster than the export as published (see
+/// `crate::nbits`).
+const PPLX: Export = Export {
+    repository: "perplexity-ai/pplx-embed-v1-0.6b",
+    revision: "2c4d510dd4a732063c31a0f70193e35067b51fd8",
+    graph: "onnx/model_quantized.onnx",
+    weights: &["onnx/model_quantized.onnx_data"],
+    int8_compute: true,
+    identity: "perplexity-ai/pplx-embed-v1-0.6b@2c4d510d/onnx/model_quantized.onnx+int8",
+};
+
+/// Which of the graph's outputs is the embedding.
+///
+/// The graph returns four: the last hidden state, its mean over the attention
+/// mask, and that mean quantized two ways. The int8 one is the output the
+/// model card documents, `round(127 * tanh(mean))`, and what every figure for
+/// this model was measured on.
+const PPLX_OUTPUT: &str = "pooler_output_int8";
+
+/// The longest text pplx reads here, in tokens.
+///
+/// The model reads 32K. 512 is what every figure for it was measured at, and
+/// what the model it replaced read -- so a passage past it embeds as its first
+/// 512 tokens, as it did before, and changing it would change the vectors of
+/// exactly those passages with nothing to say so.
+const PPLX_MAX_TOKENS: usize = 512;
+
+/// Loads pplx on the CPU, from its prepared copy (see `crate::prepared`).
+fn pplx(cache_dir: &std::path::Path) -> Result<Encoder> {
+    let repository = Repository::pinned(cache_dir, PPLX.repository, PPLX.revision)?;
     let copy = || {
-        let source = repository.get(JOINT_FILE)?;
+        let weights = PPLX
+            .weights
+            .iter()
+            .map(|weights| repository.get(weights))
+            .collect::<Result<Vec<_>>>()?;
+        let mut source = repository.get(PPLX.graph)?;
+        if PPLX.int8_compute {
+            source = crate::nbits::int8_compute(&source, &weights, cache_dir)?;
+        }
         Ok(crate::prepared::prepared(&source, cache_dir))
     };
     Encoder::load(
         copy,
         &repository,
-        JOINT_MAX_TOKENS,
+        PPLX_MAX_TOKENS,
         vec![crate::inference::cpu()],
     )
     .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
 }
 
-/// One text's dense BGE-M3 vector, in one forward pass of its own.
+/// One text's pplx vector, in one forward pass of its own, at unit length.
 ///
-/// The export's first output, as `fastembed` read it: the graph pools and
-/// normalizes the vector itself, so it is used as it comes. The sparse and
-/// ColBERT representations come back from the same pass and are dropped. They
-/// are not free -- the pass computes them -- but neither is wanted, and no
-/// cheaper export of this model's int8 weights exists.
-fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
+/// The documented output is int8 and is compared by cosine, so it is scaled
+/// to unit length here; the vector channel's distance is the cosine, and a
+/// stored vector at unit length is what every other profile stores.
+fn pooled(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
     let outputs = model.run(vec![text])?;
-    let first = outputs
-        .values()
-        .next()
-        .ok_or_else(|| IndexError::Engine("the joint export returned nothing".into()))?;
-    let (shape, values) = first
-        .try_extract_tensor::<f32>()
-        .map_err(|error| IndexError::Engine(format!("reading the dense vector: {error}")))?;
+    let output = outputs
+        .get(PPLX_OUTPUT)
+        .ok_or_else(|| IndexError::Engine(format!("the pplx export has no {PPLX_OUTPUT}")))?;
+    let (shape, values) = output
+        .try_extract_tensor::<i8>()
+        .map_err(|error| IndexError::Engine(format!("reading the pooled vector: {error}")))?;
     match **shape {
-        [1, width] if width > 0 => Ok(values.to_vec()),
+        [1, width] if width > 0 => Ok(unit(values.iter().map(|value| f32::from(*value)).collect())),
         _ => Err(IndexError::Engine(format!(
-            "a dense output of shape {shape:?} for one text"
+            "an output of shape {shape:?} for one text"
         ))),
     }
+}
+
+/// `vector` scaled to unit length, or as it is when it has none.
+fn unit(mut vector: Vec<f32>) -> Vec<f32> {
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in &mut vector {
+            *value /= norm;
+        }
+    }
+    vector
 }
 
 /// Query vectors already computed, oldest first.
@@ -471,6 +530,28 @@ mod tests {
                 assert_ne!(left.model_id(), right.model_id());
             }
         }
+    }
+
+    /// The one model `accuracy` has replaced is an upgrade and every other is
+    /// a mistake, including another profile's current one.
+    #[test]
+    fn only_a_replaced_model_is_embedded_again() {
+        assert!(Profile::Accuracy.replaces("gpahal/bge-m3-onnx-int8"));
+        for profile in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
+            assert!(!profile.replaces(profile.model_id()));
+            for other in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
+                assert!(!profile.replaces(other.model_id()));
+            }
+        }
+        assert!(!Profile::Speed.replaces("gpahal/bge-m3-onnx-int8"));
+    }
+
+    /// The vector pplx stores is its int8 output at unit length, pointing the
+    /// same way.
+    #[test]
+    fn a_pooled_vector_is_scaled_to_unit_length() {
+        assert_eq!(unit(vec![3.0, -4.0, 0.0]), vec![0.6, -0.8, 0.0]);
+        assert_eq!(unit(vec![0.0; 3]), vec![0.0; 3], "nothing to scale");
     }
 
     #[test]

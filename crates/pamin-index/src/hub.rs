@@ -24,6 +24,23 @@ impl Repository {
     /// not -- a mirror set for one and not the other, or two copies of the
     /// cache. Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
+        Self::at(cache_dir, hf_hub::Repo::model(name.to_string()))
+    }
+
+    /// Opens `name` as it was at `revision`, cached under `cache_dir` the same
+    /// way.
+    pub(crate) fn pinned(cache_dir: &Path, name: &str, revision: &str) -> Result<Self> {
+        Self::at(
+            cache_dir,
+            hf_hub::Repo::with_revision(
+                name.to_string(),
+                hf_hub::RepoType::Model,
+                revision.to_string(),
+            ),
+        )
+    }
+
+    fn at(cache_dir: &Path, repo: hf_hub::Repo) -> Result<Self> {
         let cache_dir = std::env::var_os("HF_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| cache_dir.to_path_buf());
@@ -33,14 +50,12 @@ impl Repository {
         if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
             builder = builder.with_endpoint(endpoint);
         }
+        let name = repo.url();
         let repo = builder
             .build()
             .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
-            .model(name.to_string());
-        Ok(Self {
-            repo,
-            name: name.to_string(),
-        })
+            .repo(repo);
+        Ok(Self { repo, name })
     }
 
     /// The local path of one of the repository's files, downloading it first
