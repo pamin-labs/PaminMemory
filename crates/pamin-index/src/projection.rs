@@ -10,7 +10,7 @@
 //! list, weighting its members twice, and the per-channel ranks every result has
 //! to report would already be gone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
@@ -1148,25 +1148,22 @@ impl ProjectionIndex {
 
     /// The documents stored under these topics, keyed by the topic each is.
     ///
-    /// The one way anything reads a document back, so a rebuild lending its
-    /// vectors and a reshape copying whole documents cannot come to disagree
-    /// about what a stored document is. The text comes from the n-gram field,
-    /// which holds the content verbatim; the segmented one is derived from it.
-    ///
-    /// Keyed fetches rather than the engine's document iterator, which reads
-    /// faster and saves nothing a rebuild can see: a pass over MIRACL's
-    /// 131,924 documents takes 1.5 s this way and 0.3 s through the iterator,
-    /// with the same resident set, and a rebuild of XQuAD-R's 13,014 takes
-    /// 30 s of which these reads are about 1%. The iterator would also seal a
-    /// writable collection's open segment each time it was made. ADR 0001.
-    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Doc>> {
+    /// How a reshape reads the index it is copying, and it has to be keyed:
+    /// it reads a served index that goes on taking writes, a batch at a time
+    /// under the owner's lock, and afterwards reads again exactly the topics
+    /// written meanwhile. The engine's document iterator, which a rebuild
+    /// lends through (see [`Previous`]), would seal a writable collection's
+    /// open segment each time one was made and block its `optimize` while
+    /// open. The text comes from the n-gram field, which holds the content
+    /// verbatim; the segmented one is derived from it.
+    fn fetch(&self, topics: &[TopicId]) -> Result<HashMap<TopicId, Doc>> {
         let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
         let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
             for doc in self
                 .collection
-                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), vectors)?
+                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), true)?
             {
                 if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
                     stored.insert(topic, doc);
@@ -1326,36 +1323,100 @@ impl Previous {
         Ok(Some(Self { index, dir: aside }))
     }
 
-    /// For each topic, its stored vector if the text stored with it is
-    /// exactly `content`, and `None` otherwise.
-    pub fn vectors(&self, wanted: &[(TopicId, &str)]) -> Result<Vec<Option<Vec<f32>>>> {
-        self.lend(wanted, true)
+    /// How many of these topics [`lend`](Self::lend) would supply, without
+    /// reading a vector.
+    ///
+    /// `wanted` maps each topic to the text the rebuild will write for it.
+    pub fn lends(&self, wanted: &HashMap<TopicId, &str>) -> Result<usize> {
+        let mut lendable = 0;
+        self.each(wanted, false, |_, _| {
+            lendable += 1;
+            Ok(())
+        })?;
+        Ok(lendable)
     }
 
-    /// How many of these topics [`vectors`](Self::vectors) would supply,
-    /// without reading a vector.
-    pub fn lends(&self, wanted: &[(TopicId, &str)]) -> Result<usize> {
-        Ok(self.lend(wanted, false)?.iter().flatten().count())
+    /// Hands `take` every document this index can lend, `batch` at a time,
+    /// as the topic, the text wanted for it and its stored vector; returns
+    /// the topics it lent.
+    ///
+    /// A topic is lent when this index holds it with exactly the text in
+    /// `wanted`; everything else is the caller's to embed. In the order this
+    /// index holds its documents rather than the caller's, because that is
+    /// the order they are read in: one pass over the collection rather than a
+    /// keyed fetch per batch. Over MIRACL's 131,924 documents a pass takes
+    /// 0.28 s this way against 1.46-1.59 s of keyed fetches, with the same
+    /// resident set and identical vectors and text (ADR 0001).
+    pub fn lend(
+        &self,
+        wanted: &HashMap<TopicId, &str>,
+        batch: usize,
+        mut take: impl FnMut(&[(TopicId, &str, &[f32])]) -> Result<()>,
+    ) -> Result<HashSet<TopicId>> {
+        let mut lent = HashSet::new();
+        let mut pending: Vec<(TopicId, &str, Vec<f32>)> = Vec::with_capacity(batch);
+        let mut hand_over = |pending: &mut Vec<(TopicId, &str, Vec<f32>)>| {
+            let documents: Vec<(TopicId, &str, &[f32])> = pending
+                .iter()
+                .map(|(topic, content, vector)| (*topic, *content, vector.as_slice()))
+                .collect();
+            take(&documents)?;
+            pending.clear();
+            Ok::<_, IndexError>(())
+        };
+        self.each(wanted, true, |topic, doc| {
+            // The vector field is not nullable and every write here carries
+            // one, so a document without it is an engine fault -- and the
+            // engine's iterator fails before handing one over anyway.
+            let vector = doc.get_vector_f32(FIELD_VECTOR)?.ok_or_else(|| {
+                IndexError::Engine(format!("the document for topic {topic} has no vector"))
+            })?;
+            lent.insert(topic);
+            pending.push((topic, wanted[&topic], vector));
+            if pending.len() == batch {
+                hand_over(&mut pending)?;
+            }
+            Ok(())
+        })?;
+        if !pending.is_empty() {
+            hand_over(&mut pending)?;
+        }
+        Ok(lent)
     }
 
-    fn lend(&self, wanted: &[(TopicId, &str)], vectors: bool) -> Result<Vec<Option<Vec<f32>>>> {
-        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
-        let stored = self.index.fetch(&topics, vectors)?;
-        wanted
-            .iter()
-            .map(|(topic, content)| {
-                let Some(doc) = stored.get(topic) else {
-                    return Ok(None);
-                };
-                if doc.get_string(FIELD_NGRAM)?.as_deref() != Some(*content) {
-                    return Ok(None);
-                }
-                if !vectors {
-                    return Ok(Some(Vec::new()));
-                }
-                Ok(doc.get_vector_f32(FIELD_VECTOR)?)
-            })
-            .collect()
+    /// Calls `visit` for every document this index holds with exactly the
+    /// text `wanted` gives its topic.
+    ///
+    /// Through the engine's document iterator, which reads a snapshot and has
+    /// three constraints this meets by construction: made on a writable
+    /// collection it seals the segment being written, which this index does
+    /// not have because it was opened read-only; nothing can `optimize` a
+    /// collection while one is open, and nothing optimizes a set-aside index;
+    /// and it fails on a document without a vector when vectors are asked
+    /// for, which the schema does not allow.
+    fn each(
+        &self,
+        wanted: &HashMap<TopicId, &str>,
+        vectors: bool,
+        mut visit: impl FnMut(TopicId, Doc) -> Result<()>,
+    ) -> Result<()> {
+        let index = &self.index;
+        for doc in index
+            .collection
+            .iter_with_options(Some(&[FIELD_NGRAM]), vectors)?
+        {
+            let doc = doc?;
+            let Some(topic) = doc.get_pk().and_then(|key| index.keys.topic(key)) else {
+                continue;
+            };
+            let Some(content) = wanted.get(&topic) else {
+                continue;
+            };
+            if doc.get_string(FIELD_NGRAM)?.as_deref() == Some(*content) {
+                visit(topic, doc)?;
+            }
+        }
+        Ok(())
     }
 
     /// Deletes the set-aside index, once the rebuild no longer needs it.
@@ -1419,7 +1480,7 @@ impl Projection for ProjectionIndex {
     /// A document without its text or its vector is refused rather than read
     /// as absent: a copy that took it for absent would drop it without a word.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
-        let stored = self.fetch(topics, true)?;
+        let stored = self.fetch(topics)?;
         topics
             .iter()
             .map(|topic| {

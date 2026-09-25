@@ -1880,20 +1880,16 @@ impl Engine {
         };
 
         let reused = off_the_runtime(|| {
-            fn pairs(batch: &[TopicState]) -> Vec<(TopicId, &str)> {
-                batch
-                    .iter()
-                    .map(|state| (state.topic_id, state.content.as_str()))
-                    .collect()
-            }
+            let wanted: std::collections::HashMap<TopicId, &str> = states
+                .iter()
+                .map(|state| (state.topic_id, state.content.as_str()))
+                .collect();
             // Counted before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
-            let mut lent = 0;
-            if let Some(previous) = &previous {
-                for batch in states.chunks(REINDEX_BATCH) {
-                    lent += previous.lends(&pairs(batch))?;
-                }
-            }
+            let lendable = match &previous {
+                Some(previous) => previous.lends(&wanted)?,
+                None => 0,
+            };
 
             // Both locks, in the order every other caller takes them, and held
             // for the whole rebuild. Taking the index first here would invert
@@ -1902,55 +1898,45 @@ impl Engine {
             // and wanting the index. Holding both throughout also matches what
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
-            let mut embedder = if lent < states.len() {
+            let mut embedder = if lendable < states.len() {
                 Some(self.embedding()?)
             } else {
                 None
             };
             let index = self.index();
 
-            for (batch, batch_passages) in states
-                .chunks(REINDEX_BATCH)
-                .zip(passages.chunks(REINDEX_BATCH))
-            {
-                let mut vectors = match &previous {
-                    Some(previous) => previous.vectors(&pairs(batch))?,
-                    None => vec![None; batch.len()],
-                };
+            // What the old index holds first, in one pass over it, then
+            // whatever it could not supply.
+            let lent = match &previous {
+                Some(previous) => previous.lend(&wanted, REINDEX_BATCH, |documents| {
+                    index.upsert_batch(documents)
+                })?,
+                None => std::collections::HashSet::new(),
+            };
+            let missing: Vec<(&TopicState, &str)> = states
+                .iter()
+                .zip(&passages)
+                .filter(|(state, _)| !lent.contains(&state.topic_id))
+                .map(|(state, passage)| (state, passage.as_str()))
+                .collect();
 
-                // One forward pass over what the old index could not supply,
-                // rather than one per state. Measured on the smallest profile,
-                // thirty-two texts together take 190 ms against 409 ms one at
-                // a time -- the model is the same work either way, and what
-                // the batch saves is everything around it.
-                let missing: Vec<usize> = (0..batch.len())
-                    .filter(|at| vectors[*at].is_none())
-                    .collect();
-                if !missing.is_empty() {
-                    let texts: Vec<&str> = missing
-                        .iter()
-                        .map(|at| batch_passages[*at].as_str())
-                        .collect();
-                    let embedder = embedder
-                        .as_mut()
-                        .expect("the model is loaded whenever a vector is missing");
-                    for (at, embedding) in missing.iter().zip(embedder.embed_passages(&texts)?) {
-                        vectors[*at] = Some(embedding);
-                    }
-                }
-
+            // One forward pass per batch rather than one per state. Measured
+            // on the smallest profile, thirty-two texts together take 190 ms
+            // against 409 ms one at a time -- the model is the same work
+            // either way, and what the batch saves is everything around it.
+            for batch in missing.chunks(REINDEX_BATCH) {
+                let texts: Vec<&str> = batch.iter().map(|(_, passage)| *passage).collect();
+                let embeddings = embedder
+                    .as_mut()
+                    .expect("the model is loaded whenever a vector is missing")
+                    .embed_passages(&texts)?;
                 let documents: Vec<_> = batch
                     .iter()
-                    .zip(&vectors)
-                    .map(|(state, embedding)| {
-                        (
-                            state.topic_id,
-                            state.content.as_str(),
-                            embedding.as_deref().expect("every vector is filled above"),
-                        )
+                    .zip(&embeddings)
+                    .map(|((state, _), embedding)| {
+                        (state.topic_id, state.content.as_str(), embedding.as_slice())
                     })
                     .collect();
-
                 index.upsert_batch(&documents)?;
             }
             index.flush()?;
@@ -1962,7 +1948,7 @@ impl Engine {
             if let Some(previous) = previous {
                 previous.discard()?;
             }
-            Ok::<_, pamin_index::IndexError>(lent)
+            Ok::<_, pamin_index::IndexError>(lent.len())
         })?;
 
         Ok(Rebuilt {
