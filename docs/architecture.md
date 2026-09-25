@@ -83,7 +83,8 @@ PostgreSQL is bundled rather than something you install. A default install
 needs no API key, and makes no network call at query time once each model has
 been fetched: on its first use, and again after an upgrade of the inference
 runtime or a move to another CPU, which needs a new mapped copy written from
-the model's download (see [cli.md](cli.md)).
+the model's download. Going unused alone never removes the copy a model loads
+from (see [cli.md](cli.md)).
 
 ### Crate layout
 
