@@ -832,6 +832,26 @@ an oracle's saving at best. Accuracy is the axis this project will not trade,
 so every query is still reranked; the learned route is a candidate for the
 `speed` profile, not the default.
 
+**Every latency table on this page was taken while idle inference threads
+spun, and they no longer do.** ONNX Runtime lets an intra-op thread that runs
+out of work spin before it sleeps; the embedder and the reranker each own a
+pool of one thread per core, so on a busy machine the spinning threads hold
+cores the working ones need. Turned off, through `pamin serve` and `pamin
+search` at the defaults on one hundred queries of the own corpus and an
+XQuAD-R subset, with rankings and scores bit-identical:
+
+| | ambient load (2.5 to 13) | two busy loops beside the server |
+| --- | --- | --- |
+| search time, off / on (geometric mean of per-query ratios) | 1.033, `p = 0.068` | **0.754**, `p = 0.0001` |
+| eight concurrent callers, throughput off / on | 1.17 | 1.13 |
+
+The latency tables on this page were taken with spinning on, several of them
+on four cores at load averages of 6 to 9, so some of what they report is the
+spinning rather than the search, and their milliseconds are likely high by an
+amount this measurement cannot say per row. They have not been re-taken; the paired ratios in them compare arms
+that spun alike, and are what to read. The rule and the method are in the
+ADR, under the thread settings.
+
 **Throughput, and where it stops.** The same sweep at one, eight and
 thirty-two concurrent callers, taken while `fast` was the default:
 
