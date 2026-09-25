@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
 use crate::session::Session;
-use pamin_engine::{Engine, Owed};
+use pamin_engine::Owed;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -19,9 +19,8 @@ pub struct Args {
 
     /// Record the memory without waiting for the index to catch up.
     ///
-    /// The work is queued rather than skipped, and `pamin cascade drain` runs
-    /// it. Importing in bulk is what this is for: one rebuild of the vector
-    /// graph at the end instead of the queue being drained after every write.
+    /// The work is queued rather than skipped. The server runs it once no
+    /// request is being answered, and `pamin cascade drain` runs it at once.
     #[arg(long)]
     pub defer: bool,
 
@@ -63,9 +62,8 @@ pub async fn execute(
     let validity = args.validity.parse()?;
 
     // Standard input is read by the front end, before dispatch, because the
-    // server has none -- `main::fill_from_stdin`. So this arm is not the
-    // fallback it reads as: on the in-process path the content is already
-    // here, and on the server path reading standard input would block the
+    // server has none -- `main::fill_from_stdin`. So this is not a fallback:
+    // the content is already here, and reading standard input would block the
     // server on a descriptor nobody is going to write to.
     let content = args
         .content
@@ -80,7 +78,7 @@ pub async fn execute(
     // unreachable the memory is still recorded and the work is still owed.
     //
     // `--defer` is that separation made visible. The memory is committed either
-    // way; what changes is whether this process is the one that pays for the
+    // way; what changes is whether this write is the one that pays for the
     // index -- and, past the ceiling, it is, because deferring is the only way
     // the queue grows without bound.
     //
@@ -88,8 +86,10 @@ pub async fn execute(
     // both was the gap. What the queue owed when this write looked at it is
     // about the writer's rate and stays true whatever is done about it; what it
     // owes on the way out is about whether this memory is searchable yet.
-    let pays_for_upkeep = pays_for_upkeep(&engine);
-
+    //
+    // Either drain stops at what the memory needs. The index's upkeep is left
+    // to the server, which is still here after the write returns and runs it
+    // between requests.
     let (behind, owed) = if args.defer {
         // Counted only as far as the bound it is compared with.
         let behind = pamin_store::jobs::pending_up_to(
@@ -101,11 +101,11 @@ pub async fn execute(
         let owed = if pamin_core::may_defer(behind) {
             behind
         } else {
-            still_owed(engine.drain_cascade(pays_for_upkeep).await?)
+            still_owed(engine.drain_cascade(Owed::WhatAMemoryNeeds).await?)
         };
         (behind, owed)
     } else {
-        let owed = still_owed(engine.drain_cascade(pays_for_upkeep).await?);
+        let owed = still_owed(engine.drain_cascade(Owed::WhatAMemoryNeeds).await?);
         (owed, owed)
     };
 
@@ -138,19 +138,6 @@ fn still_owed(drained: pamin_engine::Drained) -> i64 {
     // outrun the queue's. Both readings mean the same thing here -- there is
     // nothing left that a search would miss.
     (drained.pending - drained.applied as i64).max(0)
-}
-
-/// Who pays for the index's upkeep after this write.
-///
-/// A resident server runs it on its own time, so a write leaves it there rather
-/// than waiting it out. Without one there is nobody else, and the writer pays
-/// for what it caused.
-pub(crate) fn pays_for_upkeep(engine: &Engine) -> Owed {
-    if engine.database.is_resident() {
-        Owed::WhatAMemoryNeeds
-    } else {
-        Owed::Everything
-    }
 }
 
 /// Renders the result for a person reading it.

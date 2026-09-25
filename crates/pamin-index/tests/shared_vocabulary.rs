@@ -52,9 +52,11 @@ const EMBEDDER: &str = "gpahal/bge-m3-onnx-int8";
 const TIERS: &[(Rerank, &str)] = &[(Rerank::Fast, "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")];
 const ACCURATE: &str = "onnx-community/bge-reranker-v2-m3-ONNX";
 
-/// What `Reranker::rank` batched by, and truncated at, before this change,
+/// How `Reranker::rank` groups pairs -- at most this many padded tokens and
+/// this many pairs a forward pass -- what it truncated at before this change,
 /// and what `Embedder::load` asked `fastembed` to truncate BGE-M3 at.
-const BATCH: usize = 8;
+const BATCH_TOKENS: usize = 512;
+const BATCH: usize = 4;
 const RERANK_TOKENS: usize = 256;
 const EMBED_TOKENS: usize = 512;
 
@@ -259,7 +261,11 @@ fn the_encoder_matches_fastembed_and_holds_one_vocabulary() {
 
 /// The child: one arm, its outputs as bits, its memory and its timings.
 fn child(arm: &str, cache: &Path) {
-    for tuned in ["PAMIN_RERANK_BATCH", "PAMIN_RERANK_MAX_TOKENS"] {
+    for tuned in [
+        "PAMIN_RERANK_BATCH",
+        "PAMIN_RERANK_BATCH_TOKENS",
+        "PAMIN_RERANK_MAX_TOKENS",
+    ] {
         assert!(
             std::env::var_os(tuned).is_none(),
             "{tuned} is set, so the product is not batching or truncating as the old arm does"
@@ -424,18 +430,41 @@ type Embed = Box<dyn FnMut(&[&str]) -> Vec<f32>>;
 /// An arm's reranker: a query and candidates in, a score per candidate out.
 type Rank = Box<dyn FnMut(&str, &[&str]) -> Vec<f32>>;
 
-/// `Reranker::rank` as it was: candidates sorted by characters, scored by
-/// `fastembed` in batches of eight, and each score put back at its position.
+/// `Reranker::rank`'s grouping, scored by `fastembed`: pairs sorted by their
+/// length in tokens and then by position, each batch taking the next pair
+/// while it stays within `BATCH_TOKENS` padded tokens and `BATCH` pairs, and
+/// each score put back at its position. A quantized model scores a pair
+/// differently depending on what it was padded alongside, so the two arms
+/// can only be bit-identical if they group alike.
 fn old_rank(model: &mut TextRerank, query: &str, documents: &[&str]) -> Vec<f32> {
+    let lengths: Vec<usize> = documents
+        .iter()
+        .map(|document| {
+            let encoding = model.tokenizer.encode((query, *document), true);
+            encoding.expect("tokenize").len()
+        })
+        .collect();
     let mut order: Vec<usize> = (0..documents.len()).collect();
-    order.sort_by_key(|position| documents[*position].chars().count());
-    let batch: Vec<&str> = order.iter().map(|position| documents[*position]).collect();
+    order.sort_by_key(|position| (lengths[*position], *position));
     let mut scores = vec![f32::NAN; documents.len()];
-    for result in model
-        .rerank(query, &batch, false, Some(BATCH))
-        .expect("rerank")
-    {
-        scores[order[result.index]] = result.score;
+    let mut start = 0;
+    while start < order.len() {
+        let mut size = 1;
+        while start + size < order.len()
+            && size < BATCH
+            && (size + 1) * lengths[order[start + size]] <= BATCH_TOKENS
+        {
+            size += 1;
+        }
+        let group = &order[start..start + size];
+        let batch: Vec<&str> = group.iter().map(|position| documents[*position]).collect();
+        for result in model
+            .rerank(query, &batch, false, Some(size))
+            .expect("rerank")
+        {
+            scores[group[result.index]] = result.score;
+        }
+        start += size;
     }
     scores
 }
@@ -591,8 +620,8 @@ fn link_models(cache: &Path) {
     let Ok(existing) = std::env::var("PAMIN_TEST_MODELS") else {
         return;
     };
-    let wanted = [EMBEDDER, ACCURATE, TIERS[0].1, TIERS[1].1]
-        .map(|repository| format!("models--{}", repository.replace('/', "--")));
+    let wanted =
+        [EMBEDDER, ACCURATE].map(|repository| format!("models--{}", repository.replace('/', "--")));
     for name in wanted {
         let path = Path::new(&existing).join(&name);
         if path.exists() {

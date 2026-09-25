@@ -6,13 +6,13 @@
 //! request, and the difference between those two is the whole reason there is
 //! a server.
 //!
-//! Both callers build one of these. A server builds one and keeps it; a command
-//! running without a server builds one, uses it, and drops it, which is exactly
-//! what it did before. The commands cannot tell the difference, which is what
-//! keeps the two paths honest about producing the same answers.
+//! The server builds one of these and keeps it. It is the only thing that
+//! does: every command reaches the workspace through the server, so there is
+//! no second path to keep producing the same answers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use pamin_core::ProjectId;
@@ -46,6 +46,20 @@ pub struct Session {
     /// The reranking tier a warm-up loads: the one the last search asked for,
     /// or before any has, what `pamin search` would pass by default.
     tier: std::sync::Mutex<Rerank>,
+    /// How many requests are being answered right now.
+    ///
+    /// What the server's upkeep asks before it spends a model on work nobody
+    /// is waiting for. See [`Session::serving`].
+    serving: AtomicUsize,
+}
+
+/// A request being answered, for as long as this is held.
+pub struct Serving<'a>(&'a AtomicUsize);
+
+impl Drop for Serving<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// How many indexes stay open at once.
@@ -121,20 +135,38 @@ fn parse_open_indexes(raw: Option<&str>) -> usize {
 impl Session {
     /// Connects, migrates, and holds the result.
     ///
-    /// How many connections it may hold is the caller's to say, because that
-    /// is a question about the process rather than about the workspace: a
-    /// server is the only one talking to the cluster, and a command is one of
-    /// however many an agent is running.
-    pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
+    /// With a resident's pool: the server holding this is the only process
+    /// the CLI talks to the cluster from.
+    pub async fn open(workspace: &Workspace) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, connections).await?,
+            database: Database::open(workspace, Connections::Resident).await?,
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),
             warming: std::sync::Mutex::default(),
             tier: std::sync::Mutex::new(default_tier()),
+            serving: AtomicUsize::new(0),
         })
+    }
+
+    /// Counts a request as being answered until the result is dropped.
+    ///
+    /// A guard rather than a pair of calls, so a request that fails or panics
+    /// half way is still uncounted -- a count left one too high would stop
+    /// the upkeep catching up for as long as the server lives.
+    pub fn serving(&self) -> Serving<'_> {
+        self.serving.fetch_add(1, Ordering::SeqCst);
+        Serving(&self.serving)
+    }
+
+    /// Whether no request is being answered.
+    ///
+    /// Asked between rounds of work the server does on nobody's behalf. A
+    /// request that arrives just after this answers yes waits for at most the
+    /// round that started, which is what the round's size is chosen against.
+    pub fn is_quiet(&self) -> bool {
+        self.serving.load(Ordering::SeqCst) == 0
     }
 
     /// Opens this project's index and loads its models in the background, if
@@ -293,7 +325,9 @@ impl Session {
     /// upkeep is owed by whatever has been written, and what has been written
     /// recently is what is open. A project evicted before its upkeep ran keeps
     /// the job -- nothing is lost, it waits until the project is wanted again,
-    /// which is also when it starts mattering again.
+    /// which is also when it starts mattering again. That is maintenance
+    /// only: work that changes what a search finds is caught up whether the
+    /// project is open or not, which the server finds from the queue instead.
     /// Handed out one at a time rather than all at once, because holding every
     /// engine for the length of a sweep makes all of them look busy and stops
     /// eviction finding anything to close while it runs.
@@ -307,6 +341,23 @@ impl Session {
     /// what reopens a project nobody asked for.
     pub fn opened_engine(&self, key: &(String, Profile)) -> Option<Arc<Engine>> {
         self.engines.opened(key)
+    }
+
+    /// One open engine to do owed work on, if nobody else is inside it.
+    ///
+    /// [`Session::opened_engine`], except that it counts as a use: work owed
+    /// is a reason to keep the index, so the idle sweep waits for the work to
+    /// be done and then an idle window, as it would after a request.
+    pub fn opened_engine_for_work(&self, key: &(String, Profile)) -> Option<Arc<Engine>> {
+        self.engines.opened_for_work(key)
+    }
+
+    /// Whether this project and profile has a place here, open or opening.
+    ///
+    /// Not a use, like [`Session::opened_engine`]: asking must not keep a
+    /// project open that nothing is using.
+    pub fn holds(&self, key: &(String, Profile)) -> bool {
+        self.engines.holds(key)
     }
 
     /// An engine with this project's index discarded first, for a rebuild.

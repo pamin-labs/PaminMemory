@@ -15,7 +15,7 @@ mod session;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pamin_index::Profile;
-use pamin_store::{Connections, Workspace};
+use pamin_store::Workspace;
 
 #[derive(Parser)]
 #[command(
@@ -113,18 +113,10 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // Before anything opens an index, and for every command rather than for
-    // `serve` alone -- which is where this used to be, and the reason it moved.
-    // `PAMIN_NO_SERVER` runs the whole of a command in this process, and a
-    // command holding the descriptors a large index needs under the 1,024 a
-    // Linux process starts with does not degrade, it fails.
-    match pamin_index::raise_open_file_limit() {
-        Ok((before, after)) if after > before => {
-            tracing::info!(before, after, "raised the open-file limit")
-        }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
-    }
+    // Before anything else, so a caller still setting it is told at once
+    // rather than finding its commands going through the server it set this
+    // to avoid.
+    refuse_removed_settings()?;
 
     let cli = Cli::parse();
     let workspace = match &cli.home {
@@ -132,11 +124,24 @@ async fn main() -> Result<()> {
         None => Workspace::discover()?,
     };
     let format = output::Format::from_flags(cli.json, cli.pretty);
-    let profile = Profile::parse(&cli.profile)
+    // Checked here although the server parses it again, so that a misspelled
+    // profile is refused before a server is started for it.
+    Profile::parse(&cli.profile)
         .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
 
     // `serve` is the server, so it never goes through one.
     if let Command::Serve = cli.command {
+        // Before anything opens an index. The server is the only process the
+        // CLI opens one in, and a process holding the descriptors a large
+        // index needs under the 1,024 a Linux process starts with does not
+        // degrade, it fails.
+        match pamin_index::raise_open_file_limit() {
+            Ok((before, after)) if after > before => {
+                tracing::info!(before, after, "raised the open-file limit")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
+        }
         return server::run(&workspace).await;
     }
 
@@ -174,23 +179,46 @@ async fn main() -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
     }
 
-    if client::wanted() {
-        let request = protocol::Request {
-            version: protocol::version(),
-            project: project.clone(),
-            profile: cli.profile.clone(),
-            call,
-        };
-        if let Some(value) = client::ask(&workspace, &request).await? {
-            return render(&request.call, &value, format);
-        }
-        // Only `stop` reaches here: there was no server, so there is nothing to
-        // ask, and the database still needs stopping.
-        return run_here(&workspace, &project, profile, request.call, format).await;
+    let request = protocol::Request {
+        version: protocol::version(),
+        project,
+        profile: cli.profile.clone(),
+        call,
+    };
+    if let Some(value) = client::ask(&workspace, &request).await? {
+        return render(&request.call, &value, format);
     }
 
-    run_here(&workspace, &project, profile, call, format).await
+    // Only `stop` reaches here: there was no server, so there is nothing to
+    // ask, and the database still needs stopping. Without opening a session,
+    // because opening one starts the database.
+    let result = command::stop::execute(&workspace).await?;
+    format.emit(&result, || command::stop::render(&result));
+    Ok(())
 }
+
+/// Refuses to run with a setting that no longer does anything.
+///
+/// `PAMIN_NO_SERVER` ran a command in the calling process rather than the
+/// workspace's server, and nothing reads it now: every command goes through
+/// the server. Ignoring it would be silent in exactly the case it was set
+/// for -- somebody debugging the server, or a test wanting one process to
+/// reason about -- who would then be reasoning about a process that is not
+/// the one they asked for. Whatever it is set to, including a value that
+/// used to mean "use the server": it cannot be honoured either way, and
+/// the fix is the same.
+fn refuse_removed_settings() -> Result<()> {
+    if std::env::var_os(NO_SERVER).is_some() {
+        anyhow::bail!(
+            "{NO_SERVER} was removed: every command now goes through the workspace's \
+             server, and none can run in the calling process. Unset it to continue."
+        );
+    }
+    Ok(())
+}
+
+/// The removed setting [`refuse_removed_settings`] turns away.
+const NO_SERVER: &str = "PAMIN_NO_SERVER";
 
 /// Reads standard input into the one argument that takes it.
 fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {
@@ -203,79 +231,6 @@ fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {
             Some(std::io::read_to_string(std::io::stdin()).context("reading content from stdin")?);
     }
     Ok(protocol::Call::Write(args))
-}
-
-/// Runs a call in this process, which is what happens without a server.
-async fn run_here(
-    workspace: &Workspace,
-    project: &str,
-    profile: Profile,
-    call: protocol::Call,
-    format: output::Format,
-) -> Result<()> {
-    // Before the session, because opening one starts the database, and this is
-    // the command that stops it. It is also the one call that reaches here
-    // after a client has already looked for a server and found none.
-    if let protocol::Call::Stop = call {
-        let result = command::stop::execute(workspace).await?;
-        format.emit(&result, || command::stop::render(&result));
-        return Ok(());
-    }
-
-    let session = session::Session::open(workspace, Connections::PerCommand).await?;
-
-    match call {
-        protocol::Call::Stop => unreachable!("handled above"),
-        protocol::Call::Init => {
-            let result = command::init::execute(&session, project).await?;
-            format.emit(&result, || command::init::render(&result));
-        }
-        protocol::Call::Write(args) => {
-            let result = command::write::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::write::render(&result));
-        }
-        protocol::Call::Import(args) => {
-            let result = command::import::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::import::render(&result));
-        }
-        protocol::Call::Read(args) => {
-            let result = command::read::execute(&session, project, args).await?;
-            format.emit(&result, || command::read::render(&result));
-        }
-        protocol::Call::Search(args) => {
-            let results = command::search::execute(&session, project, profile, args).await?;
-            format.emit(&results, || command::search::render(&results));
-        }
-        protocol::Call::Grep(args) => {
-            let result = command::grep::execute(&session, project, args).await?;
-            format.emit(&result, || command::grep::render(&result));
-        }
-        protocol::Call::Link(args) => {
-            let result = command::link::execute(&session, project, args).await?;
-            format.emit(&result, || command::link::render(&result));
-        }
-        protocol::Call::Unlink(args) => {
-            let result = command::unlink::execute(&session, project, args).await?;
-            format.emit(&result, || command::unlink::render(&result));
-        }
-        protocol::Call::Neighbors(args) => {
-            let result = command::neighbors::execute(&session, project, args).await?;
-            format.emit(&result, || command::neighbors::render(&result));
-        }
-        protocol::Call::Topics(args) => {
-            let result = command::topics::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::topics::render(&result));
-        }
-        protocol::Call::Reindex(args) => {
-            let result = command::reindex::execute(&session, project, profile, args).await?;
-            format.emit(&result, || command::reindex::render(&result));
-        }
-        protocol::Call::Cascade(args) => {
-            command::cascade::execute(&session, project, profile, format, args).await?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Prints what the server sent, in whichever form was asked for.
@@ -368,8 +323,10 @@ mod tests {
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
     const UNDOCUMENTED: &[&str] = &[
+        "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
         "PAMIN_RERANK_BATCH",
+        "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
         "PAMIN_SEARCH_EFFORT",
