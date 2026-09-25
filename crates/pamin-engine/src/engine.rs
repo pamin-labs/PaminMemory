@@ -1493,7 +1493,7 @@ impl Engine {
 
         // The whole fused list rather than the caller's limit or the tier's
         // head: the reranker is also shown the strongest candidates only the
-        // graph found, wherever fusion put them (see [`GRAPH_CANDIDATES`]).
+        // graph found, wherever fusion put them (see [`GRAPH_SHOWN_FROM`]).
         // Every one of them is already resolved against the ledger. What is
         // not made for all of them is the hit -- the state, the topic's name
         // and the seed's content, copied -- which is made only for what the
@@ -2319,8 +2319,9 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
     text
 }
 
-/// How many candidates only the graph found are shown to the reranker beside
-/// the head.
+/// The graph score from which a candidate only the graph found is shown to the
+/// reranker beside the head: the edge's confidence, decayed per hop (see
+/// [`path_strength`]).
 ///
 /// The graph finds what the other channels cannot -- the memory a question
 /// needs because another memory names it -- and fusion, weighing it at 0.30,
@@ -2331,26 +2332,32 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// floor can only raise them, and it left all 1,000 questions' nDCG@10 where
 /// it was. The reranker is the one stage that is shown the memory that
 /// reached them, so it is the one that can judge them. Handing it the
-/// strongest ten lifts nDCG@10 from 0.6573 to 0.6834 (108 questions
-/// better, 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435; five
-/// was worth +0.0234. Chosen by five-fold cross-validation, every fold picking
-/// ten. The cost is ten more pairs a search, only where there are edges: a
-/// project with none has no graph candidates and pays nothing.
+/// strongest ten lifted nDCG@10 from 0.6573 to 0.6834 (108 questions better,
+/// 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435. A project with
+/// no edges has no graph candidates and pays nothing.
 ///
-/// **A fixed count, and more of them buys nothing.** Twenty brings 19 more
-/// supporting titles into the reranker's view on MuSiQue (19 questions gain,
-/// none lose), but the reranker does not turn them into a better top ten.
-/// Through `search_reranked` at the `accuracy` profile, twenty moved nDCG@10
-/// by +0.0010 (9 better, 25 worse, p = 0.41) for 1.41 times the search time,
-/// and thirty by -0.0004 (p = 0.74) for 1.78 times. A threshold on the graph
-/// score, capped at thirty and chosen leave-one-corpus-out, failed the time
-/// bound the same way. The rule was written before the runs, and
-/// `docs/measured.md` has them.
-const GRAPH_CANDIDATES: usize = 10;
+/// **Chosen by score rather than a fixed ten, because a weak find costs a pair
+/// and was not measured buying anything.** On the own corpus ten showed about
+/// four finds a query; at this threshold it shows almost none, and on MuSiQue
+/// 8.4 on average instead of ten, anywhere from none to the cap. Under a rule written before the runs, on 600 MuSiQue questions
+/// held out from where the threshold was noticed, through `search_reranked` at
+/// the `accuracy` profile with the caches bypassed: nDCG@10 +0.0017 against
+/// the fixed ten (16 questions better, 5 worse, p = 0.057), search time 0.87
+/// of ten's (p = 0.0001); on the own corpus 0.81 of ten's (p = 0.0001), one
+/// query of 157 worse by 0.0078 and the rest unchanged. `docs/measured.md` has
+/// the runs.
+const GRAPH_SHOWN_FROM: f32 = 0.5;
+
+/// At most this many of the finds at [`GRAPH_SHOWN_FROM`] are shown, strongest
+/// first. A cap is what keeps a densely linked question from handing the
+/// reranker every neighbour: MuSiQue reaches it on about one question in
+/// eight. Thirty is the cap the threshold was measured with, not a tuned value.
+const GRAPH_SHOWN_AT_MOST: usize = 30;
 
 /// The positions of a fused list the reranker is shown: the head's candidates
-/// no lexical channel found, and the [`GRAPH_CANDIDATES`] strongest below the
-/// head that only the graph found. Ascending.
+/// no lexical channel found, and the candidates below the head that only the
+/// graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
+/// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
 ///
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
@@ -2384,7 +2391,13 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
         .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
         .collect();
     graph.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
-    positions.extend(graph.into_iter().take(GRAPH_CANDIDATES).map(|(at, _)| at));
+    positions.extend(
+        graph
+            .into_iter()
+            .filter(|(_, score)| *score >= GRAPH_SHOWN_FROM)
+            .take(GRAPH_SHOWN_AT_MOST)
+            .map(|(at, _)| at),
+    );
     positions.sort_unstable();
     positions
 }
@@ -2494,8 +2507,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_CANDIDATES, MODEL_IDLE, best_first, can_be_seen, is_idle, path_strength, place,
-        rerankable, runs_of_tokens, seed_relevance, shown,
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, MODEL_IDLE, best_first, can_be_seen, is_idle,
+        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2692,11 +2705,12 @@ mod tests {
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
-    /// The reranker is shown the head's unlexical candidates and the strongest
-    /// graph-only ones below it -- not a lexical one, not a corroborated one
-    /// from below the head, and no more graph ones than the cap.
+    /// The reranker is shown the head's unlexical candidates and the graph-only
+    /// ones below it whose graph score reaches [`GRAPH_SHOWN_FROM`], strongest
+    /// first and no more than [`GRAPH_SHOWN_AT_MOST`] -- not a lexical one, not
+    /// a corroborated one from below the head, and not a weak graph find.
     #[test]
-    fn the_reranker_is_shown_the_unlexical_head_and_the_strongest_graph_finds() {
+    fn the_reranker_is_shown_the_unlexical_head_and_the_strong_graph_finds() {
         use pamin_core::Why;
 
         let channel = |channel, score| Why::Channel {
@@ -2716,16 +2730,23 @@ mod tests {
                 vec![channel(Channel::Vector, 0.5)]
             });
         }
-        // Below the head: a vector candidate, a corroborated graph one, and
-        // more graph-only ones than the cap, with increasing strength.
+        // Below the head: a vector candidate, a corroborated graph one, graph
+        // finds just under the threshold, and more at or above it than the
+        // cap, with increasing strength.
         traces.push(vec![channel(Channel::Vector, 0.4)]);
         traces.push(vec![
             channel(Channel::Vector, 0.4),
             channel(Channel::Graph, 0.9),
         ]);
-        let first_graph = traces.len();
-        for strength in 0..GRAPH_CANDIDATES + 3 {
-            traces.push(vec![channel(Channel::Graph, strength as f32 / 100.0)]);
+        for weak in [0.1, 0.3, 0.49] {
+            traces.push(vec![channel(Channel::Graph, weak)]);
+        }
+        let first_strong = traces.len();
+        for strength in 0..GRAPH_SHOWN_AT_MOST + 3 {
+            traces.push(vec![channel(
+                Channel::Graph,
+                GRAPH_SHOWN_FROM + strength as f32 / 1000.0,
+            )]);
         }
         let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
 
@@ -2736,9 +2757,18 @@ mod tests {
             (0..head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
         );
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
-        // The strongest GRAPH_CANDIDATES, which are the last ones pushed.
-        let strongest = (first_graph + 3..first_graph + GRAPH_CANDIDATES + 3).collect::<Vec<_>>();
+        // The strongest GRAPH_SHOWN_AT_MOST, which are the last ones pushed;
+        // the weakest three that reach the threshold lose to the cap.
+        let strongest =
+            (first_strong + 3..first_strong + GRAPH_SHOWN_AT_MOST + 3).collect::<Vec<_>>();
         assert_eq!(below, strongest);
+
+        // With fewer finds at the threshold than the cap, every one of them is
+        // shown, the one exactly at it included, and none under it.
+        let few: Vec<&[Why]> = borrowed[..first_strong + 2].to_vec();
+        let shown = rerankable(&few, Rerank::Accurate);
+        let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
+        assert_eq!(below, vec![first_strong, first_strong + 1]);
     }
 
     /// A head candidate is refilled in place; a graph find from below the head
