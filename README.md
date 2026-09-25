@@ -287,10 +287,11 @@ thirty-passage row reads a store the ten-passage row built, byte for byte.
 
 **One of the two categories where a gap appears is withdrawn rather than
 claimed.** Påmin Memory and MemPalace lead **adversarial** questions, and 74% of
-that category asks about the wrong speaker while the answer key rewards
-replying with the other speaker's content. mem0 answers "no record of that",
-which for the question as asked is better, and is marked wrong for it. Scoring
-high there means ignoring who said what, which is a defect in a memory product.
+that category asks about the wrong speaker. The harness judged it against the
+trap answer, which rewards replying with the other speaker's content, where
+LoCoMo's own evaluation counts only an abstention as correct. mem0 answers "no
+record of that", which is the benchmark's correct answer, and was marked wrong
+for it. The column was scored inverted, so the lead is not a result.
 
 Two more are negative and stay published. The version ledger this project is
 built around bought nothing on LOCOMO (p = 1.00). Where it does win — cutting
