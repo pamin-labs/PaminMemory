@@ -411,7 +411,10 @@ ranking internals it has no way to evaluate.
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; it now reranks thirty, which the `accurate` tier
 turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
-model pairs, and whose wall time has not been re-taken on a quiet machine. The
+model pairs. At thirty a search has been timed only on a busy machine, where
+the batching that ships with it made one 0.83 of what it was on this corpus
+([measured.md](measured.md) has the figures), so read 1522 ms as the cost
+at twenty candidates rather than as today's. The
 rows can be read against each other; none of them can be read against a figure published before
 this table, and the `off` and `fast` rows moved when the fusion layer changed
 underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
