@@ -1136,7 +1136,7 @@ does not warm its connections. One lead for a later change: every search plans
 each of its statements again, and planning is 1.5 of the 2.6 ms the warm
 backend spends.
 
-**What else the index engine offers was measured, and none of it ships.**
+**What else the index engine offers was measured.**
 `zvec-rust` 0.7.2 adds a half-precision vector field, IVF-RaBitQ and DiskANN
 beside the graph, a memory limit and a document iterator. Each was held to a
 rule written before its first number, in the order accuracy, latency, memory,
@@ -1162,8 +1162,10 @@ index query time, twice the disk and fourteen times the build, so it is the
 path for a project whose resident set is the constraint and not the default.
 An explicit memory limit changed nothing, because it sizes a pool only an index
 created with mmap off reads. The iterator reads 131,924 documents in 0.28 s
-against 1.5 s of keyed fetches, which is about 1% of a rebuild. The tables and
-the rules are in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured-none-of-it-ships);
+against 1.5 s of keyed fetches, which is about 1% of a rebuild; it failed its
+rule and ships anyway, because it changes nothing a rebuild lends and the owner
+takes every optimization that costs no accuracy. The tables and the rules are
+in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured);
 the runs were scratch builds and cannot be re-run from the repository.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
