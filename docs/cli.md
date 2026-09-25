@@ -105,18 +105,27 @@ that load fetches the model again -- 570 MB for `accurate` or the `accuracy`
 embedder -- writes the copy, and removes the download again. **That load needs
 the network.** Offline, it fails with an error that names the model and says
 why, instead of searching; the fix is to be online for that one load, or to
-copy the model directory from a machine that has the file. The old copy is
-removed by a later load once no running process has it loaded and none has
-loaded it for two weeks, so a directory shared by two versions keeps both
-copies while both are in use. It is safe to delete `models/prepared/` at any time, and the
-next load downloads the model again. The download is kept, and nothing is
-removed, when `HF_HOME` is set -- that cache is shared with other tools -- or
-when the model directory, or one model's directory inside it, is a link to
-somewhere else. `PAMIN_PREPARED=off` loads from the download, fetching it
-again if it was removed, for a measurement that needs the unmapped load or a
-disk that cannot spare the copy's extra size. When a copy cannot be written --
-a full or read-only disk -- the model loads from the download and keeps it,
-and the log says why.
+copy the model directory from a machine that has the file.
+
+Copies are removed by one rule, applied on every load. The copy this version
+loads for a model it has loaded before is never removed, however long the model
+goes unused: its download has usually been removed, so removing it would make
+the next load of that model need the network. Every other copy -- the one an
+upgrade or a move to another CPU leaves behind, or one of a model file the hub
+has since replaced -- is removed once no running process has it loaded and none
+has loaded it for two weeks. So a directory shared by two versions keeps both
+copies while both are in use, and a version that goes two weeks without running
+while the other does writes its copies again when it next runs -- fetching the
+model first, if its download was removed. A model nothing loads any more -- a
+reranker tier switched off -- keeps its copy until it is deleted. It is safe to
+delete `models/prepared/` at any time, and the next load downloads the model
+again. The download is kept when `HF_HOME` is set -- that cache is shared with
+other tools -- or when the model directory, or one model's directory inside it,
+is a link to somewhere else. `PAMIN_PREPARED=off` loads from the download,
+fetching it again if it was removed, for a measurement that needs the unmapped
+load or a disk that cannot spare the copy's extra size. When a copy cannot be
+written -- a full or read-only disk -- the model loads from the download and
+keeps it, and the log says why.
 
 Where the runtime left a model's attention as separate operators -- the
 `accurate` reranker's int8 export -- the copy also gets a second graph,
