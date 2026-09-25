@@ -572,6 +572,40 @@ project's own ordering of accuracy before latency.
 Four cores is where the embedding model and the reranker contend, so a machine
 with cores to spare will not look like this.
 
+**The `accurate` pass at the depth that ships, and batched by tokens.** The
+table above was taken when a tier reranked twenty candidates. It now reranks
+thirty, and the pairs reach the model in passes of at most 512 padded tokens
+and four pairs, grouped by their real length in tokens, where they went in
+chunks of eight sorted by characters. Through `Engine::search_reranked` at the
+`accuracy` profile, every query of each corpus through both batchings in one
+process, in rotated order, the median search:
+
+| corpus | queries reranked | chunks of eight | 512 tokens, four pairs | paired ratio, median | faster on |
+| --- | --- | --- | --- | --- | --- |
+| XQuAD-R, 13,014 sentences | 1,187 | 2,006 ms | **1,633 ms** | 0.833 | 1,053 |
+| MIRACL Swahili dev | 482 | 2,324 ms | **1,758 ms** | 0.800 | 461 |
+| MuSiQue, 1,000 2-hop questions | 997 | 6,112 ms | **4,949 ms** | 0.810 | 944 |
+
+These are not quiet-machine figures, and they are from a different machine
+from the table above: 4 vCPU (Intel Xeon @ 2.10 GHz, AMX and AVX-512 VNNI, no
+SMT), 15 GB RAM, release build, shared with two or three other measurements —
+the load average's median over the three runs was 8.1, 6.2 and 6.4. Load
+inflates both columns, so the milliseconds say what a search at thirty costs
+on a busy four-core machine and the paired ratio is what carries. Rerank
+nDCG@10 moved significantly in no group: XQuAD-R cross-lingual −0.0004,
+same-language −0.0002, MIRACL −0.0011, MuSiQue +0.0005, every p above 0.4.
+The rule the batching was chosen by, written down before anything was timed,
+and the pilot of seven candidates are at `BATCH_TOKENS` in
+`crates/pamin-index/src/reranking.rs`.
+
+**Truncating at 192 or 384 tokens rather than 256 was measured, and neither
+ships.** In the same runs, each limit paired against 256 with the new batching:
+192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
+the limit, and cost 0.0045 of its nDCG@10 (`p = 0.010`); 384 cost a third more
+a search there (1.32) and moved its nDCG@10 by −0.0016 (`p = 0.31`). On XQuAD-R
+and MIRACL neither limit moved ranking by more than 0.0006, significant nowhere.
+The rule, and the table, are at `MAX_TOKENS` in the same file.
+
 **Reranking only the queries that need it was measured, and does not ship.**
 No reranking is the cheapest sufficient choice for 43.4% of XQuAD-R's
 cross-lingual queries, so an oracle would save a great deal. The `ROUTES` arm
