@@ -1229,6 +1229,8 @@ This is the complement half of the rule: ICU4X segments, `zvec` retrieves, and n
 
 A second full-text field indexes the raw text with the `ngram` tokenizer, covering substrings that segmentation destroys: file paths, error codes, function names, configuration keys, and partial identifiers. Both fields are native `zvec` per-field configuration. The cost is roughly double the lexical index, paid by **cheap**, and whether it is worth paying is a question for the evaluation harness.
 
+The field indexes `zvec`'s default of two-character grams, and that was measured against three-character grams and against two and three together. Each is one tokenizer parameter (`{"ngram_min":3,"ngram_max":3}` or `{"ngram_min":2,"ngram_max":3}`) and a rebuild. Measured through `search_reranked` against a rule written before the runs, neither ships. Both are significantly worse on XQuAD-R's cross-lingual group (−0.0055 and −0.0035, p = 0.0001 each), neither is significantly better on any corpus as a whole, and three-character grams also lose Thai cross-lingual. Two and three together is not the cheap hedge it looks like: on XQuAD-R and MuSiQue it makes the index 1.50 to 1.67 times larger and the rebuild 1.60 to 1.67 times slower. The figures are in [what the project measures](../measured.md).
+
 ### Embeddings: profiles, and two different meanings of INT8
 
 "INT8" names two operations whose costs differ by an order of magnitude, and conflating them is easy:
