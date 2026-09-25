@@ -70,6 +70,7 @@ async fn the_ledger_holds_its_promises() {
     concurrent_appends_to_one_topic_form_one_chain(&database, &workspace).await;
     ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
+    a_batch_answers_each_edge_where_it_was_asked(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
     dropping_the_state_copy_loses_nothing_a_state_said(&database, &workspace).await;
     settled_jobs_go_and_owed_jobs_stay_through_the_migration(&database, &workspace).await;
@@ -1439,6 +1440,140 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
         again.iter().filter(|edge| edge.is_new()).count(),
         0,
         "re-asserting an unchanged batch should append nothing"
+    );
+}
+
+/// A batch answers each edge at the position it was asked, and an edge asked
+/// twice is decided the second time against what the first wrote.
+///
+/// The batch decides and writes its edges together, so neither the order of
+/// the answers nor what a repeat sees follows from doing them one at a time
+/// any more; this holds both to what one at a time gave. A repeat with the
+/// same claim is unchanged, and one with a different claim supersedes the
+/// version the first wrote -- where two versions written by one statement
+/// would both claim the same number, and the batch would fail.
+async fn a_batch_answers_each_edge_where_it_was_asked(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "answered_in_order")
+        .await
+        .expect("ensure project");
+    let mut topics = Vec::new();
+    for name in ["hub", "kept", "changed", "added"] {
+        topics.push(
+            committed!(database, common::ensure_topic, project.id, name)
+                .expect("ensure topic")
+                .id,
+        );
+    }
+    let (hub, kept, changed, added) = (topics[0], topics[1], topics[2], topics[3]);
+    let explicit = EdgeClaim::explicit(EdgeKind::RelatedTo);
+    let before = graph::assert_edges(
+        database.pool(),
+        project.id,
+        &[
+            (hub, kept, explicit.clone()),
+            (hub, changed, explicit.clone()),
+        ],
+    )
+    .await
+    .expect("assert the edges that exist before");
+
+    let weaker = |confidence: f32| EdgeClaim {
+        confidence,
+        ..explicit.clone()
+    };
+    let asserted = graph::assert_edges(
+        database.pool(),
+        project.id,
+        &[
+            (hub, kept, explicit.clone()),
+            (hub, changed, weaker(0.5)),
+            (hub, added, explicit.clone()),
+            (hub, changed, weaker(0.25)),
+            (hub, added, explicit.clone()),
+        ],
+    )
+    .await
+    .expect("assert the batch");
+
+    let described: Vec<(bool, uuid::Uuid, u32, f32)> = asserted
+        .iter()
+        .map(|assertion| {
+            let version = assertion.version();
+            (
+                assertion.is_new(),
+                version.relationship_id.0,
+                version.version,
+                version.confidence,
+            )
+        })
+        .collect();
+    let identity = |to| async move {
+        graph::find_relationship(database.pool(), project.id, hub, to, EdgeKind::RelatedTo)
+            .await
+            .expect("find relationship")
+            .expect("the edge exists")
+            .id
+            .0
+    };
+    let (kept_id, changed_id, added_id) = (
+        identity(kept).await,
+        identity(changed).await,
+        identity(added).await,
+    );
+    assert_eq!(
+        described,
+        vec![
+            (false, kept_id, 1, 1.0),
+            (true, changed_id, 2, 0.5),
+            (true, added_id, 1, 1.0),
+            (true, changed_id, 3, 0.25),
+            (false, added_id, 1, 1.0),
+        ],
+        "each answer should be the one for the edge asked at its position"
+    );
+    assert_eq!(
+        asserted[0].version().id,
+        before[0].version().id,
+        "an unchanged claim answers with the version already live"
+    );
+    assert_eq!(
+        asserted[4].version().id,
+        asserted[2].version().id,
+        "a repeat answers with the version the batch wrote"
+    );
+
+    let history = graph::edge_history(
+        database.pool(),
+        project.id,
+        graph::find_relationship(
+            database.pool(),
+            project.id,
+            hub,
+            changed,
+            EdgeKind::RelatedTo,
+        )
+        .await
+        .expect("find relationship")
+        .expect("the edge exists")
+        .id,
+    )
+    .await
+    .expect("edge history");
+    assert_eq!(
+        history
+            .iter()
+            .map(|version| (
+                version.version,
+                version.supersedes,
+                version.tombstone_reason,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, None, Some(TombstoneReason::Superseded)),
+            (2, Some(history[0].id), Some(TombstoneReason::Superseded)),
+            (3, Some(history[1].id), None),
+        ],
+        "a changed edge's versions should form one chain with the newest live"
     );
 }
 
