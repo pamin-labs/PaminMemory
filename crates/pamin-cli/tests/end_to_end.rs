@@ -2274,11 +2274,20 @@ fn a_warmed_project_is_given_back_when_idle() {
         "the warm-up logged success but the server grew from {before} KiB only to {warmed} KiB"
     );
 
+    // The first release can give back only the reranker; the engine and
+    // embedder go a tick later. Watch the resident size until it drops, so the
+    // assertion judges the release rather than which tick it happened to see.
     wait_for("gave back what nothing had asked for");
-    let released = resident_kib(&server);
+    let enough = warmed - (warmed - before) / 2;
+    let deadline = Instant::now() + GIVE_UP_AFTER;
+    let mut released = resident_kib(&server);
+    while released >= enough && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+        released = resident_kib(&server);
+    }
     println!("  resident KiB: started {before}, warmed {warmed}, after the idle window {released}");
     assert!(
-        released < warmed - (warmed - before) / 2,
+        released < enough,
         "the server held {released} KiB after the idle window, against {warmed} warmed and \
          {before} before, so the warm-up was not given back"
     );
