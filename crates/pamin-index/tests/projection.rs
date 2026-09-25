@@ -648,7 +648,11 @@ fn an_index_built_before_names_keeps_its_encoding() {
     // What the marker held before the encoding was recorded.
     std::fs::write(
         dir.path().join("profile"),
-        format!("{}\ntopic\ndisk", PROFILE.model_id()),
+        format!(
+            "{}\ntopic\n{}",
+            PROFILE.model_id(),
+            VectorIndex::default().label()
+        ),
     )
     .expect("age the marker");
     let aged = ProjectionIndex::open(
@@ -870,7 +874,11 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
     drop(index);
     std::fs::write(
         dir.join("profile"),
-        format!("{}\ntopic\ndisk\ncontent", PROFILE.model_id()),
+        format!(
+            "{}\ntopic\n{}\ncontent",
+            PROFILE.model_id(),
+            VectorIndex::default().label()
+        ),
     )
     .expect("age the marker");
     assert!(
@@ -1080,7 +1088,11 @@ fn keyed_as_written(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).expect("index dir");
     std::fs::write(
         dir.join("profile"),
-        format!("{}\ntopic\ndisk\nnamed", PROFILE.model_id()),
+        format!(
+            "{}\ntopic\n{}\nnamed",
+            PROFILE.model_id(),
+            VectorIndex::default().label()
+        ),
     )
     .expect("age the marker");
 }
@@ -1229,7 +1241,11 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     // Read the other way, the same documents answer as other topics entirely.
     std::fs::write(
         dir.join("profile"),
-        format!("{}\ntopic\ndisk\nnamed\ntopic-keys", PROFILE.model_id()),
+        format!(
+            "{}\ntopic\n{}\nnamed\ntopic-keys",
+            PROFILE.model_id(),
+            VectorIndex::default().label()
+        ),
     )
     .expect("mislabel the marker");
     let misread = ProjectionIndex::open(

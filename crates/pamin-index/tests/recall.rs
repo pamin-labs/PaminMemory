@@ -41,9 +41,9 @@ const TOP: u32 = 10;
 /// faster to search and cheaper to build, and the floor moves with them because
 /// the reason is understood rather than incidental.
 ///
-/// It measures the default vector index, which is now `disk`: half-precision
-/// vectors under DiskANN with the f32 rescore, measured at 0.9985 over these
-/// vectors (200 queries) at the shipped search width. The floor stays where
+/// It measures the default vector index, which is now `memory`: half-precision
+/// vectors under HNSW with the f32 rescore, measured at 0.9965 over these
+/// vectors (200 queries); `disk` measured 0.9985 at its shipped search width. The floor stays where
 /// it was, because what it catches is a collapse -- 0.053 is what int8 with
 /// rotation once returned -- and not the second decimal: this index returns
 /// 0.981 at DiskANN's own default width of 300, which passes it, and the

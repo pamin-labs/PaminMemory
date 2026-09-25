@@ -51,7 +51,7 @@ struct Cli {
         long,
         env = "PAMIN_VECTOR_INDEX",
         global = true,
-        default_value = "disk"
+        default_value = "memory"
     )]
     vector_index: String,
 
