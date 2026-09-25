@@ -20,6 +20,9 @@ tokio = { workspace = true }
 # what recording a memory means. Already in the tree as `pamin-cli`'s, so this
 # adds no lockfile entry.
 sha2 = { workspace = true }
+# For a search's evidence verdict, which crosses the server's socket inside
+# `pamin search`'s result. Already in the tree through every other crate.
+serde = { workspace = true }
 
 [dev-dependencies]
 pamin-store = { workspace = true }
@@ -27,7 +30,6 @@ pamin-store = { workspace = true }
 # one round trip at a time. Already in the tree as `pamin-store`'s driver, so
 # this adds no lockfile entry.
 sqlx = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
