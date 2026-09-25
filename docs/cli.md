@@ -279,10 +279,11 @@ Wrote release_notes v1
 The memory is committed exactly as it would be otherwise — `pamin read` and
 `pamin grep` see it immediately — and only `search` waits for the queue. The
 server works through the queue on its own, between requests, so the memory
-becomes searchable a few seconds later with nothing else run. Run
+becomes searchable with nothing else run once the server's five-second upkeep
+has come round once or twice: 5.8 to 11.6 seconds in five measured runs. Run
 `pamin cascade drain` to make the index catch up at once instead, for instance
-at the end of a loop of deferred writes; to record a file of memories,
-[`pamin import`](#pamin-import) is quicker than either.
+at the end of a loop of deferred writes; to record a file of memories, use
+[`pamin import`](#pamin-import).
 
 `cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
 reports what the queue owed when the write looked at it rather than what is left
