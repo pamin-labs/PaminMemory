@@ -13,8 +13,8 @@
 //! the second test below.
 //!
 //! Topics and edges are inserted in bulk rather than through `assert_edges`,
-//! because building the graph is setup and `assert_edges` costs about five
-//! round trips an edge. What is measured is the walk only.
+//! because building the graph is setup and `assert_edges` also decides, locks
+//! and versions every edge it is given. What is measured is the walk only.
 
 use pamin_core::{ProjectId, TopicId};
 use pamin_store::graph::{Expansion, Neighbor};
