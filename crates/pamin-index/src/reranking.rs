@@ -536,9 +536,9 @@ impl Rerank {
 /// a cross-encoder reads the document with the query and that is the whole of
 /// why it is worth running.
 ///
-/// Four thousand entries is about a quarter of a megabyte, and the cache is per
-/// process, so it is `pamin serve` that makes it worth anything: without a
-/// resident process every command starts with an empty one.
+/// Four thousand entries is about a quarter of a megabyte, and the cache
+/// belongs to the loaded model, so it lasts as long as the server holds that
+/// model.
 const REMEMBERED_SCORES: usize = 4096;
 
 /// Scores already computed, oldest first.

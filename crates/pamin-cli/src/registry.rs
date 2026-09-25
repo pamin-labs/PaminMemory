@@ -223,11 +223,32 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
     /// `None` while another caller holds the slot -- opening it, or rebuilding
     /// it. A caller walking the keys skips those rather than waiting.
     pub fn opened(&self, key: &K) -> Option<Arc<T>> {
+        // Deliberately does not count as a use. A sweep touches everything
+        // and would flatten the order the eviction depends on.
+        self.opened_counting(key, false)
+    }
+
+    /// [`Registry::opened`], counted as a use.
+    ///
+    /// For a caller about to do work on the value that is a reason to keep it
+    /// open: stamped now for the idle sweep and moved to the back of the
+    /// eviction order, as a caller of [`Registry::get_or_open`] would be.
+    pub fn opened_for_work(&self, key: &K) -> Option<Arc<T>> {
+        self.opened_counting(key, true)
+    }
+
+    fn opened_counting(&self, key: &K, counts: bool) -> Option<Arc<T>> {
         let slot = {
-            let registry = self.open.lock().expect("the registry lock is poisoned");
-            // Deliberately does not count as a use. A sweep touches everything
-            // and would flatten the order the eviction depends on.
-            Arc::clone(&registry.slots.get(key)?.slot)
+            let mut registry = self.open.lock().expect("the registry lock is poisoned");
+            let now = registry.uses + 1;
+            let entry = registry.slots.get_mut(key)?;
+            let slot = Arc::clone(&entry.slot);
+            if counts {
+                entry.used = now;
+                entry.at = Instant::now();
+                registry.uses = now;
+            }
+            slot
         };
         let held = slot.try_lock().ok()?;
         held.as_ref().map(Arc::clone)
@@ -502,6 +523,34 @@ mod tests {
             registry.take_evicted(),
             0,
             "closing idle entries is not eviction"
+        );
+    }
+
+    /// Work on an entry keeps it open; looking at it does not.
+    ///
+    /// The server's upkeep does both. Flushing and compacting only look, and
+    /// counting them as uses would keep every index the server ever opened
+    /// out of the idle sweep. Catching up on owed work is a reason to keep
+    /// the index, and not counting it would let the sweep close a project
+    /// half way through a backlog and the next tick open it again.
+    #[tokio::test]
+    async fn work_on_an_entry_keeps_it_open_and_looking_does_not() {
+        let registry: Registry<&str, u32> = Registry::with_capacity(16);
+        for key in ["looked_at", "worked_on"] {
+            registry
+                .get_or_open(key, || async { Ok(1) })
+                .await
+                .expect("opening");
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        assert!(registry.opened(&"looked_at").is_some());
+        assert!(registry.opened_for_work(&"worked_on").is_some());
+
+        assert_eq!(
+            registry.close_idle(Duration::from_millis(30)),
+            vec!["looked_at"],
+            "the entry worked on a moment ago was closed, or the one only looked at was kept"
         );
     }
 

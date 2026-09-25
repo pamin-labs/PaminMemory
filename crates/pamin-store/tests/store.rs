@@ -9,8 +9,8 @@
 //! temporary workspace.
 
 use pamin_core::{
-    Derivation, EdgeKind, FilterDecision, JobKind, SourceKind, TombstoneReason, Validity,
-    VersionOffset, resolve,
+    Derivation, EdgeKind, FilterDecision, JobKind, ProjectId, SourceKind, TombstoneReason,
+    Validity, VersionOffset, resolve,
 };
 mod common;
 
@@ -82,6 +82,7 @@ async fn the_ledger_holds_its_promises() {
     two_adjacent_hubs_do_not_multiply(&database).await;
     the_outbox_coalesces_claims_and_survives_a_lost_worker(&database).await;
     each_kind_is_claimed_by_its_own_priority(&database).await;
+    the_projects_owing_work_are_the_ones_a_claim_would_take_from(&database).await;
     what_a_topic_says_now_is_one_lookup(&database).await;
     a_completion_names_the_claim_it_belongs_to(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
@@ -3337,6 +3338,110 @@ async fn each_kind_is_claimed_by_its_own_priority(database: &Database) {
             "a claim for {kind} alone"
         );
     }
+}
+
+/// The projects listed as owing work are the ones a claim would take from.
+///
+/// The resident server asks this every few seconds to decide which indexes
+/// to bring up to date, and it can be wrong in two directions that both look
+/// like a quiet server: listing a project whose work a claim would not take --
+/// held by a live worker, or failed and waiting out its retry -- opens it for
+/// nothing, and leaving out one whose work is due leaves a memory unsearchable
+/// until somebody writes to that project again. So each condition the claim
+/// applies is checked here from both sides, including the case the whole list
+/// exists for: work a worker took and then died holding.
+async fn the_projects_owing_work_are_the_ones_a_claim_would_take_from(database: &Database) {
+    let mut projects = Vec::new();
+    for name in [
+        "owing-due",
+        "owing-held",
+        "owing-failed",
+        "owing-upkeep-only",
+    ] {
+        projects.push(
+            repository::ensure_project(database.pool(), name)
+                .await
+                .expect("ensure project")
+                .id,
+        );
+    }
+    let [due, held, failed, upkeep_only] = projects[..] else {
+        unreachable!("four names, four projects")
+    };
+    for project in [due, held, failed] {
+        jobs::enqueue(
+            database.pool(),
+            project,
+            JobKind::SyncTopicIndex,
+            Some(uuid::Uuid::now_v7()),
+        )
+        .await
+        .expect("enqueue");
+    }
+    jobs::enqueue(database.pool(), upkeep_only, JobKind::OptimizeIndex, None)
+        .await
+        .expect("enqueue");
+
+    let claimed = jobs::claim(database.pool(), held, "owing", 64, &JobKind::URGENT)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1, "the held project's job was not claimed");
+    let tried = jobs::claim(database.pool(), failed, "owing", 64, &JobKind::URGENT)
+        .await
+        .expect("claim");
+    jobs::fail(
+        database.pool(),
+        &tried[0],
+        "owing",
+        "the model was not there",
+    )
+    .await
+    .expect("fail");
+
+    // Other checks share this database and leave their own work queued, so
+    // only this check's projects are compared.
+    let ours = |owing: Vec<jobs::Owing>| -> Vec<(ProjectId, bool)> {
+        owing
+            .into_iter()
+            .filter(|owing| projects.contains(&owing.project))
+            .map(|owing| (owing.project, owing.never_failed))
+            .collect()
+    };
+    let urgent = jobs::owing(database.pool(), &JobKind::URGENT)
+        .await
+        .expect("list owing projects");
+    assert_eq!(
+        ours(urgent),
+        vec![(due, true)],
+        "only the project with unclaimed, unfailed work is owed it now"
+    );
+    let upkeep = jobs::owing(database.pool(), &JobKind::MAINTENANCE)
+        .await
+        .expect("list owing projects");
+    assert_eq!(
+        ours(upkeep),
+        vec![(upkeep_only, true)],
+        "the kinds asked for are the kinds listed"
+    );
+
+    // An hour on for the failure and a lease on for the claim, which is the
+    // queue a worker that died holding a job leaves behind.
+    sqlx::query(
+        "UPDATE index_jobs SET available_at = now() - interval '1 second'
+          WHERE project_id = ANY($1)",
+    )
+    .bind(vec![held.0, failed.0])
+    .execute(database.pool())
+    .await
+    .expect("move the clock");
+    let urgent = jobs::owing(database.pool(), &JobKind::URGENT)
+        .await
+        .expect("list owing projects");
+    assert_eq!(
+        ours(urgent),
+        vec![(due, true), (failed, false), (held, true)],
+        "a lapsed claim is owed as work that never failed, and a due retry as work that did"
+    );
 }
 
 /// What the outbox has to get right for the projection to stay correct.

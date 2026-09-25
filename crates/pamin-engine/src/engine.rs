@@ -780,7 +780,7 @@ impl Engine {
     /// `set_max_doc_count_per_segment` on an open one returns `Ok` and changes
     /// nothing, which ADR 0001 records. [`reshape`](Self::reshape) does that
     /// by copying the index while it is served, and a server runs it on its
-    /// own; without a server, `pamin reindex` is what fixes it.
+    /// own; `pamin reindex` fixes it at once.
     pub fn segmentation(&self) -> Result<pamin_index::Segmentation> {
         Ok(self.index().segmentation()?)
     }

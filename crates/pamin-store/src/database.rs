@@ -32,16 +32,6 @@ pub enum Connections {
 }
 
 impl Connections {
-    /// Whether this process is the one that stays.
-    ///
-    /// Asked about work that has to outlive the request that scheduled it.
-    /// A command that exits after one write cannot hand anything on, so it
-    /// finishes what it started; a server can, and should, because the
-    /// alternative is an agent waiting out the index's housekeeping.
-    pub fn resident(self) -> bool {
-        matches!(self, Self::Resident)
-    }
-
     /// The pool size this calls for.
     fn limit(self) -> u32 {
         match self {
@@ -72,7 +62,6 @@ fn available_cores() -> u32 {
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
-    connections: Connections,
 }
 
 impl Database {
@@ -109,7 +98,6 @@ impl Database {
     pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
         Ok(Self {
             pool: pool(&server.url(), connections).await?,
-            connections,
         })
     }
 
@@ -122,25 +110,19 @@ impl Database {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
-
-    /// Whether the process holding this is the one that stays.
-    ///
-    /// The same fact that sizes the pool, asked for a different reason: work
-    /// that can be handed on needs somebody to hand it to.
-    pub fn is_resident(&self) -> bool {
-        self.connections.resident()
-    }
 }
 
 /// Opens a pool sized for one short-lived command.
 ///
-/// Every `pamin` invocation is its own process with its own pool, all pointing
-/// at one cluster, so the pool's size is multiplied by however many agents are
-/// running. The default of ten connections each means thirty agents ask for
-/// three hundred, against a server that allows a hundred, and what they get is
-/// `too many clients` after a thirty-second wait. A resident server is the
-/// other case entirely -- one pool for the machine, nothing to multiply by --
-/// so [`Connections`] is the caller's to state.
+/// Every `pamin` invocation used to be its own process with its own pool, all
+/// pointing at one cluster, so the pool's size was multiplied by however many
+/// agents were running. The default of ten connections each meant thirty
+/// agents asked for three hundred, against a server that allows a hundred, and
+/// what they got was `too many clients` after a thirty-second wait. The CLI now
+/// reaches the cluster only through its resident server -- one pool for the
+/// machine, nothing to multiply by -- and a process opening the workspace for
+/// itself, as the evaluation harnesses do, is the other case, so
+/// [`Connections`] is the caller's to state.
 ///
 /// `test_before_acquire` is off. It costs a full round trip on every acquire to
 /// detect connections dropped by a proxy or an idle timer, and there is neither
@@ -178,11 +160,11 @@ async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
 /// instead, which is the right trade for a background process.
 fn settings() -> HashMap<String, String> {
     HashMap::from([
-        // PostgreSQL allows a hundred clients, and every `pamin` command
-        // without a server is a process with its own pool pointing at this one
-        // cluster. A few dozen agents working at once exhaust that, and what
-        // they see is a connection timeout rather than anything naming the
-        // limit.
+        // PostgreSQL allows a hundred clients, and every process that opens
+        // the workspace without a server has its own pool pointing at this
+        // one cluster -- which used to include every `pamin` command. A few
+        // dozen agents working at once exhausted that, and what they saw was
+        // a connection timeout rather than anything naming the limit.
         ("max_connections".to_string(), "300".to_string()),
         // Four megabytes is enough for a sort of a few thousand rows and is
         // reached by a project long before it is large. Past it the sort goes
