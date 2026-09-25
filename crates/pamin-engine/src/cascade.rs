@@ -106,17 +106,42 @@ impl Engine {
     /// otherwise leave it for whoever came next, and "drain" would mean
     /// something different each time it was called.
     pub async fn drain_cascade(&self, owed: Owed) -> Result<Drained> {
+        self.drain_cascade_while(owed, BATCH, || true).await
+    }
+
+    /// The same drain, in rounds of `batch` jobs, asking `another` before each
+    /// round whether to take it.
+    ///
+    /// For a caller draining on nobody's behalf: the resident server, catching
+    /// up on work a deferred write or a process that died left behind. It has
+    /// no memory waiting to be findable and every reason to get out of the way
+    /// of one that is, so it stops between rounds when a request arrives --
+    /// and the round is the unit it cannot stop inside, which is why the batch
+    /// is its to choose. A round's forward pass holds the profile's model, and
+    /// a search on any project sharing that model waits for it.
+    ///
+    /// Stopping early leaves the rest owed and nothing half done: a round
+    /// either completes its jobs or leaves their claims to lapse.
+    pub async fn drain_cascade_while(
+        &self,
+        owed: Owed,
+        batch: i32,
+        mut another: impl FnMut() -> bool,
+    ) -> Result<Drained> {
         let mut drained = Drained::default();
         // Once, at the end, and never again in this drain: the tidy-up is
         // itself a job, so queueing another after running one would spin.
         let mut tidied = false;
 
         loop {
+            if !another() {
+                break;
+            }
             let claimed = jobs::claim(
                 self.database.pool(),
                 self.project,
                 &self.worker,
-                BATCH,
+                batch,
                 owed.kinds(),
             )
             .await?;

@@ -16,8 +16,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
-use pamin_engine::Engine;
-use pamin_index::Profile;
+use pamin_core::JobKind;
+use pamin_engine::{Engine, Owed};
+use pamin_index::{Profile, ProjectionIndex};
 use pamin_store::Workspace;
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
@@ -97,7 +98,9 @@ const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Does the index's housekeeping, away from whoever caused it.
 ///
-/// This is the half of the cascade a write no longer waits for. Compacting a
+/// First it catches up on work that decides what a search finds and that
+/// nobody is coming back for -- see [`CatchingUp`]. The rest is the half of
+/// the cascade a write no longer waits for. Compacting a
 /// few hundred index files takes a third of a second and makes nothing more
 /// correct, so paying for it in front of an agent was the wrong place; the
 /// server is still here afterwards, which is the whole qualification for the
@@ -115,8 +118,13 @@ const UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 /// which is the entire reason the write did not flush for itself.
 async fn maintain(session: Arc<Session>) {
     let mut reshapes = Reshapes::default();
+    let mut catching_up = CatchingUp::default();
     loop {
         tokio::time::sleep(UPKEEP).await;
+
+        // Before the flushes, which make what it applies durable in the same
+        // tick rather than the next.
+        catching_up.run(&session).await;
 
         // After the per-project work rather than before: flushing is what
         // turns a write's claim into a completion, and closing an index that
@@ -168,6 +176,237 @@ async fn maintain(session: Arc<Session>) {
             );
             trim_heap();
         }
+    }
+}
+
+/// How many jobs a round of catching up takes.
+///
+/// The round is what a request that arrives during one waits for, so this is
+/// sized against that wait rather than against throughput: a round's forward
+/// pass holds the profile's model, and a search on any project sharing it
+/// queues behind the pass. Throughput gives up little for it. A write's own
+/// drain takes sixty-four jobs a round because a round is what one flush
+/// covers, and catching up does not flush per round -- it leaves the writes
+/// applied, for the flush that follows it in the same tick, exactly as a write
+/// does.
+///
+/// Smaller did not buy anything measurable. With rounds of four, eight and
+/// sixteen jobs, two runs each of `catching_up_does_not_hold_a_search_up` on
+/// a debug build on four busy cores, searches during catching up took 111,
+/// 122 and 131 ms at the median and 2.0, 2.4 and 1.6 s at worst -- the same,
+/// within noise that large. A round of sixteen index writes took 0.3 s at the
+/// median and 1.2 s at worst on that machine. So this stays at sixteen, where
+/// it was set before measuring.
+const CATCH_UP_BATCH: i32 = 16;
+
+/// Overrides [`CATCH_UP_BATCH`], for sweeping it without editing the tree.
+///
+/// Undocumented on purpose, like the reranker's depth and batch: it exists so
+/// a measurement can try sizes, not as something a caller can evaluate.
+const CATCH_UP_BATCH_VAR: &str = "PAMIN_CATCH_UP_BATCH";
+
+fn catch_up_batch() -> i32 {
+    std::env::var(CATCH_UP_BATCH_VAR)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|batch: &i32| *batch > 0)
+        .unwrap_or(CATCH_UP_BATCH)
+}
+
+/// How long one tick may spend catching up, across every project.
+///
+/// Not the wait a request can see -- a request stops the catching up between
+/// rounds -- but how long the rest of the tick waits for it: the flushes that
+/// complete other projects' claims, which lapse after a minute, and the idle
+/// sweep. It is spent whether or not requests leave room for rounds in it,
+/// and the round in progress when it runs out is finished, so a tick can
+/// overrun it by one round.
+///
+/// Equal to the tick, so a server with nothing else to do spends about half
+/// its time catching up and the other half idle, rather than every core it
+/// has on work nobody is waiting for.
+const CATCH_UP_BUDGET: std::time::Duration = UPKEEP;
+
+/// How long a project the server could not open for catching up is left alone.
+///
+/// Without it a project whose index will not open -- held by another process,
+/// or needing a rebuild -- is tried, and warned about, every tick.
+const REOPEN_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Runs the work that decides what a search finds, when nobody is asking.
+///
+/// A write drains what its own memory needs before it returns, so ordinarily
+/// nothing is owed. Two things leave work owed with nobody coming back for it:
+/// `pamin write --defer`, and a server that died holding claims. Before this,
+/// both waited for the next write or import into the same project or for
+/// `pamin cascade drain`, and until then the memories were recorded and could
+/// not be found. Now they are found a tick or two later.
+///
+/// Three rules keep it out of the way of the requests it is doing work for:
+///
+/// - **It runs only while no request is being answered.** It stops between
+///   rounds when one arrives and starts again in the next gap, so a request
+///   that arrives during a round waits for at most that round -- see
+///   [`CATCH_UP_BATCH`] -- and an agent searching every second does not
+///   stop the backlog shrinking, only slows it.
+/// - **It opens at most one project per tick** that is not already open.
+///   That is how a queue left by a server that died is reached: the project
+///   it belongs to may be one nobody asks about again for hours, and the
+///   first search that does ask should find the memories rather than open
+///   the index and miss them. One at a time because opening one may load a
+///   model, and only for work that has not already failed -- a job that
+///   keeps failing is retried when something opens its project anyway, not
+///   every hour on its own account.
+/// - **Work owed counts as a use, and nothing else it does.** A project it
+///   catches up is stamped as used, like one a request touched, so the idle
+///   sweep gives it back one idle window after the work is done rather than
+///   half way through a backlog. A server with nothing owed stamps nothing,
+///   and gives back what it did before.
+///
+/// Through the drain every other caller uses, so a round claims, runs and
+/// records its jobs exactly as a write's does.
+struct CatchingUp {
+    /// Projects that would not open, and when they last refused.
+    refused: HashMap<(String, Profile), Instant>,
+    batch: i32,
+}
+
+impl Default for CatchingUp {
+    fn default() -> Self {
+        Self {
+            refused: HashMap::new(),
+            batch: catch_up_batch(),
+        }
+    }
+}
+
+impl CatchingUp {
+    async fn run(&mut self, session: &Session) {
+        let owing =
+            match pamin_store::jobs::owing(session.database().pool(), &JobKind::URGENT).await {
+                Ok(owing) => owing,
+                Err(error) => {
+                    tracing::warn!(%error, "asking which projects are owed work failed");
+                    return;
+                }
+            };
+        self.refused.retain(|_, at| at.elapsed() < REOPEN_AFTER);
+
+        let started = Instant::now();
+        let within_budget = || started.elapsed() < CATCH_UP_BUDGET;
+        let go_on = || session.is_quiet() && within_budget();
+        let mut opened_one = false;
+        for owing in owing {
+            if !within_budget() {
+                return;
+            }
+            // Under the profile the index was built with: nothing else will
+            // open it, and no index means nothing to catch up.
+            let dir = session.workspace().index_dir(owing.project);
+            let profile = match ProjectionIndex::built_for(&dir) {
+                Ok(Some(profile)) => profile,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::warn!(project = %owing.name, %error, "reading the index's profile failed");
+                    continue;
+                }
+            };
+            let key = (owing.name, profile);
+
+            let engine = if session.holds(&key) {
+                // Being opened, or rebuilt: the next tick.
+                let Some(engine) = session.opened_engine_for_work(&key) else {
+                    continue;
+                };
+                engine
+            } else {
+                if opened_one || !owing.never_failed || self.refused.contains_key(&key) {
+                    continue;
+                }
+                opened_one = true;
+                match session.engine(&key.0, profile).await {
+                    Ok(engine) => engine,
+                    Err(error) => {
+                        tracing::warn!(project = %key.0, %error, "opening a project to catch up failed");
+                        self.refused.insert(key, Instant::now());
+                        continue;
+                    }
+                }
+            };
+
+            // Rounds in every gap between requests until the project is
+            // caught up or the budget is spent. A request stops the drain
+            // between rounds, and waiting here for the next gap holds nothing
+            // the request needs.
+            let mut caught_up = CaughtUp::default();
+            while within_budget() {
+                if !session.is_quiet() {
+                    tokio::time::sleep(QUIET_POLL).await;
+                    continue;
+                }
+                let draining = Instant::now();
+                match engine
+                    .drain_cascade_while(Owed::WhatAMemoryNeeds, self.batch, go_on)
+                    .await
+                {
+                    Ok(drained) => caught_up.add(drained, draining.elapsed()),
+                    Err(error) => {
+                        tracing::warn!(project = %key.0, %error, "catching up on owed work failed");
+                        break;
+                    }
+                }
+                // Stopped with nothing standing in its way: nothing is due.
+                if go_on() {
+                    break;
+                }
+            }
+            caught_up.log(&key.0, self.batch);
+        }
+    }
+}
+
+/// How often catching up asks whether the request it stopped for has gone.
+///
+/// Short against a request and long against the question, which reads one
+/// counter: the gap between two searches an agent makes is hundreds of
+/// milliseconds, and a round started late into it is a round a later search
+/// may wait for.
+const QUIET_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// What one tick's catching up did in one project, for the log.
+#[derive(Default)]
+struct CaughtUp {
+    drains: usize,
+    completed: usize,
+    failed: usize,
+    seconds: f64,
+    last: pamin_engine::Drained,
+}
+
+impl CaughtUp {
+    fn add(&mut self, drained: pamin_engine::Drained, took: std::time::Duration) {
+        self.drains += 1;
+        self.completed += drained.completed;
+        self.failed += drained.failed;
+        self.seconds += took.as_secs_f64();
+        self.last = drained;
+    }
+
+    fn log(&self, project: &str, batch: i32) {
+        if self.completed + self.failed + self.last.applied == 0 {
+            return;
+        }
+        tracing::debug!(
+            project,
+            batch,
+            drains = self.drains,
+            seconds = self.seconds,
+            completed = self.completed,
+            failed = self.failed,
+            applied = self.last.applied,
+            pending = self.last.pending,
+            "caught up on owed work"
+        );
     }
 }
 
@@ -335,6 +574,7 @@ async fn serve_connection(session: &Arc<Session>, stream: UnixStream) -> Result<
             continue;
         }
         let name = request.call.name();
+        let serving = session.serving();
         let response = match answer(session, request).await {
             Ok(value) => Response::Ok(value),
             // Rendered here rather than shipped as a type: the client fails
@@ -344,6 +584,7 @@ async fn serve_connection(session: &Arc<Session>, stream: UnixStream) -> Result<
                 Response::Err(format!("{error:#}"))
             }
         };
+        drop(serving);
 
         framed.send(within_bounds(&response)?).await?;
 

@@ -2,9 +2,10 @@
 //!
 //! A write commits what the projection owes and stops there, so something has
 //! to pay it. Ordinarily that is the drain at the end of `pamin write`, and
-//! these commands are for the cases it does not cover: a queue left behind by a
-//! process that died, work deferred because the index was unreachable, and
-//! jobs that failed often enough to be set aside for a person to look at.
+//! what that leaves -- deferred writes, a queue a process that died left
+//! behind -- the server catches up on between requests. These commands are
+//! for making the index catch up at once, and for jobs that failed often
+//! enough to be set aside for a person to look at.
 
 use anyhow::Result;
 use pamin_engine::Owed;
