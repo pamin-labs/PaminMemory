@@ -832,6 +832,26 @@ an oracle's saving at best. Accuracy is the axis this project will not trade,
 so every query is still reranked; the learned route is a candidate for the
 `speed` profile, not the default.
 
+**Every latency table on this page was taken while idle inference threads
+spun, and they no longer do.** ONNX Runtime lets an intra-op thread that runs
+out of work spin before it sleeps; the embedder and the reranker each own a
+pool of one thread per core, so on a busy machine the spinning threads hold
+cores the working ones need. Turned off, through `pamin serve` and `pamin
+search` at the defaults on one hundred queries of the own corpus and an
+XQuAD-R subset, with rankings and scores bit-identical:
+
+| | ambient load (2.5 to 13) | two busy loops beside the server |
+| --- | --- | --- |
+| search time, off / on (geometric mean of per-query ratios) | 1.033, `p = 0.068` | **0.754**, `p = 0.0001` |
+| eight concurrent callers, throughput off / on | 1.17 | 1.13 |
+
+The latency tables on this page were taken with spinning on, several of them
+on four cores at load averages of 6 to 9, so some of what they report is the
+spinning rather than the search, and their milliseconds are likely high by an
+amount this measurement cannot say per row. They have not been re-taken; the paired ratios in them compare arms
+that spun alike, and are what to read. The rule and the method are in the
+ADR, under the thread settings.
+
 **Throughput, and where it stops.** The same sweep at one, eight and
 thirty-two concurrent callers, taken while `fast` was the default:
 
@@ -892,7 +912,7 @@ serves, which ONNX Runtime copies onto the heap. They have not been re-run
 since the change below.
 
 **The weights are mapped now, not copied.** On the CPU each model loads from a
-copy the runtime maps from disk -- written once beside the download; see
+copy the runtime maps from disk -- written once from the download; see
 `crates/pamin-index/src/prepared.rs` -- and
 `crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
 and `Embedder::load`. Each load runs in a fresh process, and what is counted
@@ -912,6 +932,35 @@ bare runtime session adds 139 MB loading the `fast` reranker's download and
 session. The data file is the price, on disk rather than in memory -- larger
 than the model it came from, because the packed weights are stored beside the
 originals.
+
+**And the download goes once its copy has loaded**, so a model is on disk once
+rather than twice. Measured on a model directory holding BGE-M3 and the
+`accurate` reranker as the code before this left them after first use -- each
+download beside its copy -- seeded by hard links from the evaluation
+workspace's directory so that nothing was downloaded, and read with `du` before
+and after one load of each through `Embedder::load` and `Reranker::load`:
+
+| | bytes on disk |
+| --- | --- |
+| each download beside its copy | 2,923 MB |
+| after one load of each | **1,783 MB** |
+
+Each load mapped the copy that was already there (read from
+`/proc/self/maps`), so the 1,141 MB is the two int8 exports, 570 MB each; what
+is left is the two copies and the two 17 MB tokenizers. The same lifecycle on a
+fresh directory through the hub, with the `fast` tier to spare the disk: 157 MB
+after its first load, where its 119 MB download used to stay beside that. With
+its copy renamed to another key, which is what a runtime upgrade leaves, and
+the hub unreachable, the next load failed naming the model and the network;
+with the hub back it fetched the file again, wrote the copy under the same key
+as before -- a re-download is given the removed file's modification time, so
+it keys identically -- and removed the download again. All five loads scored
+bit-identically, `PAMIN_PREPARED=off` among them. What this gives up is
+offline use across a key change, and [cli.md](cli.md) says so where the
+setting is described. Disuse is not a key change: the collection that removes
+copies nothing has loaded for two weeks never removes the one a model's record
+points at for the running version, so a tier left unused does not need the
+network again.
 
 **And one vocabulary between them, not one each.** What a copy leaves is mostly
 tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
