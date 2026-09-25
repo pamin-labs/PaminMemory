@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
 use crate::session::Session;
-use pamin_engine::{Depths, Evidence, Verdict};
+use pamin_engine::Depths;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -169,14 +169,6 @@ struct Hit {
 #[derive(Serialize, Deserialize)]
 pub struct Results {
     query: String,
-    /// Whether the top hit is more likely relevant than not, as a probability
-    /// that means the same on every query. Absent below the `accurate` tier,
-    /// which is the one it is calibrated for, and when nothing matched.
-    ///
-    /// Advice, not a filter: the hits are returned either way, and a caller
-    /// that answers from memory decides what a `weak` verdict means for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    evidence: Option<Evidence>,
     hits: Vec<Hit>,
 }
 
@@ -197,11 +189,9 @@ pub async fn execute(
     let hits = engine
         .search_reranked(&args.query, args.limit, depths, rerank)
         .await?;
-    let evidence = engine.judge(&args.query, &hits, rerank).await?;
 
     let results = Results {
         query: args.query,
-        evidence,
         hits: hits
             .into_iter()
             .map(|hit| Hit {
@@ -225,14 +215,7 @@ pub fn render(results: &Results) -> String {
     if results.hits.is_empty() {
         return format!("No memories matched {:?}", results.query);
     }
-    let verdict = results.evidence.map(|evidence| {
-        let word = match evidence.verdict {
-            Verdict::Sufficient => "sufficient",
-            Verdict::Weak => "weak",
-        };
-        format!("evidence: {word} ({:.2})\n", evidence.probability)
-    });
-    let hits = results
+    results
         .hits
         .iter()
         .map(|hit| {
@@ -246,8 +229,7 @@ pub fn render(results: &Results) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    verdict.unwrap_or_default() + &hits
+        .join("\n")
 }
 
 /// Renders the trace as one line, so the reason a result is here is visible
