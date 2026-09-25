@@ -19,8 +19,6 @@ use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
 
-use crate::evidence::Evidence;
-
 /// How deep each channel reaches before fusion.
 ///
 /// These are inputs rather than constants because they are provisional: the
@@ -1557,51 +1555,6 @@ impl Engine {
             &best_first,
         );
         Ok(fused.hits(limit))
-    }
-
-    /// Whether the top of `hits` is evidence for `query`, as a calibrated
-    /// probability -- see [`crate::evidence`].
-    ///
-    /// `None` when there is nothing to judge, or when `rerank` is not the tier
-    /// the map was fitted for. Asked after the ranking is final and never
-    /// feeding back into it, so the order a search returns is the same with or
-    /// without this. The top hit already has a score when the reranker moved
-    /// it; when a lexical channel found it, the model never saw it, and this
-    /// is one pair more.
-    pub async fn judge(
-        &self,
-        query: &str,
-        hits: &[SearchHit],
-        rerank: Rerank,
-    ) -> Result<Option<Evidence>> {
-        let Some(top) = hits.first() else {
-            return Ok(None);
-        };
-        if rerank != crate::evidence::CALIBRATED {
-            return Ok(None);
-        }
-        let scored = top.result.why.iter().find_map(|why| match why {
-            Why::Reranked { score } => Some(*score),
-            Why::Channel { .. } | Why::Path { .. } => None,
-        });
-        let logit = match scored {
-            Some(score) => score,
-            None => {
-                let document = shown(&top.topic, &top.state.content, top.seed.as_deref());
-                off_the_runtime(|| {
-                    let ranked = self
-                        .models
-                        .reranker(rerank)?
-                        .lock()
-                        .expect("the reranker lock is poisoned")
-                        .rank(query, &[document.as_str()])?;
-                    Ok::<_, pamin_index::IndexError>(
-                        ranked.first().map_or(f32::MIN, |ranked| ranked.score),
-                    )
-                })?
-            }
-        };
-        Ok(Some(Evidence::of(logit)))
     }
 
     /// The same search, with the fusion settings supplied.
