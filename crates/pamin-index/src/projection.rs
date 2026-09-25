@@ -334,7 +334,7 @@ const SMALLEST_SEGMENT: u64 = 10_000;
 /// by orders of magnitude keeps the size it was created with until something
 /// recreates it: a server reshapes it on its own once
 /// [`Segmentation::is_worth_rebuilding`] says so, and `pamin reindex` rebuilds
-/// it where there is no server.
+/// it at once.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
 }
@@ -351,9 +351,10 @@ pub fn segment_documents(documents: u64) -> u64 {
 /// from its upkeep loop and, when [`is_worth_rebuilding`](Self::is_worth_rebuilding)
 /// says so, reshapes the index in the background: a copy taken while the
 /// index is served, with every vector reused and the lock held a batch at a
-/// time -- see [`crate::Reshape`]. Without a server nothing does that on its
-/// own, `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds
-/// it, also without embedding anything again; see [`Previous`].
+/// time -- see [`crate::Reshape`]. A process holding the index without a
+/// server, such as an evaluation harness, has nothing doing that on its own.
+/// `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds it,
+/// also without embedding anything again; see [`Previous`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segmentation {
     /// Documents the collection holds.
@@ -442,8 +443,8 @@ impl Segmentation {
 /// the flush to the server, this is a bound rather than a working limit: three
 /// thousand writes through a server leave 136 files and nothing is ever
 /// compacted, where two thousand flushed one at a time left 10,031. It is kept
-/// for the cases that still reach it -- an import, and a workspace written to
-/// with no server behind it -- and because a bound that is not being
+/// for the cases that still reach it -- an import, and a harness writing to an
+/// index with no server behind it -- and because a bound that is not being
 /// approached is the one worth having.
 const MAX_FILES: u64 = 256;
 

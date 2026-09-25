@@ -13,8 +13,8 @@
 //! This used to live in `pamin-cli`'s server module and be called from the
 //! serve path alone, which meant the one process that raised the limit was the
 //! one that had it raised and every other way of opening an index did not:
-//! `PAMIN_NO_SERVER`, and every evaluation harness in this workspace. The
-//! failure above is what that cost. It lives here now because this is the
+//! the CLI's in-process mode at the time, and every evaluation harness in this
+//! workspace. The failure above is what that cost. It lives here now because this is the
 //! crate whose files these are, and it is a call rather than something that
 //! happens on its own -- a library changing a process-wide limit behind its
 //! caller's back is a surprise, and the caller saying so is one line.

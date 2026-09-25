@@ -12,7 +12,6 @@ use pamin_index::Profile;
 use pamin_store::jobs;
 use serde::{Deserialize, Serialize};
 
-use crate::output::Format;
 use crate::session::Session;
 
 #[derive(clap::Args, Serialize, Deserialize)]
@@ -117,7 +116,7 @@ pub fn render_value(
     match args.command {
         Command::Drain => {
             let result: Drained = serde_json::from_str(value.get())?;
-            format.emit(&result, || render_drained(&result, Served::Yes));
+            format.emit(&result, || render_drained(&result));
         }
         Command::Failed => {
             let result: Failures = serde_json::from_str(value.get())?;
@@ -138,70 +137,19 @@ pub fn render_value(
     Ok(())
 }
 
-/// Runs one of the subcommands and prints it.
-pub async fn execute(
-    session: &Session,
-    project: &str,
-    profile: Profile,
-    format: Format,
-    args: Args,
-) -> Result<()> {
-    match args.command {
-        Command::Drain => {
-            let result = drain(session, project, profile).await?;
-            format.emit(&result, || render_drained(&result, Served::No));
-        }
-        Command::Failed => {
-            let result = failed(session, project).await?;
-            format.emit(&result, || render_failures(&result));
-        }
-        Command::Replay => {
-            let result = replay(session, project).await?;
-            format.emit(&result, || {
-                format!("Queued {} failed jobs to run again", result.jobs)
-            });
-        }
-        Command::Discard => {
-            let result = discard(session, project).await?;
-            format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
-        }
-    }
-    Ok(())
-}
-
-/// Whether a server answered, which decides what fixes a badly shaped index.
-#[derive(Clone, Copy)]
-enum Served {
-    Yes,
-    No,
-}
-
 /// What a drain did, and what shape it left the index in if that is worth
 /// saying.
-///
-/// One rendering for both paths. The served one used to be the only one that
-/// mentioned the shape, so the same drain said less without a server -- where
-/// nothing reshapes the index on its own and the advice mattered most.
-fn render_drained(result: &Drained, served: Served) -> String {
+fn render_drained(result: &Drained) -> String {
     let mut rendered = format!(
         "Ran {} jobs, {} failed, {} still owed",
         result.completed, result.failed, result.pending
     );
     if let Some(segments) = &result.segments {
-        let fix = match served {
-            Served::Yes => {
-                "the server reshapes it in the background, copying what it holds \
-                 rather than embedding it again; `pamin reindex` rebuilds it now"
-            }
-            Served::No => {
-                "`pamin reindex` rebuilds it at the right size, and a running server \
-                 reshapes it in the background on its own"
-            }
-        };
         rendered.push_str(&format!(
             "\nThis index is spread over {} segments where {} would do, because it \
              recorded its segment size when it was empty. Searches pay for the extra \
-             segments; {fix}.",
+             segments; the server reshapes it in the background, copying what it holds \
+             rather than embedding it again; `pamin reindex` rebuilds it now.",
             segments.holds, segments.wants
         ));
     }
