@@ -670,12 +670,19 @@ const DOCUMENT_GRAIN: &str = "topic";
 /// and 7.4 MB for the identifier column. A 1024-dimensional fp32 vector is
 /// 4 KB a document and that is most of the 64.
 ///
-/// `Fp32` -- no quantization -- until a sweep says otherwise, and the sweep is
-/// the point of this being a setting: [`PAMIN_VECTOR_STORAGE`] lets
-/// `crates/pamin-index/tests/recall.rs` measure a cell without a rebuild of
-/// the world, because the one thing reading the binding cannot answer is
-/// whether the refiner keeps a full-precision copy beside the quantized one --
-/// in which case quantizing costs disk rather than saving it.
+/// `Fp32`, and that is a measurement of the whole search rather than of the
+/// index (ADR 0001, "What else zvec-rust 0.7.2 offers"). `Int8` answers the
+/// index in about half to four-fifths of the time on MIRACL's 131,924 passages
+/// and ranked not one of 952 questions differently, but through
+/// `search_reranked` it takes 0.998 of fp32's time (p = 0.47): the index is a
+/// few milliseconds of a search the reranker spends a second or more on. And it
+/// costs 16-27% more disk and 25% more resident memory, because the refiner
+/// keeps the fp32 vectors beside the codes. A half-precision *field* would
+/// halve the vector bytes instead, but the engine's fp16 arithmetic costs
+/// recall (0.9650 against 0.9980 on the clustered vectors `recall.rs` uses),
+/// and the binding cannot write one without going around it to the C API.
+/// [`PAMIN_VECTOR_STORAGE`] stays so `crates/pamin-index/tests/recall.rs` can
+/// measure a cell without a rebuild of the world.
 ///
 /// ADR 0001 records a previous attempt at this returning recall@10 of 0.000
 /// with no error and no visible symptom, under the only configuration that
@@ -705,13 +712,16 @@ pub enum VectorStorage {
     Int4,
     /// A bit a dimension.
     ///
-    /// Listed and not reachable: the engine refuses to train a RaBitQ
-    /// quantizer without a `raw_vector_provider`, which this binding does not
-    /// expose, so asking for it fails when the graph is built rather than
-    /// returning a worse index. Kept as a name so the refusal is recorded
-    /// where someone would look for it, and because it is the one storage
-    /// whose codes are small enough to change the disk answer -- see
-    /// `index_params`.
+    /// Listed and not reachable: asking for it fails when the graph is built,
+    /// with the engine refusing to train a RaBitQ quantizer without a
+    /// `raw_vector_provider`. That message names the wrong gap. The index that
+    /// pairs a graph with RaBitQ, `HNSW_RABITQ`, is not in the engine's C API
+    /// at all -- `zvec_index_params_create` has no case for it and hands back
+    /// Flat parameters, without an error, for any type it does not list -- so
+    /// no binding of that API can reach it, provider or not. The RaBitQ that
+    /// is reachable is `IndexParams::ivf_rabitq`, an IVF index rather than a
+    /// graph. Kept as a name so the refusal is recorded where someone would
+    /// look for it.
     Rabitq,
 }
 
@@ -786,10 +796,12 @@ impl VectorStorage {
         // the nearest ones, which is the exact shape ADR 0001 records from the
         // last quantization attempt.
         //
-        // Rotation needs a fitted transform, and nothing here fits one; the
-        // binding's RaBitQ path says as much out loud, refusing to train
-        // without a `raw_vector_provider`. So this stays off until something
-        // supplies that, and `scratch_quantize.rs` is what would notice.
+        // Why is not established, and it is not a missing fitted transform,
+        // which is what this comment used to say: the engine's FHT rotator is
+        // random, seeded from `std::random_device` when the quantizer is
+        // made, so there is nothing for this code to fit or supply. The
+        // likely cause is upstream. So this stays off, and
+        // `scratch_quantize.rs` is what would notice if it came back.
         Ok(IndexParams::hnsw_with_quantize(
             MetricType::Cosine,
             GRAPH_DEGREE,
@@ -1016,6 +1028,14 @@ impl ProjectionIndex {
         access: Access,
         segment: u64,
     ) -> Result<Self> {
+        // The engine's defaults, and an explicit `memory_limit` was measured
+        // rather than assumed away. The limit sizes the buffer pool the engine
+        // reads vectors through when a collection was created with mmap off,
+        // and every collection here is created with the default, mmap on, so
+        // nothing reads it. Over XQuAD-R's 13,014 documents, 256 MiB, 2 GiB
+        // and none opened at the same resident set (243 MB), returned the same
+        // results for 400 vector and 400 lexical queries, and built in the
+        // same time and peak within noise (25.2-26.4 s, 826-873 MB). ADR 0001.
         INITIALIZE.call_once(|| {
             let _ = zvec_rust::initialize(None);
         });
@@ -1132,6 +1152,13 @@ impl ProjectionIndex {
     /// vectors and a reshape copying whole documents cannot come to disagree
     /// about what a stored document is. The text comes from the n-gram field,
     /// which holds the content verbatim; the segmented one is derived from it.
+    ///
+    /// Keyed fetches rather than the engine's document iterator, which reads
+    /// faster and saves nothing a rebuild can see: a pass over MIRACL's
+    /// 131,924 documents takes 1.5 s this way and 0.3 s through the iterator,
+    /// with the same resident set, and a rebuild of XQuAD-R's 13,014 takes
+    /// 30 s of which these reads are about 1%. The iterator would also seal a
+    /// writable collection's open segment each time it was made. ADR 0001.
     fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Doc>> {
         let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
         let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());

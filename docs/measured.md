@@ -1136,6 +1136,36 @@ does not warm its connections. One lead for a later change: every search plans
 each of its statements again, and planning is 1.5 of the 2.6 ms the warm
 backend spends.
 
+**What else the index engine offers was measured, and none of it ships.**
+`zvec-rust` 0.7.2 adds a half-precision vector field, IVF-RaBitQ and DiskANN
+beside the graph, a memory limit and a document iterator. Each was held to a
+rule written before its first number, in the order accuracy, latency, memory,
+disk, and the storages were run through `search_reranked` at the default tier
+and profile with both caches bypassed and the arms in rotated order: all 157
+own-corpus queries, 595 of XQuAD-R's and 200 of MuSiQue's, on four cores two
+other evaluations were sharing, so times are ratios within a question.
+
+| against fp32 | nDCG@10: own / XQuAD-R / MuSiQue | search time | vectors on disk, MIRACL | resident, MIRACL | recall@10, MIRACL / synthetic |
+| --- | --- | --- | --- | --- | --- |
+| int8 codes and refiner | identical on all 952 questions | 0.998 (p = 0.47) | +27% | +25% | 1.0000 / 0.9980, as fp32 |
+| fp16 vector field | −0.0004 / −0.0002 / 0.0000, none significant | 0.997 (p = 0.39) | −45% | −45% | 0.9985 / **0.9650**, against 1.0000 / 0.9980 |
+| IVF-RaBitQ, half the lists probed | not run | not run | +18% | +12% | 0.9981 / 0.951 |
+| DiskANN | not run | not run | +95% | **−96%** | 1.0000 / — |
+
+Int8 makes the index itself answer in about half to four-fifths of the time,
+and that does not reach the search: the index is a few milliseconds of a search
+the reranker spends one to six seconds on. The fp16 field halves the vector
+bytes, but the engine's fp16 arithmetic loses recall on clustered vectors that
+rounding alone does not, and the rule allowed 0.002. DiskANN is the only
+memory lever, holding 22 MB where the graph holds 565, at 2.5 to 5 times the
+index query time, twice the disk and fourteen times the build, so it is the
+path for a project whose resident set is the constraint and not the default.
+An explicit memory limit changed nothing, because it sizes a pool only an index
+created with mmap off reads. The iterator reads 131,924 documents in 0.28 s
+against 1.5 s of keyed fetches, which is about 1% of a rebuild. The tables and
+the rules are in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured-none-of-it-ships);
+the runs were scratch builds and cannot be re-run from the repository.
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested — and the descriptor count is the first thing that would break: this
