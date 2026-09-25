@@ -684,18 +684,21 @@ impl Reranker {
         let repository = Repository::open(cache_dir, tier.repository())?;
 
         let session = |device: Device, providers| -> Result<Encoder> {
-            let model = || {
-                let source = repository.get(tier.onnx(device))?;
+            let weights = repository.file(cache_dir, tier.onnx(device));
+            let model = || match device {
                 // The file the hub serves is copied onto the heap whole; on
                 // the CPU, the prepared copy is mapped instead -- see
-                // `crate::prepared` for what that saves.
-                Ok(match device {
-                    Device::Cpu => crate::prepared::prepared(&source, cache_dir),
-                    _ => source,
-                })
+                // `crate::prepared` for what that saves -- and the download
+                // removed once the copy has loaded.
+                Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
+                _ => repository.get(tier.onnx(device)),
             };
-            Encoder::load(model, &repository, max_tokens(), providers)
-                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))
+            let encoder = Encoder::load(model, &repository, max_tokens(), providers)
+                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
+            if device == Device::Cpu {
+                crate::prepared::release(&weights, cache_dir);
+            }
+            Ok(encoder)
         };
 
         // Each accelerator this build carries, then the CPU. An accelerator
@@ -740,13 +743,19 @@ impl Reranker {
     }
 
     /// Whether the tier's weights for the CPU are on disk already, so that
-    /// loading it reads a file rather than fetching half a gigabyte.
+    /// loading it reads a file rather than fetching half a gigabyte: the
+    /// download, or the mapped copy that replaced it (see `crate::prepared`).
     ///
     /// For a caller loading a tier nobody has asked for yet -- a resident
     /// server warming a project -- which should not be what downloads it.
     pub fn is_downloaded(tier: Rerank, cache_dir: &Path) -> bool {
         tier != Rerank::Off
-            && crate::hub::is_cached(cache_dir, tier.repository(), tier.onnx(Device::Cpu))
+            && Repository::open(cache_dir, tier.repository()).is_ok_and(|repository| {
+                crate::prepared::is_ready(
+                    &repository.file(cache_dir, tier.onnx(Device::Cpu)),
+                    cache_dir,
+                )
+            })
     }
 
     /// Where this reranker's passes run. See [`Device`].
