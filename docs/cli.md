@@ -106,20 +106,22 @@ embedder -- writes the copy, and removes the download again. **That load needs
 the network.** Offline, it fails with an error that names the model and says
 why, instead of searching; the fix is to be online for that one load, or to
 copy the model directory from a machine that has the file. The old copy is
-left in place. It is safe to delete `models/prepared/` at any time, and the next load
-downloads the model again. The download is kept, and nothing is removed, when
-`HF_HOME` is set -- that cache is shared with other tools -- or when a model's
-directory is linked in from another cache. `PAMIN_PREPARED=off` loads from
-the download, fetching it again if it was removed, for a measurement that
-needs the unmapped load or a disk that cannot spare the copy's extra size.
-When a copy cannot be written -- a full or read-only disk -- the model loads
-from the download and keeps it, and the log says why. Where the runtime left a model's
-attention as separate operators -- the `accurate` reranker's int8 export --
-the copy also gets a second graph, `attention.onnx`, with each layer's
-attention as one fused operator; it is kept only if it scores a probe
-bit-for-bit as the first does, and otherwise `attention.unfused` says why.
-`PAMIN_FUSED_ATTENTION=off` loads the unfused graph, for measuring one
-against the other.
+left in place. It is safe to delete `models/prepared/` at any time, and the
+next load downloads the model again. The download is kept, and nothing is
+removed, when `HF_HOME` is set -- that cache is shared with other tools -- or
+when the model directory, or one model's directory inside it, is a link to
+somewhere else. `PAMIN_PREPARED=off` loads from the download, fetching it
+again if it was removed, for a measurement that needs the unmapped load or a
+disk that cannot spare the copy's extra size. When a copy cannot be written --
+a full or read-only disk -- the model loads from the download and keeps it,
+and the log says why.
+
+Where the runtime left a model's attention as separate operators -- the
+`accurate` reranker's int8 export -- the copy also gets a second graph,
+`attention.onnx`, with each layer's attention as one fused operator; it is
+kept only if it scores a probe bit-for-bit as the first does, and otherwise
+`attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
+graph, for measuring one against the other.
 
 The reranker runs on a GPU when the machine has one, with no flag and no
 separate build. Each platform's inference runtime carries the accelerator that

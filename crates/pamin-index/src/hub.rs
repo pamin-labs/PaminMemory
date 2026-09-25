@@ -91,10 +91,13 @@ impl crate::prepared::Download for File<'_> {
     ///
     /// Declines -- `Ok(false)`, nothing touched -- for a file this model
     /// directory does not own: under `HF_HOME`, which is a cache other tools
-    /// read too, or a blob that resolves outside the model directory because
-    /// its repository was linked in from another cache.
+    /// read too; in a model directory that is itself a link, which is how
+    /// several workspaces share one cache; or a blob that resolves outside the
+    /// model directory because its repository was linked in from another cache.
     fn remove(&self) -> Result<bool> {
-        if std::env::var_os("HF_HOME").is_some() {
+        if std::env::var_os("HF_HOME").is_some()
+            || std::fs::symlink_metadata(self.cache_dir)?.is_symlink()
+        {
             return Ok(false);
         }
         let Some(entry) = self.on_disk() else {
@@ -195,5 +198,22 @@ mod tests {
         assert!(!file.remove().expect("decline"));
         assert!(blob.exists(), "another cache's blob was removed");
         assert!(file.on_disk().is_some());
+    }
+
+    /// Nor is anything in a model directory that is itself a link: other
+    /// workspaces link to the same one.
+    #[test]
+    fn a_download_in_a_linked_model_directory_is_not_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let shared = dir.path().join("shared");
+        let (_, blob) = downloaded(&shared);
+        let cache = dir.path().join("models");
+        std::os::unix::fs::symlink(&shared, &cache).expect("link the directory");
+        let repository = Repository::open(&cache, NAME).expect("open");
+        let file = repository.file(&cache, FILE);
+        assert!(file.on_disk().is_some());
+
+        assert!(!file.remove().expect("decline"));
+        assert!(blob.exists(), "a shared directory's blob was removed");
     }
 }
