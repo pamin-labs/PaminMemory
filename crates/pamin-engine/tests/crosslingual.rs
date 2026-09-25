@@ -37,12 +37,19 @@
 //!
 //! | group | the relevant sentences | why it is its own number |
 //! |---|---|---|
-//! | `same_language` | the answer sentence in the query's own language | the baseline the other is read against |
+//! | `same_language` | the answer sentence in the query's own language, with its ten translations removed from the ranking | the baseline the other is read against |
 //! | `cross_lingual` | the answer sentence in the other ten languages, with the query's own removed from the ranking | the claim this project makes |
 //!
 //! Removing the same-language answer from the ranking is what makes the second
 //! group honest. Left in, it takes a top rank on nearly every query and the
 //! group scores well while answering the wrong question.
+//!
+//! The first group removes the translations for the same reason, and until
+//! perf-58 it did not: they stayed in its ranking as non-relevant, so ranking
+//! a correct translation above the same-language answer scored as a mistake.
+//! Every same-language figure in this file and in the ADR from before that
+//! change was taken under the old key, and is a lower bound on the same
+//! ranking scored now -- see [`Query::relevant`].
 //!
 //! Alongside the two metrics is a third number: how many relevant sentences
 //! come back inside the shortlist but *below* rank ten. That is the whole
@@ -191,9 +198,12 @@ const SOURCE: &str =
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
-/// One more than [`RECALL_AT`], because the cross-lingual group drops the
-/// query's own language from the ranking and still needs fifty left.
-const DEPTH: usize = RECALL_AT + 1;
+/// [`RECALL_AT`] plus what a group drops from the ranking before scoring it:
+/// the cross-lingual group drops the query's own language, the same-language
+/// group its ten translations, and each still needs fifty left. Asking for
+/// more changes nothing but how many come back, because the reranker's head
+/// is well inside either depth.
+const DEPTH: usize = RECALL_AT + LANGUAGES.len() - 1;
 
 /// What each channel contributes before fusion, and how far the graph walks.
 ///
@@ -273,24 +283,41 @@ impl Query<'_> {
 
     /// The relevant sentence keys for one group, and what to drop first.
     ///
+    /// Each group removes from the ranking the answers it does not count,
+    /// rather than leaving them in as non-relevant. The two groups are the
+    /// same question under two answer keys, and every answer the key leaves
+    /// out is still a correct answer.
+    ///
     /// The cross-lingual group answers "can a query reach a memory written in
-    /// another language", so the memory written in its own language is removed
-    /// from the ranking rather than merely uncounted. Left in the ranking it
-    /// occupies a top position on nearly every query, and the group reports a
-    /// number that is mostly about same-language retrieval.
-    fn relevant(&self, group: &str) -> (HashSet<&str>, Option<&str>) {
+    /// another language", so the memory written in its own language is
+    /// removed. Left in the ranking it occupies a top position on nearly every
+    /// query, and the group reports a number that is mostly about
+    /// same-language retrieval.
+    ///
+    /// The same-language group answers "is the answer in the query's own
+    /// language placed well", so its ten translations are removed. **They were
+    /// left in until perf-58, as non-relevant**, and a system that ranks a
+    /// correct translation above the same-language answer was scored as though
+    /// it had ranked a wrong sentence there. The `accurate` reranker does that
+    /// often: on 40 random questions, at least one translation outscored the
+    /// same-language answer on 13, and a same-language distractor did so on
+    /// only 3. So the old group penalised correct multilingual relevance, and
+    /// "same-language damage" measured under it was partly this. Removing a
+    /// non-relevant candidate can only raise the relevant one, so every
+    /// same-language figure taken before this change is a lower bound on the
+    /// same ranking scored now.
+    fn relevant(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
         let own = self.question.answers[self.language].as_str();
+        let translations: HashSet<&str> = self
+            .question
+            .answers
+            .iter()
+            .filter(|(language, _)| **language != self.language)
+            .map(|(_, key)| key.as_str())
+            .collect();
         match group {
-            "same_language" => (HashSet::from([own]), None),
-            "cross_lingual" => (
-                self.question
-                    .answers
-                    .iter()
-                    .filter(|(language, _)| **language != self.language)
-                    .map(|(_, key)| key.as_str())
-                    .collect(),
-                Some(own),
-            ),
+            "same_language" => (HashSet::from([own]), translations),
+            "cross_lingual" => (translations, HashSet::from([own])),
             other => panic!("unknown group {other}"),
         }
     }
@@ -521,14 +548,11 @@ fn score(groups: &mut BTreeMap<String, Scores>, query: &Query<'_>, ranked: &[Str
 /// Scores one ranking for one group, dropping what that group drops.
 fn score_group(into: &mut Scores, query: &Query<'_>, group: &str, ranked: &[String]) {
     let (relevant, drop) = query.relevant(group);
-    let kept: Vec<String> = match drop {
-        None => ranked.to_vec(),
-        Some(key) => ranked
-            .iter()
-            .filter(|hit| hit.as_str() != key)
-            .cloned()
-            .collect(),
-    };
+    let kept: Vec<String> = ranked
+        .iter()
+        .filter(|hit| !drop.contains(hit.as_str()))
+        .cloned()
+        .collect();
     into.add(&kept, relevant.len(), |topic| relevant.contains(topic));
 }
 
@@ -1230,7 +1254,7 @@ async fn search_reaches_across_languages() {
                     judged: relevant.len(),
                 };
                 dump.observe(&asked, &hits, WIDE, |topic| {
-                    (drop != Some(topic)).then(|| f64::from(relevant.contains(topic)))
+                    (!drop.contains(topic)).then(|| f64::from(relevant.contains(topic)))
                 });
             }
         }
@@ -1329,8 +1353,8 @@ async fn search_reaches_across_languages() {
 
     // `AT_LIMIT` asks the shipped path for as many results as a person asks
     // for, and reports what the reranker was made to do rather than how well
-    // it did it. Every other arm here asks for fifty-one so that recall@50 can
-    // be scored, which puts the reranker's whole twenty-deep head inside what
+    // it did it. Every other arm here asks for sixty so that recall@50 can
+    // be scored, which puts the reranker's whole thirty-deep head inside what
     // is read; at five, most of that head is past it, and `can_be_seen` then
     // declines the pass entirely on the queries where none of the candidates
     // it may move is inside the five. How often that is, is the number this
@@ -1538,8 +1562,8 @@ enum Route {
     Shipped(Rerank),
     /// The same entry point, asked for as many results as a person asks for.
     ///
-    /// `DEPTH` is fifty-one so that recall@50 can be scored, and the whole of
-    /// the reranker's twenty-deep head is inside that. `pamin search` defaults
+    /// `DEPTH` is sixty so that recall@50 can be scored, and the whole of
+    /// the reranker's thirty-deep head is inside that. `pamin search` defaults
     /// to five, where most of that head is past what the caller reads --
     /// which is a different amount of work for the same query and was never
     /// measured. The scores from this route are not comparable with anything
@@ -1812,7 +1836,7 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
             let into = if at % 2 == 0 { &mut fit } else { &mut test };
             let pairs = into.entry(group.to_string()).or_default();
             for hit in &hits {
-                if drop == Some(hit.topic.as_str()) {
+                if drop.contains(hit.topic.as_str()) {
                     continue;
                 }
                 let scored = hit.result.why.iter().find_map(|why| match why {
@@ -2516,8 +2540,8 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
     let mut groups = BTreeMap::new();
     for query in queries {
         let hits = match &route {
-            // `DEPTH` is fifty-one and a tier's depth is twenty, so the
-            // rerank path returns the fifty-one this scores at and the
+            // `DEPTH` is sixty and a tier's depth is thirty, so the
+            // rerank path returns the sixty this scores at and the
             // reranker reorders the head. recall@50 is therefore the same list either
             // way and only the ordering moves, which is what the tier claims
             // to change.
