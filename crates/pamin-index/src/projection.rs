@@ -792,6 +792,24 @@ impl ProjectionIndex {
         Self::open_sized(dir, profile, access, segment_documents(documents))
     }
 
+    /// The profile the index at `dir` was built with, if there is one there.
+    ///
+    /// For a caller that has to open an index nobody asked it to and so has
+    /// no profile in hand: the resident server, bringing up to date a project
+    /// that was written to by a process that is gone. Opening under a guess is
+    /// not an option -- a wrong guess is refused, and a guess at a directory
+    /// with no index creates one for that profile.
+    ///
+    /// `None` for no index, and for one recorded with a model no profile runs
+    /// any more, which only a rebuild can open.
+    pub fn built_for(dir: &Path) -> Result<Option<Profile>> {
+        Ok(Marker::read(dir)?.and_then(|recorded| {
+            [Profile::Speed, Profile::Balanced, Profile::Accuracy]
+                .into_iter()
+                .find(|profile| profile.model_id() == recorded.model)
+        }))
+    }
+
     /// Opens the index at `dir`, creating it with segments of `segment`
     /// documents if absent.
     ///
@@ -1704,5 +1722,37 @@ mod upkeep {
     fn a_nonsense_completeness_does_not_wrap() {
         assert!(vector_index_lags(30_000, -1.0));
         assert!(!vector_index_lags(30_000, 2.0));
+    }
+}
+
+#[cfg(test)]
+mod marker {
+    use super::{Marker, ProjectionIndex};
+    use crate::Profile;
+
+    /// What an index was built with reads back as the profile that built it.
+    ///
+    /// The server opens a project nobody asked for under this answer, and
+    /// the answer being wrong has no quiet failure: the open is refused, or
+    /// -- for a directory with no index -- an empty one is created under the
+    /// guess. So every profile is written and read back, and an empty
+    /// directory has to answer that there is nothing to open.
+    #[test]
+    fn an_index_reads_back_the_profile_it_was_built_with() {
+        for profile in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
+            let dir = tempfile::tempdir().expect("a directory");
+            Marker::current(profile).write(dir.path()).expect("marking");
+            assert_eq!(
+                ProjectionIndex::built_for(dir.path()).expect("reading"),
+                Some(profile)
+            );
+        }
+
+        let empty = tempfile::tempdir().expect("a directory");
+        assert_eq!(
+            ProjectionIndex::built_for(empty.path()).expect("reading"),
+            None,
+            "a directory with no index named a profile to open it under"
+        );
     }
 }
