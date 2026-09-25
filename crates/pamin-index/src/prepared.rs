@@ -29,7 +29,7 @@
 //! stops being true.
 //!
 //! What it costs is disk and one slow first load. The copy is written once per
-//! model, beside the downloaded weights, and is larger than the file it came
+//! model from the downloaded weights, and is larger than the file it came
 //! from -- 874 MB of data for the 570 MB reranker, because the packed weights
 //! are stored alongside the originals. Writing it took 5.1 s on that model,
 //! during which the source is loaded onto the heap exactly as it was before,
@@ -50,6 +50,18 @@
 //!
 //! Only the CPU. An accelerator copies weights into its own memory whatever
 //! the file looks like, and loads the file the hub serves.
+//!
+//! Once a copy has loaded, the download it was written from is removed
+//! ([`release`]): nothing reads it again on this runtime and this CPU, and at
+//! the defaults it was 1,141 MB of the 2,923 MB the two models took, measured
+//! on a model directory before and after one load of each. What that
+//! gives up is the source for the next copy. A copy that no longer fits -- a
+//! runtime upgrade, a model directory moved to another CPU -- is written from
+//! a fresh download, so that load needs the network, and fails saying so when
+//! there is none ([`load_path`]). A small record of what the download was
+//! (`<repository>--<file>.source`, beside the copies) is what finds the copy
+//! without the file it was keyed by, and what lets a re-download key exactly
+//! as the removed one did.
 
 use std::path::{Path, PathBuf};
 
@@ -88,35 +100,190 @@ const FUSED: &str = "attention.onnx";
 /// again. The copy then loads [`MODEL`].
 const UNFUSED: &str = "attention.unfused";
 
-/// The path to load `source` from on the CPU: a mapped copy of it under
+/// A model file as [`load_path`] asks for it: on disk, from the hub, or
+/// removed once a copy has replaced it. `crate::hub::File` in the product; a
+/// stand-in in the tests, which cannot reach a hub.
+pub(crate) trait Download {
+    /// `repository/file`, which names the file's record and its log lines.
+    fn label(&self) -> String;
+    /// The file, if it is on disk, without asking the hub.
+    fn on_disk(&self) -> Option<PathBuf>;
+    /// The file, downloaded first if it is not on disk.
+    fn fetch(&self) -> Result<PathBuf>;
+    /// Removes the file from disk, returning whether it did: `false`, having
+    /// touched nothing, when the file is not this model directory's to remove.
+    fn remove(&self) -> Result<bool>;
+}
+
+/// The path to load `download` from on the CPU: a mapped copy of it under
 /// `cache_dir`, written first if there is none yet.
 ///
-/// Falls back to `source` itself, with a warning, when the copy cannot be
+/// A copy that exists is found without the download, which [`release`] has
+/// usually removed. When there is none for this runtime and CPU the download
+/// is fetched again, and the copy written from it; with no network that is an
+/// error saying why the model is not on disk, rather than the hub client's.
+///
+/// Falls back to the download itself, with a warning, when the copy cannot be
 /// written -- a read-only or full disk, a file lock the filesystem does not
 /// support, a graph the runtime will not re-serialize. The model then loads
 /// the way it did before copies existed, which costs memory and nothing else.
 /// `PAMIN_PREPARED=off` asks for that on purpose, for a measurement that needs
-/// the unmapped load or a disk that cannot spare the second copy.
+/// the unmapped load, and fetches the download if it was removed.
 ///
 /// The copy's graph with its attention fused, where that scored identically,
 /// and `PAMIN_FUSED_ATTENTION=off` asks for the graph as ONNX Runtime wrote
 /// it -- the other arm of a measurement of what the fusion is worth.
-pub(crate) fn prepared(source: &Path, cache_dir: &Path) -> PathBuf {
-    if std::env::var("PAMIN_PREPARED").is_ok_and(|value| value.eq_ignore_ascii_case("off")) {
-        return source.to_path_buf();
+pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<PathBuf> {
+    let root = cache_dir.join("prepared");
+    if !wanted() {
+        let fetched = download.fetch()?;
+        if let Some(recorded) = recorded(download, &root) {
+            recorded.restore(&fetched);
+        }
+        return Ok(fetched);
     }
-    match prepare(source, &cache_dir.join("prepared")) {
-        Ok(copy) if copy.ends_with(FUSED) && !fusion_wanted() => copy.with_file_name(MODEL),
-        Ok(copy) => copy,
+    let source = match download.on_disk() {
+        Some(source) => source,
+        None => {
+            let recorded = recorded(download, &root);
+            if let Some(copy) = recorded.as_ref().and_then(|source| found(source, &root)) {
+                return Ok(copy);
+            }
+            let fetched = download.fetch().map_err(|error| match &recorded {
+                Some(_) => IndexError::Engine(format!(
+                    "no mapped copy of {} fits this runtime and CPU, and its download was \
+                     removed once a copy had replaced it; writing one needs the download \
+                     again, and fetching it failed. Connect to the network for this one \
+                     load, or copy the model directory from a machine that has the file. \
+                     ({error})",
+                    download.label()
+                )),
+                None => error,
+            })?;
+            if let Some(recorded) = &recorded {
+                recorded.restore(&fetched);
+            }
+            fetched
+        }
+    };
+    match prepare(&source, &root) {
+        Ok(copy) => Ok(graph(copy)),
         Err(error) => {
+            // Another process released the download between this one finding
+            // it and keying it, which it does only once the copy is complete.
+            if !source.exists()
+                && let Some(copy) =
+                    recorded(download, &root).and_then(|source| found(&source, &root))
+            {
+                return Ok(copy);
+            }
             tracing::warn!(
                 source = %source.display(),
                 %error,
                 "could not write a mapped copy of the model; loading it onto the heap instead"
             );
-            source.to_path_buf()
+            Ok(source)
         }
     }
+}
+
+/// Removes `download` from disk once a copy of it has loaded, keeping a
+/// record of what it was.
+///
+/// Called by a load that has just succeeded from [`load_path`]'s answer, so a
+/// copy that will not load never costs the file it could be written again
+/// from. Under the copy's lock, so a writer of the same copy is never left
+/// without its source; the record is written before the file goes, so an
+/// interruption between the two costs a download, never the copy.
+///
+/// Best effort, and a no-op where there is nothing to do: the download is
+/// already gone, there is no complete copy for it, `PAMIN_PREPARED=off`, or
+/// the file is not the model directory's own ([`Download::remove`]).
+pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
+    if !wanted() {
+        return;
+    }
+    let Some(source) = download.on_disk() else {
+        return;
+    };
+    let root = cache_dir.join("prepared");
+    let released = (|| -> Result<Option<u64>> {
+        let identity = Source::of(&source)?;
+        let (key, _) = identity.key();
+        if settled(&root.join(&key)).is_none() {
+            return Ok(None);
+        }
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(root.join(format!("{key}.lock")))?;
+        lock.lock()?;
+        // Again under the lock, which is what a writer of this copy holds.
+        if settled(&root.join(&key)).is_none() {
+            return Ok(None);
+        }
+        let record = root.join(record_name(download));
+        let partial = record.with_extension("source.partial");
+        std::fs::write(&partial, identity.record())?;
+        std::fs::rename(&partial, &record)?;
+        Ok(download.remove()?.then_some(identity.length))
+    })();
+    match released {
+        Ok(Some(bytes)) => tracing::info!(
+            model = %download.label(),
+            megabytes = bytes / 1_000_000,
+            "removed a model's download, which its mapped copy has replaced"
+        ),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(
+            model = %download.label(),
+            %error,
+            "could not remove a model's download beside its mapped copy; keeping it"
+        ),
+    }
+}
+
+/// Whether loading `download` reads only what is on disk: the download, or a
+/// copy that fits this runtime and CPU.
+pub(crate) fn is_ready(download: &impl Download, cache_dir: &Path) -> bool {
+    download.on_disk().is_some()
+        || (wanted()
+            && recorded(download, &cache_dir.join("prepared"))
+                .and_then(|source| found(&source, &cache_dir.join("prepared")))
+                .is_some())
+}
+
+/// Whether copies are wanted at all: unless `PAMIN_PREPARED=off`.
+fn wanted() -> bool {
+    !std::env::var("PAMIN_PREPARED").is_ok_and(|value| value.eq_ignore_ascii_case("off"))
+}
+
+/// The graph a caller loads from a settled copy: the fused one unless
+/// `PAMIN_FUSED_ATTENTION=off` asks for the one ONNX Runtime wrote.
+fn graph(copy: PathBuf) -> PathBuf {
+    if copy.ends_with(FUSED) && !fusion_wanted() {
+        copy.with_file_name(MODEL)
+    } else {
+        copy
+    }
+}
+
+/// The settled copy of the download `source` described, if this runtime and
+/// CPU have one.
+fn found(source: &Source, root: &Path) -> Option<PathBuf> {
+    settled(&root.join(source.key().0)).map(graph)
+}
+
+/// What a removed download was, as [`release`] recorded it.
+fn recorded(download: &impl Download, root: &Path) -> Option<Source> {
+    Source::parse(&std::fs::read_to_string(root.join(record_name(download))).ok()?)
+}
+
+/// The record's file name: the label, readable, with nothing a path would
+/// split on.
+fn record_name(download: &impl Download) -> String {
+    format!("{}.source", download.label().replace(['/', '\\'], "--"))
 }
 
 /// Finds or writes the copy of `source` under `root`.
@@ -134,7 +301,7 @@ pub(crate) fn prepared(source: &Path, cache_dir: &Path) -> PathBuf {
 /// it -- and the path returned is the graph to load: [`FUSED`] if it was
 /// kept, [`MODEL`] if not.
 fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
-    let (key, described) = key(source)?;
+    let (key, described) = Source::of(source)?.key();
     let done = root.join(&key);
     let copy = done.join(MODEL);
     if let Some(settled) = settled(&done) {
@@ -383,42 +550,111 @@ fn write(source: &Path, into: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The directory name a copy of `source` is kept under, and what it was
-/// derived from, for the log.
-///
-/// The source is identified by the name of the file it resolves to -- for a
-/// hub download that is the blob, named by the hash of its content -- with its
-/// length and modification time, so a file replaced in place under the same
-/// name is a different source. The rest is everything that decides whether a
-/// copy written here is valid there: the runtime's build, the architecture and
-/// its matrix features, and the optimization level. Hashed because the build
-/// string alone is longer than some filesystems allow a name to be.
-fn key(source: &Path) -> Result<(String, String)> {
-    let resolved = std::fs::canonicalize(source)?;
-    let metadata = std::fs::metadata(&resolved)?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |since| since.as_nanos());
-    let described = format!(
-        "source {} {} bytes modified {modified}; runtime 1.{} {}; {} {}; {LEVEL:?}",
-        resolved
-            .file_name()
-            .map(|name| name.to_string_lossy())
-            .unwrap_or_default(),
-        metadata.len(),
-        ort::MINOR_VERSION,
-        ort::info(),
-        std::env::consts::ARCH,
-        features().join(","),
-    );
-    let digest = Sha256::digest(described.as_bytes());
-    let key = digest[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Ok((key, described))
+/// What identifies a copy's source: the name of the file it resolves to --
+/// for a hub download that is the blob, named by the hash of its content --
+/// with its length and modification time, so a file replaced in place under
+/// the same name is a different source.
+#[derive(Debug, PartialEq, Eq)]
+struct Source {
+    name: String,
+    length: u64,
+    modified: u128,
+}
+
+impl Source {
+    fn of(source: &Path) -> Result<Self> {
+        let resolved = std::fs::canonicalize(source)?;
+        let metadata = std::fs::metadata(&resolved)?;
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_nanos());
+        Ok(Self {
+            name: resolved
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            length: metadata.len(),
+            modified,
+        })
+    }
+
+    /// The directory name a copy of this source is kept under, and what it was
+    /// derived from, for the log.
+    ///
+    /// The source, and everything that decides whether a copy written here is
+    /// valid there: the runtime's build, the architecture and its matrix
+    /// features, and the optimization level. Hashed because the build string
+    /// alone is longer than some filesystems allow a name to be.
+    fn key(&self) -> (String, String) {
+        let described = format!(
+            "source {} {} bytes modified {}; runtime 1.{} {}; {} {}; {LEVEL:?}",
+            self.name,
+            self.length,
+            self.modified,
+            ort::MINOR_VERSION,
+            ort::info(),
+            std::env::consts::ARCH,
+            features().join(","),
+        );
+        let digest = Sha256::digest(described.as_bytes());
+        let key = digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        (key, described)
+    }
+
+    /// One line each, as [`release`] writes it.
+    fn record(&self) -> String {
+        format!("{}\n{}\n{}\n", self.name, self.length, self.modified)
+    }
+
+    fn parse(record: &str) -> Option<Self> {
+        let mut lines = record.lines();
+        let source = Self {
+            name: lines.next()?.to_string(),
+            length: lines.next()?.parse().ok()?,
+            modified: lines.next()?.parse().ok()?,
+        };
+        (!source.name.is_empty()).then_some(source)
+    }
+
+    /// Gives a fresh download of this source this source's modification time,
+    /// so it keys exactly as the removed file did.
+    ///
+    /// A hub blob is named by its content, so the same name and length is the
+    /// same file, and the time is the only thing the download changed. Left
+    /// changed, every copy of the model would stop fitting -- including those
+    /// of another runtime or CPU sharing the directory, which would then fetch
+    /// and write again in turn, each undoing the other. A different file --
+    /// the repository moved on -- is left as it is and keys as new.
+    fn restore(&self, fetched: &Path) {
+        let restored = (|| -> Result<bool> {
+            let now = Self::of(fetched)?;
+            if now.name != self.name || now.length != self.length || now.modified == self.modified {
+                return Ok(false);
+            }
+            let at = std::time::UNIX_EPOCH
+                + std::time::Duration::new(
+                    (self.modified / 1_000_000_000) as u64,
+                    (self.modified % 1_000_000_000) as u32,
+                );
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(std::fs::canonicalize(fetched)?)?
+                .set_modified(at)?;
+            Ok(true)
+        })();
+        if let Err(error) = restored {
+            tracing::warn!(
+                source = %fetched.display(),
+                %error,
+                "could not give a fresh download its old time; its copies will be written again"
+            );
+        }
+    }
 }
 
 /// The CPU features that decide how the matrix kernels pack a weight.
@@ -486,33 +722,231 @@ fn features() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
-    /// A file the runtime cannot read as a model, standing in for any failure
-    /// to write a copy.
-    fn not_a_model(dir: &Path) -> PathBuf {
-        let source = dir.join("broken.onnx");
-        std::fs::write(&source, b"this is not a protobuf").expect("write the fake model");
-        source
+    /// A hub that is a file on this disk: `fetch` copies `origin` into place
+    /// as a download would, and fails while `online` is false.
+    struct Hub {
+        origin: PathBuf,
+        blob: PathBuf,
+        online: Cell<bool>,
+        fetches: Cell<usize>,
     }
 
-    /// A copy that cannot be written falls back to the source and leaves
-    /// nothing behind that a later load could mistake for a copy.
+    impl Hub {
+        fn new(dir: &Path, model: &[u8]) -> Self {
+            let origin = dir.join("origin.onnx");
+            std::fs::write(&origin, model).expect("write the hub's copy");
+            Self {
+                origin,
+                blob: dir.join("models").join("blobs").join("0123abcd"),
+                online: Cell::new(true),
+                fetches: Cell::new(0),
+            }
+        }
+    }
+
+    impl Download for Hub {
+        fn label(&self) -> String {
+            "someone/model/onnx/model.onnx".into()
+        }
+
+        fn on_disk(&self) -> Option<PathBuf> {
+            self.blob.exists().then(|| self.blob.clone())
+        }
+
+        fn fetch(&self) -> Result<PathBuf> {
+            if let Some(blob) = self.on_disk() {
+                return Ok(blob);
+            }
+            if !self.online.get() {
+                return Err(IndexError::Engine("the hub cannot be reached".into()));
+            }
+            std::fs::create_dir_all(self.blob.parent().expect("a parent"))?;
+            std::fs::copy(&self.origin, &self.blob)?;
+            self.fetches.set(self.fetches.get() + 1);
+            Ok(self.blob.clone())
+        }
+
+        fn remove(&self) -> Result<bool> {
+            std::fs::remove_file(&self.blob)?;
+            Ok(true)
+        }
+    }
+
+    /// The smallest model a copy can be written of: one `MatMul` by a 32x32
+    /// weight, which at 4 kB is large enough to go to the data file.
+    fn tiny_model() -> Vec<u8> {
+        fn varint(out: &mut Vec<u8>, mut value: u64) {
+            while value >= 0x80 {
+                out.push(value as u8 | 0x80);
+                value >>= 7;
+            }
+            out.push(value as u8);
+        }
+        fn number(out: &mut Vec<u8>, field: u64, value: u64) {
+            varint(out, field << 3);
+            varint(out, value);
+        }
+        fn bytes(out: &mut Vec<u8>, field: u64, value: &[u8]) {
+            varint(out, field << 3 | 2);
+            varint(out, value.len() as u64);
+            out.extend_from_slice(value);
+        }
+        fn tensor(name: &str, dims: &[u64]) -> Vec<u8> {
+            let mut shape = Vec::new();
+            for dim in dims {
+                let mut value = Vec::new();
+                number(&mut value, 1, *dim);
+                bytes(&mut shape, 1, &value);
+            }
+            let mut tensor_type = Vec::new();
+            number(&mut tensor_type, 1, 1); // float
+            bytes(&mut tensor_type, 2, &shape);
+            let mut ty = Vec::new();
+            bytes(&mut ty, 1, &tensor_type);
+            let mut info = Vec::new();
+            bytes(&mut info, 1, name.as_bytes());
+            bytes(&mut info, 2, &ty);
+            info
+        }
+
+        let mut node = Vec::new();
+        bytes(&mut node, 1, b"x");
+        bytes(&mut node, 1, b"w");
+        bytes(&mut node, 2, b"y");
+        bytes(&mut node, 3, b"project");
+        bytes(&mut node, 4, b"MatMul");
+        let mut weight = Vec::new();
+        number(&mut weight, 1, 32);
+        number(&mut weight, 1, 32);
+        number(&mut weight, 2, 1); // float
+        bytes(&mut weight, 8, b"w");
+        let raw: Vec<u8> = (0..32 * 32)
+            .flat_map(|at| (at as f32 / 1024.0).to_le_bytes())
+            .collect();
+        bytes(&mut weight, 9, &raw);
+        let mut graph = Vec::new();
+        bytes(&mut graph, 1, &node);
+        bytes(&mut graph, 2, b"tiny");
+        bytes(&mut graph, 5, &weight);
+        bytes(&mut graph, 11, &tensor("x", &[1, 32]));
+        bytes(&mut graph, 12, &tensor("y", &[1, 32]));
+        let mut opset = Vec::new();
+        bytes(&mut opset, 1, b"");
+        number(&mut opset, 2, 13);
+        let mut model = Vec::new();
+        number(&mut model, 1, 7);
+        bytes(&mut model, 8, &opset);
+        bytes(&mut model, 7, &graph);
+        model
+    }
+
+    /// Loads `path` the way a model is loaded, which is what [`release`]
+    /// waits for.
+    fn load(path: &Path) {
+        crate::inference::session(vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
+            .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
+    }
+
+    /// The download's whole life: written into a copy and removed, the copy
+    /// found without it, a copy that no longer fits refused offline with the
+    /// reason, and the download fetched again and keyed as before once the
+    /// network is back.
     #[test]
-    fn a_failed_copy_loads_the_source_and_leaves_nothing() {
+    fn a_download_goes_once_its_copy_loads_and_comes_back_when_a_copy_must_be_written() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let source = not_a_model(dir.path());
+        let hub = Hub::new(dir.path(), &tiny_model());
+        let cache = dir.path().join("models");
+        let root = cache.join("prepared");
+
+        // First load: fetched, written into a copy, loaded, then removed.
+        let copy = load_path(&hub, &cache).expect("the first load");
+        assert_eq!(hub.fetches.get(), 1);
+        assert!(copy.starts_with(&root), "loaded {copy:?}, not a copy");
+        assert!(
+            hub.on_disk().is_some(),
+            "the download went before the copy had loaded"
+        );
+        load(&copy);
+        release(&hub, &cache);
+        assert!(
+            hub.on_disk().is_none(),
+            "the download is still beside its copy"
+        );
+        let key = copy
+            .parent()
+            .and_then(Path::file_name)
+            .expect("the copy's directory")
+            .to_owned();
+
+        // Offline, the copy is found by its record alone.
+        hub.online.set(false);
+        assert!(is_ready(&hub, &cache));
+        assert_eq!(load_path(&hub, &cache).expect("a load offline"), copy);
+        assert_eq!(hub.fetches.get(), 1, "a load with a fitting copy fetched");
+
+        // What a runtime upgrade or another CPU looks like from here: the
+        // only copy on disk is keyed for something else.
+        std::fs::rename(root.join(&key), root.join("0".repeat(32))).expect("move the copy");
+        assert!(!is_ready(&hub, &cache));
+        let refused = load_path(&hub, &cache)
+            .expect_err("a load with no fitting copy and no network must fail")
+            .to_string();
+        assert!(
+            refused.contains("someone/model/onnx/model.onnx")
+                && refused.contains("download was removed")
+                && refused.contains("the hub cannot be reached"),
+            "the offline error does not say why: {refused}"
+        );
+
+        // Back online: fetched again, and keyed as the removed file was, so
+        // a copy another runtime keeps for it would still fit.
+        hub.online.set(true);
+        let rewritten = load_path(&hub, &cache).expect("a load once online");
+        assert_eq!(hub.fetches.get(), 2);
+        assert_eq!(
+            rewritten, copy,
+            "the fresh download keyed differently from the removed one"
+        );
+        load(&rewritten);
+        release(&hub, &cache);
+        assert!(hub.on_disk().is_none());
+    }
+
+    /// A copy that cannot be written falls back to the download, leaves
+    /// nothing behind that a later load could mistake for a copy, and keeps
+    /// the download: it is the only thing that loads.
+    #[test]
+    fn a_failed_copy_loads_the_download_and_keeps_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hub = Hub::new(dir.path(), b"this is not a protobuf");
         let cache = dir.path().join("models");
 
-        assert_eq!(prepared(&source, &cache), source);
+        let loaded = load_path(&hub, &cache).expect("fall back");
+        assert_eq!(Some(loaded), hub.on_disk());
+        release(&hub, &cache);
+        assert!(
+            hub.on_disk().is_some(),
+            "the only loadable file was removed"
+        );
 
-        let (key, _) = key(&source).expect("key the source");
+        let (key, _) = Source::of(&hub.blob).expect("key the source").key();
         let root = cache.join("prepared");
         assert!(!root.join(&key).exists(), "a failed write left a copy");
         assert!(
             !root.join(format!("{key}.partial")).exists(),
             "a failed write left its partial directory"
         );
+    }
+
+    /// A file the runtime cannot read as a model.
+    fn not_a_model(dir: &Path) -> PathBuf {
+        let source = dir.join("broken.onnx");
+        std::fs::write(&source, b"this is not a protobuf").expect("write the fake model");
+        source
     }
 
     /// A partial directory found under the lock is a crashed writer's, and is
@@ -522,7 +956,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let source = not_a_model(dir.path());
         let root = dir.path().join("prepared");
-        let (key, _) = key(&source).expect("key the source");
+        let (key, _) = Source::of(&source).expect("key the source").key();
         let partial = root.join(format!("{key}.partial"));
         std::fs::create_dir_all(&partial).expect("make a partial directory");
         std::fs::write(partial.join(MODEL), b"half a model").expect("half-write it");
@@ -540,7 +974,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let source = not_a_model(dir.path());
         let root = dir.path().join("prepared");
-        let (key, _) = key(&source).expect("key the source");
+        let (key, _) = Source::of(&source).expect("key the source").key();
         std::fs::create_dir_all(root.join(&key)).expect("make the copy's directory");
         std::fs::write(root.join(&key).join(MODEL), b"a copy").expect("write the copy");
 
@@ -551,7 +985,7 @@ mod tests {
     }
 
     /// The same source keys the same way twice, and a different one does not
-    /// share its key.
+    /// share its key; and a record reads back as the source it describes.
     #[test]
     fn a_key_is_the_sources_own() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -559,7 +993,12 @@ mod tests {
         let other = dir.path().join("other.onnx");
         std::fs::write(&other, b"a different file entirely").expect("write another");
 
-        assert_eq!(key(&one).expect("key").0, key(&one).expect("key again").0);
-        assert_ne!(key(&one).expect("key").0, key(&other).expect("key").0);
+        let key = |path: &Path| Source::of(path).expect("key").key().0;
+        assert_eq!(key(&one), key(&one));
+        assert_ne!(key(&one), key(&other));
+
+        let source = Source::of(&one).expect("describe");
+        assert_eq!(Source::parse(&source.record()), Some(source));
+        assert_eq!(Source::parse("name\nnot a length\n1\n"), None);
     }
 }

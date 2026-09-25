@@ -912,7 +912,7 @@ serves, which ONNX Runtime copies onto the heap. They have not been re-run
 since the change below.
 
 **The weights are mapped now, not copied.** On the CPU each model loads from a
-copy the runtime maps from disk -- written once beside the download; see
+copy the runtime maps from disk -- written once from the download; see
 `crates/pamin-index/src/prepared.rs` -- and
 `crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
 and `Embedder::load`. Each load runs in a fresh process, and what is counted
@@ -932,6 +932,32 @@ bare runtime session adds 139 MB loading the `fast` reranker's download and
 session. The data file is the price, on disk rather than in memory -- larger
 than the model it came from, because the packed weights are stored beside the
 originals.
+
+**And the download goes once its copy has loaded**, so a model is on disk once
+rather than twice. Measured on a model directory holding BGE-M3 and the
+`accurate` reranker as the code before this left them after first use -- each
+download beside its copy -- seeded by hard links from the evaluation
+workspace's directory so that nothing was downloaded, and read with `du` before
+and after one load of each through `Embedder::load` and `Reranker::load`:
+
+| | bytes on disk |
+| --- | --- |
+| each download beside its copy | 2,923 MB |
+| after one load of each | **1,783 MB** |
+
+Each load mapped the copy that was already there (read from
+`/proc/self/maps`), so the 1,141 MB is the two int8 exports, 570 MB each; what
+is left is the two copies and the two 17 MB tokenizers. The same lifecycle on a
+fresh directory through the hub, with the `fast` tier to spare the disk: 157 MB
+after its first load, where its 119 MB download used to stay beside that. With
+its copy renamed to another key, which is what a runtime upgrade leaves, and
+the hub unreachable, the next load failed naming the model and the network;
+with the hub back it fetched the file again, wrote the copy under the same key
+as before -- a re-download is given the removed file's modification time, so
+it keys identically -- and removed the download again. All five loads scored
+bit-identically, `PAMIN_PREPARED=off` among them. What this gives up is
+offline use across a key change, and [cli.md](cli.md) says so where the
+setting is described.
 
 **And one vocabulary between them, not one each.** What a copy leaves is mostly
 tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
@@ -1158,7 +1184,7 @@ does not warm its connections. One lead for a later change: every search plans
 each of its statements again, and planning is 1.5 of the 2.6 ms the warm
 backend spends.
 
-**What else the index engine offers was measured, and none of it ships.**
+**What else the index engine offers was measured.**
 `zvec-rust` 0.7.2 adds a half-precision vector field, IVF-RaBitQ and DiskANN
 beside the graph, a memory limit and a document iterator. Each was held to a
 rule written before its first number, in the order accuracy, latency, memory,
@@ -1184,8 +1210,10 @@ index query time, twice the disk and fourteen times the build, so it is the
 path for a project whose resident set is the constraint and not the default.
 An explicit memory limit changed nothing, because it sizes a pool only an index
 created with mmap off reads. The iterator reads 131,924 documents in 0.28 s
-against 1.5 s of keyed fetches, which is about 1% of a rebuild. The tables and
-the rules are in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured-none-of-it-ships);
+against 1.5 s of keyed fetches, which is about 1% of a rebuild; it failed its
+rule and ships anyway, because it changes nothing a rebuild lends and the owner
+takes every optimization that costs no accuracy. The tables and the rules are
+in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured);
 the runs were scratch builds and cannot be re-run from the repository.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
