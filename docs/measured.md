@@ -1222,8 +1222,8 @@ in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured)
 the runs were scratch builds and cannot be re-run from the repository.
 
 **Vectors are now half precision, under `disk` or `memory`.** The owner set
-the storage directly: fp16 vectors, a DiskANN graph on disk by default
-(`disk`) or the HNSW graph in memory (`memory`), both ranking twice the
+the storage directly: fp16 vectors, the HNSW graph in memory by default
+(`memory`) or a DiskANN graph on disk (`disk`), both ranking twice the
 candidates again by an exact f32 cosine, because the engine's own fp16 scores
 lose recall in their arithmetic rather than in the rounding. Against exact
 search, with fp32 HNSW -- what shipped before -- as the bar:
@@ -1231,8 +1231,8 @@ search, with fp32 HNSW -- what shipped before -- as the bar:
 | | recall@10 / @50, 50,000 synthetic | recall@10 / @50, MIRACL | vector query, MIRACL | full build, MIRACL | resident, MIRACL | disk, MIRACL |
 | --- | --- | --- | --- | --- | --- | --- |
 | fp32 HNSW (before) | 0.9980 / 0.9974 | 1.0000 / 0.9999 | 9.5 ms | 171 s | 575 MB | 595.5 MB |
-| `memory` | 0.9965 / 0.9965 | 1.0000 / 0.9997 | 5.9 ms | 84 s | 320 MB | 327.8 MB |
-| `disk` (default) | 0.9985 / 0.9975 | 1.0000 / 0.9996 | 68.6 ms | 1,379 s | 34 MB | 618.1 MB |
+| `memory` (default) | 0.9965 / 0.9965 | 1.0000 / 0.9997 | 5.9 ms | 84 s | 320 MB | 327.8 MB |
+| `disk` | 0.9985 / 0.9975 | 1.0000 / 0.9996 | 68.6 ms | 1,379 s | 34 MB | 618.1 MB |
 
 Query times are medians at k = 10 on four cores other evaluations were
 sharing at load 9 to 13, so they are directions. `disk` reaches the bar only
@@ -1241,8 +1241,9 @@ and its cost on the write path is the open question: through the product's
 index, five `optimize` calls after 64 new documents each took 114 to 310 s
 under `disk` and 1.1 to 1.6 s under `memory`. Both keep a new memory
 searchable before any build and neither holds a search up while one runs.
-`disk` is the default because this project ranks resident memory above disk
-and query time.
+`disk` was the default at first, because this project ranks resident memory
+above disk; once that write-path cost was measured the owner made `memory` the
+default, and `disk` stays for a project whose memory is scarce.
 Through `search_reranked` at the shipped defaults neither index moved a
 ranking against fp32: nDCG@10 +0.0003 on the own corpus's 157 questions
 (p = 0.76) and −0.0003 on 595 XQuAD-R questions (p = 0.68), the two indexes

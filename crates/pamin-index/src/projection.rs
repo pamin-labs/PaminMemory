@@ -690,20 +690,24 @@ const GRAPH_DEGREE: i32 = 32;
 pub enum VectorIndex {
     /// A DiskANN graph kept on disk and read per query.
     ///
-    /// The default, because resident memory ranks above query time for this
-    /// project's owner and this is the one that holds almost nothing resident.
-    #[default]
+    /// Holds almost nothing resident, for a project whose memory is scarce.
+    /// Not the default: every `optimize` after a working drain rebuilds a
+    /// great deal of the graph (114 to 310 s after 64 new documents on 25,000,
+    /// against about a second for `memory`), and upkeep issues one whenever a
+    /// drain has done work.
     Disk,
     /// An HNSW graph held in memory.
     ///
-    /// The fastest to query and to build, and the smallest on disk, at the
-    /// cost of holding the graph and the vectors resident.
+    /// The default: the fastest to query and to build, and the smallest on
+    /// disk, at the cost of holding the graph and the vectors resident --
+    /// still half what the full-precision graph held.
+    #[default]
     Memory,
 }
 
 impl VectorIndex {
     /// Both, in the order the setting documents them.
-    pub const ALL: [Self; 2] = [Self::Disk, Self::Memory];
+    pub const ALL: [Self; 2] = [Self::Memory, Self::Disk];
 
     /// The name the setting takes and the marker records.
     pub fn label(self) -> &'static str {

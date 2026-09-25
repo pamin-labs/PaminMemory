@@ -16,7 +16,7 @@ The examples below are real output from a workspace built by the writes in
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
-| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `disk` | Vector index a project is built with: `disk` or `memory` |
+| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
@@ -202,17 +202,18 @@ index lives and what that costs, measured over MIRACL's 131,924 passages:
 
 | | resident | disk | a vector query | a whole search | a full build | peak while building |
 | --- | --- | --- | --- | --- | --- | --- |
-| `disk` (default) | 34 MB | 618 MB | 69-79 ms | 2,339 ms | 23 min | +1,353 MB |
-| `memory` | 320 MB | 328 MB | 6-10 ms | 2,236 ms | 1.4 min | +721 MB |
+| `disk` | 34 MB | 618 MB | 69-79 ms | 2,339 ms | 23 min | +1,353 MB |
+| `memory` (default) | 320 MB | 328 MB | 6-10 ms | 2,236 ms | 1.4 min | +721 MB |
 
 A whole search is the median `accurate` search over XQuAD-R's 13,014
 documents rather than MIRACL, on a shared four-core machine; the two ranked
 every question identically.
 
 `disk` keeps its graph and vectors on disk and reads them per query, which is
-why it holds almost nothing resident; it is the default because this project
-ranks resident memory above disk and query time. `memory` holds them resident, and is the faster
-and smaller choice everywhere else. A search spends most of a second or more in
+why it holds almost nothing resident; it is for a project whose memory is
+scarce, and it pays for that with minutes of `optimize` after every working
+drain (about a second under `memory`). `memory`, the default, holds them
+resident, and is the faster and smaller choice everywhere else. A search spends most of a second or more in
 the reranker, so the query column is a small share of a `pamin search`; the
 build column is not small, and `disk` also pays minutes for an `optimize` after
 a few writes where `memory` pays about a second (see
