@@ -301,8 +301,40 @@ threshold shows more than ten finds on 142 questions, and those searches take
 or fewer they take 0.72 times as long, with 14 better and 2 worse. So the
 saving and the gain both come from dropping weak finds, and the cap of thirty
 costs time it was not seen to earn. A cap of ten under the same threshold is
-the next hypothesis. It is not measured, and these 600 questions have now
-shaped it, so it needs questions of its own.
+the next hypothesis. These 600 questions shaped it, so it was tested on
+questions of its own, below.
+
+**A cap of ten ships in place of thirty, on a second held-out test.** With
+more than ten finds at the threshold the strongest ten all reach it, so a cap
+of ten shows exactly the old fixed ten there and exactly what thirty shows
+everywhere else: the two differ only on the questions where thirty shows more
+than ten. The rule was written before anything ran: compare the two caps on
+the 300 MuSiQue questions neither earlier test had seen (the last three in
+every ten, asserted on every search) and the own corpus as a replication;
+ship ten only if it is significantly worse on neither corpus and no
+own-corpus group (sign-flip, p < 0.05) and significantly faster on
+MuSiQue (geometric mean of per-question ratios, p < 0.025). Same method as
+above: `search_reranked`, `accurate` tier, `accuracy` profile, both arms of a
+question in one process in alternating order, both caches bypassed, the shown
+set checked against an independent recomputation on every search.
+
+| | MuSiQue, 300 held-out questions | own corpus, 157 |
+| --- | --- | --- |
+| nDCG@10, thirty | 0.7186 | 0.9102 |
+| ten − thirty | −0.0031 (2 better, 5 worse, p = 0.17) | identical on every query |
+| search time, ten / thirty | **0.91** (p = 0.0001) | 1.01 (p = 0.49) |
+| graph finds shown, thirty → ten | 8.32 → 5.05 | 0.01 → 0.01 |
+| reranker pairs a search | 26.8 → 23.6 | 20.3 → 20.3 |
+
+Both clauses hold, so ten ships (`GRAPH_SHOWN_AT_MOST`). The caps differed on
+72 of the 300 questions, as the 142 of 600 above predicted; there ten takes
+0.66 of thirty's time and 43 pairs become 29, and on the other 228 the ratio
+is 1.00. The nDCG@10 difference is not significant, but it points the wrong
+way, and read after the verdict it sits where thirty showed the most: the
+five losses are on questions where thirty showed 16 to 30 finds, the two
+gains where it showed 11 and 13. This harness ran from the build the
+evaluation workspace was made with, which predates changes elsewhere in the
+stack; the two arms differ only in `rerankable`'s cap.
 
 ### What the fusion function itself is worth
 
