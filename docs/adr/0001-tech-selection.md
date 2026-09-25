@@ -916,7 +916,9 @@ ablations, so nothing in it separates a retrieval gain from an abstention gain,
 and the per-column decomposition says most of it is the second. This project
 has no abstention at all: `pamin search` returns its best candidates whatever
 the evidence looks like. That is a gap worth naming, and it is a different gap
-from retrieval quality.
+from retrieval quality. Closing it with the calibrated reranker score was
+measured and does not ship; see "The transfer test, taken as an abstention
+decision" below.
 
 **Why their weighted sum works where this project's did not.** They combine
 five terms as a plain normalised weighted sum: embedding similarity, query
@@ -2287,6 +2289,91 @@ tested on one corpus, so it bounds the within-corpus case and says nothing about
 another. The transfer test is the one that decides whether the fusion rows of
 the table above can be believed, and it belongs on a corpus this was not fitted
 on.
+
+### The transfer test, taken as an abstention decision: measured, not shipped
+
+The decision that would use a calibrated score first is abstention, and it has
+a column to be scored on: LoCoMo's adversarial questions, where upstream's own
+evaluation counts only "not mentioned" as correct. So the transfer test was
+run as that decision, through `pamin search` itself, with the rule written
+down before any LoCoMo or LongMemEval search ran.
+
+**The signal.** The `accurate` tier's logit for the top hit `pamin search`
+returns -- reused when the reranker already scored it, scored as one more pair
+after the ranking is final when it did not, so the order returned is
+unchanged -- mapped through an isotonic fit, with the verdict `weak` below a
+probability of 0.5. The half is the equal-cost decision on a calibrated
+probability, not a fitted cut. The results were still returned; the verdict
+was advice beside them.
+
+**The fit, on a third corpus.** 484 MuSiQue answerable dev questions, every
+fifth, their 5,964 paragraphs pooled into one project, labelled by whether the
+top hit is a supporting paragraph (74.4% were). Held-out expected calibration
+error, fitted on one half by question and scored on the other: **0.0590**
+isotonic against 0.1804 for the raw sigmoid. Within a corpus the fit works
+again, as it did on XQuAD-R.
+
+**The rule.** Ship the verdict as a field only if, paired per question with an
+exact two-sided McNemar test: adversarial improves at p < 0.05, none of the
+four answerable columns falls at p < 0.05, and LongMemEval-S does not either.
+An answerable question counts as served when an evidence turn is in the top ten
+*and* the verdict is `sufficient`; an adversarial one when the verdict is
+`weak`.
+
+**Measured on all 1,986 LoCoMo questions**, one project per conversation, the
+turns written as the benchmark harness writes them:
+
+| column | n | never abstains | with the verdict | wins | losses | p | `weak` rate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| multi-hop | 282 | 0.791 | 0.592 | 0 | 56 | 3e-17 | 0.277 |
+| temporal | 321 | 0.826 | 0.670 | 0 | 50 | 2e-15 | 0.227 |
+| open-domain | 96 | 0.521 | 0.292 | 0 | 22 | 5e-7 | 0.479 |
+| single-hop | 841 | 0.810 | 0.718 | 0 | 77 | 1e-23 | 0.127 |
+| adversarial | 446 | 0 | **0.314** | 140 | 0 | 1e-42 | 0.314 |
+| all five | 1,986 | 0.614 | 0.581 | 140 | 205 | 0.0006 | |
+
+On LongMemEval-S, the 59-question sample the published figures use,
+recall_any@10 falls from 0.983 to 0.627 (no wins, 21 losses, p = 1e-6), the
+verdict calling a third of the top hits `weak`. On its 30 false-premise `_abs`
+questions, where abstaining is the benchmark's answer, it is `weak` on 22
+(p = 5e-7), but the same threshold withdrew 21 of the 58 answers the sample had
+retrieved: the two sets separate at AUROC 0.716.
+
+**The rule fails, on every guard at once.** The verdict abstains on a third
+of the adversarial questions, and to do it withdraws between 11% (single-hop)
+and 44% (open-domain) of the answers every other column had retrieved; pooled
+over all five, LoCoMo gets significantly worse. It does not ship.
+
+**Why: the signal barely separates the two, and the fit does not travel.**
+The probability ranks an answerable question above an adversarial one with
+AUROC **0.606** (0.640 counting only answerable questions whose evidence was
+retrieved) -- median 0.762 against 0.600. That was predicted before the run
+(0.55 -- 0.65), for the reason given then, which the run is consistent with
+but does not isolate: 74% of its
+questions have a turn that matches exactly and was only said by the other
+speaker, and a relevance model is not trained to care who said something. The
+calibration did not transfer either. On LoCoMo's answerable top hits the
+MuSiQue map scores an ECE of **0.3100**, against 0.0590 on its own held-out
+half: it says 0.372 where 11.4% are relevant (297 hits) and 0.977 where 80.6%
+are (391). A conversational turn is short and indirect beside a Wikipedia
+paragraph, and 42.1% of LoCoMo's answerable top hits are an evidence turn against 74.4%
+of MuSiQue's, so the same logit means something different. LongMemEval says
+the same: ECE 0.2951 on its top hits.
+
+So the caveat above resolves the way it was feared: the isotonic fit is a
+within-corpus result. What the cross-query-comparable score still offers --
+the rows of the table in the section above -- needs a fit per corpus, or a
+judge trained to be calibrated across them, and an abstention decision needs a
+signal that sees attribution, which a relevance score does not.
+
+Conditions: a release build of the verdict (`2a72188`, `5d7adf0`) with an
+empty table, so each row recorded the raw sigmoid of the logit; the table was
+fitted afterwards and applied to those logits offline, which is the same
+lookup the build with the table performs. `pamin search --limit 10 --json` at
+the shipped tier, four cores at a load average near 18. The latency of the
+extra pair was not measured, because the rule failed on accuracy first; the
+top hit arrived without a reranker score on 1,789 of the 1,986 LoCoMo
+searches. Reverted in `8dcfd14`.
 
 ### Where the decision-model field is, and which of it a CPU can reach
 
