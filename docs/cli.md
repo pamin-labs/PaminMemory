@@ -23,7 +23,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 | | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
-| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy |
+| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -81,7 +81,7 @@ between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
 whose default is what the library already did.
 
-On the CPU, the first load of a model writes a second copy of it into
+On the CPU, the first load of a model writes a copy of it into
 `models/prepared/`, and every load after that reads the copy. The copy is the
 runtime's own optimized form of the graph with its weights in a separate data
 file, which the runtime maps from disk instead of copying onto the heap: the
@@ -93,19 +93,46 @@ two hold 330 MB rather than 582. What it costs is disk. Each copy is larger than
 model it came from, because the weights are also stored in the layout the CPU's
 kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
 as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
-it makes that first load slower, 5.1 s for `accurate`. A copy belongs to the
-runtime version and the CPU that wrote it, so an upgrade, or a model directory
-moved to a different CPU, writes a new one and leaves the old one in place; it
-is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
-from the download, for a disk that cannot spare the second copy. When a copy
-cannot be written -- a full or read-only disk -- the model loads from the
-download anyway and the log says why. Where the runtime left a model's
-attention as separate operators -- the `accurate` reranker's int8 export --
-the copy also gets a second graph, `attention.onnx`, with each layer's
-attention as one fused operator; it is kept only if it scores a probe
-bit-for-bit as the first does, and otherwise `attention.unfused` says why.
-`PAMIN_FUSED_ATTENTION=off` loads the unfused graph, for measuring one
-against the other.
+it makes that first load slower, 5.1 s for `accurate`.
+
+Once a copy has loaded, the download it was written from is removed, since
+nothing reads it again: each model is on disk once, as its copy. At the
+defaults that took the model directory from 2,923 MB to 1,783 MB (see
+[measured.md](measured.md)). What that gives up is the source for the *next*
+copy. A copy belongs to the runtime version and the CPU that wrote it, so an
+upgrade, or a model directory moved to a different CPU, needs a new one, and
+that load fetches the model again -- 570 MB for `accurate` or the `accuracy`
+embedder -- writes the copy, and removes the download again. **That load needs
+the network.** Offline, it fails with an error that names the model and says
+why, instead of searching; the fix is to be online for that one load, or to
+copy the model directory from a machine that has the file.
+
+Copies are removed by one rule, applied on every load. The copy this version
+loads for a model it has loaded before is never removed, however long the model
+goes unused: its download has usually been removed, so removing it would make
+the next load of that model need the network. Every other copy -- the one an
+upgrade or a move to another CPU leaves behind, or one of a model file the hub
+has since replaced -- is removed once no running process has it loaded and none
+has loaded it for two weeks. So a directory shared by two versions keeps both
+copies while both are in use, and a version that goes two weeks without running
+while the other does writes its copies again when it next runs -- fetching the
+model first, if its download was removed. A model nothing loads any more -- a
+reranker tier switched off -- keeps its copy until it is deleted. It is safe to
+delete `models/prepared/` at any time, and the next load downloads the model
+again. The download is kept when `HF_HOME` is set -- that cache is shared with
+other tools -- or when the model directory, or one model's directory inside it,
+is a link to somewhere else. `PAMIN_PREPARED=off` loads from the download,
+fetching it again if it was removed, for a measurement that needs the unmapped
+load or a disk that cannot spare the copy's extra size. When a copy cannot be
+written -- a full or read-only disk -- the model loads from the download and
+keeps it, and the log says why.
+
+Where the runtime left a model's attention as separate operators -- the
+`accurate` reranker's int8 export -- the copy also gets a second graph,
+`attention.onnx`, with each layer's attention as one fused operator; it is
+kept only if it scores a probe bit-for-bit as the first does, and otherwise
+`attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
+graph, for measuring one against the other.
 
 The reranker runs on a GPU when the machine has one, with no flag and no
 separate build. Each platform's inference runtime carries the accelerator that
