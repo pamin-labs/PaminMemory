@@ -957,7 +957,10 @@ as before -- a re-download is given the removed file's modification time, so
 it keys identically -- and removed the download again. All five loads scored
 bit-identically, `PAMIN_PREPARED=off` among them. What this gives up is
 offline use across a key change, and [cli.md](cli.md) says so where the
-setting is described.
+setting is described. Disuse is not a key change: the collection that removes
+copies nothing has loaded for two weeks never removes the one a model's record
+points at for the running version, so a tier left unused does not need the
+network again.
 
 **And one vocabulary between them, not one each.** What a copy leaves is mostly
 tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
