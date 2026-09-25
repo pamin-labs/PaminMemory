@@ -1032,7 +1032,7 @@ rather than lost.
 
 `pamin write` runs the queue before it returns, and the server runs whatever
 is left, so ordinarily there is nothing here to do. These commands are for
-making the index catch up at once rather than a few seconds later, and for
+making the index catch up at once rather than about ten seconds later, and for
 jobs that failed often enough to be set aside.
 
 ```console
