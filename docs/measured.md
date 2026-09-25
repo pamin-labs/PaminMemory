@@ -892,7 +892,7 @@ serves, which ONNX Runtime copies onto the heap. They have not been re-run
 since the change below.
 
 **The weights are mapped now, not copied.** On the CPU each model loads from a
-copy the runtime maps from disk -- written once beside the download; see
+copy the runtime maps from disk -- written once from the download; see
 `crates/pamin-index/src/prepared.rs` -- and
 `crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
 and `Embedder::load`. Each load runs in a fresh process, and what is counted
@@ -912,6 +912,32 @@ bare runtime session adds 139 MB loading the `fast` reranker's download and
 session. The data file is the price, on disk rather than in memory -- larger
 than the model it came from, because the packed weights are stored beside the
 originals.
+
+**And the download goes once its copy has loaded**, so a model is on disk once
+rather than twice. Measured on a model directory holding BGE-M3 and the
+`accurate` reranker as the code before this left them after first use -- each
+download beside its copy -- seeded by hard links from the evaluation
+workspace's directory so that nothing was downloaded, and read with `du` before
+and after one load of each through `Embedder::load` and `Reranker::load`:
+
+| | bytes on disk |
+| --- | --- |
+| each download beside its copy | 2,923 MB |
+| after one load of each | **1,783 MB** |
+
+Each load mapped the copy that was already there (read from
+`/proc/self/maps`), so the 1,141 MB is the two int8 exports, 570 MB each; what
+is left is the two copies and the two 17 MB tokenizers. The same lifecycle on a
+fresh directory through the hub, with the `fast` tier to spare the disk: 157 MB
+after its first load, where its 119 MB download used to stay beside that. With
+its copy renamed to another key, which is what a runtime upgrade leaves, and
+the hub unreachable, the next load failed naming the model and the network;
+with the hub back it fetched the file again, wrote the copy under the same key
+as before -- a re-download is given the removed file's modification time, so
+it keys identically -- and removed the download again. All five loads scored
+bit-identically, `PAMIN_PREPARED=off` among them. What this gives up is
+offline use across a key change, and [cli.md](cli.md) says so where the
+setting is described.
 
 **And one vocabulary between them, not one each.** What a copy leaves is mostly
 tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
