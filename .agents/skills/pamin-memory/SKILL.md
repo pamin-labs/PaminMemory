@@ -106,7 +106,9 @@ pamin cascade drain
 ```
 
 `--defer` returns without embedding anything. The memory is committed — `read`
-and `grep` see it immediately — and only `search` waits for the queue.
+and `grep` see it immediately — and only `search` waits for the queue, which
+the server works through on its own a few seconds later; `cascade drain` makes
+it catch up at once.
 
 ## Searching
 
@@ -223,8 +225,9 @@ than that the claim was wrong.
 - **Results are stable for stable inputs**, ties broken on identifier, so an
   assembled context can be cached rather than rebuilt.
 - **`cascade` in a write's JSON** says whether the index caught up before the
-  command returned. `applied` means yes; `queued` means `pamin cascade drain`
-  still owes work. The memory is recorded either way.
+  command returned. `applied` means yes; `queued` means the index still owes
+  work, which the server runs within seconds and `pamin cascade drain` runs at
+  once. The memory is recorded either way.
 - **Do not change `--profile` casually.** It changes the vector space, and the
   index refuses to open under a different one until `pamin reindex` rebuilds
   that project.
