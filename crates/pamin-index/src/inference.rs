@@ -15,11 +15,14 @@
 //! code.
 //!
 //! So it is a setting, and its default is what the library already did.
+//!
+//! Whether an idle thread in that pool spins is not a setting: it blocks. See
+//! [`session`].
 
 use std::path::PathBuf;
 
 use ort::ep::ExecutionProviderDispatch;
-use ort::session::Session;
+use ort::session::{Session, builder::SessionBuilder};
 
 use crate::error::{IndexError, Result};
 
@@ -44,24 +47,50 @@ pub(crate) fn session(
     providers: Vec<ExecutionProviderDispatch>,
     model: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<Session> {
+    let mut builder = options(providers)?;
+    let model = model()?;
+    builder
+        .commit_from_file(&model)
+        .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))
+}
+
+/// What [`session`] asks of ONNX Runtime before it has a model to load.
+///
+/// One thing here is not `fastembed`'s choice, and does not change a score:
+/// intra-op threads block when they run out of work instead of spinning.
+/// ONNX Runtime lets them spin by default, which saves a wake-up when the next
+/// piece of work comes at once and holds a core for as long as it does not --
+/// and the embedder and the reranker each own a pool of one thread per core,
+/// so on a machine with anything else to do the spinning threads take cores
+/// from the threads that have work, the other model's included.
+///
+/// Measured through `pamin serve` and `pamin search` at the defaults, one
+/// hundred queries (sixty from the own corpus, forty from an XQuAD-R subset),
+/// a fresh server per arm so no query is a cache hit, three rounds in rotated
+/// order, on four cores shared with other work: with two busy loops beside
+/// the server a search took 0.754 of what it did spinning (geometric mean of
+/// per-query ratios; faster on 86 of 100, sign-flip `p = 0.0001`), and at the
+/// machine's own load -- 2.5 to 13 -- 1.033 (`p = 0.068`), eight concurrent
+/// callers getting 1.17 times the throughput. Rankings, query and passage
+/// embeddings and `accurate` scores were bit-identical. The rule, written
+/// before the run, is in `docs/adr/0001-tech-selection.md`.
+fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> {
     let unready =
         |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
     let threads = match threads() {
         Some(threads) => threads,
         None => std::thread::available_parallelism()?.get(),
     };
-    let mut builder = Session::builder()
+    Session::builder()
         .map_err(|error| unready(&error))?
         .with_execution_providers(providers)
         .map_err(|error| unready(&error))?
         .with_optimization_level(crate::prepared::LEVEL)
         .map_err(|error| unready(&error))?
         .with_intra_threads(threads)
-        .map_err(|error| unready(&error))?;
-    let model = model()?;
-    builder
-        .commit_from_file(&model)
-        .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))
+        .map_err(|error| unready(&error))?
+        .with_intra_op_spinning(false)
+        .map_err(|error| unready(&error))
 }
 
 /// Intra-op threads per inference session, or `None` for one per core.
@@ -173,6 +202,38 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every session's intra-op threads block rather than spin; see
+    /// [`options`]. Read back from ONNX Runtime rather than from our own
+    /// call, because an entry that never reached the options is exactly the
+    /// failure this guards: the runtime's default is to spin.
+    #[test]
+    fn idle_inference_threads_block_rather_than_spin() {
+        use ort::AsPointer;
+
+        let builder = options(vec![cpu()]).expect("session options");
+        let mut value = [0 as std::ffi::c_char; 8];
+        let mut size = value.len();
+        // SAFETY: the options pointer is live for the borrow of `builder`, the
+        // key is NUL-terminated, and `size` is the length of `value`, which
+        // the runtime writes no further than.
+        let status = unsafe {
+            (ort::api().GetSessionConfigEntry)(
+                builder.ptr(),
+                c"session.intra_op.allow_spinning".as_ptr(),
+                value.as_mut_ptr(),
+                &mut size,
+            )
+        };
+        assert!(
+            status.0.is_null(),
+            "no spinning entry reached the options, so ONNX Runtime spins"
+        );
+        // SAFETY: on success the runtime wrote a NUL-terminated string of
+        // `size` bytes, NUL included, into `value`.
+        let set = unsafe { std::ffi::CStr::from_ptr(value.as_ptr()) };
+        assert_eq!(set, c"0", "intra-op spinning is not off");
+    }
 
     /// A device that will not register is found before its model is asked for,
     /// since asking can mean downloading an export this machine cannot run.
