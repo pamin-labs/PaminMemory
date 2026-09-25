@@ -1611,16 +1611,29 @@ fn a_pre_split_workspace_is_migrated_by_reindexing() {
 /// moment on purpose -- the ordinary write path always drains before it
 /// returns, so the gap does not exist to observe.
 ///
-/// Every step is a separate `pamin` process. The one that recorded the memory
-/// is gone before the one that indexes it starts, which is exactly the crash
-/// this is about: nothing in memory survives, and the queue is what carries
-/// the work across.
+/// That process is the server: it records a memory and, a tick or two later,
+/// indexes it. So the server that recorded this one is killed before its first
+/// tick, and a second server started in its place. Nothing in memory survives
+/// the first, and the queue is what carries the work across.
+///
+/// The second is sent nothing about the project before the memory is found.
+/// A request would open the project, and a project that is open is caught up
+/// by the ordinary path; one nobody has asked about is the case a queue left
+/// by a dead server is actually in, and the one that used to wait for the next
+/// write or `pamin cascade drain` before a search could find anything in it.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn work_a_write_left_behind_outlives_the_process_that_left_it() {
-    let cli = Cli::new();
-    cli.run(&["init"]);
+    /// Well past the upkeep tick, which is five seconds.
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(120);
 
+    let cli = Cli::new();
+    let log = || std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+
+    // Started before anything else is run: a command finding no server starts
+    // one of its own, and this one would then refuse to start beside it.
+    let mut recorder = cli.serve_logging("pamin=debug");
+    cli.run(&["init"]);
     let written = cli.json(&[
         "write",
         "--defer",
@@ -1628,6 +1641,14 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
         "deferred_memory",
         "a claim recorded by a process that never indexed it",
     ]);
+    recorder
+        .kill()
+        .expect("killing the server that recorded it");
+    recorder.wait().expect("reaping it");
+    // A killed server leaves its socket file, which would read as the new
+    // one listening before it is.
+    std::fs::remove_file(cli.home().join("pamin.sock")).expect("removing the dead socket");
+
     assert_eq!(
         written["cascade"], "queued",
         "a deferred write should say the work is still owed: {written}"
@@ -1636,9 +1657,27 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
         written["promoted"], true,
         "deferring changes when the index catches up, not what is recorded: {written}"
     );
+    // The premise: the server that recorded it died owing the work. Had its
+    // upkeep run first, what follows would test nothing.
+    assert!(
+        !log().contains("caught up on owed work"),
+        "the recording server indexed the memory before it was killed, so \
+         nothing was left behind:\n{}",
+        log()
+    );
 
-    // The ledger has it -- `read` never goes through the index -- and the
-    // retrieval surface does not yet.
+    let mut server = cli.serve_logging("pamin=debug");
+    let deadline = Instant::now() + GIVE_UP_AFTER;
+    while !log().contains("caught up on owed work") {
+        assert!(
+            Instant::now() < deadline,
+            "a server with nothing asked of it never caught up on the work a dead one \
+             left:\n{}",
+            log()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
     let stored = cli.json(&["read", "deferred_memory"]);
     assert!(
         stored["content"]
@@ -1649,38 +1688,221 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
     );
     let found = contents(&cli.json(&["search", "recorded by a process", "--limit", "5"]));
     assert!(
-        !found
+        found
             .iter()
             .any(|content| content.contains("never indexed")),
-        "a deferred write should not be searchable before the cascade runs: {found:?}"
+        "the first search after a new server caught up should find the memory: {found:?}"
     );
 
-    // Owed, not lost and not failed. Without this the test would also pass if
-    // the write had silently dropped the work.
+    // Done, not failed: nothing set aside and nothing owed.
     let owed = cli.json(&["cascade", "failed"]);
     assert_eq!(
         owed["failed"].as_array().expect("failed array").len(),
         0,
         "nothing should have failed, only waited: {owed}"
     );
-
     let drained = cli.json(&["cascade", "drain"]);
-    assert!(
-        drained["completed"].as_u64().unwrap_or_default() > 0,
-        "a drain should find the work the write left: {drained}"
-    );
     assert_eq!(
         drained["pending"], 0,
-        "and should leave nothing owed: {drained}"
+        "and nothing should be left owed: {drained}"
     );
 
-    let found = contents(&cli.json(&["search", "recorded by a process", "--limit", "5"]));
-    assert!(
-        found
-            .iter()
-            .any(|content| content.contains("never indexed")),
-        "after the drain the memory is on the retrieval surface: {found:?}"
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// A deferred write is found without anything else being run.
+///
+/// `--defer` leaves the index's work in the queue and returns. Before the
+/// server caught up on it, nothing ran that queue until the next write or
+/// import into the same project, or `pamin cascade drain` -- so a memory
+/// written this way was recorded, readable, and not searchable for as long as
+/// nobody did either, which could be for ever. Against that build this fails
+/// at the deadline.
+///
+/// The searches here are the only requests, and they are what the upkeep
+/// yields to, so they are a second apart: an agent searching continuously is
+/// what the catching up has to stay out of the way of, and
+/// `catching_up_does_not_hold_a_search_up` is the test of that.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_deferred_write_is_found_without_anything_else_being_run() {
+    /// The upkeep tick is five seconds, and a round is a fraction of one.
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(60);
+
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+    // Loads the models a search and the catching up both use, so what is
+    // timed is the catching up and not a first load -- or, on a first run,
+    // a download.
+    cli.json(&[
+        "write",
+        "--topic",
+        "warm_up",
+        "the ferry timetable changes in october",
+    ]);
+    cli.json(&["search", "ferry timetable", "--limit", "5"]);
+
+    let written = cli.json(&[
+        "write",
+        "--defer",
+        "--topic",
+        "unasked_memory",
+        "the lighthouse keeper logs the fog signal every evening",
+    ]);
+    let recorded = Instant::now();
+    // The premise: the write left the index's work owed. A write that did it
+    // itself would pass this without the server doing anything.
+    assert_eq!(
+        written["cascade"], "queued",
+        "a deferred write should leave the work owed: {written}"
     );
+
+    let found = loop {
+        let hits = contents(&cli.json(&["search", "fog signal lighthouse", "--limit", "5"]));
+        if hits
+            .iter()
+            .any(|content| content.contains("lighthouse keeper"))
+        {
+            break recorded.elapsed();
+        }
+        assert!(
+            recorded.elapsed() < GIVE_UP_AFTER,
+            "a deferred write was still not searchable {GIVE_UP_AFTER:?} after it was \
+             recorded, with nothing else run: {hits:?}"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+    };
+    println!(
+        "  searchable {:.1} s after a deferred write",
+        found.as_secs_f64()
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// A search that arrives while the server is catching up waits for at most a
+/// round of it.
+///
+/// Catching up runs a model nobody asked for, and the searches it is doing the
+/// work for share that model: a forward pass holds it, and a search on any
+/// project on the same profile queues behind the pass. So the server only
+/// starts a round when nothing is being answered, stops between rounds when a
+/// request arrives, and keeps a round small -- and what a search can pay is
+/// what is left of the round it arrived during.
+///
+/// The backlog is large enough to take many ticks to clear, and the searches
+/// are spaced so that rounds run between them and some of them arrive during
+/// one. Each is timed from outside, the way an agent would see it, against the
+/// same search on the same server with nothing owed. What this catches is the
+/// catching up holding anything a search needs for longer than a round -- the
+/// model or the index across a whole tick's drain, say, which is up to five
+/// seconds.
+///
+/// The premise is checked from the log: the server has to have caught up on
+/// something during the searches, or they were timed against nothing.
+#[test]
+#[ignore = "provisions postgres and downloads model weights, and writes seven hundred memories"]
+fn catching_up_does_not_hold_a_search_up() {
+    /// About two thousand jobs. With nothing asked of it the server cleared three
+    /// hundred memories' worth -- nine hundred -- in two ticks in this build,
+    /// so this has to be more than it can clear between the last write and
+    /// the first search.
+    const BACKLOG: usize = 700;
+    const WRITERS: usize = 6;
+    const SEARCHES: usize = 30;
+    /// How much slower than the slowest quiet search one during catching up
+    /// may be.
+    ///
+    /// Several rounds rather than one, because this is a debug build on a
+    /// shared machine: a round of sixteen jobs measured 0.1 to 0.4 s here on
+    /// the `speed` profile, and a quiet search anything from 20 to 320 ms.
+    /// What it has to rule out is a search waiting out a tick's whole budget
+    /// -- five seconds, which is what holding the model or the index across
+    /// the drain would cost it -- and two seconds does that.
+    const ALLOWANCE: Duration = Duration::from_secs(2);
+
+    let cli = Cli::new();
+    let mut server = cli.serve_logging("pamin=debug");
+    let log = || std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
+    let caught_up = || log().matches("caught up on owed work").count();
+    cli.run(&["init"]);
+    cli.json(&[
+        "write",
+        "--topic",
+        "catch_up_marker",
+        "the harbour pilot boards ships at the outer buoy",
+    ]);
+
+    let search = || {
+        let started = Instant::now();
+        let hits = contents(&cli.json(&["search", "harbour pilot outer buoy", "--limit", "5"]));
+        assert!(
+            hits.iter().any(|content| content.contains("harbour pilot")),
+            "the search being timed found nothing, so it timed nothing: {hits:?}"
+        );
+        started.elapsed()
+    };
+
+    // Quiet: nothing owed, and the model already loaded by the write.
+    search();
+    let quiet: Vec<Duration> = (0..5).map(|_| search()).collect();
+    let quiet_slowest = *quiet.iter().max().expect("quiet searches");
+
+    std::thread::scope(|scope| {
+        for writer in 0..WRITERS {
+            let cli = &cli;
+            scope.spawn(move || {
+                for memory in (writer..BACKLOG).step_by(WRITERS) {
+                    cli.json(&[
+                        "write",
+                        "--defer",
+                        "--topic",
+                        &format!("backlog_{memory}"),
+                        &format!(
+                            "entry {memory} of the backlog records a tide table reading \
+                             taken at the north pier and checked against the harbour chart"
+                        ),
+                    ]);
+                }
+            });
+        }
+    });
+
+    let before = caught_up();
+    let mut during = Vec::with_capacity(SEARCHES);
+    for _ in 0..SEARCHES {
+        std::thread::sleep(Duration::from_millis(1_000));
+        during.push(search());
+    }
+    let rounds = caught_up() - before;
+    for line in log()
+        .lines()
+        .filter(|line| line.contains("caught up on owed work"))
+    {
+        println!("  {line}");
+    }
+    let slowest = *during.iter().max().expect("searches");
+    println!(
+        "  quiet: {:?}; during catching up ({rounds} catch-ups logged): {:?}",
+        quiet, during
+    );
+
+    assert!(
+        rounds >= 2,
+        "the server caught up {rounds} times while the searches ran, so they were not \
+         timed against any catching up"
+    );
+    assert!(
+        slowest <= quiet_slowest + ALLOWANCE,
+        "a search during catching up took {slowest:?}, against {quiet_slowest:?} for the \
+         slowest with nothing owed: it waited for more than a few rounds"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
 }
 
 /// Readers and writers share one index for long enough for the race to fire.
