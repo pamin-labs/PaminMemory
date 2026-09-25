@@ -206,6 +206,7 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
         None => {
             let recorded = recorded(download, &root);
             if let Some(copy) = recorded.as_ref().and_then(|source| found(source, &root)) {
+                collect(&root, SystemTime::now());
                 return Ok(copy);
             }
             let fetched = download.fetch().map_err(|error| match &recorded {
@@ -237,6 +238,7 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
                 && let Some(copy) =
                     recorded(download, &root).and_then(|source| found(&source, &root))
             {
+                collect(&root, SystemTime::now());
                 return Ok(copy);
             }
             tracing::warn!(
@@ -307,12 +309,14 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
 
 /// Whether loading `download` reads only what is on disk: the download, or a
 /// copy that fits this runtime and CPU.
+///
+/// Asking is not loading: the copy is neither stamped nor held.
 pub(crate) fn is_ready(download: &impl Download, cache_dir: &Path) -> bool {
+    let root = cache_dir.join("prepared");
     download.on_disk().is_some()
         || (wanted()
-            && recorded(download, &cache_dir.join("prepared"))
-                .and_then(|source| found(&source, &cache_dir.join("prepared")))
-                .is_some())
+            && recorded(download, &root)
+                .is_some_and(|source| settled(&root.join(source.key().0)).is_some()))
 }
 
 /// Whether copies are wanted at all: unless `PAMIN_PREPARED=off`.
@@ -331,9 +335,9 @@ fn graph(copy: PathBuf) -> PathBuf {
 }
 
 /// The settled copy of the download `source` described, if this runtime and
-/// CPU have one.
+/// CPU have one, stamped and held as [`prepare`] does with a copy it finds.
 fn found(source: &Source, root: &Path) -> Option<PathBuf> {
-    settled(&root.join(source.key().0)).map(graph)
+    find(root, &source.key().0).map(graph)
 }
 
 /// What a removed download was, as [`release`] recorded it.
@@ -356,12 +360,8 @@ fn record_name(download: &impl Download) -> String {
 /// Writing happens under an exclusive lock on `<key>.lock`, so two processes
 /// loading the same model at once write it once -- the second waits and then
 /// finds the first's copy -- and a partial directory found while holding the
-/// lock is a crashed writer's and safe to remove. Finding a copy happens under
-/// the same lock held shared, which is what a removal waits on.
-///
-/// A model directory this process cannot write -- a lock it cannot open --
-/// still loads a copy that is already there. Nothing can remove it from such
-/// a directory either, so it needs no hold.
+/// lock is a crashed writer's and safe to remove. A copy that is already there
+/// is found by [`find`], under the same lock held shared.
 ///
 /// The attention fusion is settled under the exclusive lock, once per copy --
 /// for a copy written before the fusion existed, on the first load that finds
@@ -371,24 +371,15 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
     let (key, described) = Source::of(source)?.key();
     let done = root.join(&key);
     let copy = done.join(MODEL);
-    let lock = root.join(format!("{key}.lock"));
-
-    let shared = match std::fs::create_dir_all(root).and_then(|()| open(&lock)) {
-        Ok(shared) => shared,
-        Err(error) => return settled(&done).ok_or_else(|| error.into()),
-    };
-    shared.lock_shared()?;
-    if let Some(settled) = settled(&done) {
-        stamp(&done);
-        hold(&done, shared);
-        return Ok(settled);
+    if let Some(found) = find(root, &key) {
+        return Ok(found);
     }
     // Not holding it shared while waiting to write it, or this process would
     // wait on itself: a copy it loaded before and somebody has since deleted.
-    drop(shared);
     drop(held().remove(&done));
 
-    let exclusive = open(&lock)?;
+    std::fs::create_dir_all(root)?;
+    let exclusive = open(&root.join(format!("{key}.lock")))?;
     exclusive.lock()?;
     let graph = match settled(&done) {
         Some(settled) => settled,
@@ -425,6 +416,28 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
     exclusive.lock_shared()?;
     hold(&done, exclusive);
     Ok(graph)
+}
+
+/// The settled copy under `key` in `root`, if there is one, stamped as used
+/// and held for the rest of the process.
+///
+/// Looked for under the key's lock held shared, which is what a removal
+/// waits on, so a removal either sees the stamp or has already happened. A
+/// model directory this process cannot write -- a lock it cannot open or
+/// take -- still finds a copy that is already there. Nothing can remove it
+/// from such a directory either, so it needs no hold.
+fn find(root: &Path, key: &str) -> Option<PathBuf> {
+    let done = root.join(key);
+    let Ok(shared) = open(&root.join(format!("{key}.lock"))) else {
+        return settled(&done);
+    };
+    if shared.lock_shared().is_err() {
+        return settled(&done);
+    }
+    let found = settled(&done)?;
+    stamp(&done);
+    hold(&done, shared);
+    Some(found)
 }
 
 /// Opens a key's lock file, creating it if it is not there.
@@ -1308,6 +1321,66 @@ mod tests {
         assert!(
             root.join(format!("{}.lock", key_of(2))).exists(),
             "a removed copy's lock file was deleted"
+        );
+    }
+
+    /// Makes every time the collection reads say the copy at `done` was last
+    /// used at `at`.
+    fn age(done: &Path, at: SystemTime) {
+        for (file, times) in [
+            (USED, std::fs::FileTimes::new().set_modified(at)),
+            (MODEL, std::fs::FileTimes::new().set_modified(at)),
+            (
+                DATA,
+                std::fs::FileTimes::new().set_modified(at).set_accessed(at),
+            ),
+        ] {
+            File::options()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(done.join(file))
+                .and_then(|file| file.set_times(times))
+                .expect("age a file of the copy");
+        }
+    }
+
+    /// A copy found through its record, with the download gone, is stamped
+    /// and held just as one found beside its download is. Once downloads are
+    /// removed that lookup is how nearly every load finds its copy, so without
+    /// this a copy in use would look unused and could be removed under the
+    /// process loading it.
+    #[test]
+    fn a_copy_found_through_its_record_is_stamped_and_held() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hub = Hub::new(dir.path(), &tiny_model());
+        let cache = dir.path().join("models");
+        let copy = load_path(&hub, &cache).expect("the first load");
+        load(&copy);
+        release(&hub, &cache);
+        assert!(hub.on_disk().is_none(), "the download was kept");
+        let done = copy.parent().expect("the copy's directory").to_path_buf();
+        let key = done
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("key");
+
+        // What a later process finds: a copy nothing holds, last used long ago.
+        drop(held().remove(&done));
+        let now = SystemTime::now();
+        age(&done, now - 60 * DAY);
+        assert!(unused(&done, now), "the fixture's copy is not old enough");
+
+        hub.online.set(false);
+        assert_eq!(load_path(&hub, &cache).expect("a load offline"), copy);
+        assert!(
+            !unused(&done, now),
+            "a copy found through its record was not stamped"
+        );
+        let other = open(&cache.join("prepared").join(format!("{key}.lock"))).expect("lock");
+        assert!(
+            matches!(other.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "a copy found through its record was not held"
         );
     }
 
