@@ -423,8 +423,25 @@ fn max_tokens() -> usize {
 /// 5,567-character passage is far past this limit
 /// whatever the script, so on MIRACL the truncation is doing real work, and the
 /// sentence-corpus measurement above says nothing about what it costs there.
-/// The 128-against-256 sweep has only ever been run on the corpus where the
-/// limit does not bind, which is the wrong one to run it on.
+///
+/// **So 192 and 384 were run where it binds, and neither ships.** On MuSiQue
+/// half the pairs reach this limit, because a graph candidate carries its
+/// seed's text. Every query of each corpus, at a depth of thirty and batched
+/// by [`BATCH_TOKENS`], each limit paired against 256 in the same process,
+/// sign-flip over 10,000 draws; a search is the median of each query's ratio:
+///
+/// | tokens | XQuAD-R cross-lingual | MIRACL | MuSiQue | a search: XQuAD-R, MIRACL, MuSiQue |
+/// |---|---|---|---|---|
+/// | 192 | −0.0003 (p 0.07) | −0.0005 (p 0.44) | **−0.0045 (p 0.010)** | 0.993, 0.946, 0.801 |
+/// | **256** | **0.6676** | **0.7883** | **0.6842** | **1** |
+/// | 384 | +0.0000 (p 0.50) | +0.0006 (p 0.25) | −0.0016 (p 0.31) | 1.002, 1.029, 1.321 |
+///
+/// Same-language moved by nothing either way. The rule, written down before
+/// the runs, shipped 384 only if it was significantly better somewhere and
+/// worse nowhere, and 192 only if it was worse nowhere: 384 is better
+/// nowhere, and costs a third more a search on MuSiQue for a reading of the
+/// seed's text that did not help; 192 is a fifth cheaper there and loses
+/// significantly on exactly the corpus where it truncates.
 const MAX_TOKENS: usize = 256;
 
 impl Rerank {
