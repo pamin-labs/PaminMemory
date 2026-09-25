@@ -1037,9 +1037,13 @@ $ pamin cascade drain
 Ran 3 jobs, 0 failed, 0 still owed
 ```
 
-`drain` runs everything that is due and stops. `run` keeps going, waiting for
-new work until it is interrupted; it holds the index open for writing the whole
-time, so no other command that writes can run alongside it.
+`drain` runs everything that is due and stops. It is how to make the index
+catch up now — after a run of `--defer` writes, or a write that reported
+`queued` — and like every other command it runs in the server, so it can be
+called while other commands are running. Nothing else runs this queue
+between requests: the server's upkeep flushes, compacts and reshapes what the
+index already holds, and work still owed waits for the next write or import
+into the project, or the next `drain`.
 
 Jobs name a subject rather than an event — "bring this topic up to date", not
 "this topic changed" — so running one twice leaves the same result as running
