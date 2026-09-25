@@ -405,7 +405,10 @@ struct Appending {
 ///    before the wait.
 /// 4. **Close what is superseded and append the new versions,** numbered from
 ///    the maximum of each edge's own key in the same statement -- which also
-///    began after the lock. Skipped when every claim was already live.
+///    began after the lock. Skipped when every claim was already live. The
+///    rows it closes are only ever written by whoever holds their identity,
+///    which [`retract_derived_all`] and [`close_edge`] take first too, so no
+///    order among them is needed.
 ///
 /// Whether a claim changes anything is decided here, in Rust, by
 /// [`EdgeClaim::matches`], rather than in SQL: the same comparison
@@ -628,19 +631,31 @@ pub async fn retract_derived_all(
         .flat_map(|(from, to)| to.iter().map(|to| (from.0, to.0)))
         .unzip();
 
+    // The identities first, locked in the order `assert_within` locks them,
+    // and only those with something to close -- so restating a memory that
+    // still names everything it did locks nothing. See `close_edge` for why a
+    // version is written only under its identity's lock.
     let closed = sqlx::query(
-        "UPDATE relationship_versions
+        "WITH doomed AS (
+             SELECT r.id FROM relationships r
+              WHERE r.project_id = $4 AND r.from_topic = ANY($5) AND r.kind = $6
+                AND NOT EXISTS (
+                    SELECT 1 FROM unnest($7::uuid[], $8::uuid[]) AS kept (from_topic, to_topic)
+                     WHERE kept.from_topic = r.from_topic AND kept.to_topic = r.to_topic
+                )
+                AND EXISTS (
+                    SELECT 1 FROM relationship_versions v
+                     WHERE v.relationship_id = r.id AND v.invalidated_at IS NULL
+                       AND v.derivation = $3
+                )
+              ORDER BY r.from_topic, r.to_topic, r.kind
+                FOR UPDATE OF r
+         )
+         UPDATE relationship_versions
             SET invalidated_at = $1, tombstone_reason = $2
           WHERE invalidated_at IS NULL
             AND derivation = $3
-            AND relationship_id IN (
-                SELECT r.id FROM relationships r
-                 WHERE r.project_id = $4 AND r.from_topic = ANY($5) AND r.kind = $6
-                   AND NOT EXISTS (
-                       SELECT 1 FROM unnest($7::uuid[], $8::uuid[]) AS kept (from_topic, to_topic)
-                        WHERE kept.from_topic = r.from_topic AND kept.to_topic = r.to_topic
-                   )
-            )",
+            AND relationship_id IN (SELECT id FROM doomed)",
     )
     .bind(OffsetDateTime::now_utc())
     .bind(TombstoneReason::Closed.label())
@@ -669,14 +684,24 @@ pub async fn close_edge(
     kind: EdgeKind,
     reason: TombstoneReason,
 ) -> Result<bool> {
+    // Under the identity's lock, as every write of a version is. Closing takes
+    // the version's row, and so does superseding it: a batch that had closed
+    // one edge's version and waited for another's, while a retraction had
+    // closed the second and waited for the first, was a deadlock the server
+    // broke by aborting one of them. Taking the identity first -- which every
+    // writer of an edge's versions now does, in one order -- means nobody
+    // waits for a version's row: whoever holds its identity is the only one
+    // who can be writing it.
     let affected = sqlx::query(
-        "UPDATE relationship_versions
-         SET invalidated_at = $1, tombstone_reason = $2
-         WHERE invalidated_at IS NULL
-           AND relationship_id IN (
-               SELECT id FROM relationships
-               WHERE project_id = $3 AND from_topic = $4 AND to_topic = $5 AND kind = $6
-           )",
+        "WITH edge AS (
+             SELECT id FROM relationships
+              WHERE project_id = $3 AND from_topic = $4 AND to_topic = $5 AND kind = $6
+                FOR UPDATE
+         )
+         UPDATE relationship_versions
+            SET invalidated_at = $1, tombstone_reason = $2
+          WHERE invalidated_at IS NULL
+            AND relationship_id IN (SELECT id FROM edge)",
     )
     .bind(OffsetDateTime::now_utc())
     .bind(reason.label())
