@@ -80,7 +80,10 @@ to be corrected twice, along with why, is in
 
 **Everything local.** Embeddings run in-process through ONNX Runtime;
 PostgreSQL is bundled rather than something you install. A default install
-makes no network call at query time and needs no API key.
+needs no API key, and makes no network call at query time once each model has
+been fetched: on its first use, and again after an upgrade of the inference
+runtime or a move to another CPU, which needs a new mapped copy written from
+the model's download (see [cli.md](cli.md)).
 
 ### Crate layout
 
