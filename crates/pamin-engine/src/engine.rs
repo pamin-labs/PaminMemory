@@ -2339,7 +2339,8 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// **Chosen by score rather than a fixed ten, because a weak find costs a pair
 /// and was not measured buying anything.** On the own corpus ten showed about
 /// four finds a query; at this threshold it shows almost none, and on MuSiQue
-/// 8.4 on average instead of ten, anywhere from none to the cap. Under a rule written before the runs, on 600 MuSiQue questions
+/// 8.4 on average instead of ten, anywhere from none to the cap, which was
+/// thirty then. Under a rule written before the runs, on 600 MuSiQue questions
 /// held out from where the threshold was noticed, through `search_reranked` at
 /// the `accuracy` profile with the caches bypassed: nDCG@10 +0.0017 against
 /// the fixed ten (16 questions better, 5 worse, p = 0.057), search time 0.87
@@ -2350,9 +2351,20 @@ const GRAPH_SHOWN_FROM: f32 = 0.5;
 
 /// At most this many of the finds at [`GRAPH_SHOWN_FROM`] are shown, strongest
 /// first. A cap is what keeps a densely linked question from handing the
-/// reranker every neighbour: MuSiQue reaches it on about one question in
-/// eight. Thirty is the cap the threshold was measured with, not a tuned value.
-const GRAPH_SHOWN_AT_MOST: usize = 30;
+/// reranker every neighbour. At ten the threshold never shows more than the
+/// fixed ten did: where more than ten finds reach it, the strongest ten are
+/// the old ten.
+///
+/// **Ten rather than the thirty the threshold was first measured with,
+/// because the finds past ten cost time they were not seen to earn.** Under a
+/// rule written before the runs, on 300 MuSiQue questions held out from both
+/// earlier tests, through `search_reranked` at the `accuracy` profile with the
+/// caches bypassed: search time 0.91 of thirty's (p = 0.0001), and 0.66 on the
+/// 72 questions where thirty showed more than ten; nDCG@10 -0.0031 (2
+/// questions better, 5 worse, p = 0.17, not significant). The own corpus never
+/// reaches ten and was unchanged on all 157 queries. `docs/measured.md` has
+/// the runs.
+const GRAPH_SHOWN_AT_MOST: usize = 10;
 
 /// The positions of a fused list the reranker is shown: the head's candidates
 /// no lexical channel found, and the candidates below the head that only the
