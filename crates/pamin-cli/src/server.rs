@@ -189,6 +189,14 @@ async fn maintain(session: Arc<Session>) {
 /// covers, and catching up does not flush per round -- it leaves the writes
 /// applied, for the flush that follows it in the same tick, exactly as a write
 /// does.
+///
+/// Smaller did not buy anything measurable. With rounds of four, eight and
+/// sixteen jobs, two runs each of `catching_up_does_not_hold_a_search_up` on
+/// a debug build on four busy cores, searches during catching up took 111,
+/// 122 and 131 ms at the median and 2.0, 2.4 and 1.6 s at worst -- the same,
+/// within noise that large. A round of sixteen index writes took 0.3 s at the
+/// median and 1.2 s at worst on that machine. So this stays at sixteen, where
+/// it was set before measuring.
 const CATCH_UP_BATCH: i32 = 16;
 
 /// Overrides [`CATCH_UP_BATCH`], for sweeping it without editing the tree.
@@ -352,7 +360,7 @@ impl CatchingUp {
                     break;
                 }
             }
-            caught_up.log(&key.0);
+            caught_up.log(&key.0, self.batch);
         }
     }
 }
@@ -384,12 +392,13 @@ impl CaughtUp {
         self.last = drained;
     }
 
-    fn log(&self, project: &str) {
+    fn log(&self, project: &str, batch: i32) {
         if self.completed + self.failed + self.last.applied == 0 {
             return;
         }
         tracing::debug!(
             project,
+            batch,
             drains = self.drains,
             seconds = self.seconds,
             completed = self.completed,
