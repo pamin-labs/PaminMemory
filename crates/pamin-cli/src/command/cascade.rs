@@ -12,16 +12,7 @@ use pamin_index::Profile;
 use pamin_store::jobs;
 use serde::{Deserialize, Serialize};
 
-use crate::output::Format;
 use crate::session::Session;
-
-/// How long `run` waits before looking again when it finds nothing.
-///
-/// There is no wake-up signal between processes -- `LISTEN`/`NOTIFY` is outside
-/// the portable subset this store holds itself to -- so an idle worker polls.
-/// A quarter of a second is short enough to feel immediate and long enough that
-/// an idle worker is not a load.
-const IDLE: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -33,9 +24,6 @@ pub struct Args {
 pub enum Command {
     /// Run every job that is due, then stop.
     Drain,
-
-    /// Keep running jobs as they arrive, until interrupted.
-    Run,
 
     /// List the jobs that used their attempts, with the error that stopped them.
     Failed,
@@ -97,10 +85,7 @@ pub struct Moved {
 ///
 /// The subcommands answer with different types, so the server cannot hand back
 /// one struct the way every other command does; it hands back the JSON each of
-/// them would have printed. `run` is the exception inside the exception -- a
-/// foreground loop with no result -- and a client that asks a server for it
-/// gets told to run it itself, because the loop belongs to the process that
-/// wants to hold the index, and that is the server already.
+/// them would have printed.
 pub async fn answer(
     session: &Session,
     project: &str,
@@ -112,11 +97,6 @@ pub async fn answer(
         Command::Failed => serde_json::to_value(failed(session, project).await?)?,
         Command::Replay => serde_json::to_value(replay(session, project).await?)?,
         Command::Discard => serde_json::to_value(discard(session, project).await?)?,
-        Command::Run => anyhow::bail!(
-            "`pamin cascade run` holds the index for as long as it runs, so it cannot be \
-             served by the process already holding it; run it against a workspace with \
-             PAMIN_NO_SERVER=1, or let the server drain on its own"
-        ),
     };
 
     Ok(value)
@@ -136,7 +116,7 @@ pub fn render_value(
     match args.command {
         Command::Drain => {
             let result: Drained = serde_json::from_str(value.get())?;
-            format.emit(&result, || render_drained(&result, Served::Yes));
+            format.emit(&result, || render_drained(&result));
         }
         Command::Failed => {
             let result: Failures = serde_json::from_str(value.get())?;
@@ -152,81 +132,24 @@ pub fn render_value(
             let result: Moved = serde_json::from_str(value.get())?;
             format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
         }
-        Command::Run => unreachable!("the server refuses `run` rather than answering it"),
     }
 
     Ok(())
-}
-
-/// Runs one of the subcommands and prints it.
-///
-/// The only command that still owns its own printing, because `run` is the one
-/// that has nothing to print: it is a foreground loop rather than a request
-/// with an answer.
-pub async fn execute(
-    session: &Session,
-    project: &str,
-    profile: Profile,
-    format: Format,
-    args: Args,
-) -> Result<()> {
-    match args.command {
-        Command::Drain => {
-            let result = drain(session, project, profile).await?;
-            format.emit(&result, || render_drained(&result, Served::No));
-        }
-        Command::Run => keep_running(session, project, profile).await?,
-        Command::Failed => {
-            let result = failed(session, project).await?;
-            format.emit(&result, || render_failures(&result));
-        }
-        Command::Replay => {
-            let result = replay(session, project).await?;
-            format.emit(&result, || {
-                format!("Queued {} failed jobs to run again", result.jobs)
-            });
-        }
-        Command::Discard => {
-            let result = discard(session, project).await?;
-            format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
-        }
-    }
-    Ok(())
-}
-
-/// Whether a server answered, which decides what fixes a badly shaped index.
-#[derive(Clone, Copy)]
-enum Served {
-    Yes,
-    No,
 }
 
 /// What a drain did, and what shape it left the index in if that is worth
 /// saying.
-///
-/// One rendering for both paths. The served one used to be the only one that
-/// mentioned the shape, so the same drain said less without a server -- where
-/// nothing reshapes the index on its own and the advice mattered most.
-fn render_drained(result: &Drained, served: Served) -> String {
+fn render_drained(result: &Drained) -> String {
     let mut rendered = format!(
         "Ran {} jobs, {} failed, {} still owed",
         result.completed, result.failed, result.pending
     );
     if let Some(segments) = &result.segments {
-        let fix = match served {
-            Served::Yes => {
-                "the server reshapes it in the background, copying what it holds \
-                 rather than embedding it again; `pamin reindex` rebuilds it now"
-            }
-            Served::No => {
-                "`pamin reindex` rebuilds it at the right size, and a running server \
-                 reshapes it in the background on its own"
-            }
-        };
         rendered.push_str(&format!(
             "\nThis index is spread over {} segments where {} would do, because it \
              recorded its segment size when it was empty. Searches pay for the extra \
-             segments; {fix}.",
+             segments; the server reshapes it in the background, copying what it holds \
+             rather than embedding it again; `pamin reindex` rebuilds it now.",
             segments.holds, segments.wants
         ));
     }
@@ -249,32 +172,6 @@ pub async fn drain(session: &Session, project: &str, profile: Profile) -> Result
             wants: shape.wanted(),
         }),
     })
-}
-
-/// Drains, then waits, then drains again, for as long as it is left running.
-///
-/// Holds the index open for writing the whole time, which is the point: this is
-/// the shape a worker has before there is a server to hold it, and the reason
-/// it cannot run beside a `pamin write` in another terminal.
-async fn keep_running(session: &Session, project: &str, profile: Profile) -> Result<()> {
-    let engine = session.engine(project, profile).await?;
-
-    loop {
-        let drained = engine.drain_cascade(Owed::Everything).await?;
-        if drained.completed > 0 || drained.failed > 0 {
-            tracing::info!(
-                completed = drained.completed,
-                failed = drained.failed,
-                pending = jobs::pending(engine.database.pool(), engine.project).await?,
-                "cascade round"
-            );
-        }
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => return Ok(()),
-            _ = tokio::time::sleep(IDLE) => {}
-        }
-    }
 }
 
 pub async fn failed(session: &Session, project: &str) -> Result<Failures> {

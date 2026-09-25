@@ -6,10 +6,9 @@
 //! request, and the difference between those two is the whole reason there is
 //! a server.
 //!
-//! Both callers build one of these. A server builds one and keeps it; a command
-//! running without a server builds one, uses it, and drops it, which is exactly
-//! what it did before. The commands cannot tell the difference, which is what
-//! keeps the two paths honest about producing the same answers.
+//! The server builds one of these and keeps it. It is the only thing that
+//! does: every command reaches the workspace through the server, so there is
+//! no second path to keep producing the same answers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -121,14 +120,12 @@ fn parse_open_indexes(raw: Option<&str>) -> usize {
 impl Session {
     /// Connects, migrates, and holds the result.
     ///
-    /// How many connections it may hold is the caller's to say, because that
-    /// is a question about the process rather than about the workspace: a
-    /// server is the only one talking to the cluster, and a command is one of
-    /// however many an agent is running.
-    pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
+    /// With a resident's pool: the server holding this is the only process
+    /// the CLI talks to the cluster from.
+    pub async fn open(workspace: &Workspace) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, connections).await?,
+            database: Database::open(workspace, Connections::Resident).await?,
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),
