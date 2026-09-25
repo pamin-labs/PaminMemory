@@ -78,27 +78,30 @@ Five reasons, any one of which is disqualifying:
    446 questions, 22.5% of the set -- while instructing the model never to
    abstain.
 
-   This page has described that category wrongly twice. It first said the 446
-   questions have a refusal for their only correct answer; all 446 carry an
-   `adversarial_answer` rather than an `answer`, and the value is substantive
-   in every case but two. It then said the answer is implied rather than
-   stated, which is also wrong.
+   This page has described that category wrongly three times, and the third
+   reading was built into the harness. All 446 questions carry an
+   `adversarial_answer` rather than an `answer`, and that field is **the trap,
+   not the key**: upstream's own evaluation (`snap-research/locomo`,
+   `task_eval/gpt_utils.py`) offers it as the wrong option beside "Not
+   mentioned in the conversation", and `task_eval/evaluation.py` scores a
+   prediction correct only when it says "not mentioned" or "no information
+   available". Abstaining is the right answer to every one of them.
 
-   Following each question to the turn its own `evidence` field names: **332 of
-   the 446, 74%, attribute to one speaker something the other speaker said**,
-   and the key gives that other speaker's content as correct.
+   What makes them unanswerable is visible from each question's own
+   `evidence` field: **332 of the 446, 74%, ask about one speaker something
+   only the other speaker said.**
 
-   | question | answer key | the turn it cites |
+   | question | the trap | the turn it cites |
    | --- | --- | --- |
    | What country is **Melanie's** grandma from? | Sweden | *Caroline*: "a gift from my grandma in my home country, Sweden" |
    | What instrument does **Caroline** play? | clarinet and violin | *Melanie*: "Yeah, I play clarinet!" |
    | Did **Caroline** make the black and white bowl? | Yes | *Melanie*: "I made this bowl in my class" |
 
-   So the category rewards a pipeline that ignores attribution and penalises
-   one that answers "no record of that" -- which, for the question as asked, is
-   the better answer. Dropping it still removes a fifth of the benchmark, but
-   what it removes is not an abstention test and not a hardness test; it is a
-   test of whether a system will answer about the wrong person.
+   So the category is an abstention test, and specifically a test of whether
+   a system will decline to answer about the wrong person. Until September
+   2026 `benchmarks/datasets/locomo.py` judged these questions against the
+   trap, which inverts the column; it now judges them against upstream's
+   "Not mentioned in the conversation".
 
 So: we cannot say Påmin Memory beats mem0, and we cannot say it loses. The
 quantities do not overlap. What is sayable is architectural — no LLM on the
@@ -605,33 +608,35 @@ two independent runs, which is what makes them worth stating at all.
 0.735 against Påmin Memory's best of 0.529. It scored 0.676 and 0.765 in the
 earlier pair too, so this is not the churn.
 
-**Adversarial goes to Påmin Memory and MemPalace, 0.429 against mem0's 0.143
-and 0.190 — and it should not be counted as a win.** Seventy-four per cent of
-that category asks about the wrong speaker, as set out at the top of this page,
-and the answer key rewards replying with the other speaker's content anyway.
-Splitting the forty-two sampled questions on exactly that:
+**The adversarial row is inverted and should be read upside down, not as a
+result.** It was judged against the trap answer rather than against
+abstention — see the top of this page — so a higher figure there means an
+arm answered about the wrong speaker more often. The forty-two questions split
+on exactly that:
 
 | | n | `pamin-wide` | MemPalace 30 | mem0 30 |
 | --- | --- | --- | --- | --- |
 | the question names the wrong speaker | 33 | 0.485 | 0.485 | 0.242 |
 | the question names the right speaker | 9 | 0.222 | 0.222 | 0.000 |
 
-Four fifths of the category is the first row, and what separates the arms there
-is that mem0 answers "no record of that" and is marked wrong for it. mem0
-distils facts against a `user_id` and filters by it, so a question about
-Melanie does not reach Caroline's memories. That is the behaviour a memory
-product should have. Returning raw turns and letting the reader answer from
-whichever one matched is the behaviour Påmin Memory has, and here it scores
-higher.
+mem0 answers "no record of that" far more often, because it distils facts
+against a `user_id` and filters by it, so a question about Melanie does not
+reach Caroline's memories. Under the benchmark's own scoring that is the
+correct answer, and this page counted it wrong. Returning raw turns and
+letting the reader answer from whichever one matched is the behaviour Påmin
+Memory has, and on this column it is the worse one.
 
-The nine questions that name the right speaker are the ones that would have
-said something, and nine is too few to say it. So this category is reported and
-then set aside: it is not evidence for Påmin Memory, and the earlier reading of
-it — that losing it is what distilling a conversation costs — is withdrawn.
+The rows were not re-judged: the raw answers are not in this repository, and a
+wrong answer that is not the trap is wrong under both keys, so the column
+cannot be flipped arithmetically. The harness now scores abstention as correct
+and a re-run will produce the real row. Until then the column is reported and
+set aside, and the earlier reading of it — that losing it is what distilling a
+conversation costs — stays withdrawn.
 
 That leaves one split that survives scrutiny, and it is mem0's. The totals tie
-because temporal and adversarial cancel — but only one of those two is a real
-difference between the systems, and it is not Påmin Memory's.
+because temporal and adversarial cancel — and the adversarial half of that
+cancellation was scored the wrong way round, so the tie itself is not
+established.
 
 Nine open-domain questions is too few to say anything, and it is listed only so
 the column is not quietly dropped.
