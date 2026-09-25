@@ -1,5 +1,7 @@
 //! Drives the projection index against the real engine.
 
+use std::collections::HashMap;
+
 use pamin_core::{Scored, TopicId};
 use pamin_index::{Access, Profile, Projection, ProjectionIndex};
 
@@ -760,20 +762,23 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
         .expect("an index built now lends its vectors");
     assert!(!dir.exists(), "the rebuild starts from an empty directory");
 
-    let wanted = [
+    let wanted = HashMap::from([
         (id(1), "the release train leaves on thursdays"),
         (id(2), "the oncall rota rotates every fortnight"),
         (id(3), "a topic the old index never held"),
-    ];
+    ]);
     assert_eq!(previous.lends(&wanted).expect("count"), 1);
-    let lent = previous.vectors(&wanted).expect("lend");
+    let lent = lent(&previous, &wanted);
     assert_eq!(
-        lent[0].as_deref(),
+        lent.get(&id(1)).map(|(_, vector)| vector.as_slice()),
         Some(vector.as_slice()),
         "unchanged text keeps its vector"
     );
-    assert_eq!(lent[1], None, "changed text is embedded again");
-    assert_eq!(lent[2], None, "a topic the old index lacks is embedded");
+    assert!(!lent.contains_key(&id(2)), "changed text is embedded again");
+    assert!(
+        !lent.contains_key(&id(3)),
+        "a topic the old index lacks is embedded"
+    );
     previous.discard().expect("discard");
     assert!(!dir.with_extension("previous").exists());
 
@@ -793,6 +798,127 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
         "vectors from another encoding were lent"
     );
     assert!(!dir.exists() && !dir.with_extension("previous").exists());
+}
+
+/// Everything a set-aside index lends for `wanted`, by topic.
+fn lent(
+    previous: &pamin_index::Previous,
+    wanted: &HashMap<TopicId, &str>,
+) -> HashMap<TopicId, (String, Vec<f32>)> {
+    let mut lent = HashMap::new();
+    let topics = previous
+        .lend(wanted, 256, |documents| {
+            for (topic, content, vector) in documents {
+                lent.insert(*topic, (content.to_string(), vector.to_vec()));
+            }
+            Ok(())
+        })
+        .expect("lend");
+    assert_eq!(
+        topics.len(),
+        lent.len(),
+        "the topics reported lent are not the ones handed over"
+    );
+    lent
+}
+
+/// A rebuild lends, through one pass of the engine's document iterator,
+/// exactly what reading each topic back by key returns: the same documents,
+/// the same text and bit-for-bit the same vectors, and nothing whose text the
+/// ledger has since changed, that was deleted, or that the index never held.
+///
+/// Keyed reads are the reference because they are what a rebuild lent through
+/// before, and what a reshape still reads with. More documents than one batch
+/// of the lend, with edits and deletions in the index, so the iterator walks
+/// more than one segment's worth of what a real index holds.
+#[test]
+fn a_rebuild_lends_through_the_iterator_what_keyed_reads_return() {
+    use pamin_index::Previous;
+
+    const HELD: u128 = 600;
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("index");
+    let legacy = root.path().join("legacy");
+    let text = |n: u128| format!("memory number {n} is about kiln{n}");
+
+    let index = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+    let texts: Vec<String> = (1..=HELD).map(text).collect();
+    let vectors: Vec<Vec<f32>> = (1..=HELD).map(separated).collect();
+    index
+        .upsert_batch(
+            &(1..=HELD)
+                .map(|n| {
+                    let at = (n - 1) as usize;
+                    (numbered(n), texts[at].as_str(), vectors[at].as_slice())
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("write");
+    index.flush().expect("flush");
+    for n in 10..20 {
+        index
+            .upsert(
+                numbered(n),
+                &format!("memory {n} was edited"),
+                &separated(n + 1000),
+            )
+            .expect("edit");
+    }
+    let deleted: Vec<TopicId> = (30..40).map(numbered).collect();
+    index.delete(&deleted).expect("delete");
+    index.flush().expect("flush");
+
+    // What the index holds, read back by key.
+    let every: Vec<TopicId> = (1..=HELD + 10).map(numbered).collect();
+    let by_key: HashMap<TopicId, pamin_index::Stored> = every
+        .iter()
+        .zip(index.stored(&every).expect("read back by key"))
+        .filter_map(|(topic, stored)| stored.map(|stored| (*topic, stored)))
+        .collect();
+    drop(index);
+
+    // What the ledger says now: the index's text for most topics, a text the
+    // index does not hold for a few, and topics it never held at all.
+    let ledger: HashMap<TopicId, String> = every
+        .iter()
+        .map(|topic| {
+            let n = topic.0.as_u128();
+            let content = match by_key.get(topic) {
+                Some(_) if (50..60).contains(&n) => format!("memory {n} changed in the ledger"),
+                Some(stored) => stored.content.clone(),
+                None => text(n),
+            };
+            (*topic, content)
+        })
+        .collect();
+    let wanted: HashMap<TopicId, &str> = ledger
+        .iter()
+        .map(|(topic, content)| (*topic, content.as_str()))
+        .collect();
+    let expected: HashMap<TopicId, (String, Vec<f32>)> = by_key
+        .into_iter()
+        .filter(|(topic, stored)| wanted[topic] == stored.content)
+        .map(|(topic, stored)| (topic, (stored.content, stored.embedding)))
+        .collect();
+    assert_eq!(
+        expected.len(),
+        (HELD - 10 - 10) as usize,
+        "the fixture does not hold what it means to"
+    );
+
+    let previous = Previous::set_aside(&dir, PROFILE)
+        .expect("set aside")
+        .expect("an index built now lends its vectors");
+    assert_eq!(previous.lends(&wanted).expect("count"), expected.len());
+    let lent = lent(&previous, &wanted);
+    assert_eq!(lent.len(), expected.len());
+    for (topic, want) in &expected {
+        assert!(
+            lent.get(topic) == Some(want),
+            "topic {topic} was lent as something other than what a keyed read returns"
+        );
+    }
+    previous.discard().expect("discard");
 }
 
 /// A document reads back as it was written -- the text and the vector both --
@@ -959,7 +1085,7 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     let previous = Previous::set_aside(&dir, PROFILE)
         .expect("set aside")
         .expect("an index whose vectors are current lends them");
-    let wanted = [(topics[0], texts[0]), (topics[1], texts[1])];
+    let wanted = HashMap::from([(topics[0], texts[0]), (topics[1], texts[1])]);
     assert_eq!(
         previous.lends(&wanted).expect("count"),
         2,
@@ -967,13 +1093,10 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     );
     let rebuilt =
         ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("rebuild");
-    let lent = previous.vectors(&wanted).expect("lend");
-    rebuilt
-        .upsert_batch(&[
-            (topics[0], texts[0], lent[0].as_deref().expect("lent")),
-            (topics[1], texts[1], lent[1].as_deref().expect("lent")),
-        ])
-        .expect("write");
+    let lent = previous
+        .lend(&wanted, 256, |documents| rebuilt.upsert_batch(documents))
+        .expect("lend");
+    assert_eq!(lent.len(), 2);
     rebuilt.flush().expect("flush");
     previous.discard().expect("discard");
     assert!(holds(
