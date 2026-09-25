@@ -68,8 +68,11 @@ async fn the_ledger_holds_its_promises() {
     a_seed_never_reaches_itself_however_deep_the_walk(&database).await;
     concurrent_writers_to_one_source_lose_no_evidence(&database, &workspace).await;
     concurrent_appends_to_one_topic_form_one_chain(&database, &workspace).await;
+    concurrent_batches_of_edges_form_one_chain_each(&database, &workspace).await;
+    retraction_racing_assertion_leaves_one_chain_each(&database, &workspace).await;
     ensuring_a_row_that_exists_does_not_rewrite_it(&database).await;
     derived_edges_are_asserted_together_or_not_at_all(&database).await;
+    a_batch_answers_each_edge_where_it_was_asked(&database).await;
     a_workspace_the_previous_runner_migrated_is_adopted(&database, &workspace).await;
     dropping_the_state_copy_loses_nothing_a_state_said(&database, &workspace).await;
     settled_jobs_go_and_owed_jobs_stay_through_the_migration(&database, &workspace).await;
@@ -1263,6 +1266,310 @@ async fn concurrent_appends_to_one_topic_form_one_chain(
     );
 }
 
+/// Concurrent batches over the same edges each supersede the version before
+/// them, and none of them deadlocks.
+///
+/// A batch creates, locks, reads and writes all its edges a statement each, so
+/// what one edge at a time got from its own order of statements a batch has to
+/// get from the order inside them. Three ways that goes wrong, each of which
+/// this sees:
+///
+/// - **Locks taken in the caller's order.** Every writer here asks for the
+///   same edges in a different order, so two that each lock one and wait for
+///   the other deadlock, and the server aborts one of them.
+/// - **Live versions read before the lock was granted.** A writer that waited
+///   would supersede the version the writer before it had already closed, so
+///   two versions would name one predecessor -- the chain forks, with no error.
+/// - **Numbers read before the lock was granted.** Two writers would claim the
+///   same version and one would fail on the unique constraint.
+///
+/// Half the edges exist before the race and half are created during it, since
+/// finding an identity and losing the race to create one are different
+/// statements. Each writer's claims carry a confidence of its own, so every
+/// writer appends to every edge, and each answer is checked against the edge
+/// that was asked about at its position. The race is run several times, since
+/// a deadlock needs two writers to interleave and one race does not always
+/// produce that.
+async fn concurrent_batches_of_edges_form_one_chain_each(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const WRITERS: usize = 8;
+    const RACES: usize = 12;
+
+    let project = repository::ensure_project(database.pool(), "contended_edges")
+        .await
+        .expect("ensure project");
+    let mut topics = Vec::new();
+    for name in ["north", "east", "south", "west"] {
+        topics.push(
+            committed!(database, common::ensure_topic, project.id, name)
+                .expect("ensure topic")
+                .id,
+        );
+    }
+    let pairs = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2), (1, 3)]
+        .map(|(from, to)| (topics[from], topics[to]));
+    let existing: Vec<_> = pairs[..3]
+        .iter()
+        .map(|(from, to)| (*from, *to, EdgeClaim::explicit(EdgeKind::RelatedTo)))
+        .collect();
+    graph::assert_edges(database.pool(), project.id, &existing)
+        .await
+        .expect("assert the edges that exist before the race");
+
+    let server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+    for race in 0..RACES {
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let server = server.clone();
+                let mut order = pairs.to_vec();
+                order.rotate_left(writer % pairs.len());
+                if writer % 2 == 1 {
+                    order.reverse();
+                }
+                let mut claim = EdgeClaim::explicit(EdgeKind::RelatedTo);
+                claim.confidence =
+                    1.0 - (race * WRITERS + writer + 1) as f32 / (RACES * WRITERS + 1) as f32;
+                let edges: Vec<_> = order
+                    .into_iter()
+                    .map(|(from, to)| (from, to, claim.clone()))
+                    .collect();
+                tokio::spawn(async move {
+                    let database = Database::connect(&server, Connections::PerCommand)
+                        .await
+                        .expect("connect");
+                    let asserted = graph::assert_edges(database.pool(), project.id, &edges)
+                        .await
+                        .expect("every writer keeps its edges");
+                    (edges, asserted)
+                })
+            })
+            .collect();
+
+        for writer in writers {
+            let (edges, asserted) = writer.await.expect("writer task");
+            assert_eq!(asserted.len(), edges.len(), "one answer per edge asked");
+            for ((from, to, claim), assertion) in edges.iter().zip(&asserted) {
+                let edge = graph::find_relationship(
+                    database.pool(),
+                    project.id,
+                    *from,
+                    *to,
+                    EdgeKind::RelatedTo,
+                )
+                .await
+                .expect("find relationship")
+                .expect("the edge exists");
+                assert!(assertion.is_new(), "every writer's claim is its own");
+                assert_eq!(
+                    (
+                        assertion.version().relationship_id,
+                        assertion.version().confidence
+                    ),
+                    (edge.id, claim.confidence),
+                    "an answer describes an edge other than the one asked at its position"
+                );
+            }
+        }
+    }
+
+    for (at, (from, to)) in pairs.iter().enumerate() {
+        let edge =
+            graph::find_relationship(database.pool(), project.id, *from, *to, EdgeKind::RelatedTo)
+                .await
+                .expect("find relationship")
+                .expect("the edge exists");
+        let history = graph::edge_history(database.pool(), project.id, edge.id)
+            .await
+            .expect("edge history");
+        let before = usize::from(at < existing.len());
+        assert_eq!(
+            history
+                .iter()
+                .map(|version| version.version)
+                .collect::<Vec<_>>(),
+            (1..=(RACES * WRITERS + before) as u32).collect::<Vec<_>>(),
+            "concurrent writers should take consecutive versions"
+        );
+        let mut previous = None;
+        for version in &history {
+            assert_eq!(
+                version.supersedes, previous,
+                "version {} supersedes a version other than the one before it",
+                version.version
+            );
+            previous = Some(version.id);
+        }
+        let (newest, closed) = history.split_last().expect("the edge has versions");
+        assert!(
+            newest.invalidated_at.is_none(),
+            "the newest version is live"
+        );
+        assert!(
+            closed.iter().all(|version| version.invalidated_at.is_some()
+                && version.tombstone_reason == Some(TombstoneReason::Superseded)),
+            "every version before the newest was superseded"
+        );
+    }
+}
+
+/// Retracting a topic's derived edges while they are being re-asserted
+/// deadlocks neither, and leaves each edge one chain.
+///
+/// Both close live versions, and closing takes a version's row. A batch that
+/// closes one edge's version and waits for another's, while a retraction has
+/// closed the second and waits for the first, is a cycle the server resolves
+/// by aborting one of them -- a restatement or an assertion lost. So every
+/// writer of a version takes its edge's identity first, in the one order the
+/// batch already uses, and a version is only ever written by whoever holds its
+/// identity.
+///
+/// Half the racers assert the hub's edges with a claim of their own, in the
+/// reverse of the order they were written; the other half retract every one
+/// of them as no longer named. Whatever order they land in, a version is
+/// superseded exactly when the next one names it, and closed otherwise. The
+/// race is wide and repeated because the batch closes its versions in one
+/// statement, so the window in which a cycle can form is short.
+async fn retraction_racing_assertion_leaves_one_chain_each(
+    database: &Database,
+    workspace: &Workspace,
+) {
+    const RACERS: usize = 8;
+    const RACES: usize = 24;
+    const TARGETS: usize = 64;
+
+    let project = repository::ensure_project(database.pool(), "retracted_while_asserted")
+        .await
+        .expect("ensure project");
+    let hub = committed!(database, common::ensure_topic, project.id, "hub")
+        .expect("ensure topic")
+        .id;
+    let mut targets = Vec::new();
+    for target in 0..TARGETS {
+        targets.push(
+            committed!(
+                database,
+                common::ensure_topic,
+                project.id,
+                &format!("named_{target}")
+            )
+            .expect("ensure topic")
+            .id,
+        );
+    }
+    let derived = |confidence: f32| EdgeClaim {
+        kind: EdgeKind::Mentions,
+        derivation: Derivation::Deterministic,
+        confidence,
+        validity: Validity::ALWAYS,
+        caused_by_topic_state: None,
+    };
+    let server = workspace
+        .read_server()
+        .expect("read server record")
+        .expect("workspace has a server");
+
+    for race in 0..RACES {
+        // Every edge live before each race, so both sides have it to close.
+        let named: Vec<_> = targets.iter().map(|to| (hub, *to, derived(1.0))).collect();
+        graph::assert_edges(database.pool(), project.id, &named)
+            .await
+            .expect("assert the edges before the race");
+
+        let racers: Vec<_> = (0..RACERS)
+            .map(|racer| {
+                let server = server.clone();
+                // Against the order the retraction happens to scan them in,
+                // which is the order they were written.
+                let mut order = targets.clone();
+                order.reverse();
+                let claim =
+                    derived(1.0 - (race * RACERS + racer + 1) as f32 / (RACES * RACERS + 1) as f32);
+                let edges: Vec<_> = order
+                    .into_iter()
+                    .map(|to| (hub, to, claim.clone()))
+                    .collect();
+                tokio::spawn(async move {
+                    let database = Database::connect(&server, Connections::PerCommand)
+                        .await
+                        .expect("connect");
+                    if racer % 2 == 0 {
+                        graph::assert_edges(database.pool(), project.id, &edges)
+                            .await
+                            .map(|_| ())
+                    } else {
+                        graph::retract_derived_all(
+                            database.pool(),
+                            project.id,
+                            EdgeKind::Mentions,
+                            &[(hub, Vec::new())],
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                })
+            })
+            .collect();
+        for racer in racers {
+            racer
+                .await
+                .expect("racer task")
+                .expect("every assertion and retraction completes");
+        }
+    }
+
+    for to in &targets {
+        let edge =
+            graph::find_relationship(database.pool(), project.id, hub, *to, EdgeKind::Mentions)
+                .await
+                .expect("find relationship")
+                .expect("the edge exists");
+        let history = graph::edge_history(database.pool(), project.id, edge.id)
+            .await
+            .expect("edge history");
+        assert_eq!(
+            history
+                .iter()
+                .map(|version| version.version)
+                .collect::<Vec<_>>(),
+            (1..=history.len() as u32).collect::<Vec<_>>(),
+            "versions should be consecutive"
+        );
+        let (newest, older) = history.split_last().expect("the edge has versions");
+        assert!(
+            older.iter().all(|version| version.invalidated_at.is_some()),
+            "only the newest version can be live"
+        );
+        for (before, after) in older.iter().zip(&history[1..]) {
+            let expected = match after.supersedes {
+                Some(superseded) => {
+                    assert_eq!(
+                        superseded, before.id,
+                        "a version supersedes the one before it"
+                    );
+                    TombstoneReason::Superseded
+                }
+                None => TombstoneReason::Closed,
+            };
+            assert_eq!(
+                before.tombstone_reason,
+                Some(expected),
+                "version {} was closed as neither what came next nor a retraction says",
+                before.version
+            );
+        }
+        assert!(
+            newest.invalidated_at.is_none()
+                || newest.tombstone_reason == Some(TombstoneReason::Closed),
+            "the newest version is live or retracted"
+        );
+    }
+}
+
 /// Re-ensuring a project, source, topic or relationship leaves the row alone.
 ///
 /// Returning the existing row from a conflict clause requires `DO UPDATE`, and
@@ -1439,6 +1746,140 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
         again.iter().filter(|edge| edge.is_new()).count(),
         0,
         "re-asserting an unchanged batch should append nothing"
+    );
+}
+
+/// A batch answers each edge at the position it was asked, and an edge asked
+/// twice is decided the second time against what the first wrote.
+///
+/// The batch decides and writes its edges together, so neither the order of
+/// the answers nor what a repeat sees follows from doing them one at a time
+/// any more; this holds both to what one at a time gave. A repeat with the
+/// same claim is unchanged, and one with a different claim supersedes the
+/// version the first wrote -- where two versions written by one statement
+/// would both claim the same number, and the batch would fail.
+async fn a_batch_answers_each_edge_where_it_was_asked(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "answered_in_order")
+        .await
+        .expect("ensure project");
+    let mut topics = Vec::new();
+    for name in ["hub", "kept", "changed", "added"] {
+        topics.push(
+            committed!(database, common::ensure_topic, project.id, name)
+                .expect("ensure topic")
+                .id,
+        );
+    }
+    let (hub, kept, changed, added) = (topics[0], topics[1], topics[2], topics[3]);
+    let explicit = EdgeClaim::explicit(EdgeKind::RelatedTo);
+    let before = graph::assert_edges(
+        database.pool(),
+        project.id,
+        &[
+            (hub, kept, explicit.clone()),
+            (hub, changed, explicit.clone()),
+        ],
+    )
+    .await
+    .expect("assert the edges that exist before");
+
+    let weaker = |confidence: f32| EdgeClaim {
+        confidence,
+        ..explicit.clone()
+    };
+    let asserted = graph::assert_edges(
+        database.pool(),
+        project.id,
+        &[
+            (hub, kept, explicit.clone()),
+            (hub, changed, weaker(0.5)),
+            (hub, added, explicit.clone()),
+            (hub, changed, weaker(0.25)),
+            (hub, added, explicit.clone()),
+        ],
+    )
+    .await
+    .expect("assert the batch");
+
+    let described: Vec<(bool, uuid::Uuid, u32, f32)> = asserted
+        .iter()
+        .map(|assertion| {
+            let version = assertion.version();
+            (
+                assertion.is_new(),
+                version.relationship_id.0,
+                version.version,
+                version.confidence,
+            )
+        })
+        .collect();
+    let identity = |to| async move {
+        graph::find_relationship(database.pool(), project.id, hub, to, EdgeKind::RelatedTo)
+            .await
+            .expect("find relationship")
+            .expect("the edge exists")
+            .id
+            .0
+    };
+    let (kept_id, changed_id, added_id) = (
+        identity(kept).await,
+        identity(changed).await,
+        identity(added).await,
+    );
+    assert_eq!(
+        described,
+        vec![
+            (false, kept_id, 1, 1.0),
+            (true, changed_id, 2, 0.5),
+            (true, added_id, 1, 1.0),
+            (true, changed_id, 3, 0.25),
+            (false, added_id, 1, 1.0),
+        ],
+        "each answer should be the one for the edge asked at its position"
+    );
+    assert_eq!(
+        asserted[0].version().id,
+        before[0].version().id,
+        "an unchanged claim answers with the version already live"
+    );
+    assert_eq!(
+        asserted[4].version().id,
+        asserted[2].version().id,
+        "a repeat answers with the version the batch wrote"
+    );
+
+    let history = graph::edge_history(
+        database.pool(),
+        project.id,
+        graph::find_relationship(
+            database.pool(),
+            project.id,
+            hub,
+            changed,
+            EdgeKind::RelatedTo,
+        )
+        .await
+        .expect("find relationship")
+        .expect("the edge exists")
+        .id,
+    )
+    .await
+    .expect("edge history");
+    assert_eq!(
+        history
+            .iter()
+            .map(|version| (
+                version.version,
+                version.supersedes,
+                version.tombstone_reason,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, None, Some(TombstoneReason::Superseded)),
+            (2, Some(history[0].id), Some(TombstoneReason::Superseded)),
+            (3, Some(history[1].id), None),
+        ],
+        "a changed edge's versions should form one chain with the newest live"
     );
 }
 
