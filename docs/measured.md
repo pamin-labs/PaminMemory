@@ -220,6 +220,53 @@ removed, also held them down). The
 harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
 paying.
 
+**Ten is a fixed count, and showing more or choosing them by score buys
+nothing.** Replaying the fused lists found one cut that another setting would
+move: 29 supporting titles only the graph found sat below the ten shown, and
+twenty brings 19 of them into the reranker's view (19 questions gain, none
+lose, p = 0.0001). No fusion change (k, RRF, graph weight) moved that view by
+a significant amount. Four arms then went through `search_reranked` at the
+`accurate` tier and the `accuracy` profile, on the named-passage project the
+evaluation workspace holds now (where ten scores 0.7131), under a rule written
+before the runs: ship the simplest arm that is significantly worse nowhere,
+better somewhere, costs at most 1.5 times the search time, and, where accuracy
+and speed disagree, wins on the effect with the larger standardized size.
+Every find is in the table for scale only; it was not a candidate.
+
+| arm | MuSiQue nDCG@10, 1,000 questions | own corpus, 157 | search time, MuSiQue | search time, own |
+| --- | --- | --- | --- | --- |
+| **ten (ships)** | **0.7131** | **unchanged** | **1** | **1** |
+| twenty | +0.0010 (9 better, 25 worse, p = 0.41) | identical on every query | 1.41 | 0.99 (n.s.) |
+| a graph score of at least τ, at most thirty | −0.0004 (9 better, 35 worse, p = 0.74) at τ = 0 | −0.0002 (1 worse) at τ = 0.5 | 1.78 | 0.82 |
+| every graph find | −0.0002 (11 better, 41 worse, p = 0.90) | identical on every query | 2.26 | 0.99 (n.s.) |
+
+Times are the geometric mean of each question's ratio to ten, from searches
+with the reranker's and the embedder's caches bypassed and the arms taken in
+rotated order: 100 MuSiQue questions (every tenth) and all 157 own-corpus
+queries, on four cores that other work was sharing. XQuAD-R has no edges, so
+every arm is ten there. τ was chosen leave-one-corpus-out: on the own corpus
+every τ scores the same, down to showing no graph find at all, so MuSiQue got
+τ = 0, which is thirty; MuSiQue chose τ = 0.5 for the own corpus. So the
+threshold is faster on the own corpus and fails the time bound on MuSiQue,
+and twenty wins nothing. Neither ships.
+
+Two findings came out of it. The recall the reranker is shown does not
+predict what it returns: twenty adds 19 relevant titles to its view and
++0.0010 to its top ten. And the own corpus pays for graph finds it does not
+use: ten shows about four of them a query, none of them ever changes a top
+ten there, and not showing them is 18% of a search. On 100 MuSiQue questions,
+rebuilt from the reranker's own scores, τ = 0.5 (about nine finds a question)
+scored 0.6920 against ten's 0.6902, and a five-fold split of those questions
+picked it in every fold. That is a hypothesis for a threshold measured on its
+own, not a result: it was not the arm this comparison chose.
+
+MuSiQue's twenty and thirty come from a run that took ten first and then
+reused the pairs it had scored, so their shared pairs were scored in other
+batches; the int8 export makes a score depend on its neighbours. The 100
+questions searched fresh match that run's twenty and thirty on 97 each. The
+arms change a count and a threshold that the tree does not expose, so they
+were measured on a scratch build and cannot be re-run from the repository.
+
 ### What the fusion function itself is worth
 
 Two mechanisms were built for the finding above and swept offline from one pass
