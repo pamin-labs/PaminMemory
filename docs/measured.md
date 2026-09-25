@@ -497,6 +497,65 @@ own corpus and +0.0003 at p = 0.9057 on MIRACL. Two corpora, opposite readings,
 so ten stays — which is what the literature predicts for a constant worth one
 to three points against a normalisation worth three to eight.
 
+**The n-gram field keeps two-character grams. Three were measured and lose
+the cross-lingual group.** A scratch audit of the n-gram channel alone had
+three-character grams far ahead of `zvec`'s default of two: +0.0694 nDCG@10 on
+XQuAD-R and +0.1875 on MuSiQue. After fusion, almost none of that was left:
++0.0016 (p = 0.36) and +0.0047 (p = 0.007). So two arms went through
+`search_reranked` at the `accurate` tier and the `accuracy` profile: three
+alone (`{"ngram_min":3,"ngram_max":3}`), and two and three together
+(`{"ngram_min":2,"ngram_max":3}`). The second was the hedge for two-character
+Chinese and Thai words. The rule was written before the runs. It shipped an arm
+only if all of these held:
+
+- no aggregate cell significantly worse;
+- none of Chinese or Thai, same-language or cross-lingual, significantly worse;
+- no other XQuAD-R language significantly worse after Holm correction;
+- one aggregate cell better at p < 0.025;
+- at most 1.10 times the median search time, 1.40 times the index on disk, and
+  1.50 times the rebuild.
+
+Neither arm met it:
+
+| arm | XQuAD-R same-language, 1,190 | XQuAD-R cross-lingual, 1,190 | MuSiQue, 300 | own corpus, 157 | index on disk | rebuild |
+| --- | --- | --- | --- | --- | --- | --- |
+| **two (ships)** | **0.8118** | **0.6703** | **0.7161** | **unchanged** | **1** | **1** |
+| three | +0.0034 (46 better, 26 worse, p = 0.052) | **−0.0055** (151 better, 266 worse, p = 0.0001) | −0.0001 (33 / 35, p = 0.98) | no group moves significantly | 1.07–1.30 | 1.16–1.25 |
+| two and three | +0.0016 (32 / 16, p = 0.22) | **−0.0035** (114 / 194, p = 0.0001) | −0.0013 (27 / 30, p = 0.74) | no group moves significantly | 1.16–1.67 | 1.60–1.67 |
+
+Three-character grams have a lower cross-lingual mean in all eleven query
+languages, by under 0.001 in Chinese and Vietnamese, and two of those losses
+fail the rule on their own. Thai loses −0.0049 (8 better,
+17 worse, p = 0.018), and English loses −0.0126 (p = 0.036 after Holm). The
+risk the rule named in advance did not appear: Chinese same-language moves by
+−0.0002 and Thai same-language by +0.0031, neither significant. Recall@50 of
+the final list does not move on XQuAD-R (−0.0001), so the loss is in the order
+of the top ten, not in what is found. The MuSiQue gain the fused list showed
+does not survive the reranker, although recall@50 there rises by 0.0050 in both
+arms. Two and three together is not a cheap hedge. It stores both gram sizes,
+so it is the largest index and the slowest rebuild of the three arms, and it
+still loses the cross-lingual group.
+
+Median search time is within 2.3% of what ships on every corpus, faster on
+some and slower on others. It was measured with the reranker's and the embedder's caches
+bypassed and the arms taken in rotated order, on four cores that two other
+evaluation runs were sharing. Disk is the whole project index directory after a
+rebuild and an optimise. Two gram sizes make it 1.50 times as large on XQuAD-R
+and 1.67 times on MuSiQue, which is 110 MB against 166 MB and 119 MB against
+198 MB. Rebuild is the reindex wall clock with every vector lent from the index
+it replaces, so it is the index's own work: 21.9 s, 27.4 s and 35.0 s on
+XQuAD-R. The own corpus rebuilds in under half a second, too little to give a
+ratio. MuSiQue is its first 300 questions, not 1,000. At about twenty seconds a
+question on the shared machine, the full set would have taken five and a half
+hours, and XQuAD-R had already decided the verdict. The addendum saying so
+was written before those rows were analysed. The
+arms were built on the tree from before the graph threshold, when the reranker
+was shown a fixed ten graph finds. XQuAD-R has no edges, and each comparison is
+paired on one base. The
+gram size is a scratch-build switch, not something the tree exposes, so the
+arms cannot be re-run from the repository. With no arm eligible, the rule did
+not re-sweep the n-gram weight, and it stays at an eighth.
+
 **A learned fusion head was fitted and does not generalise.** The `FEATURES`
 arm (`pamin-engine/tests/features`) dumps every fused candidate with each
 channel's rank and score, and the shipped combiner rebuilt from the dump alone
