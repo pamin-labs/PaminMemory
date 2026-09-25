@@ -264,8 +264,9 @@ Writing also derives relationships. See [Relationships](#relationships).
 The write itself commits the evidence, the span, the state and a record of what
 the projection is owed, all in one transaction that touches only PostgreSQL;
 the index is brought up to date afterwards. `applied` means that happened here.
-`queued` means some of it is still owed and `pamin cascade` will run it — the
-memory is recorded either way. See [`pamin cascade`](#pamin-cascade).
+`queued` means some of it is still owed, and the server runs it once it has no
+request to answer — the memory is recorded either way. See
+[`pamin cascade`](#pamin-cascade).
 
 `--defer` records the memory and leaves the index to catch up later, so the
 command returns without embedding anything:
@@ -276,9 +277,13 @@ Wrote release_notes v1
 ```
 
 The memory is committed exactly as it would be otherwise — `pamin read` and
-`pamin grep` see it immediately — and only `search` waits for the queue. Use it
-when importing in bulk and run `pamin cascade drain` once at the end: one
-rebuild of the vector graph instead of one after every write.
+`pamin grep` see it immediately — and only `search` waits for the queue. The
+server works through the queue on its own, between requests, so the memory
+becomes searchable with nothing else run once the server's five-second upkeep
+has come round once or twice: 5.8 to 11.6 seconds in five measured runs. Run
+`pamin cascade drain` to make the index catch up at once instead, for instance
+at the end of a loop of deferred writes; to record a file of memories, use
+[`pamin import`](#pamin-import).
 
 `cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
 reports what the queue owed when the write looked at it rather than what is left
@@ -287,12 +292,12 @@ identical from outside, apart from searches missing the newest memories.
 
 Ten thousand is also where `--defer` stops deferring: a write past it drains
 before returning, so an import that ignores the signal still cannot run the
-queue away. That costs the importer the work it created rather than pausing it,
-which is the only form of backpressure that means anything here — ordinarily
-nothing else is draining, so a writer that waited would slow the import and
-leave the backlog exactly where it was. A new memory queues three jobs, so an
-import pays for a batch about every three thousand of them and never carries
-more than ten thousand.
+queue away. That costs the importer the work it created rather than pausing it.
+A writer that waited would hand the same work to the server, which runs it only
+while no request is being answered and in smaller rounds, so waiting would slow
+the import by at least what paying costs and bound nothing. A new memory
+queues three jobs, so an import pays for a batch about every three thousand of
+them and never carries more than ten thousand.
 
 ## `pamin import`
 
@@ -411,7 +416,10 @@ ranking internals it has no way to evaluate.
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; it now reranks thirty, which the `accurate` tier
 turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
-model pairs, and whose wall time has not been re-taken on a quiet machine. The
+model pairs. At thirty a search has been timed only on a busy machine, where
+the batching that ships with it made one 0.83 of what it was on this corpus
+([measured.md](measured.md) has the figures), so read 1522 ms as the cost
+at twenty candidates rather than as today's. The
 rows can be read against each other; none of them can be read against a figure published before
 this table, and the `off` and `fast` rows moved when the fusion layer changed
 underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
@@ -497,9 +505,9 @@ nothing there.
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
 measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
-Four thousand scores are kept, about a quarter of a megabyte. Without
-`pamin serve` there is no process to keep them in, so every command starts
-from nothing.
+Four thousand scores are kept, about a quarter of a megabyte, for as long as
+the server holds the reranking model: they go when it stops, or when it
+releases a model nothing has used for a while.
 
 The latencies are from four cores. Published figures for a reranker of this
 size are a few milliseconds per candidate rather than the ten measured here,
@@ -990,8 +998,8 @@ authority store, not the index.
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
 
-It is also how a grown project resizes its vector segments when no server is
-running. The index sizes them from the number of memories it holds when it is
+It is also how a grown project resizes its vector segments at once, rather
+than when the server gets to it. The index sizes them from the number of memories it holds when it is
 created, which for a project starting from nothing is the smallest size; a
 project that has since grown by orders of magnitude keeps that size until the
 index is recreated. Rebuilding recomputes it from what the project holds now,
@@ -999,14 +1007,13 @@ so a project that has outgrown its layout searches faster afterwards. Where the
 old index was built the way a new one is, a memory whose text has not changed
 keeps the vector it already has rather than being embedded again.
 
-A running server does this on its own. Once a project's index is spread over
+The server does this on its own. Once a project's index is spread over
 more than twice the segments it should be, the server copies it into the right
 shape in the background — reading it a batch at a time while it goes on
 answering searches and writes, and building the copy's vector graph with the
 index free — then swaps the copy in. Writes made during the copy are carried
 over before the swap. Nothing is embedded, and for the length of the copy the
-disk holds the index twice. `pamin cascade drain` reports a badly shaped index
-either way.
+disk holds the index twice. `pamin cascade drain` reports a badly shaped index.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
@@ -1023,20 +1030,32 @@ transaction, so a memory is never recorded without its follow-up work also
 being recorded — and a process that dies between the two leaves the work owed
 rather than lost.
 
-`pamin write` runs the queue before it returns, so ordinarily there is nothing
-here to do. These commands are for when there is: a queue left behind by a
-process that was killed, writes made with [`--defer`](#pamin-write), work
-deferred because something it needed was unavailable, and jobs that failed
-often enough to be set aside.
+`pamin write` runs the queue before it returns, and the server runs whatever
+is left, so ordinarily there is nothing here to do. These commands are for
+making the index catch up at once rather than about ten seconds later, and for
+jobs that failed often enough to be set aside.
 
 ```console
 $ pamin cascade drain
 Ran 3 jobs, 0 failed, 0 still owed
 ```
 
-`drain` runs everything that is due and stops. `run` keeps going, waiting for
-new work until it is interrupted; it holds the index open for writing the whole
-time, so no other command that writes can run alongside it.
+`drain` runs everything that is due and stops. It is how to make the index
+catch up now — after a run of `--defer` writes, or a write that reported
+`queued` — and like every other command it runs in the server, so it can be
+called while other commands are running.
+
+Without it the server gets there on its own. Every five seconds, if it is not
+answering a request, it looks for projects owed work that changes what a search
+finds — writes made with [`--defer`](#pamin-write), and work a server that was
+killed left behind — and runs it in rounds of sixteen jobs, for up to five
+seconds, stopping between rounds as soon as a request arrives. A search that
+arrives during a round waits for the rest of it. It also opens a
+project nobody has asked about, one per tick, when that project is owed work
+that has never failed, so the first search after a server was killed finds
+what the dead one had not indexed. What it opens it gives back like anything
+else it holds, once nothing has wanted it for the idle window. A job that has
+failed is retried when something opens its project, not on its own account.
 
 Jobs name a subject rather than an event — "bring this topic up to date", not
 "this topic changed" — so running one twice leaves the same result as running
@@ -1093,9 +1112,11 @@ loaded an embedding model before it did any work of its own.
 to watch it. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
 
-Between requests it looks after the indexes it holds open: it makes applied
-writes durable, compacts an index spread over too many files, and reshapes one
-spread over too many segments, as `pamin reindex` describes. A reshape logs
+Between requests it brings indexes up to date with work a deferred write or a
+killed server left owed, as [`pamin cascade`](#pamin-cascade) describes, and
+looks after the indexes it holds open: it makes applied writes durable,
+compacts an index spread over too many files, and reshapes one spread over too
+many segments, as `pamin reindex` describes. A reshape logs
 `reshaping the index` when it starts and `reshaped the index` with the segment
 counts and its duration when it finishes, at the `info` level that
 `PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
@@ -1110,20 +1131,18 @@ of them is 1.6 GB or 3.3 GB depending on a flag. On a machine where that is too
 much, `PAMIN_OPEN_INDEXES` sets a smaller number. Lowering it costs nothing but
 a reopen when a query lands on a project that has fallen out.
 
-`PAMIN_NO_SERVER=1` runs everything in the calling process, as it did before.
-The results are identical — it is the same code either way — so this is for
-debugging the server itself, and for a caller that would rather have one process
-to reason about than a fast one.
-
-It does not combine with a server that is already up. A running server holds the
-index open for writing, and the index takes an exclusive lock on its directory,
-so a second process opening the same project fails rather than waiting. That is
-the lock doing its job: two processes writing one index is what it exists to
-prevent. Run `pamin stop` first if you want the in-process path against a
-workspace a server is holding.
-
 Every command goes through the server except two. `serve` is the server, and
-`stop` is what shuts it down.
+`stop` is what shuts it down; with no server running, `stop` stops the database
+itself rather than starting a server to do it. There is no way to run a command
+in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
+and a command run with it set fails and says so rather than quietly going
+through the server it was set to avoid.
+
+So the server is the only process the command line opens an index in. It holds
+each project's index open for writing, and the index takes an exclusive lock on
+its directory, so any other process opening the same project waits briefly and
+then fails rather than sharing it. That is the lock doing its job: two processes
+writing one index is what it exists to prevent.
 
 The socket is a file, so it inherits the workspace's permissions and cannot be
 reached from another machine. There is no authentication, for the same reason:

@@ -334,7 +334,7 @@ const SMALLEST_SEGMENT: u64 = 10_000;
 /// by orders of magnitude keeps the size it was created with until something
 /// recreates it: a server reshapes it on its own once
 /// [`Segmentation::is_worth_rebuilding`] says so, and `pamin reindex` rebuilds
-/// it where there is no server.
+/// it at once.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
 }
@@ -351,9 +351,10 @@ pub fn segment_documents(documents: u64) -> u64 {
 /// from its upkeep loop and, when [`is_worth_rebuilding`](Self::is_worth_rebuilding)
 /// says so, reshapes the index in the background: a copy taken while the
 /// index is served, with every vector reused and the lock held a batch at a
-/// time -- see [`crate::Reshape`]. Without a server nothing does that on its
-/// own, `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds
-/// it, also without embedding anything again; see [`Previous`].
+/// time -- see [`crate::Reshape`]. A process holding the index without a
+/// server, such as an evaluation harness, has nothing doing that on its own.
+/// `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds it,
+/// also without embedding anything again; see [`Previous`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segmentation {
     /// Documents the collection holds.
@@ -442,8 +443,8 @@ impl Segmentation {
 /// the flush to the server, this is a bound rather than a working limit: three
 /// thousand writes through a server leave 136 files and nothing is ever
 /// compacted, where two thousand flushed one at a time left 10,031. It is kept
-/// for the cases that still reach it -- an import, and a workspace written to
-/// with no server behind it -- and because a bound that is not being
+/// for the cases that still reach it -- an import, and a harness writing to an
+/// index with no server behind it -- and because a bound that is not being
 /// approached is the one worth having.
 const MAX_FILES: u64 = 256;
 
@@ -789,6 +790,24 @@ impl ProjectionIndex {
         }
 
         Self::open_sized(dir, profile, access, segment_documents(documents))
+    }
+
+    /// The profile the index at `dir` was built with, if there is one there.
+    ///
+    /// For a caller that has to open an index nobody asked it to and so has
+    /// no profile in hand: the resident server, bringing up to date a project
+    /// that was written to by a process that is gone. Opening under a guess is
+    /// not an option -- a wrong guess is refused, and a guess at a directory
+    /// with no index creates one for that profile.
+    ///
+    /// `None` for no index, and for one recorded with a model no profile runs
+    /// any more, which only a rebuild can open.
+    pub fn built_for(dir: &Path) -> Result<Option<Profile>> {
+        Ok(Marker::read(dir)?.and_then(|recorded| {
+            [Profile::Speed, Profile::Balanced, Profile::Accuracy]
+                .into_iter()
+                .find(|profile| profile.model_id() == recorded.model)
+        }))
     }
 
     /// Opens the index at `dir`, creating it with segments of `segment`
@@ -1482,22 +1501,31 @@ fn options(access: Access) -> Result<Option<CollectionOptions>> {
 
 /// How long to keep trying for the index's file lock before giving up.
 ///
-/// Long enough to outlast the other command, short enough that a caller who is
-/// actually stuck finds out quickly. A `pamin search` holds the lock for the
-/// length of one query.
+/// Long enough to outlast a server on its way out, short enough that a caller
+/// who is actually stuck finds out quickly.
 const LOCK_BUDGET: Duration = Duration::from_millis(2_000);
 
 /// Opens the collection, waiting out another process that holds its lock.
 ///
-/// The engine takes the lock non-blocking and exclusive, so two commands
-/// running at once do not queue -- the second is refused outright. Agents drive
-/// this CLI concurrently by design, so a plain refusal turns an ordinary
-/// overlap into a failed command. Retrying with backoff is not the eventual
-/// answer, which is opening read-only for queries and holding the index in one
-/// process, but it is what makes an overlap survivable today.
+/// The engine takes the lock non-blocking and exclusive, so a second opener
+/// does not queue -- it is refused outright. This used to be for `pamin`
+/// commands overlapping, each opening the index itself. They no longer open
+/// it: the workspace's server does, and it is the only process the CLI opens
+/// an index in. What is left is a handover between two processes, and
+/// it is still worth waiting out:
 ///
-/// The jitter matters more than the backoff: several commands started together
-/// by one agent would otherwise retry in step forever.
+/// - **A server being replaced.** `pamin stop` and then any command, or a
+///   client that found a server from another build, stops one server and
+///   starts another. The old one
+///   removes its socket and then exits, and its lock goes only when the kernel
+///   closes its descriptors -- after unmapping an address space that runs to
+///   gigabytes. The client watches the socket, not the process, so the new
+///   server can reach the index while the old one still holds it.
+/// - **A process outside the CLI** holding the same workspace, such as an
+///   evaluation harness driving an engine directly.
+///
+/// The jitter is for the second case: several processes started together would
+/// otherwise retry in step forever.
 fn open_contended(mut open: impl FnMut() -> Result<Collection>) -> Result<Collection> {
     let deadline = Instant::now() + LOCK_BUDGET;
     let mut wait = Duration::from_millis(5);
@@ -1694,5 +1722,37 @@ mod upkeep {
     fn a_nonsense_completeness_does_not_wrap() {
         assert!(vector_index_lags(30_000, -1.0));
         assert!(!vector_index_lags(30_000, 2.0));
+    }
+}
+
+#[cfg(test)]
+mod marker {
+    use super::{Marker, ProjectionIndex};
+    use crate::Profile;
+
+    /// What an index was built with reads back as the profile that built it.
+    ///
+    /// The server opens a project nobody asked for under this answer, and
+    /// the answer being wrong has no quiet failure: the open is refused, or
+    /// -- for a directory with no index -- an empty one is created under the
+    /// guess. So every profile is written and read back, and an empty
+    /// directory has to answer that there is nothing to open.
+    #[test]
+    fn an_index_reads_back_the_profile_it_was_built_with() {
+        for profile in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
+            let dir = tempfile::tempdir().expect("a directory");
+            Marker::current(profile).write(dir.path()).expect("marking");
+            assert_eq!(
+                ProjectionIndex::built_for(dir.path()).expect("reading"),
+                Some(profile)
+            );
+        }
+
+        let empty = tempfile::tempdir().expect("a directory");
+        assert_eq!(
+            ProjectionIndex::built_for(empty.path()).expect("reading"),
+            None,
+            "a directory with no index named a profile to open it under"
+        );
     }
 }

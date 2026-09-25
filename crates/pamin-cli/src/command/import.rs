@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use pamin_engine::Owed;
 use pamin_index::Profile;
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
-use crate::command::write::pays_for_upkeep;
 use crate::session::Session;
 
 /// How many memories to record between checks on the queue.
@@ -126,7 +126,6 @@ pub async fn execute(
         .collect::<Result<_>>()?;
 
     let engine = session.engine(project, profile).await?;
-    let upkeep = pays_for_upkeep(&engine);
 
     // Grouped by topic, and **the grouping is what makes concurrency correct
     // rather than faster**. `Engine::remember` reads the topic's current
@@ -184,7 +183,7 @@ pub async fn execute(
             let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
             if !pamin_core::may_defer(behind) {
                 lagging = true;
-                engine.drain_cascade(upkeep).await?;
+                engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
             }
         }
     }
@@ -192,7 +191,9 @@ pub async fn execute(
     // Once at the end rather than per memory, which is the whole point: the
     // cascade claims sixty-four jobs a round, so an import that drained per
     // memory would pay a round's fixed costs for every line of the file.
-    engine.drain_cascade(upkeep).await?;
+    // Only what the memories need, as after a write: the index's upkeep is the
+    // server's, between requests.
+    engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
 
     // And the import is on disk when it returns. A write leaves its flush to
     // the server and reports the memory findable, which it is; an import is a

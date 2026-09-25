@@ -31,8 +31,8 @@ pub enum IndexError {
     LegacyLayout,
 
     #[error(
-        "another pamin command is holding this project's index and did not \
-         release it in time ({0}); retry, or run one command at a time"
+        "another process is holding this project's index and did not release it \
+         in time ({0}); if a pamin server was just stopped or replaced, retry"
     )]
     Busy(String),
 
