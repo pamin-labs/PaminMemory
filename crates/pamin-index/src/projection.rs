@@ -194,6 +194,8 @@ pub struct ProjectionIndex {
     storage: VectorStorage,
     /// What this index's vectors were embedded from. See [`Passage`].
     passage: Passage,
+    /// How this index spells a topic as a primary key. See [`Keys`].
+    keys: Keys,
 }
 
 /// What text a document's vector was embedded from.
@@ -243,6 +245,87 @@ impl Passage {
 
 /// The encoding a new index is built with.
 const PASSAGE: Passage = Passage::Named;
+
+/// How a topic's identifier is spelled as the engine's primary key.
+///
+/// The engine maps primary keys to its own row numbers in a RocksDB instance
+/// that it flushes and never compacts, and RocksDB moves a file whose keys
+/// overlap nothing below it down a level without merging it. Identifiers are
+/// time-ordered (see `pamin_core::id`), so every flush wrote a range of keys
+/// above everything before it and left one file behind that nothing ever
+/// merged. Measured through `Engine::write` and a drain per sixty-four new
+/// memories, 12,800 of them on the `speed` profile: 200 files in the map, one
+/// per round, against 1 spelled this way. After an `optimize`, which does not
+/// touch the map, that was 252 files in the index against 108 and 215
+/// descriptors held by an open against 72 -- and the map's files count
+/// against [`MAX_FILES`] like any other, so they spend a budget no
+/// compaction can give back. Opening took the same time either way.
+///
+/// Only a flush that adds and nothing else does it. One that also rewrites an
+/// older topic overlaps what came before and is merged with it, so with a
+/// quarter of the writes being edits the map held one or two files whatever
+/// the spelling. Importing, or a stretch of new memories, is what adds only.
+///
+/// Recorded in the marker, like the [`Passage`], because reading one spelling
+/// as the other matches nothing. What a document stands for is unchanged --
+/// that is [`DOCUMENT_GRAIN`] -- so an index keyed the old way opens and goes
+/// on being written that way, and a rebuild or a reshape, which write every
+/// document again, key the new one the new way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Keys {
+    /// The identifier as written. Every index built before this existed.
+    Topic,
+    /// The identifier's sixteen bytes in reverse order, so the random bytes
+    /// at its end lead and its timestamp trails. Its own inverse, and a
+    /// permutation of the bytes rather than a hash, so a key is exactly one
+    /// topic and reads back without anything stored beside it.
+    Reversed,
+}
+
+impl Keys {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Topic => "topic-keys",
+            Self::Reversed => "reversed-keys",
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        match label.trim() {
+            "topic-keys" => Some(Self::Topic),
+            "reversed-keys" => Some(Self::Reversed),
+            _ => None,
+        }
+    }
+
+    /// The primary key `topic` is stored under.
+    fn key(self, topic: TopicId) -> String {
+        self.spell(topic.0).to_string()
+    }
+
+    /// The topic stored under `key`, or `None` for a key this crate did not
+    /// write.
+    fn topic(self, key: &str) -> Option<TopicId> {
+        uuid::Uuid::parse_str(key)
+            .ok()
+            .map(|parsed| TopicId::from(self.spell(parsed)))
+    }
+
+    /// Both directions at once, since reversing is its own inverse.
+    fn spell(self, id: uuid::Uuid) -> uuid::Uuid {
+        match self {
+            Self::Topic => id,
+            Self::Reversed => {
+                let mut bytes = *id.as_bytes();
+                bytes.reverse();
+                uuid::Uuid::from_bytes(bytes)
+            }
+        }
+    }
+}
+
+/// How a new index spells its keys.
+const KEYS: Keys = Keys::Reversed;
 
 /// How many segments a collection is aimed at.
 ///
@@ -805,7 +888,7 @@ impl ProjectionIndex {
     ) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let storage = vector_storage();
-        let passage = match Marker::read(dir)? {
+        let (passage, keys) = match Marker::read(dir)? {
             Some(recorded) => {
                 if recorded.storage != storage {
                     return Err(IndexError::VectorStorageMismatch {
@@ -832,7 +915,7 @@ impl ProjectionIndex {
                         expected: DOCUMENT_GRAIN.to_string(),
                     });
                 }
-                recorded.passage
+                (recorded.passage, recorded.keys)
             }
             None => {
                 // What was actually built, not what was asked for. The two are
@@ -841,12 +924,13 @@ impl ProjectionIndex {
                 // marker recording the request would then be read as a
                 // description of the index -- ADR 0001's silent wrong answer.
                 Marker::current(profile).write(dir)?;
-                PASSAGE
+                (PASSAGE, KEYS)
             }
         };
 
         let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
         index.passage = passage;
+        index.keys = keys;
         Ok(index)
     }
 
@@ -859,6 +943,10 @@ impl ProjectionIndex {
     /// current marker would label those vectors `name: content`. Reopening
     /// then checks the copied marker against `profile` like any other open.
     ///
+    /// Except for the [`Keys`]: the copy is written a document at a time
+    /// through this index, which spells every key itself, so nothing of the
+    /// source's spelling survives into it and the copy takes the current one.
+    ///
     /// Whatever is at `dir` already is discarded first: it can only be a copy
     /// that did not finish.
     pub(crate) fn create_beside(
@@ -869,7 +957,17 @@ impl ProjectionIndex {
     ) -> Result<Self> {
         Self::discard(dir)?;
         std::fs::create_dir_all(dir)?;
-        std::fs::copy(source.join(Marker::FILE), dir.join(Marker::FILE))?;
+        let recorded = Marker::read(source)?.ok_or_else(|| {
+            IndexError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no marker at {}", source.display()),
+            ))
+        })?;
+        Marker {
+            keys: KEYS,
+            ..recorded
+        }
+        .write(dir)?;
         Self::open_sized(
             dir,
             profile,
@@ -955,12 +1053,13 @@ impl ProjectionIndex {
             dir: dir.to_path_buf(),
             storage: vector_storage(),
             passage: PASSAGE,
+            keys: KEYS,
         })
     }
 
     fn document(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<Doc> {
         let mut doc = Doc::new()?;
-        let key = topic.to_string();
+        let key = self.keys.key(topic);
         doc.set_pk(&key);
         doc.add_string(FIELD_ID, &key)?;
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
@@ -1001,28 +1100,30 @@ impl ProjectionIndex {
         // from one that returned the least bad of fifty wrong documents. Reading
         // it costs one accessor per candidate on a result set already in memory.
         // BM25, where larger is already better.
-        Ok(collect_scored(self.collection.query(&search)?, |score| {
-            score
-        }))
+        Ok(collect_scored(
+            self.keys,
+            self.collection.query(&search)?,
+            |score| score,
+        ))
     }
 
-    /// The documents stored under these topics, keyed by primary key.
+    /// The documents stored under these topics, keyed by the topic each is.
     ///
     /// The one way anything reads a document back, so a rebuild lending its
     /// vectors and a reshape copying whole documents cannot come to disagree
     /// about what a stored document is. The text comes from the n-gram field,
     /// which holds the content verbatim; the segmented one is derived from it.
-    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<String, Doc>> {
-        let keys: Vec<String> = topics.iter().map(ToString::to_string).collect();
-        let mut stored: HashMap<String, Doc> = HashMap::with_capacity(keys.len());
+    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Doc>> {
+        let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
+        let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
             for doc in self
                 .collection
                 .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), vectors)?
             {
-                if let Some(key) = doc.get_pk() {
-                    stored.insert(key.to_string(), doc);
+                if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
+                    stored.insert(topic, doc);
                 }
             }
         }
@@ -1046,16 +1147,18 @@ impl ProjectionIndex {
 
 /// What an index records it was built for, in its `profile` file.
 ///
-/// Four lines: the embedding model, what a document stands for, how vectors
-/// are stored, and what text they were embedded from. A line an older index
-/// does not have reads as what that index was built with, so an existing
-/// workspace opens unchanged: no storage line is `fp32`, no passage line is
-/// content alone.
+/// Five lines: the embedding model, what a document stands for, how vectors
+/// are stored, what text they were embedded from, and how a topic is spelled
+/// as a key. A line an older index does not have reads as what that index was
+/// built with, so an existing workspace opens unchanged: no storage line is
+/// `fp32`, no passage line is content alone, no key line is the topic as
+/// written.
 struct Marker {
     model: String,
     grain: String,
     storage: VectorStorage,
     passage: Passage,
+    keys: Keys,
 }
 
 impl Marker {
@@ -1068,6 +1171,7 @@ impl Marker {
             grain: DOCUMENT_GRAIN.to_string(),
             storage: vector_storage(),
             passage: PASSAGE,
+            keys: KEYS,
         }
     }
 
@@ -1090,6 +1194,7 @@ impl Marker {
                 .next()
                 .and_then(Passage::parse)
                 .unwrap_or(Passage::Content),
+            keys: lines.next().and_then(Keys::parse).unwrap_or(Keys::Topic),
         }))
     }
 
@@ -1097,11 +1202,12 @@ impl Marker {
         std::fs::write(
             dir.join(Self::FILE),
             format!(
-                "{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}",
                 self.model,
                 self.grain,
                 self.storage.label(),
-                self.passage.label()
+                self.passage.label(),
+                self.keys.label()
             ),
         )?;
         Ok(())
@@ -1109,7 +1215,11 @@ impl Marker {
 
     /// Whether a vector this index holds is the vector an index built now
     /// would compute for the same text: same model, same storage, same
-    /// encoding, same keys.
+    /// encoding, same grain.
+    ///
+    /// Not the same [`Keys`]: how a key is spelled says nothing about the
+    /// vector stored under it, and the index lending it is read through its
+    /// own spelling.
     fn matches(&self, other: &Self) -> bool {
         self.model == other.model
             && self.grain == other.grain
@@ -1152,12 +1262,12 @@ impl Previous {
     pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let lends =
-            Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&Marker::current(profile)));
-        if !lends {
+        let Some(recorded) =
+            Marker::read(dir)?.filter(|recorded| recorded.matches(&Marker::current(profile)))
+        else {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
-        }
+        };
         std::fs::rename(dir, &aside)?;
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
@@ -1166,6 +1276,7 @@ impl Previous {
             segment_documents(0),
         )?;
         index.passage = PASSAGE;
+        index.keys = recorded.keys;
         Ok(Some(Self { index, dir: aside }))
     }
 
@@ -1187,7 +1298,7 @@ impl Previous {
         wanted
             .iter()
             .map(|(topic, content)| {
-                let Some(doc) = stored.get(&topic.to_string()) else {
+                let Some(doc) = stored.get(topic) else {
                     return Ok(None);
                 };
                 if doc.get_string(FIELD_NGRAM)?.as_deref() != Some(*content) {
@@ -1266,7 +1377,7 @@ impl Projection for ProjectionIndex {
         topics
             .iter()
             .map(|topic| {
-                let Some(doc) = stored.get(&topic.to_string()) else {
+                let Some(doc) = stored.get(topic) else {
                     return Ok(None);
                 };
                 match (
@@ -1285,7 +1396,7 @@ impl Projection for ProjectionIndex {
     /// Removes these topics.
     fn delete(&self, topics: &[TopicId]) -> Result<()> {
         for chunk in topics.chunks(WRITE_BATCH) {
-            let keys: Vec<String> = chunk.iter().map(ToString::to_string).collect();
+            let keys: Vec<String> = chunk.iter().map(|topic| self.keys.key(*topic)).collect();
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             self.collection.delete(&keys)?;
         }
@@ -1346,9 +1457,11 @@ impl Projection for ProjectionIndex {
         // would sum this channel backwards and reading its confidence would
         // read its worst candidate as its best. Cosine distance is
         // `1 - similarity`, so this is the exact inverse and not a rescaling.
-        Ok(collect_scored(self.collection.query(&search)?, |score| {
-            1.0 - score
-        }))
+        Ok(collect_scored(
+            self.keys,
+            self.collection.query(&search)?,
+            |score| 1.0 - score,
+        ))
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -1553,12 +1666,11 @@ fn jittered(wait: Duration) -> Duration {
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a
 /// branch on the field so that adding a channel cannot forget it.
-fn collect_scored(docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
+fn collect_scored(keys: Keys, docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
     docs.iter()
         .filter_map(|doc| {
-            let pk = doc.get_pk()?;
-            let topic = uuid::Uuid::parse_str(pk).ok()?;
-            Some(Scored::new(TopicId::from(topic), orient(doc.get_score())))
+            let topic = keys.topic(doc.get_pk()?)?;
+            Some(Scored::new(topic, orient(doc.get_score())))
         })
         .collect()
 }
@@ -1694,5 +1806,72 @@ mod upkeep {
     fn a_nonsense_completeness_does_not_wrap() {
         assert!(vector_index_lags(30_000, -1.0));
         assert!(!vector_index_lags(30_000, 2.0));
+    }
+}
+
+#[cfg(test)]
+mod keys {
+    use super::{KEYS, Keys};
+    use pamin_core::TopicId;
+
+    /// Every spelling reads back as exactly the topic it was written for.
+    ///
+    /// A key that read back as some other topic would not fail anywhere: the
+    /// channels would return a plausible identifier, the ledger would resolve
+    /// it or drop it, and a memory would go missing from search with no error.
+    #[test]
+    fn a_key_reads_back_as_the_topic_it_was_written_for() {
+        let mut topics: Vec<TopicId> = (0..1_000).map(|_| TopicId::new()).collect();
+        topics.extend([
+            TopicId(uuid::Uuid::nil()),
+            TopicId(uuid::Uuid::max()),
+            TopicId(uuid::Uuid::from_u128(1)),
+            TopicId(uuid::Uuid::from_u128(
+                0x0123_4567_89ab_cdef_fedc_ba98_7654_3210,
+            )),
+        ]);
+        for keys in [Keys::Topic, Keys::Reversed] {
+            assert_eq!(Keys::parse(keys.label()), Some(keys));
+            for topic in &topics {
+                assert_eq!(keys.topic(&keys.key(*topic)), Some(*topic), "{keys:?}");
+            }
+            assert_eq!(keys.topic("not a key"), None);
+        }
+
+        // The old spelling is the identifier as written, which is what every
+        // index without a key line holds.
+        let topic = topics[0];
+        assert_eq!(Keys::Topic.key(topic), topic.to_string());
+        assert_ne!(Keys::Reversed.key(topic), topic.to_string());
+        assert_eq!(KEYS, Keys::Reversed, "a new index spells keys reversed");
+    }
+
+    /// Topics created one after another do not make keys that ascend.
+    ///
+    /// Which is the whole point: the key map only merges files whose key
+    /// ranges overlap, so keys that each land above the last are what left
+    /// one file per flush behind.
+    #[test]
+    fn topics_created_in_order_do_not_make_keys_in_order() {
+        let topics: Vec<TopicId> = (0..1_000).map(|_| TopicId::new()).collect();
+        let ascending = |keys: Keys| {
+            let spelled: Vec<String> = topics.iter().map(|topic| keys.key(*topic)).collect();
+            spelled.windows(2).filter(|pair| pair[0] < pair[1]).count()
+        };
+
+        assert_eq!(
+            ascending(Keys::Topic),
+            topics.len() - 1,
+            "the premise: identifiers created in order ascend"
+        );
+        // Random order ascends about half the time: 499.5 of 999 pairs, with
+        // a standard deviation of about nine, so these bounds are ten of them
+        // either side and still nowhere near the 999 of the premise.
+        let reversed = ascending(Keys::Reversed);
+        assert!(
+            (400..600).contains(&reversed),
+            "reversed keys ascended at {reversed} of {} pairs",
+            topics.len() - 1
+        );
     }
 }

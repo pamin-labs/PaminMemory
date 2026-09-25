@@ -855,3 +855,315 @@ fn a_document_reads_back_as_it_was_written() {
         "a deleted document still reads back"
     );
 }
+
+/// Marks `dir` as an index built before key spellings were recorded, so what
+/// opens there next spells every key as the topic's identifier -- which is
+/// what every index built before then holds.
+fn keyed_as_written(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).expect("index dir");
+    std::fs::write(
+        dir.join("profile"),
+        format!("{}\ntopic\nfp32\nnamed", PROFILE.model_id()),
+    )
+    .expect("age the marker");
+}
+
+/// The files the engine's key map is spread across.
+///
+/// The engine keeps the map from primary key to row in a RocksDB instance of
+/// its own beside the segments, and never compacts it.
+fn key_map_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir.join("memories"))
+        .expect("read the collection")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("idmap"))
+        .flat_map(|map| std::fs::read_dir(map.path()).expect("read the key map"))
+        .flatten()
+        .filter(|file| file.file_name().to_string_lossy().ends_with(".sst"))
+        .count()
+}
+
+/// An index whose keys are the identifiers as written goes on answering, and
+/// the rebuild that replaces it reads its vectors back through that spelling.
+///
+/// Every workspace built before key spellings were recorded holds one. Read
+/// with the new spelling it would match nothing and say nothing -- the silence
+/// `DOCUMENT_GRAIN` exists to turn into an error -- so the marker's missing
+/// line has to be read as the old spelling, and this reads it the other way
+/// too, to show the line is what decides.
+#[test]
+fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
+    use pamin_index::Previous;
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("index");
+    let legacy = root.path().join("legacy");
+    let topics: Vec<TopicId> = (0..3).map(|_| TopicId::new()).collect();
+    let texts = [
+        "the release train leaves on thursdays",
+        "the oncall rota rotates weekly",
+        "the staging cluster is rebuilt nightly",
+    ];
+
+    keyed_as_written(&dir);
+    let index = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+    let documents: Vec<Vec<f32>> = (0..3).map(|n| separated(n + 40)).collect();
+    index
+        .upsert_batch(
+            &(0..3)
+                .map(|n| (topics[n], texts[n], documents[n].as_slice()))
+                .collect::<Vec<_>>(),
+        )
+        .expect("write");
+    index.flush().expect("flush");
+    index.delete(&[topics[2]]).expect("delete");
+    index.flush().expect("flush");
+    drop(index);
+
+    let index =
+        ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("reopen");
+    assert!(holds(
+        &index.recall_segmented("release train", 10).expect("recall"),
+        topics[0]
+    ));
+    assert!(holds(
+        &index.recall_vector(&documents[1], 10).expect("recall"),
+        topics[1]
+    ));
+    assert!(
+        !holds(
+            &index
+                .recall_segmented("staging cluster", 10)
+                .expect("recall"),
+            topics[2]
+        ),
+        "a deletion by the old spelling did not delete"
+    );
+    assert_eq!(
+        index.stored(&[topics[1]]).expect("read back")[0]
+            .as_ref()
+            .map(|stored| stored.content.as_str()),
+        Some(texts[1])
+    );
+    drop(index);
+    assert!(
+        std::fs::read_to_string(dir.join("profile"))
+            .expect("marker")
+            .lines()
+            .count()
+            == 4,
+        "opening an old index relabelled it"
+    );
+
+    // The rebuild's side: it lends from this index and writes a new one.
+    let previous = Previous::set_aside(&dir, PROFILE)
+        .expect("set aside")
+        .expect("an index whose vectors are current lends them");
+    let wanted = [(topics[0], texts[0]), (topics[1], texts[1])];
+    assert_eq!(
+        previous.lends(&wanted).expect("count"),
+        2,
+        "the set-aside index was read with a spelling it was not written in"
+    );
+    let rebuilt =
+        ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("rebuild");
+    let lent = previous.vectors(&wanted).expect("lend");
+    rebuilt
+        .upsert_batch(&[
+            (topics[0], texts[0], lent[0].as_deref().expect("lent")),
+            (topics[1], texts[1], lent[1].as_deref().expect("lent")),
+        ])
+        .expect("write");
+    rebuilt.flush().expect("flush");
+    previous.discard().expect("discard");
+    assert!(holds(
+        &rebuilt.recall_vector(&documents[1], 10).expect("recall"),
+        topics[1]
+    ));
+    drop(rebuilt);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("profile"))
+            .expect("marker")
+            .lines()
+            .last(),
+        Some("reversed-keys"),
+        "a rebuilt index keeps the old spelling"
+    );
+
+    // Read the other way, the same documents answer as other topics entirely.
+    std::fs::write(
+        dir.join("profile"),
+        format!("{}\ntopic\nfp32\nnamed\ntopic-keys", PROFILE.model_id()),
+    )
+    .expect("mislabel the marker");
+    let misread = ProjectionIndex::open(&dir, &legacy, PROFILE, Access::ReadOnly, 0).expect("open");
+    let found = misread
+        .recall_segmented("release train", 10)
+        .expect("recall");
+    assert!(
+        !found.is_empty() && !holds(&found, topics[0]),
+        "the spelling the marker names is not the one the index is read with"
+    );
+}
+
+/// Every channel returns the same topics, in the same order and with the same
+/// scores, whichever way the index spells its keys.
+///
+/// The spelling decides where a key lands in the engine's key map, and
+/// nothing else should move: a document's row, its segment and every score
+/// follow the order it was written in. Two indexes are written the same
+/// documents in the same batches, one keyed each way, and every channel's
+/// top fifty is compared for every query.
+#[test]
+fn every_channel_answers_the_same_whichever_way_keys_are_spelled() {
+    const WORDS: [&str; 24] = [
+        "kiln", "harbor", "ledger", "orchid", "copper", "lantern", "meadow", "quartz", "saffron",
+        "tundra", "violet", "walnut", "anchor", "bramble", "cinder", "dune", "ember", "fjord",
+        "garnet", "hollow", "ivory", "juniper", "kestrel", "lagoon",
+    ];
+    const DOCUMENTS: usize = 640;
+    let text = |n: usize| {
+        let mut state = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let words: Vec<&str> = (0..9)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                WORDS[(state % WORDS.len() as u64) as usize]
+            })
+            .collect();
+        format!("note {n} {}", words.join(" "))
+    };
+    let topics: Vec<TopicId> = (0..DOCUMENTS).map(|_| TopicId::new()).collect();
+    let texts: Vec<String> = (0..DOCUMENTS).map(text).collect();
+    let vectors: Vec<Vec<f32>> = (0..DOCUMENTS).map(|n| separated(n as u128)).collect();
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let legacy = root.path().join("legacy");
+    let build = |dir: &std::path::Path| {
+        let index =
+            ProjectionIndex::open(dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+        // Sixty-four to a flush, as the cascade writes, with every eighth
+        // batch rewriting a document written before.
+        for (batch, chunk) in (0..DOCUMENTS).collect::<Vec<_>>().chunks(64).enumerate() {
+            let documents: Vec<(TopicId, &str, &[f32])> = chunk
+                .iter()
+                .map(|&n| (topics[n], texts[n].as_str(), vectors[n].as_slice()))
+                .collect();
+            index.upsert_batch(&documents).expect("write");
+            if batch % 8 == 7 {
+                index
+                    .upsert(topics[batch], "note rewritten kiln harbor", &vectors[batch])
+                    .expect("rewrite");
+            }
+            index.flush().expect("flush");
+        }
+        index.delete(&[topics[3]]).expect("delete");
+        index.flush().expect("flush");
+        index
+    };
+    let written = root.path().join("written");
+    keyed_as_written(&written);
+    let written = build(&written);
+    let reversed = build(&root.path().join("reversed"));
+
+    let answers = |index: &ProjectionIndex, query: usize| {
+        let words = WORDS[query % WORDS.len()];
+        let pair = format!("{words} {}", WORDS[(query * 7 + 3) % WORDS.len()]);
+        [
+            index.recall_segmented(&pair, 50).expect("segmented"),
+            index.recall_ngram(words, 50).expect("ngram"),
+            index
+                .recall_naming(&pair, 50)
+                .expect("naming")
+                .into_iter()
+                .map(|topic| Scored::new(topic, 0.0))
+                .collect(),
+            index
+                .recall_vector(&vectors[query * 17 % DOCUMENTS], 50)
+                .expect("vector"),
+        ]
+    };
+    for query in 0..30 {
+        let (before, after) = (answers(&written, query), answers(&reversed, query));
+        for (channel, (before, after)) in ["segmented", "ngram", "naming", "vector"]
+            .iter()
+            .zip(before.iter().zip(&after))
+        {
+            // The premise: two empty lists agree about nothing.
+            assert!(
+                !before.is_empty(),
+                "query {query} found nothing on {channel}"
+            );
+            let spelled = |list: &[Scored]| -> Vec<(TopicId, u32)> {
+                list.iter()
+                    .map(|hit| (hit.topic, hit.score.map_or(0, f32::to_bits)))
+                    .collect()
+            };
+            assert_eq!(
+                spelled(before),
+                spelled(after),
+                "query {query} answered differently on {channel}"
+            );
+        }
+    }
+}
+
+/// Topics written in the order they were created leave the engine's key map a
+/// bounded number of files, however many flushes wrote them.
+///
+/// Identifiers are time-ordered, so each flush wrote keys above every key
+/// before it. The engine flushes its key map and never compacts it, and
+/// RocksDB moves a file that overlaps nothing below it down a level without
+/// merging, so every flush left a file of its own for good -- 200 over 12,800
+/// memories written through the engine sixty-four to a drain. Spelling the key with its random
+/// bytes first makes every flush overlap the last, and RocksDB merges them.
+///
+/// Both spellings are written, and the old one is asserted to accumulate:
+/// that is what shows the count is measuring the key map at all, and if it
+/// stops accumulating the engine has started compacting and this workaround
+/// can go.
+#[test]
+fn topics_written_in_order_leave_a_bounded_key_map() {
+    const FLUSHES: usize = 60;
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let legacy = root.path().join("legacy");
+    let files = |dir: &std::path::Path| {
+        let index =
+            ProjectionIndex::open(dir, &legacy, PROFILE, Access::ReadWrite, 0).expect("open");
+        for flush in 0..FLUSHES {
+            let documents: Vec<(TopicId, String)> = (0..4)
+                .map(|n| (TopicId::new(), format!("flush {flush} memory {n}")))
+                .collect();
+            let vector = stub();
+            index
+                .upsert_batch(
+                    &documents
+                        .iter()
+                        .map(|(topic, text)| (*topic, text.as_str(), vector.as_slice()))
+                        .collect::<Vec<_>>(),
+                )
+                .expect("write");
+            index.flush().expect("flush");
+        }
+        drop(index);
+        key_map_files(dir)
+    };
+
+    let written = root.path().join("written");
+    keyed_as_written(&written);
+    let as_written = files(&written);
+    let reversed = files(&root.path().join("reversed"));
+
+    assert!(
+        as_written >= FLUSHES / 2,
+        "the premise: keys in creation order left {as_written} key-map files over \
+         {FLUSHES} flushes, so this is not counting what accumulates"
+    );
+    assert!(
+        reversed <= 8,
+        "reversed keys left {reversed} key-map files over {FLUSHES} flushes \
+         (keys as written left {as_written})"
+    );
+}

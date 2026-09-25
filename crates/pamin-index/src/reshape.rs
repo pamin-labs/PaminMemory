@@ -730,9 +730,11 @@ mod tests {
             Passage::Content,
             "the copy was relabelled with an encoding its vectors were not embedded in"
         );
+        // Everything the served index recorded, and the current key spelling:
+        // the copy wrote every document again, so none of the old one is left.
         assert_eq!(
             std::fs::read_to_string(live.join("profile")).expect("marker"),
-            marker,
+            format!("{marker}\nreversed-keys"),
             "the copy does not record what the served index recorded"
         );
 
