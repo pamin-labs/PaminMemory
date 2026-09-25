@@ -447,6 +447,72 @@ pub async fn pending_up_to(
     Ok(waiting)
 }
 
+/// A project with work that a claim for some kinds would take now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owing {
+    pub project: ProjectId,
+    pub name: String,
+    /// Whether any of that work has not failed yet.
+    ///
+    /// A job that failed is due again an hour later, for eight hours. A caller
+    /// deciding whether to open a project nobody has asked for -- an index and
+    /// a model, held for the idle window afterwards -- has reason to do it for
+    /// work that has never failed, which includes work a process that died was
+    /// holding, and none to do it every hour for a job that keeps failing.
+    pub never_failed: bool,
+}
+
+/// Every project that has work of these kinds due, in name order.
+///
+/// Due by exactly the conditions [`claim`] applies, so a project listed here
+/// is one a claim for the same kinds would take something from.
+///
+/// Across projects, for a caller with none of its own to ask about: the
+/// resident server, working out which indexes are owed work. A probe per
+/// project rather than one scan of the queue, because the queue's index leads
+/// with the project: a scan reads every owed row -- ten thousand for one bulk
+/// import -- where a probe stops at the first. A workspace has tens or
+/// hundreds of projects, and this is asked every few seconds.
+pub async fn owing(executor: impl PgExecutor<'_>, kinds: &[JobKind]) -> Result<Vec<Owing>> {
+    let rows = sqlx::query(
+        "SELECT project.id, project.name,
+                EXISTS (
+                    SELECT 1 FROM index_jobs
+                     WHERE project_id = project.id
+                       AND job_type = ANY($1)
+                       AND priority = ANY($2)
+                       AND available_at <= $3
+                       AND attempts < $4
+                       AND last_error IS NULL
+                ) AS never_failed
+           FROM projects AS project
+          WHERE EXISTS (
+                    SELECT 1 FROM index_jobs
+                     WHERE project_id = project.id
+                       AND job_type = ANY($1)
+                       AND priority = ANY($2)
+                       AND available_at <= $3
+                       AND attempts < $4
+                )
+          ORDER BY project.name",
+    )
+    .bind(kinds.iter().map(|kind| kind.label()).collect::<Vec<_>>())
+    .bind(kinds.iter().map(|kind| priority(*kind)).collect::<Vec<_>>())
+    .bind(OffsetDateTime::now_utc())
+    .bind(pamin_core::MAX_ATTEMPTS)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Owing {
+            project: row.get::<uuid::Uuid, _>("id").into(),
+            name: row.get("name"),
+            never_failed: row.get("never_failed"),
+        })
+        .collect())
+}
+
 /// Jobs that have used their attempts, with the error that stopped them.
 pub async fn exhausted(
     executor: impl PgExecutor<'_>,
