@@ -66,11 +66,27 @@
 //! A copy's key changes with the runtime and the CPU, so every upgrade of ONNX
 //! Runtime writes new copies and leaves the old ones -- 0.8 to 1.2 GB a model
 //! -- where nothing would otherwise remove them. Every load therefore
-//! collects, by one rule: **a copy is removed once no process holds it and
-//! none has loaded it for [`UNUSED_FOR`]**, whichever binary wrote it. Not by
-//! key: a key is a hash nobody can read an owner from, and two binaries built
-//! on different runtimes can share one model directory, each loading its own
-//! copy and each entitled to find it there.
+//! collects, by one rule: **a copy is removed once it is not the copy this
+//! runtime and CPU load for a model recorded beside it, no process holds it,
+//! and none has loaded it for [`UNUSED_FOR`]**.
+//!
+//! The first part is what keeps a copy whose download is gone. Every model
+//! this build has loaded has a record, and the key this build derives from a
+//! record is the copy its next load of that model looks for. Removing that
+//! copy would turn the load into a download -- offline, into an error --
+//! however long the model had gone unused, so it stays for as long as this
+//! build finds that record. The price is that a model nothing loads any more
+//! -- a reranker tier switched off -- keeps its copy until `prepared/` is
+//! deleted by hand. What goes is every other copy: an upgrade's
+//! leftovers, one written on a CPU the directory was moved from, one of a file
+//! the repository has since replaced, and one an older build wrote beside a
+//! download it kept, whose loss costs only a rewrite from that download.
+//!
+//! The rest of the rule is not by key: a key is a hash nobody can read an
+//! owner from, and two binaries built on different runtimes can share one
+//! model directory, each loading its own copy and each entitled to find it
+//! there. Each keeps its own copies from its own collections by the first
+//! part, and from the other's by these two:
 //!
 //! - *Holds.* A process that loads a copy holds its key's lock shared until
 //!   it exits, and removal takes that lock exclusively and gives up if it
@@ -97,7 +113,7 @@
 //! that another process is about to open would let two writers each hold
 //! "the" lock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -148,9 +164,11 @@ const USED: &str = "used";
 /// A choice, not a measurement. Long enough that a binary run once a week
 /// keeps its copy between runs -- one running now is covered by its hold
 /// however long ago it loaded -- and short enough that an upgrade's leftovers
-/// are gone within a month. Removing a copy too early costs one rewrite the
-/// next time something loads it: a few seconds, with the source on the heap
-/// while it is written.
+/// are gone within a month. Removing a copy too early costs the next load of
+/// it one rewrite -- a few seconds, with the source on the heap while it is
+/// written -- and a download first when its own was removed. The copy this
+/// build loads for a recorded model is not judged by this at all (see the
+/// module's documentation).
 const UNUSED_FOR: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 /// The lock of every copy this process has loaded, held shared until it exits
@@ -497,7 +515,8 @@ fn unused(done: &Path, now: SystemTime) -> bool {
         .is_some_and(|idle| idle >= UNUSED_FOR)
 }
 
-/// Removes, from `root`, every copy that has gone [`UNUSED_FOR`] without a
+/// Removes, from `root`, every copy that is not the one this runtime and CPU
+/// load for a model recorded there, that has gone [`UNUSED_FOR`] without a
 /// load and that no process holds, and every partial directory no writer
 /// holds. See the module's documentation for the rule and why it is safe.
 ///
@@ -512,15 +531,35 @@ fn collect(root: &Path, now: SystemTime) {
             return;
         }
     };
+    let current = current(root);
     for entry in entries.flatten() {
         let path = entry.path();
-        if let Err(error) = collect_one(root, &path, now) {
+        if let Err(error) = collect_one(root, &path, &current, now) {
             tracing::warn!(copy = %path.display(), %error, "could not remove an unused mapped copy");
         }
     }
 }
 
-fn collect_one(root: &Path, path: &Path, now: SystemTime) -> std::io::Result<()> {
+/// The keys of the copies this runtime and CPU load for the models recorded
+/// in `root`: the ones a collection never removes.
+fn current(root: &Path) -> BTreeSet<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "source"))
+        .filter_map(|entry| Source::parse(&std::fs::read_to_string(entry.path()).ok()?))
+        .map(|source| source.key().0)
+        .collect()
+}
+
+fn collect_one(
+    root: &Path,
+    path: &Path,
+    current: &BTreeSet<String>,
+    now: SystemTime,
+) -> std::io::Result<()> {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return Ok(());
     };
@@ -532,7 +571,7 @@ fn collect_one(root: &Path, path: &Path, now: SystemTime) -> std::io::Result<()>
         && key
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-    if !is_key || !path.is_dir() || (!partial && !unused(path, now)) {
+    if !is_key || !path.is_dir() || (!partial && (current.contains(key) || !unused(path, now))) {
         return Ok(());
     }
 
@@ -555,7 +594,10 @@ fn collect_one(root: &Path, path: &Path, now: SystemTime) -> std::io::Result<()>
     }
     std::fs::rename(path, &aside)?;
     std::fs::remove_dir_all(&aside)?;
-    tracing::info!(copy = %path.display(), "removed a mapped copy nothing had loaded for two weeks");
+    tracing::info!(
+        copy = %path.display(),
+        "removed a mapped copy this runtime and CPU do not load, which nothing had loaded for two weeks"
+    );
     Ok(())
 }
 
@@ -1382,6 +1424,40 @@ mod tests {
             matches!(other.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
             "a copy found through its record was not held"
         );
+    }
+
+    /// The copy a record points at for this runtime and CPU is never
+    /// collected, however long it goes unused: its download is gone, so
+    /// removing it would make the next load of that model a download. A copy
+    /// under any other key -- an upgrade's leftover, say -- still goes by the
+    /// rest of the rule, and the record itself is left alone.
+    #[test]
+    fn the_copy_a_record_points_at_stays_and_other_keys_go() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = Source::of(&not_a_model(dir.path())).expect("describe the source");
+        let root = dir.path().join("prepared");
+        std::fs::create_dir_all(&root).expect("the copies' directory");
+        let record = root.join("someone--model--onnx--model.onnx.source");
+        std::fs::write(&record, source.record()).expect("the record");
+        let now = SystemTime::now();
+        let long_ago = now - 60 * DAY;
+
+        let (key, _) = source.key();
+        let recorded = fake_copy(&root, &key, long_ago, long_ago, Some(long_ago));
+        let stale = fake_copy(&root, &key_of(1), long_ago, long_ago, Some(long_ago));
+        assert!(unused(&recorded, now) && unused(&stale, now));
+
+        collect(&root, now);
+
+        assert!(
+            recorded.join(MODEL).exists(),
+            "the copy a record points at for this runtime and CPU was removed"
+        );
+        assert!(
+            !stale.exists(),
+            "a copy under a key this build does not load was kept"
+        );
+        assert!(record.exists(), "the record was removed");
     }
 
     /// A load stamps the copy it hands out and holds it, so a collection in
