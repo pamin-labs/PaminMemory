@@ -211,8 +211,8 @@ every question identically.
 
 `disk` keeps its graph and vectors on disk and reads them per query, which is
 why it holds almost nothing resident; it is for a project whose memory is
-scarce, and it pays for that with minutes of `optimize` after every working
-drain (about a second under `memory`). `memory`, the default, holds them
+scarce, and it pays for that with minutes on each `optimize` upkeep runs after
+writes (about a second under `memory`). `memory`, the default, holds them
 resident, and is the faster and smaller choice everywhere else. A search spends most of a second or more in
 the reranker, so the query column is a small share of a `pamin search`; the
 build column is not small, and `disk` also pays minutes for an `optimize` after
