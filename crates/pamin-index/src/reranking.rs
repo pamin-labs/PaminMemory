@@ -316,11 +316,7 @@ const DEPTH: usize = 30;
 /// evaluation's own `SWEEP` and `TIERS`: unset means the constant, so nothing a
 /// user runs is affected.
 fn tuned(name: &str, fallback: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(fallback)
+    pamin_core::env::positive(name).unwrap_or(fallback)
 }
 
 /// How many padded tokens go through the model at once.
