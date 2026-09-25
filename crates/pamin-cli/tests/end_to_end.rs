@@ -1837,13 +1837,20 @@ fn a_deferred_write_is_found_without_anything_else_being_run() {
 /// The backlog is large enough to take many ticks to clear, and the searches
 /// are spaced so that rounds run between them and some of them arrive during
 /// one. Each is timed from outside, the way an agent would see it, against the
-/// same search on the same server with nothing owed. What this catches is the
-/// catching up holding anything a search needs for longer than a round -- the
-/// model or the index across a whole tick's drain, say, which is up to five
-/// seconds.
+/// same search on the same server once the backlog is indexed and nothing is
+/// owed. What this catches is the catching up holding anything a search needs
+/// for longer than a round -- the model or the index across a whole tick's
+/// drain, say, which is up to five seconds.
 ///
-/// The premise is checked from the log: the server has to have caught up on
-/// something during the searches, or they were timed against nothing.
+/// The baseline is taken after the backlog, not before it. The backlog is
+/// written to resemble the query, so every memory indexed gives the search
+/// more candidates to rerank: before the backlog it reranks one memory, and
+/// timing against that credited the reranking of the backlog to catching up.
+///
+/// Two premises are checked: the server has to have caught up on something
+/// during the searches, or they were timed against nothing, and it has to
+/// have stopped owing anything before the baseline, or the baseline was
+/// timed during catching up too.
 #[test]
 #[ignore = "provisions postgres and downloads model weights, and writes seven hundred memories"]
 fn catching_up_does_not_hold_a_search_up() {
@@ -1854,16 +1861,19 @@ fn catching_up_does_not_hold_a_search_up() {
     const BACKLOG: usize = 700;
     const WRITERS: usize = 6;
     const SEARCHES: usize = 30;
-    /// How much slower than the slowest quiet search one during catching up
+    /// How much slower than the slowest settled search one during catching up
     /// may be.
     ///
     /// Several rounds rather than one, because this is a debug build on a
-    /// shared machine: a round of sixteen jobs measured 0.1 to 0.4 s here on
-    /// the `speed` profile, and a quiet search anything from 20 to 320 ms.
-    /// What it has to rule out is a search waiting out a tick's whole budget
-    /// -- five seconds, which is what holding the model or the index across
-    /// the drain would cost it -- and two seconds does that.
-    const ALLOWANCE: Duration = Duration::from_secs(2);
+    /// shared machine: a round of sixteen index writes took 0.3 s at the
+    /// median and 1.2 s at worst here, on the `speed` profile with four cores
+    /// and a load average of twelve, and across three runs the slowest search
+    /// during catching up was 1.2, 1.9 and 2.5 s against 0.1, 0.4 and 0.3 s
+    /// settled. What it has to rule out is a search waiting out a tick's whole
+    /// budget -- five seconds, which is what holding the model or the index
+    /// across the drain would cost it -- and three seconds does that with
+    /// room for the machine.
+    const ALLOWANCE: Duration = Duration::from_secs(3);
 
     let cli = Cli::new();
     let mut server = cli.serve_logging("pamin=debug");
@@ -1887,10 +1897,8 @@ fn catching_up_does_not_hold_a_search_up() {
         started.elapsed()
     };
 
-    // Quiet: nothing owed, and the model already loaded by the write.
+    // Loads the reranker, so that no search timed below pays for it.
     search();
-    let quiet: Vec<Duration> = (0..5).map(|_| search()).collect();
-    let quiet_slowest = *quiet.iter().max().expect("quiet searches");
 
     std::thread::scope(|scope| {
         for writer in 0..WRITERS {
@@ -1919,6 +1927,23 @@ fn catching_up_does_not_hold_a_search_up() {
         during.push(search());
     }
     let rounds = caught_up() - before;
+
+    // Settled: the whole backlog indexed and nothing owed, so the search does
+    // all the reranking it did during catching up and more, and nothing runs
+    // beside it.
+    let drained = cli.json(&["cascade", "drain"]);
+    assert_eq!(
+        drained["pending"], 0,
+        "work was still owed when the baseline was taken: {drained}"
+    );
+    let settled: Vec<Duration> = (0..10)
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(200));
+            search()
+        })
+        .collect();
+    let settled_slowest = *settled.iter().max().expect("settled searches");
+
     for line in log()
         .lines()
         .filter(|line| line.contains("caught up on owed work"))
@@ -1926,10 +1951,7 @@ fn catching_up_does_not_hold_a_search_up() {
         println!("  {line}");
     }
     let slowest = *during.iter().max().expect("searches");
-    println!(
-        "  quiet: {:?}; during catching up ({rounds} catch-ups logged): {:?}",
-        quiet, during
-    );
+    println!("  settled: {settled:?}; during catching up ({rounds} catch-ups logged): {during:?}");
 
     assert!(
         rounds >= 2,
@@ -1937,8 +1959,8 @@ fn catching_up_does_not_hold_a_search_up() {
          timed against any catching up"
     );
     assert!(
-        slowest <= quiet_slowest + ALLOWANCE,
-        "a search during catching up took {slowest:?}, against {quiet_slowest:?} for the \
+        slowest <= settled_slowest + ALLOWANCE,
+        "a search during catching up took {slowest:?}, against {settled_slowest:?} for the \
          slowest with nothing owed: it waited for more than a few rounds"
     );
 
