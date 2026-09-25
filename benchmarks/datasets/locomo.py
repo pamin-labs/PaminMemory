@@ -6,23 +6,26 @@ reader to turn retrieved passages into an answer and a judge to decide whether
 that answer means what the reference means -- both the same model for every
 arm, or the comparison measures the models.
 
-The adversarial category is kept, and what it measures has been read wrongly
-twice. It is not a set of questions whose only correct answer is a refusal:
-444 of its 446 carry a substantive `adversarial_answer`. Nor is it questions
-whose answer is implied rather than stated -- that was the second reading and
-it is also wrong. Following each question to the turn its own `evidence` field
-names, **332 of the 446 (74%) attribute to one speaker something the other
-speaker said**, and the answer key gives that other speaker's content as
-correct.
+The adversarial category is kept, and it is scored the way the benchmark
+scores it: **abstaining is the correct answer.** Its questions carry an
+`adversarial_answer` and no `answer`, and that field is the trap, not the key.
+Upstream's own evaluation (`snap-research/locomo`, `task_eval/gpt_utils.py`)
+offers it as the wrong option beside "Not mentioned in the conversation", and
+`task_eval/evaluation.py` marks a category-5 prediction correct only when it
+says "not mentioned" or "no information available".
 
-    Q: "What country is Melanie's grandma from?"   key: "Sweden"
+What makes a question adversarial is visible from its own `evidence` field:
+**332 of the 446 (74%) ask about one speaker something only the other speaker
+said.**
+
+    Q: "What country is Melanie's grandma from?"   trap: "Sweden"
     evidence D4:3 -- Caroline: "...a gift from my grandma in my home
                       country, Sweden."
 
-So the category rewards a pipeline that ignores who said what, and penalises
-one that answers "no record of that" -- which for the question as asked is the
-better answer. Scoring well here is not evidence of a property worth having,
-and a result on this category should be reported with that attached.
+This file used the trap as the reference until September 2026, and this
+page read it as the key twice before that -- so every adversarial figure
+produced before then rewarded answering about the wrong person and penalised
+"no record of that". Those figures are inverted, not merely noisy.
 """
 import collections
 import random
@@ -35,6 +38,11 @@ CATEGORY = {
     1: "multi-hop", 2: "temporal", 3: "open-domain",
     4: "single-hop", 5: "adversarial",
 }
+
+ADVERSARIAL = 5
+
+# The correct answer to an adversarial question, in upstream's own words.
+ABSTAIN = "Not mentioned in the conversation"
 
 
 READER = """You are answering a question from a record of past conversations.
@@ -123,6 +131,11 @@ def questions(entry, per_unit=20, seed=20260917):
     for i, qa in enumerate(entry.get("qa", [])):
         reference = qa.get("answer", qa.get("adversarial_answer"))
         if reference:
+            # Filtered on the field as before, so the sample is the same set
+            # of questions; only what an adversarial one is judged against
+            # changes.
+            if qa["category"] == ADVERSARIAL:
+                reference = ABSTAIN
             pool[qa["category"]].append((f"{cid}:q{i}", qa, reference))
 
     rng = random.Random(seed)

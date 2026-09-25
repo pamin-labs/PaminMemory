@@ -534,6 +534,28 @@ would be near one by construction.
 Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
 all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
 
+**An abstention verdict from the reranker was measured, and does not ship.**
+The `accurate` tier's logit for the top hit, mapped through an isotonic fit on
+484 MuSiQue questions (held-out ECE 0.0590), with `weak` below a probability
+of one half, was scored through `pamin search` on all 1,986 LoCoMo questions
+against a rule written before the run: abstain more on the adversarial column,
+lose nothing significant elsewhere. It abstained on 140 of 446 adversarial
+questions and withdrew retrieved answers from every other column, each fall
+significant:
+
+| LoCoMo, evidence in the top ten and not `weak` | n | never abstains | with the verdict | p |
+| --- | --- | --- | --- | --- |
+| multi-hop | 282 | 0.791 | 0.592 | 3e-17 |
+| temporal | 321 | 0.826 | 0.670 | 2e-15 |
+| open-domain | 96 | 0.521 | 0.292 | 5e-7 |
+| single-hop | 841 | 0.810 | 0.718 | 1e-23 |
+| adversarial, `weak` | 446 | 0 | 0.314 | 1e-42 |
+
+LongMemEval-S recall_any@10 fell from 0.983 to 0.627 (p = 1e-6). The
+score separates adversarial from answerable questions at AUROC 0.606, and its
+calibration does not transfer: ECE 0.3100 on LoCoMo's top hits. The conditions
+and the reasons are in [the ADR](adr/0001-tech-selection.md).
+
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
