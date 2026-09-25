@@ -1483,22 +1483,31 @@ fn options(access: Access) -> Result<Option<CollectionOptions>> {
 
 /// How long to keep trying for the index's file lock before giving up.
 ///
-/// Long enough to outlast the other command, short enough that a caller who is
-/// actually stuck finds out quickly. A `pamin search` holds the lock for the
-/// length of one query.
+/// Long enough to outlast a server on its way out, short enough that a caller
+/// who is actually stuck finds out quickly.
 const LOCK_BUDGET: Duration = Duration::from_millis(2_000);
 
 /// Opens the collection, waiting out another process that holds its lock.
 ///
-/// The engine takes the lock non-blocking and exclusive, so two commands
-/// running at once do not queue -- the second is refused outright. Agents drive
-/// this CLI concurrently by design, so a plain refusal turns an ordinary
-/// overlap into a failed command. Retrying with backoff is not the eventual
-/// answer, which is opening read-only for queries and holding the index in one
-/// process, but it is what makes an overlap survivable today.
+/// The engine takes the lock non-blocking and exclusive, so a second opener
+/// does not queue -- it is refused outright. This used to be for `pamin`
+/// commands overlapping, each opening the index itself. They no longer open
+/// it: the workspace's server does, and it is the only process the CLI opens
+/// an index in. What is left is a handover between two processes, and
+/// it is still worth waiting out:
 ///
-/// The jitter matters more than the backoff: several commands started together
-/// by one agent would otherwise retry in step forever.
+/// - **A server being replaced.** `pamin stop` and then any command, or a
+///   client that found a server from another build, stops one server and
+///   starts another. The old one
+///   removes its socket and then exits, and its lock goes only when the kernel
+///   closes its descriptors -- after unmapping an address space that runs to
+///   gigabytes. The client watches the socket, not the process, so the new
+///   server can reach the index while the old one still holds it.
+/// - **A process outside the CLI** holding the same workspace, such as an
+///   evaluation harness driving an engine directly.
+///
+/// The jitter is for the second case: several processes started together would
+/// otherwise retry in step forever.
 fn open_contended(mut open: impl FnMut() -> Result<Collection>) -> Result<Collection> {
     let deadline = Instant::now() + LOCK_BUDGET;
     let mut wait = Duration::from_millis(5);
