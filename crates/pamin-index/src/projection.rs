@@ -770,6 +770,11 @@ const DISKANN_BUILD_LIST: i32 = 100;
 
 /// Product-quantization chunks for in-memory navigation of the on-disk graph;
 /// zero keeps none, and every step reads full vectors from disk.
+///
+/// None. Sixty-four chunks answered in about a third of the time at the same
+/// width and recalled 0.9200 at ten and 0.8629 at fifty where none recalls
+/// 0.9985 and 0.9975 -- navigating by codes loses neighbours the rescore
+/// cannot find again -- and took 1,859 s to build rather than 922 to 1,024.
 const DISKANN_PQ_CHUNKS: i32 = 0;
 
 /// How wide a query searches the on-disk graph, at the least: one asking for
@@ -834,6 +839,21 @@ const GRAPH_EFFORT: i32 = 500;
 /// and at 2,000, fused and through the reranker -- zero wins, zero losses (the
 /// `EFFORTS` arm of `pamin-engine/tests/monolingual.rs`). Synthetic clusters
 /// are harder to search than real embeddings, so the width stays.
+///
+/// **And again over half-precision vectors with the rescore**, which is what
+/// [`VectorIndex::Memory`] searches, against the bar that fp32 at 700 sets --
+/// within 0.002 of its recall on 50,000 clustered vectors, 0.001 on MIRACL:
+///
+/// | width | synthetic @10 | synthetic @50 | MIRACL @10 | MIRACL @50 |
+/// | --- | --- | --- | --- | --- |
+/// | fp32 at 700 | 0.9980 | 0.9974 | 1.0000 | 0.9999 |
+/// | 200 | 0.9665 | 0.9458 | 0.9996 | 0.9980 |
+/// | 300 | 0.9855 | 0.9769 | 0.9998 | 0.9988 |
+/// | 500 | 0.9965 | 0.9927 | 1.0000 | 0.9993 |
+/// | **700** | **0.9965** | **0.9965** | **1.0000** | **0.9997** |
+///
+/// A narrower width saves about a millisecond a query and fails the bar at
+/// fifty on both sets, so 700 stays for this index too.
 const SEARCH_EFFORT: i32 = 700;
 
 /// Overrides [`SEARCH_EFFORT`], for the sweep that settles it.
