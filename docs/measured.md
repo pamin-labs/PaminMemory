@@ -207,7 +207,7 @@ over 10,785 memories. On its first 1,000 two-hop questions, through
 
 | | nDCG@10 | recall@50 |
 | --- | --- | --- |
-| the shipped search | **0.6834** | **0.8435** |
+| the search as shipped then, showing ten graph finds | **0.6834** | **0.8435** |
 | the same search without the graph | −0.0406 (114 wins, 238 losses, p = 0.0001) | |
 
 Fusion alone gains 0.0159 from the graph there, and the weight of three tenths
@@ -220,8 +220,8 @@ removed, also held them down). The
 harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
 paying.
 
-**Ten is a fixed count, and showing more or choosing them by score buys
-nothing.** Replaying the fused lists found one cut that another setting would
+**Showing more graph finds buys nothing, and the first attempt to choose them
+by score failed its time bound.** Replaying the fused lists found one cut that another setting would
 move: 29 supporting titles only the graph found sat below the ten shown, and
 twenty brings 19 of them into the reranker's view (19 questions gain, none
 lose, p = 0.0001). No fusion change (k, RRF, graph weight) moved that view by
@@ -235,7 +235,7 @@ Every find is in the table for scale only; it was not a candidate.
 
 | arm | MuSiQue nDCG@10, 1,000 questions | own corpus, 157 | search time, MuSiQue | search time, own |
 | --- | --- | --- | --- | --- |
-| **ten (ships)** | **0.7131** | **unchanged** | **1** | **1** |
+| **ten** | **0.7131** | **unchanged** | **1** | **1** |
 | twenty | +0.0010 (9 better, 25 worse, p = 0.41) | identical on every query | 1.41 | 0.99 (n.s.) |
 | a graph score of at least τ, at most thirty | −0.0004 (9 better, 35 worse, p = 0.74) at τ = 0 | −0.0002 (1 worse) at τ = 0.5 | 1.78 | 0.82 |
 | every graph find | −0.0002 (11 better, 41 worse, p = 0.90) | identical on every query | 2.26 | 0.99 (n.s.) |
@@ -248,7 +248,7 @@ every arm is ten there. τ was chosen leave-one-corpus-out: on the own corpus
 every τ scores the same, down to showing no graph find at all, so MuSiQue got
 τ = 0, which is thirty; MuSiQue chose τ = 0.5 for the own corpus. So the
 threshold is faster on the own corpus and fails the time bound on MuSiQue,
-and twenty wins nothing. Neither ships.
+and twenty wins nothing. Neither shipped.
 
 Two findings came out of it. The recall the reranker is shown does not
 predict what it returns: twenty adds 19 relevant titles to its view and
@@ -266,6 +266,43 @@ batches; the int8 export makes a score depend on its neighbours. The 100
 questions searched fresh match that run's twenty and thirty on 97 each. The
 arms change a count and a threshold that the tree does not expose, so they
 were measured on a scratch build and cannot be re-run from the repository.
+
+**A graph score of at least 0.5, at most thirty, ships in place of the fixed
+ten, on a held-out test.** The hypothesis above came from 100 questions it was
+then fitted on, so those were set aside (every tenth, from the first), and a
+second rule was written before anything ran: compare ten with τ = 0.5 capped at
+thirty on 600 other MuSiQue questions (the six in every ten after each set-aside
+one), the own corpus and XQuAD-R; ship the threshold only if it is
+significantly worse on no corpus and no group (sign-flip, p < 0.05), at most
+1.1 times ten's search time on MuSiQue, and significantly faster or better on
+MuSiQue or the own corpus (p < 0.0125, four tests). Searches went through
+`search_reranked` at the `accurate` tier and the `accuracy` profile, both arms
+of a question in one process in alternating order, with the reranker's and the
+embedder's caches bypassed and the shown set asserted against an independent
+recomputation from the trace on every search.
+
+| | MuSiQue, 600 held-out questions | own corpus, 157 | XQuAD-R, 119 |
+| --- | --- | --- | --- |
+| nDCG@10, ten | 0.7138 | 0.9103 | |
+| threshold − ten | +0.0017 (16 better, 5 worse, p = 0.057) | −0.00005 (1 worse, p = 1.0) | identical lists |
+| search time, threshold / ten | **0.87** (p = 0.0001) | **0.81** (p = 0.0001) | 1.00 (n.s.) |
+| graph finds shown, ten → threshold | 10 → 8.4 | 3.95 → 0.01 | 0 → 0 |
+| reranker pairs a search | 28.4 → 26.9 | 24.3 → 20.3 | 24.2 → 24.2 |
+
+No group is worse; the own corpus's one loss is a cross-lingual query that
+drops by 0.0078. Every clause holds, so the threshold ships
+(`GRAPH_SHOWN_FROM` and `GRAPH_SHOWN_AT_MOST` in `pamin-engine`). Times are
+geometric means of per-question ratios on four cores that other evaluations
+were sharing. The 0.6834 and 0.7131 above were measured with ten.
+
+What it trades, read after the verdict and not part of it: on MuSiQue the
+threshold shows more than ten finds on 142 questions, and those searches take
+1.60 times as long, with 2 better and 3 worse; on the 458 where it shows ten
+or fewer they take 0.72 times as long, with 14 better and 2 worse. So the
+saving and the gain both come from dropping weak finds, and the cap of thirty
+costs time it was not seen to earn. A cap of ten under the same threshold is
+the next hypothesis. It is not measured, and these 600 questions have now
+shaped it, so it needs questions of its own.
 
 ### What the fusion function itself is worth
 
