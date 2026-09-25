@@ -106,7 +106,9 @@ embedder -- writes the copy, and removes the download again. **That load needs
 the network.** Offline, it fails with an error that names the model and says
 why, instead of searching; the fix is to be online for that one load, or to
 copy the model directory from a machine that has the file. The old copy is
-left in place. It is safe to delete `models/prepared/` at any time, and the
+removed by a later load once no running process has it loaded and none has
+loaded it for two weeks, so a directory shared by two versions keeps both
+copies while both are in use. It is safe to delete `models/prepared/` at any time, and the
 next load downloads the model again. The download is kept, and nothing is
 removed, when `HF_HOME` is set -- that cache is shared with other tools -- or
 when the model directory, or one model's directory inside it, is a link to
