@@ -591,8 +591,8 @@ fn link_models(cache: &Path) {
     let Ok(existing) = std::env::var("PAMIN_TEST_MODELS") else {
         return;
     };
-    let wanted = [EMBEDDER, ACCURATE, TIERS[0].1, TIERS[1].1]
-        .map(|repository| format!("models--{}", repository.replace('/', "--")));
+    let wanted =
+        [EMBEDDER, ACCURATE].map(|repository| format!("models--{}", repository.replace('/', "--")));
     for name in wanted {
         let path = Path::new(&existing).join(&name);
         if path.exists() {
