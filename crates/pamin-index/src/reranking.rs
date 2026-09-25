@@ -302,7 +302,9 @@ pub enum Rerank {
 /// gain for half its extra pairs: accuracy decides the direction and latency
 /// the distance, and forty's last 0.0013 is not worth another third of the
 /// reranker's time. The pass costs half again what it did at twenty in model
-/// pairs; its wall time has not been re-measured on a quiet machine.
+/// pairs. Its wall time at thirty is under [`BATCH_TOKENS`], taken on a
+/// machine shared with other measurements rather than a quiet one, so it is
+/// the ratios there that carry.
 const DEPTH: usize = 30;
 
 /// The tuning constants above, overridable for a sweep.
@@ -321,11 +323,61 @@ fn tuned(name: &str, fallback: usize) -> usize {
         .unwrap_or(fallback)
 }
 
-/// How many padded tokens go through the model at once. MEASUREMENT PENDING.
-const BATCH_TOKENS: usize = 1024;
+/// How many padded tokens go through the model at once.
+///
+/// Five hundred and twelve, with at most [`BATCH`] pairs, and the control is
+/// the tokens rather than the count. A batch is padded to its longest member,
+/// and on four cores a pair also costs more the more padded tokens share its
+/// pass, so chunks of eight lost twice: to padding where short and long pairs
+/// met, and to size where every pair was long -- MuSiQue's graph candidates,
+/// which carry their seed's text, filled eight-pair passes with 256-token
+/// rows. So every unscored pair is tokenized once, sorted by its real length
+/// and then its position, and each pass takes the next pair while the pass
+/// stays within this many padded tokens.
+///
+/// Settled by a rule written down before anything was timed. A pilot of 24
+/// queries a corpus ran seven candidates beside the batching this replaced --
+/// sorted by characters, consecutive chunks of eight -- through
+/// `Engine::search_reranked` at the shipped depth, all in one process, each
+/// query through every candidate in rotated order. A whole search, as the
+/// median of each query's ratio to chunks of eight:
+///
+/// | candidate | XQuAD-R | MIRACL | MuSiQue | pooled |
+/// |---|---|---|---|---|
+/// | chunks of four | 0.814 | 0.710 | 0.708 | 0.742 |
+/// | 512 tokens | 0.766 | 0.576 | 0.556 | 0.626 |
+/// | 1,024 tokens | 0.922 | 0.840 | 0.690 | 0.811 |
+/// | 2,048 tokens | 1.292 | 1.109 | 1.057 | 1.149 |
+/// | **512 tokens, four pairs** | **0.746** | **0.583** | **0.523** | **0.610** |
+/// | 1,024 tokens, four pairs | 0.806 | 0.616 | 0.633 | 0.680 |
+/// | 2,048 tokens, four pairs | 0.827 | 0.695 | 0.704 | 0.739 |
+///
+/// A budget of 2,048 with no cap is *slower* than chunks of eight: it packs a
+/// dozen and more pairs into a pass, which pads more than chunks of eight did
+/// and costs more a token besides.
+///
+/// The winner then went through every query, because grouping is not
+/// score-neutral: the int8 export quantizes activations per tensor, so rows
+/// padded together share one scale and a pair's score depends on its
+/// neighbours. Paired against chunks of eight by sign-flip, 10,000 draws:
+///
+/// | group | queries | nDCG@10 | wins / losses | p | a search | faster on |
+/// |---|---|---|---|---|---|---|
+/// | XQuAD-R cross-lingual | 1,190 | −0.0004 | 166 / 192 | 0.60 | 0.833 | 1,053 of 1,187 |
+/// | XQuAD-R same-language | 1,190 | −0.0002 | 5 / 6 | 0.62 | (the same searches) | |
+/// | MIRACL Swahili | 482 | −0.0011 | 13 / 11 | 0.42 | 0.800 | 461 of 482 |
+/// | MuSiQue, 2-hop | 1,000 | +0.0005 | 27 / 17 | 0.63 | 0.810 | 944 of 997 |
+///
+/// Not significantly worse in any group, and faster on 2,458 of 2,666 pooled
+/// searches with a pooled ratio of 0.814, so it ships. The pilot's larger
+/// saving was taken at a load average of 11 to 12 on four cores and this at 6
+/// to 8; the saving grows with contention, and it is the paired ratio rather
+/// than either set of milliseconds that carries. Measured on the `accurate`
+/// tier; `fast` batches the same way and its scores were not re-measured.
+const BATCH_TOKENS: usize = 512;
 
-/// How many candidates go through the model at once, at most. MEASUREMENT PENDING.
-const BATCH: usize = 1024;
+/// How many pairs go through the model at once, at most. See [`BATCH_TOKENS`].
+const BATCH: usize = 4;
 
 /// How much the model reads at once, and how long a candidate. See [`tuned`].
 fn batch_tokens() -> usize {
@@ -367,9 +419,8 @@ fn max_tokens() -> usize {
 /// | XQuAD-R, sentences | 165 characters | 1,341 |
 /// | MIRACL Swahili, Wikipedia passages | 311 characters | 5,567 |
 ///
-/// Characters rather than tokens, because that is what can be counted without
-/// asking the tokenizer -- see the sort in [`Reranker::rank`] for the small
-/// factor between them. A 5,567-character passage is far past this limit
+/// Characters rather than tokens, as [`Reranker::counted`] reports them. A
+/// 5,567-character passage is far past this limit
 /// whatever the script, so on MIRACL the truncation is doing real work, and the
 /// sentence-corpus measurement above says nothing about what it costs there.
 /// The 128-against-256 sweep has only ever been run on the corpus where the
@@ -569,10 +620,10 @@ pub struct Reranker {
 
 /// How long the candidates that reached the model were.
 ///
-/// Counted in characters because that is what the batching sort already uses
-/// and what can be counted without asking the tokenizer -- see the sort in
-/// [`Reranker::rank`] for why characters rather than bytes, and for the small
-/// factor that separates them from tokens.
+/// Counted in characters rather than bytes, because UTF-8 is three bytes a
+/// character for the Chinese and Thai in these corpora against one for the
+/// Latin, and in characters rather than tokens so that these totals stay
+/// comparable with the ones recorded before the batching counted tokens.
 ///
 /// Here because the cost of a cross-encoder rises with sequence length and
 /// nothing in this project had ever recorded the lengths it sees. `MAX_TOKENS`
@@ -712,7 +763,8 @@ impl Reranker {
 
         // Only what has not been scored before goes through the model,
         // tokenized once here so that `score` can group the pairs by their
-        // real length. BATCHING NOTE PENDING.
+        // real length in tokens. See `BATCH_TOKENS` for why that grouping is
+        // not score-neutral.
         let unscored: Vec<usize> = (0..documents.len())
             .filter(|position| scores[*position].is_none())
             .collect();
