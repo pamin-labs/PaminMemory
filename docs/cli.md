@@ -16,6 +16,7 @@ The examples below are real output from a workspace built by the writes in
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `disk` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
@@ -995,8 +996,11 @@ retrieval engine replaceable and makes a breaking engine upgrade a rebuild
 rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
-Run it after changing `--profile`, or after deleting the index directory. It
-rebuilds one project — the one named by `--project` — and leaves the rest alone.
+Run it after changing `--profile` or `--vector-index`, or after deleting the
+index directory. It rebuilds one project — the one named by `--project` — and
+leaves the rest alone. An index built before the vector indexes existed stored
+fp32 vectors under an in-memory graph; it is refused with a message naming
+this command, and rebuilding it reuses every vector it holds.
 
 It is also how a grown project resizes its vector segments at once, rather
 than when the server gets to it. The index sizes them from the number of memories it holds when it is

@@ -257,6 +257,7 @@ async fn stop_and_wait(path: &Path) -> Result<()> {
         version: String::new(),
         project: String::new(),
         profile: String::new(),
+        vector_index: String::new(),
         call: Call::Stop,
     };
 

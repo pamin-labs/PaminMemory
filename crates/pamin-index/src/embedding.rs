@@ -11,7 +11,8 @@
 //! reranker reorders the fused head, but it cannot recover a candidate the
 //! vector channel ranked out of the list.
 //!
-//! Stored vectors are float32. Weights are quantized where a quantized export
+//! Vectors leave here as float32 and the index stores them as half precision
+//! (see `projection::VectorIndex`). Weights are quantized where a quantized export
 //! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
 //! because the model registry publishes no quantized variant for that family.
 

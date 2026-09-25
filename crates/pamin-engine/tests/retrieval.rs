@@ -142,7 +142,7 @@ use std::path::PathBuf;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Profile, Rerank};
+use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -213,9 +213,15 @@ async fn retrieval_quality_by_group() {
     // another, so two profiles measured against one corpus need two indexes.
     let project = format!("eval-{named}-{}", fingerprint(&corpus));
 
-    let mut engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let mut engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     // The project name carries the corpus fingerprint, so a corpus that has
     // changed lands in a workspace that has never seen it and a corpus that has
@@ -302,6 +308,7 @@ async fn retrieval_quality_by_group() {
             &workspace,
             &format!("{project}-named"),
             profile,
+            VectorIndex::default(),
             Access::ReadWrite,
         )
         .await

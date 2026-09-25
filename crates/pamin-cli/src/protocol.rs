@@ -56,6 +56,11 @@ pub struct Request {
     /// before sending it; the server parses it again because a name is what
     /// crosses the socket.
     pub profile: String,
+    /// The vector index, by name, checked and parsed like the profile.
+    /// Defaulted so a `stop` from another build, which may carry none, is
+    /// still read.
+    #[serde(default)]
+    pub vector_index: String,
     pub call: Call,
 }
 

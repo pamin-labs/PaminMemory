@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::{Channel, Derivation, EdgeKind, Why};
-use pamin_index::{Profile, Rerank};
+use pamin_index::{Profile, Rerank, VectorIndex};
 
 use serde::{Deserialize, Serialize};
 
@@ -176,12 +176,13 @@ pub async fn execute(
     session: &Session,
     project: &str,
     profile: Profile,
+    vector_index: VectorIndex,
     args: Args,
 ) -> Result<Results> {
     let rerank = Rerank::parse(&args.rerank)
         .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
 
-    let engine = session.engine(project, profile).await?;
+    let engine = session.engine(project, profile, vector_index).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
