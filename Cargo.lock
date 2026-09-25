@@ -1835,7 +1835,6 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
- "libc",
  "pamin-core",
  "pamin-engine",
  "pamin-index",
@@ -1855,7 +1854,6 @@ name = "pamin-core"
 version = "0.0.1"
 dependencies = [
  "serde",
- "thiserror",
  "time",
  "uuid",
 ]

@@ -12,5 +12,4 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 time = { workspace = true }
-thiserror = { workspace = true }
 uuid = { workspace = true }
