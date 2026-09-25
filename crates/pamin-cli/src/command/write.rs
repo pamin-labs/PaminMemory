@@ -19,9 +19,8 @@ pub struct Args {
 
     /// Record the memory without waiting for the index to catch up.
     ///
-    /// The work is queued rather than skipped, and `pamin cascade drain` runs
-    /// it. Importing in bulk is what this is for: one rebuild of the vector
-    /// graph at the end instead of the queue being drained after every write.
+    /// The work is queued rather than skipped. The server runs it once no
+    /// request is being answered, and `pamin cascade drain` runs it at once.
     #[arg(long)]
     pub defer: bool,
 

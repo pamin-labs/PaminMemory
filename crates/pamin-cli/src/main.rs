@@ -295,6 +295,7 @@ mod tests {
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
     const UNDOCUMENTED: &[&str] = &[
+        "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_BATCH_TOKENS",
