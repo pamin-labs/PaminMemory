@@ -635,10 +635,11 @@ the last row says something else: at the shipped weight the support rule does
 nothing on 1,157 questions, including MuSiQue's 12,840-edge graph -- the dense
 case it was kept for.
 
-**Nothing has changed default.** Reciprocal rank fusion still ships at the
-weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
-same-language queries on the same 1,190 questions, and it has to report before
-any of this moves a default.
+**The combiner has changed default since this was written.** XQuAD-R, the
+corpus that separates cross-lingual from same-language queries on the same
+1,190 questions, had to report before any of this moved a default; once it
+had, the banded combiner replaced reciprocal rank fusion — see *What that
+mechanism, once stated, made shippable* above.
 
 One thing the first attempt at this sweep is worth recording. Standardised
 fusion measured **0.0099 against 0.7910** — 0 wins, 43 losses — because zvec
@@ -648,8 +649,8 @@ let it through is worse: the test asserting every channel orders its candidates
 by the score it reports wrote every document with the same stub embedding, so
 the vector channel reported one constant and ordering by a constant asserts
 nothing. Both are fixed, and no figure published before this had ever read a
-score — every ranking that ships, and every number in the table above the fix,
-reads ranks. The MIRACL comparison above is not re-taken
+score — every ranking that shipped then, and every number in the table above
+the fix, read ranks. The MIRACL comparison above is not re-taken
 yet, for the ten hours named earlier, and on `speed` it carries a second
 finding worth stating early: once fusion stops diluting, the cross-encoder
 *costs* 0.0152 there — 0.6730 with it against 0.6882 without, for 226 ms a
