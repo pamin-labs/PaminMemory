@@ -244,13 +244,6 @@ impl Passage {
 /// The encoding a new index is built with.
 const PASSAGE: Passage = Passage::Named;
 
-/// What one document in this index stands for.
-///
-/// Recorded beside the model because an index keyed by something else is not
-/// stale, it is silently empty: the old scheme's identifiers are read as the
-/// new scheme's, match nothing, and every search comes back with no results
-/// and no error anywhere. Changing what a document is keyed by means changing
-/// this, which turns that silence into a message naming `pamin reindex`.
 /// How many segments a collection is aimed at.
 ///
 /// Four, measured. Building 100,000 documents at several segment sizes, against
@@ -549,6 +542,13 @@ fn unindexed_budget() -> u64 {
         .unwrap_or(UNINDEXED_BUDGET)
 }
 
+/// What one document in this index stands for.
+///
+/// Recorded beside the model because an index keyed by something else is not
+/// stale, it is silently empty: the old scheme's identifiers are read as the
+/// new scheme's, match nothing, and every search comes back with no results
+/// and no error anywhere. Changing what a document is keyed by means changing
+/// this, which turns that silence into a message naming `pamin reindex`.
 const DOCUMENT_GRAIN: &str = "topic";
 
 /// How many neighbours each document keeps in the vector graph.
