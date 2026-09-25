@@ -133,6 +133,7 @@
 mod channels;
 mod cold;
 mod features;
+mod harness;
 mod reranking;
 mod scoring;
 mod statistics;
@@ -141,7 +142,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use pamin_core::{Channel, Fusion};
-use pamin_engine::{Depths, Engine, Write};
+use pamin_engine::{Depths, Engine};
 use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
@@ -995,44 +996,23 @@ async fn run(
 /// import, and a drain per write rebuilds derived state far more often than
 /// the data changes.
 async fn write_corpus(engine: &mut Engine, corpus: &[Memory]) {
-    let project = engine.project;
     let mut written = 0;
 
     for memory in corpus {
-        let existing =
-            pamin_store::repository::find_topic(engine.database.pool(), project, &memory.topic)
-                .await
-                .expect("look for the topic");
-        if existing.is_some() {
-            continue;
+        if harness::write_absent(
+            engine,
+            &memory.topic,
+            &memory.content,
+            &memory.language,
+            "evaluation corpus",
+        )
+        .await
+        {
+            written += 1;
         }
-        written += 1;
-        engine
-            .write(&Write {
-                topic: &memory.topic,
-                content: &memory.content,
-                content_hash: &memory.content.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "evaluation corpus",
-                promoted: true,
-                language: Some(&memory.language),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", memory.topic));
     }
 
-    let drained = engine
-        .drain_cascade(pamin_engine::Owed::Everything)
-        .await
-        .expect("drain the cascade");
-    assert_eq!(
-        drained.pending, 0,
-        "the corpus is not fully indexed: {} jobs still owed",
-        drained.pending
-    );
+    harness::drain(engine).await;
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.len());
     }
