@@ -1119,7 +1119,9 @@ a reopen when a query lands on a project that has fallen out.
 Every command goes through the server except two. `serve` is the server, and
 `stop` is what shuts it down; with no server running, `stop` stops the database
 itself rather than starting a server to do it. There is no way to run a command
-in the calling process instead.
+in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
+and a command run with it set fails and says so rather than quietly going
+through the server it was set to avoid.
 
 So the server is the only process the command line opens an index in. It holds
 each project's index open for writing, and the index takes an exclusive lock on
