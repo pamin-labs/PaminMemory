@@ -500,9 +500,9 @@ nothing there.
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
 measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
-Four thousand scores are kept, about a quarter of a megabyte. Without
-`pamin serve` there is no process to keep them in, so every command starts
-from nothing.
+Four thousand scores are kept, about a quarter of a megabyte, for as long as
+the server holds the reranking model: they go when it stops, or when it
+releases a model nothing has used for a while.
 
 The latencies are from four cores. Published figures for a reranker of this
 size are a few milliseconds per candidate rather than the ten measured here,
@@ -993,8 +993,8 @@ authority store, not the index.
 Run it after changing `--profile`, or after deleting the index directory. It
 rebuilds one project — the one named by `--project` — and leaves the rest alone.
 
-It is also how a grown project resizes its vector segments when no server is
-running. The index sizes them from the number of memories it holds when it is
+It is also how a grown project resizes its vector segments at once, rather
+than when the server gets to it. The index sizes them from the number of memories it holds when it is
 created, which for a project starting from nothing is the smallest size; a
 project that has since grown by orders of magnitude keeps that size until the
 index is recreated. Rebuilding recomputes it from what the project holds now,
@@ -1002,14 +1002,13 @@ so a project that has outgrown its layout searches faster afterwards. Where the
 old index was built the way a new one is, a memory whose text has not changed
 keeps the vector it already has rather than being embedded again.
 
-A running server does this on its own. Once a project's index is spread over
+The server does this on its own. Once a project's index is spread over
 more than twice the segments it should be, the server copies it into the right
 shape in the background — reading it a batch at a time while it goes on
 answering searches and writes, and building the copy's vector graph with the
 index free — then swaps the copy in. Writes made during the copy are carried
 over before the swap. Nothing is embedded, and for the length of the copy the
-disk holds the index twice. `pamin cascade drain` reports a badly shaped index
-either way.
+disk holds the index twice. `pamin cascade drain` reports a badly shaped index.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
@@ -1117,20 +1116,16 @@ of them is 1.6 GB or 3.3 GB depending on a flag. On a machine where that is too
 much, `PAMIN_OPEN_INDEXES` sets a smaller number. Lowering it costs nothing but
 a reopen when a query lands on a project that has fallen out.
 
-`PAMIN_NO_SERVER=1` runs everything in the calling process, as it did before.
-The results are identical — it is the same code either way — so this is for
-debugging the server itself, and for a caller that would rather have one process
-to reason about than a fast one.
-
-It does not combine with a server that is already up. A running server holds the
-index open for writing, and the index takes an exclusive lock on its directory,
-so a second process opening the same project fails rather than waiting. That is
-the lock doing its job: two processes writing one index is what it exists to
-prevent. Run `pamin stop` first if you want the in-process path against a
-workspace a server is holding.
-
 Every command goes through the server except two. `serve` is the server, and
-`stop` is what shuts it down.
+`stop` is what shuts it down; with no server running, `stop` stops the database
+itself rather than starting a server to do it. There is no way to run a command
+in the calling process instead.
+
+So the server is the only process the command line opens an index in. It holds
+each project's index open for writing, and the index takes an exclusive lock on
+its directory, so any other process opening the same project waits briefly and
+then fails rather than sharing it. That is the lock doing its job: two processes
+writing one index is what it exists to prevent.
 
 The socket is a file, so it inherits the workspace's permissions and cannot be
 reached from another machine. There is no authentication, for the same reason:

@@ -28,18 +28,6 @@ const STARTUP: Duration = Duration::from_secs(90);
 /// How long to wait between attempts to connect to a server that is starting.
 const RETRY: Duration = Duration::from_millis(50);
 
-/// Whether this process should talk to a server at all.
-///
-/// `PAMIN_NO_SERVER=1` runs everything in this process instead. It exists for
-/// tests that want a single process to reason about, and for the case where the
-/// server is the thing being debugged.
-pub fn wanted() -> bool {
-    !matches!(
-        std::env::var("PAMIN_NO_SERVER").as_deref(),
-        Ok("1") | Ok("true")
-    )
-}
-
 /// Sends one request, starting a server if there is none.
 ///
 /// `Ok(None)` means there was no server and none was wanted -- only `stop` asks
