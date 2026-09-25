@@ -2787,6 +2787,41 @@ it was and the setting is documented instead: a deployment that knows it serves
 concurrent, mostly-distinct queries can take the quarter, and one serving a
 single agent should not.
 
+**Idle inference threads block instead of spinning.** ONNX Runtime lets an
+intra-op thread that runs out of work spin before it sleeps, and nothing here
+had said otherwise, so every table above was taken with it spinning. The
+embedder and the reranker each own a pool of one thread per core, so on a
+machine with other work -- the upkeep drain's embedding, another caller, or
+another process -- the spinning threads hold cores the working threads need.
+`inference::session` now turns it off for every model it loads. The rule was
+written before anything was timed: ship if rankings and scores are
+bit-identical, the paired search-time ratio at the machine's own load is at
+most 1.05, under a fixed contention it is at most 0.80 at `p < 0.01`, and eight
+concurrent callers get no less throughput. Through `pamin serve` and `pamin
+search` at the defaults, one hundred queries (sixty from the own corpus, forty
+from an XQuAD-R subset of three languages), a fresh server per arm and round so
+no query is a cache hit, three rounds in rotated order, on four cores:
+
+| | ambient load (2.5 to 13) | two busy loops beside it (load 9 to 13) |
+| --- | --- | --- |
+| search, spin off / spin on | 1.033, faster on 39/100, `p = 0.068` | **0.754**, faster on 86/100, `p = 0.0001` |
+| own corpus / XQuAD-R | 1.027 / 1.042 | 0.720 / 0.809 |
+| eight callers, throughput ratio | 1.17 (1.22, 1.46, 0.89) | 1.13 (1.04, 1.55, 0.90) |
+| one global pool, spin off / spin on | 0.964, `p = 0.037` | 0.886, `p = 0.0002` |
+
+Ratios are geometric means of per-query ratios, each query's time the median of
+its three rounds; `p` is a paired sign-flip test. Every ranking of all two
+hundred queries was identical across arms and rounds, and in process forty
+query embeddings, sixteen passage embeddings and 256 `accurate` scores were
+bit-identical. What it costs where nothing competes was not measured -- this
+machine was never quiet -- and the ambient column, at 1.033 and not
+significant, is the nearest thing to it. One pool shared by both models, through
+`ort`'s global thread pool, was the other candidate: it passes the same rule
+but gives up most of the gain under contention, so it does not ship. The
+`speed` and `balanced` profiles' embedders load through `fastembed`, whose
+options do not reach this setting, and still spin; both rerankers and the
+default profile's embedder do not.
+
 **This says nothing about a machine with cores to spare.** On sixteen or
 thirty-two, one forward pass would not saturate the box, callers would not be
 fighting for the same cores, and the guards could well become exactly the
