@@ -61,7 +61,7 @@
 use std::time::{Duration, Instant};
 
 use pamin_engine::{Depths, Engine, Models};
-use pamin_index::{Access, Embedder, Profile, Rerank, Reranker};
+use pamin_index::{Access, Embedder, Profile, Rerank, Reranker, VectorIndex};
 use pamin_store::{Database, Workspace};
 
 /// What `pamin search` passes when a caller says nothing.
@@ -256,6 +256,7 @@ async fn open(
         workspace,
         project,
         profile,
+        VectorIndex::default(),
         Access::ReadWrite,
     )
     .await
@@ -377,6 +378,7 @@ async fn attached(
         workspace,
         project,
         profile,
+        VectorIndex::default(),
         Access::ReadWrite,
     )
     .await

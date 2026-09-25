@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use pamin_engine::Owed;
-use pamin_index::Profile;
+use pamin_index::{Profile, VectorIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
@@ -102,6 +102,7 @@ pub async fn execute(
     session: &Session,
     project: &str,
     profile: Profile,
+    vector_index: VectorIndex,
     args: Args,
 ) -> Result<Imported> {
     // Parsed before anything is provisioned, so a malformed interval fails
@@ -125,7 +126,7 @@ pub async fn execute(
         })
         .collect::<Result<_>>()?;
 
-    let engine = session.engine(project, profile).await?;
+    let engine = session.engine(project, profile, vector_index).await?;
 
     // Grouped by topic, and **the grouping is what makes concurrency correct
     // rather than faster**. `Engine::remember` reads the topic's current

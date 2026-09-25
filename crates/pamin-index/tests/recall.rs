@@ -19,7 +19,7 @@
 //! keeps this number where it is is that segments stop growing.
 
 use pamin_core::TopicId;
-use pamin_index::{Access, Profile, Projection, ProjectionIndex};
+use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
 
 /// The default profile's width, so this measures the shape actually shipped.
 const PROFILE: Profile = Profile::Accuracy;
@@ -147,6 +147,7 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
         &dir.path().join("index"),
         &dir.path().join("legacy"),
         PROFILE,
+        VectorIndex::default(),
         Access::ReadWrite,
         DOCS as u64,
     )

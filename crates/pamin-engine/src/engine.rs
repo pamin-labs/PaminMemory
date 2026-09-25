@@ -13,7 +13,7 @@ use pamin_core::{
     Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
-    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
+    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -246,6 +246,9 @@ pub struct Engine {
     /// one it may embed with. Held because the load is deferred and the
     /// deferred load has to ask for the same profile the index recorded.
     pub(crate) profile: Profile,
+    /// Which vector index this engine's index was built with, which is also
+    /// the one it was asked for: opening under another is refused.
+    pub(crate) vector_index: VectorIndex,
     /// Where a reranker comes from, if a search asks for one.
     ///
     /// The registry rather than a loaded model: most searches do not rerank,
@@ -571,12 +574,20 @@ impl Engine {
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
         let database = Database::open(workspace, Connections::PerCommand).await?;
         let models = Models::in_workspace(workspace);
         Self::assemble(
-            database, &models, workspace, project, profile, access, false,
+            database,
+            &models,
+            workspace,
+            project,
+            profile,
+            vector_index,
+            access,
+            false,
         )
         .await
     }
@@ -592,9 +603,20 @@ impl Engine {
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
-        Self::assemble(database, models, workspace, project, profile, access, false).await
+        Self::assemble(
+            database,
+            models,
+            workspace,
+            project,
+            profile,
+            vector_index,
+            access,
+            false,
+        )
+        .await
     }
 
     /// Rebuilding, against a database that is already up.
@@ -608,6 +630,7 @@ impl Engine {
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
     ) -> Result<Self> {
         Self::assemble(
             database,
@@ -615,18 +638,21 @@ impl Engine {
             workspace,
             project,
             profile,
+            vector_index,
             Access::ReadWrite,
             true,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn assemble(
         database: Database,
         models: &Models,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
         access: Access,
         discard: bool,
     ) -> Result<Self> {
@@ -673,7 +699,8 @@ impl Engine {
                 None
             };
 
-            let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
+            let index =
+                ProjectionIndex::open(&dir, &legacy, profile, vector_index, access, documents)?;
             // The model is not loaded here. It was, and that made opening an
             // engine cost the weights -- see the `embedder` field. What is lost
             // is that a cold profile's download used to surface at open rather
@@ -704,6 +731,7 @@ impl Engine {
             }))),
             embedder: std::sync::OnceLock::new(),
             profile,
+            vector_index,
             models: models.clone(),
             project: project.id,
         })
@@ -742,6 +770,11 @@ impl Engine {
     /// finished writing.
     pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
         self.index.lock().expect("the index lock is poisoned")
+    }
+
+    /// Which vector index this project's index was built with.
+    pub fn vector_index(&self) -> VectorIndex {
+        self.vector_index
     }
 
     /// What text this project's vectors are embedded from. Public because a

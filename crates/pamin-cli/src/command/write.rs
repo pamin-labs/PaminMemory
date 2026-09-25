@@ -1,7 +1,7 @@
 //! `pamin write` — record a memory.
 
 use anyhow::{Context, Result};
-use pamin_index::Profile;
+use pamin_index::{Profile, VectorIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
@@ -55,6 +55,7 @@ pub async fn execute(
     session: &Session,
     project: &str,
     profile: Profile,
+    vector_index: VectorIndex,
     args: Args,
 ) -> Result<Written> {
     // Parsed before anything is provisioned, so a malformed interval fails
@@ -69,7 +70,7 @@ pub async fn execute(
         .content
         .context("no content: pass it as an argument or on standard input")?;
 
-    let engine = session.engine(project, profile).await?;
+    let engine = session.engine(project, profile, vector_index).await?;
     let (verdict, recorded) = engine.remember(&args.topic, &content, validity).await?;
 
     // The projection catches up from the outbox rather than here. Draining now

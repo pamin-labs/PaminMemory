@@ -2500,3 +2500,66 @@ fn one_topic_is_recorded_in_the_files_order() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// The storage line of every project index in this workspace.
+fn recorded_vector_indexes(cli: &Cli) -> Vec<String> {
+    std::fs::read_dir(cli.home().join("index"))
+        .expect("the index directory")
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("profile")).ok())
+        .map(|marker| marker.lines().nth(2).unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A project's vector index is chosen when its index is built, and changed by
+/// rebuilding it -- which reuses every vector rather than embedding again.
+///
+/// Asking an index built one way to answer as the other is refused and names
+/// `pamin reindex`, as a profile change is: searched with the other index's
+/// parameters it would answer, plausibly and wrongly.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn changing_the_vector_index_takes_a_reindex_and_reuses_every_vector() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    for (topic, content) in [
+        ("release_process", "the release train leaves on thursdays"),
+        ("oncall_rota", "the oncall rota rotates weekly"),
+    ] {
+        cli.run(&["write", "--topic", topic, content]);
+    }
+    assert_eq!(recorded_vector_indexes(&cli), vec!["disk".to_string()]);
+    let before = contents(&cli.json(&["search", "release train", "--limit", "1"]));
+    assert_eq!(
+        before,
+        vec!["the release train leaves on thursdays".to_string()]
+    );
+
+    let refused = cli.fails(&["--vector-index", "memory", "search", "release train"]);
+    assert!(
+        refused.contains("disk") && refused.contains("reindex"),
+        "the refusal has to name what the index is and what to run: {refused}"
+    );
+
+    let rebuilt = cli.json(&["--vector-index", "memory", "reindex"]);
+    assert_eq!(
+        rebuilt["reused"], 2,
+        "changing the vector index re-embedded what the old one held: {rebuilt}"
+    );
+    assert_eq!(recorded_vector_indexes(&cli), vec!["memory".to_string()]);
+    let after = contents(&cli.json(&[
+        "--vector-index",
+        "memory",
+        "search",
+        "release train",
+        "--limit",
+        "1",
+    ]));
+    assert_eq!(after, before);
+
+    let refused = cli.fails(&["search", "release train"]);
+    assert!(
+        refused.contains("memory") && refused.contains("reindex"),
+        "the default now has to be refused the other way: {refused}"
+    );
+}

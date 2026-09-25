@@ -59,7 +59,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Profile, Rerank};
+use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -372,9 +372,15 @@ async fn search_ranks_product_listings() {
     };
 
     let project = format!("esci-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     write_corpus(&engine, &corpus).await;
 

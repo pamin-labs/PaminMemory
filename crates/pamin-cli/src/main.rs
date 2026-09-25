@@ -14,7 +14,7 @@ mod session;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use pamin_index::Profile;
+use pamin_index::{Profile, VectorIndex};
 use pamin_store::Workspace;
 
 #[derive(Parser)]
@@ -39,6 +39,21 @@ struct Cli {
     /// requires `pamin reindex` rather than silently mixing vector spaces.
     #[arg(long, env = "PAMIN_PROFILE", global = true, default_value = "accuracy")]
     profile: String,
+
+    /// Which vector index to build: disk or memory.
+    ///
+    /// `disk` holds almost nothing resident and is slower to query and much
+    /// slower to build; `memory` is the fastest and the smallest on disk, and
+    /// holds its graph and vectors resident. The index records which it was
+    /// built with, so changing this requires `pamin reindex`, as a profile
+    /// change does.
+    #[arg(
+        long,
+        env = "PAMIN_VECTOR_INDEX",
+        global = true,
+        default_value = "disk"
+    )]
+    vector_index: String,
 
     /// Emit machine-readable JSON instead of text.
     #[arg(long, global = true)]
@@ -128,6 +143,8 @@ async fn main() -> Result<()> {
     // profile is refused before a server is started for it.
     Profile::parse(&cli.profile)
         .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
+    VectorIndex::parse(&cli.vector_index)
+        .ok_or_else(|| anyhow::anyhow!("unknown vector index {:?}", cli.vector_index))?;
 
     // `serve` is the server, so it never goes through one.
     if let Command::Serve = cli.command {
@@ -183,6 +200,7 @@ async fn main() -> Result<()> {
         version: protocol::version(),
         project,
         profile: cli.profile.clone(),
+        vector_index: cli.vector_index.clone(),
         call,
     };
     if let Some(value) = client::ask(&workspace, &request).await? {
@@ -331,7 +349,6 @@ mod tests {
         "PAMIN_RERANK_MAX_TOKENS",
         "PAMIN_SEARCH_EFFORT",
         "PAMIN_UNINDEXED_BUDGET",
-        "PAMIN_VECTOR_STORAGE",
     ];
 
     /// Every setting the product reads is documented, or listed as not.
@@ -445,6 +462,24 @@ mod tests {
         assert_eq!(
             Profile::parse(&declared.to_string_lossy()),
             Some(Profile::default())
+        );
+    }
+
+    /// The vector index a command gets when nobody names one, for the same
+    /// reason: the string here and the library's `Default` are two defaults
+    /// that nothing else makes agree.
+    #[test]
+    fn the_documented_default_vector_index_is_the_library_default() {
+        let command = <Cli as clap::CommandFactory>::command();
+        let declared = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "vector_index")
+            .and_then(|argument| argument.get_default_values().first().cloned())
+            .expect("the vector index argument declares a default");
+
+        assert_eq!(
+            VectorIndex::parse(&declared.to_string_lossy()),
+            Some(VectorIndex::default())
         );
     }
 }

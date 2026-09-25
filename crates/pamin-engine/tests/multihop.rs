@@ -65,7 +65,7 @@ use std::process::Command;
 
 use pamin_core::Fusion;
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Profile, Rerank};
+use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -298,9 +298,15 @@ async fn search_answers_questions_that_take_several_steps() {
     };
 
     let project = format!("musique-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
     write_corpus(&engine, &corpus).await;
 
     let edges = channels::live_edges(&engine).await;
@@ -319,6 +325,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &workspace,
             &format!("{project}-named"),
             profile,
+            VectorIndex::default(),
             Access::ReadWrite,
         )
         .await
@@ -392,6 +399,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &workspace,
             &format!("{project}-entities"),
             profile,
+            VectorIndex::default(),
             Access::ReadOnly,
         )
         .await
@@ -657,6 +665,7 @@ async fn entities(
         workspace,
         &format!("{project}-entities"),
         profile,
+        VectorIndex::default(),
         Access::ReadWrite,
     )
     .await

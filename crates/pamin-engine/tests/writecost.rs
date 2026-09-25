@@ -45,7 +45,7 @@ use std::time::Instant;
 
 use pamin_core::{FilterDecision, Validity};
 use pamin_engine::{Engine, Owed, Write};
-use pamin_index::{Access, Profile};
+use pamin_index::{Access, Profile, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 /// Ten times apart, because the defect is a factor and not an offset.
@@ -214,9 +214,15 @@ async fn one_write_does_not_pay_for_the_whole_project() {
             .expect("ensure project");
         fill(&database, project.id, topics, 3).await;
 
-        let engine = Engine::open(&workspace, &name, profile, Access::ReadWrite)
-            .await
-            .expect("open the engine");
+        let engine = Engine::open(
+            &workspace,
+            &name,
+            profile,
+            VectorIndex::default(),
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the engine");
 
         // Once before the clock starts. The first write of a process loads the
         // model and opens the index, and neither is what this is about.
@@ -377,9 +383,15 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
              every row below it would be measuring the wrong axis"
         );
 
-        let engine = Engine::open(&workspace, &name, profile, Access::ReadWrite)
-            .await
-            .expect("open the engine");
+        let engine = Engine::open(
+            &workspace,
+            &name,
+            profile,
+            VectorIndex::default(),
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the engine");
         let recorded = engine
             .write(&request("incident review", PROSE, "incident-wide"))
             .await

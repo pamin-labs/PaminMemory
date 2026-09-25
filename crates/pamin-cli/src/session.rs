@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 use pamin_core::ProjectId;
 use pamin_engine::{Engine, Models};
-use pamin_index::{Access, Profile, Rerank};
+use pamin_index::{Access, IndexError, Profile, Rerank, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 use crate::registry::Registry;
@@ -186,7 +186,7 @@ impl Session {
     /// same registry and the models into the same [`Models`], stamped as used
     /// now, so a project warmed and then left alone is closed and its models
     /// released one idle window later, as if a search had opened them.
-    pub fn warm(self: &Arc<Self>, project: &str, profile: Profile) {
+    pub fn warm(self: &Arc<Self>, project: &str, profile: Profile, vector_index: VectorIndex) {
         let key = (project.to_string(), profile);
         if self.engines.holds(&key) {
             return;
@@ -204,7 +204,7 @@ impl Session {
         tokio::spawn(async move {
             let models = session.models.clone();
             let loading = tokio::task::spawn_blocking(move || models.warm(profile, tier));
-            if let Err(error) = session.engine(&key.0, profile).await {
+            if let Err(error) = session.engine(&key.0, profile, vector_index).await {
                 tracing::debug!(project = %key.0, %error, "warming: opening the project failed");
             }
             match loading.await {
@@ -304,8 +304,19 @@ impl Session {
     /// cold project stalled every project this process was serving, including
     /// ones already open. Two projects on one profile still wait for each other
     /// inside [`Models`], which is where waiting for weights belongs.
-    pub async fn engine(&self, project: &str, profile: Profile) -> Result<Arc<Engine>> {
-        self.engines
+    ///
+    /// Asked for under the vector index its index was built with, as it is
+    /// under that profile: an open engine asked for under the other one is
+    /// refused the way opening its index would be, rather than answering as
+    /// what it is not.
+    pub async fn engine(
+        &self,
+        project: &str,
+        profile: Profile,
+        vector_index: VectorIndex,
+    ) -> Result<Arc<Engine>> {
+        let engine = self
+            .engines
             .get_or_open((project.to_string(), profile), || {
                 Engine::attached(
                     self.database.clone(),
@@ -313,10 +324,19 @@ impl Session {
                     &self.workspace,
                     project,
                     profile,
+                    vector_index,
                     Access::ReadWrite,
                 )
             })
-            .await
+            .await?;
+        if engine.vector_index() != vector_index {
+            return Err(IndexError::VectorIndexMismatch {
+                indexed: engine.vector_index().label().to_string(),
+                requested: vector_index.label().to_string(),
+            }
+            .into());
+        }
+        Ok(engine)
     }
 
     /// The engines this process currently holds open.
@@ -365,7 +385,12 @@ impl Session {
     /// Evicts rather than reuses: the rebuild throws the collection away and
     /// opens a new one, so an engine held from before points at a directory
     /// that is gone.
-    pub async fn rebuilding(&self, project: &str, profile: Profile) -> Result<Arc<Engine>> {
+    pub async fn rebuilding(
+        &self,
+        project: &str,
+        profile: Profile,
+        vector_index: VectorIndex,
+    ) -> Result<Arc<Engine>> {
         self.engines
             .reopen((project.to_string(), profile), || {
                 Engine::rebuilding_attached(
@@ -374,6 +399,7 @@ impl Session {
                     &self.workspace,
                     project,
                     profile,
+                    vector_index,
                 )
             })
             .await
