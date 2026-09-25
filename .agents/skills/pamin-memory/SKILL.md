@@ -107,8 +107,8 @@ pamin cascade drain
 
 `--defer` returns without embedding anything. The memory is committed — `read`
 and `grep` see it immediately — and only `search` waits for the queue, which
-the server works through on its own a few seconds later; `cascade drain` makes
-it catch up at once.
+the server works through on its own within about ten seconds; `cascade drain`
+makes it catch up at once.
 
 ## Searching
 
