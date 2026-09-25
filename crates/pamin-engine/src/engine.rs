@@ -2336,6 +2336,16 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// was worth +0.0234. Chosen by five-fold cross-validation, every fold picking
 /// ten. The cost is ten more pairs a search, only where there are edges: a
 /// project with none has no graph candidates and pays nothing.
+///
+/// **A fixed count, and more of them buys nothing.** Twenty brings 19 more
+/// supporting titles into the reranker's view on MuSiQue (19 questions gain,
+/// none lose), but the reranker does not turn them into a better top ten.
+/// Through `search_reranked` at the `accuracy` profile, twenty moved nDCG@10
+/// by +0.0010 (9 better, 25 worse, p = 0.41) for 1.41 times the search time,
+/// and thirty by -0.0004 (p = 0.74) for 1.78 times. A threshold on the graph
+/// score, capped at thirty and chosen leave-one-corpus-out, failed the time
+/// bound the same way. The rule was written before the runs, and
+/// `docs/measured.md` has them.
 const GRAPH_CANDIDATES: usize = 10;
 
 /// The positions of a fused list the reranker is shown: the head's candidates
