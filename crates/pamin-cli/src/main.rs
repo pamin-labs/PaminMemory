@@ -113,6 +113,11 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Before anything else, so a caller still setting it is told at once
+    // rather than finding its commands going through the server it set this
+    // to avoid.
+    refuse_removed_settings()?;
+
     let cli = Cli::parse();
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),
@@ -191,6 +196,29 @@ async fn main() -> Result<()> {
     format.emit(&result, || command::stop::render(&result));
     Ok(())
 }
+
+/// Refuses to run with a setting that no longer does anything.
+///
+/// `PAMIN_NO_SERVER` ran a command in the calling process rather than the
+/// workspace's server, and nothing reads it now: every command goes through
+/// the server. Ignoring it would be silent in exactly the case it was set
+/// for -- somebody debugging the server, or a test wanting one process to
+/// reason about -- who would then be reasoning about a process that is not
+/// the one they asked for. Whatever it is set to, including a value that
+/// used to mean "use the server": it cannot be honoured either way, and
+/// the fix is the same.
+fn refuse_removed_settings() -> Result<()> {
+    if std::env::var_os(NO_SERVER).is_some() {
+        anyhow::bail!(
+            "{NO_SERVER} was removed: every command now goes through the workspace's \
+             server, and none can run in the calling process. Unset it to continue."
+        );
+    }
+    Ok(())
+}
+
+/// The removed setting [`refuse_removed_settings`] turns away.
+const NO_SERVER: &str = "PAMIN_NO_SERVER";
 
 /// Reads standard input into the one argument that takes it.
 fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {
