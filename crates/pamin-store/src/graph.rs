@@ -154,92 +154,6 @@ const FIND_RELATIONSHIP: &str = "SELECT id, created_at FROM relationships
                                  WHERE project_id = $1 AND from_topic = $2
                                    AND to_topic = $3 AND kind = $4";
 
-/// The same lookup, locking the row it finds.
-///
-/// [`assert_within`] is about to append a version under that identity, and the
-/// lock used to be a second statement: the same row read again by id, for
-/// nothing but `FOR UPDATE`. Two round trips where the work is one. Taking it
-/// in the lookup is also the stricter order -- the old form read the row and
-/// *then* locked it, so the read was outside the lock it exists to be inside.
-///
-/// Derived from the constant above rather than written out, so the two cannot
-/// drift into asking different questions. The unlocked form stays public: a
-/// lookup is a lookup, and `FOR UPDATE` outside a transaction locks a row for
-/// no longer than the statement.
-const LOCK_RELATIONSHIP: &str = concat!(
-    "SELECT id, created_at FROM relationships
-                                 WHERE project_id = $1 AND from_topic = $2
-                                   AND to_topic = $3 AND kind = $4",
-    " FOR UPDATE"
-);
-
-/// Returns the edge identity for this pair and kind, creating it if absent.
-///
-/// One identity per (pair, kind): two topics can be related several ways at
-/// once, and each way carries its own history.
-/// Takes a connection rather than any executor because it uses it twice, and a
-/// pooled connection is not something that can be handed out twice.
-///
-/// Private: `assert_within` is the only caller, and the lock the lookup takes
-/// only means anything inside that transaction.
-async fn ensure_relationship(
-    connection: &mut sqlx::PgConnection,
-    project: ProjectId,
-    from: TopicId,
-    to: TopicId,
-    kind: EdgeKind,
-) -> Result<Relationship> {
-    // Read first: an edge is created once and re-asserted on every rewrite of
-    // the memory that derives it, so the insert is the rare path. See
-    // `repository::ensure_project` for why the conflict clause does not update.
-    if let Some(relationship) =
-        locked_relationship(&mut *connection, project, from, to, kind).await?
-    {
-        return Ok(relationship);
-    }
-
-    let inserted = sqlx::query(
-        "INSERT INTO relationships
-             (id, project_id, from_topic, to_topic, kind, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (project_id, from_topic, to_topic, kind) DO NOTHING
-         RETURNING id, created_at",
-    )
-    .bind(RelationshipId::new().0)
-    .bind(project.0)
-    .bind(from.0)
-    .bind(to.0)
-    .bind(kind.label())
-    .bind(OffsetDateTime::now_utc())
-    .fetch_optional(&mut *connection)
-    .await?;
-
-    let row = match inserted {
-        Some(row) => row,
-        // Another writer created it in between, and it has to be locked here
-        // too: this is the path where two writers raced, which is exactly when
-        // the lock matters.
-        None => {
-            sqlx::query(LOCK_RELATIONSHIP)
-                .bind(project.0)
-                .bind(from.0)
-                .bind(to.0)
-                .bind(kind.label())
-                .fetch_one(&mut *connection)
-                .await?
-        }
-    };
-
-    Ok(Relationship {
-        id: row.get::<uuid::Uuid, _>("id").into(),
-        project_id: project,
-        from_topic: from,
-        to_topic: to,
-        kind,
-        created_at: row.get("created_at"),
-    })
-}
-
 /// Loads the version of an edge currently believed, if any.
 pub async fn live_version(
     executor: impl PgExecutor<'_>,
@@ -296,29 +210,23 @@ pub async fn assert_edge(
     to: TopicId,
     claim: &EdgeClaim,
 ) -> Result<Assertion> {
-    // Through the batched read with one edge in it, so that "would this claim
-    // change anything" has one implementation. It had two, and the one on this
-    // path was the one no test measured.
-    if let Some(unchanged) = live_versions_of(pool, project, &[(from, to, claim.clone())])
+    // Through the batch with one edge in it, so that deciding and writing an
+    // edge each have one implementation. Deciding had two once, and the one on
+    // this path was the one no test measured. One edge costs the same
+    // statements either way.
+    Ok(assert_edges(pool, project, &[(from, to, claim.clone())])
         .await?
-        .remove(&(from, to, claim.kind))
-        .filter(|version| claim.matches(version))
-    {
-        return Ok(Assertion::Unchanged(unchanged));
-    }
-
-    let mut transaction = pool.begin().await?;
-    let asserted = assert_within(&mut transaction, project, from, to, claim).await?;
-    transaction.commit().await?;
-    Ok(asserted)
+        .pop()
+        .expect("one edge asked about, one answered"))
 }
 
 /// Asserts several edges in one transaction.
 ///
 /// Deriving the edges of one memory means asserting every topic it names, and
 /// a transaction each meant four to six round trips per edge plus a commit.
-/// Here they share one, so the cost of a write grows with the number of names
-/// in it rather than with that number times the depth of the protocol.
+/// Here they share one transaction and its statements: the identities are
+/// created, locked, read and written a statement each for the whole batch, so
+/// a cascade round restating sixty-four memories costs what one edge does.
 ///
 /// Atomic as well as cheaper, which is the more important half: a memory's
 /// derived edges are one statement about what it says, and a crash partway
@@ -353,10 +261,11 @@ pub async fn assert_edges(
 
     if !pending.is_empty() {
         let mut transaction = pool.begin().await?;
-        for index in pending {
-            let (from, to, claim) = &edges[index];
-            asserted[index] =
-                Some(assert_within(&mut transaction, project, *from, *to, claim).await?);
+        for round in repeats_apart(edges, pending) {
+            let written = assert_within(&mut transaction, project, edges, &round).await?;
+            for (index, assertion) in round.into_iter().zip(written) {
+                asserted[index] = Some(assertion);
+            }
         }
         transaction.commit().await?;
     }
@@ -433,69 +342,255 @@ async fn live_versions_of(
         .collect())
 }
 
+/// Splits the edges to write into rounds in which no edge appears twice.
+///
+/// Asserting one edge twice in a call is the same as asserting it in two:
+/// the second claim is decided against the version the first one wrote. A
+/// statement cannot read its own writes, so a repeat waits for the next round,
+/// under the lock the first round already took. Every round after the first
+/// holds only repeats, and a call without any has one round.
+fn repeats_apart(edges: &[(TopicId, TopicId, EdgeClaim)], pending: Vec<usize>) -> Vec<Vec<usize>> {
+    let mut rounds: Vec<Vec<usize>> = Vec::new();
+    let mut seen: HashMap<(TopicId, TopicId, EdgeKind), usize> = HashMap::new();
+    for index in pending {
+        let (from, to, claim) = &edges[index];
+        let times = seen.entry((*from, *to, claim.kind)).or_default();
+        if rounds.len() == *times {
+            rounds.push(Vec::new());
+        }
+        rounds[*times].push(index);
+        *times += 1;
+    }
+    rounds
+}
+
+/// The versions [`assert_within`] appends, a column each, as its last
+/// statement unnests them.
+#[derive(Default)]
+struct Appending {
+    /// Where each sits among the edges asked about.
+    at: Vec<usize>,
+    id: Vec<uuid::Uuid>,
+    relationship: Vec<uuid::Uuid>,
+    supersedes: Vec<Option<uuid::Uuid>>,
+    valid_from: Vec<Option<OffsetDateTime>>,
+    valid_to: Vec<Option<OffsetDateTime>>,
+    caused_by: Vec<Option<uuid::Uuid>>,
+    confidence: Vec<f32>,
+    derivation: Vec<&'static str>,
+    from: Vec<uuid::Uuid>,
+    to: Vec<uuid::Uuid>,
+    kind: Vec<&'static str>,
+}
+
+/// Asserts these edges -- no two the same -- inside the caller's transaction,
+/// answering in the order of `indices`.
+///
+/// Four statements however many edges there are, each one the step the
+/// single-edge protocol took per edge:
+///
+/// 1. **Create the identities that are missing.** `ON CONFLICT DO NOTHING`, so
+///    one another writer created in the meantime is left to it; an inserted
+///    row is held by this transaction until it ends.
+/// 2. **Lock every identity, in one order.** A separate statement because the
+///    first cannot lock what it did not insert: a row another writer committed
+///    after it began is invisible to it, and conflicting with a row is not
+///    holding it. Sorted, and the inserts before it sorted the same way, so
+///    two writers asserting overlapping edges take them in the same order and
+///    cannot deadlock -- which, one edge at a time in the caller's order, they
+///    could.
+/// 3. **Read the live versions.** A statement of its own, begun after the lock
+///    was granted: a statement reads with the snapshot it began with, so one
+///    that waited for a lock inside itself would decide against what it saw
+///    before the wait.
+/// 4. **Close what is superseded and append the new versions,** numbered from
+///    the maximum of each edge's own key in the same statement -- which also
+///    began after the lock. Skipped when every claim was already live.
+///
+/// Whether a claim changes anything is decided here, in Rust, by
+/// [`EdgeClaim::matches`], rather than in SQL: the same comparison
+/// [`assert_edges`] made before the transaction, so the two cannot disagree
+/// about what "unchanged" means.
 async fn assert_within(
     transaction: &mut sqlx::PgTransaction<'_>,
     project: ProjectId,
-    from: TopicId,
-    to: TopicId,
-    claim: &EdgeClaim,
-) -> Result<Assertion> {
-    // Locked by the lookup inside this, so the version append below is
-    // serialised against another writer asserting the same edge.
-    let relationship = ensure_relationship(transaction, project, from, to, claim.kind).await?;
-
-    let live = live_version(&mut **transaction, relationship.id).await?;
-    if let Some(existing) = live.as_ref().filter(|version| claim.matches(version)) {
-        // Re-deriving the same edge from unchanged content must not stack
-        // versions, or every rewrite of a memory would grow the ledger.
-        return Ok(Assertion::Unchanged(existing.clone()));
-    }
-
+    edges: &[(TopicId, TopicId, EdgeClaim)],
+    indices: &[usize],
+) -> Result<Vec<Assertion>> {
+    let from: Vec<uuid::Uuid> = indices.iter().map(|&i| edges[i].0.0).collect();
+    let to: Vec<uuid::Uuid> = indices.iter().map(|&i| edges[i].1.0).collect();
+    let kinds: Vec<&'static str> = indices.iter().map(|&i| edges[i].2.kind.label()).collect();
     let now = OffsetDateTime::now_utc();
-    if let Some(previous) = live.as_ref() {
-        sqlx::query(
-            "UPDATE relationship_versions
-             SET invalidated_at = $2, tombstone_reason = $3
-             WHERE id = $1",
-        )
-        .bind(previous.id.0)
-        .bind(now)
-        .bind(TombstoneReason::Superseded.label())
-        .execute(&mut **transaction)
-        .await?;
-    }
 
-    let row = sqlx::query(concat!(
-        "INSERT INTO relationship_versions (
-             id, project_id, relationship_id, version, valid_from, valid_to,
-             created_at, supersedes, caused_by_topic_state, confidence, derivation,
-             from_topic, to_topic, kind
-         )
-         SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13
-         FROM relationship_versions WHERE project_id = $2 AND relationship_id = $3
-         RETURNING ",
-        version_columns!()
-    ))
-    .bind(RelationshipVersionId::new().0)
+    sqlx::query(
+        "INSERT INTO relationships (id, project_id, from_topic, to_topic, kind, created_at)
+         SELECT id, $1, from_topic, to_topic, kind, $2
+           FROM unnest($3::uuid[], $4::uuid[], $5::uuid[], $6::text[])
+             AS wanted(id, from_topic, to_topic, kind)
+          ORDER BY from_topic, to_topic, kind
+         ON CONFLICT (project_id, from_topic, to_topic, kind) DO NOTHING",
+    )
     .bind(project.0)
-    .bind(relationship.id.0)
-    .bind(claim.validity.from)
-    .bind(claim.validity.to)
     .bind(now)
-    .bind(live.as_ref().map(|version| version.id.0))
-    .bind(claim.caused_by_topic_state.map(|id| id.0))
-    .bind(claim.confidence)
-    .bind(claim.derivation.label())
-    // The identity's own, copied so a walk can read a topic's strongest live
-    // edges from one index. See `V13__edge_endpoints_on_versions.sql`.
-    .bind(relationship.from_topic.0)
-    .bind(relationship.to_topic.0)
-    .bind(relationship.kind.label())
-    .fetch_one(&mut **transaction)
+    .bind(
+        indices
+            .iter()
+            .map(|_| RelationshipId::new().0)
+            .collect::<Vec<_>>(),
+    )
+    .bind(&from)
+    .bind(&to)
+    .bind(&kinds)
+    .execute(&mut **transaction)
     .await?;
 
-    Ok(Assertion::Appended(row_to_version(&row)))
+    let locked: HashMap<(uuid::Uuid, uuid::Uuid, String), uuid::Uuid> = sqlx::query(
+        "SELECT r.id, r.from_topic, r.to_topic, r.kind
+           FROM relationships r
+           JOIN unnest($2::uuid[], $3::uuid[], $4::text[]) AS wanted(from_topic, to_topic, kind)
+             ON r.project_id = $1 AND r.from_topic = wanted.from_topic
+            AND r.to_topic = wanted.to_topic AND r.kind = wanted.kind
+          ORDER BY r.from_topic, r.to_topic, r.kind
+            FOR UPDATE OF r",
+    )
+    .bind(project.0)
+    .bind(&from)
+    .bind(&to)
+    .bind(&kinds)
+    .fetch_all(&mut **transaction)
+    .await?
+    .iter()
+    .map(|row| {
+        (
+            (row.get("from_topic"), row.get("to_topic"), row.get("kind")),
+            row.get("id"),
+        )
+    })
+    .collect();
+    // Every identity was created or found above, so one missing now was
+    // removed in between -- its topic deleted -- which the single-edge lock
+    // reported the same way.
+    let identities: Vec<uuid::Uuid> = indices
+        .iter()
+        .map(|&i| {
+            let (from, to, claim) = &edges[i];
+            locked
+                .get(&(from.0, to.0, claim.kind.label().to_string()))
+                .copied()
+                .ok_or(sqlx::Error::RowNotFound)
+        })
+        .collect::<std::result::Result<_, _>>()?;
+
+    let live: HashMap<uuid::Uuid, RelationshipVersion> = sqlx::query(concat!(
+        "SELECT DISTINCT ON (relationship_id) ",
+        version_columns!(),
+        " FROM relationship_versions
+          WHERE relationship_id = ANY($1) AND invalidated_at IS NULL
+          ORDER BY relationship_id, version DESC"
+    ))
+    .bind(&identities)
+    .fetch_all(&mut **transaction)
+    .await?
+    .iter()
+    .map(|row| {
+        let version = row_to_version(row);
+        (version.relationship_id.0, version)
+    })
+    .collect();
+
+    // Re-deriving the same edge from unchanged content must not stack
+    // versions, or every rewrite of a memory would grow the ledger.
+    let mut asserted: Vec<Option<Assertion>> = Vec::with_capacity(indices.len());
+    let mut appending = Appending::default();
+    for (at, (&index, identity)) in indices.iter().zip(&identities).enumerate() {
+        let claim = &edges[index].2;
+        let current = live.get(identity);
+        if let Some(unchanged) = current.filter(|version| claim.matches(version)) {
+            asserted.push(Some(Assertion::Unchanged(unchanged.clone())));
+            continue;
+        }
+        asserted.push(None);
+        appending.at.push(at);
+        appending.id.push(RelationshipVersionId::new().0);
+        appending.relationship.push(*identity);
+        appending
+            .supersedes
+            .push(current.map(|version| version.id.0));
+        appending.valid_from.push(claim.validity.from);
+        appending.valid_to.push(claim.validity.to);
+        appending
+            .caused_by
+            .push(claim.caused_by_topic_state.map(|id| id.0));
+        appending.confidence.push(claim.confidence);
+        appending.derivation.push(claim.derivation.label());
+        appending.from.push(from[at]);
+        appending.to.push(to[at]);
+        appending.kind.push(kinds[at]);
+    }
+
+    if !appending.at.is_empty() {
+        let appended: HashMap<uuid::Uuid, RelationshipVersion> = sqlx::query(concat!(
+            "WITH claim AS (
+                 SELECT * FROM unnest(
+                     $3::uuid[], $4::uuid[], $5::uuid[], $6::timestamptz[], $7::timestamptz[],
+                     $8::uuid[], $9::real[], $10::text[], $11::uuid[], $12::uuid[], $13::text[]
+                 ) AS claim(id, relationship_id, supersedes, valid_from, valid_to,
+                            caused_by, confidence, derivation, from_topic, to_topic, kind)
+             ), closed AS (
+                 UPDATE relationship_versions
+                    SET invalidated_at = $2, tombstone_reason = $14
+                   FROM claim WHERE relationship_versions.id = claim.supersedes
+             )
+             INSERT INTO relationship_versions (
+                 id, project_id, relationship_id, version, valid_from, valid_to,
+                 created_at, supersedes, caused_by_topic_state, confidence, derivation,
+                 from_topic, to_topic, kind
+             )
+             SELECT claim.id, $1, claim.relationship_id,
+                    COALESCE((SELECT MAX(version) FROM relationship_versions
+                               WHERE project_id = $1
+                                 AND relationship_id = claim.relationship_id), 0) + 1,
+                    claim.valid_from, claim.valid_to, $2, claim.supersedes, claim.caused_by,
+                    claim.confidence, claim.derivation, claim.from_topic, claim.to_topic,
+                    claim.kind
+               FROM claim
+             RETURNING ",
+            version_columns!()
+        ))
+        .bind(project.0)
+        .bind(now)
+        .bind(&appending.id)
+        .bind(&appending.relationship)
+        .bind(&appending.supersedes)
+        .bind(&appending.valid_from)
+        .bind(&appending.valid_to)
+        .bind(&appending.caused_by)
+        .bind(&appending.confidence)
+        .bind(&appending.derivation)
+        // The identity's own endpoints, copied so a walk can read a topic's
+        // strongest live edges from one index. See
+        // `V13__edge_endpoints_on_versions.sql`.
+        .bind(&appending.from)
+        .bind(&appending.to)
+        .bind(&appending.kind)
+        .bind(TombstoneReason::Superseded.label())
+        .fetch_all(&mut **transaction)
+        .await?
+        .iter()
+        .map(|row| {
+            let version = row_to_version(row);
+            (version.id.0, version)
+        })
+        .collect();
+        for (at, id) in appending.at.iter().zip(&appending.id) {
+            asserted[*at] = Some(Assertion::Appended(appended[id].clone()));
+        }
+    }
+
+    Ok(asserted
+        .into_iter()
+        .map(|assertion| assertion.expect("every edge was either unchanged or appended"))
+        .collect())
 }
 
 /// Closes the derived edges of one kind out of each topic that are no longer
@@ -604,25 +699,6 @@ pub async fn find_relationship(
     kind: EdgeKind,
 ) -> Result<Option<Relationship>> {
     let row = sqlx::query(FIND_RELATIONSHIP)
-        .bind(project.0)
-        .bind(from.0)
-        .bind(to.0)
-        .bind(kind.label())
-        .fetch_optional(executor)
-        .await?;
-
-    Ok(row.map(|row| relationship_row(&row, project, from, to, kind)))
-}
-
-/// The same lookup, holding the row until the transaction ends.
-async fn locked_relationship(
-    executor: impl PgExecutor<'_>,
-    project: ProjectId,
-    from: TopicId,
-    to: TopicId,
-    kind: EdgeKind,
-) -> Result<Option<Relationship>> {
-    let row = sqlx::query(LOCK_RELATIONSHIP)
         .bind(project.0)
         .bind(from.0)
         .bind(to.0)
