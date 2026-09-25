@@ -705,13 +705,16 @@ pub enum VectorStorage {
     Int4,
     /// A bit a dimension.
     ///
-    /// Listed and not reachable: the engine refuses to train a RaBitQ
-    /// quantizer without a `raw_vector_provider`, which this binding does not
-    /// expose, so asking for it fails when the graph is built rather than
-    /// returning a worse index. Kept as a name so the refusal is recorded
-    /// where someone would look for it, and because it is the one storage
-    /// whose codes are small enough to change the disk answer -- see
-    /// `index_params`.
+    /// Listed and not reachable: asking for it fails when the graph is built,
+    /// with the engine refusing to train a RaBitQ quantizer without a
+    /// `raw_vector_provider`. That message names the wrong gap. The index that
+    /// pairs a graph with RaBitQ, `HNSW_RABITQ`, is not in the engine's C API
+    /// at all -- `zvec_index_params_create` has no case for it and hands back
+    /// Flat parameters, without an error, for any type it does not list -- so
+    /// no binding of that API can reach it, provider or not. The RaBitQ that
+    /// is reachable is `IndexParams::ivf_rabitq`, an IVF index rather than a
+    /// graph. Kept as a name so the refusal is recorded where someone would
+    /// look for it.
     Rabitq,
 }
 
@@ -786,10 +789,12 @@ impl VectorStorage {
         // the nearest ones, which is the exact shape ADR 0001 records from the
         // last quantization attempt.
         //
-        // Rotation needs a fitted transform, and nothing here fits one; the
-        // binding's RaBitQ path says as much out loud, refusing to train
-        // without a `raw_vector_provider`. So this stays off until something
-        // supplies that, and `scratch_quantize.rs` is what would notice.
+        // Why is not established, and it is not a missing fitted transform,
+        // which is what this comment used to say: the engine's FHT rotator is
+        // random, seeded from `std::random_device` when the quantizer is
+        // made, so there is nothing for this code to fit or supply. The
+        // likely cause is upstream. So this stays off, and
+        // `scratch_quantize.rs` is what would notice if it came back.
         Ok(IndexParams::hnsw_with_quantize(
             MetricType::Cosine,
             GRAPH_DEGREE,
