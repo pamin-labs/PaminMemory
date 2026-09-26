@@ -260,8 +260,7 @@ fn describe(why: &[Trace]) -> String {
             }
             // One word, because the fact is the whole content. A line reading
             // `vector#12 reranked` says the fused list had this twelfth and
-            // the model moved it, which is what a reader auditing a ranking
-            // wants and could not previously get from anywhere.
+            // the model scored it; the accurate tier also uses fusion's score.
             Trace::Reranked {} => "reranked".to_string(),
         })
         .collect::<Vec<_>>()
