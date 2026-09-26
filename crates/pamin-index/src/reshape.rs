@@ -496,6 +496,10 @@ impl Projection for Recording {
         self.inner.file_count()
     }
 
+    fn files_after_optimize(&self) -> u64 {
+        self.inner.files_after_optimize()
+    }
+
     /// None, for the reason [`optimize`](Self::optimize) does nothing: this
     /// index is about to be replaced, and reporting its blocks would only
     /// queue a compaction that does nothing, once a flush, until the swap.
@@ -589,6 +593,10 @@ impl Projection for Closed {
 
     fn file_count(&self) -> Result<u64> {
         self.refuse()
+    }
+
+    fn files_after_optimize(&self) -> u64 {
+        0
     }
 
     fn unmerged_blocks(&self) -> Result<u64> {
