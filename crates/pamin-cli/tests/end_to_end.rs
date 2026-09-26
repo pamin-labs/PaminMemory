@@ -1886,6 +1886,12 @@ fn catching_up_does_not_hold_a_search_up() {
         "catch_up_marker",
         "the harbour pilot boards ships at the outer buoy",
     ]);
+    cli.json(&[
+        "write",
+        "--topic",
+        "catch_up_marker_two",
+        "the harbour pilot checks the outer buoy before boarding",
+    ]);
 
     let search = || {
         let started = Instant::now();
@@ -1897,8 +1903,13 @@ fn catching_up_does_not_hold_a_search_up() {
         started.elapsed()
     };
 
-    // Loads the reranker, so that no search timed below pays for it.
+    // Two visible candidates make the pass observable; one candidate skips it.
+    // Wait for the actual load before any timed search.
     search();
+    assert!(
+        log().contains("reranker loaded"),
+        "the warm-up did not load the reranker"
+    );
 
     std::thread::scope(|scope| {
         for writer in 0..WRITERS {
