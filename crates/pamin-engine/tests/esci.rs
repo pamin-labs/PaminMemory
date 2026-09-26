@@ -50,18 +50,20 @@
 //! instead of the search path, which is the arm this corpus was added for.
 
 mod channels;
+mod harness;
 mod scoring;
 mod statistics;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
-use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Profile, Rerank, VectorIndex};
+use pamin_engine::{Depths, Engine};
+use pamin_index::{Access, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
+use harness::profile;
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// Where the rows come from.
@@ -92,8 +94,6 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
-
-const DEFAULT_PROFILE: &str = "accuracy";
 
 /// A listing's key, so this corpus cannot collide with another in one
 /// workspace.
@@ -170,7 +170,7 @@ impl Corpus {
     /// page fetched would be scored against part of its own judgements --
     /// which is a recall failure invented by the loader.
     fn load() -> Self {
-        let dir = dataset_dir();
+        let dir = harness::dataset_dir("ESCI_DIR", "esci");
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
@@ -308,19 +308,6 @@ impl Corpus {
     }
 }
 
-fn dataset_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("ESCI_DIR") {
-        return PathBuf::from(dir);
-    }
-    eval_home().join("esci")
-}
-
-fn eval_home() -> PathBuf {
-    std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"))
-}
-
 /// Fetches one page if it is not already cached.
 ///
 /// Through `curl` for the reason the other harnesses give: a dependency added
@@ -346,12 +333,6 @@ fn download(path: &Path, url: &str) {
          ESCI_DIR at a directory of cached pages."
     );
     std::fs::rename(&partial, path).expect("name the downloaded page");
-}
-
-fn profile() -> (String, Profile) {
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
-    (named, profile)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -574,47 +555,27 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
 /// enough that it matters: a run interrupted part way through embedding
 /// continues rather than starting over.
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
-    let project = engine.project;
     let mut written = 0usize;
 
     for listing in &corpus.listings {
-        let existing =
-            pamin_store::repository::find_topic(engine.database.pool(), project, &listing.key)
-                .await
-                .expect("look for the topic");
-        if existing.is_some() {
+        if !harness::write_absent(
+            engine,
+            &listing.key,
+            &listing.text,
+            &listing.locale,
+            "evaluation corpus",
+        )
+        .await
+        {
             continue;
         }
         written += 1;
-        engine
-            .write(&Write {
-                topic: &listing.key,
-                content: &listing.text,
-                content_hash: &listing.text.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "evaluation corpus",
-                promoted: true,
-                language: Some(&listing.locale),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", listing.key));
         if written.is_multiple_of(2_000) {
             println!("  wrote {written} listings");
         }
     }
 
-    let drained = engine
-        .drain_cascade(pamin_engine::Owed::Everything)
-        .await
-        .expect("drain the cascade");
-    assert_eq!(
-        drained.pending, 0,
-        "the corpus is not fully indexed: {} jobs still owed",
-        drained.pending
-    );
+    harness::drain(engine).await;
     if written > 0 {
         println!("  wrote {written} of {} listings", corpus.listings.len());
     }
