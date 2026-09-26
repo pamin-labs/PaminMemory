@@ -2609,6 +2609,40 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     );
 }
 
+#[test]
+#[ignore = "requires score CSVs from the same corpus under two code revisions"]
+fn compare_exported_rerank_scores() {
+    fn read(path: &str) -> BTreeMap<(String, String), Vec<f64>> {
+        let text = std::fs::read_to_string(path).expect("read score CSV");
+        let mut rows = BTreeMap::<(String, String), Vec<f64>>::new();
+        assert_eq!(
+            text.lines().next(),
+            Some("tier,group,query_index,ndcg_at_10")
+        );
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split(',').collect();
+            assert_eq!(fields.len(), 4, "bad score row: {line}");
+            let scores = rows
+                .entry((fields[0].to_string(), fields[1].to_string()))
+                .or_default();
+            assert_eq!(fields[2].parse::<usize>().unwrap(), scores.len());
+            scores.push(fields[3].parse().expect("nDCG score"));
+        }
+        rows
+    }
+
+    let before = read(&std::env::var("PAMIN_EVAL_BEFORE").expect("A score CSV"));
+    let after = read(&std::env::var("PAMIN_EVAL_AFTER").expect("B score CSV"));
+    for group in GROUPS {
+        let key = |tier: &str| (tier.to_string(), group.to_string());
+        assert_eq!(before[&key("off")], after[&key("off")], "different corpus");
+        println!(
+            "  {group}: {}",
+            statistics::compare(&before[&key("accurate")], &after[&key("accurate")])
+        );
+    }
+}
+
 /// What the shipped tier is worth when it is shown each candidate's topic
 /// name, and the memory the graph reached it from. See `reranking::in_context`.
 ///
