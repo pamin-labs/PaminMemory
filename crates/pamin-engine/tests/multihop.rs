@@ -48,6 +48,7 @@
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
+//! | `RERANK_RULES` | replay score blending against full-head substitution |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
 //! | `REACH` | where the supporting titles sit, channel by channel, in the names-only and shared-name projects |
@@ -463,6 +464,34 @@ async fn search_answers_questions_that_take_several_steps() {
             },
         )
         .await;
+        return;
+    }
+
+    if std::env::var("RERANK_RULES").is_ok() {
+        let tier = Rerank::default();
+        let rules = reranking::rules();
+        let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+        for query in &corpus.queries {
+            let hits = engine
+                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let replayed = reranking::replay(&hits, tier);
+            for ((_, rule), into) in rules.iter().zip(&mut measured) {
+                score(
+                    into.entry(query.group.clone()).or_default(),
+                    query,
+                    &replayed.order(*rule),
+                );
+            }
+        }
+        reranking::report(
+            &format!("rules for the {} reranker, MuSiQue, {named}", tier.name()),
+            &rules,
+            reranking::shipped(&rules),
+            &measured,
+        );
         return;
     }
 
