@@ -240,17 +240,9 @@ use crate::inference::Device;
 pub enum Rerank {
     /// Return what fusion ordered.
     ///
-    /// The right setting for a workspace whose memories are all in one
-    /// language, where there is very little for the pass to find: what it
-    /// reorders is the candidates the lexical channels missed, and across a
-    /// language boundary that is most of them.
-    ///
-    /// Not *nothing*, though, and the difference matters. The rule is "no
-    /// lexical channel found it", not "it is in another language" -- the two
-    /// agree on 93% of a shortlist but not on all of it -- so a one-language
-    /// workspace still has vector-only candidates and the pass still moves
-    /// them. On this project's own corpus the monolingual group does not
-    /// budge, but that group sits at 0.9940 where nothing could move it.
+    /// Keeps fusion's order without loading a cross-encoder.
+    /// `fast` reorders candidates no lexical channel found; `accurate` can
+    /// reorder the whole head.
     Off,
     /// A twelve-layer distilled multilingual MiniLM, 113 MB.
     ///
