@@ -206,11 +206,7 @@ const CATCH_UP_BATCH: i32 = 16;
 const CATCH_UP_BATCH_VAR: &str = "PAMIN_CATCH_UP_BATCH";
 
 fn catch_up_batch() -> i32 {
-    std::env::var(CATCH_UP_BATCH_VAR)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
-        .filter(|batch: &i32| *batch > 0)
-        .unwrap_or(CATCH_UP_BATCH)
+    pamin_core::env::positive(CATCH_UP_BATCH_VAR).unwrap_or(CATCH_UP_BATCH)
 }
 
 /// How long one tick may spend catching up, across every project.

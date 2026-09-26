@@ -103,11 +103,7 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
 /// is a performance knob, and a typo in it should not stop a search from
 /// working.
 pub(crate) fn threads() -> Option<usize> {
-    std::env::var("PAMIN_INFERENCE_THREADS")
-        .ok()?
-        .parse::<usize>()
-        .ok()
-        .filter(|threads| *threads > 0)
+    pamin_core::env::positive("PAMIN_INFERENCE_THREADS")
 }
 
 /// Where a model's forward passes run.
@@ -177,7 +173,7 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
 /// chosen over -- and report nothing; failing here lets the caller load the
 /// CPU's own export instead and record that it did.
 pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
-    if std::env::var("PAMIN_DEVICE").is_ok_and(|device| device.eq_ignore_ascii_case("cpu")) {
+    if pamin_core::env::is("PAMIN_DEVICE", "cpu") {
         return Vec::new();
     }
     vec![
