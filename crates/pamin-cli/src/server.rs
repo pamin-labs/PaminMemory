@@ -121,10 +121,15 @@ async fn maintain(session: Arc<Session>) {
     let mut catching_up = CatchingUp::default();
     loop {
         tokio::time::sleep(UPKEEP).await;
+        let tick = Instant::now();
 
         // Before the flushes, which make what it applies durable in the same
         // tick rather than the next.
         catching_up.run(&session).await;
+        tracing::debug!(
+            seconds = tick.elapsed().as_secs_f64(),
+            "catch-up stage finished"
+        );
 
         // After the per-project work rather than before: flushing is what
         // turns a write's claim into a completion, and closing an index that
@@ -144,16 +149,28 @@ async fn maintain(session: Arc<Session>) {
                 // next tick rather than this loop waiting for it.
                 continue;
             };
+            let flush = Instant::now();
             match engine.flush_what_is_applied().await {
                 Ok(0) => {}
                 Ok(durable) => tracing::debug!(durable, "made applied writes durable"),
                 Err(error) => tracing::warn!(%error, "flushing applied writes failed"),
             }
+            tracing::debug!(
+                ?key,
+                seconds = flush.elapsed().as_secs_f64(),
+                "flush stage finished"
+            );
+            let upkeep = Instant::now();
             match engine.maintain().await {
                 Ok(true) => tracing::debug!("ran index upkeep"),
                 Ok(false) => {}
                 Err(error) => tracing::warn!(%error, "index upkeep failed"),
             }
+            tracing::debug!(
+                ?key,
+                seconds = upkeep.elapsed().as_secs_f64(),
+                "index upkeep stage finished"
+            );
             // Beside the loop rather than in it: a reshape takes minutes, and
             // every other project's flushes wait on this loop -- a claim held
             // past its lease is replayed.
@@ -162,7 +179,12 @@ async fn maintain(session: Arc<Session>) {
 
         // The engines above are dropped by now, so a project that has gone
         // quiet can be closed and the weights it was pinning given back.
+        let sweep = Instant::now();
         let (engines, embedders, rerankers) = session.close_what_is_idle();
+        tracing::debug!(
+            seconds = sweep.elapsed().as_secs_f64(),
+            "idle sweep finished"
+        );
         // And an index the open-index bound closed since the last tick. It was
         // closed inside a request, which is no place to wait on the allocator.
         let evicted = session.take_evicted();
@@ -176,6 +198,10 @@ async fn maintain(session: Arc<Session>) {
             );
             trim_heap();
         }
+        tracing::debug!(
+            seconds = tick.elapsed().as_secs_f64(),
+            "upkeep tick finished"
+        );
     }
 }
 
