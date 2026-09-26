@@ -77,18 +77,19 @@
 
 mod channels;
 mod features;
+mod harness;
 mod memory;
 mod reranking;
 mod scoring;
 mod statistics;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
-use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile, Rerank, VectorIndex};
+use pamin_engine::{Depths, Engine};
+use pamin_index::{Access, Embedder, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -106,6 +107,7 @@ const QRELS: &str = "https://huggingface.co/datasets/miracl/miracl/resolve/main/
 const CORPUS: &str = "https://huggingface.co/datasets/miracl/miracl-corpus/resolve/main/\
                       miracl-corpus-v1.0-sw/docs-0.jsonl.gz";
 
+use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// How deep a ranking is taken before scoring, so recall@50 can be reached.
@@ -116,9 +118,6 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
-
-/// The profile the floors were measured against, and the product default.
-const DEFAULT_PROFILE: &str = "accuracy";
 
 /// The one group. MIRACL has no split inside a language and inventing one
 /// would be reporting a number nobody else reports.
@@ -168,7 +167,7 @@ struct Corpus {
 
 impl Corpus {
     fn load() -> Self {
-        let dir = dataset_dir();
+        let dir = harness::dataset_dir("MIRACL_DIR", "miracl-sw");
         fetch(&dir);
 
         let cap = std::env::var("MIRACL_MAX_DOCS")
@@ -271,20 +270,6 @@ impl Corpus {
             }
         );
     }
-}
-
-/// Where the dataset lives.
-fn dataset_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("MIRACL_DIR") {
-        return PathBuf::from(dir);
-    }
-    eval_home().join("miracl-sw")
-}
-
-fn eval_home() -> PathBuf {
-    std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"))
 }
 
 /// Downloads the three files that are not there yet.
@@ -417,12 +402,6 @@ fn assert_floors(named: &str, corpus: &Corpus, scores: &Scores, floors: (f64, f6
         "{GROUP} recall@{RECALL_AT} fell to {:.4}, below the {recall:.4} floor",
         scores.mean_recall()
     );
-}
-
-fn profile() -> (String, Profile) {
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).expect("a known profile");
-    (named, profile)
 }
 
 // ---------------------------------------------------------------------------
@@ -1454,32 +1433,21 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     let mut written = 0usize;
 
     for passage in &corpus.passages {
-        let existing =
-            pamin_store::repository::find_topic(engine.database.pool(), project, &passage.docid)
-                .await
-                .expect("look for the topic");
-        if existing.is_some() {
+        // The dataset's own language, as the other harness does it: `pamin
+        // write` takes this from `detect_language`, and nothing reads the
+        // column today.
+        if !harness::write_absent(
+            engine,
+            &passage.docid,
+            &passage.text,
+            "sw",
+            "monolingual evaluation corpus",
+        )
+        .await
+        {
             continue;
         }
         written += 1;
-        engine
-            .write(&Write {
-                topic: &passage.docid,
-                content: &passage.text,
-                content_hash: &passage.text.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "monolingual evaluation corpus",
-                promoted: true,
-                // The dataset's own language, as the other harness does it:
-                // `pamin write` takes this from `detect_language`, and nothing
-                // reads the column today.
-                language: Some("sw"),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", passage.docid));
 
         if written.is_multiple_of(5_000) {
             println!("  wrote {written} passages");
