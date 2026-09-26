@@ -1298,12 +1298,16 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
     // What the allocator holds after it was freed: glibc keeps freed memory in
     // per-thread arenas, and the difference trimming makes is memory the
     // process holds and does not use.
+    #[cfg(target_os = "linux")]
     unsafe extern "C" {
         fn malloc_trim(pad: usize) -> i32;
     }
     // SAFETY: glibc's own function, no arguments that point anywhere.
-    unsafe { malloc_trim(0) };
-    memory::Resident::now().print("after malloc_trim(0)");
+    #[cfg(target_os = "linux")]
+    {
+        unsafe { malloc_trim(0) };
+        memory::Resident::now().print("after malloc_trim(0)");
+    }
 }
 
 /// Reshapes the index while it is open, and asks every question before and
