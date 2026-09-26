@@ -121,15 +121,7 @@ fn default_tier() -> Rerank {
 }
 
 fn open_indexes() -> usize {
-    parse_open_indexes(std::env::var(OPEN_INDEXES_VAR).ok().as_deref())
-}
-
-/// Split from the lookup so it can be tested without setting a variable the
-/// rest of the process shares.
-fn parse_open_indexes(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|count| *count > 0)
-        .unwrap_or(OPEN_INDEXES)
+    pamin_core::env::positive(OPEN_INDEXES_VAR).unwrap_or(OPEN_INDEXES)
 }
 
 impl Session {
@@ -403,30 +395,5 @@ impl Session {
                 )
             })
             .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{OPEN_INDEXES, parse_open_indexes};
-
-    #[test]
-    fn a_smaller_machine_can_ask_for_fewer_open_indexes() {
-        assert_eq!(parse_open_indexes(Some("4")), 4);
-        assert_eq!(parse_open_indexes(Some("  4 ")), 4);
-    }
-
-    #[test]
-    fn anything_that_is_not_a_count_leaves_the_default_alone() {
-        // Zero would evict whatever was just opened, and a long-running server
-        // that refuses to start over a typo in an environment variable has
-        // failed worse than one that ignores it.
-        for raw in [None, Some(""), Some("0"), Some("-1"), Some("lots")] {
-            assert_eq!(
-                parse_open_indexes(raw),
-                OPEN_INDEXES,
-                "{raw:?} should not have changed the bound"
-            );
-        }
     }
 }
