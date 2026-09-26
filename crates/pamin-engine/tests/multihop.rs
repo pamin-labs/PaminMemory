@@ -532,6 +532,18 @@ async fn search_answers_questions_that_take_several_steps() {
             statistics::compare(&scores.per_query, &graphless[group].per_query)
         );
     }
+    if let Some(work) = engine.reranked(Rerank::default()) {
+        println!(
+            "  both arms: {} scored pairs, {} tokens, {} padded tokens, {} batches; \
+             encoding {:.1} ms, padding + inference {:.1} ms",
+            work.scored,
+            work.tokens,
+            work.padded_tokens,
+            work.batches,
+            work.encode_us as f64 / 1_000.0,
+            work.forward_us as f64 / 1_000.0,
+        );
+    }
     println!();
 
     // What this corpus exists to show. First read at 1,000 two-hop questions:
