@@ -469,6 +469,11 @@ ranking internals it has no way to evaluate.
 `--rerank` chooses how much to spend reordering the results, and takes
 `PAMIN_RERANK`:
 
+The table below is a historical comparison, measured before the corrected
+XQuAD-R same-language key and the current full-head `accurate` pass. Its
+same-language and latency figures do not describe the current path. The
+current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+
 | | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|
 | `off` | nothing | 99 ms | 0.6114 | 0.7829 |
@@ -505,15 +510,15 @@ four cores, for a query the server has not been asked before. A resident
 server remembers a query's vector, so asking the same thing twice costs the
 16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
 
-`accurate` is the default, on accuracy: it is the best tier on every corpus
-measured, and query by query against `fast` it is ahead by 0.0086 cross-lingual
+`accurate` is the default, on accuracy. In the historical comparison above,
+query by query against `fast` it was ahead by 0.0086 cross-lingual
 (`p = 0.0015`) and 0.0066 same-language (`p = 0.0001`) on XQuAD-R, and by
 0.0411 on MIRACL Swahili (83 queries better, 12 worse, `p = 0.0001`). What that
 costs is the latency column: 1522 ms against `fast`'s 359, about a quarter of
 the throughput, and 571 MB loaded against 119.
 
-`fast` was the default until it was measured against that order, and it is
-**the only tier that measurably damages same-language ranking** — −0.0060 at
+`fast` was the default until it was measured against that order. Under the
+historical same-language key, it lost −0.0060 at
 `p = 0.0008`, nineteen queries worse against three better, and on MIRACL at the
 `speed` profile −0.0154 against no reranking at all (35 better, 58 worse,
 `p = 0.014`). Ask for it when a search has to stay under half a second and the
@@ -548,21 +553,16 @@ arena growth above that stays. A workspace that sets `off` never pays it at
 all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
 and its resident cost has not been taken on its own.
 
-A reranker reads the query and a memory together, which is what lets it correct
-an order the channels got wrong, and what makes it cost a forward pass for
-every candidate it looks at. Only the candidates no lexical channel found are
-reordered, and only into the positions they already hold — so a memory that
-shares words with your query comes back where it was, whatever the reranker
-thought of it. That is why the same-language column moves by thousandths rather
-than by the hundredths the cross-lingual column moves. It does not hold the
-column still: a same-language answer the lexical channels happened to miss is
-an unlexical candidate like any other, and reordering can carry it down.
+A reranker reads the query and a memory together, which lets it correct an
+order the channels got wrong and costs a forward pass for every candidate it
+sees. `accurate` scores the entire fused head, including lexical hits, then
+blends its scores with fusion's. `fast` still reorders only candidates that no
+lexical channel found. Both tiers can also see strong graph-only candidates
+below the head.
 
-On a workspace in one language there are fewer such candidates, so there is
-less for the pass to do -- but less is not nothing. On MIRACL, one language
-throughout, `accurate` is still worth +0.0257 over `off` (67 queries better, 19
-worse, `p = 0.0001`, `speed` profile); it is `fast` that is worth less than
-nothing there.
+On the earlier confined pass, MIRACL's single-language corpus measured
+`accurate` at +0.0257 over `off` (67 queries better, 19 worse, `p = 0.0001`,
+`speed` profile). The full-head pass has not been measured on MIRACL yet.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
@@ -762,23 +762,20 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 `derived_from` and `part_of` the direction *is* the claim, so it is stated
 rather than left to be inferred.
 
-**`reranked`** — the cross-encoder decided this result's position, and fusion
-did not. The example above carries no such entry, and correctly: a lexical
-channel found that result, so the pass left it where fusion put it. It carries nothing else, and the omission is the design rather than a
-shortcut: a cross-encoder's score is calibrated against nothing, so it
+**`reranked`** — the cross-encoder scored this result. With `accurate`, the
+result's position comes from its model score blended with fusion; with `fast`,
+the model orders the selected candidates. A result without this entry was not
+shown to the model. The entry carries no score on the wire: a cross-encoder's
+score is calibrated against nothing, so it
 separates the candidates of one shortlist and means nothing between two
 queries, and a number on the wire invites exactly the comparison it cannot
 support.
 
-What it does tell you is the part nothing exposed before. A result **with** this
-entry was reordered by the model. A result **without** it holds the place
-fusion gave it — either a lexical channel found it, so the pass deliberately
-left it alone, or it sat below the tier's depth and the model never saw it. So a
-line reading `vector#12 reranked` says the fused list had this twelfth and the
-model moved it, and a line reading `lexical_segmented#3 vector#7` says the two
-channels agreed and no model was consulted. Auditing a ranking needs that
-distinction, and before this it was not derivable from anything the command
-returned. `--rerank off` produces no entries of this kind at all.
+The entry distinguishes scored from unscored results; it does not claim that
+the model alone set the final order or that the position changed. A line
+reading `vector#12 reranked` says the model scored that candidate. A line
+without `reranked` was not scored, whether it came from a lexical channel or
+fell below the selected depth. `--rerank off` produces no such entries.
 
 There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance

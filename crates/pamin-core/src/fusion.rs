@@ -179,15 +179,12 @@ pub enum Why {
         edge: EdgeKind,
         derivation: Derivation,
     },
-    /// A reranker scored this result and put it where it is.
+    /// A reranker scored this result.
     ///
     /// Present only on the candidates that reached the model, which is the
-    /// part of a search's explanation that was missing: every channel wrote
-    /// down what it scored a candidate, and the one score that decided the
-    /// final order was computed and thrown away. A result with no entry of
-    /// this kind was not reranked -- either a lexical channel found it, or it
-    /// sat below the tier's depth -- and that distinction is readable from the
-    /// absence.
+    /// part of a search's explanation that was missing. The accurate tier
+    /// blends this score with fusion, while fast orders only its selected
+    /// candidates. No entry means the model did not score the result.
     ///
     /// **Never comparable across queries**, for the same reason the channel
     /// score above is not: a cross-encoder's logit is calibrated against

@@ -13,7 +13,7 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 - Preserves raw evidence and source spans as the authority behind memory.
 - Tracks versioned memories so current, stale, contradicted, and historical facts can be separated.
-- Combines lexical matching, semantic recall, relationship structure, and a reranking pass over what the lexical channels missed.
+- Combines lexical matching, semantic recall, relationship structure, and tier-specific reranking of the fused candidates.
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
 
@@ -243,6 +243,10 @@ the conditions they were taken under are in
 systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
 under [benchmarks/results/](benchmarks/results).
+
+These are published baseline measurements. The `accurate` tier now scores the
+whole fused head and blends model and fusion scores; its current accuracy and
+latency are being evaluated in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
 
 | | | measured on |
 | --- | --- | --- |
