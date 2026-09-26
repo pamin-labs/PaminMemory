@@ -4,7 +4,7 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -471,11 +471,14 @@ impl Models {
     /// actually decides this is therefore the engine registry closing its idle
     /// entries first; this is the second half of that, and on its own it
     /// releases nothing.
+    /// A model still loading is not idle; skip this tick rather than block
+    /// the server's upkeep on its registry lock.
     pub fn release_idle_embedders(&self) -> Vec<Profile> {
-        let mut loaded = self
-            .loaded
-            .lock()
-            .expect("the model registry lock is poisoned");
+        let mut loaded = match self.loaded.try_lock() {
+            Ok(loaded) => loaded,
+            Err(TryLockError::WouldBlock) => return Vec::new(),
+            Err(TryLockError::Poisoned(_)) => panic!("the model registry lock is poisoned"),
+        };
 
         let now = Instant::now();
         let idle: Vec<Profile> = loaded
@@ -503,11 +506,13 @@ impl Models {
     /// that case. Dropping the registry's handle while a search holds its own
     /// would not free anything, it would only make the next search load a
     /// second copy alongside the first, which is the opposite of the point.
+    /// A model still loading is not idle; the next upkeep tick can retry.
     pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
-        let mut rerankers = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned");
+        let mut rerankers = match self.rerankers.try_lock() {
+            Ok(rerankers) => rerankers,
+            Err(TryLockError::WouldBlock) => return Vec::new(),
+            Err(TryLockError::Poisoned(_)) => panic!("the reranker registry lock is poisoned"),
+        };
 
         let now = Instant::now();
         let idle: Vec<Rerank> = rerankers
@@ -2571,6 +2576,35 @@ mod tests {
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    #[test]
+    fn idle_sweep_skips_registries_while_a_model_load_holds_them() {
+        use std::sync::mpsc;
+
+        let models = super::Models {
+            dir: std::path::PathBuf::new(),
+            loaded: std::sync::Arc::default(),
+            rerankers: std::sync::Arc::default(),
+        };
+
+        let embedder_load = models.loaded.lock().unwrap();
+        let (sent, received) = mpsc::channel();
+        let sweeping = models.clone();
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedders()));
+        let embedder_result = received.recv_timeout(Duration::from_secs(1));
+        drop(embedder_load);
+        worker.join().unwrap().unwrap();
+        assert_eq!(embedder_result.unwrap(), Vec::<pamin_index::Profile>::new());
+
+        let reranker_load = models.rerankers.lock().unwrap();
+        let (sent, received) = mpsc::channel();
+        let sweeping = models.clone();
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_rerankers()));
+        let reranker_result = received.recv_timeout(Duration::from_secs(1));
+        drop(reranker_load);
+        worker.join().unwrap().unwrap();
+        assert_eq!(reranker_result.unwrap(), Vec::<Rerank>::new());
+    }
 
     /// The reranker reads a candidate under its name, and a graph arrival with
     /// the memory it was reached from -- the sentence that makes it relevant.
