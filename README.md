@@ -266,8 +266,8 @@ vectors under `--vector-index memory` by default, an in-memory graph that on
 MIRACL's passages holds 320 MB resident where the fp32 graph held 575 MB, at
 the same recall. `--vector-index disk` keeps a DiskANN graph on disk and holds
 34 MB, but it takes more disk (618 MB against 328), makes a whole search about
-5% slower, builds far more slowly, and spends minutes of `optimize` after
-every working drain where `memory` spends about a second -- which is why it is
+5% slower, builds far more slowly, and spends minutes on each `optimize` upkeep
+runs after writes where `memory` spends about a second -- which is why it is
 the choice for a project whose memory is scarce rather than the default. What each costs is
 in [docs/measured.md](docs/measured.md) and [docs/cli.md](docs/cli.md).
 

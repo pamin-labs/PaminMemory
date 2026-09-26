@@ -728,7 +728,10 @@ fn rewriting_the_same_memories_leaves_a_bounded_number_of_files() {
             .expect("upsert");
         index.flush().expect("flush");
 
-        if pamin_index::is_fragmented(index.file_count().expect("count files")) {
+        if pamin_index::is_fragmented(
+            index.file_count().expect("count files"),
+            index.files_after_optimize(),
+        ) {
             index.optimize().expect("optimize");
         }
     }
@@ -742,6 +745,48 @@ fn rewriting_the_same_memories_leaves_a_bounded_number_of_files() {
         index.document_count().expect("documents"),
         10,
         "the files were compacted away along with the memories"
+    );
+}
+
+/// What `optimize` left is what the file trigger measures growth from.
+///
+/// Zero until it has run, so a freshly opened index is held to the budget
+/// alone, and then the count the directory held when it finished. Unrecorded,
+/// the trigger is the budget alone again -- which asked an index that stays
+/// above the budget for another `optimize` after every drain that did work.
+#[test]
+fn optimize_records_how_many_files_it_left() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let index = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        VectorIndex::default(),
+        Access::ReadWrite,
+        0,
+    )
+    .expect("open index");
+    assert_eq!(index.files_after_optimize(), 0, "nothing has optimized it");
+
+    for round in 0..20u128 {
+        index
+            .upsert(numbered(round), &format!("memory {round}"), &stub())
+            .expect("upsert");
+        index.flush().expect("flush");
+    }
+    index.optimize().expect("optimize");
+    let left = index.file_count().expect("count files");
+    assert!(left > 0, "an optimized index is still some files");
+    assert_eq!(index.files_after_optimize(), left);
+
+    index
+        .upsert(numbered(20), "one more memory", &stub())
+        .expect("upsert");
+    index.flush().expect("flush");
+    assert_eq!(
+        index.files_after_optimize(),
+        left,
+        "a flush grows the directory, not the floor"
     );
 }
 

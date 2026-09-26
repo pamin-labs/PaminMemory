@@ -677,9 +677,17 @@ impl Engine {
     /// write rather than two, so this fires roughly every five and a half
     /// thousand writes instead of every sixty, and a project below that never
     /// built a graph at all. See `vector_index_lags`.
+    ///
+    /// Read beside what the last `optimize` on this index left, because an
+    /// index can stay above the budget whatever `optimize` does, and asking
+    /// again before it has grown only spends the `optimize`. See
+    /// `pamin_index::is_fragmented`.
     fn index_is_fragmented(&self) -> Result<bool> {
-        let files = crate::engine::off_the_runtime(|| self.index().file_count())?;
-        Ok(pamin_index::is_fragmented(files))
+        let (files, floor) = crate::engine::off_the_runtime(|| -> Result<(u64, u64)> {
+            let index = self.index();
+            Ok((index.file_count()?, index.files_after_optimize()))
+        })?;
+        Ok(pamin_index::is_fragmented(files, floor))
     }
 
     /// Whether enough documents sit outside the vector graph to build one.
