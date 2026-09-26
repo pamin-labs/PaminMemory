@@ -621,11 +621,7 @@ pub fn vector_index_lags(documents: u64, completeness: f32) -> bool {
 /// affected. Undocumented on purpose -- it exists so a test does not have to
 /// edit the tree.
 fn unindexed_budget() -> u64 {
-    std::env::var("PAMIN_UNINDEXED_BUDGET")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(UNINDEXED_BUDGET)
+    pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET").unwrap_or(UNINDEXED_BUDGET)
 }
 
 /// What one document in this index stands for.
@@ -864,11 +860,7 @@ const SEARCH_EFFORT: i32 = 700;
 const PAMIN_SEARCH_EFFORT: &str = "PAMIN_SEARCH_EFFORT";
 
 fn search_effort() -> i32 {
-    std::env::var(PAMIN_SEARCH_EFFORT)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|effort| *effort > 0)
-        .unwrap_or(SEARCH_EFFORT)
+    pamin_core::env::positive(PAMIN_SEARCH_EFFORT).unwrap_or(SEARCH_EFFORT)
 }
 
 impl ProjectionIndex {

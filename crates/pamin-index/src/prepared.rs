@@ -339,7 +339,7 @@ pub(crate) fn is_ready(download: &impl Download, cache_dir: &Path) -> bool {
 
 /// Whether copies are wanted at all: unless `PAMIN_PREPARED=off`.
 fn wanted() -> bool {
-    !std::env::var("PAMIN_PREPARED").is_ok_and(|value| value.eq_ignore_ascii_case("off"))
+    !pamin_core::env::is("PAMIN_PREPARED", "off")
 }
 
 /// The graph a caller loads from a settled copy: the fused one unless
@@ -615,7 +615,7 @@ fn settled(copy: &Path) -> Option<PathBuf> {
 /// `PAMIN_FUSED_ATTENTION=off`, which exists so the two can be measured
 /// against each other through the product's own load.
 fn fusion_wanted() -> bool {
-    !std::env::var("PAMIN_FUSED_ATTENTION").is_ok_and(|value| value.eq_ignore_ascii_case("off"))
+    !pamin_core::env::is("PAMIN_FUSED_ATTENTION", "off")
 }
 
 /// Fuses the attention of the complete copy in `copy`, keeps the result only

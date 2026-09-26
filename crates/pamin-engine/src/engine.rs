@@ -541,10 +541,7 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
 /// window releases a model the tick after it loads and turns every search into
 /// a model load.
 pub fn model_idle() -> Duration {
-    std::env::var(MODEL_IDLE_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
+    pamin_core::env::positive(MODEL_IDLE_VAR)
         .map(Duration::from_secs)
         .unwrap_or(MODEL_IDLE)
 }
