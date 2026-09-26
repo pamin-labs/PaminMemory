@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn a_switch_is_read_ignoring_case() {
-        const NAME: &str = "PAMIN_CORE_ENV_SWITCH_TEST";
+        const NAME: &str = "CORE_ENV_SWITCH_TEST";
         assert!(!is(NAME, "off"), "unset is not a switch");
 
         // SAFETY: nothing else in this process reads or writes this variable.
