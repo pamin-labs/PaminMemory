@@ -2528,28 +2528,28 @@ fn changing_the_vector_index_takes_a_reindex_and_reuses_every_vector() {
     ] {
         cli.run(&["write", "--topic", topic, content]);
     }
-    assert_eq!(recorded_vector_indexes(&cli), vec!["disk".to_string()]);
+    assert_eq!(recorded_vector_indexes(&cli), vec!["memory".to_string()]);
     let before = contents(&cli.json(&["search", "release train", "--limit", "1"]));
     assert_eq!(
         before,
         vec!["the release train leaves on thursdays".to_string()]
     );
 
-    let refused = cli.fails(&["--vector-index", "memory", "search", "release train"]);
+    let refused = cli.fails(&["--vector-index", "disk", "search", "release train"]);
     assert!(
-        refused.contains("disk") && refused.contains("reindex"),
+        refused.contains("memory") && refused.contains("reindex"),
         "the refusal has to name what the index is and what to run: {refused}"
     );
 
-    let rebuilt = cli.json(&["--vector-index", "memory", "reindex"]);
+    let rebuilt = cli.json(&["--vector-index", "disk", "reindex"]);
     assert_eq!(
         rebuilt["reused"], 2,
         "changing the vector index re-embedded what the old one held: {rebuilt}"
     );
-    assert_eq!(recorded_vector_indexes(&cli), vec!["memory".to_string()]);
+    assert_eq!(recorded_vector_indexes(&cli), vec!["disk".to_string()]);
     let after = contents(&cli.json(&[
         "--vector-index",
-        "memory",
+        "disk",
         "search",
         "release train",
         "--limit",
@@ -2559,7 +2559,7 @@ fn changing_the_vector_index_takes_a_reindex_and_reuses_every_vector() {
 
     let refused = cli.fails(&["search", "release train"]);
     assert!(
-        refused.contains("memory") && refused.contains("reindex"),
+        refused.contains("disk") && refused.contains("reindex"),
         "the default now has to be refused the other way: {refused}"
     );
 }
