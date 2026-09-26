@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
 use pamin_core::JobKind;
 use pamin_engine::{Engine, Owed};
-use pamin_index::{Profile, ProjectionIndex};
+use pamin_index::{Profile, ProjectionIndex, VectorIndex};
 use pamin_store::Workspace;
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
@@ -303,8 +303,8 @@ impl CatchingUp {
             // Under the profile the index was built with: nothing else will
             // open it, and no index means nothing to catch up.
             let dir = session.workspace().index_dir(owing.project);
-            let profile = match ProjectionIndex::built_for(&dir) {
-                Ok(Some(profile)) => profile,
+            let (profile, vector_index) = match ProjectionIndex::built_for(&dir) {
+                Ok(Some(built)) => built,
                 Ok(None) => continue,
                 Err(error) => {
                     tracing::warn!(project = %owing.name, %error, "reading the index's profile failed");
@@ -324,7 +324,7 @@ impl CatchingUp {
                     continue;
                 }
                 opened_one = true;
-                match session.engine(&key.0, profile).await {
+                match session.engine(&key.0, profile, vector_index).await {
                     Ok(engine) => engine,
                     Err(error) => {
                         tracing::warn!(project = %key.0, %error, "opening a project to catch up failed");
@@ -617,12 +617,15 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
     let Request {
         project,
         profile,
+        vector_index,
         call,
         ..
     } = request;
 
     let profile =
         Profile::parse(&profile).ok_or_else(|| anyhow::anyhow!("unknown profile {profile:?}"))?;
+    let vector_index = VectorIndex::parse(&vector_index)
+        .ok_or_else(|| anyhow::anyhow!("unknown vector index {vector_index:?}"))?;
 
     // Before the request, not after it: the loads are what the next search
     // would wait for, and this request is the earliest sign one is coming.
@@ -634,33 +637,33 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         session.searched_at(tier);
     }
     if !matches!(call, Call::Stop | Call::Reindex(_)) {
-        session.warm(&project, profile);
+        session.warm(&project, profile, vector_index);
     }
 
     let value = match call {
         Call::Init => json(command::init::execute(session, &project).await?)?,
         Call::Write(args) => {
-            json(command::write::execute(session, &project, profile, args).await?)?
+            json(command::write::execute(session, &project, profile, vector_index, args).await?)?
         }
         Call::Import(args) => {
-            json(command::import::execute(session, &project, profile, args).await?)?
+            json(command::import::execute(session, &project, profile, vector_index, args).await?)?
         }
         Call::Read(args) => json(command::read::execute(session, &project, args).await?)?,
         Call::Search(args) => {
-            json(command::search::execute(session, &project, profile, args).await?)?
+            json(command::search::execute(session, &project, profile, vector_index, args).await?)?
         }
         Call::Grep(args) => json(command::grep::execute(session, &project, args).await?)?,
         Call::Link(args) => json(command::link::execute(session, &project, args).await?)?,
         Call::Unlink(args) => json(command::unlink::execute(session, &project, args).await?)?,
         Call::Neighbors(args) => json(command::neighbors::execute(session, &project, args).await?)?,
         Call::Topics(args) => {
-            json(command::topics::execute(session, &project, profile, args).await?)?
+            json(command::topics::execute(session, &project, profile, vector_index, args).await?)?
         }
         Call::Reindex(args) => {
-            json(command::reindex::execute(session, &project, profile, args).await?)?
+            json(command::reindex::execute(session, &project, profile, vector_index, args).await?)?
         }
         Call::Cascade(args) => {
-            json(command::cascade::answer(session, &project, profile, args).await?)?
+            json(command::cascade::answer(session, &project, profile, vector_index, args).await?)?
         }
         Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
     };

@@ -16,6 +16,7 @@ The examples below are real output from a workspace built by the writes in
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
@@ -191,6 +192,40 @@ evaluation corpus it roughly doubles cross-lingual retrieval against
 `balanced`, matches it on same-language queries, and costs nine milliseconds.
 `balanced` is kept for those nine milliseconds and for projects already indexed
 under it; there is no other reason left to choose it.
+
+`--vector-index` chooses how a project's vectors are indexed. Both choices
+store every vector in half precision and search the same way -- the index
+proposes twice the candidates it is asked for, and those are ranked again by an
+exact cosine in full precision -- so both return the same neighbours as the
+full-precision graph did, within 0.002 of its recall. They differ in where the
+index lives and what that costs, measured over MIRACL's 131,924 passages:
+
+| | resident | disk | a vector query | a whole search | a full build | peak while building |
+| --- | --- | --- | --- | --- | --- | --- |
+| `disk` | 34 MB | 618 MB | 69-79 ms | 2,339 ms | 23 min | +1,353 MB |
+| `memory` (default) | 320 MB | 328 MB | 6-10 ms | 2,236 ms | 1.4 min | +721 MB |
+
+A whole search is the median `accurate` search over XQuAD-R's 13,014
+documents rather than MIRACL, on a shared four-core machine; the two ranked
+every question identically.
+
+`disk` keeps its graph and vectors on disk and reads them per query, which is
+why it holds almost nothing resident; it is for a project whose memory is
+scarce, and it pays for that with minutes of `optimize` after every working
+drain (about a second under `memory`). `memory`, the default, holds them
+resident, and is the faster and smaller choice everywhere else. A search spends most of a second or more in
+the reranker, so the query column is a small share of a `pamin search`; the
+build column is not small, and `disk` also pays minutes for an `optimize` after
+a few writes where `memory` pays about a second (see
+[measured.md](measured.md)). Choose `memory` for a project that is written to
+all the time, and wherever resident memory is not what is scarce.
+
+The index records which one it was built with, and changing the setting
+changes nothing about an index that exists: opening it as the other one is
+refused, naming `reindex`, as a profile change is. `pamin reindex` rebuilds it
+the new way and reuses every vector it holds. An index built before this
+choice existed stored full-precision vectors under an in-memory graph; it is
+refused the same way and moved the same way.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -1022,8 +1057,11 @@ retrieval engine replaceable and makes a breaking engine upgrade a rebuild
 rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
-Run it after changing `--profile`, or after deleting the index directory. It
-rebuilds one project — the one named by `--project` — and leaves the rest alone.
+Run it after changing `--profile` or `--vector-index`, or after deleting the
+index directory. It rebuilds one project — the one named by `--project` — and
+leaves the rest alone. An index built before the vector indexes existed stored
+fp32 vectors under an in-memory graph; it is refused with a message naming
+this command, and rebuilding it reuses every vector it holds.
 
 It is also how a grown project resizes its vector segments at once, rather
 than when the server gets to it. The index sizes them from the number of memories it holds when it is

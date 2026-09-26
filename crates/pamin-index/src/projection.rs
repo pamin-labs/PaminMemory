@@ -19,8 +19,8 @@ use pamin_core::{Scored, TopicId};
 
 use crate::embedding::Profile;
 use zvec_rust::{
-    Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts,
-    FtsQueryParams, HnswQueryParams, IndexParams, MetricType, QuantizeType, SearchQuery,
+    Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
+    FieldSchema, Fts, FtsQueryParams, HnswQueryParams, IndexParams, MetricType, SearchQuery,
 };
 
 use crate::error::{IndexError, Result};
@@ -170,6 +170,9 @@ pub trait Projection {
     /// What text this index's vectors are embedded from, which every write to
     /// it has to follow.
     fn passage(&self) -> Passage;
+
+    /// Which vector index this one was built with.
+    fn vector_index(&self) -> VectorIndex;
 }
 
 /// One document as an index holds it.
@@ -178,7 +181,8 @@ pub struct Stored {
     /// The memory's text, exactly as written. The segmented field is derived
     /// from it, so it is all a copy needs to rebuild both lexical fields.
     pub content: String,
-    /// The vector, as it was embedded under the index's [`Passage`].
+    /// The vector, as it was embedded under the index's [`Passage`] and then
+    /// stored: each component rounded to half precision (see [`crate::as_stored`]).
     pub embedding: Vec<f32>,
 }
 
@@ -187,11 +191,9 @@ pub struct ProjectionIndex {
     collection: Collection,
     segmenter: Arc<Segmenter>,
     dir: std::path::PathBuf,
-    /// How this collection's vectors are stored, so a query's refiner flag
-    /// follows the index rather than the environment: reading the variable
-    /// again at query time would let a process that changed it mid-flight ask
-    /// for a refiner that is not there.
-    storage: VectorStorage,
+    /// Which vector index this collection was built with, as its marker
+    /// records -- and so how a query asks it.
+    index: VectorIndex,
     /// What this index's vectors were embedded from. See [`Passage`].
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
@@ -663,163 +665,158 @@ const DOCUMENT_GRAIN: &str = "topic";
 /// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
 /// configuration that needs the maximum at fifty thousand has nothing left at
 /// seven million.
-/// How the stored vectors are kept.
-///
-/// The vector field is the largest thing on disk: 64.2 MB of a 116 MB index
-/// over 13,014 documents, 55% of it, against 44.7 MB for both full-text fields
-/// and 7.4 MB for the identifier column. A 1024-dimensional fp32 vector is
-/// 4 KB a document and that is most of the 64.
-///
-/// `Fp32`, and that is a measurement of the whole search rather than of the
-/// index (ADR 0001, "What else zvec-rust 0.7.2 offers"). `Int8` answers the
-/// index in about half to four-fifths of the time on MIRACL's 131,924 passages
-/// and ranked not one of 952 questions differently, but through
-/// `search_reranked` it takes 0.998 of fp32's time (p = 0.47): the index is a
-/// few milliseconds of a search the reranker spends a second or more on. And it
-/// costs 16-27% more disk and 25% more resident memory, because the refiner
-/// keeps the fp32 vectors beside the codes. A half-precision *field* would
-/// halve the vector bytes instead, but the engine's fp16 arithmetic costs
-/// recall (0.9650 against 0.9980 on the clustered vectors `recall.rs` uses),
-/// and the binding cannot write one without going around it to the C API.
-/// [`PAMIN_VECTOR_STORAGE`] stays so `crates/pamin-index/tests/recall.rs` can
-/// measure a cell without a rebuild of the world.
-///
-/// ADR 0001 records a previous attempt at this returning recall@10 of 0.000
-/// with no error and no visible symptom, under the only configuration that
-/// existed then (`Int8`, before the binding exposed rotation). That is why the
-/// storage is recorded in the profile marker: an index built one way and read
-/// another is the silent-wrong-answer shape, and the marker turns it into a
-/// message naming `pamin reindex`.
-const VECTOR_STORAGE: VectorStorage = VectorStorage::Fp32;
+const GRAPH_DEGREE: i32 = 32;
 
-/// Overrides [`VECTOR_STORAGE`], for the sweep that settles it.
+/// Which vector index a project's index is built with, and what its marker
+/// records.
 ///
-/// Deliberately undocumented: a caller has no way to evaluate it, and reading
-/// an index built under one value with another is exactly what the marker
-/// exists to refuse.
-const PAMIN_VECTOR_STORAGE: &str = "PAMIN_VECTOR_STORAGE";
-
-/// How a stored vector is kept, and what the marker records.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum VectorStorage {
-    /// Four bytes a dimension, exactly what the model produced.
-    Fp32,
-    /// Two bytes a dimension.
-    Fp16,
-    /// One byte a dimension.
-    Int8,
-    /// Half a byte a dimension.
-    Int4,
-    /// A bit a dimension.
+/// A setting (`--vector-index`, `PAMIN_VECTOR_INDEX`) with two values, because
+/// the choice is a trade between resident memory on one side and query and
+/// build time on the other that only the person running a project can make.
+/// Both store vectors in half precision and both are searched the same way:
+/// the index proposes [`RESCORE`] times the candidates asked for, with their
+/// stored vectors, and those are ranked again by an exact f32 cosine. The two
+/// differ in their index and query parameters and in nothing else. ADR 0001,
+/// "Two vector indexes, both half precision", has the measurements.
+///
+/// The marker records which one an index was built with, and an index is
+/// never searched as the other: opening one under the other is refused with a
+/// message naming `pamin reindex`, as a profile change is. Reading an index
+/// built one way as another is the silent-wrong-answer shape ADR 0001 records
+/// from the first attempt at quantization, which returned recall@10 of 0.000
+/// with no error. `pamin reindex` lends every vector the old index holds to
+/// the new one (see [`Previous`]), so changing costs a build and no embedding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum VectorIndex {
+    /// A DiskANN graph kept on disk and read per query.
     ///
-    /// Listed and not reachable: asking for it fails when the graph is built,
-    /// with the engine refusing to train a RaBitQ quantizer without a
-    /// `raw_vector_provider`. That message names the wrong gap. The index that
-    /// pairs a graph with RaBitQ, `HNSW_RABITQ`, is not in the engine's C API
-    /// at all -- `zvec_index_params_create` has no case for it and hands back
-    /// Flat parameters, without an error, for any type it does not list -- so
-    /// no binding of that API can reach it, provider or not. The RaBitQ that
-    /// is reachable is `IndexParams::ivf_rabitq`, an IVF index rather than a
-    /// graph. Kept as a name so the refusal is recorded where someone would
-    /// look for it.
-    Rabitq,
+    /// Holds almost nothing resident, for a project whose memory is scarce.
+    /// Not the default: every `optimize` after a working drain rebuilds a
+    /// great deal of the graph (114 to 310 s after 64 new documents on 25,000,
+    /// against about a second for `memory`), and upkeep issues one whenever a
+    /// drain has done work.
+    Disk,
+    /// An HNSW graph held in memory.
+    ///
+    /// The default: the fastest to query and to build, and the smallest on
+    /// disk, at the cost of holding the graph and the vectors resident --
+    /// still half what the full-precision graph held.
+    #[default]
+    Memory,
 }
 
-impl VectorStorage {
-    /// The label the profile marker carries.
+impl VectorIndex {
+    /// Both, in the order the setting documents them.
+    pub const ALL: [Self; 2] = [Self::Memory, Self::Disk];
+
+    /// The name the setting takes and the marker records.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Fp32 => "fp32",
-            Self::Fp16 => "fp16",
-            Self::Int8 => "int8",
-            Self::Int4 => "int4",
-            Self::Rabitq => "rabitq",
+            Self::Disk => "disk",
+            Self::Memory => "memory",
         }
     }
 
-    fn parse(label: &str) -> Option<Self> {
-        match label.trim() {
-            "fp32" => Some(Self::Fp32),
-            "fp16" => Some(Self::Fp16),
-            "int8" => Some(Self::Int8),
-            "int4" => Some(Self::Int4),
-            "rabitq" => Some(Self::Rabitq),
-            _ => None,
-        }
+    /// The index a name stands for, `None` for any other name -- including
+    /// what an index built before these existed records.
+    pub fn parse(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|index| index.label() == label.trim())
     }
 
-    fn quantize(self) -> Option<QuantizeType> {
-        match self {
-            Self::Fp32 => None,
-            Self::Fp16 => Some(QuantizeType::Fp16),
-            Self::Int8 => Some(QuantizeType::Int8),
-            Self::Int4 => Some(QuantizeType::Int4),
-            Self::Rabitq => Some(QuantizeType::Rabitq),
-        }
-    }
-
-    /// Whether a query should ask for the refiner.
-    ///
-    /// It rescores against a full-precision copy that exists only where the
-    /// stored vectors were quantized, and asking for one otherwise fails
-    /// outright rather than being ignored -- so this follows the storage rather
-    /// than being a setting of its own.
-    fn refines(self) -> bool {
-        self.quantize().is_some()
-    }
-
-    /// The index parameters for this storage.
-    fn index_params(self) -> Result<IndexParams> {
-        let Some(quantize) = self.quantize() else {
-            return Ok(IndexParams::hnsw(
+    /// The parameters a collection is created with.
+    fn params(self) -> Result<IndexParams> {
+        Ok(match self {
+            Self::Disk => IndexParams::diskann(
                 MetricType::Cosine,
-                GRAPH_DEGREE,
-                GRAPH_EFFORT,
-            )?);
-        };
+                DISKANN_DEGREE,
+                DISKANN_BUILD_LIST,
+                DISKANN_PQ_CHUNKS,
+            )?,
+            Self::Memory => IndexParams::hnsw(MetricType::Cosine, GRAPH_DEGREE, GRAPH_EFFORT)?,
+        })
+    }
 
-        // Rotation is left off, and that is a measurement rather than the
-        // binding's default carried through.
-        //
-        // It was on here for every quantized storage, on the reasoning that
-        // spreading the bits across dimensions that carry comparable
-        // information must help the coarse storages and could not hurt the
-        // others. Both halves of that were wrong. The engine accepts it only
-        // for int8 and int4 -- for anything else it refuses when the *segment*
-        // opens its vector field rather than when the parameters are built, so
-        // fp16 presented as a segment that would not take writes. And on the
-        // two storages that do accept it, it is ruinous: recall@10 over 50,000
-        // clustered vectors is **0.0530 with rotation and 0.9980 without** for
-        // int8, 0.0580 against 0.9990 for int4. Everything else about the two
-        // runs is equal, including the bytes on disk, and the failure is
-        // silent -- an index that returns plausible neighbours that are not
-        // the nearest ones, which is the exact shape ADR 0001 records from the
-        // last quantization attempt.
-        //
-        // Why is not established, and it is not a missing fitted transform,
-        // which is what this comment used to say: the engine's FHT rotator is
-        // random, seeded from `std::random_device` when the quantizer is
-        // made, so there is nothing for this code to fit or supply. The
-        // likely cause is upstream. So this stays off, and
-        // `scratch_quantize.rs` is what would notice if it came back.
-        Ok(IndexParams::hnsw_with_quantize(
-            MetricType::Cosine,
-            GRAPH_DEGREE,
-            GRAPH_EFFORT,
-            quantize,
-        )?)
+    /// Asks `search` for this index, wide enough for `candidates`.
+    fn ask(self, search: &mut SearchQuery, candidates: u32) -> Result<()> {
+        match self {
+            Self::Disk => search.set_diskann_params(DiskannQueryParams::new(
+                DISKANN_SEARCH_LIST.max(candidates as i32),
+            ))?,
+            Self::Memory => {
+                search.set_hnsw_params(HnswQueryParams::new(search_effort(), 0.0, false, false))?
+            }
+        }
+        Ok(())
     }
 }
 
-/// The storage this process will build and read with.
-fn vector_storage() -> VectorStorage {
-    std::env::var(PAMIN_VECTOR_STORAGE)
-        .ok()
-        .and_then(|value| VectorStorage::parse(&value))
-        .unwrap_or(VECTOR_STORAGE)
-}
+/// What a marker with no storage line records: every index built before the
+/// line existed stored its vectors as fp32.
+const LEGACY_STORAGE: &str = "fp32";
 
-const GRAPH_DEGREE: i32 = 32;
+/// How many neighbours each document keeps in the on-disk graph.
+///
+/// Sixty-four, which is where every DiskANN figure here was taken. The build
+/// is what this index costs most -- 922 to 1,024 s for 50,000 clustered
+/// 1024-dimensional vectors in four segments on a shared four-core machine,
+/// against 58 s for [`VectorIndex::Memory`] -- so a degree that recalled as
+/// much for less build would be the one to take; none was measured to.
+const DISKANN_DEGREE: i32 = 64;
+
+/// How wide the build searches to place each document in the on-disk graph.
+///
+/// One hundred. Twice that took 1,416 s rather than 922 to 1,024 over the same
+/// 50,000 vectors and recalled no more at any search width: 0.9970 against
+/// 0.9975 at 800.
+const DISKANN_BUILD_LIST: i32 = 100;
+
+/// Product-quantization chunks for in-memory navigation of the on-disk graph;
+/// zero keeps none, and every step reads full vectors from disk.
+///
+/// None. Sixty-four chunks answered in about a third of the time at the same
+/// width and recalled 0.9200 at ten and 0.8629 at fifty where none recalls
+/// 0.9985 and 0.9975 -- navigating by codes loses neighbours the rescore
+/// cannot find again -- and took 1,859 s to build rather than 922 to 1,024.
+const DISKANN_PQ_CHUNKS: i32 = 0;
+
+/// How wide a query searches the on-disk graph, at the least: one asking for
+/// more candidates than this searches as wide as it asks.
+///
+/// Measured over 50,000 clustered 1024-dimensional vectors in four segments,
+/// with the rescore, against exact search -- fp32 HNSW recalls 0.9980 at ten
+/// and 0.9974 at fifty there:
+///
+/// | width | recall@10 | recall@50 | a query, shared machine |
+/// | --- | --- | --- | --- |
+/// | 300 | 0.9810 | 0.9715 | 20 ms |
+/// | 500 | 0.9955 | 0.9901 | 62 ms |
+/// | 800 | 0.9975 | 0.9952 | 82 ms |
+/// | **1,200** | **0.9985** | **0.9975** | **114 ms** |
+/// | 2,000 | 0.9985 | 0.9986 | 186 ms |
+///
+/// The graph is what limits it rather than the arithmetic -- the rescore adds
+/// at most 0.0015 at any width -- and 1,200 is the narrowest measured to stay
+/// within 0.002 of fp32 at both depths. The milliseconds are from a machine
+/// at load 12 to 13 and are a direction, not a figure; see ADR 0001.
+const DISKANN_SEARCH_LIST: i32 = 1_200;
+
+/// How many candidates either index is asked for per result kept, before they
+/// are ranked again in f32.
+///
+/// The engine scores a half-precision field by multiplying and accumulating
+/// in half precision on a CPU with AVX-512 FP16 (upstream,
+/// `inner_product_distance_batch_impl_fp16_avx512fp16.cc`), so its scores are
+/// off by about 4e-4 where rounding the vectors moves a cosine by about 1e-5,
+/// and an HNSW graph over such a field recalled 0.9650 of the exact top ten on
+/// 50,000 clustered vectors where fp32 recalled 0.9975. Reading the stored
+/// vectors back with the candidates and ranking them by an exact f32 cosine
+/// removes the arithmetic's error and leaves only the rounding's. Twice the
+/// candidates is where recall stops rising: at k = 10 it restored 0.9970 on
+/// the synthetic set and 0.9998 on MIRACL's 131,924 passages -- what exact
+/// search over the rounded vectors recalls -- and four times gained nothing.
+const RESCORE: u32 = 2;
 
 /// How hard the build works to place each document in the graph.
 ///
@@ -846,6 +843,21 @@ const GRAPH_EFFORT: i32 = 500;
 /// and at 2,000, fused and through the reranker -- zero wins, zero losses (the
 /// `EFFORTS` arm of `pamin-engine/tests/monolingual.rs`). Synthetic clusters
 /// are harder to search than real embeddings, so the width stays.
+///
+/// **And again over half-precision vectors with the rescore**, which is what
+/// [`VectorIndex::Memory`] searches, against the bar that fp32 at 700 sets --
+/// within 0.002 of its recall on 50,000 clustered vectors, 0.001 on MIRACL:
+///
+/// | width | synthetic @10 | synthetic @50 | MIRACL @10 | MIRACL @50 |
+/// | --- | --- | --- | --- | --- |
+/// | fp32 at 700 | 0.9980 | 0.9974 | 1.0000 | 0.9999 |
+/// | 200 | 0.9665 | 0.9458 | 0.9996 | 0.9980 |
+/// | 300 | 0.9855 | 0.9769 | 0.9998 | 0.9988 |
+/// | 500 | 0.9965 | 0.9927 | 1.0000 | 0.9993 |
+/// | **700** | **0.9965** | **0.9965** | **1.0000** | **0.9997** |
+///
+/// A narrower width saves about a millisecond a query and fails the bar at
+/// fifty on both sets, so 700 stays for this index too.
 const SEARCH_EFFORT: i32 = 700;
 
 /// Overrides [`SEARCH_EFFORT`], for the sweep that settles it.
@@ -868,11 +880,13 @@ impl ProjectionIndex {
     /// because reading one scheme's keys as another's matches nothing at all.
     /// Neither failure looks like a failure -- one returns plausible rankings
     /// from meaningless distances and the other returns no results and no
-    /// error -- so both are enforced rather than documented.
+    /// error -- so both are enforced rather than documented. So is the vector
+    /// index, for the same reason: see [`VectorIndex`].
     pub fn open(
         dir: &Path,
         legacy_dir: &Path,
         profile: Profile,
+        index: VectorIndex,
         access: Access,
         documents: u64,
     ) -> Result<Self> {
@@ -884,7 +898,7 @@ impl ProjectionIndex {
             return Err(IndexError::LegacyLayout);
         }
 
-        Self::open_sized(dir, profile, access, segment_documents(documents))
+        Self::open_sized(dir, profile, index, access, segment_documents(documents))
     }
 
     /// The profile the index at `dir` was built with, if there is one there.
@@ -896,12 +910,14 @@ impl ProjectionIndex {
     /// with no index creates one for that profile.
     ///
     /// `None` for no index, and for one recorded with a model no profile runs
-    /// any more, which only a rebuild can open.
-    pub fn built_for(dir: &Path) -> Result<Option<Profile>> {
+    /// any more or a vector index no build makes any more, which only a
+    /// rebuild can open.
+    pub fn built_for(dir: &Path) -> Result<Option<(Profile, VectorIndex)>> {
         Ok(Marker::read(dir)?.and_then(|recorded| {
-            [Profile::Speed, Profile::Balanced, Profile::Accuracy]
+            let profile = [Profile::Speed, Profile::Balanced, Profile::Accuracy]
                 .into_iter()
-                .find(|profile| profile.model_id() == recorded.model)
+                .find(|profile| profile.model_id() == recorded.model)?;
+            Some((profile, VectorIndex::parse(&recorded.storage)?))
         }))
     }
 
@@ -914,19 +930,13 @@ impl ProjectionIndex {
     pub(crate) fn open_sized(
         dir: &Path,
         profile: Profile,
+        index: VectorIndex,
         access: Access,
         segment: u64,
     ) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let storage = vector_storage();
         let (passage, keys) = match Marker::read(dir)? {
             Some(recorded) => {
-                if recorded.storage != storage {
-                    return Err(IndexError::VectorStorageMismatch {
-                        indexed: recorded.storage.label().to_string(),
-                        requested: storage.label().to_string(),
-                    });
-                }
                 if recorded.model != profile.model_id() {
                     return Err(IndexError::ProfileMismatch {
                         indexed: recorded.model,
@@ -946,23 +956,25 @@ impl ProjectionIndex {
                         expected: DOCUMENT_GRAIN.to_string(),
                     });
                 }
+                if recorded.storage != index.label() {
+                    return Err(IndexError::VectorIndexMismatch {
+                        indexed: recorded.storage,
+                        requested: index.label().to_string(),
+                    });
+                }
                 (recorded.passage, recorded.keys)
             }
             None => {
-                // What was actually built, not what was asked for. The two are
-                // the same today; they stop being the same the moment a
-                // storage needs a capability the machine may not have, and a
-                // marker recording the request would then be read as a
-                // description of the index -- ADR 0001's silent wrong answer.
-                Marker::current(profile).write(dir)?;
+                Marker::current(profile, index).write(dir)?;
                 (PASSAGE, KEYS)
             }
         };
 
-        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
-        index.passage = passage;
-        index.keys = keys;
-        Ok(index)
+        let mut opened =
+            Self::open_with_dimensions(dir, profile.dimensions(), index, access, segment)?;
+        opened.passage = passage;
+        opened.keys = keys;
+        Ok(opened)
     }
 
     /// Creates an empty index at `dir` that records what the one at `source`
@@ -984,6 +996,7 @@ impl ProjectionIndex {
         source: &Path,
         dir: &Path,
         profile: Profile,
+        index: VectorIndex,
         documents: u64,
     ) -> Result<Self> {
         Self::discard(dir)?;
@@ -1002,6 +1015,7 @@ impl ProjectionIndex {
         Self::open_sized(
             dir,
             profile,
+            index,
             Access::ReadWrite,
             segment_documents(documents),
         )
@@ -1012,19 +1026,20 @@ impl ProjectionIndex {
     /// For reopening an index after its directory was moved into place, where
     /// finding nothing there is a fault: an open that created an empty index
     /// would hand the caller a project with no memories and no error.
-    pub(crate) fn reopen(dir: &Path, profile: Profile) -> Result<Self> {
+    pub(crate) fn reopen(dir: &Path, profile: Profile, index: VectorIndex) -> Result<Self> {
         if !std::fs::exists(dir.join(COLLECTION))? {
             return Err(IndexError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("no index at {}", dir.display()),
             )));
         }
-        Self::open_sized(dir, profile, Access::ReadWrite, segment_documents(0))
+        Self::open_sized(dir, profile, index, Access::ReadWrite, segment_documents(0))
     }
 
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
+        index: VectorIndex,
         access: Access,
         segment: u64,
     ) -> Result<Self> {
@@ -1060,11 +1075,12 @@ impl ProjectionIndex {
                 DataType::String,
                 IndexParams::fts(Some("ngram"), None, None)?,
             )
+            // Half precision, and read back by the rescore; see `RESCORE`.
             .add_vector_field(
                 FIELD_VECTOR,
-                DataType::VectorFp32,
+                DataType::VectorFp16,
                 dimensions,
-                vector_storage().index_params()?,
+                index.params()?,
             )
             .max_doc_count_per_segment(segment)
             .build()?;
@@ -1090,7 +1106,7 @@ impl ProjectionIndex {
             collection,
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
-            storage: vector_storage(),
+            index,
             passage: PASSAGE,
             keys: KEYS,
         })
@@ -1103,7 +1119,7 @@ impl ProjectionIndex {
         doc.add_string(FIELD_ID, &key)?;
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
         doc.add_string(FIELD_NGRAM, content)?;
-        doc.add_vector_f32(FIELD_VECTOR, embedding)?;
+        crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
         Ok(doc)
     }
 
@@ -1193,13 +1209,17 @@ impl ProjectionIndex {
 /// Five lines: the embedding model, what a document stands for, how vectors
 /// are stored, what text they were embedded from, and how a topic is spelled
 /// as a key. A line an older index does not have reads as what that index was
-/// built with, so an existing workspace opens unchanged: no storage line is
-/// `fp32`, no passage line is content alone, no key line is the topic as
-/// written.
+/// built with: no storage line is `fp32`, no passage line is content alone, no
+/// key line is the topic as written.
+///
+/// The storage line is kept as written rather than parsed into a
+/// [`VectorIndex`], because an index built before those existed records
+/// something else -- `fp32`, or whatever a sweep built -- and has to be named
+/// when it is refused and read when a rebuild lends from it.
 struct Marker {
     model: String,
     grain: String,
-    storage: VectorStorage,
+    storage: String,
     passage: Passage,
     keys: Keys,
 }
@@ -1207,12 +1227,12 @@ struct Marker {
 impl Marker {
     const FILE: &str = "profile";
 
-    /// What an index built now, for this profile, is.
-    fn current(profile: Profile) -> Self {
+    /// What an index built now, for this profile and vector index, is.
+    fn current(profile: Profile, index: VectorIndex) -> Self {
         Self {
             model: profile.model_id().to_string(),
             grain: DOCUMENT_GRAIN.to_string(),
-            storage: vector_storage(),
+            storage: index.label().to_string(),
             passage: PASSAGE,
             keys: KEYS,
         }
@@ -1229,10 +1249,7 @@ impl Marker {
         Ok(Some(Self {
             model: lines.next().unwrap_or_default().trim().to_string(),
             grain: lines.next().unwrap_or_default().trim().to_string(),
-            storage: lines
-                .next()
-                .and_then(VectorStorage::parse)
-                .unwrap_or(VectorStorage::Fp32),
+            storage: lines.next().map_or(LEGACY_STORAGE, str::trim).to_string(),
             passage: lines
                 .next()
                 .and_then(Passage::parse)
@@ -1248,7 +1265,7 @@ impl Marker {
                 "{}\n{}\n{}\n{}\n{}",
                 self.model,
                 self.grain,
-                self.storage.label(),
+                self.storage,
                 self.passage.label(),
                 self.keys.label()
             ),
@@ -1257,17 +1274,21 @@ impl Marker {
     }
 
     /// Whether a vector this index holds is the vector an index built now
-    /// would compute for the same text: same model, same storage, same
-    /// encoding, same grain.
+    /// would compute for the same text: same model, same encoding, same grain.
     ///
     /// Not the same [`Keys`]: how a key is spelled says nothing about the
     /// vector stored under it, and the index lending it is read through its
-    /// own spelling.
+    /// own spelling. Nor the same storage: every index built now stores half
+    /// precision, and a vector read from any of them -- or from an fp32 index
+    /// built before -- rounds to the same codes the model's own output would.
     fn matches(&self, other: &Self) -> bool {
-        self.model == other.model
-            && self.grain == other.grain
-            && self.storage == other.storage
-            && self.passage == other.passage
+        self.model == other.model && self.grain == other.grain && self.passage == other.passage
+    }
+
+    /// Whether the index this describes stores half-precision vectors, as
+    /// every [`VectorIndex`] does; an index built before them stored fp32.
+    fn is_half(&self) -> bool {
+        VectorIndex::parse(&self.storage).is_some()
     }
 }
 
@@ -1292,6 +1313,9 @@ impl Marker {
 pub struct Previous {
     index: ProjectionIndex,
     dir: std::path::PathBuf,
+    /// Whether its vectors are half precision; an index from before the
+    /// [`VectorIndex`]es stores fp32.
+    half: bool,
 }
 
 impl Previous {
@@ -1305,22 +1329,29 @@ impl Previous {
     pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let Some(recorded) =
-            Marker::read(dir)?.filter(|recorded| recorded.matches(&Marker::current(profile)))
+        let current = Marker::current(profile, VectorIndex::default());
+        let Some(recorded) = Marker::read(dir)?.filter(|recorded| recorded.matches(&current))
         else {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
         };
         std::fs::rename(dir, &aside)?;
+        // The collection exists, so the vector index passed here only fills a
+        // schema the engine does not read.
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
             profile.dimensions(),
+            VectorIndex::default(),
             Access::ReadOnly,
             segment_documents(0),
         )?;
         index.passage = PASSAGE;
         index.keys = recorded.keys;
-        Ok(Some(Self { index, dir: aside }))
+        Ok(Some(Self {
+            index,
+            dir: aside,
+            half: recorded.is_half(),
+        }))
     }
 
     /// How many of these topics [`lend`](Self::lend) would supply, without
@@ -1368,7 +1399,12 @@ impl Previous {
             // The vector field is not nullable and every write here carries
             // one, so a document without it is an engine fault -- and the
             // engine's iterator fails before handing one over anyway.
-            let vector = doc.get_vector_f32(FIELD_VECTOR)?.ok_or_else(|| {
+            let vector = if self.half {
+                crate::half::get(&doc, FIELD_VECTOR)?
+            } else {
+                doc.get_vector_f32(FIELD_VECTOR)?
+            };
+            let vector = vector.ok_or_else(|| {
                 IndexError::Engine(format!("the document for topic {topic} has no vector"))
             })?;
             lent.insert(topic);
@@ -1421,7 +1457,7 @@ impl Previous {
 
     /// Deletes the set-aside index, once the rebuild no longer needs it.
     pub fn discard(self) -> Result<()> {
-        let Self { index, dir } = self;
+        let Self { index, dir, .. } = self;
         drop(index);
         ProjectionIndex::discard(&dir)
     }
@@ -1430,6 +1466,10 @@ impl Previous {
 impl Projection for ProjectionIndex {
     fn passage(&self) -> Passage {
         self.passage
+    }
+
+    fn vector_index(&self) -> VectorIndex {
+        self.index
     }
 
     /// The segmenter this index tokenizes with.
@@ -1489,7 +1529,7 @@ impl Projection for ProjectionIndex {
                 };
                 match (
                     doc.get_string(FIELD_NGRAM)?,
-                    doc.get_vector_f32(FIELD_VECTOR)?,
+                    crate::half::get(doc, FIELD_VECTOR)?,
                 ) {
                     (Some(content), Some(embedding)) => Ok(Some(Stored { content, embedding })),
                     _ => Err(IndexError::Engine(format!(
@@ -1544,31 +1584,51 @@ impl Projection for ProjectionIndex {
     /// directly would be meaningless -- but each channel's own scores are the
     /// only evidence of whether *that* channel is confident, which is a question
     /// ranks cannot answer. See [`pamin_core::ChannelResults`].
+    ///
+    /// The index proposes [`RESCORE`] times `limit` candidates with their
+    /// stored vectors, and they are ranked again here by an exact f32 cosine
+    /// against the query as the model produced it; the engine's own scores
+    /// over half-precision vectors are not good enough to rank by. The score
+    /// each keeps is that cosine similarity, where larger is better as
+    /// `Scored` requires.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
+        let candidates = limit.saturating_mul(RESCORE);
+        let mut search = SearchQuery::new(
+            FIELD_VECTOR,
+            &crate::half::query(embedding),
+            candidates as i32,
+        )?;
         search.set_output_fields(&[FIELD_ID])?;
-        search.set_include_vector(false)?;
-        // No radius bound and the graph rather than a linear scan. The refiner
-        // follows what the vectors were stored as, for the reason
-        // `VectorStorage::refines` gives: asking for one over unquantized
-        // vectors fails outright rather than being ignored.
-        search.set_hnsw_params(HnswQueryParams::new(
-            search_effort(),
-            0.0,
-            false,
-            self.storage.refines(),
-        ))?;
-        // Cosine *distance*, which is what the engine reports for a cosine
-        // index: nearest is zero. `Scored` requires larger to be better,
-        // because everything above compares magnitudes -- summing a distance
-        // would sum this channel backwards and reading its confidence would
-        // read its worst candidate as its best. Cosine distance is
-        // `1 - similarity`, so this is the exact inverse and not a rescaling.
-        Ok(collect_scored(
-            self.keys,
-            self.collection.query(&search)?,
-            |score| 1.0 - score,
-        ))
+        search.set_include_vector(true)?;
+        self.index.ask(&mut search, candidates)?;
+
+        let length = dot(embedding, embedding).sqrt();
+        let mut scored = Vec::with_capacity(candidates as usize);
+        for doc in self.collection.query(&search)? {
+            let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) else {
+                continue;
+            };
+            let vector = crate::half::get(&doc, FIELD_VECTOR)?.ok_or_else(|| {
+                IndexError::Engine(format!(
+                    "a candidate for topic {topic} came without its vector"
+                ))
+            })?;
+            let lengths = length * dot(&vector, &vector).sqrt();
+            let similarity = if lengths > 0.0 {
+                dot(embedding, &vector) / lengths
+            } else {
+                0.0
+            };
+            scored.push(Scored::new(topic, similarity));
+        }
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .unwrap_or(f32::MIN)
+                .total_cmp(&left.score.unwrap_or(f32::MIN))
+        });
+        scored.truncate(limit as usize);
+        Ok(scored)
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -1782,6 +1842,11 @@ fn jittered(wait: Duration) -> Duration {
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a
 /// branch on the field so that adding a channel cannot forget it.
+/// The dot product, accumulated in f32.
+fn dot(left: &[f32], right: &[f32]) -> f32 {
+    left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
 fn collect_scored(keys: Keys, docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
     docs.iter()
         .filter_map(|doc| {
@@ -1994,7 +2059,7 @@ mod keys {
 
 #[cfg(test)]
 mod marker {
-    use super::{Marker, ProjectionIndex};
+    use super::{Marker, ProjectionIndex, VectorIndex};
     use crate::Profile;
 
     /// What an index was built with reads back as the profile that built it.
@@ -2007,13 +2072,30 @@ mod marker {
     #[test]
     fn an_index_reads_back_the_profile_it_was_built_with() {
         for profile in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
-            let dir = tempfile::tempdir().expect("a directory");
-            Marker::current(profile).write(dir.path()).expect("marking");
-            assert_eq!(
-                ProjectionIndex::built_for(dir.path()).expect("reading"),
-                Some(profile)
-            );
+            for index in VectorIndex::ALL {
+                let dir = tempfile::tempdir().expect("a directory");
+                Marker::current(profile, index)
+                    .write(dir.path())
+                    .expect("marking");
+                assert_eq!(
+                    ProjectionIndex::built_for(dir.path()).expect("reading"),
+                    Some((profile, index))
+                );
+            }
         }
+
+        // An index from before the vector indexes names no profile to open it
+        // under: only a rebuild can.
+        let legacy = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            legacy.path().join("profile"),
+            format!("{}\ntopic\nfp32\nnamed", Profile::Accuracy.model_id()),
+        )
+        .expect("marking");
+        assert_eq!(
+            ProjectionIndex::built_for(legacy.path()).expect("reading"),
+            None
+        );
 
         let empty = tempfile::tempdir().expect("a directory");
         assert_eq!(

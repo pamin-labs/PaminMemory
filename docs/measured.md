@@ -1207,10 +1207,12 @@ Int8 makes the index itself answer in about half to four-fifths of the time,
 and that does not reach the search: the index is a few milliseconds of a search
 the reranker spends one to six seconds on. The fp16 field halves the vector
 bytes, but the engine's fp16 arithmetic loses recall on clustered vectors that
-rounding alone does not, and the rule allowed 0.002. DiskANN is the only
+rounding alone does not, and the rule allowed 0.002 (the next paragraph takes
+that loss back with a rescore). DiskANN is the only
 memory lever, holding 22 MB where the graph holds 565, at 2.5 to 5 times the
-index query time, twice the disk and fourteen times the build, so it is the
-path for a project whose resident set is the constraint and not the default.
+index query time, twice the disk and fourteen times the build, so it was left
+as the path for a project whose resident set is the constraint -- until the
+decision below made it the default.
 An explicit memory limit changed nothing, because it sizes a pool only an index
 created with mmap off reads. The iterator reads 131,924 documents in 0.28 s
 against 1.5 s of keyed fetches, which is about 1% of a rebuild; it failed its
@@ -1218,6 +1220,39 @@ rule and ships anyway, because it changes nothing a rebuild lends and the owner
 takes every optimization that costs no accuracy. The tables and the rules are
 in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured);
 the runs were scratch builds and cannot be re-run from the repository.
+
+**Vectors are now half precision, under `disk` or `memory`.** The owner set
+the storage directly: fp16 vectors, the HNSW graph in memory by default
+(`memory`) or a DiskANN graph on disk (`disk`), both ranking twice the
+candidates again by an exact f32 cosine, because the engine's own fp16 scores
+lose recall in their arithmetic rather than in the rounding. Against exact
+search, with fp32 HNSW -- what shipped before -- as the bar:
+
+| | recall@10 / @50, 50,000 synthetic | recall@10 / @50, MIRACL | vector query, MIRACL | full build, MIRACL | resident, MIRACL | disk, MIRACL |
+| --- | --- | --- | --- | --- | --- | --- |
+| fp32 HNSW (before) | 0.9980 / 0.9974 | 1.0000 / 0.9999 | 9.5 ms | 171 s | 575 MB | 595.5 MB |
+| `memory` (default) | 0.9965 / 0.9965 | 1.0000 / 0.9997 | 5.9 ms | 84 s | 320 MB | 327.8 MB |
+| `disk` | 0.9985 / 0.9975 | 1.0000 / 0.9996 | 68.6 ms | 1,379 s | 34 MB | 618.1 MB |
+
+Query times are medians at k = 10 on four cores other evaluations were
+sharing at load 9 to 13, so they are directions. `disk` reaches the bar only
+at a search width of 1,200 (0.981 at its default of 300 on the synthetic set),
+and its cost on the write path is the open question: through the product's
+index, five `optimize` calls after 64 new documents each took 114 to 310 s
+under `disk` and 1.1 to 1.6 s under `memory`. Both keep a new memory
+searchable before any build and neither holds a search up while one runs.
+`disk` was the default at first, because this project ranks resident memory
+above disk; once that write-path cost was measured the owner made `memory` the
+default, and `disk` stays for a project whose memory is scarce.
+Through `search_reranked` at the shipped defaults neither index moved a
+ranking against fp32: nDCG@10 +0.0003 on the own corpus's 157 questions
+(p = 0.76) and −0.0003 on 595 XQuAD-R questions (p = 0.68), the two indexes
+identical on every question. A whole search took 1.03 and 1.05 of `memory`'s
+time under `disk` (medians 1,371 against 1,287 ms and 2,339 against 2,236),
+and rebuilding XQuAD-R's 13,014 documents took 424 s under `disk` and 30 s
+under `memory`.
+The table, the tuning and the write-path measurement are in
+[the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-disk-by-default).
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,

@@ -256,6 +256,17 @@ under [benchmarks/results/](benchmarks/results).
 Latency is a corpus and a tier before it is a number, which is why every row
 above names both and why the matrix is on the other page.
 
+Those rows were taken with the vector index that shipped until now, fp32
+vectors in an in-memory graph. A project is now built with half-precision
+vectors under `--vector-index memory` by default, an in-memory graph that on
+MIRACL's passages holds 320 MB resident where the fp32 graph held 575 MB, at
+the same recall. `--vector-index disk` keeps a DiskANN graph on disk and holds
+34 MB, but it takes more disk (618 MB against 328), makes a whole search about
+5% slower, builds far more slowly, and spends minutes of `optimize` after
+every working drain where `memory` spends about a second -- which is why it is
+the choice for a project whose memory is scarce rather than the default. What each costs is
+in [docs/measured.md](docs/measured.md) and [docs/cli.md](docs/cli.md).
+
 Five findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
 

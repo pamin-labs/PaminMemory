@@ -172,7 +172,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile, Rerank};
+use pamin_index::{Access, Embedder, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 /// The languages XQuAD-R covers, in the order the rotation walks them.
@@ -1104,9 +1104,15 @@ async fn search_reaches_across_languages() {
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
     let project = format!("xquad-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     write_corpus(&engine, &corpus).await;
 
@@ -1118,6 +1124,7 @@ async fn search_reaches_across_languages() {
             &workspace,
             &format!("{project}-named"),
             profile,
+            VectorIndex::default(),
             Access::ReadWrite,
         )
         .await

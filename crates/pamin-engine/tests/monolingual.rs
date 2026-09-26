@@ -88,7 +88,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile, Rerank};
+use pamin_index::{Access, Embedder, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -641,9 +641,15 @@ async fn search() {
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
     let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     // `MEMORY`: where the resident memory goes, stage by stage. First, so no
     // other arm has loaded anything yet. See `memory`.
@@ -829,6 +835,7 @@ async fn search() {
             &workspace,
             &format!("{project}-named"),
             profile,
+            VectorIndex::default(),
             Access::ReadWrite,
         )
         .await

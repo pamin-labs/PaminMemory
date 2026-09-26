@@ -19,7 +19,7 @@
 //! keeps this number where it is is that segments stop growing.
 
 use pamin_core::TopicId;
-use pamin_index::{Access, Profile, Projection, ProjectionIndex};
+use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
 
 /// The default profile's width, so this measures the shape actually shipped.
 const PROFILE: Profile = Profile::Accuracy;
@@ -40,6 +40,14 @@ const TOP: u32 = 10;
 /// take 55 s. Smaller graphs are not a trade here -- they are more accurate,
 /// faster to search and cheaper to build, and the floor moves with them because
 /// the reason is understood rather than incidental.
+///
+/// It measures the default vector index, which is now `memory`: half-precision
+/// vectors under HNSW with the f32 rescore, measured at 0.9965 over these
+/// vectors (200 queries); `disk` measured 0.9985 at its shipped search width. The floor stays where
+/// it was, because what it catches is a collapse -- 0.053 is what int8 with
+/// rotation once returned -- and not the second decimal: this index returns
+/// 0.981 at DiskANN's own default width of 300, which passes it, and the
+/// width is held by the table beside `DISKANN_SEARCH_LIST` instead.
 const FLOOR: f64 = 0.97;
 
 /// Deterministic pseudo-random, so two runs measure the same corpus.
@@ -147,6 +155,7 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
         &dir.path().join("index"),
         &dir.path().join("legacy"),
         PROFILE,
+        VectorIndex::default(),
         Access::ReadWrite,
         DOCS as u64,
     )
