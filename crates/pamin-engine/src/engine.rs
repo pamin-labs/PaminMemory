@@ -1447,9 +1447,9 @@ impl Engine {
     /// left it reordering five candidates and usually declining to reorder at
     /// all.
     ///
-    /// The `fast` tier stays confined to candidates no lexical channel found.
-    /// The `accurate` tier tests whether its stronger model can also correct
-    /// lexical ordering after the same-language evaluation key was fixed.
+    /// The `accurate` tier scores the whole head and blends the model's score
+    /// with fusion's, so graph and channel agreement still contribute. The
+    /// `fast` tier stays confined to candidates no lexical channel found.
     ///
     /// This was a language comparison first, since "written in another
     /// language" is what the case really is. The two pick the same candidates
@@ -1574,7 +1574,19 @@ impl Engine {
                     score: ranked.score,
                 });
         }
-        let best_first: Vec<usize> = ordered.iter().map(|ranked| ranked.position).collect();
+        let best_first: Vec<usize> = if rerank == Rerank::Accurate {
+            let fused_scores: Vec<f64> = unlexical
+                .iter()
+                .map(|at| f64::from(fused.results[*at].score))
+                .collect();
+            let mut model_scores = vec![0.0; ordered.len()];
+            for ranked in &ordered {
+                model_scores[ranked.position] = f64::from(ranked.score);
+            }
+            score_blend_order(&fused_scores, &model_scores, RERANK_FUSION)
+        } else {
+            ordered.iter().map(|ranked| ranked.position).collect()
+        };
         fused.results = place(
             std::mem::take(&mut fused.results),
             &unlexical,
@@ -2417,6 +2429,41 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
     positions
 }
 
+/// Fusion's share of the accurate reranker's final score.
+///
+/// Chosen on XQuAD-R before checking MuSiQue: the latter's held-out arm also
+/// improves over both unblended full-head reranking and the old partial pass.
+pub const RERANK_FUSION: f64 = 0.2;
+
+/// Best-first positions after min-max scaling both scores within one shortlist.
+/// Shared with the evaluation replay so the measured rule is the shipped rule.
+pub fn score_blend_order(fused: &[f64], model: &[f64], fusion: f64) -> Vec<usize> {
+    assert_eq!(fused.len(), model.len());
+    let scaled = |values: &[f64]| {
+        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        values
+            .iter()
+            .map(|value| {
+                if high > low {
+                    (value - low) / (high - low)
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let (fused, model) = (scaled(fused), scaled(model));
+    let mut positions: Vec<usize> = (0..fused.len()).collect();
+    positions.sort_by(|left, right| {
+        let score = |at: usize| fusion * fused[at] + (1.0 - fusion) * model[at];
+        score(*right)
+            .total_cmp(&score(*left))
+            .then_with(|| left.cmp(right))
+    });
+    positions
+}
+
 /// Puts the candidates the reranker scored back into the list, best first.
 ///
 /// `shown` is what [`rerankable`] chose, ascending, and `best_first` indexes
@@ -2523,7 +2570,7 @@ mod tests {
 
     use super::{
         GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, MODEL_IDLE, best_first, can_be_seen, is_idle,
-        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
+        path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
@@ -2820,6 +2867,14 @@ mod tests {
             ),
             vec!["vector", "graph", "lexical"]
         );
+    }
+
+    #[test]
+    fn blended_scores_keep_the_models_gain_and_break_ties_by_fused_rank() {
+        let fused = [0.9, 0.5, 0.1];
+        let model = [0.0, 1.0, 2.0];
+        assert_eq!(score_blend_order(&fused, &model, 0.2), vec![2, 1, 0]);
+        assert_eq!(score_blend_order(&fused, &model, 0.5), vec![0, 1, 2]);
     }
 
     /// What this process remembers about the widest name only ever grows.
