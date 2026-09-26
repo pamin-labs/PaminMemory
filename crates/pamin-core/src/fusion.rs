@@ -1,4 +1,4 @@
-//! Reciprocal rank fusion and the modifiers applied after it.
+//! Rank fusion and the modifiers applied after it.
 //!
 //! Fusion happens here rather than inside a retrieval engine, and that is a
 //! correctness requirement rather than a preference. The graph channel lives in
@@ -240,14 +240,13 @@ pub struct FusedResult {
 /// TM2C2 -- and the band read on theoretical min-max all measured worse and
 /// were removed. What each was worth, and why it lost, is recorded under
 /// "Fusion designs measured and removed" in `docs/adr/0001-tech-selection.md`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Combine {
     /// `sum over channels of weight / (k + rank)`.
     ///
     /// The rank is all it reads, which is the property that makes it robust to
     /// incomparable channels and the property that makes it unable to tell a
     /// channel that is certain from one that is guessing.
-    #[default]
     Reciprocal,
     /// Each channel's scores, rescaled into the band reciprocal rank fusion
     /// would have spanned over the same candidates.
@@ -437,7 +436,7 @@ impl Fusion {
         self.with_weight(channel, 0.0)
     }
 
-    /// Combines the channels this way instead of by reciprocal rank.
+    /// Combines the channels this way instead of the default.
     ///
     /// See [`Combine`] for what the choices are and what the literature says
     /// about them. [`Combine::Banded`] ships; [`Combine::Reciprocal`] is kept
