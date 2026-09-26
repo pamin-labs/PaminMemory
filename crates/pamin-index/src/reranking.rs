@@ -225,6 +225,7 @@
 //! divide it differently, and not in the direction the caveat guessed.
 
 use std::path::Path;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokenizers::Encoding;
@@ -621,6 +622,16 @@ pub struct Reranker {
     device: Device,
     scores: Scores,
     lengths: Lengths,
+    work: Work,
+}
+
+#[derive(Default)]
+struct Work {
+    tokens: u64,
+    padded_tokens: u64,
+    batches: u64,
+    encode_us: u64,
+    forward_us: u64,
 }
 
 /// How long the candidates that reached the model were.
@@ -658,6 +669,16 @@ pub struct Reranked {
     pub characters: u64,
     /// The longest single candidate that reached the model, in characters.
     pub longest: usize,
+    /// Tokens in scored pairs before batch padding.
+    pub tokens: u64,
+    /// Tokens actually passed to the model, including padding.
+    pub padded_tokens: u64,
+    /// Model batches run for uncached pairs.
+    pub batches: u64,
+    /// Time spent encoding uncached pairs, in microseconds.
+    pub encode_us: u64,
+    /// Time spent padding and running those batches, in microseconds.
+    pub forward_us: u64,
 }
 
 impl Reranker {
@@ -727,6 +748,7 @@ impl Reranker {
             device,
             scores: Scores::default(),
             lengths: Lengths::default(),
+            work: Work::default(),
         })
     }
 
@@ -794,9 +816,18 @@ impl Reranker {
                 .iter()
                 .map(|position| (query, documents[*position]))
                 .collect();
+            let encoding = Instant::now();
             let encodings = self.model.encode(pairs).map_err(reranking)?;
-            let scored =
+            self.work.encode_us += encoding.elapsed().as_micros() as u64;
+            self.work.tokens += encodings
+                .iter()
+                .map(|encoding| encoding.len() as u64)
+                .sum::<u64>();
+            let (scored, work) =
                 score(&mut self.model, encodings, batch_tokens(), batch()).map_err(reranking)?;
+            self.work.padded_tokens += work.padded_tokens;
+            self.work.batches += work.batches;
+            self.work.forward_us += work.forward_us;
             for (position, score) in unscored.iter().zip(scored) {
                 scores[*position] = Some(score);
                 self.scores.put(keys[*position], score);
@@ -848,6 +879,11 @@ impl Reranker {
             scored: self.scores.misses,
             characters: self.lengths.total,
             longest: self.lengths.longest,
+            tokens: self.work.tokens,
+            padded_tokens: self.work.padded_tokens,
+            batches: self.work.batches,
+            encode_us: self.work.encode_us,
+            forward_us: self.work.forward_us,
         }
     }
 }
@@ -863,7 +899,7 @@ fn score(
     encodings: Vec<Encoding>,
     budget: usize,
     most: usize,
-) -> Result<Vec<f32>> {
+) -> Result<(Vec<f32>, Work)> {
     let count = encodings.len();
     // By length and then by position, so one shortlist is grouped the same way
     // every time it is asked.
@@ -873,9 +909,16 @@ fn score(
 
     let mut scores = vec![f32::MIN; count];
     let mut pending = sorted.into_iter();
+    let mut work = Work::default();
+    let mut start = 0;
     for size in batches(&lengths, budget, most) {
+        work.batches += 1;
+        work.padded_tokens += (size * lengths[start + size - 1]) as u64;
+        start += size;
         let (positions, batch): (Vec<usize>, Vec<Encoding>) = pending.by_ref().take(size).unzip();
+        let forward = Instant::now();
         let outputs = model.run_encoded(batch)?;
+        work.forward_us += forward.elapsed().as_micros() as u64;
         let logits = outputs
             .get("logits")
             .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
@@ -895,7 +938,7 @@ fn score(
             scores[*position] = row[0];
         }
     }
-    Ok(scores)
+    Ok((scores, work))
 }
 
 /// How many pairs go in each batch, in order, for pairs of these `lengths`
