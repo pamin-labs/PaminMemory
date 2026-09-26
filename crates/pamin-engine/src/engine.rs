@@ -1439,9 +1439,7 @@ impl Engine {
     }
 
     /// Search, then reorder the head of the result with a cross-encoder.
-    ///
-    /// Only the candidates no lexical channel found, and only into the
-    /// positions those candidates already hold.
+    /// `accurate` sees the whole head; `fast` keeps the non-lexical rule.
     ///
     /// Fused deeper than it returns, because a reranker that only sees what the
     /// caller asked for has nothing to work with: the tier's depth was measured
@@ -1449,13 +1447,9 @@ impl Engine {
     /// left it reordering five candidates and usually declining to reorder at
     /// all.
     ///
-    /// Every cross-encoder measured improves cross-lingual ranking and damages
-    /// same-language ranking by about as much: fusion is already good at
-    /// placing a memory that shares words with the query, and a second pass
-    /// reorders it worse. So the pass is confined to the candidates the
-    /// lexical channels did not find -- the ones fusion ordered on the vector
-    /// channel alone. Everything else keeps the rank it had, which makes the
-    /// damage arithmetically impossible rather than merely unlikely.
+    /// The `fast` tier stays confined to candidates no lexical channel found.
+    /// The `accurate` tier tests whether its stronger model can also correct
+    /// lexical ordering after the same-language evaluation key was fixed.
     ///
     /// This was a language comparison first, since "written in another
     /// language" is what the case really is. The two pick the same candidates
@@ -2373,8 +2367,8 @@ const GRAPH_SHOWN_FROM: f32 = 0.5;
 /// eight. Thirty is the cap the threshold was measured with, not a tuned value.
 const GRAPH_SHOWN_AT_MOST: usize = 30;
 
-/// The positions of a fused list the reranker is shown: the head's candidates
-/// no lexical channel found, and the candidates below the head that only the
+/// The positions of a fused list the reranker is shown: the whole head for
+/// `accurate`, the head's non-lexical candidates for `fast`, and those below the head that only the
 /// graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
 /// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
 ///
@@ -2405,7 +2399,9 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
         graph
     };
 
-    let mut positions: Vec<usize> = (0..head).filter(|at| !lexical(traces[*at])).collect();
+    let mut positions: Vec<usize> = (0..head)
+        .filter(|at| rerank == Rerank::Accurate || !lexical(traces[*at]))
+        .collect();
     let mut graph: Vec<(usize, f32)> = (head..traces.len())
         .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
         .collect();
@@ -2724,12 +2720,10 @@ mod tests {
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
-    /// The reranker is shown the head's unlexical candidates and the graph-only
-    /// ones below it whose graph score reaches [`GRAPH_SHOWN_FROM`], strongest
-    /// first and no more than [`GRAPH_SHOWN_AT_MOST`] -- not a lexical one, not
-    /// a corroborated one from below the head, and not a weak graph find.
+    /// Accurate sees the whole head; fast keeps the old non-lexical rule.
+    /// Both see strong graph-only candidates below the head.
     #[test]
-    fn the_reranker_is_shown_the_unlexical_head_and_the_strong_graph_finds() {
+    fn the_accurate_reranker_sees_the_whole_head_and_strong_graph_finds() {
         use pamin_core::Why;
 
         let channel = |channel, score| Why::Channel {
@@ -2771,9 +2765,14 @@ mod tests {
 
         let shown = rerankable(&borrowed, Rerank::Accurate);
         let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
+        assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
+        let fast_head = Rerank::Fast.depth();
         assert_eq!(
-            head_shown,
-            (0..head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
+            rerankable(&borrowed, Rerank::Fast)
+                .into_iter()
+                .filter(|at| *at < fast_head)
+                .collect::<Vec<_>>(),
+            (0..fast_head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
         );
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         // The strongest GRAPH_SHOWN_AT_MOST, which are the last ones pushed;
@@ -2807,6 +2806,19 @@ mod tests {
         assert_eq!(
             place(list, &[0, 1], 3, &[1, 0]),
             vec!["b", "a", "c", "d", "e", "g"]
+        );
+    }
+
+    #[test]
+    fn a_whole_head_can_move_a_lexical_candidate() {
+        assert_eq!(
+            place(
+                vec!["lexical", "vector", "graph"],
+                &[0, 1, 2],
+                3,
+                &[1, 2, 0]
+            ),
+            vec!["vector", "graph", "lexical"]
         );
     }
 
