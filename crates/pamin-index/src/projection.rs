@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
@@ -158,6 +159,10 @@ pub trait Projection {
     /// counting, and it is what decides when the index is asked to tidy up.
     fn file_count(&self) -> Result<u64>;
 
+    /// How many files [`optimize`](Self::optimize) left the last time it ran
+    /// on this handle, or zero if it has not run on it. See [`is_fragmented`].
+    fn files_after_optimize(&self) -> u64;
+
     /// How many vector blocks flushes have left that no compaction has merged.
     ///
     /// What disk is spent on, where [`file_count`](Self::file_count) is what
@@ -198,6 +203,8 @@ pub struct ProjectionIndex {
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
     keys: Keys,
+    /// What [`Projection::files_after_optimize`] reports.
+    optimized_files: AtomicU64,
 }
 
 /// What text a document's vector was embedded from.
@@ -527,8 +534,22 @@ impl Segmentation {
 const MAX_FILES: u64 = 256;
 
 /// Whether an index is spread across more files than it should be.
-pub fn is_fragmented(files: u64) -> bool {
-    files > MAX_FILES
+///
+/// `floor` is what the last `optimize` left, and past [`MAX_FILES`] the index
+/// has to have grown by a quarter of the budget since then. Without that, an
+/// index `optimize` cannot bring under the budget asked for it after every
+/// drain that did work: the scalar files of sealed segments are never merged,
+/// so an index with two or more sealed segments can stay above the budget for
+/// good -- MIRACL's 131,924 passages hold 2,317 files -- and every open adds
+/// two empty write-ahead logs. Measured on a 12,814-document index its own
+/// `optimize` left at 257 files, one write per five-second upkeep tick
+/// re-queued `optimize` 8 times in 60 ticks, about a second of processor time
+/// each under `memory`.
+///
+/// Zero, for an index this process has not optimized, is the budget alone, so
+/// a reopened index is asked once and learns its floor from that.
+pub fn is_fragmented(files: u64, floor: u64) -> bool {
+    files > MAX_FILES.max(floor.saturating_add(MAX_FILES / 4))
 }
 
 /// How many unmerged vector blocks an index may hold whatever its size.
@@ -689,8 +710,9 @@ pub enum VectorIndex {
     /// Holds almost nothing resident, for a project whose memory is scarce.
     /// Not the default: every `optimize` after a working drain rebuilds a
     /// great deal of the graph (114 to 310 s after 64 new documents on 25,000,
-    /// against about a second for `memory`), and upkeep issues one whenever a
-    /// drain has done work.
+    /// against about a second for `memory`), and upkeep issues one after a
+    /// drain that did work whenever the file budget, the unmerged blocks or
+    /// the unindexed remainder asks for it.
     Disk,
     /// An HNSW graph held in memory.
     ///
@@ -1101,6 +1123,7 @@ impl ProjectionIndex {
             index,
             passage: PASSAGE,
             keys: KEYS,
+            optimized_files: AtomicU64::new(0),
         })
     }
 
@@ -1646,6 +1669,8 @@ impl Projection for ProjectionIndex {
     /// [`vector_index_completeness`](Self::vector_index_completeness) belongs.
     fn optimize(&self) -> Result<()> {
         self.collection.optimize()?;
+        self.optimized_files
+            .store(self.file_count()?, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1669,6 +1694,15 @@ impl Projection for ProjectionIndex {
         Ok(self.collection.stats()?.doc_count)
     }
 
+    fn segmentation(&self) -> Result<Segmentation> {
+        Ok(Segmentation {
+            documents: self.collection.stats()?.doc_count,
+            // What the collection actually recorded, not what the policy would
+            // have chosen: the point of reporting this is that the two differ.
+            recorded: self.collection.schema()?.max_doc_count_per_segment(),
+        })
+    }
+
     /// How many files the index is spread across, counted from the directory.
     ///
     /// The engine reports documents and index completeness and nothing about
@@ -1680,15 +1714,6 @@ impl Projection for ProjectionIndex {
     /// A directory that cannot be read counts as nothing to do. This decides
     /// whether to schedule maintenance, and failing a write over it would be a
     /// worse answer than scheduling it a little late.
-    fn segmentation(&self) -> Result<Segmentation> {
-        Ok(Segmentation {
-            documents: self.collection.stats()?.doc_count,
-            // What the collection actually recorded, not what the policy would
-            // have chosen: the point of reporting this is that the two differ.
-            recorded: self.collection.schema()?.max_doc_count_per_segment(),
-        })
-    }
-
     fn file_count(&self) -> Result<u64> {
         fn walk(dir: &std::path::Path) -> u64 {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1705,6 +1730,10 @@ impl Projection for ProjectionIndex {
         }
 
         Ok(walk(&self.dir))
+    }
+
+    fn files_after_optimize(&self) -> u64 {
+        self.optimized_files.load(Ordering::Relaxed)
     }
 
     /// Counted from the directory, as [`file_count`](Self::file_count) is:
@@ -1940,7 +1969,7 @@ mod upkeep {
         // Measured, not chosen: the file count after three thousand writes
         // that left their flush to the server.
         assert!(
-            !is_fragmented(136),
+            !is_fragmented(136, 0),
             "136 files is inside the budget, which is why this condition \
              cannot be the graph's"
         );
@@ -1967,11 +1996,47 @@ mod upkeep {
         assert!(!wastes_disk(8, 1), "eight blocks is the floor");
         assert!(wastes_disk(9, 43), "a ninth on a small index is waste");
         assert!(
-            !is_fragmented(9 * 6),
+            !is_fragmented(9 * 6, 0),
             "and the file budget would not have asked yet"
         );
         assert!(!wastes_disk(100, 13_014), "a large index is allowed more");
         assert!(wastes_disk(102, 13_014));
+    }
+
+    /// An index `optimize` cannot bring under the budget is not asked again
+    /// until it has grown.
+    ///
+    /// The first assertion is the one the budget alone failed: an index its
+    /// own `optimize` left at 300 files was asked for another after every
+    /// drain that did work, and the answer was the same 300 files.
+    #[test]
+    fn an_index_optimize_cannot_shrink_is_not_asked_again_until_it_grows() {
+        assert!(
+            !is_fragmented(300, 300),
+            "nothing has grown since the last optimize"
+        );
+        assert!(
+            !is_fragmented(300 + 2 * 10, 300),
+            "ten reopens' write-ahead logs are not growth worth an optimize"
+        );
+        assert!(
+            is_fragmented(300 + 65, 300),
+            "a quarter of the budget past the floor is"
+        );
+        assert!(!is_fragmented(2_317, 2_317), "nor is MIRACL's floor");
+    }
+
+    /// Under the budget the floor changes nothing, and an index this process
+    /// has not optimized is held to the budget alone.
+    #[test]
+    fn below_the_budget_the_floor_changes_nothing() {
+        assert!(!is_fragmented(256, 0));
+        assert!(is_fragmented(257, 0), "a reopened index is asked once");
+        assert!(
+            is_fragmented(257, 40),
+            "an index optimize left small keeps the plain budget"
+        );
+        assert!(!is_fragmented(u64::MAX, u64::MAX), "the floor saturates");
     }
 
     /// A completeness outside 0.0..=1.0 must not read as a negative remainder.
