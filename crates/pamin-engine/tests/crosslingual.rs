@@ -801,6 +801,15 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
         100.0 * (counted.offered - counted.scored) as f64 / counted.offered as f64,
         counted.offered,
     );
+    println!(
+        "  actual rerank work: {} tokens, {} padded tokens, {} batches; \
+         encoding {:.1} ms/query, padding + inference {:.1} ms/query",
+        counted.tokens,
+        counted.padded_tokens,
+        counted.batches,
+        counted.encode_us as f64 / 1_000.0 / queries as f64,
+        counted.forward_us as f64 / 1_000.0 / queries as f64,
+    );
 }
 
 /// Asserts the floors, unless this is a run of some other profile.
