@@ -7,6 +7,7 @@
 
 pub mod cascade;
 pub mod channel;
+pub mod env;
 pub mod filter;
 pub mod fusion;
 pub mod graph;
