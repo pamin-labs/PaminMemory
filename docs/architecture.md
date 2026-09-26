@@ -20,7 +20,7 @@ flowchart TD
 
     A -- "outbox, settled by the cascade" --> P
 
-    P -- "three channels" --> F["reciprocal rank fusion, in our layer"]
+    P -- "three channels" --> F["banded rank fusion, in our layer"]
     A -- "graph channel" --> F
     F --> R["optional cross-encoder rerank"]
     R --> O([results, each carrying why it is here])

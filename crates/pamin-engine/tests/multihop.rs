@@ -55,16 +55,17 @@
 
 mod channels;
 mod features;
+mod harness;
 mod reranking;
 mod scoring;
 mod statistics;
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use pamin_core::Fusion;
-use pamin_engine::{Depths, Engine, Write};
+use pamin_engine::{Depths, Engine};
 use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
@@ -148,7 +149,7 @@ struct Corpus {
 
 impl Corpus {
     fn load() -> Self {
-        let dir = dataset_dir();
+        let dir = harness::dataset_dir("MUSIQUE_DIR", "musique");
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
@@ -239,16 +240,6 @@ impl Corpus {
             );
         }
     }
-}
-
-fn dataset_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("MUSIQUE_DIR") {
-        return PathBuf::from(dir);
-    }
-    std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"))
-        .join("musique")
 }
 
 /// Fetches one page if it is not already cached, through `curl` for the reason
@@ -559,45 +550,23 @@ async fn search_answers_questions_that_take_several_steps() {
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     let mut written = 0usize;
     for memory in &corpus.memories {
-        let existing = pamin_store::repository::find_topic(
-            engine.database.pool(),
-            engine.project,
+        if !harness::write_absent(
+            engine,
             &memory.title,
+            &memory.text,
+            "eng",
+            "evaluation corpus",
         )
         .await
-        .expect("look for the topic");
-        if existing.is_some() {
+        {
             continue;
         }
         written += 1;
-        engine
-            .write(&Write {
-                topic: &memory.title,
-                content: &memory.text,
-                content_hash: &memory.text.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "evaluation corpus",
-                promoted: true,
-                language: Some("eng"),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", memory.title));
         if written.is_multiple_of(2_000) {
             println!("  wrote {written} memories");
         }
     }
-    let drained = engine
-        .drain_cascade(pamin_engine::Owed::Everything)
-        .await
-        .expect("drain the cascade");
-    assert_eq!(
-        drained.pending, 0,
-        "the corpus is not fully indexed: {} jobs still owed",
-        drained.pending
-    );
+    harness::drain(engine).await;
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.memories.len());
     }
