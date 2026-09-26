@@ -166,6 +166,8 @@
 //! queries. The default asks each question in one language, rotating through
 //! the eleven, which is 1,190 queries covering every language and every
 //! question and takes a eleventh of the time.
+//! `TIERS=accurate PAMIN_EVAL_SCORES_OUT=/path/to/scores.csv` also exports
+//! each query's nDCG@10 for a paired comparison across code revisions.
 
 mod channels;
 mod features;
@@ -1435,6 +1437,22 @@ async fn search_reaches_across_languages() {
             report(&format!("{tier:?}, {named}"), &groups, cost);
             report_reranking(&engine, tier, queries.len());
             priced.push((tier, cost, groups));
+        }
+
+        if let Ok(path) = std::env::var("PAMIN_EVAL_SCORES_OUT") {
+            use std::fmt::Write as _;
+
+            let mut rows = String::from("tier,group,query_index,ndcg_at_10\n");
+            for (tier, _, groups) in &priced {
+                for (group, scores) in groups {
+                    for (query_index, score) in scores.per_query.iter().enumerate() {
+                        writeln!(rows, "{},{group},{query_index},{score:.17}", tier.name())
+                            .expect("write a score row");
+                    }
+                }
+            }
+            std::fs::write(&path, rows).expect("write paired scores");
+            println!("  wrote paired scores to {path}");
         }
 
         let (_, _, baseline) = &priced[0];
