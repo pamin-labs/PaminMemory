@@ -169,17 +169,18 @@
 
 mod channels;
 mod features;
+mod harness;
 mod reranking;
 mod scoring;
 mod statistics;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use pamin_core::{Channel, Fusion, Why};
-use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile, Rerank, VectorIndex};
+use pamin_engine::{Depths, Engine};
+use pamin_index::{Access, Embedder, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 /// The languages XQuAD-R covers, in the order the rotation walks them.
@@ -195,6 +196,7 @@ const LANGUAGES: [&str; 11] = [
 const SOURCE: &str =
     "https://raw.githubusercontent.com/google-research-datasets/lareqa/master/xquad-r";
 
+use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
@@ -213,9 +215,6 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
-
-/// The profile the floors were measured against, and the product default.
-const DEFAULT_PROFILE: &str = "accuracy";
 
 /// Per group: the nDCG@10 and recall@50 floors for the embedding space.
 ///
@@ -329,7 +328,7 @@ const GROUPS: [&str; 2] = ["cross_lingual", "same_language"];
 impl Corpus {
     /// Reads the eleven language files, fetching them if they are not there.
     fn load() -> Self {
-        let dir = dataset_dir();
+        let dir = harness::dataset_dir("LAREQA_DIR", "xquad-r");
         fetch(&dir);
 
         let mut sentences = Vec::new();
@@ -478,17 +477,6 @@ impl Corpus {
         }
         format!("{hash:016x}")
     }
-}
-
-/// Where the dataset lives.
-fn dataset_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("LAREQA_DIR") {
-        return PathBuf::from(dir);
-    }
-    let base = std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"));
-    base.join("xquad-r")
 }
 
 /// Downloads the language files that are not there yet.
@@ -888,13 +876,6 @@ fn fusion(setting: Option<(f32, f32)>) -> Fusion {
     }
 }
 
-/// The profile to measure.
-fn profile() -> (String, Profile) {
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).expect("a known profile");
-    (named, profile)
-}
-
 // ---------------------------------------------------------------------------
 // The embedding space on its own
 // ---------------------------------------------------------------------------
@@ -912,9 +893,7 @@ fn the_model_reaches_across_languages() {
         queries.len()
     );
 
-    let home = std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"));
+    let home = eval_home();
     let mut embedder =
         Embedder::load(profile, &home.join("models")).expect("load the embedding model");
 
@@ -2646,58 +2625,36 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
 /// content, and a corpus whose sentences named each other would measure the
 /// graph channel on relationships the dataset does not assert.
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
-    let project = engine.project;
     let mut written = 0;
 
     for sentence in &corpus.sentences {
-        let existing =
-            pamin_store::repository::find_topic(engine.database.pool(), project, &sentence.key)
-                .await
-                .expect("look for the topic");
-        if existing.is_some() {
-            continue;
+        // The dataset's own two-letter tags, which are not what the product
+        // writes: `pamin write` takes its language from `detect_language`, and
+        // that returns ISO-639-3 -- `eng` where this says `en`. Nothing
+        // compares the two today, and the rule that would have (a fusion
+        // weight that knew the query's language) was measured and dropped.
+        // Left as the dataset has it rather than translated, because changing
+        // it would mean re-indexing thirteen thousand sentences to alter a
+        // column no reader consults. Anything that starts consulting it should
+        // fix this first.
+        if harness::write_absent(
+            engine,
+            &sentence.key,
+            &sentence.text,
+            sentence.language,
+            "cross-lingual evaluation corpus",
+        )
+        .await
+        {
+            written += 1;
         }
-        written += 1;
-        engine
-            .write(&Write {
-                topic: &sentence.key,
-                content: &sentence.text,
-                content_hash: &sentence.text.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "cross-lingual evaluation corpus",
-                promoted: true,
-                // The dataset's own two-letter tags, which are not what the
-                // product writes: `pamin write` takes its language from
-                // `detect_language`, and that returns ISO-639-3 -- `eng` where
-                // this says `en`. Nothing compares the two today, and the rule
-                // that would have (a fusion weight that knew the query's
-                // language) was measured and dropped. Left as the dataset has
-                // it rather than translated, because changing it would mean
-                // re-indexing thirteen thousand sentences to alter a column no
-                // reader consults. Anything that starts consulting it should
-                // fix this first.
-                language: Some(sentence.language),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", sentence.key));
     }
 
     if written > 0 {
         println!("  wrote {written} of {} sentences", corpus.sentences.len());
     }
     let started = std::time::Instant::now();
-    let drained = engine
-        .drain_cascade(pamin_engine::Owed::Everything)
-        .await
-        .expect("drain the cascade");
-    assert_eq!(
-        drained.pending, 0,
-        "the corpus is not fully indexed: {} jobs still owed",
-        drained.pending
-    );
+    let drained = harness::drain(engine).await;
     if written > 0 {
         println!(
             "  ran {} cascade jobs in {:.0}s",
