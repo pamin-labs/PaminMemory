@@ -2,12 +2,11 @@
 
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 
 workspace_models = Path(sys.argv[1])
-hub_cache = Path(os.environ.get("HF_HOME", workspace_models))
+hub_cache = workspace_models
 models = json.loads((Path(__file__).parent / "xquad-r-model-artifacts.json").read_text())["models"]
 
 
