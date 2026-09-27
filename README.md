@@ -238,9 +238,9 @@ Edges are versioned the way memories are. Changing one closes the old version an
 
 ## Measured
 
-Every figure comes from `pamin search` and `pamin write` themselves rather than
-from the model or the index underneath them, on four cores. **The numbers and
-the conditions they were taken under are in
+The current retrieval accuracy below runs through `Engine::search_reranked`;
+the historical CLI latency and write figures came from `pamin search` and
+`pamin write` on a four-core machine. **The numbers and conditions are in
 [docs/measured.md](docs/measured.md)**; the comparison against other memory
 systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
@@ -248,20 +248,21 @@ under [benchmarks/results/](benchmarks/results).
 
 A new or reindexed `accuracy` index embeds `name: content`, and the `accurate`
 tier reranks the whole fused head, blending model and fusion scores. Older
-indexes retain content-only vectors until `pamin reindex`. On a named XQuAD-R
-index, through the shipped `search_reranked` path:
+indexes retain content-only vectors until `pamin reindex`. Through the shipped
+`search_reranked` path:
 
 | retrieval group | result | measured on |
 | --- | --- | --- |
-| query and answer in different languages | nDCG@10 **0.7274**, recall@50 **0.9032** | 1,190 queries, 13,014 sentences |
-| query and answer in the same language | nDCG@10 **0.8691**, recall@50 **0.9647** | the same queries, with the same-language answer key |
+| XQuAD-R, query and answer in different languages | nDCG@10 **0.7274**, recall@50 **0.9032** | named index, 1,190 queries, 13,014 sentences |
+| XQuAD-R, query and answer in the same language | nDCG@10 **0.8691**, recall@50 **0.9647** | the same queries, with the same-language answer key |
+| MIRACL Swahili dev | nDCG@10 **0.8193**, recall@50 **0.9568** | 482 judged queries, 131,924 passages; [conditions](docs/cli.md) |
 
 The [committed run summary](benchmarks/results/retrieval/summary-current-xquad.json)
 records the path and its reproducible harness command.
 
-The following measurements are historical baselines. MIRACL has not been
-retaken under the current full-head path; latency and resident memory were
-measured on another machine and cannot be carried over to this one.
+The following measurements are historical baselines. Their latency and
+resident memory were measured under earlier paths or on another machine and
+cannot be carried over to the current retrieval rows.
 
 | historical measurement | result | condition |
 | --- | --- | --- |
