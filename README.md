@@ -246,9 +246,10 @@ systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
 under [benchmarks/results/](benchmarks/results).
 
-The current `accuracy` profile embeds `name: content` and the `accurate` tier
-reranks the whole fused head, blending model and fusion scores. On XQuAD-R,
-through the shipped `search_reranked` path:
+A new or reindexed `accuracy` index embeds `name: content`, and the `accurate`
+tier reranks the whole fused head, blending model and fusion scores. Older
+indexes retain content-only vectors until `pamin reindex`. On a named XQuAD-R
+index, through the shipped `search_reranked` path:
 
 | retrieval group | result | measured on |
 | --- | --- | --- |
