@@ -253,8 +253,8 @@ index, through the shipped `search_reranked` path:
 
 | retrieval group | result | measured on |
 | --- | --- | --- |
-| query and answer in different languages | nDCG@10 **0.7268**, recall@50 **0.9032** | 1,190 queries, 13,014 sentences |
-| query and answer in the same language | nDCG@10 **0.8682**, recall@50 **0.9647** | the same queries, with the same-language answer key |
+| query and answer in different languages | nDCG@10 **0.7274**, recall@50 **0.9032** | 1,190 queries, 13,014 sentences |
+| query and answer in the same language | nDCG@10 **0.8691**, recall@50 **0.9647** | the same queries, with the same-language answer key |
 
 The [committed run summary](benchmarks/results/retrieval/summary-current-xquad.json)
 records the path and its reproducible harness command.

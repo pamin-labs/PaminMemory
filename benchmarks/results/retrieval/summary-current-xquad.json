@@ -1,6 +1,6 @@
 {
   "table": "Current BGE-M3 XQuAD-R product search",
-  "status": "existing 2026-09-27 run, copied from ADR 0001; this documentation branch does not claim a new run",
+  "status": "measured product-path run; latency shared a busy machine and is not reported",
   "corpus": {
     "name": "XQuAD-R",
     "sentences": 13014,
@@ -19,16 +19,28 @@
     "reranker": "accurate (BGE-reranker-v2-m3), full head of 30",
     "fusion_model_blend": 0.2
   },
+  "machine": {
+    "os": "Darwin 25.6.0 arm64",
+    "model": "Mac16,12",
+    "logical_cpus": 10,
+    "memory_bytes": 34359738368,
+    "load": "shared with a MuSiQue PPLX index build; run duration is not a latency result"
+  },
   "metrics": {
     "cross_language": {
-      "ndcg_at_10": 0.7268,
+      "ndcg_at_10": 0.7274,
       "recall_at_50": 0.9032
     },
     "same_language": {
-      "ndcg_at_10": 0.8682,
+      "ndcg_at_10": 0.8691,
       "recall_at_50": 0.9647
     }
   },
   "reproduce": "PAMIN_PROFILE=accuracy cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture",
-  "resources": "Fresh execution downloads models and builds a 13,014-sentence index; inspect disk and memory headroom before running."
+  "resources": "Fresh execution downloads models and builds a 13,014-sentence index; inspect disk and memory headroom before running.",
+  "source_run": {
+    "log": "xquad-r-current-run.log",
+    "sha256": "efa037566f1cfa2a2f7dada327d6ce225a205bf7fc4a89bd802c89714664bb6c",
+    "code_commit": "94be212511e4d0cd9cc47b3c4aa2a33b68e22415"
+  }
 }

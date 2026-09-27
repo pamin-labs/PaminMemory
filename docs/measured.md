@@ -17,8 +17,12 @@ same-language answer key. All 1,190 queries use `search_reranked`:
 
 | group | nDCG@10 | recall@50 |
 | --- | ---: | ---: |
-| cross-language | **0.7268** | **0.9032** |
-| same-language | **0.8682** | **0.9647** |
+| cross-language | **0.7274** | **0.9032** |
+| same-language | **0.8691** | **0.9647** |
+
+The previous full run reported 0.7268 and 0.8682 nDCG@10 with the same
+recall. These were separate runs; the small differences here are not credited
+to an optimization.
 
 The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
 records the model, index encoding and harness command.
