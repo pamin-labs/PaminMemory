@@ -668,4 +668,17 @@ mod tests {
         });
         assert_eq!(order, ["lexical", "a", "b", "c"]);
     }
+
+    #[test]
+    fn shipped_accurate_replay_blends_when_the_model_order_differs() {
+        let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
+        assert_eq!(
+            scores.order(shipped_rule(Rerank::Accurate)),
+            ["lexical", "a", "b", "c"]
+        );
+        assert_eq!(
+            scores.order(shipped_rule(Rerank::Fast)),
+            ["lexical", "b", "a", "c"]
+        );
+    }
 }
