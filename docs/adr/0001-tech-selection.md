@@ -1450,6 +1450,52 @@ with the export a product would ship, but the maintainer weighed it against a
 3.4× slower write path and chose BGE-M3; the decision and the figures it rests
 on close this section.
 
+**Rechecked against the current full-head `accurate` path, 2026-09-27:
+still rejected on accuracy.** An experimental profile loaded
+[Perplexity's official MIT int8 ONNX export](https://huggingface.co/perplexity-ai/pplx-embed-v1-0.6b)
+with the same 512-token input limit, 1024-dimensional fp16 HNSW index,
+`name: content` encoding, fused candidate depth, BGE cross-encoder and 0.2
+reranker-score blend as the current BGE-M3 path. All 13,014 XQuAD-R sentences
+were indexed and all 1,190 rotated questions searched through
+`search_reranked`. The BGE column is the earlier run on the same corpus
+fingerprint and corrected answer key; it was not alternated with pplx, so
+the aggregate differences below are descriptive, not a paired significance
+claim.
+
+| Current full-head XQuAD-R | BGE-M3 | pplx | Difference |
+| --- | ---: | ---: | ---: |
+| Cross-language nDCG@10 | 0.7268 | 0.7251 | −0.0017 |
+| Cross-language recall@50 | 0.9032 | 0.8950 | −0.0082 |
+| Same-language nDCG@10 | 0.8682 | 0.8689 | +0.0007 |
+| Same-language recall@50 | 0.9647 | 0.9630 | −0.0017 |
+
+The Greek weakness was specified for a separate paired check before this run,
+because the earlier pplx trial lost 0.0512 nDCG in that language. Reusing the
+two completed indexes, 108 Greek questions were asked of both models through
+the same `search_reranked` entry point. Cross-language nDCG@10 was 0.7218 →
+0.6999 (−0.0219, 25 wins / 38 losses, paired bootstrap 95% interval
+[−0.0486, +0.0024]); recall@50 was **0.9259 → 0.8685** (−0.0574, 9 wins /
+26 losses, interval [−0.1009, −0.0148], unadjusted paired sign-flip
+`p = 0.0093`). Same-language nDCG moved 0.8774 → 0.8941, without a
+detectable gain (`p = 0.1638`). The current reranker shrinks the old Greek
+nDCG loss but does not remove its recall loss. Under the accuracy-first rule,
+there is no general XQuAD-R gain to offset this preselected weakness, so the
+experimental profile was removed without spending another full rebuild on
+MuSiQue. Its older MuSiQue gain was measured under a different rerank path and
+is not claimed for this one.
+
+The 13,014-sentence cold project ran 39,043 cascade jobs in 5,659 s; the
+complete test took 9,611 s and search averaged 3,316 ms/question, of which
+3,020 ms was reranker padding and inference. These are single-run absolute
+costs on a shared machine, not a speed ratio against BGE. The compacted pplx
+index was about 80 MiB, the same order as BGE's for the same vector width;
+the official ONNX external-weight file is 706 MB against about 570 MB for
+BGE's int8 model. Product-server peak RSS was not measured. A proposed
+eight-text inference batch was also dropped: on real XQuAD-R sentences its
+int8 output changed for one of 32 texts even though the pre-quantization
+pooled output stayed within cosine 0.99999970, so it cannot be used as a
+bit-identical acceleration of the current encoding.
+
 The survey above named one candidate and four reasons it was not yet a
 default, the first being that it had been measured on the vector channel
 alone. The end-to-end trial ran it through `search_reranked` at the `accurate`
