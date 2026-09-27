@@ -1279,6 +1279,30 @@ The pipeline reproduces the engine's own BGE-M3 figures within 0.0013 on three
 arms and 0.0062 on XQuAD-R same-language, where the int8 export itself moves by
 that much with the runtime's optimisation level (cosine 0.985 between builds).
 
+**Granite 97M multilingual R2, screened on the corrected XQuAD-R key on
+2026-09-27: rejected.** [IBM's Apache-2.0 model](https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2)
+has 384-dimensional output and an ONNX export, so its lower model and index
+cost merited a precision-first check. All 13,014 sentences were embedded with
+CLS pooling, and the same 1,190 questions rotated over eleven languages were
+compared against the full multilingual pool by exact cosine. The BGE-M3 arm
+reproduced the current `the_model_reaches_across_languages` baseline exactly:
+
+| Embedding space only | Cross nDCG@10 | Cross recall@50 | Same nDCG@10 | Same recall@50 |
+| --- | ---: | ---: | ---: | ---: |
+| BGE-M3 int8, shipped | **0.6420** | **0.8997** | **0.7925** | **0.9571** |
+| Granite 97M int8 | 0.2914 | 0.5369 | 0.6242 | 0.8622 |
+| Granite 97M fp32 | 0.3582 | 0.6508 | 0.6798 | 0.8975 |
+
+The fp32 Granite cross-lingual nDCG difference against BGE-M3 is −0.2838
+paired by question (95% bootstrap interval [−0.3006, −0.2666]); int8 costs a
+further 0.0668 against its own fp32 weights. The ONNX output is
+`last_hidden_state`, the model card's CLS pooling was used, and the same text
+embedded alone or in a batch of 32 had cosine 1.000000, so neither output
+selection nor batch instability explains the loss. These are model-only
+figures; no `search_reranked` product run or index migration was justified
+after a deficit this large. The model card's multilingual benchmark average
+does not predict ranking against this project's mixed-language candidate pool.
+
 **The two highest-ranked models collapse across languages**, and MTEB cannot
 see it: it scores each language pair against a corpus in one language, while a
 memory store holds all its languages in one pool. Harrier and mE5 rank a
