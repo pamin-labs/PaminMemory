@@ -1496,6 +1496,16 @@ int8 output changed for one of 32 texts even though the pre-quantization
 pooled output stayed within cosine 0.99999970, so it cannot be used as a
 bit-identical acceleration of the current encoding.
 
+**Reproduction.** The [fixed, non-merge experimental commit](https://github.com/pamin-labs/PaminMemory/commit/8a72a16e39d5239b978db189764d9ff03063e8cf)
+pins the official pplx model revision, carries an optional profile solely for
+this trial, and includes `benchmarks/reproduce_pplx_current.sh`. It creates an
+ignored Greek test target, invokes the existing full XQuAD-R product harness,
+and writes raw logs and per-question scores. The committed summary and
+108-question JSON were regenerated from this branch; a second Greek run
+produced a byte-identical JSON file and the same paired statistics. This
+reproduction code is kept outside the merge stack so the rejected model does
+not become a product option.
+
 The survey above named one candidate and four reasons it was not yet a
 default, the first being that it had been measured on the vector channel
 alone. The end-to-end trial ran it through `search_reranked` at the `accurate`
