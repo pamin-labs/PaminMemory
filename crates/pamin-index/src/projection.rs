@@ -535,8 +535,9 @@ const MAX_FILES: u64 = 256;
 
 /// Whether an index is spread across more files than it should be.
 ///
-/// `floor` is what the last `optimize` left, and past [`MAX_FILES`] the index
-/// has to have grown by a quarter of the budget since then. Without that, an
+/// `floor` is what the last `optimize` left. When that floor is already above
+/// [`MAX_FILES`], the index has to grow by a quarter of the budget before
+/// optimizing again. Below the budget, the file ceiling still applies. Without that, an
 /// index `optimize` cannot bring under the budget asked for it after every
 /// drain that did work: the scalar files of sealed segments are never merged,
 /// so an index with two or more sealed segments can stay above the budget for
@@ -549,7 +550,12 @@ const MAX_FILES: u64 = 256;
 /// Zero, for an index this process has not optimized, is the budget alone, so
 /// a reopened index is asked once and learns its floor from that.
 pub fn is_fragmented(files: u64, floor: u64) -> bool {
-    files > MAX_FILES.max(floor.saturating_add(MAX_FILES / 4))
+    files
+        > if floor > MAX_FILES {
+            floor.saturating_add(MAX_FILES / 4)
+        } else {
+            MAX_FILES
+        }
 }
 
 /// How many unmerged vector blocks an index may hold whatever its size.
@@ -2032,6 +2038,15 @@ mod upkeep {
     fn below_the_budget_the_floor_changes_nothing() {
         assert!(!is_fragmented(256, 0));
         assert!(is_fragmented(257, 0), "a reopened index is asked once");
+        assert!(!is_fragmented(256, 240));
+        assert!(
+            is_fragmented(257, 240),
+            "a prior optimize below the ceiling cannot raise that ceiling"
+        );
+        assert!(
+            is_fragmented(257, 256),
+            "the ceiling itself is not a floor above it"
+        );
         assert!(
             is_fragmented(257, 40),
             "an index optimize left small keeps the plain budget"
