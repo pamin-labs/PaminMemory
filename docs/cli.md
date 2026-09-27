@@ -708,9 +708,10 @@ matches and the meaning does not. They were also once described here as nearly
 the same channel, and they are not: Kendall tau-b between their rankings is
 0.2816, 0.3188 and 0.2973 on the three corpora this project measures, so they
 agree about a third of the time. They share a field, not a ranking. The eighth
-each is one number doing the work of two — no sweep has ever moved them
-independently, and the n-gram channel is the weaker of the two wherever either
-is measured alone. An eighth rather than the quarter that shipped
+each is one number doing the work of two. A later independent 25-pair sweep
+on XQuAD-R and MuSiQue found different preferred pairs across the corpora,
+so the shipped pair has not changed. The n-gram channel is the weaker of the
+two wherever either is measured alone. An eighth rather than the quarter that shipped
 before because on MIRACL Swahili — 482 questions people asked, judged by
 people — the quarter ranked *worse* than the vector channel by itself, and
 because the quarter had never been compared against anything smaller than

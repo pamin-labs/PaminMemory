@@ -341,26 +341,31 @@ BGE-M3 indexes answered all 1,190 XQuAD-R questions and the first 1,000
 MuSiQue two-hop questions. `CHANNELS` asked for a wide, untruncated
 `search_fused` trace, then replayed the production `Fusion::fuse` with each
 weight pair. The MuSiQue arm used `MUSIQUE_QUESTIONS=1000` to reuse its
-10,785-memory project. These are fusion-only screens, not product
+10,785-memory project. Both reused projects asserted `Passage::Named` and the
+expected document counts before writing or collecting scores. These are fusion-only screens, not product
 `search_reranked` measurements.
 
 | Segmented / 2-gram | XQuAD-R cross nDCG@10 | XQuAD-R same nDCG@10 | MuSiQue two-hop nDCG@10 | MuSiQue recall@50 |
 | --- | ---: | ---: | ---: | ---: |
 | **0.125 / 0.125 (ships)** | **0.6372** | **0.8438** | **0.6814** | **0.8060** |
 | 0 / 0 | 0.6677 | 0.8138 | 0.6704 | 0.7995 |
+| 0 / 0.125 | 0.6542 | 0.8312 | 0.6732 | 0.8030 |
 | 0 / 0.25 | 0.6377 | 0.8445 | 0.6753 | 0.8025 |
 | 0.25 / 0 | 0.6358 | 0.8395 | 0.6802 | 0.8035 |
 | 0.25 / 0.125 | 0.6195 | 0.8510 | 0.6834 | 0.8050 |
 
-The harness's implemented selection rule maximises macro-mean nDCG@10 over
-groups in five folds, breaking ties toward the shipped setting. On XQuAD-R it
-chose `k = 0` in four folds and 0 / 0.125 in one: held-out macro mean 0.7424
-against the shipped 0.7405 (paired +0.0019, `p = 0.0361`). Yet `k = 0`
-lowers same-language nDCG 0.8438 → 0.8388 and cross-language recall 0.9032 →
-0.8924. On MuSiQue the same rule chose 0.25 / 0.125 in four folds and 0.25 /
-0.0625 in one: held-out nDCG 0.6829 against 0.6814 (+0.0014,
-`p = 0.3811`). The folds do not agree within either corpus, and the settings
-favoured by the two corpora do not transfer.
+The selection rule maximises macro-mean nDCG@10 over groups in five folds,
+breaking ties toward the shipped setting. **For the lexical-weight question it
+chooses only among the 25 lexical pairs.** On XQuAD-R it chose 0 / 0.125 in
+four folds and 0.0625 / 0.125 in one: held-out macro mean 0.7420 against the
+shipped 0.7405. Both answer keys for each physical query were assigned to the
+same fold, and the paired comparison averaged those keys into one observation
+per query (+0.0014, `p = 0.2206`). On MuSiQue it chose 0.25 / 0.125 in four
+folds and 0.25 / 0.0625 in one: held-out nDCG 0.6829 against 0.6814
+(+0.0014, `p = 0.3811`). Neither held-out gain is significant, and the settings
+favoured by the two corpora do not transfer. A separate mixed-parameter
+diagnostic chose `k = 0` in four XQuAD-R folds; that choice does not establish
+anything about which lexical pair should ship.
 
 Removing both lexical channels raises XQuAD-R cross-language nDCG by 0.0305
 but lowers same-language by 0.0300 and MuSiQue by 0.0111, all with family
@@ -368,7 +373,7 @@ adjustment `p <= 0.0002`. Giving MuSiQue its highest grid nDCG, 0.25 / 0.125,
 buys only +0.0019 there (`p = 0.9880` after family adjustment) while losing
 0.0177 cross-lingual XQuAD-R (`p = 0.0001`). The near-neutral XQuAD-R arms
 0 / 0.25 and 0.25 / 0 both lose MuSiQue ranking and recall. The equal eighths
-stay because the implemented cross-validation finds no stable transferable
+stay because the lexical-only cross-validation finds no transferable gain and
 choice and the grid exposes a real cross-language versus same-language trade.
 MIRACL's earlier independent grid already favoured 0.25 / 0 by +0.0076
 (`p = 0.0580`), as recorded below; it is **not** an untouched held-out set for
