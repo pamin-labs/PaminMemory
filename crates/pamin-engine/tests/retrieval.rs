@@ -683,6 +683,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
         &labels,
         reranking::shipped_context(),
         &measured,
+        false,
     );
 }
 
@@ -729,6 +730,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
         &rules,
         reranking::shipped(&rules),
         &measured,
+        false,
     );
 }
 
@@ -899,6 +901,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         &variants,
         channels::shipped_row(&variants),
         &offline,
+        false,
     );
 
     println!(

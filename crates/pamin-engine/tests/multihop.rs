@@ -298,6 +298,13 @@ async fn search_answers_questions_that_take_several_steps() {
     )
     .await
     .expect("open the engine");
+    if std::env::var("CHANNELS").is_ok() {
+        assert_eq!(engine.passage(), pamin_index::Passage::Named);
+        assert_eq!(
+            engine.indexed_documents().expect("count documents") as usize,
+            corpus.memories.len()
+        );
+    }
     write_corpus(&engine, &corpus).await;
 
     let edges = channels::live_edges(&engine).await;
@@ -494,6 +501,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &labels,
             reranking::shipped_context(),
             &measured,
+            false,
         );
         return;
     }

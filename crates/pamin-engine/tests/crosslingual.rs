@@ -696,6 +696,16 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         &variants,
         channels::shipped_row(&variants),
         &offline,
+        true,
+    );
+    channels::lexical_cross_validated(
+        &format!("XQuAD-R lexical weights only, {named}"),
+        &GROUPS,
+        &whole,
+        &variants,
+        channels::shipped_row(&variants),
+        &offline,
+        true,
     );
 
     // Per language, against the vector channel alone rather than against
@@ -1091,6 +1101,13 @@ async fn search_reaches_across_languages() {
     .await
     .expect("open the engine");
 
+    if std::env::var("CHANNELS").is_ok() {
+        assert_eq!(engine.passage(), pamin_index::Passage::Named);
+        assert_eq!(
+            engine.indexed_documents().expect("count documents") as usize,
+            corpus.sentences.len()
+        );
+    }
     write_corpus(&engine, &corpus).await;
 
     // `PASSAGES`: the same memories in a second project whose vectors embed
@@ -2553,6 +2570,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
         &rules,
         reranking::shipped(&rules),
         &measured,
+        true,
     );
 }
 
@@ -2589,6 +2607,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
         &labels,
         reranking::shipped_context(),
         &measured,
+        true,
     );
 }
 

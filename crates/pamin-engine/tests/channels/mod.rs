@@ -391,8 +391,9 @@ pub fn sweep_table<T>(
 /// go to the shipped setting, so a sweep that finds nothing changes nothing.
 /// `recall@50` is not in the rule; it is reported beside it.
 ///
-/// Five folds stratified by group. For each, the rule sees the other four
-/// folds' means and its choice is scored on the fifth. Three numbers come out,
+/// Five folds stratified by group, with linked answer keys of one physical
+/// query kept in one fold when `linked` is true. For each, the rule sees the
+/// other four folds' means and its choice is scored on the fifth. Three numbers come out,
 /// and the gap between the first two is the one this repository never had:
 ///
 /// - the best macro nDCG@10 of any row, scored on the queries that chose it --
@@ -407,6 +408,7 @@ pub fn cross_validated<T>(
     variants: &[(String, T)],
     ship: Option<usize>,
     offline: &[BTreeMap<String, crate::scoring::Scores>],
+    linked: bool,
 ) {
     use crate::statistics;
 
@@ -474,12 +476,25 @@ pub fn cross_validated<T>(
         .iter()
         .map(|row| macro_mean(&by_group(row)))
         .fold(f64::MIN, f64::max);
-    let selected =
-        statistics::cross_validate(&matrix, &labels, &statistics::folds(&labels, 5), rule);
+    let assigned = if linked {
+        statistics::linked_folds(
+            &groups
+                .iter()
+                .map(|group| shipped[*group].per_query.len())
+                .collect::<Vec<_>>(),
+            5,
+        )
+    } else {
+        statistics::folds(&labels, 5)
+    };
+    let selected = statistics::cross_validate(&matrix, &labels, &assigned, rule);
     let procedure = macro_mean(&by_group(&selected.held_out));
     let current = macro_mean(&by_group(&baseline));
 
     println!("\n  choosing from this sweep, cross-validated over five folds, {title}");
+    if linked {
+        println!("  both answer keys for each physical query share one fold");
+    }
     println!(
         "  rule: maximise the mean over {} groups of nDCG@10, ties to what ships",
         groups.len()
@@ -493,10 +508,15 @@ pub fn cross_validated<T>(
         "  optimism of choosing in-sample                  {:+.4}",
         in_sample - procedure
     );
-    println!(
-        "  the procedure against what ships: {}",
+    let paired = if linked {
+        statistics::compare(
+            &statistics::linked_mean(&baseline, groups.len()),
+            &statistics::linked_mean(&selected.held_out, groups.len()),
+        )
+    } else {
         statistics::compare(&baseline, &selected.held_out)
-    );
+    };
+    println!("  the procedure against what ships: {paired}");
     let chosen: Vec<&str> = selected
         .chosen
         .iter()
@@ -518,6 +538,34 @@ pub fn cross_validated<T>(
     if selected.chosen.iter().any(|at| *at != selected.chosen[0]) {
         println!("  the folds disagree, so no single setting is a stable choice at this size");
     }
+}
+
+/// Select only among the 25 independently swept lexical weight pairs.
+///
+/// The full diagnostic also varies `k`, the combiner and graph weight. Its
+/// choice cannot answer whether the *lexical weights* should change, even if
+/// its macro mean is higher. Clone the small score matrix so the existing
+/// selection and paired-statistics owner remains the only implementation.
+pub fn lexical_cross_validated(
+    title: &str,
+    groups: &[&str],
+    shipped: &BTreeMap<String, crate::scoring::Scores>,
+    variants: &[(String, Fusion)],
+    ship: Option<usize>,
+    offline: &[BTreeMap<String, crate::scoring::Scores>],
+    linked: bool,
+) {
+    let indices: Vec<usize> = variants
+        .iter()
+        .enumerate()
+        .filter_map(|(at, (name, _))| name.starts_with("lex seg ").then_some(at))
+        .collect();
+    assert_eq!(indices.len(), 25, "the independent lexical grid changed");
+    let lexical: Vec<_> = indices.iter().map(|at| variants[*at].clone()).collect();
+    let rows: Vec<_> = indices.iter().map(|at| offline[*at].clone()).collect();
+    let baseline = ship.and_then(|at| indices.iter().position(|index| *index == at));
+    assert!(baseline.is_some(), "the lexical grid lost the shipped row");
+    cross_validated(title, groups, shipped, &lexical, baseline, &rows, linked);
 }
 
 /// Kendall's tau-b between two channels' orderings.
@@ -722,6 +770,16 @@ impl Diagnosis {
             &self.variants,
             shipped_row(&self.variants),
             &self.offline,
+            false,
+        );
+        lexical_cross_validated(
+            &format!("{title}, lexical weights only"),
+            &self.whole.keys().map(String::as_str).collect::<Vec<_>>(),
+            &self.whole,
+            &self.variants,
+            shipped_row(&self.variants),
+            &self.offline,
+            false,
         );
         println!();
     }

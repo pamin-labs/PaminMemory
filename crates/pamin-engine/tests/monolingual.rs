@@ -1085,6 +1085,7 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
         &rules,
         reranking::shipped(&rules),
         &measured,
+        false,
     );
 }
 
@@ -1127,6 +1128,7 @@ async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named:
         &labels,
         reranking::shipped_context(),
         &measured,
+        false,
     );
 }
 
@@ -1259,6 +1261,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         &variants,
         channels::shipped_row(&variants),
         &offline.iter().map(keyed).collect::<Vec<_>>(),
+        false,
     );
 
     println!(
