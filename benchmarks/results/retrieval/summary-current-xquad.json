@@ -1,0 +1,31 @@
+{
+  "table": "Current BGE-M3 XQuAD-R product search",
+  "status": "existing 2026-09-27 run, copied from ADR 0001; this documentation branch does not claim a new run",
+  "corpus": {
+    "name": "XQuAD-R",
+    "sentences": 13014,
+    "queries": 1190,
+    "languages": 11,
+    "fingerprint": "24ad7f1862182925"
+  },
+  "path": {
+    "entry": "Engine::search_reranked",
+    "profile": "accuracy (BGE-M3 int8)",
+    "passage": "Named: name: content",
+    "vector_index": "memory (fp16 field with f32 rescore)",
+    "reranker": "accurate (BGE-reranker-v2-m3), full head of 30",
+    "fusion_model_blend": 0.2
+  },
+  "metrics": {
+    "cross_language": {
+      "ndcg_at_10": 0.7268,
+      "recall_at_50": 0.9032
+    },
+    "same_language": {
+      "ndcg_at_10": 0.8682,
+      "recall_at_50": 0.9647
+    }
+  },
+  "reproduce": "PAMIN_PROFILE=accuracy cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture",
+  "resources": "Fresh execution downloads models and builds a 13,014-sentence index; inspect disk and memory headroom before running."
+}

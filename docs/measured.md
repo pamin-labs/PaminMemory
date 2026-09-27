@@ -20,6 +20,9 @@ same-language answer key. All 1,190 queries use `search_reranked`:
 | cross-language | **0.7268** | **0.9032** |
 | same-language | **0.8682** | **0.9647** |
 
+The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
+records the model, index encoding and harness command.
+
 The figures below preserve earlier runs for their design history. They were
 not rerun under every later change to passage encoding, the answer key or the
 full-head rerank. In particular, the MIRACL default-profile row is not a
