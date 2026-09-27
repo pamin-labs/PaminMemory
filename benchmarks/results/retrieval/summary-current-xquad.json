@@ -6,7 +6,10 @@
     "sentences": 13014,
     "queries": 1190,
     "languages": 11,
-    "fingerprint": "24ad7f1862182925"
+    "passage_fingerprint": "24ad7f1862182925",
+    "source_revision": "9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c",
+    "input_sha256_manifest": "xquad-r-input.sha256",
+    "input_manifest_sha256": "cf47b10b898adc62d2643380ec1e7914a604622dc642549c9db47fa48fa28755"
   },
   "path": {
     "entry": "Engine::search_reranked",

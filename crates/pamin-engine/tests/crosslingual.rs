@@ -198,8 +198,7 @@ const LANGUAGES: [&str; 11] = [
 /// The published release, not the HuggingFace mirror of it: the mirror carries
 /// XQuAD's paragraphs rather than LAReQA's sentence-level candidate pool, which
 /// is a different and much easier task.
-const SOURCE: &str =
-    "https://raw.githubusercontent.com/google-research-datasets/lareqa/master/xquad-r";
+const SOURCE: &str = "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r";
 
 use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
