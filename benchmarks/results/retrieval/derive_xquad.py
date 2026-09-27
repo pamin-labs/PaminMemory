@@ -12,6 +12,8 @@ assert "test search_reaches_across_languages ... ok" in text
 commits = re.findall(r"^\s*benchmark code commit: ([0-9a-f]{40})\s*$", text, re.M)
 assert len(commits) == 1
 assert re.search(r"^\s*index passage: named\s*$", text, re.M)
+assert "reranker device: cpu; export: onnx/model_int8.onnx" in text
+assert re.findall(r"^\s*indexed documents: (\d+)\s*$", text, re.M) == ["13014"]
 rows = re.findall(r"^\s*(cross_lingual|same_language)\s+(\d+)\s+([\d.]+)\s+([\d.]+)", text, re.M)
 assert len(rows) == 2 and {row[0] for row in rows} == {"cross_lingual", "same_language"}
 assert all(int(row[1]) == 1190 for row in rows)
@@ -28,6 +30,8 @@ models = root / "xquad-r-model-artifacts.json"
 models_hash = hashlib.sha256(models.read_bytes()).hexdigest()
 assert models_hash == "d8616e71f9a49eb88b19066448d109b72acd4beb01c0b67d43a03700bb26c71a"
 summary["status"] = "measured product-path run; latency shared a busy machine and is not reported"
+summary["path"]["reranker_device"] = "cpu"
+summary["path"]["reranker_export"] = "onnx/model_int8.onnx"
 summary["source_run"] = {
     "log": log.name,
     "sha256": hashlib.sha256(log.read_bytes()).hexdigest(),

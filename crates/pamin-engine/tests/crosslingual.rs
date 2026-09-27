@@ -1162,6 +1162,11 @@ async fn search_reaches_across_languages() {
         std::env::var_os("HF_HOME").is_none(),
         "unset HF_HOME for this pinned benchmark"
     );
+    assert_eq!(
+        std::env::var("PAMIN_DEVICE").as_deref(),
+        Ok("cpu"),
+        "set PAMIN_DEVICE=cpu for the reproducible XQuAD-R baseline"
+    );
     let git = Command::new("git")
         .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
         .output()
@@ -1176,6 +1181,7 @@ async fn search_reaches_across_languages() {
     );
     let commit = String::from_utf8(git.stdout).expect("git prints a UTF-8 commit hash");
     println!("  benchmark code commit: {}", commit.trim());
+    println!("  reranker device: cpu; export: onnx/model_int8.onnx");
     let corpus = Corpus::load();
     let queries = corpus.queries();
     let (named, profile) = profile();
@@ -1215,12 +1221,13 @@ async fn search_reaches_across_languages() {
         println!("  index passage: named");
     }
     write_corpus(&engine, &corpus).await;
-    if std::env::var("CHANNELS").is_ok() {
-        assert_eq!(
-            engine.indexed_documents().expect("count documents") as usize,
-            corpus.sentences.len()
-        );
-    }
+    let documents = engine.indexed_documents().expect("count documents") as usize;
+    assert_eq!(
+        documents,
+        corpus.sentences.len(),
+        "the reused XQuAD-R index has extra or missing documents"
+    );
+    println!("  indexed documents: {documents}");
 
     // `PASSAGES`: the same memories in a second project whose vectors embed
     // the topic's name, asked every question alongside this one. See

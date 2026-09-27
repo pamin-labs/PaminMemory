@@ -194,7 +194,8 @@ It prints group aggregates, not per-question rows. On a clean cache, run
 before the recorded search command; this fetches the two archived model
 revisions and makes the product loader use them. Its committed log is the
 source for `python3 benchmarks/results/retrieval/derive_xquad.py`, which reads
-the code commit and named passage encoding printed at run time;
+the code commit, named passage encoding, indexed document count and forced CPU
+reranker export printed at run time; the search command sets `PAMIN_DEVICE=cpu`.
 the input manifest covers all eleven upstream JSON files, including the
 question and answer keys, and the harness rejects stale cached copies. The
 archived index marker is checked as `named` by the extractor. The model
