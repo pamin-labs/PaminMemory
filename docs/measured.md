@@ -12,7 +12,7 @@ and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
 **Current XQuAD-R retrieval quality**, with the named-passage BGE-M3 index,
-the `accurate` tier reranking the whole fused head, and the corrected
+the CPU int8 `accurate` tier reranking the whole fused head, and the corrected
 same-language answer key. All 1,190 queries use `search_reranked`:
 
 | group | nDCG@10 | recall@50 |
@@ -27,10 +27,11 @@ to an optimization.
 The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
 records the model, index encoding and harness command.
 
-**Current MIRACL Swahili dev retrieval quality**, through the full-head
+**Recorded MIRACL Swahili dev full-head run**, through the
 `search_reranked` path on 131,924 passages and 482 judged queries: nDCG@10
 **0.8193**, recall@50 **0.9568**. The conditions and replay check are in
-[cli.md](cli.md).
+[cli.md](cli.md). Its complete code/device provenance has not been archived,
+so it is not part of the verified current headline.
 
 The figures below preserve earlier runs for their design history. They were
 not rerun under every later change to passage encoding, the answer key or the
@@ -57,18 +58,12 @@ Both corpora are fetched rather than vendored, and each has a harness in the
 repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
 XQuAD-R and `--test monolingual` for MIRACL.
 
-**The MIRACL row is older than the harness named beside it and older than the
-fusion the product now ships**, and both have to be said rather than tidied
-away. The fusion weight that produced 0.7359 was halved after a sweep on this
-very corpus (below), so that row is not the current default's score either; the
-default profile needs about ten hours of index building on four cores before it
-can be re-taken, and until it is, the XQuAD-R rows are the only two on this
-page taken at the fusion that ships. On the `speed` profile, which can be built
-in an hour, the same corpus moved from 0.6826 to 0.6882 fused when the weight
-was halved. The same applies to the LOCOMO and LongMemEval figures further down
-and to every latency figure on this page: all were taken at the quarter, and
-the weight reorders results without changing which ones are retrieved, so the
-latency rows are unaffected and the quality rows are not yet re-taken.
+**The historical MIRACL row predates the current harness and fusion.** The
+fusion weight that produced 0.7359 was later halved; that row remains a record
+of its original path. The current full-head run is described above, but its
+complete code/device provenance has not yet been archived beside XQuAD-R.
+The LoCoMo and LongMemEval rows below also retain their original configurations
+rather than claiming that every later retrieval change was rerun on them.
 
 Each XQuAD-R row was reproduced identically to four decimals by a second run
 before being placed here, which is what this harness does: fixed corpus, fixed

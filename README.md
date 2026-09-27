@@ -81,7 +81,7 @@ search there is not a product claim, and it is not made here.
 The row that means something is the last one. Thirty-five of these 59 questions
 have more than one gold session, and requiring all of them is the difference
 between finding the evidence and finding *some* of it: **79.7% against 89.8%,
-ten points over the lexical baseline, with no model called at any stage.**
+ten points over the lexical baseline, with no generative answerer or judge.**
 
 ### What the parity is bought with
 
@@ -248,17 +248,20 @@ under [benchmarks/results/](benchmarks/results).
 
 A new or reindexed `accuracy` index embeds `name: content`, and the `accurate`
 tier reranks the whole fused head, blending model and fusion scores. Older
-indexes retain content-only vectors until `pamin reindex`. Through the shipped
-`search_reranked` path:
+indexes retain content-only vectors until `pamin reindex`. Through the product
+`search_reranked` path, with the CPU int8 reranker explicitly selected:
 
 | retrieval group | result | measured on |
 | --- | --- | --- |
 | XQuAD-R, query and answer in different languages | nDCG@10 **0.7274**, recall@50 **0.9032** | named index, 1,190 queries, 13,014 sentences |
 | XQuAD-R, query and answer in the same language | nDCG@10 **0.8691**, recall@50 **0.9647** | the same queries, with the same-language answer key |
-| MIRACL Swahili dev | nDCG@10 **0.8193**, recall@50 **0.9568** | 482 judged queries, 131,924 passages; [conditions](docs/cli.md) |
 
 The [committed run summary](benchmarks/results/retrieval/summary-current-xquad.json)
 records the path and its reproducible harness command.
+
+The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
+It is outside this headline table until its code, device and raw-run evidence
+are archived with the same provenance as XQuAD-R.
 
 The following measurements are historical baselines. Their latency and
 resident memory were measured under earlier paths or on another machine and
