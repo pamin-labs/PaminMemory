@@ -1985,6 +1985,19 @@ Both chains are defensible and **neither states its licence where it is shipped 
 | `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one, and it was removed |
 | `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
 
+**Rechecked on the full-head `accurate` path, 2026-09-27.** On the same persisted
+XQuAD-R index, the `accuracy` profile, CPU, and 1,190 questions rotated across
+eleven languages, the [GTE multilingual reranker](https://huggingface.co/Alibaba-NLP/gte-multilingual-reranker-base)
+int8 ONNX export replaced only the cross-encoder. Candidate retrieval, depth
+30, and the 0.2 fusion/model-score blend stayed fixed. GTE scored 0.6868
+cross-lingual and 0.8611 same-language nDCG@10; the shipped BGE reranker
+scored 0.7268 and 0.8682. Recall@50 was identical at 0.9032 and 0.9647.
+The full evaluation took 644 seconds with GTE and 1,605 seconds with BGE,
+about 2.5 times faster for GTE. Those were separate runs on a shared machine,
+not an alternated latency comparison. The large cross-lingual accuracy loss
+rules out a default swap under the accuracy-first policy; the speed result is
+a lead for future distillation or model work, not a measured search p95 gain.
+
 **What the non-commercial licence actually buys, now that it has been paid.**
 The survey above ruled the whole Jina line out as non-commercial and left it
 there. The rule was then relaxed — CC-BY-NC acceptable as a named, opt-in,
