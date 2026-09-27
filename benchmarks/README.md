@@ -189,8 +189,12 @@ an unverifiable row should not be dressed up as a verified one, and the run log
 is not the row.
 
 XQuAD-R uses the Rust `crosslingual` harness rather than `benchmarks/run.py`.
-It prints group aggregates, not per-question rows. Its committed log is the
-source for `python3 benchmarks/results/retrieval/derive_xquad.py <code-commit>`;
+It prints group aggregates, not per-question rows. On a clean cache, run
+`PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored`
+before the recorded search command; this fetches the two archived model
+revisions and makes the product loader use them. Its committed log is the
+source for `python3 benchmarks/results/retrieval/derive_xquad.py`, which reads
+the code commit and named passage encoding printed at run time;
 the input manifest covers all eleven upstream JSON files, including the
 question and answer keys, and the harness rejects stale cached copies. The
 archived index marker is checked as `named` by the extractor. The model
