@@ -37,7 +37,8 @@ second LLM grades it. MemPalace's row instead reports retrieval metrics.
 Every one of these is self-reported.
 
 MemPalace's `R@5` asks whether **any** labelled session is in the top five;
-the strict all-evidence version is measured below. Its [nDCG implementation][mempalace-ndcg]
+the strict all-evidence version is measured below. Its
+[nDCG implementation][mempalace-ndcg]
 builds the ideal ranking from relevant hits **already retrieved** in the top
 `k`, so a missed gold session is absent from the denominator. The reported
 0.889 is not conventional nDCG when a question has multiple gold sessions.
@@ -47,10 +48,10 @@ xMemory's figure is generated-answer F1 rather than retrieval recall. Its
 message-level expansion. The [February 2026 public code][xmemory-code] instead
 uses the average negative log probability of generated tokens; its
 [episode thresholds][xmemory-routing] are negative, and its
-[expansion path][xmemory-expansion] loads all messages of an admitted episode. The
-public [evaluation tree][xmemory-evaluation] provides a LoCoMo runner but no
-PerLTQA runner. This is a useful
-research result, not a drop-in accuracy or latency claim for this product.
+[expansion path][xmemory-expansion] loads all messages of an admitted episode.
+The public [evaluation tree][xmemory-evaluation] provides a LoCoMo runner but
+no PerLTQA runner. This is a useful research result, not a drop-in accuracy or
+latency claim for this product.
 
 **One of those "No"s needs a footnote, because this page measured the opposite.**
 MemPalace's headline is "96.6% R@5 **raw** — zero API calls", and raw is real:

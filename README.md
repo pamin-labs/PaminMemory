@@ -274,11 +274,11 @@ Latency is a corpus, a tier and a machine before it is a number; the full
 matrix and the older conditions are on [the measurement page](docs/measured.md).
 
 The historical rows used the vector index that shipped before the current
-half-precision field: fp32 vectors in an in-memory graph. A project now builds with half-precision
-vectors under `--vector-index memory` by default, an in-memory graph that on
-MIRACL's passages holds 320 MB resident where the fp32 graph held 575 MB, at
-the same recall. `--vector-index disk` keeps a DiskANN graph on disk and holds
-34 MB, but it takes more disk (618 MB against 328), makes a whole search about
+half-precision field: fp32 vectors in an in-memory graph. A project now builds
+with half-precision vectors under `--vector-index memory` by default. On
+MIRACL's passages its in-memory graph holds 320 MB resident against 575 MB
+for fp32, at the same recall. `--vector-index disk` keeps a DiskANN graph on
+disk and holds 34 MB, but it takes more disk (618 MB against 328), makes a whole search about
 5% slower, builds far more slowly, and spends minutes on each `optimize` upkeep
 runs after writes where `memory` spends about a second -- which is why it is
 the choice for a project whose memory is scarce rather than the default. What each costs is

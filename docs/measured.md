@@ -1,7 +1,7 @@
 # What Påmin Memory measures about itself
 
-The headline search figures here run through the product's `search_reranked` entry
-point or the CLI; the write figures run through its write path. They are not
+The headline search figures here run through the product's `search_reranked`
+entry point or the CLI; the write figures run through its write path. They are not
 model-only or index-only benchmarks, because the gap to a whole search is
 where this project's numbers have been wrong before. The README carries the
 summary; this page carries the numbers and their conditions.
