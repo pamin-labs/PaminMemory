@@ -845,7 +845,7 @@ def longmemeval_retrieval(raw, pamin_rows, recorded):
         for side in ("bm25", "pamin")}
 
     return {
-        "table": "LongMemEval-S session retrieval, no model anywhere",
+        "table": "LongMemEval-S session retrieval, no answerer or judge",
         "published_in": "docs/benchmarks.md, 'LongMemEval: the published "
                         "metric is saturated'",
         "dataset": {"name": "longmemeval-s", "questions": n,
