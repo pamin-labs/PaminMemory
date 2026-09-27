@@ -534,6 +534,72 @@ fn stale_cached_questions_are_rejected() {
     fetch(dir.path());
 }
 
+#[test]
+#[ignore = "downloads the pinned XQuAD-R model artifacts into a persistent cache"]
+fn prepare_pinned_xquad_models() {
+    let home = std::env::var("PAMIN_EVAL_HOME").expect("set PAMIN_EVAL_HOME for the model cache");
+    let models = Path::new(&home).join("models");
+    assert!(
+        std::env::var_os("HF_HOME").is_none(),
+        "unset HF_HOME to keep the pinned cache in this workspace"
+    );
+    let cache = models.clone();
+    let mut builder = hf_hub::api::sync::ApiBuilder::new()
+        .with_cache_dir(cache.clone())
+        .with_progress(false);
+    if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
+        builder = builder.with_endpoint(endpoint);
+    }
+    let api = builder.build().expect("reach the model hub");
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+    ))
+    .unwrap();
+    for model in manifest["models"].as_array().unwrap() {
+        let name = model["repository"].as_str().unwrap();
+        let revision = model["revision"].as_str().unwrap();
+        let repository = api.repo(hf_hub::Repo::with_revision(
+            name.to_string(),
+            hf_hub::RepoType::Model,
+            revision.to_string(),
+        ));
+        for file in model["files_sha256"].as_object().unwrap().keys() {
+            repository
+                .get(file)
+                .unwrap_or_else(|error| panic!("fetching {name}/{file}: {error}"));
+        }
+
+        // The product can reuse an existing mapped copy after releasing the
+        // original download. A fresh cache fetches the pinned ONNX file.
+        let weights = model["source_onnx"].as_str().unwrap();
+        let label = format!(
+            "{}--{}.source",
+            name.replace('/', "--"),
+            weights.replace('/', "--")
+        );
+        let record = std::fs::read_to_string(models.join("prepared").join(label)).ok();
+        let prepared = models
+            .join("prepared")
+            .join(model["prepared_key_on_measured_host"].as_str().unwrap());
+        let ready = record.as_deref().and_then(|record| record.lines().next())
+            == model["source_onnx_sha256"].as_str()
+            && prepared.join("model.onnx").exists()
+            && prepared.join("model.onnx.data").exists();
+        if !ready {
+            repository
+                .get(weights)
+                .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
+        }
+
+        let refs = cache
+            .join(format!("models--{}", name.replace('/', "--")))
+            .join("refs");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("main"), revision).unwrap();
+        println!("  prepared {name} at {revision}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
@@ -1092,6 +1158,24 @@ const RERANK_IS_WORTH: f64 = 0.040;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
 async fn search_reaches_across_languages() {
+    assert!(
+        std::env::var_os("HF_HOME").is_none(),
+        "unset HF_HOME for this pinned benchmark"
+    );
+    let git = Command::new("git")
+        .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
+        .output()
+        .expect("identify the benchmark code commit");
+    assert!(git.status.success());
+    assert!(
+        Command::new("git")
+            .args(["-C", env!("CARGO_MANIFEST_DIR"), "diff", "--quiet", "HEAD"])
+            .status()
+            .is_ok_and(|status| status.success()),
+        "benchmark checkout has tracked changes"
+    );
+    let commit = String::from_utf8(git.stdout).expect("git prints a UTF-8 commit hash");
+    println!("  benchmark code commit: {}", commit.trim());
     let corpus = Corpus::load();
     let queries = corpus.queries();
     let (named, profile) = profile();
@@ -1128,6 +1212,7 @@ async fn search_reaches_across_languages() {
             pamin_index::Passage::Named,
             "XQuAD-R needs named passages; run pamin reindex for an older workspace"
         );
+        println!("  index passage: named");
     }
     write_corpus(&engine, &corpus).await;
     if std::env::var("CHANNELS").is_ok() {
