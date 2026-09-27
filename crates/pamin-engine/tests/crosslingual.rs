@@ -67,7 +67,12 @@
 //! one is not parallel and is closer to the shape of the workload. A change
 //! that helps on one and hurts on the other is a result, not a contradiction.
 //!
-//! ## What it measured when it was written
+//! ## Historical measurements
+//!
+//! This table predates the corrected same-language answer key and the current
+//! full-head `accurate` reranker. It documents the earlier decision, not the
+//! present regression baseline; the measured current values are beside
+//! `MODEL_FLOORS` and `SEARCH_FLOORS` below.
 //!
 //! 13,014 sentences in eleven languages, 1,190 queries, the default profile:
 //!
@@ -219,21 +224,12 @@ const DEFAULT_PROFILE: &str = "accuracy";
 
 /// Per group: the nDCG@10 and recall@50 floors for the embedding space.
 ///
-/// Floors under what was measured -- 0.6335 / 0.8981 cross-lingual and
-/// 0.6787 / 0.9529 same-language -- by roughly a tenth, which is wide enough
-/// that ordinary variation does not trip them and narrow enough that a
-/// weaker model does. Floors, not targets: a run that beats one is not by
-/// itself a reason to raise it.
-///
-/// Re-taken on deterministic vectors. This arm calls `embed_passages`, and
-/// on the default profile a batch used to perturb every vector in it, so the
-/// figures here described embeddings the product no longer produces. They
-/// moved by less than this harness's own run-to-run spread -- the previous
-/// pair was 0.6338 / 0.8951 and 0.6748 / 0.9563 -- which is the finding
-/// rather than a reason to skip the re-run: the perturbation was systematic
-/// enough to leave the ranking alone, and that is why nothing caught it.
+/// Re-measured with the corrected same-language answer key and deterministic
+/// vectors: 0.6420 / 0.8997 cross-lingual and 0.7925 / 0.9571 same-language.
+/// The nDCG floors leave about 0.07 and the recall floors 0.06-0.10 of margin.
+/// They detect a weaker model without fitting the threshold to one run.
 const MODEL_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.57, 0.80), ("same_language", 0.60, 0.86)];
+    &[("cross_lingual", 0.57, 0.80), ("same_language", 0.72, 0.90)];
 
 // ---------------------------------------------------------------------------
 // The corpus
@@ -1058,52 +1054,21 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
 
 /// The floors for the whole search path, as the product calls it.
 ///
-/// A tenth below 0.6480 / 0.8960 cross-lingual, which is what
-/// `search_reranked` scores at the default tier.
-///
-/// The same-language pair is deliberately *not* a tenth. It measures 0.7495 /
-/// 0.9580 and the floor stays at the 0.71 set when the lexical weight was a
-/// quarter and this group scored 0.7971: halving that weight cost this group
-/// 0.0476 and bought 0.0383 cross-lingual here, 0.0550 cross-lingual on the
-/// own corpus and the best MIRACL score of the five weights tried (see
-/// `pamin_core::fusion`). That leaves about a twentieth of margin instead of a
-/// tenth, and lowering the floor to restore the tenth would be moving a guard
-/// to fit the regression it exists to catch. A twentieth is enough here
-/// because this measurement is exactly repeatable: fixed corpus, fixed index,
-/// fixed model, greedy pass.
-///
-/// Both pairs now sit *above* the model's own floors. The cross-lingual pair
-/// did not until the lexical weight was halved -- the product used to rank
-/// below the model it is built on, on the group the model is best at -- which
-/// is the single most important thing this harness has found: see the table in
-/// the module notes.
+/// Through the default full-head `search_reranked` path after correcting the
+/// same-language key: 0.7268 / 0.9032 cross-lingual and 0.8682 / 0.9647
+/// same-language. The floors leave roughly 0.04-0.07 on nDCG and 0.04-0.05 on
+/// recall, enough for ordinary variation but tighter than the old-key guards.
 const SEARCH_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.58, 0.80), ("same_language", 0.71, 0.86)];
+    &[("cross_lingual", 0.66, 0.85), ("same_language", 0.82, 0.92)];
 
 /// The least the reranker must be worth, in cross-lingual nDCG@10.
 ///
-/// A floor cannot carry this. The tenth of margin every other floor here uses
-/// is wider than the reranker's own contribution -- fusion alone scores 0.6077
-/// and the default tier 0.6480, so a floor set a tenth below the tier still
-/// passes with the reranker switched off entirely. Losing it would be silent.
-///
-/// So the floor test scores fusion alone as well and asserts the gap. Measured
-/// at 0.0403, and the measurement is exactly repeatable: three runs of all
-/// three tiers returned the same four decimals every time, because the corpus,
-/// the index and the model are all fixed and the pass is greedy. Half of what
-/// was measured, so that this fails when the reranker stops working rather than
-/// when it works slightly less well.
-///
-/// The gap is a corpus's opinion, not the reranker's worth in general. On
-/// MIRACL Swahili the same default tier scores 0.6730 against 0.6882 for
-/// fusion alone -- it *costs* 0.0152 there, at 226 ms a query. Those two are
-/// the `speed` profile rather than this one, because `accuracy` is ten hours
-/// of indexing for that corpus, so the pair is comparable with each other and
-/// not with the figures above. What it establishes is that part of what the
-/// reranker buys here is the dilution fusion introduced, and this corpus --
-/// parallel translations, half its queries answered in another language -- is
-/// the one where that dilution is largest.
-const RERANK_IS_WORTH: f64 = 0.020;
+/// A ranking floor alone can pass with the reranker switched off. On the
+/// corrected XQuAD-R key the shipped full-head pass scores 0.7268
+/// cross-lingually, a measured gain of 0.0895 over fusion alone. A 0.04
+/// floor catches a missing pass while leaving margin for small changes. This
+/// is this corpus's comparison, not a claim that reranking always helps.
+const RERANK_IS_WORTH: f64 = 0.040;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
