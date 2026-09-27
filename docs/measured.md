@@ -170,8 +170,9 @@ apart.
 
 Two other things the diagnostic settled. The two lexical channels agree at
 Kendall tau-b 0.2816, 0.3188 and 0.2973 on the three corpora, so **they are not
-the near-duplicate pair this project described them as** and the single weight
-they share has never been swept apart. And the graph channel contributes
+the near-duplicate pair this project described them as**. A later independent
+weight grid on XQuAD-R and MuSiQue found no transferable replacement for their
+equal eighths (ADR 0001). And the graph channel contributes
 **exactly 0.0000 in every group of all three corpora**, which is not a
 measurement of the channel: **none of the three corpora has any edges.** The two
 external ones name their topics deliberately unlike their own text, which their
