@@ -934,9 +934,14 @@ impl ProjectionIndex {
     /// rebuild can open.
     pub fn built_for(dir: &Path) -> Result<Option<(Profile, VectorIndex)>> {
         Ok(Marker::read(dir)?.and_then(|recorded| {
-            let profile = [Profile::Speed, Profile::Balanced, Profile::Accuracy]
-                .into_iter()
-                .find(|profile| profile.model_id() == recorded.model)?;
+            let profile = [
+                Profile::Speed,
+                Profile::Balanced,
+                Profile::Accuracy,
+                Profile::Pplx,
+            ]
+            .into_iter()
+            .find(|profile| profile.model_id() == recorded.model)?;
             Some((profile, VectorIndex::parse(&recorded.storage)?))
         }))
     }

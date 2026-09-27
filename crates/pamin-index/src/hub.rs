@@ -24,6 +24,12 @@ impl Repository {
     /// not -- a mirror set for one and not the other, or two copies of the
     /// cache. Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
+        Self::open_at(cache_dir, name, "main")
+    }
+
+    /// The same repository at one immutable revision for a reproducible
+    /// experimental model comparison.
+    pub(crate) fn open_at(cache_dir: &Path, name: &str, revision: &str) -> Result<Self> {
         let cache_dir = cache_root(cache_dir);
         let mut builder = hf_hub::api::sync::ApiBuilder::new()
             .with_cache_dir(cache_dir)
@@ -34,7 +40,11 @@ impl Repository {
         let repo = builder
             .build()
             .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
-            .model(name.to_string());
+            .repo(hf_hub::Repo::with_revision(
+                name.to_string(),
+                hf_hub::RepoType::Model,
+                revision.to_string(),
+            ));
         Ok(Self {
             repo,
             name: name.to_string(),

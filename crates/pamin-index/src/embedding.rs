@@ -67,6 +67,8 @@ pub enum Profile {
     /// described as an order of magnitude more expensive.
     #[default]
     Accuracy,
+    /// Experimental pplx arm for the archived current-path comparison.
+    Pplx,
 }
 
 impl Profile {
@@ -75,7 +77,7 @@ impl Profile {
         match self {
             Self::Speed => EmbeddingModel::MultilingualE5Small,
             Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy => unreachable!("the accuracy profile runs the joint BGE-M3 export"),
+            Self::Accuracy | Self::Pplx => unreachable!("this profile runs its own ONNX export"),
         }
     }
 
@@ -89,7 +91,7 @@ impl Profile {
     fn prefixes(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
-            Self::Accuracy => None,
+            Self::Accuracy | Self::Pplx => None,
         }
     }
 
@@ -101,7 +103,7 @@ impl Profile {
         match self {
             Self::Speed => 384,
             Self::Balanced => 768,
-            Self::Accuracy => 1024,
+            Self::Accuracy | Self::Pplx => 1024,
         }
     }
 
@@ -120,6 +122,7 @@ impl Profile {
             // to them, and the recorded identity is what stops two encodings
             // sharing one index.
             Self::Accuracy => "gpahal/bge-m3-onnx-int8",
+            Self::Pplx => "perplexity-ai/pplx-embed-v1-0.6b+official-onnx-int8",
         }
     }
 
@@ -129,6 +132,7 @@ impl Profile {
             "speed" => Some(Self::Speed),
             "balanced" => Some(Self::Balanced),
             "accuracy" => Some(Self::Accuracy),
+            "pplx" => Some(Self::Pplx),
             _ => None,
         }
     }
@@ -158,6 +162,7 @@ pub struct Embedder {
 enum Model {
     Text(Box<TextEmbedding>),
     Joint(Box<Encoder>),
+    Pooled(Box<Encoder>),
 }
 
 impl Embedder {
@@ -175,7 +180,8 @@ impl Embedder {
 
         let model = match profile {
             Profile::Accuracy => Model::Joint(Box::new(joint(cache_dir)?)),
-            _ => {
+            Profile::Pplx => Model::Pooled(Box::new(pplx(cache_dir)?)),
+            Profile::Speed | Profile::Balanced => {
                 let mut options = TextInitOptions::new(profile.model())
                     .with_cache_dir(cache_dir.to_path_buf())
                     .with_show_download_progress(false)
@@ -289,6 +295,7 @@ impl Embedder {
         match &mut self.model {
             Model::Text(model) => model.embed(texts, None).map_err(failed),
             Model::Joint(model) => texts.iter().map(|text| dense(model, text)).collect(),
+            Model::Pooled(model) => texts.iter().map(|text| pooled(model, text)).collect(),
         }
     }
 }
@@ -324,6 +331,51 @@ fn joint(cache_dir: &std::path::Path) -> Result<Encoder> {
     .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
     crate::prepared::release(&weights, cache_dir);
     Ok(encoder)
+}
+
+/// The official int8 ONNX export has external weights. Fetch them before
+/// opening the graph so ONNX Runtime finds both files in one snapshot.
+fn pplx(cache_dir: &std::path::Path) -> Result<Encoder> {
+    let repository = Repository::open_at(
+        cache_dir,
+        "perplexity-ai/pplx-embed-v1-0.6b",
+        "2c4d510dd4a732063c31a0f70193e35067b51fd8",
+    )?;
+    repository.get("onnx/model_quantized.onnx_data")?;
+    Encoder::load(
+        || repository.get("onnx/model_quantized.onnx"),
+        &repository,
+        JOINT_MAX_TOKENS,
+        vec![crate::inference::cpu()],
+    )
+}
+
+/// The evaluated encoding: singleton passes and unit-normalized int8 pooled
+/// output. Real XQuAD-R vectors changed in a batch, so this arm preserves
+/// one text per pass even though its write path is slower.
+fn pooled(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
+    let outputs = model.run(vec![text])?;
+    let output = outputs
+        .get("pooler_output_int8")
+        .ok_or_else(|| IndexError::Engine("the pplx export has no int8 pooled output".into()))?;
+    let (shape, values) = output
+        .try_extract_tensor::<i8>()
+        .map_err(|error| IndexError::Engine(format!("reading the pooled vector: {error}")))?;
+    match **shape {
+        [1, 1024] => {
+            let mut vector: Vec<f32> = values.iter().map(|value| f32::from(*value)).collect();
+            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for value in &mut vector {
+                    *value /= norm;
+                }
+            }
+            Ok(vector)
+        }
+        _ => Err(IndexError::Engine(format!(
+            "a pooled output of shape {shape:?} for one text"
+        ))),
+    }
 }
 
 /// One text's dense BGE-M3 vector, in one forward pass of its own.
@@ -454,6 +506,7 @@ mod tests {
             ("speed", Profile::Speed),
             ("balanced", Profile::Balanced),
             ("accuracy", Profile::Accuracy),
+            ("pplx", Profile::Pplx),
         ] {
             assert_eq!(Profile::parse(name), Some(profile));
         }
@@ -461,14 +514,16 @@ mod tests {
     }
 
     #[test]
-    fn each_profile_declares_a_distinct_width_and_identity() {
-        // The width is what the index is built for and the identity is what a
-        // stored vector is tagged with, so two profiles sharing either would
-        // let incompatible vectors sit in one space undetected.
-        let profiles = [Profile::Speed, Profile::Balanced, Profile::Accuracy];
+    fn each_profile_declares_a_distinct_identity() {
+        // Model identity, not width, keeps two 1024-wide spaces apart.
+        let profiles = [
+            Profile::Speed,
+            Profile::Balanced,
+            Profile::Accuracy,
+            Profile::Pplx,
+        ];
         for (index, left) in profiles.iter().enumerate() {
             for right in &profiles[index + 1..] {
-                assert_ne!(left.dimensions(), right.dimensions());
                 assert_ne!(left.model_id(), right.model_id());
             }
         }
