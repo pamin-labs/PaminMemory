@@ -187,6 +187,7 @@ use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::{Depths, Engine};
 use pamin_index::{Access, Embedder, Rerank, VectorIndex};
 use pamin_store::Workspace;
+use sha2::{Digest, Sha256};
 
 /// The languages XQuAD-R covers, in the order the rotation walks them.
 const LANGUAGES: [&str; 11] = [
@@ -486,30 +487,51 @@ fn fetch(dir: &Path) {
     std::fs::create_dir_all(dir)
         .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
+    let manifest = include_str!("../../../benchmarks/results/retrieval/xquad-r-input.sha256");
     for language in LANGUAGES {
         let path = dir.join(format!("{language}.json"));
-        if path.exists() {
-            continue;
+        if !path.exists() {
+            let partial = dir.join(format!("{language}.json.part"));
+            let url = format!("{SOURCE}/{language}.json");
+            let status = Command::new("curl")
+                .args(["-sSLf", "--max-time", "300", "-o"])
+                .arg(&partial)
+                .arg(&url)
+                .status();
+
+            let fetched = matches!(status, Ok(status) if status.success());
+            assert!(
+                fetched,
+                "could not fetch {url}\n\
+                 The dataset is not vendored: it is CC-BY-SA-4.0 and this repository is Apache-2.0.\n\
+                 Download the eleven language files by hand and point LAREQA_DIR at the directory,\n\
+                 or make `curl` and {SOURCE} reachable."
+            );
+            std::fs::rename(&partial, &path).expect("name the downloaded file");
         }
-
-        let partial = dir.join(format!("{language}.json.part"));
-        let url = format!("{SOURCE}/{language}.json");
-        let status = Command::new("curl")
-            .args(["-sSLf", "--max-time", "300", "-o"])
-            .arg(&partial)
-            .arg(&url)
-            .status();
-
-        let fetched = matches!(status, Ok(status) if status.success());
-        assert!(
-            fetched,
-            "could not fetch {url}\n\
-             The dataset is not vendored: it is CC-BY-SA-4.0 and this repository is Apache-2.0.\n\
-             Download the eleven language files by hand and point LAREQA_DIR at the directory,\n\
-             or make `curl` and {SOURCE} reachable."
+        let filename = format!("{language}.json");
+        let expected = manifest
+            .lines()
+            .filter_map(|line| line.split_once("  "))
+            .find_map(|(hash, name)| (name == filename).then_some(hash))
+            .expect("every XQuAD-R language has a pinned hash");
+        let actual = Sha256::digest(std::fs::read(&path).expect("read the XQuAD-R file"));
+        assert_eq!(
+            format!("{actual:x}"),
+            expected,
+            "cached XQuAD-R {filename} differs from the pinned revision; remove it to refetch"
         );
-        std::fs::rename(&partial, &path).expect("name the downloaded file");
     }
+}
+
+#[test]
+#[should_panic(expected = "cached XQuAD-R ar.json differs")]
+fn stale_cached_questions_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    for language in LANGUAGES {
+        std::fs::write(dir.path().join(format!("{language}.json")), b"stale").unwrap();
+    }
+    fetch(dir.path());
 }
 
 // ---------------------------------------------------------------------------
