@@ -561,10 +561,12 @@ lexical channel found. Both tiers can also see strong graph-only candidates
 below the head.
 
 On MIRACL Swahili dev's full 131,924 passages and 482 judged queries, the
-current `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
+recorded `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
 and recall@50 0.9568 through `search_reranked`; replay reproduced every
 returned order. The earlier confined pass's +0.0257 over `off` was measured
 on the `speed` profile and is historical, not a paired comparison with this run.
+The raw run's complete code/device provenance is not yet archived, so this
+record is not a verified current headline measurement.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
