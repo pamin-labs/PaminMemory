@@ -341,8 +341,8 @@ BGE-M3 indexes answered all 1,190 XQuAD-R questions and the first 1,000
 MuSiQue two-hop questions. `CHANNELS` asked for a wide, untruncated
 `search_fused` trace, then replayed the production `Fusion::fuse` with each
 weight pair. The MuSiQue arm used `MUSIQUE_QUESTIONS=1000` to reuse its
-10,785-memory project. Both reused projects asserted `Passage::Named` and the
-expected document counts before writing or collecting scores. These are fusion-only screens, not product
+10,785-memory project. Both projects asserted `Passage::Named` before writing
+and the expected document counts before collecting scores. These are fusion-only screens, not product
 `search_reranked` measurements.
 
 | Segmented / 2-gram | XQuAD-R cross nDCG@10 | XQuAD-R same nDCG@10 | MuSiQue two-hop nDCG@10 | MuSiQue recall@50 |
