@@ -1,0 +1,28 @@
+{
+  "date": "2026-09-27",
+  "dataset": "XQuAD-R",
+  "fingerprint": "24ad7f1862182925",
+  "sentences": 13014,
+  "queries": 1190,
+  "model_revision": "2c4d510dd4a732063c31a0f70193e35067b51fd8",
+  "product_entry": "Engine::search_reranked",
+  "rerank": "accurate, full head, 0.2 fusion-score share",
+  "baseline": "BGE-M3 in a separate run on the same fingerprint and corrected key",
+  "metrics": {
+    "cross_lingual": {
+      "bge_ndcg_at_10": 0.7268,
+      "pplx_ndcg_at_10": 0.7251,
+      "bge_recall_at_50": 0.9032,
+      "pplx_recall_at_50": 0.8950
+    },
+    "same_language": {
+      "bge_ndcg_at_10": 0.8682,
+      "pplx_ndcg_at_10": 0.8689,
+      "bge_recall_at_50": 0.9647,
+      "pplx_recall_at_50": 0.9630
+    }
+  },
+  "greek_per_question": "pplx-greek-paired-2026-09-27.json",
+  "timing_claim": null,
+  "decision": "rejected: no aggregate gain and preselected Greek cross-language recall loss"
+}
