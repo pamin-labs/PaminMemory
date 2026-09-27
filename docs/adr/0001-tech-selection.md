@@ -167,7 +167,7 @@ The graph channel lives in PostgreSQL, where `zvec` cannot see it. Letting the e
 
 Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer. This is a correctness requirement, not a preference.
 
-`k = 10`, not the customary 60, and the two lexical channels carry an eighth weight each — a quarter each until a third corpus was measured; the paragraphs below record the quarter as it was argued, and the section after them is what replaced it. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights the two of them cast two votes against the vector and graph channels' one each. That much holds. The stronger claim this record used to make alongside it — that the two are near enough one channel to share a weight — does not: Kendall tau-b between their rankings is 0.2816 on this project's own corpus, 0.3188 on XQuAD-R and 0.2973 on MIRACL. They are two channels that agree about a third of the time, sharing a field rather than a ranking, and the single constant they share has never been swept apart.
+`k = 10`, not the customary 60, and the two lexical channels carry an eighth weight each — a quarter each until a third corpus was measured; the paragraphs below record the quarter as it was argued, and the section after them is what replaced it. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights the two of them cast two votes against the vector and graph channels' one each. That much holds. The stronger claim this record used to make alongside it — that the two are near enough one channel to share a weight — does not: Kendall tau-b between their rankings is 0.2816 on this project's own corpus, 0.3188 on XQuAD-R and 0.2973 on MIRACL. They are two channels that agree about a third of the time, sharing a field rather than a ranking, and their equal eighths have since been tested independently, below.
 
 The weight was swept across both evaluation corpora — the one written for Påmin Memory and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
 
@@ -329,6 +329,37 @@ segmented channel away on its own, which the leave-one-out diagnostic does,
 costs MIRACL significantly at p = 0.0125. The channel is measurable there. What
 was not measurable was a one-dimensional slice through a two-dimensional
 question, and the sentence above read a null result off the wrong instrument.
+
+#### The two lexical weights were swept independently, 2026-09-27
+
+The earlier claim that they had never been separated is now historical. Before
+seeing results, a 5-by-5 grid fixed each of segmented BM25 and 2-gram BM25 at
+0, 0.0625, 0.125, 0.25 or 0.5; the shipped pair is (0.125, 0.125). The current
+BGE-M3 indexes answered all 1,190 XQuAD-R questions and the first 1,000
+MuSiQue two-hop questions. `CHANNELS` asked for a wide, untruncated
+`search_fused` trace, then replayed the production `Fusion::fuse` with each
+weight pair. The MuSiQue arm used `MUSIQUE_QUESTIONS=1000` to reuse its
+10,785-memory project. These are fusion-only screens, not product
+`search_reranked` measurements.
+
+| Segmented / 2-gram | XQuAD-R cross nDCG@10 | XQuAD-R same nDCG@10 | MuSiQue two-hop nDCG@10 | MuSiQue recall@50 |
+| --- | ---: | ---: | ---: | ---: |
+| **0.125 / 0.125 (ships)** | **0.6372** | **0.8438** | **0.6814** | **0.8060** |
+| 0 / 0 | 0.6677 | 0.8138 | 0.6704 | 0.7995 |
+| 0 / 0.25 | 0.6377 | 0.8445 | 0.6753 | 0.8025 |
+| 0.25 / 0 | 0.6358 | 0.8395 | 0.6802 | 0.8035 |
+| 0.25 / 0.125 | 0.6195 | 0.8510 | 0.6834 | 0.8050 |
+
+Removing both lexical channels raises XQuAD-R cross-language nDCG by 0.0305
+but lowers same-language by 0.0300 and MuSiQue by 0.0111, all with family
+adjustment `p <= 0.0002`. Giving MuSiQue its highest grid nDCG, 0.25 / 0.125,
+buys only +0.0019 there (`p = 0.9880` after family adjustment) while losing
+0.0177 cross-lingual XQuAD-R (`p = 0.0001`). The near-neutral XQuAD-R arms
+0 / 0.25 and 0.25 / 0 both lose MuSiQue ranking and recall. No pair cleared
+the prewritten no-harm and detectable-gain rule, so the equal eighths stay.
+MIRACL held-out validation and full reranked searches were not run on a
+candidate already rejected by both screening corpora. The result justifies a
+compromise on these corpora, not a universal equality between the channels.
 
 **The adaptive rule is now visibly just a weaker constant.** Against the
 quarter on XQuAD-R, `adapt 0.00-1.00` scores +0.0618 cross-lingual and zero
