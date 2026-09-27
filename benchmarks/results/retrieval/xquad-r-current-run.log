@@ -1,0 +1,25 @@
+   Compiling pamin-core v0.0.1 (/Users/jason/.codex/worktrees/benchmark-doc-refresh/PaminMemory/crates/pamin-core)
+   Compiling pamin-store v0.0.1 (/Users/jason/.codex/worktrees/benchmark-doc-refresh/PaminMemory/crates/pamin-store)
+   Compiling pamin-index v0.0.1 (/Users/jason/.codex/worktrees/benchmark-doc-refresh/PaminMemory/crates/pamin-index)
+   Compiling pamin-engine v0.0.1 (/Users/jason/.codex/worktrees/benchmark-doc-refresh/PaminMemory/crates/pamin-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.14s
+     Running tests/crosslingual.rs (/Users/jason/.codex/worktrees/optimisation-stack/PaminMemory/target/debug/deps/crosslingual-892ab1f261f9fc79)
+
+running 1 test
+test search_reaches_across_languages has been running for over 60 seconds
+
+  the shipped search path, accuracy
+  group            queries   nDCG@10   recall@50   below rank 10   queries with any
+  ---------------------------------------------------------------------------------
+  cross_lingual       1190    0.7274      0.9032            2335                789
+  same_language       1190    0.8691      0.9647              50                 50
+  6192 ms per query
+
+  accurate: 30.0 candidates a query reached the model of 30.0 offered, 192 characters each, longest 1351, cache 0.1% of 35700 lookups
+  actual rerank work: 2711586 tokens, 2862622 padded tokens, 9722 batches; encoding 46.1 ms/query, padding + inference 6057.8 ms/query
+  reranking is worth +0.0901  761W/184L/245T  p=0.0001 cross-lingual nDCG@10
+  and +0.0253  122W/48L/1020T  p=0.0001 same-language
+
+test search_reaches_across_languages ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 7446.39s
