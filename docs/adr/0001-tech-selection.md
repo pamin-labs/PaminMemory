@@ -332,8 +332,10 @@ question, and the sentence above read a null result off the wrong instrument.
 
 #### The two lexical weights were swept independently, 2026-09-27
 
-The earlier claim that they had never been separated is now historical. Before
-seeing results, a 5-by-5 grid fixed each of segmented BM25 and 2-gram BM25 at
+The blanket claim that these weights had never been separated was already
+outdated by the MIRACL grid below. This run extends that independent test to
+XQuAD-R and MuSiQue. Before seeing results, a 5-by-5 grid fixed each of
+segmented BM25 and 2-gram BM25 at
 0, 0.0625, 0.125, 0.25 or 0.5; the shipped pair is (0.125, 0.125). The current
 BGE-M3 indexes answered all 1,190 XQuAD-R questions and the first 1,000
 MuSiQue two-hop questions. `CHANNELS` asked for a wide, untruncated
@@ -368,9 +370,11 @@ buys only +0.0019 there (`p = 0.9880` after family adjustment) while losing
 0 / 0.25 and 0.25 / 0 both lose MuSiQue ranking and recall. The equal eighths
 stay because the implemented cross-validation finds no stable transferable
 choice and the grid exposes a real cross-language versus same-language trade.
-MIRACL validation and full reranked searches were not run on an unselected
-candidate. This justifies a compromise on these corpora, not a universal
-equality between the channels.
+MIRACL's earlier independent grid already favoured 0.25 / 0 by +0.0076
+(`p = 0.0580`), as recorded below; it is **not** an untouched held-out set for
+this sweep. MIRACL was not rerun, and no full reranked arm was spent on an
+unselected candidate. This justifies a compromise on these corpora, not a
+universal equality between the channels.
 
 **The adaptive rule is now visibly just a weaker constant.** Against the
 quarter on XQuAD-R, `adapt 0.00-1.00` scores +0.0618 cross-lingual and zero
@@ -466,6 +470,14 @@ of what it scored it too. Three findings, on three corpora:
 | `vector` | **0.8268** | **0.6335** | 0.6787 |
 | `graph` | premise absent | premise absent | premise absent |
 | all four fused | 0.7985 | 0.6114 | 0.7829 |
+
+This is a historical 2026-09-22 run (the fused row was recorded at
+`a3c2ec06`), before new indexes embedded `name: content` and before perf-58
+removed correct translations from XQuAD-R's same-language answer key. The
+current BGE-M3, named-index, corrected-key fusion-only baseline is 0.6372
+cross-lingual and 0.8438 same-language in the independent grid above. The
+old 0.6114/0.7829 and new 0.6372/0.8438 are not two measurements of an
+unchanged pipeline; their difference is not credited to the weight sweep.
 
 **Fusing four channels ranks below one of them on cross-lingual queries**, and
 on the same-language queries of the same corpus the lexical channels earn their
