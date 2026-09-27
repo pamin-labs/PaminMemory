@@ -1026,7 +1026,7 @@ stratified from LongMemEval-S's 500, a proportional sample of the same six
 types; 35 of them carry more than one gold session, which is why the two
 metrics differ at all.
 
-| session retrieval, no model anywhere | BM25 | Påmin Memory |
+| session retrieval, no answerer or judge | BM25 | Påmin Memory |
 | --- | --- | --- |
 | `recall_any@5` — **the published metric** | **0.9661** | 0.9831 |
 | `recall_any@10` | 0.9831 | 1.0000 |

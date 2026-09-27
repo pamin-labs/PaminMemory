@@ -19,13 +19,15 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 ## Where This Differs
 
-**LOCOMO accuracy matching mem0 and MemPalace — with zero model calls on the
-write path, zero cost to ingest, and a store that rebuilds itself byte for
-byte.**
+**LOCOMO accuracy matching mem0 and MemPalace in the historical matched run —
+with zero LLM calls on the write path, zero API charges to ingest, and a store
+that rebuilds itself byte for byte.**
 
 Measured head to head: every arm answering the same 199 questions, read and
 judged by the same model, embedding through the same endpoint. Reproducible
-from this repository with the commands in [benchmarks/](benchmarks).
+from this repository with the commands in [benchmarks/](benchmarks). This run
+predates the current full-head `accurate` reranker; it is a comparison of the
+recorded builds, not today's default accuracy or latency.
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
@@ -35,7 +37,7 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 No pair of those accuracies separates statistically. That is the claim, and it
 is deliberately a tie: **parity with the systems this category is named after,
-from a design that spends nothing to reach it.**
+from a design that spends no write-side LLM calls to reach it.**
 
 ### Why these numbers are lower than the ones on everyone's website
 
@@ -63,7 +65,7 @@ website. LongMemEval's retrieval stage has no reader and no judge — it asks
 whether the gold session is in the top k — so it is the one figure here that
 can sit beside a published one. MemPalace publishes **96.6% R@5** on it.
 
-| LongMemEval session retrieval, no model anywhere | BM25 | Påmin Memory |
+| LongMemEval session retrieval, no answerer or judge | BM25 | Påmin Memory |
 | --- | --- | --- |
 | R@5, as the field defines it — gold session in the top five | 96.6% | 98.3% |
 | R@10 | 98.3% | **100%** |
