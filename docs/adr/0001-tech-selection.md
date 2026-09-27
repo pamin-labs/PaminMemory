@@ -23,6 +23,7 @@ One rule ran through all of it:
 | Migrations | `sqlx::migrate`, migrations listed in code |
 | Authoritative store | PostgreSQL, bundled via `postgresql_embedded` |
 | Retrieval engine | `zvec` (in-process, BM25 full-text and dense vectors) |
+| Vector index | Half-precision vectors under a DiskANN graph (`disk`) or an HNSW graph (`memory`, the default), candidates ranked again by an exact f32 cosine |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
 | Embeddings | ONNX Runtime through `ort` and `tokenizers`, BGE-M3 with int8 weights by default; the E5 profiles through `fastembed` |
@@ -62,6 +63,88 @@ PostgreSQL is also the shortest path to a distributed future rather than an obst
 Doing this now costs nothing. Doing it after a cloud tier exists is a migration.
 
 PostgreSQL is bundled rather than brought by the user. `pamin init` provisions and hosts a local instance through `postgresql_embedded`, so there is no Docker and no configuration. This changes only the distribution mechanism; PostgreSQL remains the sole authority.
+
+**The bundled cluster runs with `fsync` on and `synchronous_commit` off.** `postgresql_embedded` 0.21 starts every cluster with `-F`, which is `fsync=off`, and until this was noticed every workspace ran that way: nothing PostgreSQL wrote was forced to disk, so a power cut could leave the data directory corrupt, not merely behind. For the one store here that cannot be rebuilt from anything else that is the wrong trade at any price, and the store now passes `fsync=on` after the flag, which overrides it. What it gives up instead is the last moments: with `synchronous_commit` off a commit returns before its WAL is flushed, the WAL writer flushes within a few hundred milliseconds, and a crash can lose the commits of that window but cannot leave the cluster inconsistent. A memory lost that way is one whose write had returned, which is a real cost; its evidence is the agent's own recent output, which is the cheapest thing in the system to say again. Waiting for the flush on every commit was measured through `Engine::write` on a synthetic project of 152,000 topics, three runs alternating the two settings with `fsync` on, 100 writes each: p50 3.0-5.9 ms a write with synchronous commit against 2.3-2.7 ms without, on this machine's disk, in a debug build at a load average near 12. A laptop's flush can cost more or less than this container's; the direction is the same. A workspace that is already running keeps what it was started with until `pamin stop`.
+
+### The driver stays `sqlx`: pipelining measured
+
+`sqlx` sends a statement and waits for its result before it sends the next.
+The PostgreSQL protocol allows pipelining, which means sending several
+statements before reading any result, and `tokio-postgres` does it on one
+connection. So the question was whether the store pays for `sqlx` in round
+trips. Upstream, as of 2026-09-24, the `launchbadge/sqlx` issues this touches
+(#408 and #2798) are open, pull request #3891 was closed on 2026-09-14, and the
+pool redesign in #3582 is open.
+
+The harness is a scratch program outside the tree. It runs the statements of
+the write path verbatim, copied from `repository.rs` and `jobs.rs`: the twelve
+that rewriting an existing topic issues inside `Engine::write`'s transaction.
+It also runs the read that `current_states_of` makes, for 64 topics. The data
+is 20,000 seeded topics in a local PostgreSQL. `sqlx` 0.9.0 uses the
+product's pool options, and `tokio-postgres` 0.7 is the control. Each iteration
+runs every arm once, in an order rotated per iteration, for 7 rounds of 300
+iterations. Ratios are taken per iteration and then the median is reported.
+Each arm asserts its premise before it is timed:
+
+- a write arm must have produced the product's work, meaning that many new
+  states, each superseding its predecessor, with spans, queued jobs, and
+  pointers on the newest state;
+- a read arm must return exactly the reference rows;
+- both drivers must report the `synchronous_commit` the run asked for;
+- 64 pipelined `SELECT 1` must take under 0.7 of their sequential time. They
+  measured 0.16 to 0.24.
+
+An earlier run stopped on the premise that its pipelined reads overlap, and no
+figure here comes from it. The machine was the shared four-core one, at a load
+average of 8 to 13.
+
+| paired ratio | multi-thread runtime, `synchronous_commit=off` | multi-thread, `on` | current-thread, `off` |
+| --- | --- | --- | --- |
+| write, `tokio-postgres` pipelined along its dependencies (4 round trips) ÷ the same 12 statements one at a time | 0.92 | 1.03 | 0.83 |
+| write, merged into writable CTEs and pipelined (2 round trips) ÷ 12 one at a time, `tokio-postgres` | 0.82 | 1.03 | 0.65 |
+| write, `sqlx`, merged into writable CTEs (6 statements) ÷ `sqlx`'s 12 | 0.86 | 0.87 | 0.92 |
+| write, `sqlx`, one PL/pgSQL function ÷ `sqlx`'s 12 | 0.54 | 0.74 | 0.68 |
+| write, `tokio-postgres`'s 12 ÷ `sqlx`'s 12 | 0.59 | 0.64 | 0.91 |
+| 64 reads, `sqlx`, one `= ANY($1)` ÷ 64 statements on the pool | 0.07 | 0.07 | 0.08 |
+| 64 reads, `tokio-postgres` pipelined ÷ 64 `sqlx` statements on the pool | 0.14 | 0.15 | 0.25 |
+| 64 reads, `sqlx` on one held connection ÷ on the pool | 0.50 | 0.62 | 0.42 |
+| one `SELECT 1`, `sqlx` on a held connection ÷ on the pool | 0.64 | 0.65 | 0.69 |
+
+**Pipelining the write transaction is worth 0.83 to 1.03.** Its statements
+depend on each other: the locks need the ids the lookups return, the new state
+needs the previous one, and the pointer needs the new version. So twelve
+statements pipeline into four round trips at best. On a local socket a round
+trip is not the cost either. A `SELECT 1` takes 0.058 to 0.090 ms on
+`tokio-postgres`, and the whole write transaction on `sqlx` takes 10.7 to 13.7
+ms (medians). With commits flushed, which is PostgreSQL's default and the
+product does not change it, pipelining measured 1.03.
+
+**The reads are already batched, and batching beats pipelining.** The store
+reads current states in one `= ANY($2)` statement. The same shape on `sqlx`
+takes 0.915 ms against 1.831 ms for 64 reads pipelined on `tokio-postgres`
+(multi-thread runtime, `off`).
+
+**Part of the gap between the drivers is the pool, and part is not
+explained.** Every statement run on `&PgPool` acquires a connection and
+releases it, and `sqlx-core` 0.9.0 pings the connection on every release
+(`return_to_pool` in `pool/connection.rs`). `test_before_acquire(false)` does
+not turn that off. Holding one connection for 64 reads costs 0.42 to 0.62 of
+running them on the pool, so where a path runs several statements back to
+back outside a transaction, holding one connection is the fix, and `sqlx`
+already provides it. The write transaction already holds one connection, so the
+ping is not what makes `tokio-postgres` 0.59 to 0.91 of `sqlx` there. What
+does was not isolated.
+
+So the store stays on `sqlx`. Pipelining is worth close to nothing on the path
+that could use it. Switching drivers for the per-statement gap would bring back
+the second driver the Consequences below record removing. The largest single
+lever measured on `sqlx`, one server-side function at 0.54 to 0.74, is PL/pgSQL, and
+PL/pgSQL is not in the portable subset listed above. Writable CTEs are in that
+subset and are worth 0.86 to 0.92 on `sqlx` with no driver change, which makes
+them the lever to reach for if the write transaction's round trips ever matter.
+Revisit this when the database stops being local: every figure above has a
+round trip under a fifth of a millisecond. Revisit it too if `sqlx` ships
+pipelining or stops pinging on release.
 
 ### Retrieval engine: one engine, `zvec`
 
@@ -834,7 +917,9 @@ ablations, so nothing in it separates a retrieval gain from an abstention gain,
 and the per-column decomposition says most of it is the second. This project
 has no abstention at all: `pamin search` returns its best candidates whatever
 the evidence looks like. That is a gap worth naming, and it is a different gap
-from retrieval quality.
+from retrieval quality. Closing it with the calibrated reranker score was
+measured and does not ship; see "The transfer test, taken as an abstention
+decision" below.
 
 **Why their weighted sum works where this project's did not.** They combine
 five terms as a plain normalised weighted sum: embedding similarity, query
@@ -1145,6 +1230,8 @@ This is the complement half of the rule: ICU4X segments, `zvec` retrieves, and n
 
 A second full-text field indexes the raw text with the `ngram` tokenizer, covering substrings that segmentation destroys: file paths, error codes, function names, configuration keys, and partial identifiers. Both fields are native `zvec` per-field configuration. The cost is roughly double the lexical index, paid by **cheap**, and whether it is worth paying is a question for the evaluation harness.
 
+The field indexes `zvec`'s default of two-character grams, and that was measured against three-character grams and against two and three together. Each is one tokenizer parameter (`{"ngram_min":3,"ngram_max":3}` or `{"ngram_min":2,"ngram_max":3}`) and a rebuild. Measured through `search_reranked` against a rule written before the runs, neither ships. Both are significantly worse on XQuAD-R's cross-lingual group (−0.0055 and −0.0035, p = 0.0001 each), neither is significantly better on any corpus as a whole, and three-character grams also lose Thai cross-lingual. Two and three together is not the cheap hedge it looks like: on XQuAD-R and MuSiQue it makes the index 1.50 to 1.67 times larger and the rebuild 1.60 to 1.67 times slower. The figures are in [what the project measures](../measured.md).
+
 ### Embeddings: profiles, and two different meanings of INT8
 
 "INT8" names two operations whose costs differ by an order of magnitude, and conflating them is easy:
@@ -1211,11 +1298,301 @@ against the shipped BGE-M3 export's 0.980); Greek queries are worse by 0.071
 about 2.2 times BGE-M3's, a passage 2-3 times, and every workspace would have
 to be re-embedded.
 
+### BGE-M3's other outputs, measured: none of them ships
+
+One forward pass of BGE-M3 returns three things — a dense vector, a sparse
+vector of per-token lexical weights, and one multi-vector (ColBERT) embedding
+per token — and the model was trained on passages up to 8,192 tokens. The
+product keeps the dense vector and truncates at 512 (`JOINT_MAX_TOKENS`). Each
+of the other three was measured in September 2026 against what ships, under
+selection rules written down before any of it was computed.
+
+Every comparison is paired per question: sign-flip randomisation, 10,000
+draws, two-sided, so 0.0001 is the floor. "Significantly worse" means a
+negative mean at p < 0.05 without correction, which is deliberately strict
+against the change. The groups are this project's own four, XQuAD-R's two and
+MuSiQue's 1,000 two-hop questions.
+
+**This was measured below the entry point, and the reason is the tunable.** A
+channel weight and a reordering of the shortlist are not settings `pamin
+search` accepts, so a replay stands in for the last two stages: `Banded`
+fusion, `engine::rerankable` and `engine::place` over the engine's own
+per-channel candidates, with the `accurate` cross-encoder scoring the same
+shown set at 256 tokens in length-sorted batches of eight. On XQuAD-R the
+replay reproduces the product, 0.6608 / 0.7842 against 0.6613 / 0.7838 at a
+rerank depth of twenty. On MuSiQue it reads 0.6634 against the product's
+0.6834: the replay leaves out the graph seed text the engine shows the
+cross-encoder, and MuSiQue is the only corpus of the two with a graph. So its
+MuSiQue figures are differences between arms of the same replay, not product
+figures. Everything below is at the rerank depth of thirty that ships; for the
+sparse channel, twenty gives the same signs.
+
+**The sparse channel helps within a language and hurts across one.** Added as
+a fifth channel, banded like the two BM25 channels, nDCG@10 after the rerank
+against what ships:
+
+| sparse weight | own cross-lingual (43) | XQuAD-R cross-lingual (1,190) | XQuAD-R same-language (1,190) | MuSiQue two-hop (1,000) |
+| --- | --- | --- | --- | --- |
+| 0.0625 | **−0.0078**, p = 0.0045 | **−0.0114**, p = 0.0001, 25 wins / 373 losses | **+0.0141**, p = 0.0001, 91 / 9 | **+0.0035**, p = 0.0028 |
+| 0.125 | **−0.0248**, p = 0.0002 | **−0.0213**, p = 0.0001 | **+0.0229**, p = 0.0001 | **+0.0051**, p = 0.0018 |
+| 0.25 | **−0.0549**, p = 0.0001 | **−0.0415**, p = 0.0001 | **+0.0340**, p = 0.0001 | **+0.0097**, p = 0.0001 |
+
+The relational, lexical and monolingual groups do not move significantly at
+any weight in the table. The cause is visible in the channel alone: it scores
+0.7684 nDCG@10 on XQuAD-R's same-language group and 0.0864 on its cross-lingual
+one.
+It is a third lexical channel, it matches tokens, and a token does not cross a
+language. Every weight trades one group for another, and the smallest weight
+still costs the cross-lingual group 373 queries against 25.
+
+The rule chose on what the reranker is handed, `recall@30` of the fused list,
+and there the sparse channel is significantly worse on XQuAD-R cross-lingual at
+every weight (−0.0021 at 0.0625, p < 0.001). Using it to replace one of the
+two BM25 channels instead of adding it is significantly worse there too, fused
+nDCG@10 −0.0081 in place of the segmented channel and −0.0128 in place of the
+n-gram one. No weight was admissible on any two corpora, so leave-one-corpus-out
+had nothing to carry to the third, and the rule says not to build it.
+
+**A sparse model that does cross languages exists, and its licence rules it
+out.** MILCO (`omai-research/milco-650m` and `-300m`, arXiv 2510.00671) maps
+every language into one English lexical space and reports MKQA `recall@100` of
+76.6 against BGE-M3 sparse's 45.3, which is the gap measured above. Its cards
+say `apache-2.0`, but both released checkpoints carry `naver/splade-v3`'s MLM
+head (24M parameters, CC-BY-NC-SA-4.0; its bias correlates with splade-v3's at
+1.0000 read from the released tensors), its second training stage distils
+scores from a `license: gemma` reranker, and its training code carries no
+licence. By the leaf-and-base rule above that is the same refusal as
+`bge-reranker-v2-gemma` and the splade-v3 family. It also has no ONNX export,
+and it would add a second XLM-R-large forward to every query and every write.
+
+Cost is not the reason. The sparse vector falls out of the forward pass the
+product already runs, and stores at 129 to 533 bytes a memory (a 32-bit id and
+weight per non-zero, on this project's corpus and MuSiQue) against 4,096 for
+the dense vector. The index could not hold it as things stand anyway:
+`zvec-rust` 0.7.2 declares sparse field types and accepts a sparse sub-query,
+but its `Doc` has no setter for a sparse field, so writing one would go
+through the raw FFI.
+
+**The multi-vector output loses to the cross-encoder it would replace.**
+Reordering the same shown set, nDCG@10 against the shipped `accurate` tier:
+
+| reordered by | own cross-lingual | XQuAD-R cross-lingual | XQuAD-R same-language | MuSiQue two-hop |
+| --- | --- | --- | --- | --- |
+| `accurate` cross-encoder, shipped | 0.8162 | 0.6673 | 0.7844 | 0.6596 |
+| M3 "All", the card's 0.4 dense + 0.2 sparse + 0.4 multi-vector | −0.0033, p = 0.8344 | **−0.0527**, p = 0.0001 | +0.0006, p = 0.7164 | **−0.0167**, p = 0.0001 |
+| M3 multi-vector alone | −0.0030, p = 0.8337 | **−0.0531**, p = 0.0001 | −0.0025, p = 0.1758 | **−0.0200**, p = 0.0001 |
+| cross-encoder and "All", rank-fused, weight 0.25 | −0.0030, p = 0.4786 | +0.0011, p = 0.1294 | −0.0000, p = 1.0000 | **−0.0022**, p = 0.0101 |
+| the same at 0.5 | −0.0006, p = 0.8988 | **−0.0030**, p = 0.0177 | +0.0004, p = 0.5800 | −0.0025, p = 0.0812 |
+| the same at 1.0 | +0.0121, p = 0.2832 | **−0.0110**, p = 0.0001 | +0.0009, p = 0.3549 | **−0.0080**, p = 0.0001 |
+
+The paper's weights (1, 0.3, 1) give −0.0501 and −0.0172 on the two groups
+that move. Against fusion with no rerank at all, "All" gains nothing
+significant on XQuAD-R cross-lingual (+0.0032, p = 0.1553) and loses MuSiQue
+(−0.0070, p = 0.0001). That is the `mLateOn` result recorded below, from a
+second model: late interaction reorders this pipeline's candidates no better
+than the fusion order it replaces. The rank-fused weight was chosen
+leave-one-corpus-out, and the choice does not hold out: no weight was
+admissible on the other two corpora with this project's own held out, and the
+two folds that chose one lose on the corpus they did not see — XQuAD-R
+cross-lingual −0.0030 (p = 0.0177) at 0.5, MuSiQue −0.0022 (p = 0.0101) at
+0.25.
+
+**And it is not cheaper either way it could be built.** Stored, the per-token
+vectors at int8 are 19.3 KiB a memory on this project's corpus, 42.9 KiB on
+XQuAD-R and 117.7 KiB on MuSiQue — 545 MiB and 1,240 MiB for the two external
+corpora, against 4 KiB of dense vector a memory. Computed at query time
+instead, each candidate not cached needs a BGE-M3 forward pass, which costs
+about what the cross-encoder's pair does: 130.8 ms against 134.8 on XQuAD-R
+sentences and 376.2 against 299.0 on MuSiQue paragraphs, medians at batch one
+from a single run. A cache of those vectors over the harness's stream of
+questions hits 46% of reranked candidates on XQuAD-R and 38% on MuSiQue at 500
+entries, and 64% and 77% with no bound.
+
+**The longer window buys nothing these corpora can see.** None of this
+project's 230 memories or XQuAD-R's 13,014 sentences exceeds 512 tokens. On
+MuSiQue 32 of 10,785 paragraphs do (0.3%), the longest at 597. On the 46
+questions whose relevant paragraph is one of those, embedding it whole moves
+the vector channel alone, exact search, from 0.5323 to 0.5348 nDCG@10 (+0.0025,
+p = 0.820, 4 wins, 3 losses), with `recall@50` unchanged; the sparse output
+moves by +0.0010 (p = 1.000). The forward pass grows faster than the text: 223
+ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
+4,096, the fastest of three calls on one text (of two at 4,096). The window
+stays at 512.
+
+### pplx-embed-v1-0.6b on the shipped path: measured, not adopted
+
+**Status: rejected.** BGE-M3 remains the default. The accuracy gain held up
+with the export a product would ship, but the maintainer weighed it against a
+3.4× slower write path and chose BGE-M3; the decision and the figures it rests
+on close this section.
+
+The survey above named one candidate and four reasons it was not yet a
+default, the first being that it had been measured on the vector channel
+alone. The end-to-end trial ran it through `search_reranked` at the `accurate`
+tier on the XQuAD-R and MuSiQue harnesses. It used an experimental `pplx`
+profile over our own int8 export (52bc0d9) and a harness option that pairs one
+profile's saved per-question scores with another's (783551a), and neither is on
+the default branch. It ran at the rerank depth of twenty that shipped at the
+time. Both indexes embed `name: content`:
+
+| | BGE-M3 | pplx | difference | wins / losses | p |
+| --- | --- | --- | --- | --- | --- |
+| MuSiQue two-hop (1,000), nDCG@10 | 0.7129 | 0.7451 | **+0.0322** | 306 / 218 | 0.0001 |
+| MuSiQue two-hop, `recall@50` | 0.8570 | 0.8865 | **+0.0295** | 94 / 39 | 0.0001 |
+| XQuAD-R same-language (1,190), nDCG@10 | 0.8030 | 0.8193 | **+0.0162** | 168 / 118 | 0.0076 |
+| XQuAD-R same-language, `recall@50` | 0.9605 | 0.9580 | −0.0025 | 13 / 16 | 0.7137 |
+| XQuAD-R cross-lingual (1,190), nDCG@10 | 0.6714 | 0.6643 | −0.0072 | 421 / 486 | 0.0986 |
+| XQuAD-R cross-lingual, `recall@50` | 0.9005 | 0.8946 | −0.0059 | 175 / 180 | 0.1934 |
+
+**What survived fusion and the reranker is a third to a half of the model-alone
+gain within a language, and none of it across languages.** Alone, the vector
+channel had gained +0.0647 on MuSiQue, +0.0457 same-language and +0.0251
+cross-lingual. The prediction written before this run was +0.015 on MuSiQue (a
+range of −0.005 to +0.035), +0.035 same-language, and +0.005 cross-lingual, not
+significant. MuSiQue came in at the top of its range and same-language at half
+the prediction. Cross-lingual was not significant, as predicted, but its sign
+is negative.
+
+**The first figures this trial printed were wrong, and what was wrong was the
+baseline's text, not its model.** They were +0.0029 cross-lingual (p = 0.5351)
+and +0.0355 same-language (p = 0.0001) on XQuAD-R. Those paired pplx on a fresh
+index against BGE-M3 indexes built before 0c2ff9f, which embed content alone
+and keep doing so until `pamin reindex` rebuilds them. Measured alone on the
+same harness, the encoding moves BGE-M3 from content to `name: content` by
++0.0101 cross-lingual (444 wins / 321 losses), +0.0193 same-language
+(141 / 80) and +0.0294 on MuSiQue (249 / 166), each at p = 0.0001. So the
++0.0355 was +0.0193 of encoding and +0.0162 of model, and the +0.0029 was an
+encoding gain covering a model loss. The harness now refuses to pair runs over
+different encodings (783551a). The prediction for the encoding was wrong in
+sign on XQuAD-R (−0.003 and −0.002, on the reasoning that names like `de:12:3`
+are noise to the model) and low on MuSiQue (+0.012). It also separates two
+decisions: a BGE-M3 workspace built before 0c2ff9f gains the encoding figures
+from `pamin reindex` with no change of model.
+
+What it costs:
+
+| | BGE-M3, shipped | pplx, own int8 export |
+| --- | --- | --- |
+| query embedding | — | 2.24× to 3.02× BGE-M3's: the median per-query ratio in each of four runs of 375 queries |
+| resident after loading and 20 queries | 628 MiB (299 anonymous, 329 file-backed) | 886 MiB (167 anonymous, 720 file-backed) |
+| model on disk | 560 MiB | 850 MiB |
+| passage embedding | — | 2 to 3 times BGE-M3's, from the survey |
+
+The latency is the embedding call through the crate's own encoder, not a whole
+search. It was taken on the shared four-core machine at a load average of 17 to
+20, so only the per-query ratio is quoted: BGE-M3's own median moved between
+40.8 and 90.8 ms across the four runs. The resident figures are the median of
+three alternating rounds, one model per fresh process, which agree to within
+1.5 MiB.
+
+**Combining the two models was measured, and it is not proposed.** It used the
+same replay as the section above, with its MuSiQue caveat, under rules written
+before any combined result. Every arm keeps the two BM25 channels at 0.125 and
+the graph at 0.30:
+
+- **A** is what ships: BGE-M3 dense at 1.0, over an index of content, as the
+  benchmark workspaces were built. **A′** is A over a fresh BGE-M3 index of
+  `name: content`, which is what a new install builds.
+- **B** is A plus BGE-M3's sparse channel at 0.0625.
+- **C** is pplx's dense vector in place of BGE-M3's, at 1.0.
+- **D** is C plus BGE-M3's sparse channel at 0.0625.
+- **E** is BGE-M3 at 1.0, pplx at 0.5 and the sparse channel at 0.0625, and
+  **E′** is E over the fresh BGE-M3 index.
+
+D's and E's weights are what the rule chose on all three corpora. The
+leave-one-corpus-out folds disagreed, choosing a sparse weight of 0.125 for D
+and 0.25 for E with this project's corpus held out, so by the same rule neither
+arm has an established sparse weight. nDCG@10 after the rerank, at the depth of
+thirty that ships, paired against A:
+
+| arm | own cross-lingual (43) | own relational (20) | XQuAD-R cross-lingual | XQuAD-R same-language | MuSiQue two-hop |
+| --- | --- | --- | --- | --- | --- |
+| A | 0.8162 | 0.6480 | 0.6673 | 0.7844 | 0.6596 |
+| A′ | +0.0201, p = 0.0995 | +0.0353, p = 0.3065 | **+0.0051**, p = 0.0161 | **+0.0160**, p = 0.0001 | **+0.0218**, p = 0.0001 |
+| B | **−0.0078**, p = 0.0045 | −0.0020, p = 1.0000 | **−0.0114**, p = 0.0001 | **+0.0141**, p = 0.0001 | **+0.0035**, p = 0.0028 |
+| C | **+0.0644**, p = 0.0001 | −0.0135, p = 0.8611 | +0.0049, p = 0.2404 | **+0.0230**, p = 0.0005 | **+0.0679**, p = 0.0001 |
+| D | **+0.0471**, p = 0.0046 | −0.0320, p = 0.6664 | −0.0073, p = 0.0765 | **+0.0351**, p = 0.0001 | **+0.0695**, p = 0.0001 |
+| E | **+0.0347**, p = 0.0014 | −0.0054, p = 0.7534 | **+0.0085**, p = 0.0001 | **+0.0243**, p = 0.0001 | **+0.0359**, p = 0.0001 |
+| E′ | **+0.0478**, p = 0.0001 | +0.0312, p = 0.6124 | **+0.0135**, p = 0.0001 | **+0.0332**, p = 0.0001 | **+0.0458**, p = 0.0001 |
+
+The lexical group is 1.0000 in every arm, and the monolingual group is 0.9940
+in every arm except C, which is 0.9881 (one query, p = 1.0000). Against A′,
+the baseline a new install gets, C still has no group significantly worse:
++0.0443 own cross-lingual (p = 0.0023), −0.0002 and +0.0069 on XQuAD-R's two
+groups (p = 0.9557 and 0.2542), and +0.0461 on MuSiQue (p = 0.0001). D loses
+XQuAD-R cross-lingual to A′, −0.0124 (p = 0.0013). E and E′ have no group
+significantly worse than A or A′ either. But they need both models, 628 + 886
+MiB resident and 560 + 850 MiB on disk, and they score below C on MuSiQue
+(0.6955 and 0.7054 against 0.7275). D needs both as well, because its sparse
+channel is BGE-M3's, and B loses XQuAD-R cross-lingual. So among the arms that
+load one model, C is the only one with no group significantly worse than A or
+A′, and it was the configuration taken to a decision.
+
+**The replay and the product agree on direction, not to the third decimal.**
+Paired against a named BGE-M3 index at depth twenty, the replay gives C
++0.0450 on MuSiQue where the product gave +0.0322, and +0.0069 (not
+significant) same-language on XQuAD-R where the product gave +0.0162. The
+decision rests on the product-path tables in this section. The replay only
+ranks the combinations against one another.
+
+**The four open items were settled before the decision** (the adoption
+branch, `claude/perf-33-pplx-default-7gafc1`, and its PR #98 were closed
+unmerged and hold the code and logs):
+
+1. **The export.** Perplexity's own 8-bit ONNX export at a pinned revision
+   runs fast once each of its 196 `MatMulNBits` nodes is told to compute in
+   int8 (accuracy level 4), set at load time with no Python. Against the
+   full-precision export over 400 texts its mean cosine is 0.99925, above our
+   own export's 0.99571, and on the XQuAD-R path the two exports do not differ
+   (+0.0019 cross-lingual, p = 0.097; +0.0009 same-language, p = 0.50).
+2. **Re-embedding.** A replaced model's index can be rebuilt beside the old
+   one in the background while the old one serves.
+3. **Greek.** Per query language on the shipped path, Holm-corrected across
+   eleven languages, Greek cross-lingual is −0.0512 (30 wins / 59 losses,
+   corrected p = 0.006) and Chinese cross-lingual +0.0685 (corrected p = 0.001);
+   nothing else moves. Greek alone accounts for the whole cross-lingual −0.0045.
+4. **Fusion weights.** A leave-one-corpus-out re-sweep written before it ran
+   kept every weight: the three folds each chose a different setting, and the
+   procedure lost −0.0020 pooled over 3,537 held-out questions (p = 0.0023).
+
+**The decision, on the export that would ship, at the shipped depth of
+thirty.** Accuracy, paired per question:
+
+| | BGE-M3 | pplx | difference | wins / losses | p |
+| --- | --- | --- | --- | --- | --- |
+| MuSiQue two-hop (1,000), nDCG@10 | 0.7131 | 0.7470 | **+0.0339** | 300 / 211 | 0.0001 |
+| MuSiQue two-hop, `recall@50` | 0.8570 | 0.8855 | **+0.0285** | 93 / 41 | 0.0001 |
+| XQuAD-R same-language (1,190), nDCG@10 | 0.8041 | 0.8199 | **+0.0157** | 162 / 111 | 0.010 |
+| XQuAD-R cross-lingual (1,190), nDCG@10 | 0.6745 | 0.6699 | −0.0045 | 412 / 493 | 0.24 |
+
+Cost, in two long-lived processes opened as `pamin serve` opens them, the two
+models alternated per query on 100 MuSiQue and 100 XQuAD-R queries at the CLI
+defaults (load average 5.6 to 7.2 on four cores):
+
+| | BGE-M3 | pplx | ratio |
+| --- | --- | --- | --- |
+| query embedding, median | 46–47 ms | 119–138 ms | 2.5–3.1×, p = 0.0001 |
+| whole search, both corpora, median | 2,062 ms | 2,112 ms | 1.02× (geometric mean of per-query ratios), p = 0.83 |
+| passage embedding, a write | 135 ms | 523 ms; 459 ms with the passes of a batch run side by side | 3.4–4.1× |
+| resident | 628 MiB | 797 MiB | |
+
+**Why the whole search did not slow down, and why that did not decide it.**
+The query embedding is 1 to 7% of a search that reranks, and pplx changed how
+often the reranker runs at all (57 of 100 MuSiQue queries against 66). But
+every memory written pays the passage cost before it becomes searchable, and
+the cost sits in the kernel: this export's `MatMulNBits` runs on MLAS's
+AVX512-VNNI path, while the AMX path serves only the `MatMulInteger` that
+BGE-M3's export uses. Batching does not recover it, since a pass's cost per
+token is flat and each passage already runs alone. Only a per-column int8
+export of our own reaches AMX, which means hosting weights. With accuracy and
+latency weighed about equally, a 4.8% relative multi-hop gain did not buy a
+3.4× slower write path, and BGE-M3 stays.
+
 ### Quantizing the stored vectors: measured, and it is the wrong lever
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
 
-`PAMIN_VECTOR_STORAGE` builds the projection's vector field five ways. Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
+`PAMIN_VECTOR_STORAGE` built the projection's vector field five ways (it has since been removed, with every storage below; see "Two vector indexes, both half precision"). Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
 
 | storage | recall@10 | per query | build | whole index |
 | --- | --- | --- | --- | --- |
@@ -1223,9 +1600,9 @@ This decision recorded stored-vector quantization as deferred "until the binding
 | fp16 | 0.9980 | 10.9 ms | 82 s | 337.0 MB |
 | int8 | 0.9980 | 7.3 ms | 43 s | 292.6 MB |
 | int4 | 0.9990 | 9.3 ms | 45 s | 269.4 MB |
-| rabitq | — | — | — | refuses to train without a `raw_vector_provider` |
+| rabitq | — | — | — | refused when the graph is built: HNSW with RaBitQ is not in the engine's C API |
 
-**Quantizing cannot save disk here, because the refiner keeps the full-precision vectors.** Every quantized row carries the same 206.4 MB of raw vectors — 50,000 × 1024 × 4 bytes is 204.8 MB, so that column is the raw copy — and adds its codes on top. So the trade is not "smaller index for slightly worse recall"; it is **19% to 49% more disk for half the query time and half the build**, at no measured recall cost. That is a real trade and it is the opposite of the one this decision went looking for, so the default stays fp32 and the mechanism stays available to a workspace that would rather spend disk than milliseconds.
+**Quantizing cannot save disk here, because the refiner keeps the full-precision vectors.** Every quantized row carries the same 206.4 MB of raw vectors — 50,000 × 1024 × 4 bytes is 204.8 MB, so that column is the raw copy — and adds its codes on top. So the trade is not "smaller index for slightly worse recall"; it is **19% to 49% more disk for half the query time and half the build**, at no measured recall cost. That is a real trade and it is the opposite of the one this decision went looking for, so the default stayed fp32 and the mechanism stayed available to a workspace that would rather spend disk than milliseconds -- until the owner's decision below replaced both.
 
 The measurement could not be made by reading the code. Whether a refiner stores a second copy beside the codes is not visible from the binding's surface, and it is the whole answer.
 
@@ -1236,7 +1613,7 @@ The measurement could not be made by reading the code. Whether a refiner stores 
 | int8 | 0.0530 | 0.9980 |
 | int4 | 0.0580 | 0.9990 |
 
-Same bytes, same build time, same query time. This is the failure shape recorded above from the previous quantization attempt — an index returning plausible neighbours that are not the nearest ones, with no error anywhere — and it was reproduced here only because the harness reports recall rather than whether the calls succeeded. Rotation needs a fitted transform and nothing supplies one; the binding's RaBitQ path is explicit about it, refusing to train without a `raw_vector_provider` the binding does not expose. It is off, and `crates/pamin-index/tests/scratch_quantize.rs` is what would notice if it came back.
+Same bytes, same build time, same query time. This is the failure shape recorded above from the previous quantization attempt — an index returning plausible neighbours that are not the nearest ones, with no error anywhere — and it was reproduced here only because the harness reports recall rather than whether the calls succeeded. Why is not established. It is not a missing fitted transform, which is what this paragraph used to say: the engine's FHT rotator is random, seeded from `std::random_device`, so there is nothing to fit or to supply, and the likely cause is upstream. Nor is the rabitq row's refusal about a `raw_vector_provider` the binding does not expose, though that is what the engine's message names: the index that pairs a graph with RaBitQ, `HNSW_RABITQ`, is not in the engine's C API at all — `zvec_index_params_create(4)` hands back Flat parameters without an error — so no binding of that API can reach it. Rotation was off from then on, and with the quantized storages gone there is nothing left to turn it on for; `each_vector_index_returns_the_nearest_documents` in `crates/pamin-index/tests/projection.rs` is what would notice a collapse of this shape now.
 
 **The joint export has a third cost, and it took a while to find.** On this export a text's vector depends on what else is in its batch. Against the same text embedded alone: cosine 0.9816 with a shorter neighbour in the batch, 0.9859 with a longer one, and the two neighbours disagree with each other at 0.9805. A batch of one is byte-identical to a single call, so it is the presence of a neighbour rather than the batching API, and it is not the tokenization either — the tokenizer pads to the batch's longest member, so a text that *is* the longest gets byte-identical ids and mask either way, and the mask is passed to the session. Only the batch dimension differs, which puts it in the export or the runtime's INT8 kernels. `speed` and `balanced` return byte-identical vectors batched or alone.
 
@@ -1244,13 +1621,61 @@ The consequence was not accuracy. It was reproducibility: `reindex` embedded in 
 
 **Measured, because "it changes the vectors" and "it changes the answers" are different claims.** Re-running the model-alone arm of the cross-lingual harness on deterministic vectors returns 0.6335 cross-lingual and 0.6787 same-language nDCG@10, against 0.6351 and 0.6763 on the batch-perturbed ones — inside the run-to-run spread this harness already shows, and either side of the 0.6338 / 0.6748 recorded before. So the perturbation is systematic enough to leave the ranking alone, which is why it survived this long: nothing downstream looked wrong. It is fixed for determinism, not for quality, and the distinction belongs in the record.
 
-Stored vectors are float32. The original reasoning was about cost and benefit — a workspace of low millions of vectors makes the compression worth little, and the deterministic reranker has no cross-encoder to recover the accuracy it costs. At the scale this store now targets that reasoning would have expired, so the trade was measured rather than assumed.
+**What this section said before 0.7.2, kept because it was wrong in an instructive way.** On `zvec-rust` 0.7.0 an index built with `hnsw_with_quantize(..., Int8)` returned recall@10 of 0.000 against exact search over the same 50,000 clustered vectors, with or without the refiner and with no error, and the decision was deferred "until the binding exposes rotation", which the engine's own benchmarks describe as what makes int8 usable. 0.7.2 exposed it (`IndexParams::set_quantizer_enable_rotate`), and the tables above are what that trigger found: int8 recalls 0.9980 *without* rotation, and rotation is what now collapses it. So rotation was never what int8 lacked, and the 0.000 did not reproduce on 0.7.2. What stood is the gate that result set — a recall run and an end-to-end run on real corpora before any storage ships — and the next section is that gate, run.
 
-It does not work in this engine. On 50,000 clustered 1024-dimensional vectors, an index built with `hnsw_with_quantize(..., Int8)` returns recall@10 of **0.000** against exact search, with or without the refiner — ten results per query, the right number, none of them the right ones. It does not error and nothing about the output looks wrong.
+### What else zvec-rust 0.7.2 offers, measured
 
-`enable_rotate`, which the engine's own benchmarks describe as what makes INT8 usable (Cohere-768 recall 92.87% unrotated against 94.01% rotated), was not exposed in the Rust binding at all when this was written. **It is now, and that was this row's trigger.** `zvec-rust` 0.7.2 adds `IndexParams::quantizer_enable_rotate` and `set_quantizer_enable_rotate`, and `QuantizeType` carries `Rabitq` beside `Fp16`, `Int8` and `Int4` — verified against the crate source rather than a release note, and absent from 0.7.0, which is the version the 0.000 result below was taken on. Rotation defaults to off, so it has to be asked for. What that changes is the shape of the work: quantization is reachable on the same HNSW graph through `hnsw_with_quantize`, without moving to an IVF index and invalidating the parameter table and recall floor this section rests on. What it does not change is the gate — the 0.000 was silent, so a recall run and an end-to-end nDCG run on a real corpus both have to clear before any of it ships. Whether that is the whole explanation is not established; what is established is that the configuration reachable from here is unusable. The refiner is likewise unavailable without quantization: on a full-precision index `is_using_refiner` fails the query outright rather than being ignored.
+The binding exposes more than rotation: a half-precision vector field, IVF-RaBitQ and DiskANN as alternatives to the graph, an explicit memory limit, and a document iterator. Each was measured against a rule written down before its first number, under this project's order of priorities — accuracy, then latency, then memory, then disk — and each rule asked for a win measured where the product runs: `search_reranked` at the default tier on the `accuracy` profile, with the reranker's and the embedder's caches bypassed and the arms taken in rotated order. That ran over all 157 own-corpus queries, every second of XQuAD-R's 1,190 (595, scored in both groups) and every fifth of MuSiQue's first thousand (200), on four cores that two other evaluations were sharing (load about 9) — so the times below are ratios within a question, never absolute figures. The index-level figures are over the MIRACL-sw passages the evaluation workspace holds — 131,924 real BGE-M3 vectors, the 482 real queries embedded, exact search as the truth — and over the 50,000 synthetic clustered vectors `recall.rs` uses, in the four-segment shape `pamin reindex` produces.
 
-Revisit when the binding exposes rotation, or when the measurement above changes. Until then this is not a decision about compression being unworthy — it is that the compression on offer returns the wrong answers.
+| | recall@10, MIRACL | recall@10, synthetic | index query, MIRACL | disk, MIRACL vectors | resident, MIRACL vectors | end-to-end nDCG@10 | end-to-end time |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **fp32 HNSW (shipped then)** | **1.0000** | **0.9980** | **12.3 ms (5.95–12.55)** | **595.5 MB** | **565 MB** | — | **1** |
+| fp16 field (`VectorFp16`) | 0.9985–0.9988 | 0.9650 | 9.2 ms (8.62–9.39) | 327.8 MB | 310 MB | −0.0004 / −0.0002 / 0.0000, 1 and 5 questions worse, 4 better | 0.997 (p = 0.39) |
+| int8 codes and refiner | 1.0000 | 0.9980 | 6.5 ms (4.69–6.71) | 758.7 MB | 704 MB | identical on every question | 0.998 (p = 0.47) |
+| IVF-RaBitQ, 7 bits, nprobe of 363 lists: 45 / 90 / 181 | 0.9693 / 0.9921 / 0.9981 | 0.786 / 0.951 at 55 / 111 of 223 | 2.90 / 3.49 / 4.81 ms | 703.1 MB | 630–633 MB | not run | not run |
+| DiskANN, degree 64, build list 100, search list 300 | 1.0000 | 1.0000 at 5,000 | 30.79 ms | 1,160.5 MB | 22 MB | not run | not run |
+
+End-to-end nDCG@10 is own corpus / XQuAD-R / MuSiQue, each against fp32 on the same questions; time is the geometric mean of each question's ratio to fp32, pooled over the three (952 questions). Resident is what opening the vector-only collection and answering the 482 queries added to the process. Index query times are the median of four runs, one each for IVF-RaBitQ and DiskANN, on a machine whose load moved between 1.4 and 6 — fp32's own ranged from 5.95 to 12.55 ms — so they give a direction and nothing below rests on more than that.
+
+**The half-precision field halves what it should and costs recall the engine's arithmetic loses.** The binding has no way to write one: `Doc::add_vector_f32` tags its bytes as fp32 and the engine refuses them for an fp16 field ("type mismatch, expected VECTOR_FP16 but got VECTOR_FP32"), and a query handed over as fp32 is refused as 2,048 dimensions. Written through the C API the binding re-exports, and queried with fp16 codes, it works: the vector bytes halve (−45% on MIRACL, and −25% and −19% of the whole XQuAD-R and MuSiQue indexes, 83.0 against 110.2 MB and 95.6 against 118.6), and so does their resident set. What it costs is recall, and not where expected. Rounding a vector to fp16 moves a component by at most 2^-11 of itself; exact search over the rounded vectors recalls 0.9970 of the synthetic truth. The engine's own scores are off by 3.7 × 10^-4 against exact cosine (fp32's by 1.5 × 10^-6), and its recall is 0.9650 — and the graph is not the cause, because a linear scan through the same field loses the same (0.9820 against 1.0000 at 5,000). On real embeddings, whose neighbours are further apart than synthetic clusters, the loss is 0.0012 to 0.0015, and end to end it moved nine of 1,190 XQuAD-R scores (four better, five worse) and one own-corpus query. Its index query time is not settled either way: 0.75 of fp32's in three rounds under load and 1.45 in the one quieter round. The rule allowed 0.002 of synthetic recall and it lost 0.033, so it did not ship. fp16 cannot be combined with a quantizer either: "dense_vector's index_params of VECTOR_FP16 do not support quantize". The next section finds the loss in the engine's arithmetic rather than in the rounding, takes it back with a rescore in f32, and ships the field.
+
+**Int8 is the trade the section above describes, and at the whole search it buys nothing.** Recall and every ranking were identical — not one of 952 questions scored differently — and the index answers in 0.53 to 0.79 of fp32's time on MIRACL, but a search spends a few milliseconds in the vector index out of 1.1 s (own corpus) to 6 s (MuSiQue), almost all of it in the reranker. Measured there, it is 0.993, 0.998 and 1.002 of fp32's time on the three corpora (pooled 0.998, p = 0.47), against a rule that asked for at least 2% at p < 0.05. What it costs is real: 16% more disk on MuSiQue, 22% on XQuAD-R and 27% on MIRACL's vectors, and 25% more resident. So fp32 stays, now with the end-to-end number behind it rather than the index one.
+
+**IVF-RaBitQ saves nothing at this size; DiskANN saves resident memory and pays for it in everything else.** Both were the expected path for a large or cold project. IVF-RaBitQ is faster than the graph at every probe count tried and less accurate at all of them — within 0.002 only when probing half the lists — and it holds more, not less: 703 MB on disk against 596, and 630 MB resident against 565, which is what a full-precision copy beside the codes would look like. On the synthetic clusters it is worse again, 0.951 at half the lists, with a resident peak of 1.14 GB against 0.77. DiskANN is the one real memory lever here: it recalls everything fp32 does and opening it and answering 482 queries added 22 MB to the process, against 565 MB for the graph, because it reads the vectors from disk per query rather than holding them — so what it touches sits in the page cache, which the kernel can take back, rather than in the process. Everything else goes the other way: 2.5 to 5 times the index query time (30.8 ms in one run, against fp32's 5.95 to 12.55 ms in four), twice the disk (1,160.5 MB), fourteen times the build (757 s against 55) with a 3.2 GB peak while building, and a 5,000-document build that took 70 s against the graph's 3. Under this project's order latency outranks memory, and the rule asked for no slower than 1.03 at the index, so it is not the default. It is the path for a project whose resident set is the constraint and whose searches can afford some 20 ms more in the index — not measured end to end, where that would be roughly 0.3 to 2% of a search at the times above — and, like `enable_mmap`, it is fixed when a collection is created, so reaching it is `pamin reindex` -- which, with `--vector-index`, is now how a project moves between it and the in-memory graph.
+
+**The memory limit is not read by an index opened this way.** `initialize(Some(..))` with `ConfigBuilder::memory_limit` sets the size of the pool the engine reads vectors through when a collection was created with mmap off; left unset, the engine takes 80% of the cgroup's or the host's memory. Every collection here is created with the default, mmap on, and the pool is then not consulted. Measured rather than read, over XQuAD-R's 13,014 documents, each arm in its own process and two rounds: 256 MiB, 2 GiB and no limit opened at the same resident set (243 MB, to the kilobyte's noise), returned identical results for 400 vector and 400 lexical queries, answered in the same time within noise (4.6 to 5.5 ms a pair, overlapping across arms), and built the same index in 25.2 to 26.4 s with a peak of 826 to 873 MB — no limit lowest in both rounds. The engine is still initialized with `None`.
+
+**The document iterator reads faster and saves little a rebuild can see, and it ships anyway.** A rebuild lent its vectors by reading the set-aside index twice through keyed fetches of 256 — once to count what it can lend, once to take it. Over MIRACL's 131,924 documents, warm, one pass of fetches took 1.46 to 1.59 s and one pass of the iterator 0.28 s, the resident set after each was the same 1.53 GB — the index, mapped — and the two read identical vectors and text. So the iterator takes about 2.5 s off a rebuild of that size; XQuAD-R's rebuild takes 30.0 s, of which reads at that rate are about 0.3 s. The rule asked for 10% of the rebuild's time or its peak memory, and the best case is 1%, so by the rule it did not ship. The rule was then overruled: the owner's position is that an optimization that costs nothing in accuracy is taken however small, and this one costs nothing — the same documents, the same text and bit-for-bit the same vectors, which `a_rebuild_lends_through_the_iterator_what_keyed_reads_return` in `crates/pamin-index/tests/projection.rs` asserts against keyed reads of the same index. `Previous::lends` and `Previous::lend` now make one pass each, and the rebuild writes what is lent in the order the old index holds it, then embeds the rest. Its three constraints are met by where it is used rather than by care: the set-aside index is opened read-only, so there is no segment being written for the iterator to seal; nothing optimizes a set-aside index, so none is blocked; and the vector field is not nullable, so no document fails the iteration for lacking one. The reshape still reads by key, because it copies the *served* index, which goes on taking writes and being optimized, and afterwards has to read again exactly the topics written meanwhile.
+
+The runs are scratch builds (a storage label read at open and the two caches bypassed) and cannot be re-run from the repository. The fp16 field needed about a hundred lines around the C API, which the tree now carries in `crates/pamin-index/src/half.rs`.
+
+### Two vector indexes, both half precision: `memory` by default
+
+The section above measured each storage against a rule and shipped none of them. The owner then set the rule aside for the vector index and decided the shape directly: vectors are stored in half precision, the index is one of two, `disk` (DiskANN) or `memory` (HNSW), chosen with `--vector-index` / `PAMIN_VECTOR_INDEX`, and `disk` was made the default because this project ranks resident memory above query time and disk, and `disk` is the index that holds almost nothing resident. Once the write-path cost below was measured, the owner made `memory` the default instead; `disk` stays for projects whose memory is scarce. Everything else — fp32 as a way to write, int8, int4, RaBitQ, IVF-RaBitQ, the quantizer's rotation, `PAMIN_VECTOR_STORAGE` — is gone from the code. What was measured to hold that decision to the accuracy bar, and what it costs, follows.
+
+**Half precision is accurate once the engine's scores are not trusted.** The paragraph above found the fp16 field losing 0.033 of synthetic recall, and a later probe found why: on a CPU with AVX-512 FP16 the engine's cosine and inner-product kernels multiply and accumulate in half precision (`inner_product_distance_batch_impl_fp16_avx512fp16.cc` upstream), so its scores are off by about 4e-4 where rounding the vectors alone moves a cosine by about 1e-5. The fix is on this side of the boundary: ask either index for twice the candidates with their stored vectors, and rank those again by an exact f32 cosine against the query as the model produced it. That leaves only the rounding's error, which is what exact search over the rounded vectors recalls. The stored vectors are read back through the C API — the binding's f32 getter returns nothing for an fp16 field, which is why the section above concluded they could not be — and `crates/pamin-index/src/half.rs` carries the three crossings the binding lacks.
+
+Measured against exact search, recall@10 and recall@50, with the rescore; fp32 HNSW is what shipped until now. Synthetic is the 50,000 clustered 1024-dimensional vectors `recall.rs` uses in four segments, 200 queries; MIRACL is its 131,924 real BGE-M3 passages and 482 real queries, in four segments. Times are the median index query on four cores that other evaluations were sharing at load 9 to 13, so they are directions within a row group, not figures:
+
+| | recall@10 / @50, synthetic | recall@10 / @50, MIRACL | index query, MIRACL, k = 10 / 50 | build, MIRACL | peak while building | disk, MIRACL | resident, MIRACL |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| fp32 HNSW (what shipped) | 0.9980 / 0.9974 | 1.0000 / 0.9999 | 9.5 / 9.4 ms | 171 s | +570 MB | 595.5 MB | 575 MB |
+| **`memory`** (default): fp16 HNSW, width 700 | 0.9965 / 0.9965 | 1.0000 / 0.9997 | 5.9 / 10.0 ms | 84 s | +721 MB | 327.8 MB | 320 MB |
+| **`disk`**: fp16 DiskANN, width 1,200 | 0.9985 / 0.9975 | 1.0000 / 0.9996 | 68.6 / 79.2 ms | 1,379 s | +1,353 MB | 618.1 MB | 34 MB |
+
+Resident is what opening the vector-only collection and answering the 482 queries added to the process. Build and peak are one `optimize` over every document, the way `pamin reindex` builds. The synthetic set shows the same ordering: `memory` built in 58 to 64 s, fp32 in 98 s and `disk` in 922 to 1,024 s; they held 130, 224 and 27.5 MB resident and took 132.1, 232.0 and 235.6 MB of disk.
+
+**`memory` meets the bar at the width it already had.** Its recall is inside 0.002 of fp32's on the synthetic set and inside 0.001 on MIRACL, and it is faster to query, to build and smaller on disk and resident than the fp32 graph, all of it from half the bytes a vector. The query width was measured again for it, because a narrower one is where its remaining milliseconds are: at 200, 300 and 500 it saves about a millisecond a query and misses the bar at fifty on both sets (0.9458, 0.9769 and 0.9927 on the synthetic set; 0.9980, 0.9988 and 0.9993 on MIRACL), so it stays at 700.
+
+**`disk` meets it only by searching wide, and pays for that in query time and above all in build.** The on-disk graph is what limits its recall, not the arithmetic — the rescore adds at most 0.0015 at any width — and at DiskANN's own default width of 300 it recalls 0.981 of the synthetic top ten. It needs a width of 1,200 to be within 0.002 of fp32 at both depths, and the query then takes roughly ten times what the in-memory graph takes. On MIRACL's real embeddings the graph is easier to search -- 0.9996 at ten and 0.9986 at fifty from a width of 300, 0.9995 at fifty from 800 -- but the synthetic clusters are what set the width, as they set the in-memory graph's, and 1,200 is also what MIRACL was measured at. A build is the heaviest cost: over the synthetic 50,000, 922 to 1,024 s against 58 s for `memory`, with 946 MB more resident while it runs; a build list of 200 rather than 100 took 1,416 s and recalled no more, and 64 product-quantization chunks for navigation answered in a third of the time but recalled 0.9200 at ten and 0.8629 at fifty -- the rescore cannot find again what navigating by codes lost -- and took 1,859 s. What it buys is the resident set: the vectors and the graph stay on disk and are read per query, so opening the index and answering the queries added 34 MB to the process against 320 MB for `memory` and 575 MB for fp32; what it touches sits in the page cache, which the kernel can take back.
+
+**What `disk` does to the write path is its largest cost, and it decided the default.** Measured through the product's own index on 25,000 synthetic vectors written the way a grown project holds them (segments of 10,000), with searches and writes running beside the `optimize` that upkeep issues: both indexes keep a freshly written memory searchable before any build -- every one of fifty found itself, by exhaustive scan of the unbuilt segment -- and neither holds a search up while it builds (`disk`: 15,423 searches during the build, median 13.5 ms, p95 26 ms; `memory`: median 20.5 ms). But `disk`'s first build took 567 s where `memory`'s took 81, and its index queries afterwards ran at a median of 166 ms and a p95 of 537 ms on a machine at load 12 to 15 against `memory`'s 6.8 and 11. And then five increments of 64 documents, each written, flushed and followed by an `optimize` -- what a working drain produces -- took **114, 114, 174, 196 and 310 s** of `optimize` each under `disk`, against 1.1 to 1.6 s under `memory`. Whatever the engine rebuilds when a few documents join an on-disk graph, it rebuilds a great deal of it, and the cost grew with each round. Upkeep runs `optimize` whenever the file budget, the unmerged blocks or the unindexed remainder asks for it, so how often a working project asks is what decides this cost: each time is minutes of two or more cores under `disk` and about a second under `memory`. That settled it: with that cost measured, the owner made `memory` the default, since this project ranks query time above resident memory and `memory` already holds half what the fp32 graph did.
+
+**End to end, neither index moves a ranking, and `disk` costs a few percent of a search.** Measured through `search_reranked` at the shipped defaults (`accuracy`, `accurate` reranking), each project rebuilt from its fp32 index the way `pamin reindex` rebuilds, lending every vector: the own corpus's 157 questions, and every second XQuAD-R question, 595 of them scored in two groups. Against fp32 on the same questions (the fp32 arm of the section above), nDCG@10 moved by +0.0003 on the own corpus (3 better, 2 worse, p = 0.76 by paired sign-flip) and −0.0003 on XQuAD-R (55 better, 55 worse, p = 0.68) under either index, because `disk` and `memory` scored identically on every question: their vector top ten agreed on 100 of 100 probe queries before a question was timed. In the same run, `disk` took 1.033 of `memory`'s time on the own corpus (median 1,371 ms against 1,287, p = 0.34) and 1.054 on XQuAD-R (2,339 against 2,236 ms, p < 0.001). Against fp32 the ratios are 1.23 and 1.13 for `disk` and 1.20 and 1.08 for `memory`, but fp32 was timed in an earlier run at a mean load of 8.9 and 9.0 against 15.1 and 10.4 here, so those carry the machine as well as the index and are not a figure. The rebuild that moved XQuAD-R's 13,014 documents onto each index took 424 s under `disk` and 30 s under `memory`, and left 108.1 and 80.6 MB of index where fp32's was 123.1.
+
+**The two end-to-end tests the write path depends on pass under both, and one of them is flaky before this change as well.** `a_deferred_write_is_found_without_anything_else_being_run` passed in every run: three under `disk`, three under `memory` and three on the fp32 build this branches from, a deferred write searchable after 5.2 to 32.1 s, 5.5 to 34.5 s and 5.5 to 34.7 s against a limit of 60. `catching_up_does_not_hold_a_search_up` passed 2 of 3 times under `disk`, 1 of 3 under `memory` and 0 of 3 on the fp32 build. Its failures are of the same two shapes on every build: the server caught up only once while the thirty searches ran, so the test refused to time them, or one search during catching up took 21.7 to 24.4 s against a settled slowest under 0.1 s. Both shapes appear on the fp32 build this branches from, so neither is this change's. In every run, on every build, two logged rounds of catching up were 28 to 35 s apart where the loop sleeps five seconds between them; what holds the loop, and whether it is what the long searches waited for, is not established and is not fixed here.
+
+**An index built before this is refused rather than searched.** Its marker's storage line says `fp32`, or nothing, which reads as `fp32`; it names neither index, so opening it fails with the message the profile check already gives — run `pamin reindex` — and the rebuild lends every vector it holds, reading them as fp32 and storing them as half precision would have stored the model's. Changing `--vector-index` on a built project goes the same way: refused, then rebuilt without embedding anything. Refusing is what the marker already did for a profile change, and it keeps one way of searching: an index is only ever searched as what it was built as. `each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself`, `an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild` and `each_vector_index_returns_the_nearest_documents` in `crates/pamin-index/tests/projection.rs` hold the three properties, and the last fails at 0.01 recall when the query is scrambled.
 
 ### The graph is the memory floor, and it just doubled
 
@@ -1258,7 +1683,7 @@ Quantizing stored vectors, if it worked, would shrink the payload and not the gr
 
 Raising `m` to 32 for the recall measured above doubles that: roughly 196 GiB for the same hundred projects. That is a real cost and it is the right trade anyway, for a reason worth stating rather than assuming. Nothing puts hundreds of projects of this size in resident memory under *any* configuration — the fp32 payload alone is 2.7 TB, and the best case measured here, one-bit quantization that does not work in this engine, still leaves a floor in the hundreds of gigabytes. Protecting a factor of two on a budget already out of reach buys nothing, while a vector channel returning seven of every ten true neighbours is a live defect.
 
-What it does change is when the disk-resident path stops being optional. Serving that many projects at that size means keeping cold indexes on disk and paging in the working set, and the graph doubling brings that forward rather than pushing it away. The engine exposes `IndexType::Diskann` and `IvfRabitq` for it, with two constraints to carry into that work: DiskANN is Linux x86-64 only, and `enable_mmap` is written into the manifest at creation and ignored when an existing collection is opened, so it cannot be turned on after the fact.
+What it does change is when the disk-resident path stops being optional. Serving that many projects at that size means keeping cold indexes on disk and paging in the working set, and the graph doubling brings that forward rather than pushing it away. The engine exposes `IndexType::Diskann` and `IvfRabitq` for it, with two constraints to carry into that work: DiskANN is available on Linux x86-64 and ARM64, macOS ARM64 and Windows x86-64 but IVF-RaBitQ only on Linux x86-64, and `enable_mmap` is written into the manifest at creation and ignored when an existing collection is opened, so it cannot be turned on after the fact.
 
 ### Segment size is the whole vector-maintenance policy
 
@@ -1521,7 +1946,7 @@ One figure elsewhere looks like a contradiction and is not. [measured.md](../mea
 
 A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
 
-**There is no compilation trick left in the runtime.** Sorting candidates by length before batching and using batches of eight rather than sixteen took the same work from 191 ms to 151, because a batch is padded to its longest member. Against that, the export format is worth at most 1.45x on identical weights, fp16 is slower than fp32 on a CPU, and the session already runs every core at the highest graph optimization level. The measured 9.75 ms a pair is what twelve transformer layers on four cores cost.
+**There is no compilation trick left in the runtime.** Batching was the lever inside it, and it has been pulled twice. Sorting candidates by length before batching and using batches of eight rather than sixteen took the same work from 191 ms to 151, because a batch is padded to its longest member. Grouping pairs by their real length in tokens, each pass within 512 padded tokens and four pairs, then took a whole default search at a depth of thirty to 0.81 of what chunks of eight cost, paired over every query of XQuAD-R, MIRACL and MuSiQue, because on four cores a pair also costs more the more tokens share its pass; no group's nDCG@10 moved significantly, which had to be measured rather than assumed, since the int8 export quantizes a batch's activations together and so scores a pair by its company. The rule it was chosen by and the tables are at `BATCH_TOKENS` in `crates/pamin-index/src/reranking.rs`. Against that, the export format is worth at most 1.45x on identical weights, fp16 is slower than fp32 on a CPU, and the session already runs every core at the highest graph optimization level. The measured 9.75 ms a pair is what twelve transformer layers on four cores cost.
 
 The published answers to this latency all change the architecture instead, and both are deferred on a missing export rather than on a licence or a doubt:
 
@@ -1559,6 +1984,20 @@ Both chains are defensible and **neither states its licence where it is shipped 
 | `mixedbread-ai/mxbai-rerank-base-v2` | `apache-2.0` | MIRACL 28.56. Not a multilingual reranker in the sense this product needs, whatever the language count says |
 | `Alibaba-NLP/gte-multilingual-reranker-base` | `apache-2.0`, with an int8 ONNX re-export | Four times `fast`'s compute for a 12-layer model. Shipped as `balanced` to settle it, and **measured worse than `fast` cross-lingual** at 2.3 times its latency — the "plausible middle tier" this row predicted is not one, and it was removed |
 | `nreimers/mmarco-mMiniLMv2-L6-H384-v1` | **no licence tag at all** | The obvious "halve the layers" move, unavailable for the reason this project's rules anticipate |
+
+**Rechecked on the full-head `accurate` path, 2026-09-27.** On the same persisted
+XQuAD-R index, the `accuracy` profile, CPU, and 1,190 questions rotated across
+eleven languages, the [GTE multilingual reranker](https://huggingface.co/Alibaba-NLP/gte-multilingual-reranker-base)
+int8 ONNX export replaced only the cross-encoder. Candidate retrieval, depth
+30, and the 0.2 fusion/model-score blend stayed fixed. GTE scored 0.6868
+cross-lingual and 0.8611 same-language nDCG@10; the shipped BGE reranker
+scored 0.7268 and 0.8682. Recall@50 was identical at 0.9032 and 0.9647.
+The observed full-run wall times were 644 seconds with GTE and 1,605 seconds
+with BGE, a ratio of 2.49 in these runs. They were separate, non-alternated
+runs on a shared machine, so that ratio is not an established model speedup or
+per-search latency result. The large cross-lingual accuracy loss
+rules out a default swap under the accuracy-first policy; the speed result is
+a lead for future distillation or model work, not a measured search p95 gain.
 
 **What the non-commercial licence actually buys, now that it has been paid.**
 The survey above ruled the whole Jina line out as non-commercial and left it
@@ -1915,6 +2354,91 @@ tested on one corpus, so it bounds the within-corpus case and says nothing about
 another. The transfer test is the one that decides whether the fusion rows of
 the table above can be believed, and it belongs on a corpus this was not fitted
 on.
+
+### The transfer test, taken as an abstention decision: measured, not shipped
+
+The decision that would use a calibrated score first is abstention, and it has
+a column to be scored on: LoCoMo's adversarial questions, where upstream's own
+evaluation counts only "not mentioned" as correct. So the transfer test was
+run as that decision, through `pamin search` itself, with the rule written
+down before any LoCoMo or LongMemEval search ran.
+
+**The signal.** The `accurate` tier's logit for the top hit `pamin search`
+returns -- reused when the reranker already scored it, scored as one more pair
+after the ranking is final when it did not, so the order returned is
+unchanged -- mapped through an isotonic fit, with the verdict `weak` below a
+probability of 0.5. The half is the equal-cost decision on a calibrated
+probability, not a fitted cut. The results were still returned; the verdict
+was advice beside them.
+
+**The fit, on a third corpus.** 484 MuSiQue answerable dev questions, every
+fifth, their 5,964 paragraphs pooled into one project, labelled by whether the
+top hit is a supporting paragraph (74.4% were). Held-out expected calibration
+error, fitted on one half by question and scored on the other: **0.0590**
+isotonic against 0.1804 for the raw sigmoid. Within a corpus the fit works
+again, as it did on XQuAD-R.
+
+**The rule.** Ship the verdict as a field only if, paired per question with an
+exact two-sided McNemar test: adversarial improves at p < 0.05, none of the
+four answerable columns falls at p < 0.05, and LongMemEval-S does not either.
+An answerable question counts as served when an evidence turn is in the top ten
+*and* the verdict is `sufficient`; an adversarial one when the verdict is
+`weak`.
+
+**Measured on all 1,986 LoCoMo questions**, one project per conversation, the
+turns written as the benchmark harness writes them:
+
+| column | n | never abstains | with the verdict | wins | losses | p | `weak` rate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| multi-hop | 282 | 0.791 | 0.592 | 0 | 56 | 3e-17 | 0.277 |
+| temporal | 321 | 0.826 | 0.670 | 0 | 50 | 2e-15 | 0.227 |
+| open-domain | 96 | 0.521 | 0.292 | 0 | 22 | 5e-7 | 0.479 |
+| single-hop | 841 | 0.810 | 0.718 | 0 | 77 | 1e-23 | 0.127 |
+| adversarial | 446 | 0 | **0.314** | 140 | 0 | 1e-42 | 0.314 |
+| all five | 1,986 | 0.614 | 0.581 | 140 | 205 | 0.0006 | |
+
+On LongMemEval-S, the 59-question sample the published figures use,
+recall_any@10 falls from 0.983 to 0.627 (no wins, 21 losses, p = 1e-6), the
+verdict calling a third of the top hits `weak`. On its 30 false-premise `_abs`
+questions, where abstaining is the benchmark's answer, it is `weak` on 22
+(p = 5e-7), but the same threshold withdrew 21 of the 58 answers the sample had
+retrieved: the two sets separate at AUROC 0.716.
+
+**The rule fails, on every guard at once.** The verdict abstains on a third
+of the adversarial questions, and to do it withdraws between 11% (single-hop)
+and 44% (open-domain) of the answers every other column had retrieved; pooled
+over all five, LoCoMo gets significantly worse. It does not ship.
+
+**Why: the signal barely separates the two, and the fit does not travel.**
+The probability ranks an answerable question above an adversarial one with
+AUROC **0.606** (0.640 counting only answerable questions whose evidence was
+retrieved) -- median 0.762 against 0.600. That was predicted before the run
+(0.55 -- 0.65), for the reason given then, which the run is consistent with
+but does not isolate: 74% of its
+questions have a turn that matches exactly and was only said by the other
+speaker, and a relevance model is not trained to care who said something. The
+calibration did not transfer either. On LoCoMo's answerable top hits the
+MuSiQue map scores an ECE of **0.3100**, against 0.0590 on its own held-out
+half: it says 0.372 where 11.4% are relevant (297 hits) and 0.977 where 80.6%
+are (391). A conversational turn is short and indirect beside a Wikipedia
+paragraph, and 42.1% of LoCoMo's answerable top hits are an evidence turn against 74.4%
+of MuSiQue's, so the same logit means something different. LongMemEval says
+the same: ECE 0.2951 on its top hits.
+
+So the caveat above resolves the way it was feared: the isotonic fit is a
+within-corpus result. What the cross-query-comparable score still offers --
+the rows of the table in the section above -- needs a fit per corpus, or a
+judge trained to be calibrated across them, and an abstention decision needs a
+signal that sees attribution, which a relevance score does not.
+
+Conditions: a release build of the verdict (`2a72188`, `5d7adf0`) with an
+empty table, so each row recorded the raw sigmoid of the logit; the table was
+fitted afterwards and applied to those logits offline, which is the same
+lookup the build with the table performs. `pamin search --limit 10 --json` at
+the shipped tier, four cores at a load average near 18. The latency of the
+extra pair was not measured, because the rule failed on accuracy first; the
+top hit arrived without a reranker score on 1,789 of the 1,986 LoCoMo
+searches. Reverted in `8dcfd14`.
 
 ### Where the decision-model field is, and which of it a CPU can reach
 
@@ -2305,6 +2829,41 @@ every mix to become the default. Two threads does not, so the default stays as
 it was and the setting is documented instead: a deployment that knows it serves
 concurrent, mostly-distinct queries can take the quarter, and one serving a
 single agent should not.
+
+**Idle inference threads block instead of spinning.** ONNX Runtime lets an
+intra-op thread that runs out of work spin before it sleeps, and nothing here
+had said otherwise, so every table above was taken with it spinning. The
+embedder and the reranker each own a pool of one thread per core, so on a
+machine with other work -- the upkeep drain's embedding, another caller, or
+another process -- the spinning threads hold cores the working threads need.
+`inference::session` now turns it off for every model it loads. The rule was
+written before anything was timed: ship if rankings and scores are
+bit-identical, the paired search-time ratio at the machine's own load is at
+most 1.05, under a fixed contention it is at most 0.80 at `p < 0.01`, and eight
+concurrent callers get no less throughput. Through `pamin serve` and `pamin
+search` at the defaults, one hundred queries (sixty from the own corpus, forty
+from an XQuAD-R subset of three languages), a fresh server per arm and round so
+no query is a cache hit, three rounds in rotated order, on four cores:
+
+| | ambient load (2.5 to 13) | two busy loops beside it (load 9 to 13) |
+| --- | --- | --- |
+| search, spin off / spin on | 1.033, faster on 39/100, `p = 0.068` | **0.754**, faster on 86/100, `p = 0.0001` |
+| own corpus / XQuAD-R | 1.027 / 1.042 | 0.720 / 0.809 |
+| eight callers, throughput ratio | 1.17 (1.22, 1.46, 0.89) | 1.13 (1.04, 1.55, 0.90) |
+| one global pool, spin off / spin on | 0.964, `p = 0.037` | 0.886, `p = 0.0002` |
+
+Ratios are geometric means of per-query ratios, each query's time the median of
+its three rounds; `p` is a paired sign-flip test. Every ranking of all two
+hundred queries was identical across arms and rounds, and in process forty
+query embeddings, sixteen passage embeddings and 256 `accurate` scores were
+bit-identical. What it costs where nothing competes was not measured -- this
+machine was never quiet -- and the ambient column, at 1.033 and not
+significant, is the nearest thing to it. One pool shared by both models, through
+`ort`'s global thread pool, was the other candidate: it passes the same rule
+but gives up most of the gain under contention, so it does not ship. The
+`speed` and `balanced` profiles' embedders load through `fastembed`, whose
+options do not reach this setting, and still spin; both rerankers and the
+default profile's embedder do not.
 
 **This says nothing about a machine with cores to spare.** On sixteen or
 thirty-two, one forward pass would not saturate the box, callers would not be

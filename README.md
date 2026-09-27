@@ -13,7 +13,7 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 - Preserves raw evidence and source spans as the authority behind memory.
 - Tracks versioned memories so current, stale, contradicted, and historical facts can be separated.
-- Combines lexical matching, semantic recall, relationship structure, and a reranking pass over what the lexical channels missed.
+- Combines lexical matching, semantic recall, relationship structure, and tier-specific reranking of the fused candidates.
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
 
@@ -244,6 +244,10 @@ systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
 under [benchmarks/results/](benchmarks/results).
 
+These are published baseline measurements. The `accurate` tier now scores the
+whole fused head and blends model and fusion scores; its current accuracy and
+latency are being evaluated in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+
 | | | measured on |
 | --- | --- | --- |
 | retrieval, one language | nDCG@10 **0.7654** | MIRACL Swahili dev, 131,924 passages, `accurate` reranking |
@@ -255,6 +259,17 @@ under [benchmarks/results/](benchmarks/results).
 
 Latency is a corpus and a tier before it is a number, which is why every row
 above names both and why the matrix is on the other page.
+
+Those rows were taken with the vector index that shipped until now, fp32
+vectors in an in-memory graph. A project is now built with half-precision
+vectors under `--vector-index memory` by default, an in-memory graph that on
+MIRACL's passages holds 320 MB resident where the fp32 graph held 575 MB, at
+the same recall. `--vector-index disk` keeps a DiskANN graph on disk and holds
+34 MB, but it takes more disk (618 MB against 328), makes a whole search about
+5% slower, builds far more slowly, and spends minutes on each `optimize` upkeep
+runs after writes where `memory` spends about a second -- which is why it is
+the choice for a project whose memory is scarce rather than the default. What each costs is
+in [docs/measured.md](docs/measured.md) and [docs/cli.md](docs/cli.md).
 
 Five findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
@@ -287,10 +302,11 @@ thirty-passage row reads a store the ten-passage row built, byte for byte.
 
 **One of the two categories where a gap appears is withdrawn rather than
 claimed.** Påmin Memory and MemPalace lead **adversarial** questions, and 74% of
-that category asks about the wrong speaker while the answer key rewards
-replying with the other speaker's content. mem0 answers "no record of that",
-which for the question as asked is better, and is marked wrong for it. Scoring
-high there means ignoring who said what, which is a defect in a memory product.
+that category asks about the wrong speaker. The harness judged it against the
+trap answer, which rewards replying with the other speaker's content, where
+LoCoMo's own evaluation counts only an abstention as correct. mem0 answers "no
+record of that", which is the benchmark's correct answer, and was marked wrong
+for it. The column was scored inverted, so the lead is not a result.
 
 Two more are negative and stay published. The version ledger this project is
 built around bought nothing on LOCOMO (p = 1.00). Where it does win — cutting

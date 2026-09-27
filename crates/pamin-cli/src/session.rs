@@ -6,18 +6,18 @@
 //! request, and the difference between those two is the whole reason there is
 //! a server.
 //!
-//! Both callers build one of these. A server builds one and keeps it; a command
-//! running without a server builds one, uses it, and drops it, which is exactly
-//! what it did before. The commands cannot tell the difference, which is what
-//! keeps the two paths honest about producing the same answers.
+//! The server builds one of these and keeps it. It is the only thing that
+//! does: every command reaches the workspace through the server, so there is
+//! no second path to keep producing the same answers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use pamin_core::ProjectId;
 use pamin_engine::{Engine, Models};
-use pamin_index::{Access, Profile, Rerank};
+use pamin_index::{Access, IndexError, Profile, Rerank, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 use crate::registry::Registry;
@@ -39,6 +39,27 @@ pub struct Session {
     /// profiles against one project are two indexes, and the engine holding
     /// one cannot answer for the other.
     engines: Registry<(String, Profile), Engine>,
+    /// Projects being warmed in the background, so a burst of requests at one
+    /// cold project starts one warm-up rather than one each. See
+    /// [`Session::warm`].
+    warming: std::sync::Mutex<std::collections::HashSet<(String, Profile)>>,
+    /// The reranking tier a warm-up loads: the one the last search asked for,
+    /// or before any has, what `pamin search` would pass by default.
+    tier: std::sync::Mutex<Rerank>,
+    /// How many requests are being answered right now.
+    ///
+    /// What the server's upkeep asks before it spends a model on work nobody
+    /// is waiting for. See [`Session::serving`].
+    serving: AtomicUsize,
+}
+
+/// A request being answered, for as long as this is held.
+pub struct Serving<'a>(&'a AtomicUsize);
+
+impl Drop for Serving<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// How many indexes stay open at once.
@@ -65,6 +86,15 @@ pub struct Session {
 /// figure the paragraph above used to quote, 100 MB, was the smallest
 /// profile's, and nothing said so.
 ///
+/// Most of the first row is a floor rather than a function of size. The
+/// full-text store is a RocksDB with twelve column families, and zvec gives
+/// each one's memtable a hash index of a million buckets, an 8,000,000-byte
+/// array allocated and zeroed when the memtable is: 96 MB before the first
+/// memory is written. A one-memory `speed` index measured 93 MiB anonymous
+/// (98 MB), and nothing pamin configures changes the bucket count. In the
+/// hundred-project end-to-end test, one-memory `accuracy` indexes added 103 to
+/// 152 MiB apiece while the first sixteen opened.
+///
 /// A count cannot be made to mean bytes here: what an index costs depends on
 /// the profile, the quantization, and how much has been written, and this
 /// process learns the last of those only by opening it. So the number stays a
@@ -80,33 +110,113 @@ const OPEN_INDEXES: usize = 16;
 /// to start over a typo in an environment variable is the worse failure.
 const OPEN_INDEXES_VAR: &str = "PAMIN_OPEN_INDEXES";
 
-fn open_indexes() -> usize {
-    parse_open_indexes(std::env::var(OPEN_INDEXES_VAR).ok().as_deref())
+/// The tier `pamin search` passes when a caller names none: `PAMIN_RERANK`
+/// where the server was started with it, as a client started from the same
+/// environment reads it, and the shipped default otherwise.
+fn default_tier() -> Rerank {
+    std::env::var("PAMIN_RERANK")
+        .ok()
+        .and_then(|name| Rerank::parse(&name))
+        .unwrap_or_default()
 }
 
-/// Split from the lookup so it can be tested without setting a variable the
-/// rest of the process shares.
-fn parse_open_indexes(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|count| *count > 0)
-        .unwrap_or(OPEN_INDEXES)
+fn open_indexes() -> usize {
+    pamin_core::env::positive(OPEN_INDEXES_VAR).unwrap_or(OPEN_INDEXES)
 }
 
 impl Session {
     /// Connects, migrates, and holds the result.
     ///
-    /// How many connections it may hold is the caller's to say, because that
-    /// is a question about the process rather than about the workspace: a
-    /// server is the only one talking to the cluster, and a command is one of
-    /// however many an agent is running.
-    pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
+    /// With a resident's pool: the server holding this is the only process
+    /// the CLI talks to the cluster from.
+    pub async fn open(workspace: &Workspace) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, connections).await?,
+            database: Database::open(workspace, Connections::Resident).await?,
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),
+            warming: std::sync::Mutex::default(),
+            tier: std::sync::Mutex::new(default_tier()),
+            serving: AtomicUsize::new(0),
         })
+    }
+
+    /// Counts a request as being answered until the result is dropped.
+    ///
+    /// A guard rather than a pair of calls, so a request that fails or panics
+    /// half way is still uncounted -- a count left one too high would stop
+    /// the upkeep catching up for as long as the server lives.
+    pub fn serving(&self) -> Serving<'_> {
+        self.serving.fetch_add(1, Ordering::SeqCst);
+        Serving(&self.serving)
+    }
+
+    /// Whether no request is being answered.
+    ///
+    /// Asked between rounds of work the server does on nobody's behalf. A
+    /// request that arrives just after this answers yes waits for at most the
+    /// round that started, which is what the round's size is chosen against.
+    pub fn is_quiet(&self) -> bool {
+        self.serving.load(Ordering::SeqCst) == 0
+    }
+
+    /// Opens this project's index and loads its models in the background, if
+    /// this process holds nothing open for it -- without making the caller
+    /// wait for any of it.
+    ///
+    /// A server that has released a project, or never held it, answers the
+    /// first search by opening the index and loading both models in front of
+    /// it: 2,386 ms at the median of the `COLD` arm against 618 for the next
+    /// search. Whatever an agent asks first -- a `read`, a `write`, the search
+    /// itself -- is the first sign it is working on the project, so that is
+    /// when this starts. A search that arrives before it finishes waits for
+    /// the loads already in flight rather than starting its own, so it never
+    /// pays more than it would have, and one that arrives after pays nothing.
+    ///
+    /// Nothing here changes what is given back. The index is opened into the
+    /// same registry and the models into the same [`Models`], stamped as used
+    /// now, so a project warmed and then left alone is closed and its models
+    /// released one idle window later, as if a search had opened them.
+    pub fn warm(self: &Arc<Self>, project: &str, profile: Profile, vector_index: VectorIndex) {
+        let key = (project.to_string(), profile);
+        if self.engines.holds(&key) {
+            return;
+        }
+        if !self
+            .warming
+            .lock()
+            .expect("the warming set is poisoned")
+            .insert(key.clone())
+        {
+            return;
+        }
+        let tier = *self.tier.lock().expect("the tier lock is poisoned");
+        let session = Arc::clone(self);
+        tokio::spawn(async move {
+            let models = session.models.clone();
+            let loading = tokio::task::spawn_blocking(move || models.warm(profile, tier));
+            if let Err(error) = session.engine(&key.0, profile, vector_index).await {
+                tracing::debug!(project = %key.0, %error, "warming: opening the project failed");
+            }
+            match loading.await {
+                Ok(Ok(())) => tracing::debug!(project = %key.0, tier = tier.name(), "warmed"),
+                Ok(Err(error)) => {
+                    tracing::debug!(project = %key.0, %error, "warming: loading a model failed");
+                }
+                Err(error) => tracing::warn!(%error, "warming: the load panicked"),
+            }
+            session
+                .warming
+                .lock()
+                .expect("the warming set is poisoned")
+                .remove(&key);
+        });
+    }
+
+    /// Records the tier a search asked for, as the one to warm next.
+    pub fn searched_at(&self, tier: Rerank) {
+        *self.tier.lock().expect("the tier lock is poisoned") = tier;
     }
 
     pub fn database(&self) -> &Database {
@@ -146,6 +256,14 @@ impl Session {
         (engines, embedders, rerankers)
     }
 
+    /// How many indexes the open-index bound has closed since the last call.
+    ///
+    /// The bound closes one on the way to opening another, inside a request,
+    /// so giving the freed heap back is left to the server's upkeep.
+    pub fn take_evicted(&self) -> usize {
+        self.engines.take_evicted()
+    }
+
     /// The project row for this name, creating it if it is new.
     pub async fn project(&self, name: &str) -> Result<ProjectId> {
         let mut projects = self.projects.lock().await;
@@ -178,8 +296,19 @@ impl Session {
     /// cold project stalled every project this process was serving, including
     /// ones already open. Two projects on one profile still wait for each other
     /// inside [`Models`], which is where waiting for weights belongs.
-    pub async fn engine(&self, project: &str, profile: Profile) -> Result<Arc<Engine>> {
-        self.engines
+    ///
+    /// Asked for under the vector index its index was built with, as it is
+    /// under that profile: an open engine asked for under the other one is
+    /// refused the way opening its index would be, rather than answering as
+    /// what it is not.
+    pub async fn engine(
+        &self,
+        project: &str,
+        profile: Profile,
+        vector_index: VectorIndex,
+    ) -> Result<Arc<Engine>> {
+        let engine = self
+            .engines
             .get_or_open((project.to_string(), profile), || {
                 Engine::attached(
                     self.database.clone(),
@@ -187,10 +316,19 @@ impl Session {
                     &self.workspace,
                     project,
                     profile,
+                    vector_index,
                     Access::ReadWrite,
                 )
             })
-            .await
+            .await?;
+        if engine.vector_index() != vector_index {
+            return Err(IndexError::VectorIndexMismatch {
+                indexed: engine.vector_index().label().to_string(),
+                requested: vector_index.label().to_string(),
+            }
+            .into());
+        }
+        Ok(engine)
     }
 
     /// The engines this process currently holds open.
@@ -199,7 +337,9 @@ impl Session {
     /// upkeep is owed by whatever has been written, and what has been written
     /// recently is what is open. A project evicted before its upkeep ran keeps
     /// the job -- nothing is lost, it waits until the project is wanted again,
-    /// which is also when it starts mattering again.
+    /// which is also when it starts mattering again. That is maintenance
+    /// only: work that changes what a search finds is caught up whether the
+    /// project is open or not, which the server finds from the queue instead.
     /// Handed out one at a time rather than all at once, because holding every
     /// engine for the length of a sweep makes all of them look busy and stops
     /// eviction finding anything to close while it runs.
@@ -215,12 +355,34 @@ impl Session {
         self.engines.opened(key)
     }
 
+    /// One open engine to do owed work on, if nobody else is inside it.
+    ///
+    /// [`Session::opened_engine`], except that it counts as a use: work owed
+    /// is a reason to keep the index, so the idle sweep waits for the work to
+    /// be done and then an idle window, as it would after a request.
+    pub fn opened_engine_for_work(&self, key: &(String, Profile)) -> Option<Arc<Engine>> {
+        self.engines.opened_for_work(key)
+    }
+
+    /// Whether this project and profile has a place here, open or opening.
+    ///
+    /// Not a use, like [`Session::opened_engine`]: asking must not keep a
+    /// project open that nothing is using.
+    pub fn holds(&self, key: &(String, Profile)) -> bool {
+        self.engines.holds(key)
+    }
+
     /// An engine with this project's index discarded first, for a rebuild.
     ///
     /// Evicts rather than reuses: the rebuild throws the collection away and
     /// opens a new one, so an engine held from before points at a directory
     /// that is gone.
-    pub async fn rebuilding(&self, project: &str, profile: Profile) -> Result<Arc<Engine>> {
+    pub async fn rebuilding(
+        &self,
+        project: &str,
+        profile: Profile,
+        vector_index: VectorIndex,
+    ) -> Result<Arc<Engine>> {
         self.engines
             .reopen((project.to_string(), profile), || {
                 Engine::rebuilding_attached(
@@ -229,33 +391,9 @@ impl Session {
                     &self.workspace,
                     project,
                     profile,
+                    vector_index,
                 )
             })
             .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{OPEN_INDEXES, parse_open_indexes};
-
-    #[test]
-    fn a_smaller_machine_can_ask_for_fewer_open_indexes() {
-        assert_eq!(parse_open_indexes(Some("4")), 4);
-        assert_eq!(parse_open_indexes(Some("  4 ")), 4);
-    }
-
-    #[test]
-    fn anything_that_is_not_a_count_leaves_the_default_alone() {
-        // Zero would evict whatever was just opened, and a long-running server
-        // that refuses to start over a typo in an environment variable has
-        // failed worse than one that ignores it.
-        for raw in [None, Some(""), Some("0"), Some("-1"), Some("lots")] {
-            assert_eq!(
-                parse_open_indexes(raw),
-                OPEN_INDEXES,
-                "{raw:?} should not have changed the bound"
-            );
-        }
     }
 }

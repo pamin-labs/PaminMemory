@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -37,6 +38,9 @@ pub struct Registry<K, T> {
     /// prevent, turned from a convention into a compiler error.
     open: std::sync::Mutex<Open<K, T>>,
     capacity: usize,
+    /// How many entries the capacity bound has closed since
+    /// [`take_evicted`](Self::take_evicted) last asked.
+    evicted: AtomicUsize,
 }
 
 struct Open<K, T> {
@@ -66,6 +70,7 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
                 uses: 0,
             }),
             capacity,
+            evicted: AtomicUsize::new(0),
         }
     }
 
@@ -112,7 +117,8 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
                 entry.at = Instant::now();
                 Arc::clone(&entry.slot)
             } else {
-                registry.make_room(self.capacity);
+                let evicted = registry.make_room(self.capacity);
+                self.evicted.fetch_add(evicted, Ordering::Relaxed);
                 let slot = Slot::default();
                 registry.slots.insert(
                     key,
@@ -145,6 +151,18 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
         // for one key share it rather than queueing on the registry.
     }
 
+    /// Whether this key has a place here, open or being opened.
+    ///
+    /// Does not count as a use, for the same reason [`Registry::opened`]
+    /// does not.
+    pub fn holds(&self, key: &K) -> bool {
+        self.open
+            .lock()
+            .expect("the registry lock is poisoned")
+            .slots
+            .contains_key(key)
+    }
+
     /// The keys currently held, for a caller that works through all of them.
     ///
     /// Keys rather than values, so that walking them does not pin every one
@@ -157,6 +175,15 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
             .keys()
             .cloned()
             .collect()
+    }
+
+    /// How many entries the capacity bound has closed since the last call.
+    ///
+    /// For the caller that gives freed memory back to the operating system,
+    /// which a request should not wait for: the bound closes an entry on the
+    /// way to opening another, and that request has somewhere to be.
+    pub fn take_evicted(&self) -> usize {
+        self.evicted.swap(0, Ordering::Relaxed)
     }
 
     /// Closes everything nothing has wanted for `idle`, and says what it closed.
@@ -196,11 +223,32 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
     /// `None` while another caller holds the slot -- opening it, or rebuilding
     /// it. A caller walking the keys skips those rather than waiting.
     pub fn opened(&self, key: &K) -> Option<Arc<T>> {
+        // Deliberately does not count as a use. A sweep touches everything
+        // and would flatten the order the eviction depends on.
+        self.opened_counting(key, false)
+    }
+
+    /// [`Registry::opened`], counted as a use.
+    ///
+    /// For a caller about to do work on the value that is a reason to keep it
+    /// open: stamped now for the idle sweep and moved to the back of the
+    /// eviction order, as a caller of [`Registry::get_or_open`] would be.
+    pub fn opened_for_work(&self, key: &K) -> Option<Arc<T>> {
+        self.opened_counting(key, true)
+    }
+
+    fn opened_counting(&self, key: &K, counts: bool) -> Option<Arc<T>> {
         let slot = {
-            let registry = self.open.lock().expect("the registry lock is poisoned");
-            // Deliberately does not count as a use. A sweep touches everything
-            // and would flatten the order the eviction depends on.
-            Arc::clone(&registry.slots.get(key)?.slot)
+            let mut registry = self.open.lock().expect("the registry lock is poisoned");
+            let now = registry.uses + 1;
+            let entry = registry.slots.get_mut(key)?;
+            let slot = Arc::clone(&entry.slot);
+            if counts {
+                entry.used = now;
+                entry.at = Instant::now();
+                registry.uses = now;
+            }
+            slot
         };
         let held = slot.try_lock().ok()?;
         held.as_ref().map(Arc::clone)
@@ -215,7 +263,10 @@ impl<K: Eq + Hash + Clone, T> Open<K, T> {
     /// buy nothing and cost the next caller for that key a second open. When
     /// everything is busy the bound gives way rather than the request -- it
     /// exists to stop idle values accumulating, not to cap concurrency.
-    fn make_room(&mut self, capacity: usize) {
+    ///
+    /// Returns how many it closed.
+    fn make_room(&mut self, capacity: usize) -> usize {
+        let mut closed = 0;
         while self.slots.len() >= capacity {
             let idle = self
                 .slots
@@ -224,9 +275,11 @@ impl<K: Eq + Hash + Clone, T> Open<K, T> {
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(key, _)| key.clone());
 
-            let Some(idle) = idle else { return };
+            let Some(idle) = idle else { return closed };
             self.slots.remove(&idle);
+            closed += 1;
         }
+        closed
     }
 
     /// Whether dropping this entry would actually free what it holds.
@@ -441,6 +494,63 @@ mod tests {
             registry.close_idle(Duration::from_millis(1)),
             vec!["busy"],
             "the entry was not closed once nothing held it"
+        );
+    }
+
+    /// What the capacity bound closes is counted, once.
+    ///
+    /// The server gives the heap back after an eviction rather than during
+    /// one, so the request that caused it does not wait for the allocator; the
+    /// count is how it learns there was one. Counting idle closes here too
+    /// would trim twice for one close, and never counting would leave an
+    /// evicted index's heap mapped until the idle sweep, which is the growth
+    /// this exists to stop.
+    #[tokio::test]
+    async fn what_the_bound_closes_is_counted_once() {
+        let registry: Registry<u32, u32> = Registry::with_capacity(2);
+        for key in 0..3 {
+            registry
+                .get_or_open(key, || async move { Ok(key) })
+                .await
+                .expect("opening");
+        }
+        assert_eq!(registry.take_evicted(), 1, "the third key closed one");
+        assert_eq!(registry.take_evicted(), 0, "and it is not counted again");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(registry.close_idle(Duration::from_millis(1)).len(), 2);
+        assert_eq!(
+            registry.take_evicted(),
+            0,
+            "closing idle entries is not eviction"
+        );
+    }
+
+    /// Work on an entry keeps it open; looking at it does not.
+    ///
+    /// The server's upkeep does both. Flushing and compacting only look, and
+    /// counting them as uses would keep every index the server ever opened
+    /// out of the idle sweep. Catching up on owed work is a reason to keep
+    /// the index, and not counting it would let the sweep close a project
+    /// half way through a backlog and the next tick open it again.
+    #[tokio::test]
+    async fn work_on_an_entry_keeps_it_open_and_looking_does_not() {
+        let registry: Registry<&str, u32> = Registry::with_capacity(16);
+        for key in ["looked_at", "worked_on"] {
+            registry
+                .get_or_open(key, || async { Ok(1) })
+                .await
+                .expect("opening");
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        assert!(registry.opened(&"looked_at").is_some());
+        assert!(registry.opened_for_work(&"worked_on").is_some());
+
+        assert_eq!(
+            registry.close_idle(Duration::from_millis(30)),
+            vec!["looked_at"],
+            "the entry worked on a moment ago was closed, or the one only looked at was kept"
         );
     }
 

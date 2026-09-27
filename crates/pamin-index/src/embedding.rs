@@ -11,7 +11,8 @@
 //! reranker reorders the fused head, but it cannot recover a candidate the
 //! vector channel ranked out of the list.
 //!
-//! Stored vectors are float32. Weights are quantized where a quantized export
+//! Vectors leave here as float32 and the index stores them as half precision
+//! (see `projection::VectorIndex`). Weights are quantized where a quantized export
 //! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
 //! because the model registry publishes no quantized variant for that family.
 
@@ -309,20 +310,20 @@ const JOINT_MAX_TOKENS: usize = 512;
 /// Its int8 export is 570 MB, and loaded from the file the hub serves it is
 /// copied onto the heap whole and its matrix weights packed into a second copy
 /// -- see `crate::prepared`, which writes a copy the runtime maps instead, and
-/// falls back to the file itself when it cannot.
+/// falls back to the file itself when it cannot. Once the copy has loaded the
+/// download is removed, since nothing reads it again.
 fn joint(cache_dir: &std::path::Path) -> Result<Encoder> {
     let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
-    let copy = || {
-        let source = repository.get(JOINT_FILE)?;
-        Ok(crate::prepared::prepared(&source, cache_dir))
-    };
-    Encoder::load(
-        copy,
+    let weights = repository.file(cache_dir, JOINT_FILE);
+    let encoder = Encoder::load(
+        || crate::prepared::load_path(&weights, cache_dir),
         &repository,
         JOINT_MAX_TOKENS,
         vec![crate::inference::cpu()],
     )
-    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
+    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
+    crate::prepared::release(&weights, cache_dir);
+    Ok(encoder)
 }
 
 /// One text's dense BGE-M3 vector, in one forward pass of its own.

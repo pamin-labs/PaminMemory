@@ -1,10 +1,9 @@
 //! What the reranker's scores are worth under another rule for using them,
 //! priced from the run that used them the shipped way.
 //!
-//! `search_reranked` *substitutes*: the candidates no lexical channel found
-//! keep their slots and are refilled in the model's order, so fusion's opinion
-//! of them is thrown away once the model has one. The standard alternative in
-//! the literature is to *interpolate* -- a weighted sum of the first stage's
+//! The accurate tier now blends the full head's fused and model scores.
+//! The alternative is to substitute the model's order, throwing away the first stage's
+//! opinion. The blend is a weighted sum of the first stage's
 //! score and the model's, each normalised per query -- which keeps what the
 //! first stage knew and the model could not see. Here that is the graph path
 //! and the channels' agreement: a cross-encoder reads the query and one memory,
@@ -58,11 +57,19 @@ pub enum Rule {
 /// Every rule measured, labelled. The shipped rule is found by value, not by
 /// position, by [`shipped`].
 pub fn rules() -> Vec<(String, Rule)> {
-    let mut rules = vec![("substitute (ships)".to_string(), Rule::Substitute)];
+    let mut rules = vec![("substitute".to_string(), Rule::Substitute)];
     for scale in [Scale::Score, Scale::Rank] {
         for fusion in [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0] {
             rules.push((
-                format!("blend {scale:?}, fusion {fusion:.1}").to_lowercase(),
+                format!(
+                    "blend {scale:?}, fusion {fusion:.1}{}",
+                    if scale == Scale::Score && fusion == pamin_engine::RERANK_FUSION {
+                        " (ships)"
+                    } else {
+                        ""
+                    }
+                )
+                .to_lowercase(),
                 Rule::Blend { fusion, scale },
             ));
         }
@@ -72,7 +79,19 @@ pub fn rules() -> Vec<(String, Rule)> {
 
 /// Which row of [`rules`] ships.
 pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
-    rules.iter().position(|(_, rule)| *rule == Rule::Substitute)
+    rules
+        .iter()
+        .position(|(_, rule)| *rule == shipped_rule(Rerank::default()))
+}
+
+fn shipped_rule(tier: Rerank) -> Rule {
+    match tier {
+        Rerank::Accurate => Rule::Blend {
+            fusion: pamin_engine::RERANK_FUSION,
+            scale: Scale::Score,
+        },
+        Rerank::Fast | Rerank::Off => Rule::Substitute,
+    }
 }
 
 /// Ways of spending less on the reranker, each priced against spending all of
@@ -112,6 +131,19 @@ const GATES: [&str; 5] = [
     "skip: three channels agree, no graph find",
     "skip: first in both lexical, no graph find",
 ];
+
+fn cascade_order(replayed: &Replayed, keep: &[usize]) -> Vec<String> {
+    if keep.len() < 2 {
+        return replayed.fused.clone();
+    }
+    let positions: Vec<usize> = keep.iter().map(|at| replayed.movable[*at]).collect();
+    let (fused, model): (Vec<f64>, Vec<f64>) = keep
+        .iter()
+        .map(|at| (replayed.fusion[*at], replayed.model[*at]))
+        .unzip();
+    let best = pamin_engine::score_blend_order(&fused, &model, pamin_engine::RERANK_FUSION);
+    pamin_engine::place(replayed.fused.clone(), &positions, replayed.head, &best)
+}
 
 impl Default for Routes {
     fn default() -> Self {
@@ -194,7 +226,7 @@ impl Routes {
         ];
 
         let fused = replayed.fused.clone();
-        let shipped = replayed.order(Rule::Substitute);
+        let shipped = replayed.order(shipped_rule(Rerank::default()));
         let mut orders: Vec<(Vec<String>, u64, u64)> =
             vec![(fused.clone(), 0, 0), (shipped.clone(), 0, shown)];
 
@@ -223,18 +255,7 @@ impl Routes {
             });
             keep.truncate(n);
             keep.sort_unstable();
-            let positions: Vec<usize> = keep.iter().map(|at| replayed.movable[*at]).collect();
-            let mut best: Vec<usize> = (0..keep.len()).collect();
-            best.sort_by(|left, right| {
-                replayed.model[keep[*right]]
-                    .total_cmp(&replayed.model[keep[*left]])
-                    .then(left.cmp(right))
-            });
-            let order = if positions.len() < 2 {
-                fused.clone()
-            } else {
-                pamin_engine::place(fused.clone(), &positions, replayed.head, &best)
-            };
+            let order = cascade_order(replayed, &keep);
             orders.push((order, shown, keep.len() as u64));
         }
         for skip in skips {
@@ -415,7 +436,11 @@ pub fn in_context(
                 );
             }
         }
-        rendered[rendering] = Some(replayed.rescored(scores).order(Rule::Substitute));
+        rendered[rendering] = Some(
+            replayed
+                .rescored(scores)
+                .order(shipped_rule(Rerank::default())),
+        );
     }
     orders.extend(
         rendered
@@ -507,7 +532,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
 
     let engine: Vec<&str> = hits.iter().map(|hit| hit.topic.as_str()).collect();
     assert_eq!(
-        replayed.order(Rule::Substitute),
+        replayed.order(shipped_rule(tier)),
         engine,
         "replaying the shipped rule did not reproduce the engine's order, so every other \
          rule's figure would be a reconstruction error"
@@ -551,17 +576,31 @@ impl Replayed {
     /// The whole list under `rule`: unmovable positions stay, movable ones are
     /// refilled in the rule's order, ties to the earlier position.
     pub fn order(&self, rule: Rule) -> Vec<String> {
+        if let Rule::Blend {
+            fusion,
+            scale: Scale::Score,
+        } = rule
+        {
+            let picks = pamin_engine::score_blend_order(&self.fusion, &self.model, fusion);
+            return pamin_engine::place(self.fused.clone(), &self.movable, self.head, &picks);
+        }
         let keys: Vec<f64> = match rule {
             Rule::Substitute => self.model.clone(),
-            Rule::Blend { fusion, scale } => {
-                let (first, second) =
-                    (on(scale, &self.fusion, false), on(scale, &self.model, true));
+            Rule::Blend {
+                fusion,
+                scale: Scale::Rank,
+            } => {
+                let (first, second) = (on(&self.fusion, false), on(&self.model, true));
                 first
                     .iter()
                     .zip(&second)
                     .map(|(fused, model)| fusion * fused + (1.0 - fusion) * model)
                     .collect()
             }
+            Rule::Blend {
+                scale: Scale::Score,
+                ..
+            } => unreachable!("handled above"),
         };
         let mut picks: Vec<usize> = (0..self.movable.len()).collect();
         picks.sort_by(|left, right| {
@@ -575,41 +614,22 @@ impl Replayed {
 
 /// `values` on `scale`, higher better. `sort` says whether they need ranking:
 /// the fused scores arrive already in order, the model's do not.
-fn on(scale: Scale, values: &[f64], sort: bool) -> Vec<f64> {
+fn on(values: &[f64], sort: bool) -> Vec<f64> {
     let count = values.len();
-    match scale {
-        Scale::Score => {
-            let low = values.iter().copied().fold(f64::INFINITY, f64::min);
-            let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let span = high - low;
-            values
-                .iter()
-                .map(|value| {
-                    if span > 0.0 {
-                        (value - low) / span
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
-        }
-        Scale::Rank => {
-            let mut places: Vec<usize> = (0..count).collect();
-            if sort {
-                places.sort_by(|left, right| {
-                    values[*right]
-                        .total_cmp(&values[*left])
-                        .then_with(|| left.cmp(right))
-                });
-            }
-            let mut scaled = vec![0.0; count];
-            let last = count.saturating_sub(1).max(1) as f64;
-            for (place, at) in places.iter().enumerate() {
-                scaled[*at] = 1.0 - place as f64 / last;
-            }
-            scaled
-        }
+    let mut places: Vec<usize> = (0..count).collect();
+    if sort {
+        places.sort_by(|left, right| {
+            values[*right]
+                .total_cmp(&values[*left])
+                .then_with(|| left.cmp(right))
+        });
     }
+    let mut scaled = vec![0.0; count];
+    let last = count.saturating_sub(1).max(1) as f64;
+    for (place, at) in places.iter().enumerate() {
+        scaled[*at] = 1.0 - place as f64 / last;
+    }
+    scaled
 }
 
 #[cfg(test)]
@@ -649,5 +669,27 @@ mod tests {
             scale: Scale::Score,
         });
         assert_eq!(order, ["lexical", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn shipped_accurate_replay_blends_when_the_model_order_differs() {
+        let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
+        assert_eq!(
+            scores.order(shipped_rule(Rerank::Accurate)),
+            ["lexical", "a", "b", "c"]
+        );
+        assert_eq!(
+            scores.order(shipped_rule(Rerank::Fast)),
+            ["lexical", "b", "a", "c"]
+        );
+    }
+
+    #[test]
+    fn cascade_keeps_the_shipped_blend_on_selected_candidates() {
+        let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
+        assert_eq!(
+            cascade_order(&scores, &[0, 1, 2]),
+            scores.order(shipped_rule(Rerank::Accurate))
+        );
     }
 }

@@ -5,7 +5,7 @@
 //! from the first release so the guarantee is executable rather than stated.
 
 use anyhow::Result;
-use pamin_index::Profile;
+use pamin_index::{Profile, VectorIndex};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,11 +34,12 @@ pub async fn execute(
     session: &Session,
     project: &str,
     profile: Profile,
+    vector_index: VectorIndex,
     _args: Args,
 ) -> Result<Reindexed> {
     // Rebuilding discards this project's index first, and clears the shared
     // pre-split layout if the workspace still has one.
-    let engine = session.rebuilding(project, profile).await?;
+    let engine = session.rebuilding(project, profile, vector_index).await?;
     let rebuilt = engine.reindex().await?;
 
     let result = Reindexed {

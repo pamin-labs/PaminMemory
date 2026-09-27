@@ -4,7 +4,7 @@
 //! `cargo test -p pamin-index -- --ignored`.
 
 use pamin_core::TopicId;
-use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex};
+use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, VectorIndex};
 
 fn id(byte: u8) -> TopicId {
     TopicId(uuid::Uuid::from_bytes([byte; 16]))
@@ -24,6 +24,7 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
         &dir.path().join("index"),
         &dir.path().join("legacy"),
         profile,
+        VectorIndex::default(),
         Access::ReadWrite,
         0,
     )

@@ -121,10 +121,14 @@ pub const LAGGING_AT: i64 = 10_000;
 ///
 /// **It is deliberately not a pause.** The plan for this layer was that a
 /// writer past the ceiling should sleep, which is what backpressure usually
-/// means and what it cannot mean here: the writer is ordinarily the only thing
-/// that drains, so a writer that sleeps slows the import and leaves the backlog
-/// exactly where it was. Paying it down costs the same writer the same time and
-/// bounds the queue, which sleeping does not do at all.
+/// means and what it cannot usefully mean here. When this was written the
+/// writer was ordinarily the only thing that drained, so a writer that slept
+/// left the backlog exactly where it was. A resident server now catches up
+/// between requests, so a sleeping writer would hand it the work -- but that
+/// work runs only while nothing is being answered, in smaller rounds, so the
+/// import would be slowed by at least what paying costs. Paying it down costs
+/// the same writer no more than that and bounds the queue, which sleeping does
+/// not do at all.
 ///
 /// **One number, not two.** The depth that means "behind" and the depth at
 /// which something is done about it are the same on purpose. A ceiling ten

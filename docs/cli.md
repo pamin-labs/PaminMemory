@@ -16,6 +16,7 @@ The examples below are real output from a workspace built by the writes in
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
 | `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
@@ -23,7 +24,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 | | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
-| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy |
+| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
@@ -81,7 +82,7 @@ between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
 whose default is what the library already did.
 
-On the CPU, the first load of a model writes a second copy of it into
+On the CPU, the first load of a model writes a copy of it into
 `models/prepared/`, and every load after that reads the copy. The copy is the
 runtime's own optimized form of the graph with its weights in a separate data
 file, which the runtime maps from disk instead of copying onto the heap: the
@@ -93,13 +94,46 @@ two hold 330 MB rather than 582. What it costs is disk. Each copy is larger than
 model it came from, because the weights are also stored in the layout the CPU's
 kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
 as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
-it makes that first load slower, 5.1 s for `accurate`. A copy belongs to the
-runtime version and the CPU that wrote it, so an upgrade, or a model directory
-moved to a different CPU, writes a new one and leaves the old one in place; it
-is safe to delete `models/prepared/` at any time. `PAMIN_PREPARED=off` loads
-from the download, for a disk that cannot spare the second copy. When a copy
-cannot be written -- a full or read-only disk -- the model loads from the
-download anyway and the log says why.
+it makes that first load slower, 5.1 s for `accurate`.
+
+Once a copy has loaded, the download it was written from is removed, since
+nothing reads it again: each model is on disk once, as its copy. At the
+defaults that took the model directory from 2,923 MB to 1,783 MB (see
+[measured.md](measured.md)). What that gives up is the source for the *next*
+copy. A copy belongs to the runtime version and the CPU that wrote it, so an
+upgrade, or a model directory moved to a different CPU, needs a new one, and
+that load fetches the model again -- 570 MB for `accurate` or the `accuracy`
+embedder -- writes the copy, and removes the download again. **That load needs
+the network.** Offline, it fails with an error that names the model and says
+why, instead of searching; the fix is to be online for that one load, or to
+copy the model directory from a machine that has the file.
+
+Copies are removed by one rule, applied on every load. The copy this version
+loads for a model it has loaded before is never removed, however long the model
+goes unused: its download has usually been removed, so removing it would make
+the next load of that model need the network. Every other copy -- the one an
+upgrade or a move to another CPU leaves behind, or one of a model file the hub
+has since replaced -- is removed once no running process has it loaded and none
+has loaded it for two weeks. So a directory shared by two versions keeps both
+copies while both are in use, and a version that goes two weeks without running
+while the other does writes its copies again when it next runs -- fetching the
+model first, if its download was removed. A model nothing loads any more -- a
+reranker tier switched off -- keeps its copy until it is deleted. It is safe to
+delete `models/prepared/` at any time, and the next load downloads the model
+again. The download is kept when `HF_HOME` is set -- that cache is shared with
+other tools -- or when the model directory, or one model's directory inside it,
+is a link to somewhere else. `PAMIN_PREPARED=off` loads from the download,
+fetching it again if it was removed, for a measurement that needs the unmapped
+load or a disk that cannot spare the copy's extra size. When a copy cannot be
+written -- a full or read-only disk -- the model loads from the download and
+keeps it, and the log says why.
+
+Where the runtime left a model's attention as separate operators -- the
+`accurate` reranker's int8 export -- the copy also gets a second graph,
+`attention.onnx`, with each layer's attention as one fused operator; it is
+kept only if it scores a probe bit-for-bit as the first does, and otherwise
+`attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
+graph, for measuring one against the other.
 
 The reranker runs on a GPU when the machine has one, with no flag and no
 separate build. Each platform's inference runtime carries the accelerator that
@@ -158,6 +192,40 @@ evaluation corpus it roughly doubles cross-lingual retrieval against
 `balanced`, matches it on same-language queries, and costs nine milliseconds.
 `balanced` is kept for those nine milliseconds and for projects already indexed
 under it; there is no other reason left to choose it.
+
+`--vector-index` chooses how a project's vectors are indexed. Both choices
+store every vector in half precision and search the same way -- the index
+proposes twice the candidates it is asked for, and those are ranked again by an
+exact cosine in full precision -- so both return the same neighbours as the
+full-precision graph did, within 0.002 of its recall. They differ in where the
+index lives and what that costs, measured over MIRACL's 131,924 passages:
+
+| | resident | disk | a vector query | a whole search | a full build | peak while building |
+| --- | --- | --- | --- | --- | --- | --- |
+| `disk` | 34 MB | 618 MB | 69-79 ms | 2,339 ms | 23 min | +1,353 MB |
+| `memory` (default) | 320 MB | 328 MB | 6-10 ms | 2,236 ms | 1.4 min | +721 MB |
+
+A whole search is the median `accurate` search over XQuAD-R's 13,014
+documents rather than MIRACL, on a shared four-core machine; the two ranked
+every question identically.
+
+`disk` keeps its graph and vectors on disk and reads them per query, which is
+why it holds almost nothing resident; it is for a project whose memory is
+scarce, and it pays for that with minutes on each `optimize` upkeep runs after
+writes (about a second under `memory`). `memory`, the default, holds them
+resident, and is the faster and smaller choice everywhere else. A search spends most of a second or more in
+the reranker, so the query column is a small share of a `pamin search`; the
+build column is not small, and `disk` also pays minutes for an `optimize` after
+a few writes where `memory` pays about a second (see
+[measured.md](measured.md)). Choose `memory` for a project that is written to
+all the time, and wherever resident memory is not what is scarce.
+
+The index records which one it was built with, and changing the setting
+changes nothing about an index that exists: opening it as the other one is
+refused, naming `reindex`, as a profile change is. `pamin reindex` rebuilds it
+the new way and reuses every vector it holds. An index built before this
+choice existed stored full-precision vectors under an in-memory graph; it is
+refused the same way and moved the same way.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
 crosses between them and a rebuild of one leaves the others alone. That also
@@ -258,8 +326,9 @@ Writing also derives relationships. See [Relationships](#relationships).
 The write itself commits the evidence, the span, the state and a record of what
 the projection is owed, all in one transaction that touches only PostgreSQL;
 the index is brought up to date afterwards. `applied` means that happened here.
-`queued` means some of it is still owed and `pamin cascade` will run it — the
-memory is recorded either way. See [`pamin cascade`](#pamin-cascade).
+`queued` means some of it is still owed, and the server runs it once it has no
+request to answer — the memory is recorded either way. See
+[`pamin cascade`](#pamin-cascade).
 
 `--defer` records the memory and leaves the index to catch up later, so the
 command returns without embedding anything:
@@ -270,9 +339,13 @@ Wrote release_notes v1
 ```
 
 The memory is committed exactly as it would be otherwise — `pamin read` and
-`pamin grep` see it immediately — and only `search` waits for the queue. Use it
-when importing in bulk and run `pamin cascade drain` once at the end: one
-rebuild of the vector graph instead of one after every write.
+`pamin grep` see it immediately — and only `search` waits for the queue. The
+server works through the queue on its own, between requests, so the memory
+becomes searchable with nothing else run once the server's five-second upkeep
+has come round once or twice: 5.8 to 11.6 seconds in five measured runs. Run
+`pamin cascade drain` to make the index catch up at once instead, for instance
+at the end of a loop of deferred writes; to record a file of memories, use
+[`pamin import`](#pamin-import).
 
 `cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
 reports what the queue owed when the write looked at it rather than what is left
@@ -281,12 +354,12 @@ identical from outside, apart from searches missing the newest memories.
 
 Ten thousand is also where `--defer` stops deferring: a write past it drains
 before returning, so an import that ignores the signal still cannot run the
-queue away. That costs the importer the work it created rather than pausing it,
-which is the only form of backpressure that means anything here — ordinarily
-nothing else is draining, so a writer that waited would slow the import and
-leave the backlog exactly where it was. A new memory queues three jobs, so an
-import pays for a batch about every three thousand of them and never carries
-more than ten thousand.
+queue away. That costs the importer the work it created rather than pausing it.
+A writer that waited would hand the same work to the server, which runs it only
+while no request is being answered and in smaller rounds, so waiting would slow
+the import by at least what paying costs and bound nothing. A new memory
+queues three jobs, so an import pays for a batch about every three thousand of
+them and never carries more than ten thousand.
 
 ## `pamin import`
 
@@ -396,6 +469,11 @@ ranking internals it has no way to evaluate.
 `--rerank` chooses how much to spend reordering the results, and takes
 `PAMIN_RERANK`:
 
+The table below is a historical comparison, measured before the corrected
+XQuAD-R same-language key and the current full-head `accurate` pass. Its
+same-language and latency figures do not describe the current path. The
+current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+
 | | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|
 | `off` | nothing | 99 ms | 0.6114 | 0.7829 |
@@ -405,7 +483,10 @@ ranking internals it has no way to evaluate.
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; it now reranks thirty, which the `accurate` tier
 turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
-model pairs, and whose wall time has not been re-taken on a quiet machine. The
+model pairs. At thirty a search has been timed only on a busy machine, where
+the batching that ships with it made one 0.83 of what it was on this corpus
+([measured.md](measured.md) has the figures), so read 1522 ms as the cost
+at twenty candidates rather than as today's. The
 rows can be read against each other; none of them can be read against a figure published before
 this table, and the `off` and `fast` rows moved when the fusion layer changed
 underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
@@ -429,15 +510,15 @@ four cores, for a query the server has not been asked before. A resident
 server remembers a query's vector, so asking the same thing twice costs the
 16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
 
-`accurate` is the default, on accuracy: it is the best tier on every corpus
-measured, and query by query against `fast` it is ahead by 0.0086 cross-lingual
+`accurate` is the default, on accuracy. In the historical comparison above,
+query by query against `fast` it was ahead by 0.0086 cross-lingual
 (`p = 0.0015`) and 0.0066 same-language (`p = 0.0001`) on XQuAD-R, and by
 0.0411 on MIRACL Swahili (83 queries better, 12 worse, `p = 0.0001`). What that
 costs is the latency column: 1522 ms against `fast`'s 359, about a quarter of
 the throughput, and 571 MB loaded against 119.
 
-`fast` was the default until it was measured against that order, and it is
-**the only tier that measurably damages same-language ranking** — −0.0060 at
+`fast` was the default until it was measured against that order. Under the
+historical same-language key, it lost −0.0060 at
 `p = 0.0008`, nineteen queries worse against three better, and on MIRACL at the
 `speed` profile −0.0154 against no reranking at all (35 better, 58 worse,
 `p = 0.014`). Ask for it when a search has to stay under half a second and the
@@ -472,28 +553,25 @@ arena growth above that stays. A workspace that sets `off` never pays it at
 all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
 and its resident cost has not been taken on its own.
 
-A reranker reads the query and a memory together, which is what lets it correct
-an order the channels got wrong, and what makes it cost a forward pass for
-every candidate it looks at. Only the candidates no lexical channel found are
-reordered, and only into the positions they already hold — so a memory that
-shares words with your query comes back where it was, whatever the reranker
-thought of it. That is why the same-language column moves by thousandths rather
-than by the hundredths the cross-lingual column moves. It does not hold the
-column still: a same-language answer the lexical channels happened to miss is
-an unlexical candidate like any other, and reordering can carry it down.
+A reranker reads the query and a memory together, which lets it correct an
+order the channels got wrong and costs a forward pass for every candidate it
+sees. `accurate` scores the entire fused head, including lexical hits, then
+blends its scores with fusion's. `fast` still reorders only candidates that no
+lexical channel found. Both tiers can also see strong graph-only candidates
+below the head.
 
-On a workspace in one language there are fewer such candidates, so there is
-less for the pass to do -- but less is not nothing. On MIRACL, one language
-throughout, `accurate` is still worth +0.0257 over `off` (67 queries better, 19
-worse, `p = 0.0001`, `speed` profile); it is `fast` that is worth less than
-nothing there.
+On MIRACL Swahili dev's full 131,924 passages and 482 judged queries, the
+current `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
+and recall@50 0.9568 through `search_reranked`; replay reproduced every
+returned order. The earlier confined pass's +0.0257 over `off` was measured
+on the `speed` profile and is historical, not a paired comparison with this run.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
 measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
-Four thousand scores are kept, about a quarter of a megabyte. Without
-`pamin serve` there is no process to keep them in, so every command starts
-from nothing.
+Four thousand scores are kept, about a quarter of a megabyte, for as long as
+the server holds the reranking model: they go when it stops, or when it
+releases a model nothing has used for a while.
 
 The latencies are from four cores. Published figures for a reranker of this
 size are a few milliseconds per candidate rather than the ten measured here,
@@ -686,23 +764,20 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 `derived_from` and `part_of` the direction *is* the claim, so it is stated
 rather than left to be inferred.
 
-**`reranked`** — the cross-encoder decided this result's position, and fusion
-did not. The example above carries no such entry, and correctly: a lexical
-channel found that result, so the pass left it where fusion put it. It carries nothing else, and the omission is the design rather than a
-shortcut: a cross-encoder's score is calibrated against nothing, so it
+**`reranked`** — the cross-encoder scored this result. With `accurate`, the
+result's position comes from its model score blended with fusion; with `fast`,
+the model orders the selected candidates. A result without this entry was not
+shown to the model. The entry carries no score on the wire: a cross-encoder's
+score is calibrated against nothing, so it
 separates the candidates of one shortlist and means nothing between two
 queries, and a number on the wire invites exactly the comparison it cannot
 support.
 
-What it does tell you is the part nothing exposed before. A result **with** this
-entry was reordered by the model. A result **without** it holds the place
-fusion gave it — either a lexical channel found it, so the pass deliberately
-left it alone, or it sat below the tier's depth and the model never saw it. So a
-line reading `vector#12 reranked` says the fused list had this twelfth and the
-model moved it, and a line reading `lexical_segmented#3 vector#7` says the two
-channels agreed and no model was consulted. Auditing a ranking needs that
-distinction, and before this it was not derivable from anything the command
-returned. `--rerank off` produces no entries of this kind at all.
+The entry distinguishes scored from unscored results; it does not claim that
+the model alone set the final order or that the position changed. A line
+reading `vector#12 reranked` says the model scored that candidate. A line
+without `reranked` was not scored, whether it came from a lexical channel or
+fell below the selected depth. `--rerank off` produces no such entries.
 
 There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance
@@ -981,11 +1056,14 @@ retrieval engine replaceable and makes a breaking engine upgrade a rebuild
 rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
-Run it after changing `--profile`, or after deleting the index directory. It
-rebuilds one project — the one named by `--project` — and leaves the rest alone.
+Run it after changing `--profile` or `--vector-index`, or after deleting the
+index directory. It rebuilds one project — the one named by `--project` — and
+leaves the rest alone. An index built before the vector indexes existed stored
+fp32 vectors under an in-memory graph; it is refused with a message naming
+this command, and rebuilding it reuses every vector it holds.
 
-It is also how a grown project resizes its vector segments when no server is
-running. The index sizes them from the number of memories it holds when it is
+It is also how a grown project resizes its vector segments at once, rather
+than when the server gets to it. The index sizes them from the number of memories it holds when it is
 created, which for a project starting from nothing is the smallest size; a
 project that has since grown by orders of magnitude keeps that size until the
 index is recreated. Rebuilding recomputes it from what the project holds now,
@@ -993,14 +1071,13 @@ so a project that has outgrown its layout searches faster afterwards. Where the
 old index was built the way a new one is, a memory whose text has not changed
 keeps the vector it already has rather than being embedded again.
 
-A running server does this on its own. Once a project's index is spread over
+The server does this on its own. Once a project's index is spread over
 more than twice the segments it should be, the server copies it into the right
 shape in the background — reading it a batch at a time while it goes on
 answering searches and writes, and building the copy's vector graph with the
 index free — then swaps the copy in. Writes made during the copy are carried
 over before the swap. Nothing is embedded, and for the length of the copy the
-disk holds the index twice. `pamin cascade drain` reports a badly shaped index
-either way.
+disk holds the index twice. `pamin cascade drain` reports a badly shaped index.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
@@ -1017,20 +1094,32 @@ transaction, so a memory is never recorded without its follow-up work also
 being recorded — and a process that dies between the two leaves the work owed
 rather than lost.
 
-`pamin write` runs the queue before it returns, so ordinarily there is nothing
-here to do. These commands are for when there is: a queue left behind by a
-process that was killed, writes made with [`--defer`](#pamin-write), work
-deferred because something it needed was unavailable, and jobs that failed
-often enough to be set aside.
+`pamin write` runs the queue before it returns, and the server runs whatever
+is left, so ordinarily there is nothing here to do. These commands are for
+making the index catch up at once rather than about ten seconds later, and for
+jobs that failed often enough to be set aside.
 
 ```console
 $ pamin cascade drain
 Ran 3 jobs, 0 failed, 0 still owed
 ```
 
-`drain` runs everything that is due and stops. `run` keeps going, waiting for
-new work until it is interrupted; it holds the index open for writing the whole
-time, so no other command that writes can run alongside it.
+`drain` runs everything that is due and stops. It is how to make the index
+catch up now — after a run of `--defer` writes, or a write that reported
+`queued` — and like every other command it runs in the server, so it can be
+called while other commands are running.
+
+Without it the server gets there on its own. Every five seconds, if it is not
+answering a request, it looks for projects owed work that changes what a search
+finds — writes made with [`--defer`](#pamin-write), and work a server that was
+killed left behind — and runs it in rounds of sixteen jobs, for up to five
+seconds, stopping between rounds as soon as a request arrives. A search that
+arrives during a round waits for the rest of it. It also opens a
+project nobody has asked about, one per tick, when that project is owed work
+that has never failed, so the first search after a server was killed finds
+what the dead one had not indexed. What it opens it gives back like anything
+else it holds, once nothing has wanted it for the idle window. A job that has
+failed is retried when something opens its project, not on its own account.
 
 Jobs name a subject rather than an event — "bring this topic up to date", not
 "this topic changed" — so running one twice leaves the same result as running
@@ -1087,9 +1176,11 @@ loaded an embedding model before it did any work of its own.
 to watch it. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
 
-Between requests it looks after the indexes it holds open: it makes applied
-writes durable, compacts an index spread over too many files, and reshapes one
-spread over too many segments, as `pamin reindex` describes. A reshape logs
+Between requests it brings indexes up to date with work a deferred write or a
+killed server left owed, as [`pamin cascade`](#pamin-cascade) describes, and
+looks after the indexes it holds open: it makes applied writes durable,
+compacts an index spread over too many files, and reshapes one spread over too
+many segments, as `pamin reindex` describes. A reshape logs
 `reshaping the index` when it starts and `reshaped the index` with the segment
 counts and its duration when it finishes, at the `info` level that
 `PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
@@ -1104,20 +1195,18 @@ of them is 1.6 GB or 3.3 GB depending on a flag. On a machine where that is too
 much, `PAMIN_OPEN_INDEXES` sets a smaller number. Lowering it costs nothing but
 a reopen when a query lands on a project that has fallen out.
 
-`PAMIN_NO_SERVER=1` runs everything in the calling process, as it did before.
-The results are identical — it is the same code either way — so this is for
-debugging the server itself, and for a caller that would rather have one process
-to reason about than a fast one.
-
-It does not combine with a server that is already up. A running server holds the
-index open for writing, and the index takes an exclusive lock on its directory,
-so a second process opening the same project fails rather than waiting. That is
-the lock doing its job: two processes writing one index is what it exists to
-prevent. Run `pamin stop` first if you want the in-process path against a
-workspace a server is holding.
-
 Every command goes through the server except two. `serve` is the server, and
-`stop` is what shuts it down.
+`stop` is what shuts it down; with no server running, `stop` stops the database
+itself rather than starting a server to do it. There is no way to run a command
+in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
+and a command run with it set fails and says so rather than quietly going
+through the server it was set to avoid.
+
+So the server is the only process the command line opens an index in. It holds
+each project's index open for writing, and the index takes an exclusive lock on
+its directory, so any other process opening the same project waits briefly and
+then fails rather than sharing it. That is the lock doing its job: two processes
+writing one index is what it exists to prevent.
 
 The socket is a file, so it inherits the workspace's permissions and cannot be
 reached from another machine. There is no authentication, for the same reason:
