@@ -36,14 +36,14 @@
       "recall_at_50": 0.9647
     }
   },
-  "prepare_models": "PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored",
-  "reproduce": "PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture",
+  "prepare_models": "env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored",
+  "reproduce": "env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture",
   "verify_models": "python3 benchmarks/results/retrieval/verify_xquad_models.py $PAMIN_EVAL_HOME/models",
   "resources": "Fresh execution downloads models and builds a 13,014-sentence index; inspect disk and memory headroom before running.",
   "source_run": {
     "log": "xquad-r-current-run.log",
-    "sha256": "efa037566f1cfa2a2f7dada327d6ce225a205bf7fc4a89bd802c89714664bb6c",
-    "code_commit": "94be212511e4d0cd9cc47b3c4aa2a33b68e22415",
+    "sha256": "7f7e14996e1f980047c61b741390acd219e0c40ec0c83425cc1d05f854dfc1db",
+    "code_commit": "733f95903b45c3ef6b017ff131042d9822deda69",
     "index_profile": "xquad-r-index-profile.txt",
     "index_profile_sha256": "91c78fc151309c1cb86f99df1eb414090b4ca2ab3abda4921c8edfb66949d73f",
     "index_project": "xquad-accuracy-24ad7f1862182925",

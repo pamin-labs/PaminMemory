@@ -190,7 +190,7 @@ is not the row.
 
 XQuAD-R uses the Rust `crosslingual` harness rather than `benchmarks/run.py`.
 It prints group aggregates, not per-question rows. On a clean cache, run
-`PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored`
+`env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored`
 before the recorded search command; this fetches the two archived model
 revisions and makes the product loader use them. Its committed log is the
 source for `python3 benchmarks/results/retrieval/derive_xquad.py`, which reads
