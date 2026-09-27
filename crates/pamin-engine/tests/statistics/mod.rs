@@ -267,6 +267,40 @@ pub fn folds(groups: &[usize], k: usize) -> Vec<usize> {
     assigned
 }
 
+/// Keep multiple judgements of the same questions in the same held-out fold.
+///
+/// Each group's scores must list the same physical questions in the same
+/// order. XQuAD-R scores every asking once as cross-language and once as
+/// same-language; shuffling the views independently lets training see the
+/// held-out question under its other answer key.
+pub fn linked_folds(group_lengths: &[usize], k: usize) -> Vec<usize> {
+    let Some(&questions) = group_lengths.first() else {
+        return Vec::new();
+    };
+    assert!(
+        group_lengths.iter().all(|length| *length == questions),
+        "linked groups must contain the same questions"
+    );
+    let one = folds(&vec![0; questions], k);
+    (0..group_lengths.len())
+        .flat_map(|_| one.iter().copied())
+        .collect()
+}
+
+/// One score per physical query when the same questions have several answer keys.
+pub fn linked_mean(scores: &[f64], groups: usize) -> Vec<f64> {
+    assert!(groups > 0 && scores.len().is_multiple_of(groups));
+    let questions = scores.len() / groups;
+    (0..questions)
+        .map(|query| {
+            (0..groups)
+                .map(|group| scores[group * questions + query])
+                .sum::<f64>()
+                / groups as f64
+        })
+        .collect()
+}
+
 /// What a selection procedure is worth on queries it did not choose on.
 pub struct Selected {
     /// Per query, in the input's order, the score of the setting that was
@@ -566,6 +600,19 @@ mod tests {
             let small = (50..60).filter(|query| assigned[*query] == fold).count();
             assert_eq!(small, 2, "fold {fold} held {small} of the small group");
         }
+    }
+
+    #[test]
+    fn two_answer_keys_for_one_question_never_cross_folds() {
+        let assigned = linked_folds(&[11, 11], 5);
+        assert_eq!(&assigned[..11], &assigned[11..]);
+        assert_eq!(assigned, linked_folds(&[11, 11], 5));
+        for fold in 0..5 {
+            let first = assigned[..11].iter().filter(|at| **at == fold).count();
+            let second = assigned[11..].iter().filter(|at| **at == fold).count();
+            assert_eq!(first, second);
+        }
+        assert_eq!(linked_mean(&[1.0, 3.0, 5.0, 7.0], 2), vec![3.0, 5.0]);
     }
 
     /// Choosing the best of many settings on the same queries that grade it
