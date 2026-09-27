@@ -560,9 +560,11 @@ blends its scores with fusion's. `fast` still reorders only candidates that no
 lexical channel found. Both tiers can also see strong graph-only candidates
 below the head.
 
-On the earlier confined pass, MIRACL's single-language corpus measured
-`accurate` at +0.0257 over `off` (67 queries better, 19 worse, `p = 0.0001`,
-`speed` profile). The full-head pass has not been measured on MIRACL yet.
+On MIRACL Swahili dev's full 131,924 passages and 482 judged queries, the
+current `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
+and recall@50 0.9568 through `search_reranked`; replay reproduced every
+returned order. The earlier confined pass's +0.0257 over `off` was measured
+on the `speed` profile and is historical, not a paired comparison with this run.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
