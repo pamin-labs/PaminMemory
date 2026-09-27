@@ -48,15 +48,12 @@ const SEGMENTED_WEIGHT: f32 = 0.125;
 
 /// What character-n-gram BM25 is worth.
 ///
-/// The same eighth, and that is the part with no evidence under it. Every
-/// sweep this project has run moved both lexical channels together, so no
-/// measurement anywhere distinguishes these two numbers -- the grid was
-/// one-dimensional and the conclusion is being read as though it were two.
-///
-/// Two constants rather than one because the premise that justified sharing is
-/// refuted; see [`Fusion::default`]. Splitting them changes nothing on its own
-/// and is not meant to: it makes the second number nameable, and therefore
-/// sweepable, which it was not.
+/// The same eighth after an independent 5-by-5 grid on XQuAD-R and MuSiQue.
+/// Lowering it improves cross-language ordering but significantly harms
+/// same-language ranking; raising it does the reverse, and none of the rows
+/// that preserve both groups improves MuSiQue. The two numbers remain
+/// separately nameable because the channels rank differently, not because
+/// a shared weight was proven ideal. See [`Fusion::default`].
 const NGRAM_WEIGHT: f32 = 0.125;
 
 /// What the graph channel's rank is worth against the vector channel's.
@@ -315,9 +312,8 @@ pub struct Fusion {
 impl Default for Fusion {
     fn default() -> Self {
         // The two lexical channels count as half of one, and the size of that
-        // half is measured. What is *not* measured is the decision to give them
-        // the same number, and the argument that used to justify it has been
-        // refuted by this project's own diagnostic.
+        // half is measured. Their equal weights are a compromise after the
+        // independent grid below, not a claim that their rankings agree.
         //
         // The claim was that they are nearly one channel: both run BM25 over
         // the same text, one over segmented words and one over character
@@ -331,10 +327,11 @@ impl Default for Fusion {
         // every query where the wording matches and the meaning does not, which
         // is what the sweep below measures.
         //
-        // Every row of that sweep moved both channels together, so it cannot
-        // separate them, and the n-gram channel is the weaker of the two in
-        // every group of every corpus measured alone. One number is doing the
-        // work of two and nothing has ever been asked which.
+        // That early sweep moved both channels together. A later independent
+        // 5-by-5 grid on XQuAD-R and MuSiQue found no setting that improved a
+        // weak group without harming another; the measured rows and the
+        // staged selection rule are in ADR 0001. Both weights remain explicit
+        // so a future corpus can challenge this compromise.
         //
         // What is not obvious, and needed a corpus where a query and its answer
         // are in different languages, is that half of one channel is still too
