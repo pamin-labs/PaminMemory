@@ -350,16 +350,27 @@ weight pair. The MuSiQue arm used `MUSIQUE_QUESTIONS=1000` to reuse its
 | 0.25 / 0 | 0.6358 | 0.8395 | 0.6802 | 0.8035 |
 | 0.25 / 0.125 | 0.6195 | 0.8510 | 0.6834 | 0.8050 |
 
+The harness's implemented selection rule maximises macro-mean nDCG@10 over
+groups in five folds, breaking ties toward the shipped setting. On XQuAD-R it
+chose `k = 0` in four folds and 0 / 0.125 in one: held-out macro mean 0.7424
+against the shipped 0.7405 (paired +0.0019, `p = 0.0361`). Yet `k = 0`
+lowers same-language nDCG 0.8438 → 0.8388 and cross-language recall 0.9032 →
+0.8924. On MuSiQue the same rule chose 0.25 / 0.125 in four folds and 0.25 /
+0.0625 in one: held-out nDCG 0.6829 against 0.6814 (+0.0014,
+`p = 0.3811`). The folds do not agree within either corpus, and the settings
+favoured by the two corpora do not transfer.
+
 Removing both lexical channels raises XQuAD-R cross-language nDCG by 0.0305
 but lowers same-language by 0.0300 and MuSiQue by 0.0111, all with family
 adjustment `p <= 0.0002`. Giving MuSiQue its highest grid nDCG, 0.25 / 0.125,
 buys only +0.0019 there (`p = 0.9880` after family adjustment) while losing
 0.0177 cross-lingual XQuAD-R (`p = 0.0001`). The near-neutral XQuAD-R arms
-0 / 0.25 and 0.25 / 0 both lose MuSiQue ranking and recall. No pair cleared
-the prewritten no-harm and detectable-gain rule, so the equal eighths stay.
-MIRACL held-out validation and full reranked searches were not run on a
-candidate already rejected by both screening corpora. The result justifies a
-compromise on these corpora, not a universal equality between the channels.
+0 / 0.25 and 0.25 / 0 both lose MuSiQue ranking and recall. The equal eighths
+stay because the implemented cross-validation finds no stable transferable
+choice and the grid exposes a real cross-language versus same-language trade.
+MIRACL validation and full reranked searches were not run on an unselected
+candidate. This justifies a compromise on these corpora, not a universal
+equality between the channels.
 
 **The adaptive rule is now visibly just a weaker constant.** Against the
 quarter on XQuAD-R, `adapt 0.00-1.00` scores +0.0618 cross-lingual and zero
@@ -476,9 +487,9 @@ in both directions than it used to read.
 **The two lexical channels are not one channel.** Kendall tau-b between their
 rankings, over the candidates they share: 0.2816 on this project's own corpus,
 0.3188 on XQuAD-R, 0.2973 on MIRACL. They agree about a third of the time. The
-premise that justified one shared weight is refuted, and every sweep this
-project ever ran moved both together, so no measurement distinguishes the two
-numbers at all.
+premise that justified one shared weight is refuted. The earlier sweeps moved
+both together; the independent grid above has now tested them separately and
+found no transferable replacement for their current equal weights.
 
 **The graph channel contributes exactly 0.0000** — in every group of all three
 corpora, so removing it changes no ranking anywhere. **It is not a measurement

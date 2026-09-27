@@ -240,16 +240,17 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 ///
 /// Offline, so the whole grid costs one pass over the corpus rather than one
 /// pass per row. That changes what is affordable: a row on XQuAD-R used to be
-/// thirteen minutes, which is why every sweep this project ever ran moved both
-/// lexical channels together and left the rank constant to a coarse handful.
+/// thirteen minutes, so the earlier sweeps moved both lexical channels
+/// together and left the rank constant to a coarse handful.
 ///
 /// Several grids, because the open questions are separate.
 ///
 /// **The lexical weights, now separable.** Kendall tau-b between the two
 /// lexical channels is around 0.30 on all three corpora, so the premise that
-/// justified one shared constant is refuted, and no measurement anywhere
-/// distinguishes the two numbers. The grid crosses them, including an eighth
-/// against an eighth, which is what ships and must come back identical.
+/// justified one shared constant is refuted. The grid crosses them, including
+/// the equal eighths that ship. On XQuAD-R and MuSiQue, its five-fold macro
+/// mean selection chose different settings and no pair passed a cross-corpus
+/// accuracy trade; the numbers and decision are in ADR 0001.
 ///
 /// **The combiner, which is the choice nobody here recorded making.** This
 /// project argued about `k` and about the channel weights, both of them
@@ -296,12 +297,11 @@ pub fn variants() -> Vec<(String, Fusion)> {
         variants.push((format!("k {k:.0}"), Fusion::default().with_k(k)));
     }
 
-    // The graph channel's weight, which has never been swept. It is the least
-    // justified constant in the default: 1.0, equal to the vector channel's,
-    // arrived at by nothing, while the only comparable published system
-    // (arXiv:2609.01617) weights its graph channel at 0.15 against a dense
-    // 0.50. The channel is also the only one seeded from the other three, so
-    // it is the one whose candidates are least independent of theirs.
+    // The graph weight was settled separately on the relational group and
+    // MuSiQue; the current default is 0.30. In this replay, XQuAD-R has no
+    // edges, while 0.50 raises MuSiQue recall but does not improve nDCG. The
+    // channel is seeded from the other three, so its candidates are the least
+    // independent of theirs; see ADR 0001 for the choice.
     for graph in [0.0, 0.15, 0.3, 0.5, 1.0] {
         variants.push((
             format!("graph {graph:.2}"),
