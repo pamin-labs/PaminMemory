@@ -627,11 +627,32 @@ pub struct Reranker {
 
 #[derive(Default)]
 struct Work {
+    pairs: u64,
     tokens: u64,
     padded_tokens: u64,
     batches: u64,
     encode_us: u64,
     forward_us: u64,
+}
+
+impl Work {
+    /// Account for a rerank attempt only once all of its scores are usable.
+    fn commit(
+        &mut self,
+        pairs: usize,
+        tokens: u64,
+        encode_us: u64,
+        result: Result<(Vec<f32>, Self)>,
+    ) -> Result<Vec<f32>> {
+        let (scores, completed) = result?;
+        self.pairs += pairs as u64;
+        self.tokens += tokens;
+        self.encode_us += encode_us;
+        self.padded_tokens += completed.padded_tokens;
+        self.batches += completed.batches;
+        self.forward_us += completed.forward_us;
+        Ok(scores)
+    }
 }
 
 /// How long the candidates that reached the model were.
@@ -663,7 +684,7 @@ pub struct Reranked {
     pub remembered: usize,
     /// Candidates handed to [`Reranker::rank`], cached or not.
     pub offered: u64,
-    /// Candidates that reached the model, which is `offered` less cache hits.
+    /// Candidates whose uncached model score completed successfully.
     pub scored: u64,
     /// Characters across every candidate that reached the model.
     pub characters: u64,
@@ -806,10 +827,12 @@ impl Reranker {
             .collect();
 
         if !unscored.is_empty() {
+            let mut characters = 0;
+            let mut longest = 0;
             for position in &unscored {
-                let characters = documents[*position].chars().count();
-                self.lengths.total += characters as u64;
-                self.lengths.longest = self.lengths.longest.max(characters);
+                let length = documents[*position].chars().count();
+                characters += length as u64;
+                longest = longest.max(length);
             }
             let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
             let pairs: Vec<(&str, &str)> = unscored
@@ -818,16 +841,18 @@ impl Reranker {
                 .collect();
             let encoding = Instant::now();
             let encodings = self.model.encode(pairs).map_err(reranking)?;
-            self.work.encode_us += encoding.elapsed().as_micros() as u64;
-            self.work.tokens += encodings
+            let encode_us = encoding.elapsed().as_micros() as u64;
+            let tokens = encodings
                 .iter()
                 .map(|encoding| encoding.len() as u64)
                 .sum::<u64>();
-            let (scored, work) =
-                score(&mut self.model, encodings, batch_tokens(), batch()).map_err(reranking)?;
-            self.work.padded_tokens += work.padded_tokens;
-            self.work.batches += work.batches;
-            self.work.forward_us += work.forward_us;
+            let attempt = score(&mut self.model, encodings, batch_tokens(), batch());
+            let scored = self
+                .work
+                .commit(unscored.len(), tokens, encode_us, attempt)
+                .map_err(reranking)?;
+            self.lengths.total += characters;
+            self.lengths.longest = self.lengths.longest.max(longest);
             for (position, score) in unscored.iter().zip(scored) {
                 scores[*position] = Some(score);
                 self.scores.put(keys[*position], score);
@@ -873,10 +898,14 @@ impl Reranker {
     /// none of them: it says how much has been stored and nothing about how
     /// often it is read.
     pub fn counted(&self) -> Reranked {
+        assert!(
+            self.work.tokens <= self.work.padded_tokens,
+            "reranker work counters disagree"
+        );
         Reranked {
             remembered: self.scores.known.len(),
             offered: self.scores.hits + self.scores.misses,
-            scored: self.scores.misses,
+            scored: self.work.pairs,
             characters: self.lengths.total,
             longest: self.lengths.longest,
             tokens: self.work.tokens,
@@ -968,6 +997,35 @@ fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_score_attempt_does_not_commit_partial_work() {
+        let mut total = Work::default();
+        let failed = total.commit(2, 10, 5, Err(IndexError::Engine("missing logits".into())));
+        assert!(failed.is_err());
+        assert_eq!((total.pairs, total.tokens, total.padded_tokens), (0, 0, 0));
+
+        let completed = Work {
+            padded_tokens: 12,
+            batches: 1,
+            forward_us: 7,
+            ..Work::default()
+        };
+        assert_eq!(
+            total
+                .commit(2, 10, 5, Ok((vec![0.2, 0.8], completed)))
+                .unwrap(),
+            vec![0.2, 0.8]
+        );
+        assert_eq!(
+            (total.pairs, total.tokens, total.padded_tokens),
+            (2, 10, 12)
+        );
+        assert_eq!(
+            (total.batches, total.encode_us, total.forward_us),
+            (1, 5, 7)
+        );
+    }
 
     #[test]
     fn a_score_is_remembered_for_its_own_query_and_document() {
