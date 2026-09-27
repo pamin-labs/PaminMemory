@@ -1101,7 +1101,7 @@ async fn search_reaches_across_languages() {
     .await
     .expect("open the engine");
 
-    if std::env::var("CHANNELS").is_ok() {
+    if std::env::var("CHANNELS").is_ok() && home.is_some() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
         assert_eq!(
             engine.indexed_documents().expect("count documents") as usize,
@@ -1109,6 +1109,13 @@ async fn search_reaches_across_languages() {
         );
     }
     write_corpus(&engine, &corpus).await;
+    if std::env::var("CHANNELS").is_ok() {
+        assert_eq!(engine.passage(), pamin_index::Passage::Named);
+        assert_eq!(
+            engine.indexed_documents().expect("count documents") as usize,
+            corpus.sentences.len()
+        );
+    }
 
     // `PASSAGES`: the same memories in a second project whose vectors embed
     // the topic's name, asked every question alongside this one. See
