@@ -985,9 +985,9 @@ MemPalace is the like-for-like peer, and it ties:
 **What this does and does not take away from Påmin Memory.** It shows that an
 LLM-free write path is not unique: MemPalace has one too, and at equal
 shortlists it reaches equal accuracy with it. It does not show that the
-property is unremarkable. Of the seven systems in the table at the top of this
-page, **six put a model on the write path by default** — mem0, Zep/Graphiti,
-Memobase, Cognee, Supermemory, and MemPalace itself. The seventh, Letta, is a
+property is unremarkable. Of the eight systems in the table at the top of this
+page, **seven put a model on the write path by default** — mem0, Zep/Graphiti,
+Memobase, Cognee, Supermemory, MemPalace, and xMemory. The eighth, Letta, is a
 framework over plain files and grep rather than a store with retrieval
 channels.
 
