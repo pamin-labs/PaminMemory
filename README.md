@@ -244,24 +244,32 @@ systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
 under [benchmarks/results/](benchmarks/results).
 
-These are published baseline measurements. The `accurate` tier now scores the
-whole fused head and blends model and fusion scores; its current accuracy and
-latency are being evaluated in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+The current `accuracy` profile embeds `name: content` and the `accurate` tier
+reranks the whole fused head, blending model and fusion scores. On XQuAD-R,
+through the shipped `search_reranked` path:
 
-| | | measured on |
+| retrieval group | result | measured on |
 | --- | --- | --- |
-| retrieval, one language | nDCG@10 **0.7654** | MIRACL Swahili dev, 131,924 passages, `accurate` reranking |
-| retrieval, query and answer in different languages | nDCG@10 0.6597 | XQuAD-R, 13,014 sentences, `accurate` reranking |
-| one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
-| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, `accurate` reranking |
-| one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
-| resident, one project | 2,088 MB | model and index inside the server |
+| query and answer in different languages | nDCG@10 **0.7268**, recall@50 **0.9032** | 1,190 queries, 13,014 sentences |
+| query and answer in the same language | nDCG@10 **0.8682**, recall@50 **0.9647** | the same queries, with the same-language answer key |
 
-Latency is a corpus and a tier before it is a number, which is why every row
-above names both and why the matrix is on the other page.
+The following measurements are historical baselines. MIRACL has not been
+retaken under the current full-head path; latency and resident memory were
+measured on another machine and cannot be carried over to this one.
 
-Those rows were taken with the vector index that shipped until now, fp32
-vectors in an in-memory graph. A project is now built with half-precision
+| historical measurement | result | condition |
+| --- | --- | --- |
+| MIRACL Swahili dev, one language | nDCG@10 0.7654 | 131,924 passages, earlier `accurate` path |
+| one `pamin search` over a socket | 25.7 ms | LOCOMO, `fast` tier, earlier build |
+| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, earlier `accurate` path |
+| one `pamin write` | 30.1 ms | 2,400 memories, earlier build |
+| resident, one project | 2,088 MB | earlier model and index inside the server |
+
+Latency is a corpus, a tier and a machine before it is a number; the full
+matrix and the older conditions are on [the measurement page](docs/measured.md).
+
+The historical rows used the vector index that shipped before the current
+half-precision field: fp32 vectors in an in-memory graph. A project now builds with half-precision
 vectors under `--vector-index memory` by default, an in-memory graph that on
 MIRACL's passages holds 320 MB resident where the fp32 graph held 575 MB, at
 the same recall. `--vector-index disk` keeps a DiskANN graph on disk and holds
@@ -274,7 +282,8 @@ in [docs/measured.md](docs/measured.md) and [docs/cli.md](docs/cli.md).
 Five findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
 
-**Fusing four channels ranked below one of them on cross-lingual queries.** The
+**A historical fusion diagnostic found four channels below the vector channel
+on cross-lingual queries.** The
 vector channel alone scores 0.8268 on this project's own cross-lingual group and
 0.6335 on XQuAD-R's, against 0.7985 and 0.6114 for all four fused. On the
 same-language queries of the same corpus the lexical channels earn their place
@@ -287,6 +296,10 @@ same-language with recall unmoved, and it is the first change here that
 improves the same-language group rather than charging it.
 [measured.md](docs/measured.md) has both tables, including the version of this
 that looked better on nDCG and took cross-lingual recall from 0.8960 to 0.7765.
+The XQuAD-R 0.6114/0.7829 fusion baseline used a content-only index and an
+older same-language answer key; the current named-index fusion baseline is
+0.6372/0.8438. Those are different pipelines, so their difference is not a
+gain credited to fusion tuning.
 
 **It is a tie, and reporting it as a win would be wrong.** At thirty passages
 the three systems are 0.628, 0.623 and 0.583, and paired McNemar separates no

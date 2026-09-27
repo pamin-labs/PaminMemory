@@ -1,17 +1,31 @@
 # What Påmin Memory measures about itself
 
-Every figure here comes from `pamin search` and `pamin write` themselves, not
-from the model or the index underneath them, because the gap between those two
-is where this project's numbers have been wrong before. The README carries the
-summary; this page carries the numbers and the conditions they were taken
-under.
+The headline search figures here run through the product's `search_reranked` entry
+point or the CLI; the write figures run through its write path. They are not
+model-only or index-only benchmarks, because the gap to a whole search is
+where this project's numbers have been wrong before. The README carries the
+summary; this page carries the numbers and their conditions.
 
 The comparison against other memory systems is a different question and lives
 in [benchmarks.md](benchmarks.md), along with what that comparison holds fixed
 and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
-**Retrieval quality**, at the `fast` reranking tier, which was the default when
+**Current XQuAD-R retrieval quality**, with the named-passage BGE-M3 index,
+the `accurate` tier reranking the whole fused head, and the corrected
+same-language answer key. All 1,190 queries use `search_reranked`:
+
+| group | nDCG@10 | recall@50 |
+| --- | ---: | ---: |
+| cross-language | **0.7268** | **0.9032** |
+| same-language | **0.8682** | **0.9647** |
+
+The figures below preserve earlier runs for their design history. They were
+not rerun under every later change to passage encoding, the answer key or the
+full-head rerank. In particular, the MIRACL default-profile row is not a
+current full-head result.
+
+**Historical retrieval quality**, at the `fast` reranking tier, which was the default when
 these were taken:
 
 | corpus | group | nDCG@10 | recall@50 |
@@ -20,12 +34,12 @@ these were taken:
 | XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6480 | 0.8960 |
 | XQuAD-R | query and answer in the same language | 0.7495 | 0.9580 |
 
-The default is now `accurate`, chosen on the paired comparison in
-[cli.md](cli.md). The runs behind this table measured it too: MIRACL 0.7654,
-XQuAD-R 0.6597 cross-lingual and 0.7835 same-language, recall unchanged because
-a reranker reorders a shortlist and never changes it. The XQuAD-R pair is from
-the later run under the fusion that ships, so it sits against 0.6114 with no
-reranking rather than against the rows above.
+The default later became `accurate`, chosen on the paired comparison in
+[cli.md](cli.md). Those historical runs measured MIRACL at 0.7654 and XQuAD-R
+at 0.6597 cross-lingual and 0.7835 same-language. A reranker reorders a
+shortlist and leaves its full-depth recall unchanged. The current XQuAD-R
+result is in the table above; its gain over these older rows cannot be assigned
+to reranking alone because the passage encoding and answer key also changed.
 
 Both corpora are fetched rather than vendored, and each has a harness in the
 repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
