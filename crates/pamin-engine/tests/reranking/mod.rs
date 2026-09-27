@@ -132,6 +132,19 @@ const GATES: [&str; 5] = [
     "skip: first in both lexical, no graph find",
 ];
 
+fn cascade_order(replayed: &Replayed, keep: &[usize]) -> Vec<String> {
+    if keep.len() < 2 {
+        return replayed.fused.clone();
+    }
+    let positions: Vec<usize> = keep.iter().map(|at| replayed.movable[*at]).collect();
+    let (fused, model): (Vec<f64>, Vec<f64>) = keep
+        .iter()
+        .map(|at| (replayed.fusion[*at], replayed.model[*at]))
+        .unzip();
+    let best = pamin_engine::score_blend_order(&fused, &model, pamin_engine::RERANK_FUSION);
+    pamin_engine::place(replayed.fused.clone(), &positions, replayed.head, &best)
+}
+
 impl Default for Routes {
     fn default() -> Self {
         let mut labels = vec![
@@ -242,18 +255,7 @@ impl Routes {
             });
             keep.truncate(n);
             keep.sort_unstable();
-            let positions: Vec<usize> = keep.iter().map(|at| replayed.movable[*at]).collect();
-            let mut best: Vec<usize> = (0..keep.len()).collect();
-            best.sort_by(|left, right| {
-                replayed.model[keep[*right]]
-                    .total_cmp(&replayed.model[keep[*left]])
-                    .then(left.cmp(right))
-            });
-            let order = if positions.len() < 2 {
-                fused.clone()
-            } else {
-                pamin_engine::place(fused.clone(), &positions, replayed.head, &best)
-            };
+            let order = cascade_order(replayed, &keep);
             orders.push((order, shown, keep.len() as u64));
         }
         for skip in skips {
@@ -679,6 +681,15 @@ mod tests {
         assert_eq!(
             scores.order(shipped_rule(Rerank::Fast)),
             ["lexical", "b", "a", "c"]
+        );
+    }
+
+    #[test]
+    fn cascade_keeps_the_shipped_blend_on_selected_candidates() {
+        let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
+        assert_eq!(
+            cascade_order(&scores, &[0, 1, 2]),
+            scores.order(shipped_rule(Rerank::Accurate))
         );
     }
 }
