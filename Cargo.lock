@@ -1863,6 +1863,7 @@ name = "pamin-engine"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "hf-hub",
  "pamin-core",
  "pamin-index",
  "pamin-store",
