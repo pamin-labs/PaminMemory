@@ -27,10 +27,15 @@ to an optimization.
 The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
 records the model, index encoding and harness command.
 
+**Current MIRACL Swahili dev retrieval quality**, through the full-head
+`search_reranked` path on 131,924 passages and 482 judged queries: nDCG@10
+**0.8193**, recall@50 **0.9568**. The conditions and replay check are in
+[cli.md](cli.md).
+
 The figures below preserve earlier runs for their design history. They were
 not rerun under every later change to passage encoding, the answer key or the
-full-head rerank. In particular, the MIRACL default-profile row is not a
-current full-head result.
+full-head rerank. The older MIRACL rows below are not the current full-head
+result above.
 
 **Historical retrieval quality**, at the `fast` reranking tier, which was the default when
 these were taken:
@@ -112,13 +117,9 @@ suggests. On XQuAD-R it reaches twenty-two same-language queries out of 1,190
 and makes nineteen of them worse; on MIRACL, where every query is
 same-language, it reaches ninety-four of 482 and loses on fifty-seven.
 
-As for the harness named beside the MIRACL row: this page previously named
-one harness for both corpora, which was true of the XQuAD-R rows and false of
-the MIRACL ones: they came from a program that was never committed, so nothing
-in the repository could produce them, break them, or be trusted to notice.
-`monolingual.rs` exists to close that, and every MIRACL figure below is a
-target for it to reproduce until it has — at which point this paragraph goes
-and the figures carry floors, which they also do not have today.
+The MIRACL table below preserves an earlier run from a program that was not
+committed. `monolingual.rs` later measured the current full-head path reported
+above; the figures in this table describe the older path.
 
 **What those MIRACL figures are worth, against published results on the same
 corpus, the same dev split and the same qrels:**
@@ -128,11 +129,11 @@ corpus, the same dev split and the same qrels:**
 | Pyserini BM25 baseline | 0.3826 | lexical only |
 | Påmin Memory, `--rerank off` | 0.7158 | four channels fused |
 | Påmin Memory, `fast` | 0.7359 | fused, then a cross-encoder |
-| Påmin Memory, `accurate` (default) | **0.7654** | fused, then a larger cross-encoder |
+| Påmin Memory, earlier `accurate` path | **0.7654** | fused, then a larger cross-encoder |
 | BGE-M3, published | 0.787 | dense retrieval alone |
 
-Read the last row carefully, because it is the honest reading: **a whole
-retrieval stack here scored below a single dense retriever** — the same model,
+Read that historical `accurate` row carefully: **a whole retrieval stack then
+scored below a single dense retriever** — the same model,
 as an int8 export. Two differences are known and neither is measured: the
 published figure is fp32, and MIRACL's training split is in BGE-M3's
 fine-tuning data where this runs zero-shot. Neither excuses the gap; they are
