@@ -1,0 +1,36 @@
+{
+  "models": [
+    {
+      "role": "embedder",
+      "repository": "gpahal/bge-m3-onnx-int8",
+      "revision": "2b34e84df040034d4b9eabb62383a87c18955822",
+      "source_onnx": "model_quantized.onnx",
+      "source_onnx_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "files_sha256": {
+        "config.json": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+        "tokenizer.json": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+        "tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"
+      },
+      "prepared_key_on_measured_host": "549712a50abc9b4ab711de76de12c56a",
+      "prepared_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
+      "prepared_data_sha256": "e5ea60bbb78f8f6af7ce66032ed6c3f59496e247846b28a3fc91c0a5151e677f"
+    },
+    {
+      "role": "reranker",
+      "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "source_onnx": "onnx/model_int8.onnx",
+      "source_onnx_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "files_sha256": {
+        "config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+        "tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+        "tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"
+      },
+      "prepared_key_on_measured_host": "d9df182f15964c336e41a7b0bcd9f536",
+      "prepared_graph_sha256": "01fea914044b8346af02875be07cc9fd2af43fd814b12e85e979393c45a56589",
+      "prepared_data_sha256": "6188fbb5b4176ba108a1fbebf09207765ed6448656ca63e4e0259bba6651e0fd"
+    }
+  ]
+}
