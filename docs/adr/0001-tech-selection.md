@@ -1484,11 +1484,11 @@ experimental profile was removed without spending another full rebuild on
 MuSiQue. Its older MuSiQue gain was measured under a different rerank path and
 is not claimed for this one.
 
-The 13,014-sentence cold project ran 39,043 cascade jobs in 5,659 s; the
-complete test took 9,611 s and search averaged 3,316 ms/question, of which
-3,020 ms was reranker padding and inference. These are single-run absolute
-costs on a shared machine, not a speed ratio against BGE. The compacted pplx
-index was about 80 MiB, the same order as BGE's for the same vector width;
+The 13,014-sentence cold project ran 39,043 cascade jobs. It was one run on
+a shared machine, so neither its indexing time nor its query time has the
+three-run median and spread required for a latency claim; neither is used to
+decide this model. The compacted pplx index was about 80 MiB, the same order
+as BGE's for the same vector width;
 the official ONNX external-weight file is 706 MB against about 570 MB for
 BGE's int8 model. Product-server peak RSS was not measured. A proposed
 eight-text inference batch was also dropped: on real XQuAD-R sentences its
