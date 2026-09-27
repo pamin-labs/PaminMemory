@@ -86,8 +86,8 @@ ten points over the lexical baseline, with no model called at any stage.**
 ### What the parity is bought with
 
 Everything that separates these systems follows from one choice: **no language
-model runs on the write path.** Of the seven memory systems surveyed in
-[docs/benchmarks.md](docs/benchmarks.md), six run one by default. MemPalace can
+model runs on the write path.** Of the eight memory systems surveyed in
+[docs/benchmarks.md](docs/benchmarks.md), seven run one by default. MemPalace can
 be told not to, with `init --no-llm`, and measured that way it reaches the same
 accuracy as Påmin Memory — so the property is not unique, and it does not buy
 accuracy. What it buys is everything in the table below, and here it is the
