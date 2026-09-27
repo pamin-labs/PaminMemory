@@ -12,7 +12,12 @@
 //! behind a primary key and a `(project, id)` index, three rounds each: 5.0-5.5 s
 //! with version 4 against 3.5-4.3 s with version 7, and a primary key of
 //! 8.5 MB against 8.1 MB. The shard key is `project_id`, not these bytes, so
-//! ordering them by time skews nothing.
+//! ordering them by time skews nothing in PostgreSQL.
+//!
+//! It did skew the vector index, whose engine keeps a key map it never
+//! compacts: keys that only ever ascend left it one file per flush. That index
+//! spells a topic's key with these bytes reversed, so the random ones lead --
+//! see `Keys` in `pamin-index`'s `projection.rs`.
 //!
 //! Identifiers already written stay version 4: a topic's id is also its key in
 //! the vector index, so rewriting one means rebuilding the index, and the gain

@@ -50,13 +50,21 @@ const AWAITING_DURABILITY: usize = 128;
 pub struct Drained {
     /// Jobs that ran and were recorded as done.
     pub completed: usize,
-    /// Jobs still owed when the drain stopped.
+    /// Jobs still owed when the drain stopped, counted no further than
+    /// [`LAGGING_AT`](pamin_core::LAGGING_AT) past [`Drained::applied`].
     ///
     /// Counted from the queue, so it includes [`Drained::applied`] -- work this
     /// process has already done and is holding a claim on until a flush makes
     /// it durable. A caller asking "is this memory findable" wants the
     /// difference; a caller asking "what would replay after a power cut" wants
     /// this.
+    ///
+    /// Capped because every write drains, and the two questions a write asks
+    /// of the difference -- is it zero, is it past the lag bound -- are both
+    /// answered exactly below the cap. Counting a backlog in full costs a read
+    /// of all of it, on every write, exactly when the writer is behind. A
+    /// caller that reports the number, as `pamin cascade` does, counts it
+    /// with `jobs::pending`.
     pub pending: i64,
     /// Jobs that failed and will be tried again, or have run out of attempts.
     pub failed: usize,
@@ -98,17 +106,42 @@ impl Engine {
     /// otherwise leave it for whoever came next, and "drain" would mean
     /// something different each time it was called.
     pub async fn drain_cascade(&self, owed: Owed) -> Result<Drained> {
+        self.drain_cascade_while(owed, BATCH, || true).await
+    }
+
+    /// The same drain, in rounds of `batch` jobs, asking `another` before each
+    /// round whether to take it.
+    ///
+    /// For a caller draining on nobody's behalf: the resident server, catching
+    /// up on work a deferred write or a process that died left behind. It has
+    /// no memory waiting to be findable and every reason to get out of the way
+    /// of one that is, so it stops between rounds when a request arrives --
+    /// and the round is the unit it cannot stop inside, which is why the batch
+    /// is its to choose. A round's forward pass holds the profile's model, and
+    /// a search on any project sharing that model waits for it.
+    ///
+    /// Stopping early leaves the rest owed and nothing half done: a round
+    /// either completes its jobs or leaves their claims to lapse.
+    pub async fn drain_cascade_while(
+        &self,
+        owed: Owed,
+        batch: i32,
+        mut another: impl FnMut() -> bool,
+    ) -> Result<Drained> {
         let mut drained = Drained::default();
         // Once, at the end, and never again in this drain: the tidy-up is
         // itself a job, so queueing another after running one would spin.
         let mut tidied = false;
 
         loop {
+            if !another() {
+                break;
+            }
             let claimed = jobs::claim(
                 self.database.pool(),
                 self.project,
                 &self.worker,
-                BATCH,
+                batch,
                 owed.kinds(),
             )
             .await?;
@@ -190,9 +223,7 @@ impl Engine {
             // Whatever a read job writes goes to the ledger, which commits it,
             // so nothing it does is waiting on a flush. It reads the index,
             // and what this round wrote is already there to be read.
-            for job in reads {
-                outcomes.push((job, self.run(job).await));
-            }
+            self.run_reads(&reads, &mut outcomes).await;
 
             // The round's completions go in one statement. Separately they
             // cost more than the work they record -- a thousand of them is 165
@@ -237,7 +268,12 @@ impl Engine {
         // Counted as pending and then not as applied, it is reported owed,
         // which it is not, and every write says so.
         drained.applied = self.awaiting_durability();
-        drained.pending = jobs::pending(self.database.pool(), self.project).await?;
+        drained.pending = jobs::pending_up_to(
+            self.database.pool(),
+            self.project,
+            pamin_core::LAGGING_AT + drained.applied as i64,
+        )
+        .await?;
         Ok(drained)
     }
 
@@ -283,7 +319,36 @@ impl Engine {
 
         let held: Vec<&Job> = waiting.iter().collect();
         let completed = jobs::complete(self.database.pool(), &held, &self.worker).await?;
+
+        // A flush is what leaves a vector block behind, so this is where to ask
+        // whether the blocks have outgrown the index -- here rather than in the
+        // drain, which asks before the flush it defers and so never sees the
+        // block from the last write a project gets. Queued like the drain's own
+        // tidy-up, for the upkeep that runs after this; a failure to ask costs
+        // disk until the next flush asks again, which is no reason to report
+        // writes that are durable as failed.
+        if let Err(error) = self.queue_compaction_if_wasteful().await {
+            tracing::warn!(%error, "asking whether the index wastes disk failed");
+        }
         Ok(completed.len())
+    }
+
+    /// Queues a compaction when unmerged vector blocks outweigh the index.
+    async fn queue_compaction_if_wasteful(&self) -> Result<()> {
+        let (blocks, documents) = crate::engine::off_the_runtime(|| -> Result<(u64, u64)> {
+            let index = self.index();
+            Ok((index.unmerged_blocks()?, index.document_count()?))
+        })?;
+        if pamin_index::wastes_disk(blocks, documents) {
+            jobs::enqueue(
+                self.database.pool(),
+                self.project,
+                JobKind::OptimizeIndex,
+                None,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Runs one job.
@@ -393,6 +458,84 @@ impl Engine {
                             .map_err(Into::into),
                     };
                     into.push((job, one));
+                }
+            }
+        }
+    }
+
+    /// Runs the jobs of a round that read the index back, restating every
+    /// memory's mentions together and backfilling every new topic together.
+    ///
+    /// Batched the way [`Self::sync_indexes`] batches the writes, and for the
+    /// same reason: each job asked the same few statements with different
+    /// arguments, sixty-four times a round. One connection for all of them,
+    /// the states to restate in one lookup and the names to backfill in
+    /// another, and the rest in [`Engine::restate_mentions`] and
+    /// [`Engine::backfill_all`]. Maintenance runs one job at a time as before.
+    ///
+    /// **Each job still gets its own outcome.** A batch that fails is run again
+    /// one job at a time, so a memory that cannot be restated fails alone
+    /// rather than holding the rest of the round's jobs owed with it.
+    async fn run_reads<'j>(&self, jobs: &[&'j Job], into: &mut Vec<(&'j Job, Result<()>)>) {
+        let mut batch = Vec::new();
+        for job in jobs {
+            if !matches!(
+                job.kind,
+                JobKind::DeriveMentions | JobKind::BackfillMentions
+            ) {
+                into.push((*job, self.run(job).await));
+                continue;
+            }
+            match subject(job) {
+                Ok(subject) => batch.push((*job, TopicId::from(subject))),
+                Err(error) => into.push((*job, Err(error))),
+            }
+        }
+        if batch.is_empty() {
+            return;
+        }
+
+        let of_kind = |kind: JobKind| -> Vec<TopicId> {
+            batch
+                .iter()
+                .filter(|(job, _)| job.kind == kind)
+                .map(|(_, topic)| *topic)
+                .collect()
+        };
+        let batched = async {
+            let mut connection = self.database.pool().acquire().await?;
+            // A topic that resolves to nothing has nothing to restate, and one
+            // that does not exist has no name to backfill, as one at a time.
+            let states = pamin_store::repository::current_states_of(
+                &mut *connection,
+                self.project,
+                &of_kind(JobKind::DeriveMentions),
+            )
+            .await?;
+            self.restate_mentions(&mut connection, &states).await?;
+            let named: Vec<(TopicId, String)> = pamin_store::repository::topics_by_id(
+                &mut *connection,
+                self.project,
+                &of_kind(JobKind::BackfillMentions),
+            )
+            .await?
+            .into_iter()
+            .map(|(topic, name, _)| (topic, name))
+            .collect();
+            self.backfill_all(&mut connection, &named).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match batched {
+            Ok(()) => {
+                for (job, _) in batch {
+                    into.push((job, Ok(())));
+                }
+            }
+            Err(_) => {
+                for (job, _) in batch {
+                    into.push((job, self.run(job).await));
                 }
             }
         }
@@ -534,9 +677,17 @@ impl Engine {
     /// write rather than two, so this fires roughly every five and a half
     /// thousand writes instead of every sixty, and a project below that never
     /// built a graph at all. See `vector_index_lags`.
+    ///
+    /// Read beside what the last `optimize` on this index left, because an
+    /// index can stay above the budget whatever `optimize` does, and asking
+    /// again before it has grown only spends the `optimize`. See
+    /// `pamin_index::is_fragmented`.
     fn index_is_fragmented(&self) -> Result<bool> {
-        let files = crate::engine::off_the_runtime(|| self.index().file_count())?;
-        Ok(pamin_index::is_fragmented(files))
+        let (files, floor) = crate::engine::off_the_runtime(|| -> Result<(u64, u64)> {
+            let index = self.index();
+            Ok((index.file_count()?, index.files_after_optimize()))
+        })?;
+        Ok(pamin_index::is_fragmented(files, floor))
     }
 
     /// Whether enough documents sit outside the vector graph to build one.

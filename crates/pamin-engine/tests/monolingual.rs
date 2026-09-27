@@ -77,18 +77,19 @@
 
 mod channels;
 mod features;
+mod harness;
 mod memory;
 mod reranking;
 mod scoring;
 mod statistics;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
-use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile, Rerank};
+use pamin_engine::{Depths, Engine};
+use pamin_index::{Access, Embedder, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -106,6 +107,7 @@ const QRELS: &str = "https://huggingface.co/datasets/miracl/miracl/resolve/main/
 const CORPUS: &str = "https://huggingface.co/datasets/miracl/miracl-corpus/resolve/main/\
                       miracl-corpus-v1.0-sw/docs-0.jsonl.gz";
 
+use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// How deep a ranking is taken before scoring, so recall@50 can be reached.
@@ -116,9 +118,6 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
-
-/// The profile the floors were measured against, and the product default.
-const DEFAULT_PROFILE: &str = "accuracy";
 
 /// The one group. MIRACL has no split inside a language and inventing one
 /// would be reporting a number nobody else reports.
@@ -168,7 +167,7 @@ struct Corpus {
 
 impl Corpus {
     fn load() -> Self {
-        let dir = dataset_dir();
+        let dir = harness::dataset_dir("MIRACL_DIR", "miracl-sw");
         fetch(&dir);
 
         let cap = std::env::var("MIRACL_MAX_DOCS")
@@ -271,20 +270,6 @@ impl Corpus {
             }
         );
     }
-}
-
-/// Where the dataset lives.
-fn dataset_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("MIRACL_DIR") {
-        return PathBuf::from(dir);
-    }
-    eval_home().join("miracl-sw")
-}
-
-fn eval_home() -> PathBuf {
-    std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"))
 }
 
 /// Downloads the three files that are not there yet.
@@ -393,6 +378,15 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
         100.0 * (counted.offered - counted.scored) as f64 / counted.offered as f64,
         counted.offered,
     );
+    println!(
+        "  actual rerank work: {} tokens, {} padded tokens, {} batches; \
+         encoding {:.1} ms/query, padding + inference {:.1} ms/query",
+        counted.tokens,
+        counted.padded_tokens,
+        counted.batches,
+        counted.encode_us as f64 / 1_000.0 / queries as f64,
+        counted.forward_us as f64 / 1_000.0 / queries as f64,
+    );
 }
 
 /// Asserts the floors, unless this run is disqualified from carrying them.
@@ -417,12 +411,6 @@ fn assert_floors(named: &str, corpus: &Corpus, scores: &Scores, floors: (f64, f6
         "{GROUP} recall@{RECALL_AT} fell to {:.4}, below the {recall:.4} floor",
         scores.mean_recall()
     );
-}
-
-fn profile() -> (String, Profile) {
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).expect("a known profile");
-    (named, profile)
 }
 
 // ---------------------------------------------------------------------------
@@ -641,9 +629,15 @@ async fn search() {
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
     let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     // `MEMORY`: where the resident memory goes, stage by stage. First, so no
     // other arm has loaded anything yet. See `memory`.
@@ -829,6 +823,7 @@ async fn search() {
             &workspace,
             &format!("{project}-named"),
             profile,
+            VectorIndex::default(),
             Access::ReadWrite,
         )
         .await
@@ -1312,12 +1307,16 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
     // What the allocator holds after it was freed: glibc keeps freed memory in
     // per-thread arenas, and the difference trimming makes is memory the
     // process holds and does not use.
+    #[cfg(target_os = "linux")]
     unsafe extern "C" {
         fn malloc_trim(pad: usize) -> i32;
     }
     // SAFETY: glibc's own function, no arguments that point anywhere.
-    unsafe { malloc_trim(0) };
-    memory::Resident::now().print("after malloc_trim(0)");
+    #[cfg(target_os = "linux")]
+    {
+        unsafe { malloc_trim(0) };
+        memory::Resident::now().print("after malloc_trim(0)");
+    }
 }
 
 /// Reshapes the index while it is open, and asks every question before and
@@ -1447,32 +1446,21 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     let mut written = 0usize;
 
     for passage in &corpus.passages {
-        let existing =
-            pamin_store::repository::find_topic(engine.database.pool(), project, &passage.docid)
-                .await
-                .expect("look for the topic");
-        if existing.is_some() {
+        // The dataset's own language, as the other harness does it: `pamin
+        // write` takes this from `detect_language`, and nothing reads the
+        // column today.
+        if !harness::write_absent(
+            engine,
+            &passage.docid,
+            &passage.text,
+            "sw",
+            "monolingual evaluation corpus",
+        )
+        .await
+        {
             continue;
         }
         written += 1;
-        engine
-            .write(&Write {
-                topic: &passage.docid,
-                content: &passage.text,
-                content_hash: &passage.text.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "monolingual evaluation corpus",
-                promoted: true,
-                // The dataset's own language, as the other harness does it:
-                // `pamin write` takes this from `detect_language`, and nothing
-                // reads the column today.
-                language: Some("sw"),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", passage.docid));
 
         if written.is_multiple_of(5_000) {
             println!("  wrote {written} passages");

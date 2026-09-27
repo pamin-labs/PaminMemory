@@ -37,12 +37,19 @@
 //!
 //! | group | the relevant sentences | why it is its own number |
 //! |---|---|---|
-//! | `same_language` | the answer sentence in the query's own language | the baseline the other is read against |
+//! | `same_language` | the answer sentence in the query's own language, with its ten translations removed from the ranking | the baseline the other is read against |
 //! | `cross_lingual` | the answer sentence in the other ten languages, with the query's own removed from the ranking | the claim this project makes |
 //!
 //! Removing the same-language answer from the ranking is what makes the second
 //! group honest. Left in, it takes a top rank on nearly every query and the
 //! group scores well while answering the wrong question.
+//!
+//! The first group removes the translations for the same reason, and until
+//! perf-58 it did not: they stayed in its ranking as non-relevant, so ranking
+//! a correct translation above the same-language answer scored as a mistake.
+//! Every same-language figure in this file and in the ADR from before that
+//! change was taken under the old key, and is a lower bound on the same
+//! ranking scored now -- see [`Query::relevant`].
 //!
 //! Alongside the two metrics is a third number: how many relevant sentences
 //! come back inside the shortlist but *below* rank ten. That is the whole
@@ -60,7 +67,12 @@
 //! one is not parallel and is closer to the shape of the workload. A change
 //! that helps on one and hurts on the other is a result, not a contradiction.
 //!
-//! ## What it measured when it was written
+//! ## Historical measurements
+//!
+//! This table predates the corrected same-language answer key and the current
+//! full-head `accurate` reranker. It documents the earlier decision, not the
+//! present regression baseline; the measured current values are beside
+//! `MODEL_FLOORS` and `SEARCH_FLOORS` below.
 //!
 //! 13,014 sentences in eleven languages, 1,190 queries, the default profile:
 //!
@@ -162,17 +174,18 @@
 
 mod channels;
 mod features;
+mod harness;
 mod reranking;
 mod scoring;
 mod statistics;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use pamin_core::{Channel, Fusion, Why};
-use pamin_engine::{Depths, Engine, Write};
-use pamin_index::{Access, Embedder, Profile, Rerank};
+use pamin_engine::{Depths, Engine};
+use pamin_index::{Access, Embedder, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
 /// The languages XQuAD-R covers, in the order the rotation walks them.
@@ -188,12 +201,16 @@ const LANGUAGES: [&str; 11] = [
 const SOURCE: &str =
     "https://raw.githubusercontent.com/google-research-datasets/lareqa/master/xquad-r";
 
+use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
-/// One more than [`RECALL_AT`], because the cross-lingual group drops the
-/// query's own language from the ranking and still needs fifty left.
-const DEPTH: usize = RECALL_AT + 1;
+/// [`RECALL_AT`] plus what a group drops from the ranking before scoring it:
+/// the cross-lingual group drops the query's own language, the same-language
+/// group its ten translations, and each still needs fifty left. Asking for
+/// more changes nothing but how many come back, because the reranker's head
+/// is well inside either depth.
+const DEPTH: usize = RECALL_AT + LANGUAGES.len() - 1;
 
 /// What each channel contributes before fusion, and how far the graph walks.
 ///
@@ -204,26 +221,14 @@ const DEPTHS: Depths = Depths {
     graph: 2,
 };
 
-/// The profile the floors were measured against, and the product default.
-const DEFAULT_PROFILE: &str = "accuracy";
-
 /// Per group: the nDCG@10 and recall@50 floors for the embedding space.
 ///
-/// Floors under what was measured -- 0.6335 / 0.8981 cross-lingual and
-/// 0.6787 / 0.9529 same-language -- by roughly a tenth, which is wide enough
-/// that ordinary variation does not trip them and narrow enough that a
-/// weaker model does. Floors, not targets: a run that beats one is not by
-/// itself a reason to raise it.
-///
-/// Re-taken on deterministic vectors. This arm calls `embed_passages`, and
-/// on the default profile a batch used to perturb every vector in it, so the
-/// figures here described embeddings the product no longer produces. They
-/// moved by less than this harness's own run-to-run spread -- the previous
-/// pair was 0.6338 / 0.8951 and 0.6748 / 0.9563 -- which is the finding
-/// rather than a reason to skip the re-run: the perturbation was systematic
-/// enough to leave the ranking alone, and that is why nothing caught it.
+/// Re-measured with the corrected same-language answer key and deterministic
+/// vectors: 0.6420 / 0.8997 cross-lingual and 0.7925 / 0.9571 same-language.
+/// The nDCG floors leave about 0.07 and the recall floors 0.06-0.10 of margin.
+/// They detect a weaker model without fitting the threshold to one run.
 const MODEL_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.57, 0.80), ("same_language", 0.60, 0.86)];
+    &[("cross_lingual", 0.57, 0.80), ("same_language", 0.72, 0.90)];
 
 // ---------------------------------------------------------------------------
 // The corpus
@@ -273,24 +278,41 @@ impl Query<'_> {
 
     /// The relevant sentence keys for one group, and what to drop first.
     ///
+    /// Each group removes from the ranking the answers it does not count,
+    /// rather than leaving them in as non-relevant. The two groups are the
+    /// same question under two answer keys, and every answer the key leaves
+    /// out is still a correct answer.
+    ///
     /// The cross-lingual group answers "can a query reach a memory written in
-    /// another language", so the memory written in its own language is removed
-    /// from the ranking rather than merely uncounted. Left in the ranking it
-    /// occupies a top position on nearly every query, and the group reports a
-    /// number that is mostly about same-language retrieval.
-    fn relevant(&self, group: &str) -> (HashSet<&str>, Option<&str>) {
+    /// another language", so the memory written in its own language is
+    /// removed. Left in the ranking it occupies a top position on nearly every
+    /// query, and the group reports a number that is mostly about
+    /// same-language retrieval.
+    ///
+    /// The same-language group answers "is the answer in the query's own
+    /// language placed well", so its ten translations are removed. **They were
+    /// left in until perf-58, as non-relevant**, and a system that ranks a
+    /// correct translation above the same-language answer was scored as though
+    /// it had ranked a wrong sentence there. The `accurate` reranker does that
+    /// often: on 40 random questions, at least one translation outscored the
+    /// same-language answer on 13, and a same-language distractor did so on
+    /// only 3. So the old group penalised correct multilingual relevance, and
+    /// "same-language damage" measured under it was partly this. Removing a
+    /// non-relevant candidate can only raise the relevant one, so every
+    /// same-language figure taken before this change is a lower bound on the
+    /// same ranking scored now.
+    fn relevant(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
         let own = self.question.answers[self.language].as_str();
+        let translations: HashSet<&str> = self
+            .question
+            .answers
+            .iter()
+            .filter(|(language, _)| **language != self.language)
+            .map(|(_, key)| key.as_str())
+            .collect();
         match group {
-            "same_language" => (HashSet::from([own]), None),
-            "cross_lingual" => (
-                self.question
-                    .answers
-                    .iter()
-                    .filter(|(language, _)| **language != self.language)
-                    .map(|(_, key)| key.as_str())
-                    .collect(),
-                Some(own),
-            ),
+            "same_language" => (HashSet::from([own]), translations),
+            "cross_lingual" => (translations, HashSet::from([own])),
             other => panic!("unknown group {other}"),
         }
     }
@@ -302,7 +324,7 @@ const GROUPS: [&str; 2] = ["cross_lingual", "same_language"];
 impl Corpus {
     /// Reads the eleven language files, fetching them if they are not there.
     fn load() -> Self {
-        let dir = dataset_dir();
+        let dir = harness::dataset_dir("LAREQA_DIR", "xquad-r");
         fetch(&dir);
 
         let mut sentences = Vec::new();
@@ -453,17 +475,6 @@ impl Corpus {
     }
 }
 
-/// Where the dataset lives.
-fn dataset_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("LAREQA_DIR") {
-        return PathBuf::from(dir);
-    }
-    let base = std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"));
-    base.join("xquad-r")
-}
-
 /// Downloads the language files that are not there yet.
 ///
 /// Through `curl` rather than an HTTP client, because the workspace has none
@@ -521,14 +532,11 @@ fn score(groups: &mut BTreeMap<String, Scores>, query: &Query<'_>, ranked: &[Str
 /// Scores one ranking for one group, dropping what that group drops.
 fn score_group(into: &mut Scores, query: &Query<'_>, group: &str, ranked: &[String]) {
     let (relevant, drop) = query.relevant(group);
-    let kept: Vec<String> = match drop {
-        None => ranked.to_vec(),
-        Some(key) => ranked
-            .iter()
-            .filter(|hit| hit.as_str() != key)
-            .cloned()
-            .collect(),
-    };
+    let kept: Vec<String> = ranked
+        .iter()
+        .filter(|hit| !drop.contains(hit.as_str()))
+        .cloned()
+        .collect();
     into.add(&kept, relevant.len(), |topic| relevant.contains(topic));
 }
 
@@ -789,6 +797,15 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
         100.0 * (counted.offered - counted.scored) as f64 / counted.offered as f64,
         counted.offered,
     );
+    println!(
+        "  actual rerank work: {} tokens, {} padded tokens, {} batches; \
+         encoding {:.1} ms/query, padding + inference {:.1} ms/query",
+        counted.tokens,
+        counted.padded_tokens,
+        counted.batches,
+        counted.encode_us as f64 / 1_000.0 / queries as f64,
+        counted.forward_us as f64 / 1_000.0 / queries as f64,
+    );
 }
 
 /// Asserts the floors, unless this is a run of some other profile.
@@ -864,13 +881,6 @@ fn fusion(setting: Option<(f32, f32)>) -> Fusion {
     }
 }
 
-/// The profile to measure.
-fn profile() -> (String, Profile) {
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).expect("a known profile");
-    (named, profile)
-}
-
 // ---------------------------------------------------------------------------
 // The embedding space on its own
 // ---------------------------------------------------------------------------
@@ -888,9 +898,7 @@ fn the_model_reaches_across_languages() {
         queries.len()
     );
 
-    let home = std::env::var("PAMIN_EVAL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"));
+    let home = eval_home();
     let mut embedder =
         Embedder::load(profile, &home.join("models")).expect("load the embedding model");
 
@@ -1034,52 +1042,21 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
 
 /// The floors for the whole search path, as the product calls it.
 ///
-/// A tenth below 0.6480 / 0.8960 cross-lingual, which is what
-/// `search_reranked` scores at the default tier.
-///
-/// The same-language pair is deliberately *not* a tenth. It measures 0.7495 /
-/// 0.9580 and the floor stays at the 0.71 set when the lexical weight was a
-/// quarter and this group scored 0.7971: halving that weight cost this group
-/// 0.0476 and bought 0.0383 cross-lingual here, 0.0550 cross-lingual on the
-/// own corpus and the best MIRACL score of the five weights tried (see
-/// `pamin_core::fusion`). That leaves about a twentieth of margin instead of a
-/// tenth, and lowering the floor to restore the tenth would be moving a guard
-/// to fit the regression it exists to catch. A twentieth is enough here
-/// because this measurement is exactly repeatable: fixed corpus, fixed index,
-/// fixed model, greedy pass.
-///
-/// Both pairs now sit *above* the model's own floors. The cross-lingual pair
-/// did not until the lexical weight was halved -- the product used to rank
-/// below the model it is built on, on the group the model is best at -- which
-/// is the single most important thing this harness has found: see the table in
-/// the module notes.
+/// Through the default full-head `search_reranked` path after correcting the
+/// same-language key: 0.7268 / 0.9032 cross-lingual and 0.8682 / 0.9647
+/// same-language. The floors leave roughly 0.04-0.07 on nDCG and 0.04-0.05 on
+/// recall, enough for ordinary variation but tighter than the old-key guards.
 const SEARCH_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.58, 0.80), ("same_language", 0.71, 0.86)];
+    &[("cross_lingual", 0.66, 0.85), ("same_language", 0.82, 0.92)];
 
 /// The least the reranker must be worth, in cross-lingual nDCG@10.
 ///
-/// A floor cannot carry this. The tenth of margin every other floor here uses
-/// is wider than the reranker's own contribution -- fusion alone scores 0.6077
-/// and the default tier 0.6480, so a floor set a tenth below the tier still
-/// passes with the reranker switched off entirely. Losing it would be silent.
-///
-/// So the floor test scores fusion alone as well and asserts the gap. Measured
-/// at 0.0403, and the measurement is exactly repeatable: three runs of all
-/// three tiers returned the same four decimals every time, because the corpus,
-/// the index and the model are all fixed and the pass is greedy. Half of what
-/// was measured, so that this fails when the reranker stops working rather than
-/// when it works slightly less well.
-///
-/// The gap is a corpus's opinion, not the reranker's worth in general. On
-/// MIRACL Swahili the same default tier scores 0.6730 against 0.6882 for
-/// fusion alone -- it *costs* 0.0152 there, at 226 ms a query. Those two are
-/// the `speed` profile rather than this one, because `accuracy` is ten hours
-/// of indexing for that corpus, so the pair is comparable with each other and
-/// not with the figures above. What it establishes is that part of what the
-/// reranker buys here is the dilution fusion introduced, and this corpus --
-/// parallel translations, half its queries answered in another language -- is
-/// the one where that dilution is largest.
-const RERANK_IS_WORTH: f64 = 0.020;
+/// A ranking floor alone can pass with the reranker switched off. On the
+/// corrected XQuAD-R key the shipped full-head pass scores 0.7268
+/// cross-lingually, a measured gain of 0.0895 over fusion alone. A 0.04
+/// floor catches a missing pass while leaving margin for small changes. This
+/// is this corpus's comparison, not a claim that reranking always helps.
+const RERANK_IS_WORTH: f64 = 0.040;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
@@ -1104,9 +1081,15 @@ async fn search_reaches_across_languages() {
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
     let project = format!("xquad-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(&workspace, &project, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     write_corpus(&engine, &corpus).await;
 
@@ -1118,6 +1101,7 @@ async fn search_reaches_across_languages() {
             &workspace,
             &format!("{project}-named"),
             profile,
+            VectorIndex::default(),
             Access::ReadWrite,
         )
         .await
@@ -1230,7 +1214,7 @@ async fn search_reaches_across_languages() {
                     judged: relevant.len(),
                 };
                 dump.observe(&asked, &hits, WIDE, |topic| {
-                    (drop != Some(topic)).then(|| f64::from(relevant.contains(topic)))
+                    (!drop.contains(topic)).then(|| f64::from(relevant.contains(topic)))
                 });
             }
         }
@@ -1329,8 +1313,8 @@ async fn search_reaches_across_languages() {
 
     // `AT_LIMIT` asks the shipped path for as many results as a person asks
     // for, and reports what the reranker was made to do rather than how well
-    // it did it. Every other arm here asks for fifty-one so that recall@50 can
-    // be scored, which puts the reranker's whole twenty-deep head inside what
+    // it did it. Every other arm here asks for sixty so that recall@50 can
+    // be scored, which puts the reranker's whole thirty-deep head inside what
     // is read; at five, most of that head is past it, and `can_be_seen` then
     // declines the pass entirely on the queries where none of the candidates
     // it may move is inside the five. How often that is, is the number this
@@ -1538,8 +1522,8 @@ enum Route {
     Shipped(Rerank),
     /// The same entry point, asked for as many results as a person asks for.
     ///
-    /// `DEPTH` is fifty-one so that recall@50 can be scored, and the whole of
-    /// the reranker's twenty-deep head is inside that. `pamin search` defaults
+    /// `DEPTH` is sixty so that recall@50 can be scored, and the whole of
+    /// the reranker's thirty-deep head is inside that. `pamin search` defaults
     /// to five, where most of that head is past what the caller reads --
     /// which is a different amount of work for the same query and was never
     /// measured. The scores from this route are not comparable with anything
@@ -1812,7 +1796,7 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
             let into = if at % 2 == 0 { &mut fit } else { &mut test };
             let pairs = into.entry(group.to_string()).or_default();
             for hit in &hits {
-                if drop == Some(hit.topic.as_str()) {
+                if drop.contains(hit.topic.as_str()) {
                     continue;
                 }
                 let scored = hit.result.why.iter().find_map(|why| match why {
@@ -2516,9 +2500,9 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
     let mut groups = BTreeMap::new();
     for query in queries {
         let hits = match &route {
-            // `DEPTH` is fifty-one and a tier's depth is twenty, so
-            // `fused_for` keeps the fifty-one this scores at and the reranker
-            // reorders the head. recall@50 is therefore the same list either
+            // `DEPTH` is sixty and a tier's depth is thirty, so the
+            // rerank path returns the sixty this scores at and the
+            // reranker reorders the head. recall@50 is therefore the same list either
             // way and only the ordering moves, which is what the tier claims
             // to change.
             Route::Shipped(rerank) => {
@@ -2615,58 +2599,36 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
 /// content, and a corpus whose sentences named each other would measure the
 /// graph channel on relationships the dataset does not assert.
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
-    let project = engine.project;
     let mut written = 0;
 
     for sentence in &corpus.sentences {
-        let existing =
-            pamin_store::repository::find_topic(engine.database.pool(), project, &sentence.key)
-                .await
-                .expect("look for the topic");
-        if existing.is_some() {
-            continue;
+        // The dataset's own two-letter tags, which are not what the product
+        // writes: `pamin write` takes its language from `detect_language`, and
+        // that returns ISO-639-3 -- `eng` where this says `en`. Nothing
+        // compares the two today, and the rule that would have (a fusion
+        // weight that knew the query's language) was measured and dropped.
+        // Left as the dataset has it rather than translated, because changing
+        // it would mean re-indexing thirteen thousand sentences to alter a
+        // column no reader consults. Anything that starts consulting it should
+        // fix this first.
+        if harness::write_absent(
+            engine,
+            &sentence.key,
+            &sentence.text,
+            sentence.language,
+            "cross-lingual evaluation corpus",
+        )
+        .await
+        {
+            written += 1;
         }
-        written += 1;
-        engine
-            .write(&Write {
-                topic: &sentence.key,
-                content: &sentence.text,
-                content_hash: &sentence.text.len().to_string(),
-                verdict: pamin_core::FilterDecision::Promoted,
-                reason: "cross-lingual evaluation corpus",
-                promoted: true,
-                // The dataset's own two-letter tags, which are not what the
-                // product writes: `pamin write` takes its language from
-                // `detect_language`, and that returns ISO-639-3 -- `eng` where
-                // this says `en`. Nothing compares the two today, and the rule
-                // that would have (a fusion weight that knew the query's
-                // language) was measured and dropped. Left as the dataset has
-                // it rather than translated, because changing it would mean
-                // re-indexing thirteen thousand sentences to alter a column no
-                // reader consults. Anything that starts consulting it should
-                // fix this first.
-                language: Some(sentence.language),
-                language_confidence: None,
-                observed_at: time::OffsetDateTime::now_utc(),
-                validity: pamin_core::Validity::ALWAYS,
-            })
-            .await
-            .unwrap_or_else(|error| panic!("writing {}: {error}", sentence.key));
     }
 
     if written > 0 {
         println!("  wrote {written} of {} sentences", corpus.sentences.len());
     }
     let started = std::time::Instant::now();
-    let drained = engine
-        .drain_cascade(pamin_engine::Owed::Everything)
-        .await
-        .expect("drain the cascade");
-    assert_eq!(
-        drained.pending, 0,
-        "the corpus is not fully indexed: {} jobs still owed",
-        drained.pending
-    );
+    let drained = harness::drain(engine).await;
     if written > 0 {
         println!(
             "  ran {} cascade jobs in {:.0}s",

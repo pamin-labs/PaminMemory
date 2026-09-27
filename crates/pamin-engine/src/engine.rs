@@ -4,19 +4,19 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
-    Scored, SourceKind, Topic, TopicId, TopicState, TopicStateId, Validity, Why,
+    Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
-    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
+    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
-use pamin_store::{Connections, Database, PgExecutor, Workspace, graph, jobs, repository};
+use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
 
 /// How deep each channel reaches before fusion.
@@ -246,6 +246,9 @@ pub struct Engine {
     /// one it may embed with. Held because the load is deferred and the
     /// deferred load has to ask for the same profile the index recorded.
     pub(crate) profile: Profile,
+    /// Which vector index this engine's index was built with, which is also
+    /// the one it was asked for: opening under another is refused.
+    pub(crate) vector_index: VectorIndex,
     /// Where a reranker comes from, if a search asks for one.
     ///
     /// The registry rather than a loaded model: most searches do not rerank,
@@ -383,6 +386,44 @@ impl Models {
         Ok(reranker)
     }
 
+    /// Loads the embedder for `profile` and the reranker for `tier`, at once,
+    /// before anything has asked for either.
+    ///
+    /// For a resident server that has just been asked something about a
+    /// project it holds nothing for: most of the first search after an idle
+    /// release is these two loads (see the `COLD` arm of
+    /// `tests/retrieval.rs`), and started when the project is first touched
+    /// they run while that request is answered and while the agent reads the
+    /// answer, instead of in front of the search that needs them. What is
+    /// loaded is handed out and released like anything else here -- it is
+    /// stamped as used now, and given back after [`model_idle`] if nothing
+    /// asks for it -- so warming a model nobody then uses costs it for one
+    /// idle window and no longer.
+    ///
+    /// The reranker only if its weights are on disk already. A tier this
+    /// workspace has never searched at may be one it never will -- `off` is
+    /// what `docs/cli.md` tells a one-language workspace to choose -- and a
+    /// warm-up that fetched half a gigabyte for it would be the opposite of
+    /// the point. The embedder is loaded either way: every write and every
+    /// search needs it.
+    ///
+    /// Blocking, and both loads hold their registry's lock, so a search that
+    /// arrives meanwhile waits for the load in flight instead of starting a
+    /// second. Two threads because the two loads are independent: the `COLD`
+    /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
+    pub fn warm(&self, profile: Profile, tier: Rerank) -> Result<(), pamin_index::IndexError> {
+        std::thread::scope(|scope| {
+            let reranker = Reranker::is_downloaded(tier, &self.dir)
+                .then(|| scope.spawn(|| self.reranker(tier)));
+            let embedder = self.get(profile);
+            let reranker =
+                reranker.map(|loading| loading.join().expect("a reranker load panicked"));
+            embedder?;
+            reranker.transpose()?;
+            Ok(())
+        })
+    }
+
     /// What a loaded reranker has been asked to do, or `None` if this process
     /// never loaded that tier.
     ///
@@ -430,11 +471,14 @@ impl Models {
     /// actually decides this is therefore the engine registry closing its idle
     /// entries first; this is the second half of that, and on its own it
     /// releases nothing.
+    /// A model still loading is not idle; skip this tick rather than block
+    /// the server's upkeep on its registry lock.
     pub fn release_idle_embedders(&self) -> Vec<Profile> {
-        let mut loaded = self
-            .loaded
-            .lock()
-            .expect("the model registry lock is poisoned");
+        let mut loaded = match self.loaded.try_lock() {
+            Ok(loaded) => loaded,
+            Err(TryLockError::WouldBlock) => return Vec::new(),
+            Err(TryLockError::Poisoned(_)) => panic!("the model registry lock is poisoned"),
+        };
 
         let now = Instant::now();
         let idle: Vec<Profile> = loaded
@@ -462,11 +506,13 @@ impl Models {
     /// that case. Dropping the registry's handle while a search holds its own
     /// would not free anything, it would only make the next search load a
     /// second copy alongside the first, which is the opposite of the point.
+    /// A model still loading is not idle; the next upkeep tick can retry.
     pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
-        let mut rerankers = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned");
+        let mut rerankers = match self.rerankers.try_lock() {
+            Ok(rerankers) => rerankers,
+            Err(TryLockError::WouldBlock) => return Vec::new(),
+            Err(TryLockError::Poisoned(_)) => panic!("the reranker registry lock is poisoned"),
+        };
 
         let now = Instant::now();
         let idle: Vec<Rerank> = rerankers
@@ -500,10 +546,7 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
 /// window releases a model the tick after it loads and turns every search into
 /// a model load.
 pub fn model_idle() -> Duration {
-    std::env::var(MODEL_IDLE_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
+    pamin_core::env::positive(MODEL_IDLE_VAR)
         .map(Duration::from_secs)
         .unwrap_or(MODEL_IDLE)
 }
@@ -533,12 +576,20 @@ impl Engine {
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
         let database = Database::open(workspace, Connections::PerCommand).await?;
         let models = Models::in_workspace(workspace);
         Self::assemble(
-            database, &models, workspace, project, profile, access, false,
+            database,
+            &models,
+            workspace,
+            project,
+            profile,
+            vector_index,
+            access,
+            false,
         )
         .await
     }
@@ -554,9 +605,20 @@ impl Engine {
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
-        Self::assemble(database, models, workspace, project, profile, access, false).await
+        Self::assemble(
+            database,
+            models,
+            workspace,
+            project,
+            profile,
+            vector_index,
+            access,
+            false,
+        )
+        .await
     }
 
     /// Rebuilding, against a database that is already up.
@@ -570,6 +632,7 @@ impl Engine {
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
     ) -> Result<Self> {
         Self::assemble(
             database,
@@ -577,18 +640,21 @@ impl Engine {
             workspace,
             project,
             profile,
+            vector_index,
             Access::ReadWrite,
             true,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn assemble(
         database: Database,
         models: &Models,
         workspace: &Workspace,
         project: &str,
         profile: Profile,
+        vector_index: VectorIndex,
         access: Access,
         discard: bool,
     ) -> Result<Self> {
@@ -635,7 +701,8 @@ impl Engine {
                 None
             };
 
-            let index = ProjectionIndex::open(&dir, &legacy, profile, access, documents)?;
+            let index =
+                ProjectionIndex::open(&dir, &legacy, profile, vector_index, access, documents)?;
             // The model is not loaded here. It was, and that made opening an
             // engine cost the weights -- see the `embedder` field. What is lost
             // is that a cold profile's download used to surface at open rather
@@ -666,6 +733,7 @@ impl Engine {
             }))),
             embedder: std::sync::OnceLock::new(),
             profile,
+            vector_index,
             models: models.clone(),
             project: project.id,
         })
@@ -706,6 +774,11 @@ impl Engine {
         self.index.lock().expect("the index lock is poisoned")
     }
 
+    /// Which vector index this project's index was built with.
+    pub fn vector_index(&self) -> VectorIndex {
+        self.vector_index
+    }
+
     /// What text this project's vectors are embedded from. Public because a
     /// measurement comparing two encodings has to be able to assert which one
     /// each side holds.
@@ -742,7 +815,7 @@ impl Engine {
     /// `set_max_doc_count_per_segment` on an open one returns `Ok` and changes
     /// nothing, which ADR 0001 records. [`reshape`](Self::reshape) does that
     /// by copying the index while it is served, and a server runs it on its
-    /// own; without a server, `pamin reindex` is what fixes it.
+    /// own; `pamin reindex` fixes it at once.
     pub fn segmentation(&self) -> Result<pamin_index::Segmentation> {
         Ok(self.index().segmentation()?)
     }
@@ -1016,103 +1089,96 @@ impl Engine {
         )
         .await?;
 
-        // Evidence first, always, and before the filter's verdict is acted on.
-        // That ordering is what makes a rejection recoverable instead of a loss.
-        let evidence = repository::append_source_version(
-            &mut transaction,
-            self.project,
-            source,
-            request.content,
-            request.content_hash,
-            request.verdict,
-            request.reason,
-        )
-        .await?;
-
-        let span = repository::append_source_span(
-            &mut *transaction,
-            self.project,
-            evidence.id,
-            0,
-            request.content.len() as u32,
-            request.language,
-            request.language_confidence,
-        )
-        .await?;
-
-        let state = if request.promoted {
-            let existed =
-                repository::find_topic(&mut *transaction, self.project, request.topic).await?;
-            let topic = match existed.clone() {
-                Some(topic) => topic,
-                None => {
-                    let topic =
-                        repository::ensure_topic(&mut transaction, self.project, request.topic)
-                            .await?;
-                    // In the same transaction as the topic. A topic that exists
-                    // and is missing from the name index is a topic no memory
-                    // will ever derive an edge to, and nothing would report it.
-                    self.record_name(&mut *transaction, &topic).await?;
-                    topic
-                }
-            };
-
-            let state = repository::append_topic_state(
-                &mut transaction,
-                self.project,
-                topic.id,
-                &evidence,
-                &span,
-                request.observed_at,
-                request.validity,
-            )
-            .await?;
-
-            // Committed with the state rather than after it. A crash between
-            // the two would otherwise leave a memory the ledger knows about and
-            // the projection never hears of -- which is the failure an outbox
-            // exists to make impossible, and the one a `tokio::spawn` here
-            // would leave wide open.
-            //
-            // All of them in one statement, because this is inside the write
-            // transaction: three rows is the right number of rows and was
-            // three round trips with the transaction held open across them.
-            //
-            // The third is for a topic that did not exist a moment ago, which
-            // may already be named by memories written before it. Finding them
-            // is a scan, so it is scheduled rather than paid for by whoever
-            // created the topic -- and it is skipped entirely for a rewrite,
-            // which is why the three cannot simply be one kind.
-            let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
-            if existed.is_none() {
-                owed.push(JobKind::BackfillMentions);
-            }
-            jobs::enqueue_all(&mut *transaction, self.project, &owed, Some(topic.id.0)).await?;
-
-            Some(state)
-        } else {
-            None
+        // Evidence always, whatever the verdict. That is what makes a rejection
+        // recoverable instead of a loss.
+        let evidence = repository::Evidence {
+            content: request.content,
+            content_hash: request.content_hash,
+            decision: request.verdict,
+            reason: request.reason,
+            language: request.language,
+            language_confidence: request.language_confidence,
         };
+
+        let (version, state) =
+            if request.promoted {
+                let (topic, found) =
+                    match repository::lock_topic(&mut transaction, self.project, request.topic)
+                        .await?
+                    {
+                        Some(topic) => (topic, true),
+                        None => (
+                            self.create_topic(&mut transaction, request.topic).await?,
+                            false,
+                        ),
+                    };
+
+                // Committed with the state rather than after it. A crash between
+                // the two would otherwise leave a memory the ledger knows about and
+                // the projection never hears of -- which is the failure an outbox
+                // exists to make impossible, and the one a `tokio::spawn` here
+                // would leave wide open.
+                //
+                // The third is for a topic that did not exist a moment ago, which
+                // may already be named by memories written before it. Finding them
+                // is a scan, so it is scheduled rather than paid for by whoever
+                // created the topic -- and it is skipped entirely for a rewrite,
+                // which is why the three cannot simply be one kind.
+                let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
+                if !found {
+                    owed.push(JobKind::BackfillMentions);
+                }
+
+                // The evidence, its span, the state, the pointer and the jobs in
+                // one statement, now that both locks are held.
+                let (version, _, state) = repository::append_promoted(
+                    &mut transaction,
+                    self.project,
+                    source,
+                    &evidence,
+                    &repository::Promotion {
+                        topic: &topic,
+                        observed_at: request.observed_at,
+                        validity: request.validity,
+                        owed: &owed,
+                    },
+                )
+                .await?;
+                (version, Some(state))
+            } else {
+                let (version, _) =
+                    repository::append_evidence(&mut transaction, self.project, source, &evidence)
+                        .await?;
+                (version, None)
+            };
 
         transaction.commit().await?;
 
         Ok(Recorded {
-            source_version: evidence.version,
+            source_version: version.version,
             state,
         })
     }
 
-    /// Files a topic's name in the index that answers "who is named here".
+    /// Creates a topic and files its name in the index that answers "who is
+    /// named here", returning it locked.
     ///
     /// Tokenized here rather than in the store because the segmenter is what
     /// decides where a name begins and ends, and both sides of the eventual
-    /// comparison have to have gone through it.
-    async fn record_name(&self, executor: impl PgExecutor<'_>, topic: &Topic) -> Result<()> {
-        let tokens = off_the_runtime(|| self.segmenter.name_sequence(&topic.name));
-        repository::record_topic_name(
-            executor,
+    /// comparison have to have gone through it. In the same statement as the
+    /// topic, because a topic that exists and is missing from the name index
+    /// is a topic no memory will ever derive an edge to, and nothing would
+    /// report it.
+    async fn create_topic(
+        &self,
+        connection: &mut PgConnection,
+        name: &str,
+    ) -> Result<repository::LockedTopic> {
+        let tokens = off_the_runtime(|| self.segmenter.name_sequence(name));
+        let topic = repository::create_topic_named(
+            connection,
             self.project,
-            topic.id,
+            name,
             &tokens.join(" "),
             tokens.len(),
         )
@@ -1121,7 +1187,7 @@ impl Engine {
         // it had asked. Raising it here is what keeps the search path's
         // remembered value from going stale against writes made through it.
         self.remember_widest_name(tokens.len());
-        Ok(())
+        Ok(topic)
     }
 
     /// Restates the edges a topic's current content implies.
@@ -1140,7 +1206,31 @@ impl Engine {
     /// unchanged and written nowhere, and only then is the rest closed, so
     /// re-deriving an unaltered memory still touches no row.
     pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
-        // Every run of tokens this memory contains that is short enough to be
+        let mut connection = self.database.pool().acquire().await?;
+        self.restate_mentions(&mut connection, std::slice::from_ref(state))
+            .await
+    }
+
+    /// [`derive_mentions`](Self::derive_mentions) for many states, asking each
+    /// of its questions once for all of them.
+    ///
+    /// A cascade round restates up to sixty-four memories, and one at a time
+    /// that was five statements each -- the widest name, the names in the
+    /// memory, the edges already there, and the retraction -- where each
+    /// question is the same for every memory in the round apart from its
+    /// arguments. So the runs of every memory go into one lookup, the edges
+    /// into one assertion and the retractions into one statement, and the run
+    /// each name matched is what says which memory it belongs to.
+    pub(crate) async fn restate_mentions(
+        &self,
+        connection: &mut PgConnection,
+        states: &[TopicState],
+    ) -> Result<usize> {
+        if states.is_empty() {
+            return Ok(0);
+        }
+
+        // Every run of tokens each memory contains that is short enough to be
         // somebody's name. A name matches only as a contiguous run, so this is
         // the complete set of things it could be naming -- and asking the index
         // for these is the same question the old loop asked of every topic in
@@ -1150,43 +1240,58 @@ impl Engine {
         // value can only be too low, and too low here does not mean a missed
         // edge -- what is not found below is closed as no longer named. See
         // [`Engine::widest_name`].
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
-        let runs = off_the_runtime(|| {
-            runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest)
+        let widest = repository::widest_topic_name(&mut *connection, self.project).await?;
+        let runs: Vec<Vec<String>> = off_the_runtime(|| {
+            states
+                .iter()
+                .map(|state| runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest))
+                .collect()
         });
+        let mut asked: Vec<String> = runs.iter().flatten().cloned().collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let mut naming: std::collections::HashMap<String, Vec<TopicId>> =
+            std::collections::HashMap::new();
+        for (run, topic) in
+            repository::names_matching(&mut *connection, self.project, &asked).await?
+        {
+            naming.entry(run).or_default().push(topic);
+        }
 
-        let mut named = repository::topics_named_by(self.database.pool(), self.project, &runs)
-            .await?
-            .into_iter()
-            // A topic naming itself is not a relationship, and the schema
-            // rejects the edge anyway.
-            .filter(|topic| *topic != state.topic_id)
-            .collect::<Vec<TopicId>>();
-        named.sort_unstable();
-        named.dedup();
-
-        let edges: Vec<_> = named
-            .iter()
-            .map(|target| {
+        let mut edges = Vec::new();
+        let mut named_now = Vec::with_capacity(states.len());
+        for (state, runs) in states.iter().zip(&runs) {
+            let mut named: Vec<TopicId> = runs
+                .iter()
+                .filter_map(|run| naming.get(run))
+                .flatten()
+                .copied()
+                // A topic naming itself is not a relationship, and the schema
+                // rejects the edge anyway.
+                .filter(|topic| *topic != state.topic_id)
+                .collect();
+            named.sort_unstable();
+            named.dedup();
+            edges.extend(named.iter().map(|target| {
                 (
                     state.topic_id,
                     *target,
                     EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE),
                 )
-            })
-            .collect();
+            }));
+            named_now.push((state.topic_id, named));
+        }
 
         // One transaction: the edges a memory derives are one statement about
         // what it says, and asserting them separately both cost a commit each
         // and let a crash tell half of it.
         let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
 
-        graph::retract_derived(
-            self.database.pool(),
+        graph::retract_derived_all(
+            &mut *connection,
             self.project,
-            state.topic_id,
             EdgeKind::Mentions,
-            &named,
+            &named_now,
         )
         .await?;
 
@@ -1246,46 +1351,79 @@ impl Engine {
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
-        let candidates = off_the_runtime(|| self.index().recall_naming(name, BACKFILL_CANDIDATES))?;
+        let mut connection = self.database.pool().acquire().await?;
+        self.backfill_all(&mut connection, &[(topic, name.to_string())])
+            .await
+    }
 
-        let states =
-            repository::current_states_of(self.database.pool(), self.project, &candidates).await?;
+    /// [`backfill_mentions`](Self::backfill_mentions) for many new topics,
+    /// with one lookup of the states every probe returned and one assertion.
+    ///
+    /// The states are read through the pointer on `topics`, so every one of
+    /// them is the state its topic stands for now -- which the per-topic form
+    /// then asked the ledger a second time, in a second statement, and got
+    /// the same answer bar a write landing in between. That write queues its
+    /// own restatement, which is what decides the edges of the content it
+    /// wrote.
+    pub(crate) async fn backfill_all(
+        &self,
+        connection: &mut PgConnection,
+        topics: &[(TopicId, String)],
+    ) -> Result<usize> {
+        if topics.is_empty() {
+            return Ok(0);
+        }
 
-        // The probe returns states; the edge is about topics, and only the
-        // state a topic stands for now can support one.
-        let topics: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
-        let current: std::collections::HashSet<pamin_core::TopicStateId> =
-            repository::topics_by_id(self.database.pool(), self.project, &topics)
-                .await?
-                .into_iter()
-                .filter_map(|(_, _, current)| current)
-                .collect();
-
-        // Off the runtime because this segments every candidate the probe
-        // returned -- up to `BACKFILL_CANDIDATES` documents -- and that is tens
-        // of milliseconds of ICU work that would otherwise run on a runtime
-        // thread and stall every task sharing it.
-        let naming: Vec<(TopicId, pamin_core::TopicStateId)> = off_the_runtime(|| {
-            let segmenter = &self.segmenter;
-            // The fixed side here is the name, so that is the side prepared.
-            let name = segmenter.name_sequence(name);
-            states
+        let candidates: Vec<Vec<TopicId>> = off_the_runtime(|| {
+            topics
                 .iter()
-                .filter(|state| state.topic_id != topic)
-                .filter(|state| current.contains(&state.id))
-                .filter(|state| {
-                    pamin_index::segmentation::names(
-                        &segmenter.name_sequence(&state.content),
-                        &name,
-                    )
-                })
-                .map(|state| (state.topic_id, state.id))
-                .collect()
+                .map(|(_, name)| self.index().recall_naming(name, BACKFILL_CANDIDATES))
+                .collect::<std::result::Result<Vec<_>, _>>()
+        })?;
+        let mut wanted: Vec<TopicId> = candidates.iter().flatten().copied().collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+
+        // Only current states are considered: the probe returns topics, and
+        // only the state a topic stands for now can support an edge.
+        let states = repository::current_states_of(&mut *connection, self.project, &wanted).await?;
+        let found: std::collections::HashMap<TopicId, &TopicState> =
+            states.iter().map(|state| (state.topic_id, state)).collect();
+
+        // Off the runtime because this segments every candidate the probes
+        // returned -- up to `BACKFILL_CANDIDATES` documents a topic -- and that
+        // is tens of milliseconds of ICU work that would otherwise run on a
+        // runtime thread and stall every task sharing it. Each candidate once,
+        // however many of the names it is a candidate for.
+        let naming: Vec<(TopicId, pamin_core::TopicStateId, TopicId)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
+            let sequences: std::collections::HashMap<TopicId, Vec<String>> = states
+                .iter()
+                .map(|state| (state.topic_id, segmenter.name_sequence(&state.content)))
+                .collect();
+            let mut naming = Vec::new();
+            for ((topic, name), candidates) in topics.iter().zip(&candidates) {
+                // The fixed side here is the name, so that is the side prepared.
+                let name = segmenter.name_sequence(name);
+                let mut seen = std::collections::HashSet::new();
+                for candidate in candidates {
+                    let Some(state) = found.get(candidate) else {
+                        continue;
+                    };
+                    if state.topic_id == *topic || !seen.insert(state.topic_id) {
+                        continue;
+                    }
+                    if pamin_index::segmentation::names(&sequences[&state.topic_id], &name) {
+                        naming.push((state.topic_id, state.id, *topic));
+                    }
+                }
+            }
+            naming
         });
 
         let edges: Vec<_> = naming
             .into_iter()
-            .map(|(from, caused_by)| {
+            .map(|(from, caused_by, topic)| {
                 (
                     from,
                     topic,
@@ -1303,23 +1441,17 @@ impl Engine {
     }
 
     /// Search, then reorder the head of the result with a cross-encoder.
-    ///
-    /// Only the candidates no lexical channel found, and only into the
-    /// positions those candidates already hold.
+    /// `accurate` sees the whole head; `fast` keeps the non-lexical rule.
     ///
     /// Fused deeper than it returns, because a reranker that only sees what the
-    /// caller asked for has nothing to work with. See [`fused_for`]: the tier's
-    /// depth was measured over a list of fifty and the default `--limit` is
-    /// five, so cutting first left it reordering five candidates and usually
-    /// declining to reorder at all.
+    /// caller asked for has nothing to work with: the tier's depth was measured
+    /// over a list of fifty and the default `--limit` is five, so cutting first
+    /// left it reordering five candidates and usually declining to reorder at
+    /// all.
     ///
-    /// Every cross-encoder measured improves cross-lingual ranking and damages
-    /// same-language ranking by about as much: fusion is already good at
-    /// placing a memory that shares words with the query, and a second pass
-    /// reorders it worse. So the pass is confined to the candidates the
-    /// lexical channels did not find -- the ones fusion ordered on the vector
-    /// channel alone. Everything else keeps the rank it had, which makes the
-    /// damage arithmetically impossible rather than merely unlikely.
+    /// The `accurate` tier scores the whole head and blends the model's score
+    /// with fusion's, so graph and channel agreement still contribute. The
+    /// `fast` tier stays confined to candidates no lexical channel found.
     ///
     /// This was a language comparison first, since "written in another
     /// language" is what the case really is. The two pick the same candidates
@@ -1388,25 +1520,31 @@ impl Engine {
             drop(tokio::task::spawn_blocking(move || models.reranker(rerank)));
         }
 
-        let hits = self
-            .search_fused(query, fused_for(limit, rerank), depths, fusion)
-            .await?;
-        if rerank == Rerank::Off || hits.is_empty() {
-            return Ok(hits);
+        // The whole fused list rather than the caller's limit or the tier's
+        // head: the reranker is also shown the strongest candidates only the
+        // graph found, wherever fusion put them (see [`GRAPH_SHOWN_FROM`]).
+        // Every one of them is already resolved against the ledger. What is
+        // not made for all of them is the hit -- the state, the topic's name
+        // and the seed's content, copied -- which is made only for what the
+        // caller is given; the reranker reads the few it is shown in place.
+        let mut fused = self.fused(query, depths, fusion).await?;
+        if rerank == Rerank::Off || fused.results.is_empty() {
+            return Ok(fused.hits(limit));
         }
 
-        let traces: Vec<&[Why]> = hits.iter().map(|hit| hit.result.why.as_slice()).collect();
+        let traces: Vec<&[Why]> = fused
+            .results
+            .iter()
+            .map(|result| result.why.as_slice())
+            .collect();
         let unlexical = rerankable(&traces, rerank);
         if !can_be_seen(&unlexical, limit) {
-            return Ok(only(hits, limit));
+            return Ok(fused.hits(limit));
         }
 
         let shown: Vec<String> = unlexical
             .iter()
-            .map(|position| {
-                let hit = &hits[*position];
-                shown(&hit.topic, &hit.state.content, hit.seed.as_deref())
-            })
+            .map(|position| fused.shown(&fused.results[*position]))
             .collect();
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
@@ -1431,20 +1569,33 @@ impl Engine {
         // channel entries that answer the same question. A candidate the
         // reranker never saw carries no entry, which is how a reader -- and
         // the threshold sweep this unblocks -- tells the two cases apart.
-        let mut hits = hits;
         for ranked in &ordered {
-            hits[unlexical[ranked.position]]
-                .result
+            fused.results[unlexical[ranked.position]]
                 .why
                 .push(Why::Reranked {
                     score: ranked.score,
                 });
         }
-        let best_first: Vec<usize> = ordered.iter().map(|ranked| ranked.position).collect();
-        Ok(only(
-            place(hits, &unlexical, rerank.depth(), &best_first),
-            limit,
-        ))
+        let best_first: Vec<usize> = if rerank == Rerank::Accurate {
+            let fused_scores: Vec<f64> = unlexical
+                .iter()
+                .map(|at| f64::from(fused.results[*at].score))
+                .collect();
+            let mut model_scores = vec![0.0; ordered.len()];
+            for ranked in &ordered {
+                model_scores[ranked.position] = f64::from(ranked.score);
+            }
+            score_blend_order(&fused_scores, &model_scores, RERANK_FUSION)
+        } else {
+            ordered.iter().map(|ranked| ranked.position).collect()
+        };
+        fused.results = place(
+            std::mem::take(&mut fused.results),
+            &unlexical,
+            rerank.depth(),
+            &best_first,
+        );
+        Ok(fused.hits(limit))
     }
 
     /// The same search, with the fusion settings supplied.
@@ -1466,6 +1617,12 @@ impl Engine {
         depths: Depths,
         fusion: Fusion,
     ) -> Result<Vec<SearchHit>> {
+        Ok(self.fused(query, depths, fusion).await?.hits(limit))
+    }
+
+    /// Every fused result, ranked and explained, with what it takes to make
+    /// any of them a [`SearchHit`].
+    async fn fused(&self, query: &str, depths: Depths, fusion: Fusion) -> Result<Fused> {
         let lists = off_the_runtime(|| {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
@@ -1499,24 +1656,46 @@ impl Engine {
         // one channel's whole list before another's first result. Fusion
         // cannot do the ordering: the graph is one of the lists it fuses.
         let candidates = best_first(&lists);
+        // Every statement below on one connection, taken once the index has
+        // answered rather than held through the embedding: each statement run
+        // on the pool returns its connection afterwards, and sqlx checks a
+        // returned connection with a round trip of its own.
+        let mut connection = self.database.pool().acquire().await?;
         let mut working = WorkingSet::default();
         working.add(
-            repository::current_states_of(self.database.pool(), self.project, &candidates).await?,
+            repository::current_states_named(&mut *connection, self.project, &candidates).await?,
         );
 
         // The graph is the one channel the index cannot see, which is the
         // entire reason fusion happens here rather than inside the engine.
         let (graph_list, paths) = self
-            .recall_graph(query, &candidates, &lists, &mut working, depths)
+            .recall_graph(
+                &mut connection,
+                query,
+                &candidates,
+                &lists,
+                &mut working,
+                depths,
+            )
             .await?;
+
+        // A path explains itself by the topics at both ends of its last edge,
+        // and at two hops the near end is the topic in the middle -- which the
+        // search need not have resolved: it can have been cut from the graph's
+        // list, or stand for nothing now. Named here, and only when a path
+        // needs it, so a one-hop walk still pays nothing.
+        let unnamed: Vec<TopicId> = paths
+            .values()
+            .map(|reached| reached.via)
+            .filter(|via| !working.names.contains_key(via))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !unnamed.is_empty() {
+            working.name(repository::topics_by_id(&mut *connection, self.project, &unnamed).await?);
+        }
         let mut lists = lists;
         lists.push(graph_list);
-
-        // Names, and which state each topic stands for now. Asked once, for the
-        // topics that actually produced a result, rather than for the project.
-        working.describe(
-            repository::topics_by_id(self.database.pool(), self.project, &working.topics()).await?,
-        );
         let live = working;
 
         let mut fused = fusion.fuse(&lists);
@@ -1547,23 +1726,11 @@ impl Engine {
         // No re-sort. `fuse` ordered these and nothing above changes a score --
         // the path entry is an explanation of a position, not a reason to move
         // one. Anything added here that does touch `score` has to sort again.
-        Ok(fused
-            .into_iter()
-            .take(limit as usize)
-            .map(|result| {
-                let state = live.state(result.topic).expect("retained above");
-                let seed = paths
-                    .get(&result.topic)
-                    .and_then(|reached| live.state(reached.origin))
-                    .map(|origin| origin.content.clone());
-                SearchHit {
-                    topic: live.topic_name(result.topic),
-                    state: state.clone(),
-                    result,
-                    seed,
-                }
-            })
-            .collect())
+        Ok(Fused {
+            results: fused,
+            live,
+            paths,
+        })
     }
 
     /// Expands the graph around what the other channels found.
@@ -1579,6 +1746,7 @@ impl Engine {
     /// state, so the trace can say why the graph could see it.
     async fn recall_graph(
         &self,
+        connection: &mut PgConnection,
         query: &str,
         ranked: &[TopicId],
         lists: &[ChannelResults],
@@ -1593,7 +1761,7 @@ impl Engine {
         // same index the same way.
         let widest = self.widest_name().await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
-        let named = repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
+        let named = repository::topics_named_by(&mut *connection, self.project, &runs).await?;
         let relevance = seed_relevance(&named, lists);
 
         // A named topic no channel returned is not in the working set, and the
@@ -1609,7 +1777,7 @@ impl Engine {
             .collect();
         if !unresolved.is_empty() {
             working.add(
-                repository::current_states_of(self.database.pool(), self.project, &unresolved)
+                repository::current_states_named(&mut *connection, self.project, &unresolved)
                     .await?,
             );
         }
@@ -1633,16 +1801,6 @@ impl Engine {
                 .collect()
         };
 
-        let mut neighbors = graph::expand(
-            self.database.pool(),
-            self.project,
-            &seeds,
-            // Bounded by what this channel keeps, so a hub-shaped project
-            // does not make the walk the whole cost of a search.
-            &Expansion::to_depth(depths.graph).keeping(depths.channel as usize),
-        )
-        .await?;
-
         // Ordered by what each arrival is worth to *this query* before the cut,
         // not by the order the walk returned them in. The walk's order is
         // fewest hops, then most confident edge, then topic identifier -- and
@@ -1650,20 +1808,49 @@ impl Engine {
         // at one hop, that is identifier order. Cutting it to the channel's
         // depth kept an arbitrary fifty and could drop every neighbour of the
         // seed that matched the query best.
-        let strength = |neighbor: &Neighbor| {
-            path_strength(neighbor) * relevance.get(&neighbor.origin).copied().unwrap_or(0.0)
+        let worth = |confidence: f32, hops: u8, origin: TopicId| {
+            path_strength(confidence, hops) * relevance.get(&origin).copied().unwrap_or(0.0)
         };
-        neighbors.sort_by(|left, right| {
-            strength(right)
-                .total_cmp(&strength(left))
-                .then_with(|| left.topic.0.cmp(&right.topic.0))
-        });
+        let strength =
+            |neighbor: &Neighbor| worth(neighbor.confidence, neighbor.hops, neighbor.origin);
 
         // Cut to the channel's depth before anything is resolved. Cutting after
         // meant every neighbour the walk found was looked up and given a path,
         // and the paths were not cut with the results -- so the list was bounded
         // and the work behind it was not.
-        neighbors.truncate(depths.channel as usize);
+        //
+        // Bounded by what this channel keeps, twice over: the walk stops once
+        // it has that many, so a hub-shaped project does not make it the whole
+        // cost of a search, and it reads only that many of each topic's edges
+        // each way, strongest first, so a hub's degree does not either. The
+        // second bound is checked rather than trusted -- the walk says what it
+        // left unread, `strongest` says whether any of that could have ranked
+        // here, and when it could the walk is made again reading everything.
+        let keep = depths.channel as usize;
+        let expansion = Expansion::to_depth(depths.graph).keeping(keep);
+        let neighbors = match graph::expand_reading(
+            &mut *connection,
+            self.project,
+            &seeds,
+            &expansion,
+            keep,
+        )
+        .await?
+        .strongest(keep, worth)
+        {
+            Some(neighbors) => neighbors,
+            None => {
+                tracing::debug!(
+                    seeds = seeds.len(),
+                    "an edge the bounded walk left unread could have ranked; walking again in full"
+                );
+                graph::strongest(
+                    graph::expand(&mut *connection, self.project, &seeds, &expansion).await?,
+                    keep,
+                    worth,
+                )
+            }
+        };
 
         // Resolved here rather than at the end, because a topic that stands
         // for nothing is not a result and should not take a place in this
@@ -1671,9 +1858,9 @@ impl Engine {
         // `topics`.
         let reached: Vec<TopicId> = neighbors.iter().map(|neighbor| neighbor.topic).collect();
         let states =
-            repository::current_states_of(self.database.pool(), self.project, &reached).await?;
+            repository::current_states_named(&mut *connection, self.project, &reached).await?;
         let resolves: std::collections::HashSet<TopicId> =
-            states.iter().map(|state| state.topic_id).collect();
+            states.iter().map(|(_, state)| state.topic_id).collect();
         working.add(states);
 
         let mut candidates = Vec::new();
@@ -1734,20 +1921,16 @@ impl Engine {
         };
 
         let reused = off_the_runtime(|| {
-            fn pairs(batch: &[TopicState]) -> Vec<(TopicId, &str)> {
-                batch
-                    .iter()
-                    .map(|state| (state.topic_id, state.content.as_str()))
-                    .collect()
-            }
+            let wanted: std::collections::HashMap<TopicId, &str> = states
+                .iter()
+                .map(|state| (state.topic_id, state.content.as_str()))
+                .collect();
             // Counted before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
-            let mut lent = 0;
-            if let Some(previous) = &previous {
-                for batch in states.chunks(REINDEX_BATCH) {
-                    lent += previous.lends(&pairs(batch))?;
-                }
-            }
+            let lendable = match &previous {
+                Some(previous) => previous.lends(&wanted)?,
+                None => 0,
+            };
 
             // Both locks, in the order every other caller takes them, and held
             // for the whole rebuild. Taking the index first here would invert
@@ -1756,55 +1939,45 @@ impl Engine {
             // and wanting the index. Holding both throughout also matches what
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
-            let mut embedder = if lent < states.len() {
+            let mut embedder = if lendable < states.len() {
                 Some(self.embedding()?)
             } else {
                 None
             };
             let index = self.index();
 
-            for (batch, batch_passages) in states
-                .chunks(REINDEX_BATCH)
-                .zip(passages.chunks(REINDEX_BATCH))
-            {
-                let mut vectors = match &previous {
-                    Some(previous) => previous.vectors(&pairs(batch))?,
-                    None => vec![None; batch.len()],
-                };
+            // What the old index holds first, in one pass over it, then
+            // whatever it could not supply.
+            let lent = match &previous {
+                Some(previous) => previous.lend(&wanted, REINDEX_BATCH, |documents| {
+                    index.upsert_batch(documents)
+                })?,
+                None => std::collections::HashSet::new(),
+            };
+            let missing: Vec<(&TopicState, &str)> = states
+                .iter()
+                .zip(&passages)
+                .filter(|(state, _)| !lent.contains(&state.topic_id))
+                .map(|(state, passage)| (state, passage.as_str()))
+                .collect();
 
-                // One forward pass over what the old index could not supply,
-                // rather than one per state. Measured on the smallest profile,
-                // thirty-two texts together take 190 ms against 409 ms one at
-                // a time -- the model is the same work either way, and what
-                // the batch saves is everything around it.
-                let missing: Vec<usize> = (0..batch.len())
-                    .filter(|at| vectors[*at].is_none())
-                    .collect();
-                if !missing.is_empty() {
-                    let texts: Vec<&str> = missing
-                        .iter()
-                        .map(|at| batch_passages[*at].as_str())
-                        .collect();
-                    let embedder = embedder
-                        .as_mut()
-                        .expect("the model is loaded whenever a vector is missing");
-                    for (at, embedding) in missing.iter().zip(embedder.embed_passages(&texts)?) {
-                        vectors[*at] = Some(embedding);
-                    }
-                }
-
+            // One forward pass per batch rather than one per state. Measured
+            // on the smallest profile, thirty-two texts together take 190 ms
+            // against 409 ms one at a time -- the model is the same work
+            // either way, and what the batch saves is everything around it.
+            for batch in missing.chunks(REINDEX_BATCH) {
+                let texts: Vec<&str> = batch.iter().map(|(_, passage)| *passage).collect();
+                let embeddings = embedder
+                    .as_mut()
+                    .expect("the model is loaded whenever a vector is missing")
+                    .embed_passages(&texts)?;
                 let documents: Vec<_> = batch
                     .iter()
-                    .zip(&vectors)
-                    .map(|(state, embedding)| {
-                        (
-                            state.topic_id,
-                            state.content.as_str(),
-                            embedding.as_deref().expect("every vector is filled above"),
-                        )
+                    .zip(&embeddings)
+                    .map(|((state, _), embedding)| {
+                        (state.topic_id, state.content.as_str(), embedding.as_slice())
                     })
                     .collect();
-
                 index.upsert_batch(&documents)?;
             }
             index.flush()?;
@@ -1816,7 +1989,7 @@ impl Engine {
             if let Some(previous) = previous {
                 previous.discard()?;
             }
-            Ok::<_, pamin_index::IndexError>(lent)
+            Ok::<_, pamin_index::IndexError>(lent.len())
         })?;
 
         Ok(Rebuilt {
@@ -1926,8 +2099,8 @@ pub struct Rebuilt {
 ///
 /// It is filled in two steps because the search path finds its results in two
 /// steps: the index and then the graph, each naming topics. Both go in here,
-/// and the names are attached once at the end -- when the set of topics that
-/// produced a result is finally known.
+/// each state with its topic's name, which the lookup that resolves the state
+/// returns beside it.
 #[derive(Default)]
 struct WorkingSet {
     /// What each topic stands for now. Only current states are ranked, so
@@ -1938,24 +2111,20 @@ struct WorkingSet {
 }
 
 impl WorkingSet {
-    fn add(&mut self, states: Vec<TopicState>) {
-        for state in states {
+    /// Records states and what the ledger calls their topics, which arrive
+    /// together.
+    fn add(&mut self, states: Vec<(String, TopicState)>) {
+        for (name, state) in states {
+            self.names.insert(state.topic_id, name);
             self.current.insert(state.topic_id, state);
         }
     }
 
-    /// Records what the ledger calls these topics.
-    fn describe(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
+    /// Records names for topics the search reached without resolving.
+    fn name(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
         for (topic, name, _) in topics {
             self.names.insert(topic, name);
         }
-    }
-
-    /// The topics found so far.
-    fn topics(&self) -> Vec<TopicId> {
-        let mut topics: Vec<TopicId> = self.current.keys().copied().collect();
-        topics.sort_unstable_by_key(|topic| topic.0);
-        topics
     }
 
     fn state(&self, topic: TopicId) -> Option<&TopicState> {
@@ -1983,6 +2152,67 @@ pub struct SearchHit {
     /// reranker is shown it. Taken from every state the search resolved rather
     /// than from the results, so it does not depend on how many were asked for.
     pub seed: Option<String>,
+}
+
+/// A search's fused results, best first, and what it resolved on the way.
+///
+/// Kept apart from [`SearchHit`] because a hit copies its state, its topic's
+/// name and its seed's content, and the rerank path fuses every candidate
+/// while reading only a few of them: the head's and the graph's that the
+/// reranker is shown, and the ones the caller is given.
+struct Fused {
+    results: Vec<FusedResult>,
+    live: WorkingSet,
+    paths: std::collections::HashMap<TopicId, Neighbor>,
+}
+
+impl Fused {
+    /// The first `limit` results as hits.
+    fn hits(self, limit: u32) -> Vec<SearchHit> {
+        let Self {
+            results,
+            live,
+            paths,
+        } = self;
+        results
+            .into_iter()
+            .take(limit as usize)
+            .map(|result| {
+                let state = live.state(result.topic).expect("retained by `fused`");
+                let seed = seed(&live, &paths, result.topic).map(str::to_string);
+                SearchHit {
+                    topic: live.topic_name(result.topic),
+                    state: state.clone(),
+                    result,
+                    seed,
+                }
+            })
+            .collect()
+    }
+
+    /// What the reranker is shown of `result`.
+    fn shown(&self, result: &FusedResult) -> String {
+        let state = self.live.state(result.topic).expect("retained by `fused`");
+        shown(
+            &self.live.topic_name(result.topic),
+            &state.content,
+            seed(&self.live, &self.paths, result.topic),
+        )
+    }
+}
+
+/// For a topic the graph reached, the content of the memory the walk started
+/// from. Taken from every state the search resolved rather than from the
+/// results, so it does not depend on how many were asked for.
+fn seed<'a>(
+    live: &'a WorkingSet,
+    paths: &std::collections::HashMap<TopicId, Neighbor>,
+    topic: TopicId,
+) -> Option<&'a str> {
+    paths
+        .get(&topic)
+        .and_then(|reached| live.state(reached.origin))
+        .map(|origin| origin.content.as_str())
 }
 
 /// The channels' candidates in one order, best first, without duplicates.
@@ -2067,8 +2297,8 @@ fn seed_relevance(
 /// evaluation corpora -- so the order stays as the walk made it, and this
 /// number answers the separate question fusion needs: how far this channel's
 /// best arrival stands above its own field.
-fn path_strength(neighbor: &Neighbor) -> f32 {
-    neighbor.confidence * HOP_DECAY.powi(i32::from(neighbor.hops.saturating_sub(1)))
+fn path_strength(confidence: f32, hops: u8) -> f32 {
+    confidence * HOP_DECAY.powi(i32::from(hops.saturating_sub(1)))
 }
 
 /// Every contiguous run of up to `widest` tokens, as the name index stores them.
@@ -2116,8 +2346,9 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
     text
 }
 
-/// How many candidates only the graph found are shown to the reranker beside
-/// the head.
+/// The graph score from which a candidate only the graph found is shown to the
+/// reranker beside the head: the edge's confidence, decayed per hop (see
+/// [`path_strength`]).
 ///
 /// The graph finds what the other channels cannot -- the memory a question
 /// needs because another memory names it -- and fusion, weighing it at 0.30,
@@ -2128,16 +2359,32 @@ fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
 /// floor can only raise them, and it left all 1,000 questions' nDCG@10 where
 /// it was. The reranker is the one stage that is shown the memory that
 /// reached them, so it is the one that can judge them. Handing it the
-/// strongest ten lifts nDCG@10 from 0.6573 to 0.6834 (108 questions
-/// better, 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435; five
-/// was worth +0.0234. Chosen by five-fold cross-validation, every fold picking
-/// ten. The cost is ten more pairs a search, only where there are edges: a
-/// project with none has no graph candidates and pays nothing.
-const GRAPH_CANDIDATES: usize = 10;
+/// strongest ten lifted nDCG@10 from 0.6573 to 0.6834 (108 questions better,
+/// 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435. A project with
+/// no edges has no graph candidates and pays nothing.
+///
+/// **Chosen by score rather than a fixed ten, because a weak find costs a pair
+/// and was not measured buying anything.** On the own corpus ten showed about
+/// four finds a query; at this threshold it shows almost none, and on MuSiQue
+/// 8.4 on average instead of ten, anywhere from none to the cap. Under a rule written before the runs, on 600 MuSiQue questions
+/// held out from where the threshold was noticed, through `search_reranked` at
+/// the `accuracy` profile with the caches bypassed: nDCG@10 +0.0017 against
+/// the fixed ten (16 questions better, 5 worse, p = 0.057), search time 0.87
+/// of ten's (p = 0.0001); on the own corpus 0.81 of ten's (p = 0.0001), one
+/// query of 157 worse by 0.0078 and the rest unchanged. `docs/measured.md` has
+/// the runs.
+const GRAPH_SHOWN_FROM: f32 = 0.5;
 
-/// The positions of a fused list the reranker is shown: the head's candidates
-/// no lexical channel found, and the [`GRAPH_CANDIDATES`] strongest below the
-/// head that only the graph found. Ascending.
+/// At most this many of the finds at [`GRAPH_SHOWN_FROM`] are shown, strongest
+/// first. A cap is what keeps a densely linked question from handing the
+/// reranker every neighbour: MuSiQue reaches it on about one question in
+/// eight. Thirty is the cap the threshold was measured with, not a tuned value.
+const GRAPH_SHOWN_AT_MOST: usize = 30;
+
+/// The positions of a fused list the reranker is shown: the whole head for
+/// `accurate`, the head's non-lexical candidates for `fast`, and those below the head that only the
+/// graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
+/// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
 ///
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
@@ -2166,13 +2413,56 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
         graph
     };
 
-    let mut positions: Vec<usize> = (0..head).filter(|at| !lexical(traces[*at])).collect();
+    let mut positions: Vec<usize> = (0..head)
+        .filter(|at| rerank == Rerank::Accurate || !lexical(traces[*at]))
+        .collect();
     let mut graph: Vec<(usize, f32)> = (head..traces.len())
         .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
         .collect();
     graph.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
-    positions.extend(graph.into_iter().take(GRAPH_CANDIDATES).map(|(at, _)| at));
+    positions.extend(
+        graph
+            .into_iter()
+            .filter(|(_, score)| *score >= GRAPH_SHOWN_FROM)
+            .take(GRAPH_SHOWN_AT_MOST)
+            .map(|(at, _)| at),
+    );
     positions.sort_unstable();
+    positions
+}
+
+/// Fusion's share of the accurate reranker's final score.
+///
+/// Chosen on XQuAD-R before checking MuSiQue: the latter's held-out arm also
+/// improves over both unblended full-head reranking and the old partial pass.
+pub const RERANK_FUSION: f64 = 0.2;
+
+/// Best-first positions after min-max scaling both scores within one shortlist.
+/// Shared with the evaluation replay so the measured rule is the shipped rule.
+pub fn score_blend_order(fused: &[f64], model: &[f64], fusion: f64) -> Vec<usize> {
+    assert_eq!(fused.len(), model.len());
+    let scaled = |values: &[f64]| {
+        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        values
+            .iter()
+            .map(|value| {
+                if high > low {
+                    (value - low) / (high - low)
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let (fused, model) = (scaled(fused), scaled(model));
+    let mut positions: Vec<usize> = (0..fused.len()).collect();
+    positions.sort_by(|left, right| {
+        let score = |at: usize| fusion * fused[at] + (1.0 - fusion) * model[at];
+        score(*right)
+            .total_cmp(&score(*left))
+            .then_with(|| left.cmp(right))
+    });
     positions
 }
 
@@ -2217,35 +2507,6 @@ pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]
         .collect()
 }
 
-/// How deep to fuse when a reranker is going to reorder the head.
-///
-/// A cross-encoder can only reorder what it is shown, so the list it works on
-/// has to be at least as long as the tier's depth even when the caller wants
-/// five results. Cutting to the caller's limit first is what made the tuned
-/// depth unreachable: `--limit` defaults to five, the tier's depth is twenty,
-/// and the sweep that chose twenty was run over a list of fifty. What arrived
-/// at the reranker was five candidates, of which the two it needs to find
-/// unlexical are usually not among them -- so the shipped default reordered
-/// nothing and returned the ranking a search with reranking off would have.
-///
-/// Deeper costs the fusion nothing extra: every channel already contributes
-/// [`Depths::channel`] candidates and all of them are already resolved against
-/// the ledger. What grows is the hydration, by the difference between the two
-/// numbers.
-///
-/// And then the whole list rather than the head: the reranker is also shown the
-/// strongest candidates only the graph found, wherever fusion put them (see
-/// [`GRAPH_CANDIDATES`]), so a list cut at the head would have cut them off.
-/// Every fused result is already resolved by then; what the depth costs is one
-/// `SearchHit` a result, and the caller's limit is applied after the pass.
-fn fused_for(limit: u32, rerank: Rerank) -> u32 {
-    match rerank {
-        Rerank::Off => limit,
-        _ => u32::MAX,
-    }
-}
-
-/// The first `limit` of a list that was fused deeper than the caller asked for.
 /// Whether reranking these positions can change what the caller is given.
 ///
 /// The pass reorders the candidates at `unlexical` *into the positions they
@@ -2305,21 +2566,45 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
         .is_some_and(|highest| *highest < limit as usize)
 }
 
-fn only(mut hits: Vec<SearchHit>, limit: u32) -> Vec<SearchHit> {
-    hits.truncate(limit as usize);
-    hits
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_CANDIDATES, MODEL_IDLE, Neighbor, best_first, can_be_seen, fused_for, is_idle,
-        path_strength, place, rerankable, runs_of_tokens, seed_relevance, shown,
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, MODEL_IDLE, best_first, can_be_seen, is_idle,
+        path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    #[test]
+    fn idle_sweep_skips_registries_while_a_model_load_holds_them() {
+        use std::sync::mpsc;
+
+        let models = super::Models {
+            dir: std::path::PathBuf::new(),
+            loaded: std::sync::Arc::default(),
+            rerankers: std::sync::Arc::default(),
+        };
+
+        let embedder_load = models.loaded.lock().unwrap();
+        let (sent, received) = mpsc::channel();
+        let sweeping = models.clone();
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedders()));
+        let embedder_result = received.recv_timeout(Duration::from_secs(1));
+        drop(embedder_load);
+        worker.join().unwrap().unwrap();
+        assert_eq!(embedder_result.unwrap(), Vec::<pamin_index::Profile>::new());
+
+        let reranker_load = models.rerankers.lock().unwrap();
+        let (sent, received) = mpsc::channel();
+        let sweeping = models.clone();
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_rerankers()));
+        let reranker_result = received.recv_timeout(Duration::from_secs(1));
+        drop(reranker_load);
+        worker.join().unwrap().unwrap();
+        assert_eq!(reranker_result.unwrap(), Vec::<Rerank>::new());
+    }
 
     /// The reranker reads a candidate under its name, and a graph arrival with
     /// the memory it was reached from -- the sentence that makes it relevant.
@@ -2513,32 +2798,10 @@ mod tests {
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
-    /// A reranker is shown at least as many candidates as it was tuned for.
-    ///
-    /// The constant saying how many a tier looks at is measured, and before
-    /// this it was unreachable: the fused list was cut to the caller's limit
-    /// first, so at the default `--limit 5` the tier saw five candidates rather
-    /// than the twenty it then read, and the shipped default reordered nothing. This is the
-    /// arithmetic that was wrong, on its own, because the alternative is a test
-    /// that needs half a gigabyte of weights to observe a reordering that
-    /// silently did not happen.
+    /// Accurate sees the whole head; fast keeps the old non-lexical rule.
+    /// Both see strong graph-only candidates below the head.
     #[test]
-    fn a_reranker_is_fused_at_least_as_deep_as_it_reads() {
-        for tier in [Rerank::Fast, Rerank::Accurate] {
-            assert!(
-                fused_for(5, tier) >= tier.depth() as u32,
-                "{tier:?} reads {} candidates and was handed {}",
-                tier.depth(),
-                fused_for(5, tier)
-            );
-        }
-    }
-
-    /// The reranker is shown the head's unlexical candidates and the strongest
-    /// graph-only ones below it -- not a lexical one, not a corroborated one
-    /// from below the head, and no more graph ones than the cap.
-    #[test]
-    fn the_reranker_is_shown_the_unlexical_head_and_the_strongest_graph_finds() {
+    fn the_accurate_reranker_sees_the_whole_head_and_strong_graph_finds() {
         use pamin_core::Why;
 
         let channel = |channel, score| Why::Channel {
@@ -2558,29 +2821,50 @@ mod tests {
                 vec![channel(Channel::Vector, 0.5)]
             });
         }
-        // Below the head: a vector candidate, a corroborated graph one, and
-        // more graph-only ones than the cap, with increasing strength.
+        // Below the head: a vector candidate, a corroborated graph one, graph
+        // finds just under the threshold, and more at or above it than the
+        // cap, with increasing strength.
         traces.push(vec![channel(Channel::Vector, 0.4)]);
         traces.push(vec![
             channel(Channel::Vector, 0.4),
             channel(Channel::Graph, 0.9),
         ]);
-        let first_graph = traces.len();
-        for strength in 0..GRAPH_CANDIDATES + 3 {
-            traces.push(vec![channel(Channel::Graph, strength as f32 / 100.0)]);
+        for weak in [0.1, 0.3, 0.49] {
+            traces.push(vec![channel(Channel::Graph, weak)]);
+        }
+        let first_strong = traces.len();
+        for strength in 0..GRAPH_SHOWN_AT_MOST + 3 {
+            traces.push(vec![channel(
+                Channel::Graph,
+                GRAPH_SHOWN_FROM + strength as f32 / 1000.0,
+            )]);
         }
         let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
 
         let shown = rerankable(&borrowed, Rerank::Accurate);
         let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
+        assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
+        let fast_head = Rerank::Fast.depth();
         assert_eq!(
-            head_shown,
-            (0..head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
+            rerankable(&borrowed, Rerank::Fast)
+                .into_iter()
+                .filter(|at| *at < fast_head)
+                .collect::<Vec<_>>(),
+            (0..fast_head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
         );
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
-        // The strongest GRAPH_CANDIDATES, which are the last ones pushed.
-        let strongest = (first_graph + 3..first_graph + GRAPH_CANDIDATES + 3).collect::<Vec<_>>();
+        // The strongest GRAPH_SHOWN_AT_MOST, which are the last ones pushed;
+        // the weakest three that reach the threshold lose to the cap.
+        let strongest =
+            (first_strong + 3..first_strong + GRAPH_SHOWN_AT_MOST + 3).collect::<Vec<_>>();
         assert_eq!(below, strongest);
+
+        // With fewer finds at the threshold than the cap, every one of them is
+        // shown, the one exactly at it included, and none under it.
+        let few: Vec<&[Why]> = borrowed[..first_strong + 2].to_vec();
+        let shown = rerankable(&few, Rerank::Accurate);
+        let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
+        assert_eq!(below, vec![first_strong, first_strong + 1]);
     }
 
     /// A head candidate is refilled in place; a graph find from below the head
@@ -2603,6 +2887,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_whole_head_can_move_a_lexical_candidate() {
+        assert_eq!(
+            place(
+                vec!["lexical", "vector", "graph"],
+                &[0, 1, 2],
+                3,
+                &[1, 2, 0]
+            ),
+            vec!["vector", "graph", "lexical"]
+        );
+    }
+
+    #[test]
+    fn blended_scores_keep_the_models_gain_and_break_ties_by_fused_rank() {
+        let fused = [0.9, 0.5, 0.1];
+        let model = [0.0, 1.0, 2.0];
+        assert_eq!(score_blend_order(&fused, &model, 0.2), vec![2, 1, 0]);
+        assert_eq!(score_blend_order(&fused, &model, 0.5), vec![0, 1, 2]);
+    }
+
     /// What this process remembers about the widest name only ever grows.
     ///
     /// The direction matters more than the caching does. Remembering a value
@@ -2620,14 +2925,6 @@ mod tests {
         assert_eq!(raise(3), 3);
         assert_eq!(raise(5), 5, "a wider name did not raise it");
         assert_eq!(raise(2), 5, "a narrower name lowered it");
-    }
-
-    /// A caller wanting more than the reranker reads still gets what it asked.
-    #[test]
-    fn fusing_for_a_reranker_never_shortens_what_was_asked_for() {
-        assert!(fused_for(500, Rerank::Fast) >= 500);
-        // Nothing is going to reorder it, so nothing needs to be fused deep.
-        assert_eq!(fused_for(5, Rerank::Off), 5);
     }
 
     /// Every case the segmenter's own naming tests pin, and one that is not a
@@ -2699,23 +2996,12 @@ mod tests {
     /// derived edges away were scored identically apart from which came first.
     #[test]
     fn the_graph_vouches_less_for_each_hop_it_took() {
-        let reached = |hops: u8, confidence: f32| Neighbor {
-            topic: TopicId(uuid::Uuid::from_bytes([1; 16])),
-            origin: TopicId(uuid::Uuid::from_bytes([2; 16])),
-            hops,
-            via: TopicId(uuid::Uuid::from_bytes([3; 16])),
-            kind: pamin_core::EdgeKind::RelatedTo,
-            derivation: pamin_core::Derivation::Deterministic,
-            confidence,
-            outbound: true,
-        };
-
-        assert_eq!(path_strength(&reached(1, 1.0)), 1.0, "a certain first hop");
-        assert_eq!(path_strength(&reached(2, 1.0)), 0.5, "one hop further");
-        assert_eq!(path_strength(&reached(3, 1.0)), 0.25, "and one further");
+        assert_eq!(path_strength(1.0, 1), 1.0, "a certain first hop");
+        assert_eq!(path_strength(1.0, 2), 0.5, "one hop further");
+        assert_eq!(path_strength(1.0, 3), 0.25, "and one further");
         assert_eq!(
-            path_strength(&reached(1, 0.5)),
-            path_strength(&reached(2, 1.0)),
+            path_strength(0.5, 1),
+            path_strength(1.0, 2),
             "half the confidence at one hop is one certain hop further away"
         );
     }

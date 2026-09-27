@@ -31,7 +31,7 @@
 
 use pamin_core::{FilterDecision, Validity};
 use pamin_engine::{Engine, Owed, Write};
-use pamin_index::{Access, Profile};
+use pamin_index::{Access, Profile, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 /// The default, because a graph built for a narrower profile is not the one
@@ -89,9 +89,15 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
         .await
         .expect("ensure project");
 
-    let engine = Engine::open(&workspace, &name, profile, Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &name,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the engine");
 
     for memory in 0..MEMORIES {
         let content = format!(

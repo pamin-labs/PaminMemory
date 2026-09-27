@@ -52,9 +52,15 @@ pub struct Request {
     /// The namespace to operate in. Per request rather than per connection,
     /// because the server holds many and a client speaks for one at a time.
     pub project: String,
-    /// The embedding profile, by name. Parsed server-side so an unknown one
-    /// fails the same way it does in-process.
+    /// The embedding profile, by name. The client refuses an unknown one
+    /// before sending it; the server parses it again because a name is what
+    /// crosses the socket.
     pub profile: String,
+    /// The vector index, by name, checked and parsed like the profile.
+    /// Defaulted so a `stop` from another build, which may carry none, is
+    /// still read.
+    #[serde(default)]
+    pub vector_index: String,
     pub call: Call,
 }
 
@@ -102,8 +108,8 @@ impl Call {
 
 /// What came back.
 ///
-/// A failure is a message rather than a structured error because that is
-/// exactly what the in-process path produces: `anyhow` context, rendered once,
+/// A failure is a message rather than a structured error because a message is
+/// all the client does anything with: it fails with it, and the message is
 /// printed to stderr. Reconstructing an error type across the socket would give
 /// the client something it has never had and does not use.
 /// The success payload is carried as the bytes it already is.

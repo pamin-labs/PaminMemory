@@ -19,10 +19,10 @@ pub enum IndexError {
     GrainMismatch { indexed: String, expected: String },
 
     #[error(
-        "this index stores its vectors as {indexed} and this build expects {requested}; \
+        "this index was built as vector index {indexed} and {requested} was requested; \
          run `pamin reindex` to rebuild it"
     )]
-    VectorStorageMismatch { indexed: String, requested: String },
+    VectorIndexMismatch { indexed: String, requested: String },
 
     #[error(
         "this workspace has an index from before projects were separated; \
@@ -31,8 +31,8 @@ pub enum IndexError {
     LegacyLayout,
 
     #[error(
-        "another pamin command is holding this project's index and did not \
-         release it in time ({0}); retry, or run one command at a time"
+        "another process is holding this project's index and did not release it \
+         in time ({0}); if a pamin server was just stopped or replaced, retry"
     )]
     Busy(String),
 

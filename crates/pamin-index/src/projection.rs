@@ -10,8 +10,9 @@
 //! list, weighting its members twice, and the per-channel ranks every result has
 //! to report would already be gone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
@@ -19,8 +20,8 @@ use pamin_core::{Scored, TopicId};
 
 use crate::embedding::Profile;
 use zvec_rust::{
-    Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts,
-    FtsQueryParams, HnswQueryParams, IndexParams, MetricType, QuantizeType, SearchQuery,
+    Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
+    FieldSchema, Fts, FtsQueryParams, HnswQueryParams, IndexParams, MetricType, SearchQuery,
 };
 
 use crate::error::{IndexError, Result};
@@ -158,12 +159,25 @@ pub trait Projection {
     /// counting, and it is what decides when the index is asked to tidy up.
     fn file_count(&self) -> Result<u64>;
 
+    /// How many files [`optimize`](Self::optimize) left the last time it ran
+    /// on this handle, or zero if it has not run on it. See [`is_fragmented`].
+    fn files_after_optimize(&self) -> u64;
+
+    /// How many vector blocks flushes have left that no compaction has merged.
+    ///
+    /// What disk is spent on, where [`file_count`](Self::file_count) is what
+    /// descriptors are spent on. See [`wastes_disk`].
+    fn unmerged_blocks(&self) -> Result<u64>;
+
     /// How this index is segmented, against what the policy would choose.
     fn segmentation(&self) -> Result<Segmentation>;
 
     /// What text this index's vectors are embedded from, which every write to
     /// it has to follow.
     fn passage(&self) -> Passage;
+
+    /// Which vector index this one was built with.
+    fn vector_index(&self) -> VectorIndex;
 }
 
 /// One document as an index holds it.
@@ -172,7 +186,8 @@ pub struct Stored {
     /// The memory's text, exactly as written. The segmented field is derived
     /// from it, so it is all a copy needs to rebuild both lexical fields.
     pub content: String,
-    /// The vector, as it was embedded under the index's [`Passage`].
+    /// The vector, as it was embedded under the index's [`Passage`] and then
+    /// stored: each component rounded to half precision (see [`crate::as_stored`]).
     pub embedding: Vec<f32>,
 }
 
@@ -181,13 +196,15 @@ pub struct ProjectionIndex {
     collection: Collection,
     segmenter: Arc<Segmenter>,
     dir: std::path::PathBuf,
-    /// How this collection's vectors are stored, so a query's refiner flag
-    /// follows the index rather than the environment: reading the variable
-    /// again at query time would let a process that changed it mid-flight ask
-    /// for a refiner that is not there.
-    storage: VectorStorage,
+    /// Which vector index this collection was built with, as its marker
+    /// records -- and so how a query asks it.
+    index: VectorIndex,
     /// What this index's vectors were embedded from. See [`Passage`].
     passage: Passage,
+    /// How this index spells a topic as a primary key. See [`Keys`].
+    keys: Keys,
+    /// What [`Projection::files_after_optimize`] reports.
+    optimized_files: AtomicU64,
 }
 
 /// What text a document's vector was embedded from.
@@ -238,13 +255,87 @@ impl Passage {
 /// The encoding a new index is built with.
 const PASSAGE: Passage = Passage::Named;
 
-/// What one document in this index stands for.
+/// How a topic's identifier is spelled as the engine's primary key.
 ///
-/// Recorded beside the model because an index keyed by something else is not
-/// stale, it is silently empty: the old scheme's identifiers are read as the
-/// new scheme's, match nothing, and every search comes back with no results
-/// and no error anywhere. Changing what a document is keyed by means changing
-/// this, which turns that silence into a message naming `pamin reindex`.
+/// The engine maps primary keys to its own row numbers in a RocksDB instance
+/// that it flushes and never compacts, and RocksDB moves a file whose keys
+/// overlap nothing below it down a level without merging it. Identifiers are
+/// time-ordered (see `pamin_core::id`), so every flush wrote a range of keys
+/// above everything before it and left one file behind that nothing ever
+/// merged. Measured through `Engine::write` and a drain per sixty-four new
+/// memories, 12,800 of them on the `speed` profile: 200 files in the map, one
+/// per round, against 1 spelled this way. After an `optimize`, which does not
+/// touch the map, that was 252 files in the index against 108 and 215
+/// descriptors held by an open against 72 -- and the map's files count
+/// against [`MAX_FILES`] like any other, so they spend a budget no
+/// compaction can give back. Opening took the same time either way.
+///
+/// Only a flush that adds and nothing else does it. One that also rewrites an
+/// older topic overlaps what came before and is merged with it, so with a
+/// quarter of the writes being edits the map held one or two files whatever
+/// the spelling. Importing, or a stretch of new memories, is what adds only.
+///
+/// Recorded in the marker, like the [`Passage`], because reading one spelling
+/// as the other matches nothing. What a document stands for is unchanged --
+/// that is [`DOCUMENT_GRAIN`] -- so an index keyed the old way opens and goes
+/// on being written that way, and a rebuild or a reshape, which write every
+/// document again, key the new one the new way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Keys {
+    /// The identifier as written. Every index built before this existed.
+    Topic,
+    /// The identifier's sixteen bytes in reverse order, so the random bytes
+    /// at its end lead and its timestamp trails. Its own inverse, and a
+    /// permutation of the bytes rather than a hash, so a key is exactly one
+    /// topic and reads back without anything stored beside it.
+    Reversed,
+}
+
+impl Keys {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Topic => "topic-keys",
+            Self::Reversed => "reversed-keys",
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        match label.trim() {
+            "topic-keys" => Some(Self::Topic),
+            "reversed-keys" => Some(Self::Reversed),
+            _ => None,
+        }
+    }
+
+    /// The primary key `topic` is stored under.
+    fn key(self, topic: TopicId) -> String {
+        self.spell(topic.0).to_string()
+    }
+
+    /// The topic stored under `key`, or `None` for a key this crate did not
+    /// write.
+    fn topic(self, key: &str) -> Option<TopicId> {
+        uuid::Uuid::parse_str(key)
+            .ok()
+            .map(|parsed| TopicId::from(self.spell(parsed)))
+    }
+
+    /// Both directions at once, since reversing is its own inverse.
+    fn spell(self, id: uuid::Uuid) -> uuid::Uuid {
+        match self {
+            Self::Topic => id,
+            Self::Reversed => {
+                let mut bytes = *id.as_bytes();
+                bytes.reverse();
+                uuid::Uuid::from_bytes(bytes)
+            }
+        }
+    }
+}
+
+/// How a new index spells its keys.
+const KEYS: Keys = Keys::Reversed;
+
 /// How many segments a collection is aimed at.
 ///
 /// Four, measured. Building 100,000 documents at several segment sizes, against
@@ -328,7 +419,7 @@ const SMALLEST_SEGMENT: u64 = 10_000;
 /// by orders of magnitude keeps the size it was created with until something
 /// recreates it: a server reshapes it on its own once
 /// [`Segmentation::is_worth_rebuilding`] says so, and `pamin reindex` rebuilds
-/// it where there is no server.
+/// it at once.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
 }
@@ -345,9 +436,10 @@ pub fn segment_documents(documents: u64) -> u64 {
 /// from its upkeep loop and, when [`is_worth_rebuilding`](Self::is_worth_rebuilding)
 /// says so, reshapes the index in the background: a copy taken while the
 /// index is served, with every vector reused and the lock held a batch at a
-/// time -- see [`crate::Reshape`]. Without a server nothing does that on its
-/// own, `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds
-/// it, also without embedding anything again; see [`Previous`].
+/// time -- see [`crate::Reshape`]. A process holding the index without a
+/// server, such as an evaluation harness, has nothing doing that on its own.
+/// `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds it,
+/// also without embedding anything again; see [`Previous`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segmentation {
     /// Documents the collection holds.
@@ -436,14 +528,76 @@ impl Segmentation {
 /// the flush to the server, this is a bound rather than a working limit: three
 /// thousand writes through a server leave 136 files and nothing is ever
 /// compacted, where two thousand flushed one at a time left 10,031. It is kept
-/// for the cases that still reach it -- an import, and a workspace written to
-/// with no server behind it -- and because a bound that is not being
+/// for the cases that still reach it -- an import, and a harness writing to an
+/// index with no server behind it -- and because a bound that is not being
 /// approached is the one worth having.
 const MAX_FILES: u64 = 256;
 
 /// Whether an index is spread across more files than it should be.
-pub fn is_fragmented(files: u64) -> bool {
-    files > MAX_FILES
+///
+/// `floor` is what the last `optimize` left. When that floor is already above
+/// [`MAX_FILES`], the index has to grow by a quarter of the budget before
+/// optimizing again. Below the budget, the file ceiling still applies. Without that, an
+/// index `optimize` cannot bring under the budget asked for it after every
+/// drain that did work: the scalar files of sealed segments are never merged,
+/// so an index with two or more sealed segments can stay above the budget for
+/// good -- MIRACL's 131,924 passages hold 2,317 files -- and every open adds
+/// two empty write-ahead logs. Measured on a 12,814-document index its own
+/// `optimize` left at 257 files, one write per five-second upkeep tick
+/// re-queued `optimize` 8 times in 60 ticks, about a second of processor time
+/// each under `memory`.
+///
+/// Zero, for an index this process has not optimized, is the budget alone, so
+/// a reopened index is asked once and learns its floor from that.
+pub fn is_fragmented(files: u64, floor: u64) -> bool {
+    files
+        > if floor > MAX_FILES {
+            floor.saturating_add(MAX_FILES / 4)
+        } else {
+            MAX_FILES
+        }
+}
+
+/// How many unmerged vector blocks an index may hold whatever its size.
+///
+/// A flush writes the vectors it carries into a block of their own, and the
+/// engine sizes that block for a segment rather than for what is in it: 5 MB
+/// apparent and 1.06 MB allocated whether it holds one document or forty. So
+/// a project written a memory at a time spends a megabyte of disk a flush
+/// until something compacts it, and [`MAX_FILES`] is not that something for a
+/// small one: a flush leaves about six files, so the file budget is reached
+/// after some forty flushes. Measured on the `speed` profile, one write and
+/// one flush at a time, with nothing compacting until the end:
+///
+/// ```text
+///   writes   files   allocated   compacted   after closing
+///       40     238     45.5 MB      3.4 MB          1.9 MB
+///      300   1,538    333.3 MB      7.0 MB          5.6 MB
+/// ```
+///
+/// Compacting changed none of the thirty top-ten lists the three channels
+/// returned for ten queries, at eight, forty and three hundred writes.
+///
+/// Eight blocks is about eight megabytes, which is what a project may carry
+/// before anything is spent on it: small enough that a hundred small projects
+/// are not four gigabytes of padding, and large enough that one written a
+/// memory at a time is not compacted on every flush.
+const BLOCK_FLOOR: u64 = 8;
+
+/// Documents per unmerged block an index may carry above [`BLOCK_FLOOR`].
+///
+/// Scales the allowance with the index, so the waste stays in proportion to
+/// what compacting it costs. A compacted index is about 9 KB a document on
+/// the shipping profile -- 116 MB over 13,014 -- and a block about a
+/// megabyte, so one block per 128 documents lets the waste grow to roughly the
+/// size of the index itself before a compaction is asked for. Past about five
+/// thousand documents [`MAX_FILES`] is reached first, so this changes nothing
+/// for a project that size or larger.
+const DOCUMENTS_PER_BLOCK: u64 = 128;
+
+/// Whether an index holds more unmerged vector blocks than its size warrants.
+pub fn wastes_disk(blocks: u64, documents: u64) -> bool {
+    blocks > BLOCK_FLOOR.max(documents / DOCUMENTS_PER_BLOCK)
 }
 
 /// How many documents may sit outside the vector graph before one is built.
@@ -494,13 +648,16 @@ pub fn vector_index_lags(documents: u64, completeness: f32) -> bool {
 /// affected. Undocumented on purpose -- it exists so a test does not have to
 /// edit the tree.
 fn unindexed_budget() -> u64 {
-    std::env::var("PAMIN_UNINDEXED_BUDGET")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(UNINDEXED_BUDGET)
+    pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET").unwrap_or(UNINDEXED_BUDGET)
 }
 
+/// What one document in this index stands for.
+///
+/// Recorded beside the model because an index keyed by something else is not
+/// stale, it is silently empty: the old scheme's identifiers are read as the
+/// new scheme's, match nothing, and every search comes back with no results
+/// and no error anywhere. Changing what a document is keyed by means changing
+/// this, which turns that silence into a message naming `pamin reindex`.
 const DOCUMENT_GRAIN: &str = "topic";
 
 /// How many neighbours each document keeps in the vector graph.
@@ -531,151 +688,159 @@ const DOCUMENT_GRAIN: &str = "topic";
 /// 0.984 at five thousand documents and 0.708 at fifty thousand), so a
 /// configuration that needs the maximum at fifty thousand has nothing left at
 /// seven million.
-/// How the stored vectors are kept.
-///
-/// The vector field is the largest thing on disk: 64.2 MB of a 116 MB index
-/// over 13,014 documents, 55% of it, against 44.7 MB for both full-text fields
-/// and 7.4 MB for the identifier column. A 1024-dimensional fp32 vector is
-/// 4 KB a document and that is most of the 64.
-///
-/// `Fp32` -- no quantization -- until a sweep says otherwise, and the sweep is
-/// the point of this being a setting: [`PAMIN_VECTOR_STORAGE`] lets
-/// `crates/pamin-index/tests/recall.rs` measure a cell without a rebuild of
-/// the world, because the one thing reading the binding cannot answer is
-/// whether the refiner keeps a full-precision copy beside the quantized one --
-/// in which case quantizing costs disk rather than saving it.
-///
-/// ADR 0001 records a previous attempt at this returning recall@10 of 0.000
-/// with no error and no visible symptom, under the only configuration that
-/// existed then (`Int8`, before the binding exposed rotation). That is why the
-/// storage is recorded in the profile marker: an index built one way and read
-/// another is the silent-wrong-answer shape, and the marker turns it into a
-/// message naming `pamin reindex`.
-const VECTOR_STORAGE: VectorStorage = VectorStorage::Fp32;
+const GRAPH_DEGREE: i32 = 32;
 
-/// Overrides [`VECTOR_STORAGE`], for the sweep that settles it.
+/// Which vector index a project's index is built with, and what its marker
+/// records.
 ///
-/// Deliberately undocumented: a caller has no way to evaluate it, and reading
-/// an index built under one value with another is exactly what the marker
-/// exists to refuse.
-const PAMIN_VECTOR_STORAGE: &str = "PAMIN_VECTOR_STORAGE";
-
-/// How a stored vector is kept, and what the marker records.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum VectorStorage {
-    /// Four bytes a dimension, exactly what the model produced.
-    Fp32,
-    /// Two bytes a dimension.
-    Fp16,
-    /// One byte a dimension.
-    Int8,
-    /// Half a byte a dimension.
-    Int4,
-    /// A bit a dimension.
+/// A setting (`--vector-index`, `PAMIN_VECTOR_INDEX`) with two values, because
+/// the choice is a trade between resident memory on one side and query and
+/// build time on the other that only the person running a project can make.
+/// Both store vectors in half precision and both are searched the same way:
+/// the index proposes [`RESCORE`] times the candidates asked for, with their
+/// stored vectors, and those are ranked again by an exact f32 cosine. The two
+/// differ in their index and query parameters and in nothing else. ADR 0001,
+/// "Two vector indexes, both half precision", has the measurements.
+///
+/// The marker records which one an index was built with, and an index is
+/// never searched as the other: opening one under the other is refused with a
+/// message naming `pamin reindex`, as a profile change is. Reading an index
+/// built one way as another is the silent-wrong-answer shape ADR 0001 records
+/// from the first attempt at quantization, which returned recall@10 of 0.000
+/// with no error. `pamin reindex` lends every vector the old index holds to
+/// the new one (see [`Previous`]), so changing costs a build and no embedding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum VectorIndex {
+    /// A DiskANN graph kept on disk and read per query.
     ///
-    /// Listed and not reachable: the engine refuses to train a RaBitQ
-    /// quantizer without a `raw_vector_provider`, which this binding does not
-    /// expose, so asking for it fails when the graph is built rather than
-    /// returning a worse index. Kept as a name so the refusal is recorded
-    /// where someone would look for it, and because it is the one storage
-    /// whose codes are small enough to change the disk answer -- see
-    /// `index_params`.
-    Rabitq,
+    /// Holds almost nothing resident, for a project whose memory is scarce.
+    /// Not the default: every `optimize` after a working drain rebuilds a
+    /// great deal of the graph (114 to 310 s after 64 new documents on 25,000,
+    /// against about a second for `memory`), and upkeep issues one after a
+    /// drain that did work whenever the file budget, the unmerged blocks or
+    /// the unindexed remainder asks for it.
+    Disk,
+    /// An HNSW graph held in memory.
+    ///
+    /// The default: the fastest to query and to build, and the smallest on
+    /// disk, at the cost of holding the graph and the vectors resident --
+    /// still half what the full-precision graph held.
+    #[default]
+    Memory,
 }
 
-impl VectorStorage {
-    /// The label the profile marker carries.
+impl VectorIndex {
+    /// Both, in the order the setting documents them.
+    pub const ALL: [Self; 2] = [Self::Memory, Self::Disk];
+
+    /// The name the setting takes and the marker records.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Fp32 => "fp32",
-            Self::Fp16 => "fp16",
-            Self::Int8 => "int8",
-            Self::Int4 => "int4",
-            Self::Rabitq => "rabitq",
+            Self::Disk => "disk",
+            Self::Memory => "memory",
         }
     }
 
-    fn parse(label: &str) -> Option<Self> {
-        match label.trim() {
-            "fp32" => Some(Self::Fp32),
-            "fp16" => Some(Self::Fp16),
-            "int8" => Some(Self::Int8),
-            "int4" => Some(Self::Int4),
-            "rabitq" => Some(Self::Rabitq),
-            _ => None,
-        }
+    /// The index a name stands for, `None` for any other name -- including
+    /// what an index built before these existed records.
+    pub fn parse(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|index| index.label() == label.trim())
     }
 
-    fn quantize(self) -> Option<QuantizeType> {
-        match self {
-            Self::Fp32 => None,
-            Self::Fp16 => Some(QuantizeType::Fp16),
-            Self::Int8 => Some(QuantizeType::Int8),
-            Self::Int4 => Some(QuantizeType::Int4),
-            Self::Rabitq => Some(QuantizeType::Rabitq),
-        }
-    }
-
-    /// Whether a query should ask for the refiner.
-    ///
-    /// It rescores against a full-precision copy that exists only where the
-    /// stored vectors were quantized, and asking for one otherwise fails
-    /// outright rather than being ignored -- so this follows the storage rather
-    /// than being a setting of its own.
-    fn refines(self) -> bool {
-        self.quantize().is_some()
-    }
-
-    /// The index parameters for this storage.
-    fn index_params(self) -> Result<IndexParams> {
-        let Some(quantize) = self.quantize() else {
-            return Ok(IndexParams::hnsw(
+    /// The parameters a collection is created with.
+    fn params(self) -> Result<IndexParams> {
+        Ok(match self {
+            Self::Disk => IndexParams::diskann(
                 MetricType::Cosine,
-                GRAPH_DEGREE,
-                GRAPH_EFFORT,
-            )?);
-        };
+                DISKANN_DEGREE,
+                DISKANN_BUILD_LIST,
+                DISKANN_PQ_CHUNKS,
+            )?,
+            Self::Memory => IndexParams::hnsw(MetricType::Cosine, GRAPH_DEGREE, GRAPH_EFFORT)?,
+        })
+    }
 
-        // Rotation is left off, and that is a measurement rather than the
-        // binding's default carried through.
-        //
-        // It was on here for every quantized storage, on the reasoning that
-        // spreading the bits across dimensions that carry comparable
-        // information must help the coarse storages and could not hurt the
-        // others. Both halves of that were wrong. The engine accepts it only
-        // for int8 and int4 -- for anything else it refuses when the *segment*
-        // opens its vector field rather than when the parameters are built, so
-        // fp16 presented as a segment that would not take writes. And on the
-        // two storages that do accept it, it is ruinous: recall@10 over 50,000
-        // clustered vectors is **0.0530 with rotation and 0.9980 without** for
-        // int8, 0.0580 against 0.9990 for int4. Everything else about the two
-        // runs is equal, including the bytes on disk, and the failure is
-        // silent -- an index that returns plausible neighbours that are not
-        // the nearest ones, which is the exact shape ADR 0001 records from the
-        // last quantization attempt.
-        //
-        // Rotation needs a fitted transform, and nothing here fits one; the
-        // binding's RaBitQ path says as much out loud, refusing to train
-        // without a `raw_vector_provider`. So this stays off until something
-        // supplies that, and `scratch_quantize.rs` is what would notice.
-        Ok(IndexParams::hnsw_with_quantize(
-            MetricType::Cosine,
-            GRAPH_DEGREE,
-            GRAPH_EFFORT,
-            quantize,
-        )?)
+    /// Asks `search` for this index, wide enough for `candidates`.
+    fn ask(self, search: &mut SearchQuery, candidates: u32) -> Result<()> {
+        match self {
+            Self::Disk => search.set_diskann_params(DiskannQueryParams::new(
+                DISKANN_SEARCH_LIST.max(candidates as i32),
+            ))?,
+            Self::Memory => {
+                search.set_hnsw_params(HnswQueryParams::new(search_effort(), 0.0, false, false))?
+            }
+        }
+        Ok(())
     }
 }
 
-/// The storage this process will build and read with.
-fn vector_storage() -> VectorStorage {
-    std::env::var(PAMIN_VECTOR_STORAGE)
-        .ok()
-        .and_then(|value| VectorStorage::parse(&value))
-        .unwrap_or(VECTOR_STORAGE)
-}
+/// What a marker with no storage line records: every index built before the
+/// line existed stored its vectors as fp32.
+const LEGACY_STORAGE: &str = "fp32";
 
-const GRAPH_DEGREE: i32 = 32;
+/// How many neighbours each document keeps in the on-disk graph.
+///
+/// Sixty-four, which is where every DiskANN figure here was taken. The build
+/// is what this index costs most -- 922 to 1,024 s for 50,000 clustered
+/// 1024-dimensional vectors in four segments on a shared four-core machine,
+/// against 58 s for [`VectorIndex::Memory`] -- so a degree that recalled as
+/// much for less build would be the one to take; none was measured to.
+const DISKANN_DEGREE: i32 = 64;
+
+/// How wide the build searches to place each document in the on-disk graph.
+///
+/// One hundred. Twice that took 1,416 s rather than 922 to 1,024 over the same
+/// 50,000 vectors and recalled no more at any search width: 0.9970 against
+/// 0.9975 at 800.
+const DISKANN_BUILD_LIST: i32 = 100;
+
+/// Product-quantization chunks for in-memory navigation of the on-disk graph;
+/// zero keeps none, and every step reads full vectors from disk.
+///
+/// None. Sixty-four chunks answered in about a third of the time at the same
+/// width and recalled 0.9200 at ten and 0.8629 at fifty where none recalls
+/// 0.9985 and 0.9975 -- navigating by codes loses neighbours the rescore
+/// cannot find again -- and took 1,859 s to build rather than 922 to 1,024.
+const DISKANN_PQ_CHUNKS: i32 = 0;
+
+/// How wide a query searches the on-disk graph, at the least: one asking for
+/// more candidates than this searches as wide as it asks.
+///
+/// Measured over 50,000 clustered 1024-dimensional vectors in four segments,
+/// with the rescore, against exact search -- fp32 HNSW recalls 0.9980 at ten
+/// and 0.9974 at fifty there:
+///
+/// | width | recall@10 | recall@50 | a query, shared machine |
+/// | --- | --- | --- | --- |
+/// | 300 | 0.9810 | 0.9715 | 20 ms |
+/// | 500 | 0.9955 | 0.9901 | 62 ms |
+/// | 800 | 0.9975 | 0.9952 | 82 ms |
+/// | **1,200** | **0.9985** | **0.9975** | **114 ms** |
+/// | 2,000 | 0.9985 | 0.9986 | 186 ms |
+///
+/// The graph is what limits it rather than the arithmetic -- the rescore adds
+/// at most 0.0015 at any width -- and 1,200 is the narrowest measured to stay
+/// within 0.002 of fp32 at both depths. The milliseconds are from a machine
+/// at load 12 to 13 and are a direction, not a figure; see ADR 0001.
+const DISKANN_SEARCH_LIST: i32 = 1_200;
+
+/// How many candidates either index is asked for per result kept, before they
+/// are ranked again in f32.
+///
+/// The engine scores a half-precision field by multiplying and accumulating
+/// in half precision on a CPU with AVX-512 FP16 (upstream,
+/// `inner_product_distance_batch_impl_fp16_avx512fp16.cc`), so its scores are
+/// off by about 4e-4 where rounding the vectors moves a cosine by about 1e-5,
+/// and an HNSW graph over such a field recalled 0.9650 of the exact top ten on
+/// 50,000 clustered vectors where fp32 recalled 0.9975. Reading the stored
+/// vectors back with the candidates and ranking them by an exact f32 cosine
+/// removes the arithmetic's error and leaves only the rounding's. Twice the
+/// candidates is where recall stops rising: at k = 10 it restored 0.9970 on
+/// the synthetic set and 0.9998 on MIRACL's 131,924 passages -- what exact
+/// search over the rounded vectors recalls -- and four times gained nothing.
+const RESCORE: u32 = 2;
 
 /// How hard the build works to place each document in the graph.
 ///
@@ -702,17 +867,28 @@ const GRAPH_EFFORT: i32 = 500;
 /// and at 2,000, fused and through the reranker -- zero wins, zero losses (the
 /// `EFFORTS` arm of `pamin-engine/tests/monolingual.rs`). Synthetic clusters
 /// are harder to search than real embeddings, so the width stays.
+///
+/// **And again over half-precision vectors with the rescore**, which is what
+/// [`VectorIndex::Memory`] searches, against the bar that fp32 at 700 sets --
+/// within 0.002 of its recall on 50,000 clustered vectors, 0.001 on MIRACL:
+///
+/// | width | synthetic @10 | synthetic @50 | MIRACL @10 | MIRACL @50 |
+/// | --- | --- | --- | --- | --- |
+/// | fp32 at 700 | 0.9980 | 0.9974 | 1.0000 | 0.9999 |
+/// | 200 | 0.9665 | 0.9458 | 0.9996 | 0.9980 |
+/// | 300 | 0.9855 | 0.9769 | 0.9998 | 0.9988 |
+/// | 500 | 0.9965 | 0.9927 | 1.0000 | 0.9993 |
+/// | **700** | **0.9965** | **0.9965** | **1.0000** | **0.9997** |
+///
+/// A narrower width saves about a millisecond a query and fails the bar at
+/// fifty on both sets, so 700 stays for this index too.
 const SEARCH_EFFORT: i32 = 700;
 
 /// Overrides [`SEARCH_EFFORT`], for the sweep that settles it.
 const PAMIN_SEARCH_EFFORT: &str = "PAMIN_SEARCH_EFFORT";
 
 fn search_effort() -> i32 {
-    std::env::var(PAMIN_SEARCH_EFFORT)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|effort| *effort > 0)
-        .unwrap_or(SEARCH_EFFORT)
+    pamin_core::env::positive(PAMIN_SEARCH_EFFORT).unwrap_or(SEARCH_EFFORT)
 }
 
 impl ProjectionIndex {
@@ -724,11 +900,13 @@ impl ProjectionIndex {
     /// because reading one scheme's keys as another's matches nothing at all.
     /// Neither failure looks like a failure -- one returns plausible rankings
     /// from meaningless distances and the other returns no results and no
-    /// error -- so both are enforced rather than documented.
+    /// error -- so both are enforced rather than documented. So is the vector
+    /// index, for the same reason: see [`VectorIndex`].
     pub fn open(
         dir: &Path,
         legacy_dir: &Path,
         profile: Profile,
+        index: VectorIndex,
         access: Access,
         documents: u64,
     ) -> Result<Self> {
@@ -740,7 +918,27 @@ impl ProjectionIndex {
             return Err(IndexError::LegacyLayout);
         }
 
-        Self::open_sized(dir, profile, access, segment_documents(documents))
+        Self::open_sized(dir, profile, index, access, segment_documents(documents))
+    }
+
+    /// The profile the index at `dir` was built with, if there is one there.
+    ///
+    /// For a caller that has to open an index nobody asked it to and so has
+    /// no profile in hand: the resident server, bringing up to date a project
+    /// that was written to by a process that is gone. Opening under a guess is
+    /// not an option -- a wrong guess is refused, and a guess at a directory
+    /// with no index creates one for that profile.
+    ///
+    /// `None` for no index, and for one recorded with a model no profile runs
+    /// any more or a vector index no build makes any more, which only a
+    /// rebuild can open.
+    pub fn built_for(dir: &Path) -> Result<Option<(Profile, VectorIndex)>> {
+        Ok(Marker::read(dir)?.and_then(|recorded| {
+            let profile = [Profile::Speed, Profile::Balanced, Profile::Accuracy]
+                .into_iter()
+                .find(|profile| profile.model_id() == recorded.model)?;
+            Some((profile, VectorIndex::parse(&recorded.storage)?))
+        }))
     }
 
     /// Opens the index at `dir`, creating it with segments of `segment`
@@ -752,19 +950,13 @@ impl ProjectionIndex {
     pub(crate) fn open_sized(
         dir: &Path,
         profile: Profile,
+        index: VectorIndex,
         access: Access,
         segment: u64,
     ) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let storage = vector_storage();
-        let passage = match Marker::read(dir)? {
+        let (passage, keys) = match Marker::read(dir)? {
             Some(recorded) => {
-                if recorded.storage != storage {
-                    return Err(IndexError::VectorStorageMismatch {
-                        indexed: recorded.storage.label().to_string(),
-                        requested: storage.label().to_string(),
-                    });
-                }
                 if recorded.model != profile.model_id() {
                     return Err(IndexError::ProfileMismatch {
                         indexed: recorded.model,
@@ -784,22 +976,25 @@ impl ProjectionIndex {
                         expected: DOCUMENT_GRAIN.to_string(),
                     });
                 }
-                recorded.passage
+                if recorded.storage != index.label() {
+                    return Err(IndexError::VectorIndexMismatch {
+                        indexed: recorded.storage,
+                        requested: index.label().to_string(),
+                    });
+                }
+                (recorded.passage, recorded.keys)
             }
             None => {
-                // What was actually built, not what was asked for. The two are
-                // the same today; they stop being the same the moment a
-                // storage needs a capability the machine may not have, and a
-                // marker recording the request would then be read as a
-                // description of the index -- ADR 0001's silent wrong answer.
-                Marker::current(profile).write(dir)?;
-                PASSAGE
+                Marker::current(profile, index).write(dir)?;
+                (PASSAGE, KEYS)
             }
         };
 
-        let mut index = Self::open_with_dimensions(dir, profile.dimensions(), access, segment)?;
-        index.passage = passage;
-        Ok(index)
+        let mut opened =
+            Self::open_with_dimensions(dir, profile.dimensions(), index, access, segment)?;
+        opened.passage = passage;
+        opened.keys = keys;
+        Ok(opened)
     }
 
     /// Creates an empty index at `dir` that records what the one at `source`
@@ -811,20 +1006,36 @@ impl ProjectionIndex {
     /// current marker would label those vectors `name: content`. Reopening
     /// then checks the copied marker against `profile` like any other open.
     ///
+    /// Except for the [`Keys`]: the copy is written a document at a time
+    /// through this index, which spells every key itself, so nothing of the
+    /// source's spelling survives into it and the copy takes the current one.
+    ///
     /// Whatever is at `dir` already is discarded first: it can only be a copy
     /// that did not finish.
     pub(crate) fn create_beside(
         source: &Path,
         dir: &Path,
         profile: Profile,
+        index: VectorIndex,
         documents: u64,
     ) -> Result<Self> {
         Self::discard(dir)?;
         std::fs::create_dir_all(dir)?;
-        std::fs::copy(source.join(Marker::FILE), dir.join(Marker::FILE))?;
+        let recorded = Marker::read(source)?.ok_or_else(|| {
+            IndexError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no marker at {}", source.display()),
+            ))
+        })?;
+        Marker {
+            keys: KEYS,
+            ..recorded
+        }
+        .write(dir)?;
         Self::open_sized(
             dir,
             profile,
+            index,
             Access::ReadWrite,
             segment_documents(documents),
         )
@@ -835,22 +1046,31 @@ impl ProjectionIndex {
     /// For reopening an index after its directory was moved into place, where
     /// finding nothing there is a fault: an open that created an empty index
     /// would hand the caller a project with no memories and no error.
-    pub(crate) fn reopen(dir: &Path, profile: Profile) -> Result<Self> {
+    pub(crate) fn reopen(dir: &Path, profile: Profile, index: VectorIndex) -> Result<Self> {
         if !std::fs::exists(dir.join(COLLECTION))? {
             return Err(IndexError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("no index at {}", dir.display()),
             )));
         }
-        Self::open_sized(dir, profile, Access::ReadWrite, segment_documents(0))
+        Self::open_sized(dir, profile, index, Access::ReadWrite, segment_documents(0))
     }
 
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
+        index: VectorIndex,
         access: Access,
         segment: u64,
     ) -> Result<Self> {
+        // The engine's defaults, and an explicit `memory_limit` was measured
+        // rather than assumed away. The limit sizes the buffer pool the engine
+        // reads vectors through when a collection was created with mmap off,
+        // and every collection here is created with the default, mmap on, so
+        // nothing reads it. Over XQuAD-R's 13,014 documents, 256 MiB, 2 GiB
+        // and none opened at the same resident set (243 MB), returned the same
+        // results for 400 vector and 400 lexical queries, and built in the
+        // same time and peak within noise (25.2-26.4 s, 826-873 MB). ADR 0001.
         INITIALIZE.call_once(|| {
             let _ = zvec_rust::initialize(None);
         });
@@ -875,11 +1095,12 @@ impl ProjectionIndex {
                 DataType::String,
                 IndexParams::fts(Some("ngram"), None, None)?,
             )
+            // Half precision, and read back by the rescore; see `RESCORE`.
             .add_vector_field(
                 FIELD_VECTOR,
-                DataType::VectorFp32,
+                DataType::VectorFp16,
                 dimensions,
-                vector_storage().index_params()?,
+                index.params()?,
             )
             .max_doc_count_per_segment(segment)
             .build()?;
@@ -905,19 +1126,21 @@ impl ProjectionIndex {
             collection,
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
-            storage: vector_storage(),
+            index,
             passage: PASSAGE,
+            keys: KEYS,
+            optimized_files: AtomicU64::new(0),
         })
     }
 
     fn document(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<Doc> {
         let mut doc = Doc::new()?;
-        let key = topic.to_string();
+        let key = self.keys.key(topic);
         doc.set_pk(&key);
         doc.add_string(FIELD_ID, &key)?;
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
         doc.add_string(FIELD_NGRAM, content)?;
-        doc.add_vector_f32(FIELD_VECTOR, embedding)?;
+        crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
         Ok(doc)
     }
 
@@ -953,28 +1176,34 @@ impl ProjectionIndex {
         // from one that returned the least bad of fifty wrong documents. Reading
         // it costs one accessor per candidate on a result set already in memory.
         // BM25, where larger is already better.
-        Ok(collect_scored(self.collection.query(&search)?, |score| {
-            score
-        }))
+        Ok(collect_scored(
+            self.keys,
+            self.collection.query(&search)?,
+            |score| score,
+        ))
     }
 
-    /// The documents stored under these topics, keyed by primary key.
+    /// The documents stored under these topics, keyed by the topic each is.
     ///
-    /// The one way anything reads a document back, so a rebuild lending its
-    /// vectors and a reshape copying whole documents cannot come to disagree
-    /// about what a stored document is. The text comes from the n-gram field,
-    /// which holds the content verbatim; the segmented one is derived from it.
-    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<String, Doc>> {
-        let keys: Vec<String> = topics.iter().map(ToString::to_string).collect();
-        let mut stored: HashMap<String, Doc> = HashMap::with_capacity(keys.len());
+    /// How a reshape reads the index it is copying, and it has to be keyed:
+    /// it reads a served index that goes on taking writes, a batch at a time
+    /// under the owner's lock, and afterwards reads again exactly the topics
+    /// written meanwhile. The engine's document iterator, which a rebuild
+    /// lends through (see [`Previous`]), would seal a writable collection's
+    /// open segment each time one was made and block its `optimize` while
+    /// open. The text comes from the n-gram field, which holds the content
+    /// verbatim; the segmented one is derived from it.
+    fn fetch(&self, topics: &[TopicId]) -> Result<HashMap<TopicId, Doc>> {
+        let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
+        let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
             for doc in self
                 .collection
-                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), vectors)?
+                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), true)?
             {
-                if let Some(key) = doc.get_pk() {
-                    stored.insert(key.to_string(), doc);
+                if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
+                    stored.insert(topic, doc);
                 }
             }
         }
@@ -998,28 +1227,35 @@ impl ProjectionIndex {
 
 /// What an index records it was built for, in its `profile` file.
 ///
-/// Four lines: the embedding model, what a document stands for, how vectors
-/// are stored, and what text they were embedded from. A line an older index
-/// does not have reads as what that index was built with, so an existing
-/// workspace opens unchanged: no storage line is `fp32`, no passage line is
-/// content alone.
+/// Five lines: the embedding model, what a document stands for, how vectors
+/// are stored, what text they were embedded from, and how a topic is spelled
+/// as a key. A line an older index does not have reads as what that index was
+/// built with: no storage line is `fp32`, no passage line is content alone, no
+/// key line is the topic as written.
+///
+/// The storage line is kept as written rather than parsed into a
+/// [`VectorIndex`], because an index built before those existed records
+/// something else -- `fp32`, or whatever a sweep built -- and has to be named
+/// when it is refused and read when a rebuild lends from it.
 struct Marker {
     model: String,
     grain: String,
-    storage: VectorStorage,
+    storage: String,
     passage: Passage,
+    keys: Keys,
 }
 
 impl Marker {
     const FILE: &str = "profile";
 
-    /// What an index built now, for this profile, is.
-    fn current(profile: Profile) -> Self {
+    /// What an index built now, for this profile and vector index, is.
+    fn current(profile: Profile, index: VectorIndex) -> Self {
         Self {
             model: profile.model_id().to_string(),
             grain: DOCUMENT_GRAIN.to_string(),
-            storage: vector_storage(),
+            storage: index.label().to_string(),
             passage: PASSAGE,
+            keys: KEYS,
         }
     }
 
@@ -1034,14 +1270,12 @@ impl Marker {
         Ok(Some(Self {
             model: lines.next().unwrap_or_default().trim().to_string(),
             grain: lines.next().unwrap_or_default().trim().to_string(),
-            storage: lines
-                .next()
-                .and_then(VectorStorage::parse)
-                .unwrap_or(VectorStorage::Fp32),
+            storage: lines.next().map_or(LEGACY_STORAGE, str::trim).to_string(),
             passage: lines
                 .next()
                 .and_then(Passage::parse)
                 .unwrap_or(Passage::Content),
+            keys: lines.next().and_then(Keys::parse).unwrap_or(Keys::Topic),
         }))
     }
 
@@ -1049,24 +1283,33 @@ impl Marker {
         std::fs::write(
             dir.join(Self::FILE),
             format!(
-                "{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}",
                 self.model,
                 self.grain,
-                self.storage.label(),
-                self.passage.label()
+                self.storage,
+                self.passage.label(),
+                self.keys.label()
             ),
         )?;
         Ok(())
     }
 
     /// Whether a vector this index holds is the vector an index built now
-    /// would compute for the same text: same model, same storage, same
-    /// encoding, same keys.
+    /// would compute for the same text: same model, same encoding, same grain.
+    ///
+    /// Not the same [`Keys`]: how a key is spelled says nothing about the
+    /// vector stored under it, and the index lending it is read through its
+    /// own spelling. Nor the same storage: every index built now stores half
+    /// precision, and a vector read from any of them -- or from an fp32 index
+    /// built before -- rounds to the same codes the model's own output would.
     fn matches(&self, other: &Self) -> bool {
-        self.model == other.model
-            && self.grain == other.grain
-            && self.storage == other.storage
-            && self.passage == other.passage
+        self.model == other.model && self.grain == other.grain && self.passage == other.passage
+    }
+
+    /// Whether the index this describes stores half-precision vectors, as
+    /// every [`VectorIndex`] does; an index built before them stored fp32.
+    fn is_half(&self) -> bool {
+        VectorIndex::parse(&self.storage).is_some()
     }
 }
 
@@ -1091,6 +1334,9 @@ impl Marker {
 pub struct Previous {
     index: ProjectionIndex,
     dir: std::path::PathBuf,
+    /// Whether its vectors are half precision; an index from before the
+    /// [`VectorIndex`]es stores fp32.
+    half: bool,
 }
 
 impl Previous {
@@ -1104,58 +1350,135 @@ impl Previous {
     pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let lends =
-            Marker::read(dir)?.is_some_and(|recorded| recorded.matches(&Marker::current(profile)));
-        if !lends {
+        let current = Marker::current(profile, VectorIndex::default());
+        let Some(recorded) = Marker::read(dir)?.filter(|recorded| recorded.matches(&current))
+        else {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
-        }
+        };
         std::fs::rename(dir, &aside)?;
+        // The collection exists, so the vector index passed here only fills a
+        // schema the engine does not read.
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
             profile.dimensions(),
+            VectorIndex::default(),
             Access::ReadOnly,
             segment_documents(0),
         )?;
         index.passage = PASSAGE;
-        Ok(Some(Self { index, dir: aside }))
+        index.keys = recorded.keys;
+        Ok(Some(Self {
+            index,
+            dir: aside,
+            half: recorded.is_half(),
+        }))
     }
 
-    /// For each topic, its stored vector if the text stored with it is
-    /// exactly `content`, and `None` otherwise.
-    pub fn vectors(&self, wanted: &[(TopicId, &str)]) -> Result<Vec<Option<Vec<f32>>>> {
-        self.lend(wanted, true)
+    /// How many of these topics [`lend`](Self::lend) would supply, without
+    /// reading a vector.
+    ///
+    /// `wanted` maps each topic to the text the rebuild will write for it.
+    pub fn lends(&self, wanted: &HashMap<TopicId, &str>) -> Result<usize> {
+        let mut lendable = 0;
+        self.each(wanted, false, |_, _| {
+            lendable += 1;
+            Ok(())
+        })?;
+        Ok(lendable)
     }
 
-    /// How many of these topics [`vectors`](Self::vectors) would supply,
-    /// without reading a vector.
-    pub fn lends(&self, wanted: &[(TopicId, &str)]) -> Result<usize> {
-        Ok(self.lend(wanted, false)?.iter().flatten().count())
+    /// Hands `take` every document this index can lend, `batch` at a time,
+    /// as the topic, the text wanted for it and its stored vector; returns
+    /// the topics it lent.
+    ///
+    /// A topic is lent when this index holds it with exactly the text in
+    /// `wanted`; everything else is the caller's to embed. In the order this
+    /// index holds its documents rather than the caller's, because that is
+    /// the order they are read in: one pass over the collection rather than a
+    /// keyed fetch per batch. Over MIRACL's 131,924 documents a pass takes
+    /// 0.28 s this way against 1.46-1.59 s of keyed fetches, with the same
+    /// resident set and identical vectors and text (ADR 0001).
+    pub fn lend(
+        &self,
+        wanted: &HashMap<TopicId, &str>,
+        batch: usize,
+        mut take: impl FnMut(&[(TopicId, &str, &[f32])]) -> Result<()>,
+    ) -> Result<HashSet<TopicId>> {
+        let mut lent = HashSet::new();
+        let mut pending: Vec<(TopicId, &str, Vec<f32>)> = Vec::with_capacity(batch);
+        let mut hand_over = |pending: &mut Vec<(TopicId, &str, Vec<f32>)>| {
+            let documents: Vec<(TopicId, &str, &[f32])> = pending
+                .iter()
+                .map(|(topic, content, vector)| (*topic, *content, vector.as_slice()))
+                .collect();
+            take(&documents)?;
+            pending.clear();
+            Ok::<_, IndexError>(())
+        };
+        self.each(wanted, true, |topic, doc| {
+            // The vector field is not nullable and every write here carries
+            // one, so a document without it is an engine fault -- and the
+            // engine's iterator fails before handing one over anyway.
+            let vector = if self.half {
+                crate::half::get(&doc, FIELD_VECTOR)?
+            } else {
+                doc.get_vector_f32(FIELD_VECTOR)?
+            };
+            let vector = vector.ok_or_else(|| {
+                IndexError::Engine(format!("the document for topic {topic} has no vector"))
+            })?;
+            lent.insert(topic);
+            pending.push((topic, wanted[&topic], vector));
+            if pending.len() == batch {
+                hand_over(&mut pending)?;
+            }
+            Ok(())
+        })?;
+        if !pending.is_empty() {
+            hand_over(&mut pending)?;
+        }
+        Ok(lent)
     }
 
-    fn lend(&self, wanted: &[(TopicId, &str)], vectors: bool) -> Result<Vec<Option<Vec<f32>>>> {
-        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
-        let stored = self.index.fetch(&topics, vectors)?;
-        wanted
-            .iter()
-            .map(|(topic, content)| {
-                let Some(doc) = stored.get(&topic.to_string()) else {
-                    return Ok(None);
-                };
-                if doc.get_string(FIELD_NGRAM)?.as_deref() != Some(*content) {
-                    return Ok(None);
-                }
-                if !vectors {
-                    return Ok(Some(Vec::new()));
-                }
-                Ok(doc.get_vector_f32(FIELD_VECTOR)?)
-            })
-            .collect()
+    /// Calls `visit` for every document this index holds with exactly the
+    /// text `wanted` gives its topic.
+    ///
+    /// Through the engine's document iterator, which reads a snapshot and has
+    /// three constraints this meets by construction: made on a writable
+    /// collection it seals the segment being written, which this index does
+    /// not have because it was opened read-only; nothing can `optimize` a
+    /// collection while one is open, and nothing optimizes a set-aside index;
+    /// and it fails on a document without a vector when vectors are asked
+    /// for, which the schema does not allow.
+    fn each(
+        &self,
+        wanted: &HashMap<TopicId, &str>,
+        vectors: bool,
+        mut visit: impl FnMut(TopicId, Doc) -> Result<()>,
+    ) -> Result<()> {
+        let index = &self.index;
+        for doc in index
+            .collection
+            .iter_with_options(Some(&[FIELD_NGRAM]), vectors)?
+        {
+            let doc = doc?;
+            let Some(topic) = doc.get_pk().and_then(|key| index.keys.topic(key)) else {
+                continue;
+            };
+            let Some(content) = wanted.get(&topic) else {
+                continue;
+            };
+            if doc.get_string(FIELD_NGRAM)?.as_deref() == Some(*content) {
+                visit(topic, doc)?;
+            }
+        }
+        Ok(())
     }
 
     /// Deletes the set-aside index, once the rebuild no longer needs it.
     pub fn discard(self) -> Result<()> {
-        let Self { index, dir } = self;
+        let Self { index, dir, .. } = self;
         drop(index);
         ProjectionIndex::discard(&dir)
     }
@@ -1164,6 +1487,10 @@ impl Previous {
 impl Projection for ProjectionIndex {
     fn passage(&self) -> Passage {
         self.passage
+    }
+
+    fn vector_index(&self) -> VectorIndex {
+        self.index
     }
 
     /// The segmenter this index tokenizes with.
@@ -1214,16 +1541,16 @@ impl Projection for ProjectionIndex {
     /// A document without its text or its vector is refused rather than read
     /// as absent: a copy that took it for absent would drop it without a word.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
-        let stored = self.fetch(topics, true)?;
+        let stored = self.fetch(topics)?;
         topics
             .iter()
             .map(|topic| {
-                let Some(doc) = stored.get(&topic.to_string()) else {
+                let Some(doc) = stored.get(topic) else {
                     return Ok(None);
                 };
                 match (
                     doc.get_string(FIELD_NGRAM)?,
-                    doc.get_vector_f32(FIELD_VECTOR)?,
+                    crate::half::get(doc, FIELD_VECTOR)?,
                 ) {
                     (Some(content), Some(embedding)) => Ok(Some(Stored { content, embedding })),
                     _ => Err(IndexError::Engine(format!(
@@ -1237,7 +1564,7 @@ impl Projection for ProjectionIndex {
     /// Removes these topics.
     fn delete(&self, topics: &[TopicId]) -> Result<()> {
         for chunk in topics.chunks(WRITE_BATCH) {
-            let keys: Vec<String> = chunk.iter().map(ToString::to_string).collect();
+            let keys: Vec<String> = chunk.iter().map(|topic| self.keys.key(*topic)).collect();
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             self.collection.delete(&keys)?;
         }
@@ -1278,29 +1605,51 @@ impl Projection for ProjectionIndex {
     /// directly would be meaningless -- but each channel's own scores are the
     /// only evidence of whether *that* channel is confident, which is a question
     /// ranks cannot answer. See [`pamin_core::ChannelResults`].
+    ///
+    /// The index proposes [`RESCORE`] times `limit` candidates with their
+    /// stored vectors, and they are ranked again here by an exact f32 cosine
+    /// against the query as the model produced it; the engine's own scores
+    /// over half-precision vectors are not good enough to rank by. The score
+    /// each keeps is that cosine similarity, where larger is better as
+    /// `Scored` requires.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        let mut search = SearchQuery::new(FIELD_VECTOR, embedding, limit as i32)?;
+        let candidates = limit.saturating_mul(RESCORE);
+        let mut search = SearchQuery::new(
+            FIELD_VECTOR,
+            &crate::half::query(embedding),
+            candidates as i32,
+        )?;
         search.set_output_fields(&[FIELD_ID])?;
-        search.set_include_vector(false)?;
-        // No radius bound and the graph rather than a linear scan. The refiner
-        // follows what the vectors were stored as, for the reason
-        // `VectorStorage::refines` gives: asking for one over unquantized
-        // vectors fails outright rather than being ignored.
-        search.set_hnsw_params(HnswQueryParams::new(
-            search_effort(),
-            0.0,
-            false,
-            self.storage.refines(),
-        ))?;
-        // Cosine *distance*, which is what the engine reports for a cosine
-        // index: nearest is zero. `Scored` requires larger to be better,
-        // because everything above compares magnitudes -- summing a distance
-        // would sum this channel backwards and reading its confidence would
-        // read its worst candidate as its best. Cosine distance is
-        // `1 - similarity`, so this is the exact inverse and not a rescaling.
-        Ok(collect_scored(self.collection.query(&search)?, |score| {
-            1.0 - score
-        }))
+        search.set_include_vector(true)?;
+        self.index.ask(&mut search, candidates)?;
+
+        let length = dot(embedding, embedding).sqrt();
+        let mut scored = Vec::with_capacity(candidates as usize);
+        for doc in self.collection.query(&search)? {
+            let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) else {
+                continue;
+            };
+            let vector = crate::half::get(&doc, FIELD_VECTOR)?.ok_or_else(|| {
+                IndexError::Engine(format!(
+                    "a candidate for topic {topic} came without its vector"
+                ))
+            })?;
+            let lengths = length * dot(&vector, &vector).sqrt();
+            let similarity = if lengths > 0.0 {
+                dot(embedding, &vector) / lengths
+            } else {
+                0.0
+            };
+            scored.push(Scored::new(topic, similarity));
+        }
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .unwrap_or(f32::MIN)
+                .total_cmp(&left.score.unwrap_or(f32::MIN))
+        });
+        scored.truncate(limit as usize);
+        Ok(scored)
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -1326,6 +1675,8 @@ impl Projection for ProjectionIndex {
     /// [`vector_index_completeness`](Self::vector_index_completeness) belongs.
     fn optimize(&self) -> Result<()> {
         self.collection.optimize()?;
+        self.optimized_files
+            .store(self.file_count()?, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1349,6 +1700,15 @@ impl Projection for ProjectionIndex {
         Ok(self.collection.stats()?.doc_count)
     }
 
+    fn segmentation(&self) -> Result<Segmentation> {
+        Ok(Segmentation {
+            documents: self.collection.stats()?.doc_count,
+            // What the collection actually recorded, not what the policy would
+            // have chosen: the point of reporting this is that the two differ.
+            recorded: self.collection.schema()?.max_doc_count_per_segment(),
+        })
+    }
+
     /// How many files the index is spread across, counted from the directory.
     ///
     /// The engine reports documents and index completeness and nothing about
@@ -1360,15 +1720,6 @@ impl Projection for ProjectionIndex {
     /// A directory that cannot be read counts as nothing to do. This decides
     /// whether to schedule maintenance, and failing a write over it would be a
     /// worse answer than scheduling it a little late.
-    fn segmentation(&self) -> Result<Segmentation> {
-        Ok(Segmentation {
-            documents: self.collection.stats()?.doc_count,
-            // What the collection actually recorded, not what the policy would
-            // have chosen: the point of reporting this is that the two differ.
-            recorded: self.collection.schema()?.max_doc_count_per_segment(),
-        })
-    }
-
     fn file_count(&self) -> Result<u64> {
         fn walk(dir: &std::path::Path) -> u64 {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1385,6 +1736,39 @@ impl Projection for ProjectionIndex {
         }
 
         Ok(walk(&self.dir))
+    }
+
+    fn files_after_optimize(&self) -> u64 {
+        self.optimized_files.load(Ordering::Relaxed)
+    }
+
+    /// Counted from the directory, as [`file_count`](Self::file_count) is:
+    /// the engine keeps each segment in a directory of its own, writes one
+    /// `embedding.index.<n>.proxima` there per flush, and leaves one per
+    /// segment once it has compacted. So every block past a segment's first is
+    /// one a compaction would merge.
+    fn unmerged_blocks(&self) -> Result<u64> {
+        let prefix = format!("{FIELD_VECTOR}.index.");
+        let Ok(segments) = std::fs::read_dir(self.dir.join(COLLECTION)) else {
+            return Ok(0);
+        };
+        Ok(segments
+            .flatten()
+            .filter(|segment| segment.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|segment| {
+                let blocks = std::fs::read_dir(segment.path()).map_or(0, |files| {
+                    files
+                        .flatten()
+                        .filter(|file| {
+                            let name = file.file_name();
+                            let name = name.to_string_lossy();
+                            name.starts_with(&prefix) && name.ends_with(".proxima")
+                        })
+                        .count() as u64
+                });
+                blocks.saturating_sub(1)
+            })
+            .sum())
     }
 }
 
@@ -1405,22 +1789,31 @@ fn options(access: Access) -> Result<Option<CollectionOptions>> {
 
 /// How long to keep trying for the index's file lock before giving up.
 ///
-/// Long enough to outlast the other command, short enough that a caller who is
-/// actually stuck finds out quickly. A `pamin search` holds the lock for the
-/// length of one query.
+/// Long enough to outlast a server on its way out, short enough that a caller
+/// who is actually stuck finds out quickly.
 const LOCK_BUDGET: Duration = Duration::from_millis(2_000);
 
 /// Opens the collection, waiting out another process that holds its lock.
 ///
-/// The engine takes the lock non-blocking and exclusive, so two commands
-/// running at once do not queue -- the second is refused outright. Agents drive
-/// this CLI concurrently by design, so a plain refusal turns an ordinary
-/// overlap into a failed command. Retrying with backoff is not the eventual
-/// answer, which is opening read-only for queries and holding the index in one
-/// process, but it is what makes an overlap survivable today.
+/// The engine takes the lock non-blocking and exclusive, so a second opener
+/// does not queue -- it is refused outright. This used to be for `pamin`
+/// commands overlapping, each opening the index itself. They no longer open
+/// it: the workspace's server does, and it is the only process the CLI opens
+/// an index in. What is left is a handover between two processes, and
+/// it is still worth waiting out:
 ///
-/// The jitter matters more than the backoff: several commands started together
-/// by one agent would otherwise retry in step forever.
+/// - **A server being replaced.** `pamin stop` and then any command, or a
+///   client that found a server from another build, stops one server and
+///   starts another. The old one
+///   removes its socket and then exits, and its lock goes only when the kernel
+///   closes its descriptors -- after unmapping an address space that runs to
+///   gigabytes. The client watches the socket, not the process, so the new
+///   server can reach the index while the old one still holds it.
+/// - **A process outside the CLI** holding the same workspace, such as an
+///   evaluation harness driving an engine directly.
+///
+/// The jitter is for the second case: several processes started together would
+/// otherwise retry in step forever.
 fn open_contended(mut open: impl FnMut() -> Result<Collection>) -> Result<Collection> {
     let deadline = Instant::now() + LOCK_BUDGET;
     let mut wait = Duration::from_millis(5);
@@ -1476,19 +1869,23 @@ fn jittered(wait: Duration) -> Duration {
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a
 /// branch on the field so that adding a channel cannot forget it.
-fn collect_scored(docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
+/// The dot product, accumulated in f32.
+fn dot(left: &[f32], right: &[f32]) -> f32 {
+    left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+fn collect_scored(keys: Keys, docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
     docs.iter()
         .filter_map(|doc| {
-            let pk = doc.get_pk()?;
-            let topic = uuid::Uuid::parse_str(pk).ok()?;
-            Some(Scored::new(TopicId::from(topic), orient(doc.get_score())))
+            let topic = keys.topic(doc.get_pk()?)?;
+            Some(Scored::new(topic, orient(doc.get_score())))
         })
         .collect()
 }
 
 #[cfg(test)]
 mod upkeep {
-    use super::{Segmentation, is_fragmented, segment_documents, vector_index_lags};
+    use super::{Segmentation, is_fragmented, segment_documents, vector_index_lags, wastes_disk};
 
     /// A workspace that grew from empty holds the floor's segments, and the
     /// report says so; one built knowing its size does not.
@@ -1578,7 +1975,7 @@ mod upkeep {
         // Measured, not chosen: the file count after three thousand writes
         // that left their flush to the server.
         assert!(
-            !is_fragmented(136),
+            !is_fragmented(136, 0),
             "136 files is inside the budget, which is why this condition \
              cannot be the graph's"
         );
@@ -1598,10 +1995,185 @@ mod upkeep {
         assert!(!vector_index_lags(1_000_000, 1.0));
     }
 
+    /// A small index is compacted after a few flushes, not after the file
+    /// budget's forty; a large one keeps a larger allowance of blocks.
+    #[test]
+    fn unmerged_blocks_are_bounded_by_the_index_size() {
+        assert!(!wastes_disk(8, 1), "eight blocks is the floor");
+        assert!(wastes_disk(9, 43), "a ninth on a small index is waste");
+        assert!(
+            !is_fragmented(9 * 6, 0),
+            "and the file budget would not have asked yet"
+        );
+        assert!(!wastes_disk(100, 13_014), "a large index is allowed more");
+        assert!(wastes_disk(102, 13_014));
+    }
+
+    /// An index `optimize` cannot bring under the budget is not asked again
+    /// until it has grown.
+    ///
+    /// The first assertion is the one the budget alone failed: an index its
+    /// own `optimize` left at 300 files was asked for another after every
+    /// drain that did work, and the answer was the same 300 files.
+    #[test]
+    fn an_index_optimize_cannot_shrink_is_not_asked_again_until_it_grows() {
+        assert!(
+            !is_fragmented(300, 300),
+            "nothing has grown since the last optimize"
+        );
+        assert!(
+            !is_fragmented(300 + 2 * 10, 300),
+            "ten reopens' write-ahead logs are not growth worth an optimize"
+        );
+        assert!(
+            is_fragmented(300 + 65, 300),
+            "a quarter of the budget past the floor is"
+        );
+        assert!(!is_fragmented(2_317, 2_317), "nor is MIRACL's floor");
+    }
+
+    /// Under the budget the floor changes nothing, and an index this process
+    /// has not optimized is held to the budget alone.
+    #[test]
+    fn below_the_budget_the_floor_changes_nothing() {
+        assert!(!is_fragmented(256, 0));
+        assert!(is_fragmented(257, 0), "a reopened index is asked once");
+        assert!(!is_fragmented(256, 240));
+        assert!(
+            is_fragmented(257, 240),
+            "a prior optimize below the ceiling cannot raise that ceiling"
+        );
+        assert!(
+            is_fragmented(257, 256),
+            "the ceiling itself is not a floor above it"
+        );
+        assert!(
+            is_fragmented(257, 40),
+            "an index optimize left small keeps the plain budget"
+        );
+        assert!(!is_fragmented(u64::MAX, u64::MAX), "the floor saturates");
+    }
+
     /// A completeness outside 0.0..=1.0 must not read as a negative remainder.
     #[test]
     fn a_nonsense_completeness_does_not_wrap() {
         assert!(vector_index_lags(30_000, -1.0));
         assert!(!vector_index_lags(30_000, 2.0));
+    }
+}
+
+#[cfg(test)]
+mod keys {
+    use super::{KEYS, Keys};
+    use pamin_core::TopicId;
+
+    /// Every spelling reads back as exactly the topic it was written for.
+    ///
+    /// A key that read back as some other topic would not fail anywhere: the
+    /// channels would return a plausible identifier, the ledger would resolve
+    /// it or drop it, and a memory would go missing from search with no error.
+    #[test]
+    fn a_key_reads_back_as_the_topic_it_was_written_for() {
+        let mut topics: Vec<TopicId> = (0..1_000).map(|_| TopicId::new()).collect();
+        topics.extend([
+            TopicId(uuid::Uuid::nil()),
+            TopicId(uuid::Uuid::max()),
+            TopicId(uuid::Uuid::from_u128(1)),
+            TopicId(uuid::Uuid::from_u128(
+                0x0123_4567_89ab_cdef_fedc_ba98_7654_3210,
+            )),
+        ]);
+        for keys in [Keys::Topic, Keys::Reversed] {
+            assert_eq!(Keys::parse(keys.label()), Some(keys));
+            for topic in &topics {
+                assert_eq!(keys.topic(&keys.key(*topic)), Some(*topic), "{keys:?}");
+            }
+            assert_eq!(keys.topic("not a key"), None);
+        }
+
+        // The old spelling is the identifier as written, which is what every
+        // index without a key line holds.
+        let topic = topics[0];
+        assert_eq!(Keys::Topic.key(topic), topic.to_string());
+        assert_ne!(Keys::Reversed.key(topic), topic.to_string());
+        assert_eq!(KEYS, Keys::Reversed, "a new index spells keys reversed");
+    }
+
+    /// Topics created one after another do not make keys that ascend.
+    ///
+    /// Which is the whole point: the key map only merges files whose key
+    /// ranges overlap, so keys that each land above the last are what left
+    /// one file per flush behind.
+    #[test]
+    fn topics_created_in_order_do_not_make_keys_in_order() {
+        let topics: Vec<TopicId> = (0..1_000).map(|_| TopicId::new()).collect();
+        let ascending = |keys: Keys| {
+            let spelled: Vec<String> = topics.iter().map(|topic| keys.key(*topic)).collect();
+            spelled.windows(2).filter(|pair| pair[0] < pair[1]).count()
+        };
+
+        assert_eq!(
+            ascending(Keys::Topic),
+            topics.len() - 1,
+            "the premise: identifiers created in order ascend"
+        );
+        // Random order ascends about half the time: 499.5 of 999 pairs, with
+        // a standard deviation of about nine, so these bounds are ten of them
+        // either side and still nowhere near the 999 of the premise.
+        let reversed = ascending(Keys::Reversed);
+        assert!(
+            (400..600).contains(&reversed),
+            "reversed keys ascended at {reversed} of {} pairs",
+            topics.len() - 1
+        );
+    }
+}
+
+#[cfg(test)]
+mod marker {
+    use super::{Marker, ProjectionIndex, VectorIndex};
+    use crate::Profile;
+
+    /// What an index was built with reads back as the profile that built it.
+    ///
+    /// The server opens a project nobody asked for under this answer, and
+    /// the answer being wrong has no quiet failure: the open is refused, or
+    /// -- for a directory with no index -- an empty one is created under the
+    /// guess. So every profile is written and read back, and an empty
+    /// directory has to answer that there is nothing to open.
+    #[test]
+    fn an_index_reads_back_the_profile_it_was_built_with() {
+        for profile in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
+            for index in VectorIndex::ALL {
+                let dir = tempfile::tempdir().expect("a directory");
+                Marker::current(profile, index)
+                    .write(dir.path())
+                    .expect("marking");
+                assert_eq!(
+                    ProjectionIndex::built_for(dir.path()).expect("reading"),
+                    Some((profile, index))
+                );
+            }
+        }
+
+        // An index from before the vector indexes names no profile to open it
+        // under: only a rebuild can.
+        let legacy = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            legacy.path().join("profile"),
+            format!("{}\ntopic\nfp32\nnamed", Profile::Accuracy.model_id()),
+        )
+        .expect("marking");
+        assert_eq!(
+            ProjectionIndex::built_for(legacy.path()).expect("reading"),
+            None
+        );
+
+        let empty = tempfile::tempdir().expect("a directory");
+        assert_eq!(
+            ProjectionIndex::built_for(empty.path()).expect("reading"),
+            None,
+            "a directory with no index named a profile to open it under"
+        );
     }
 }

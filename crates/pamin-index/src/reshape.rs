@@ -35,7 +35,7 @@ use pamin_core::{Scored, TopicId};
 
 use crate::embedding::Profile;
 use crate::error::{IndexError, Result};
-use crate::projection::{Passage, Projection, ProjectionIndex, Segmentation, Stored};
+use crate::projection::{Passage, Projection, ProjectionIndex, Segmentation, Stored, VectorIndex};
 use crate::segmentation::Segmenter;
 
 /// A served projection: one handle, behind the lock its owner serializes every
@@ -123,6 +123,8 @@ pub struct Reshape {
     next: Option<ProjectionIndex>,
     live: PathBuf,
     profile: Profile,
+    /// The served index's own, which the copy keeps.
+    index: VectorIndex,
     before: Segmentation,
     copied: u64,
     caught_up: u64,
@@ -137,12 +139,16 @@ impl Reshape {
     /// listing afterwards finds it; one written after is recorded. Listing
     /// first would miss a topic created and indexed between the two.
     pub fn begin(held: &Arc<Held>, live: &Path, profile: Profile) -> Result<Option<Self>> {
-        let before = lock(held).segmentation()?;
+        let (before, index) = {
+            let served = lock(held);
+            (served.segmentation()?, served.vector_index())
+        };
         if !before.is_worth_rebuilding() {
             return Ok(None);
         }
 
-        let next = ProjectionIndex::create_beside(live, &sibling(live), profile, before.documents)?;
+        let next =
+            ProjectionIndex::create_beside(live, &sibling(live), profile, index, before.documents)?;
         let recording = {
             let mut served = lock(held);
             let recording = Arc::new(Recording {
@@ -159,6 +165,7 @@ impl Reshape {
             next: Some(next),
             live: live.to_path_buf(),
             profile,
+            index,
             before,
             copied: 0,
             caught_up: 0,
@@ -253,6 +260,7 @@ impl Reshape {
             *served = Arc::new(Closed {
                 segmenter: served.segmenter(),
                 passage: served.passage(),
+                index: served.vector_index(),
                 reason: "it is being swapped for its reshaped copy".to_string(),
             });
             drop(recording);
@@ -260,7 +268,7 @@ impl Reshape {
             drop(self.recording.take());
             drop(self.next.take());
 
-            match exchange(&self.live, self.profile) {
+            match exchange(&self.live, self.profile, self.index) {
                 Ok(index) => {
                     *served = Arc::new(index);
                     let after = served.segmentation();
@@ -278,12 +286,13 @@ impl Reshape {
                     });
                 }
                 Err(error) => {
-                    match ProjectionIndex::reopen(&self.live, self.profile) {
+                    match ProjectionIndex::reopen(&self.live, self.profile, self.index) {
                         Ok(index) => *served = Arc::new(index),
                         Err(reopening) => {
                             *served = Arc::new(Closed {
                                 segmenter: served.segmenter(),
                                 passage: served.passage(),
+                                index: served.vector_index(),
                                 reason: format!("{error}, and reopening it failed: {reopening}"),
                             })
                         }
@@ -376,7 +385,7 @@ impl Drop for Reshape {
 /// Both indexes are closed by now. If the second rename or the open fails,
 /// the served index is moved back before returning; if moving it back fails
 /// as well, [`Reshape::recover`] does it on the next open.
-fn exchange(live: &Path, profile: Profile) -> Result<ProjectionIndex> {
+fn exchange(live: &Path, profile: Profile, index: VectorIndex) -> Result<ProjectionIndex> {
     let replaced = replaced(live);
     ProjectionIndex::discard(&replaced)?;
     std::fs::rename(live, &replaced)?;
@@ -384,7 +393,7 @@ fn exchange(live: &Path, profile: Profile) -> Result<ProjectionIndex> {
         std::fs::rename(&replaced, live)?;
         return Err(error.into());
     }
-    ProjectionIndex::reopen(live, profile).or_else(|error| {
+    ProjectionIndex::reopen(live, profile, index).or_else(|error| {
         ProjectionIndex::discard(live)?;
         std::fs::rename(&replaced, live)?;
         Err(error)
@@ -487,12 +496,27 @@ impl Projection for Recording {
         self.inner.file_count()
     }
 
+    fn files_after_optimize(&self) -> u64 {
+        self.inner.files_after_optimize()
+    }
+
+    /// None, for the reason [`optimize`](Self::optimize) does nothing: this
+    /// index is about to be replaced, and reporting its blocks would only
+    /// queue a compaction that does nothing, once a flush, until the swap.
+    fn unmerged_blocks(&self) -> Result<u64> {
+        Ok(0)
+    }
+
     fn segmentation(&self) -> Result<Segmentation> {
         self.inner.segmentation()
     }
 
     fn passage(&self) -> Passage {
         self.inner.passage()
+    }
+
+    fn vector_index(&self) -> VectorIndex {
+        self.inner.vector_index()
     }
 }
 
@@ -504,6 +528,7 @@ impl Projection for Recording {
 struct Closed {
     segmenter: Arc<Segmenter>,
     passage: Passage,
+    index: VectorIndex,
     reason: String,
 }
 
@@ -570,12 +595,24 @@ impl Projection for Closed {
         self.refuse()
     }
 
+    fn files_after_optimize(&self) -> u64 {
+        0
+    }
+
+    fn unmerged_blocks(&self) -> Result<u64> {
+        self.refuse()
+    }
+
     fn segmentation(&self) -> Result<Segmentation> {
         self.refuse()
     }
 
     fn passage(&self) -> Passage {
         self.passage
+    }
+
+    fn vector_index(&self) -> VectorIndex {
+        self.index
     }
 }
 
@@ -626,11 +663,21 @@ mod tests {
         std::fs::create_dir_all(live).expect("index dir");
         std::fs::write(
             live.join("profile"),
-            format!("{}\ntopic\nfp32\ncontent", PROFILE.model_id()),
+            format!(
+                "{}\ntopic\n{}\ncontent",
+                PROFILE.model_id(),
+                VectorIndex::default().label()
+            ),
         )
         .expect("marker");
-        let index = ProjectionIndex::open_sized(live, PROFILE, Access::ReadWrite, TINY_SEGMENT)
-            .expect("open the served index");
+        let index = ProjectionIndex::open_sized(
+            live,
+            PROFILE,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            TINY_SEGMENT,
+        )
+        .expect("open the served index");
         let contents: Vec<String> = (1..=DOCUMENTS).map(content).collect();
         let vectors: Vec<Vec<f32>> = (1..=DOCUMENTS).map(vector).collect();
         let documents: Vec<(TopicId, &str, &[f32])> = (1..=DOCUMENTS)
@@ -719,9 +766,11 @@ mod tests {
             Passage::Content,
             "the copy was relabelled with an encoding its vectors were not embedded in"
         );
+        // Everything the served index recorded, and the current key spelling:
+        // the copy wrote every document again, so none of the old one is left.
         assert_eq!(
             std::fs::read_to_string(live.join("profile")).expect("marker"),
-            marker,
+            format!("{marker}\nreversed-keys"),
             "the copy does not record what the served index recorded"
         );
 
@@ -731,14 +780,14 @@ mod tests {
                     topic(n),
                     Some(Stored {
                         content: content(n),
-                        embedding: vector(n),
+                        embedding: crate::as_stored(&vector(n)),
                     }),
                 )
             })
             .collect();
         expected[4].1 = Some(Stored {
             content: "memory number 5 was edited".to_string(),
-            embedding: vector(1005),
+            embedding: crate::as_stored(&vector(1005)),
         });
         expected[6].1 = None;
         let topics: Vec<TopicId> = expected.iter().map(|(topic, _)| *topic).collect();
@@ -772,7 +821,8 @@ mod tests {
 
         // On disk, not only in the handle: what reopens is the copy.
         drop(held);
-        let reopened = ProjectionIndex::reopen(&live, PROFILE).expect("reopen");
+        let reopened =
+            ProjectionIndex::reopen(&live, PROFILE, VectorIndex::default()).expect("reopen");
         assert_eq!(reopened.document_count().expect("count"), DOCUMENTS as u64);
         assert!(
             !reopened
@@ -841,9 +891,14 @@ mod tests {
     fn an_index_in_shape_is_not_reshaped() {
         let root = tempfile::tempdir().expect("temp dir");
         let live = root.path().join("index");
-        let index =
-            ProjectionIndex::open_sized(&live, PROFILE, Access::ReadWrite, segment_documents(0))
-                .expect("open");
+        let index = ProjectionIndex::open_sized(
+            &live,
+            PROFILE,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            segment_documents(0),
+        )
+        .expect("open");
         let held: Arc<Held> = Arc::new(Mutex::new(Arc::new(index)));
         assert!(
             Reshape::begin(&held, &live, PROFILE)
@@ -864,7 +919,8 @@ mod tests {
 
         std::fs::rename(&live, replaced(&live)).expect("interrupt a swap");
         Reshape::recover(&live).expect("recover");
-        let index = ProjectionIndex::reopen(&live, PROFILE).expect("the index is back");
+        let index = ProjectionIndex::reopen(&live, PROFILE, VectorIndex::default())
+            .expect("the index is back");
         assert_eq!(index.document_count().expect("count"), DOCUMENTS as u64);
         drop(index);
 

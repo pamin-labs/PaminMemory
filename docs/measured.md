@@ -207,7 +207,7 @@ over 10,785 memories. On its first 1,000 two-hop questions, through
 
 | | nDCG@10 | recall@50 |
 | --- | --- | --- |
-| the shipped search | **0.6834** | **0.8435** |
+| the search as shipped then, showing ten graph finds | **0.6834** | **0.8435** |
 | the same search without the graph | −0.0406 (114 wins, 238 losses, p = 0.0001) | |
 
 Fusion alone gains 0.0159 from the graph there, and the weight of three tenths
@@ -219,6 +219,124 @@ while a support rule, since measured as a no-op on these questions and
 removed, also held them down). The
 harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
 paying.
+
+**Showing more graph finds buys nothing, and the first attempt to choose them
+by score failed its time bound.** Replaying the fused lists found one cut that another setting would
+move: 29 supporting titles only the graph found sat below the ten shown, and
+twenty brings 19 of them into the reranker's view (19 questions gain, none
+lose, p = 0.0001). No fusion change (k, RRF, graph weight) moved that view by
+a significant amount. Four arms then went through `search_reranked` at the
+`accurate` tier and the `accuracy` profile, on the named-passage project the
+evaluation workspace holds now (where ten scores 0.7131), under a rule written
+before the runs: ship the simplest arm that is significantly worse nowhere,
+better somewhere, costs at most 1.5 times the search time, and, where accuracy
+and speed disagree, wins on the effect with the larger standardized size.
+Every find is in the table for scale only; it was not a candidate.
+
+| arm | MuSiQue nDCG@10, 1,000 questions | own corpus, 157 | search time, MuSiQue | search time, own |
+| --- | --- | --- | --- | --- |
+| **ten** | **0.7131** | **unchanged** | **1** | **1** |
+| twenty | +0.0010 (9 better, 25 worse, p = 0.41) | identical on every query | 1.41 | 0.99 (n.s.) |
+| a graph score of at least τ, at most thirty | −0.0004 (9 better, 35 worse, p = 0.74) at τ = 0 | −0.0002 (1 worse) at τ = 0.5 | 1.78 | 0.82 |
+| every graph find | −0.0002 (11 better, 41 worse, p = 0.90) | identical on every query | 2.26 | 0.99 (n.s.) |
+
+Times are the geometric mean of each question's ratio to ten, from searches
+with the reranker's and the embedder's caches bypassed and the arms taken in
+rotated order: 100 MuSiQue questions (every tenth) and all 157 own-corpus
+queries, on four cores that other work was sharing. XQuAD-R has no edges, so
+every arm is ten there. τ was chosen leave-one-corpus-out: on the own corpus
+every τ scores the same, down to showing no graph find at all, so MuSiQue got
+τ = 0, which is thirty; MuSiQue chose τ = 0.5 for the own corpus. So the
+threshold is faster on the own corpus and fails the time bound on MuSiQue,
+and twenty wins nothing. Neither shipped.
+
+Two findings came out of it. The recall the reranker is shown does not
+predict what it returns: twenty adds 19 relevant titles to its view and
++0.0010 to its top ten. And the own corpus pays for graph finds it does not
+use: ten shows about four of them a query, none of them ever changes a top
+ten there, and not showing them is 18% of a search. On 100 MuSiQue questions,
+rebuilt from the reranker's own scores, τ = 0.5 (about nine finds a question)
+scored 0.6920 against ten's 0.6902, and a five-fold split of those questions
+picked it in every fold. That is a hypothesis for a threshold measured on its
+own, not a result: it was not the arm this comparison chose.
+
+MuSiQue's twenty and thirty come from a run that took ten first and then
+reused the pairs it had scored, so their shared pairs were scored in other
+batches; the int8 export makes a score depend on its neighbours. The 100
+questions searched fresh match that run's twenty and thirty on 97 each. The
+arms change a count and a threshold that the tree does not expose, so they
+were measured on a scratch build and cannot be re-run from the repository.
+
+**A graph score of at least 0.5, at most thirty, ships in place of the fixed
+ten, on a held-out test.** The hypothesis above came from 100 questions it was
+then fitted on, so those were set aside (every tenth, from the first), and a
+second rule was written before anything ran: compare ten with τ = 0.5 capped at
+thirty on 600 other MuSiQue questions (the six in every ten after each set-aside
+one), the own corpus and XQuAD-R; ship the threshold only if it is
+significantly worse on no corpus and no group (sign-flip, p < 0.05), at most
+1.1 times ten's search time on MuSiQue, and significantly faster or better on
+MuSiQue or the own corpus (p < 0.0125, four tests). Searches went through
+`search_reranked` at the `accurate` tier and the `accuracy` profile, both arms
+of a question in one process in alternating order, with the reranker's and the
+embedder's caches bypassed and the shown set asserted against an independent
+recomputation from the trace on every search.
+
+| | MuSiQue, 600 held-out questions | own corpus, 157 | XQuAD-R, 119 |
+| --- | --- | --- | --- |
+| nDCG@10, ten | 0.7138 | 0.9103 | |
+| threshold − ten | +0.0017 (16 better, 5 worse, p = 0.057) | −0.00005 (1 worse, p = 1.0) | identical lists |
+| search time, threshold / ten | **0.87** (p = 0.0001) | **0.81** (p = 0.0001) | 1.00 (n.s.) |
+| graph finds shown, ten → threshold | 10 → 8.4 | 3.95 → 0.01 | 0 → 0 |
+| reranker pairs a search | 28.4 → 26.9 | 24.3 → 20.3 | 24.2 → 24.2 |
+
+No group is worse; the own corpus's one loss is a cross-lingual query that
+drops by 0.0078. Every clause holds, so the threshold ships
+(`GRAPH_SHOWN_FROM` and `GRAPH_SHOWN_AT_MOST` in `pamin-engine`). Times are
+geometric means of per-question ratios on four cores that other evaluations
+were sharing. The 0.6834 and 0.7131 above were measured with ten.
+
+What it trades, read after the verdict and not part of it: on MuSiQue the
+threshold shows more than ten finds on 142 questions, and those searches take
+1.60 times as long, with 2 better and 3 worse; on the 458 where it shows ten
+or fewer they take 0.72 times as long, with 14 better and 2 worse. So the
+saving and the gain both come from dropping weak finds, and the cap of thirty
+costs time it was not seen to earn. A cap of ten under the same threshold is
+the next hypothesis. These 600 questions shaped it, so it was tested on
+questions of its own, below.
+
+**A cap of ten passed a second held-out test and does not ship.** With
+more than ten finds at the threshold the strongest ten all reach it, so a cap
+of ten shows exactly the old fixed ten there and exactly what thirty shows
+everywhere else: the two differ only on the questions where thirty shows more
+than ten. The rule was written before anything ran: compare the two caps on
+the 300 MuSiQue questions neither earlier test had seen (the last three in
+every ten, asserted on every search) and the own corpus as a replication;
+ship ten only if it is significantly worse on neither corpus and no
+own-corpus group (sign-flip, p < 0.05) and significantly faster on
+MuSiQue (geometric mean of per-question ratios, p < 0.025). Same method as
+above: `search_reranked`, `accurate` tier, `accuracy` profile, both arms of a
+question in one process in alternating order, both caches bypassed, the shown
+set checked against an independent recomputation on every search.
+
+| | MuSiQue, 300 held-out questions | own corpus, 157 |
+| --- | --- | --- |
+| nDCG@10, thirty | 0.7186 | 0.9102 |
+| ten − thirty | −0.0031 (2 better, 5 worse, p = 0.17) | identical on every query |
+| search time, ten / thirty | **0.91** (p = 0.0001) | 1.01 (p = 0.49) |
+| graph finds shown, thirty → ten | 8.32 → 5.05 | 0.01 → 0.01 |
+| reranker pairs a search | 26.8 → 23.6 | 20.3 → 20.3 |
+
+Both clauses hold, and thirty still ships (`GRAPH_SHOWN_AT_MOST`): accuracy
+outranks latency in this project, and the accuracy estimate below points the
+wrong way on exactly the questions the cap changes. The caps differed on
+72 of the 300 questions, as the 142 of 600 above predicted; there ten takes
+0.66 of thirty's time and 43 pairs become 29, and on the other 228 the ratio
+is 1.00. The nDCG@10 difference is not significant, but it points the wrong
+way, and read after the verdict it sits where thirty showed the most: the
+five losses are on questions where thirty showed 16 to 30 finds, the two
+gains where it showed 11 and 13. This harness ran from the build the
+evaluation workspace was made with, which predates changes elsewhere in the
+stack; the two arms differ only in `rerankable`'s cap.
 
 ### What the fusion function itself is worth
 
@@ -413,6 +531,65 @@ own corpus and +0.0003 at p = 0.9057 on MIRACL. Two corpora, opposite readings,
 so ten stays — which is what the literature predicts for a constant worth one
 to three points against a normalisation worth three to eight.
 
+**The n-gram field keeps two-character grams. Three were measured and lose
+the cross-lingual group.** A scratch audit of the n-gram channel alone had
+three-character grams far ahead of `zvec`'s default of two: +0.0694 nDCG@10 on
+XQuAD-R and +0.1875 on MuSiQue. After fusion, almost none of that was left:
++0.0016 (p = 0.36) and +0.0047 (p = 0.007). So two arms went through
+`search_reranked` at the `accurate` tier and the `accuracy` profile: three
+alone (`{"ngram_min":3,"ngram_max":3}`), and two and three together
+(`{"ngram_min":2,"ngram_max":3}`). The second was the hedge for two-character
+Chinese and Thai words. The rule was written before the runs. It shipped an arm
+only if all of these held:
+
+- no aggregate cell significantly worse;
+- none of Chinese or Thai, same-language or cross-lingual, significantly worse;
+- no other XQuAD-R language significantly worse after Holm correction;
+- one aggregate cell better at p < 0.025;
+- at most 1.10 times the median search time, 1.40 times the index on disk, and
+  1.50 times the rebuild.
+
+Neither arm met it:
+
+| arm | XQuAD-R same-language, 1,190 | XQuAD-R cross-lingual, 1,190 | MuSiQue, 300 | own corpus, 157 | index on disk | rebuild |
+| --- | --- | --- | --- | --- | --- | --- |
+| **two (ships)** | **0.8118** | **0.6703** | **0.7161** | **unchanged** | **1** | **1** |
+| three | +0.0034 (46 better, 26 worse, p = 0.052) | **−0.0055** (151 better, 266 worse, p = 0.0001) | −0.0001 (33 / 35, p = 0.98) | no group moves significantly | 1.07–1.30 | 1.16–1.25 |
+| two and three | +0.0016 (32 / 16, p = 0.22) | **−0.0035** (114 / 194, p = 0.0001) | −0.0013 (27 / 30, p = 0.74) | no group moves significantly | 1.16–1.67 | 1.60–1.67 |
+
+Three-character grams have a lower cross-lingual mean in all eleven query
+languages, by under 0.001 in Chinese and Vietnamese, and two of those losses
+fail the rule on their own. Thai loses −0.0049 (8 better,
+17 worse, p = 0.018), and English loses −0.0126 (p = 0.036 after Holm). The
+risk the rule named in advance did not appear: Chinese same-language moves by
+−0.0002 and Thai same-language by +0.0031, neither significant. Recall@50 of
+the final list does not move on XQuAD-R (−0.0001), so the loss is in the order
+of the top ten, not in what is found. The MuSiQue gain the fused list showed
+does not survive the reranker, although recall@50 there rises by 0.0050 in both
+arms. Two and three together is not a cheap hedge. It stores both gram sizes,
+so it is the largest index and the slowest rebuild of the three arms, and it
+still loses the cross-lingual group.
+
+Median search time is within 2.3% of what ships on every corpus, faster on
+some and slower on others. It was measured with the reranker's and the embedder's caches
+bypassed and the arms taken in rotated order, on four cores that two other
+evaluation runs were sharing. Disk is the whole project index directory after a
+rebuild and an optimise. Two gram sizes make it 1.50 times as large on XQuAD-R
+and 1.67 times on MuSiQue, which is 110 MB against 166 MB and 119 MB against
+198 MB. Rebuild is the reindex wall clock with every vector lent from the index
+it replaces, so it is the index's own work: 21.9 s, 27.4 s and 35.0 s on
+XQuAD-R. The own corpus rebuilds in under half a second, too little to give a
+ratio. MuSiQue is its first 300 questions, not 1,000. At about twenty seconds a
+question on the shared machine, the full set would have taken five and a half
+hours, and XQuAD-R had already decided the verdict. The addendum saying so
+was written before those rows were analysed. The
+arms were built on the tree from before the graph threshold, when the reranker
+was shown a fixed ten graph finds. XQuAD-R has no edges, and each comparison is
+paired on one base. The
+gram size is a scratch-build switch, not something the tree exposes, so the
+arms cannot be re-run from the repository. With no arm eligible, the rule did
+not re-sweep the n-gram weight, and it stays at an eighth.
+
 **A learned fusion head was fitted and does not generalise.** The `FEATURES`
 arm (`pamin-engine/tests/features`) dumps every fused candidate with each
 channel's rank and score, and the shipped combiner rebuilt from the dump alone
@@ -458,10 +635,11 @@ the last row says something else: at the shipped weight the support rule does
 nothing on 1,157 questions, including MuSiQue's 12,840-edge graph -- the dense
 case it was kept for.
 
-**Nothing has changed default.** Reciprocal rank fusion still ships at the
-weights it shipped at. XQuAD-R is the corpus that separates cross-lingual from
-same-language queries on the same 1,190 questions, and it has to report before
-any of this moves a default.
+**The combiner has changed default since this was written.** XQuAD-R, the
+corpus that separates cross-lingual from same-language queries on the same
+1,190 questions, had to report before any of this moved a default; once it
+had, the banded combiner replaced reciprocal rank fusion — see *What that
+mechanism, once stated, made shippable* above.
 
 One thing the first attempt at this sweep is worth recording. Standardised
 fusion measured **0.0099 against 0.7910** — 0 wins, 43 losses — because zvec
@@ -471,8 +649,8 @@ let it through is worse: the test asserting every channel orders its candidates
 by the score it reports wrote every document with the same stub embedding, so
 the vector channel reported one constant and ordering by a constant asserts
 nothing. Both are fixed, and no figure published before this had ever read a
-score — every ranking that ships, and every number in the table above the fix,
-reads ranks. The MIRACL comparison above is not re-taken
+score — every ranking that shipped then, and every number in the table above
+the fix, read ranks. The MIRACL comparison above is not re-taken
 yet, for the ten hours named earlier, and on `speed` it carries a second
 finding worth stating early: once fusion stops diluting, the cross-encoder
 *costs* 0.0152 there — 0.6730 with it against 0.6882 without, for 226 ms a
@@ -534,6 +712,28 @@ would be near one by construction.
 Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
 all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
 
+**An abstention verdict from the reranker was measured, and does not ship.**
+The `accurate` tier's logit for the top hit, mapped through an isotonic fit on
+484 MuSiQue questions (held-out ECE 0.0590), with `weak` below a probability
+of one half, was scored through `pamin search` on all 1,986 LoCoMo questions
+against a rule written before the run: abstain more on the adversarial column,
+lose nothing significant elsewhere. It abstained on 140 of 446 adversarial
+questions and withdrew retrieved answers from every other column, each fall
+significant:
+
+| LoCoMo, evidence in the top ten and not `weak` | n | never abstains | with the verdict | p |
+| --- | --- | --- | --- | --- |
+| multi-hop | 282 | 0.791 | 0.592 | 3e-17 |
+| temporal | 321 | 0.826 | 0.670 | 2e-15 |
+| open-domain | 96 | 0.521 | 0.292 | 5e-7 |
+| single-hop | 841 | 0.810 | 0.718 | 1e-23 |
+| adversarial, `weak` | 446 | 0 | 0.314 | 1e-42 |
+
+LongMemEval-S recall_any@10 fell from 0.983 to 0.627 (p = 1e-6). The
+score separates adversarial from answerable questions at AUROC 0.606, and its
+calibration does not transfer: ECE 0.3100 on LoCoMo's top hits. The conditions
+and the reasons are in [the ADR](adr/0001-tech-selection.md).
+
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
@@ -572,6 +772,40 @@ project's own ordering of accuracy before latency.
 Four cores is where the embedding model and the reranker contend, so a machine
 with cores to spare will not look like this.
 
+**The `accurate` pass at the depth that ships, and batched by tokens.** The
+table above was taken when a tier reranked twenty candidates. It now reranks
+thirty, and the pairs reach the model in passes of at most 512 padded tokens
+and four pairs, grouped by their real length in tokens, where they went in
+chunks of eight sorted by characters. Through `Engine::search_reranked` at the
+`accuracy` profile, every query of each corpus through both batchings in one
+process, in rotated order, the median search:
+
+| corpus | queries reranked | chunks of eight | 512 tokens, four pairs | paired ratio, median | faster on |
+| --- | --- | --- | --- | --- | --- |
+| XQuAD-R, 13,014 sentences | 1,187 | 2,006 ms | **1,633 ms** | 0.833 | 1,053 |
+| MIRACL Swahili dev | 482 | 2,324 ms | **1,758 ms** | 0.800 | 461 |
+| MuSiQue, 1,000 2-hop questions | 997 | 6,112 ms | **4,949 ms** | 0.810 | 944 |
+
+These are not quiet-machine figures, and they are from a different machine
+from the table above: 4 vCPU (Intel Xeon @ 2.10 GHz, AMX and AVX-512 VNNI, no
+SMT), 15 GB RAM, release build, shared with two or three other measurements —
+the load average's median over the three runs was 8.1, 6.2 and 6.4. Load
+inflates both columns, so the milliseconds say what a search at thirty costs
+on a busy four-core machine and the paired ratio is what carries. Rerank
+nDCG@10 moved significantly in no group: XQuAD-R cross-lingual −0.0004,
+same-language −0.0002, MIRACL −0.0011, MuSiQue +0.0005, every p above 0.4.
+The rule the batching was chosen by, written down before anything was timed,
+and the pilot of seven candidates are at `BATCH_TOKENS` in
+`crates/pamin-index/src/reranking.rs`.
+
+**Truncating at 192 or 384 tokens rather than 256 was measured, and neither
+ships.** In the same runs, each limit paired against 256 with the new batching:
+192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
+the limit, and cost 0.0045 of its nDCG@10 (`p = 0.010`); 384 cost a third more
+a search there (1.32) and moved its nDCG@10 by −0.0016 (`p = 0.31`). On XQuAD-R
+and MIRACL neither limit moved ranking by more than 0.0006, significant nowhere.
+The rule, and the table, are at `MAX_TOKENS` in the same file.
+
 **Reranking only the queries that need it was measured, and does not ship.**
 No reranking is the cheapest sufficient choice for 43.4% of XQuAD-R's
 cross-lingual queries, so an oracle would save a great deal. The `ROUTES` arm
@@ -598,6 +832,26 @@ predictors transfer badly between collections, and routers recover 60-80% of
 an oracle's saving at best. Accuracy is the axis this project will not trade,
 so every query is still reranked; the learned route is a candidate for the
 `speed` profile, not the default.
+
+**Every latency table on this page was taken while idle inference threads
+spun, and they no longer do.** ONNX Runtime lets an intra-op thread that runs
+out of work spin before it sleeps; the embedder and the reranker each own a
+pool of one thread per core, so on a busy machine the spinning threads hold
+cores the working ones need. Turned off, through `pamin serve` and `pamin
+search` at the defaults on one hundred queries of the own corpus and an
+XQuAD-R subset, with rankings and scores bit-identical:
+
+| | ambient load (2.5 to 13) | two busy loops beside the server |
+| --- | --- | --- |
+| search time, off / on (geometric mean of per-query ratios) | 1.033, `p = 0.068` | **0.754**, `p = 0.0001` |
+| eight concurrent callers, throughput off / on | 1.17 | 1.13 |
+
+The latency tables on this page were taken with spinning on, several of them
+on four cores at load averages of 6 to 9, so some of what they report is the
+spinning rather than the search, and their milliseconds are likely high by an
+amount this measurement cannot say per row. They have not been re-taken; the paired ratios in them compare arms
+that spun alike, and are what to read. The rule and the method are in the
+ADR, under the thread settings.
 
 **Throughput, and where it stops.** The same sweep at one, eight and
 thirty-two concurrent callers, taken while `fast` was the default:
@@ -659,7 +913,7 @@ serves, which ONNX Runtime copies onto the heap. They have not been re-run
 since the change below.
 
 **The weights are mapped now, not copied.** On the CPU each model loads from a
-copy the runtime maps from disk -- written once beside the download; see
+copy the runtime maps from disk -- written once from the download; see
 `crates/pamin-index/src/prepared.rs` -- and
 `crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
 and `Embedder::load`. Each load runs in a fresh process, and what is counted
@@ -679,6 +933,35 @@ bare runtime session adds 139 MB loading the `fast` reranker's download and
 session. The data file is the price, on disk rather than in memory -- larger
 than the model it came from, because the packed weights are stored beside the
 originals.
+
+**And the download goes once its copy has loaded**, so a model is on disk once
+rather than twice. Measured on a model directory holding BGE-M3 and the
+`accurate` reranker as the code before this left them after first use -- each
+download beside its copy -- seeded by hard links from the evaluation
+workspace's directory so that nothing was downloaded, and read with `du` before
+and after one load of each through `Embedder::load` and `Reranker::load`:
+
+| | bytes on disk |
+| --- | --- |
+| each download beside its copy | 2,923 MB |
+| after one load of each | **1,783 MB** |
+
+Each load mapped the copy that was already there (read from
+`/proc/self/maps`), so the 1,141 MB is the two int8 exports, 570 MB each; what
+is left is the two copies and the two 17 MB tokenizers. The same lifecycle on a
+fresh directory through the hub, with the `fast` tier to spare the disk: 157 MB
+after its first load, where its 119 MB download used to stay beside that. With
+its copy renamed to another key, which is what a runtime upgrade leaves, and
+the hub unreachable, the next load failed naming the model and the network;
+with the hub back it fetched the file again, wrote the copy under the same key
+as before -- a re-download is given the removed file's modification time, so
+it keys identically -- and removed the download again. All five loads scored
+bit-identically, `PAMIN_PREPARED=off` among them. What this gives up is
+offline use across a key change, and [cli.md](cli.md) says so where the
+setting is described. Disuse is not a key change: the collection that removes
+copies nothing has loaded for two weeks never removes the one a model's record
+points at for the running version, so a tier left unused does not need the
+network again.
 
 **And one vocabulary between them, not one each.** What a copy leaves is mostly
 tokenizer. BGE-M3 and every reranker tier use the same 250,002-piece Unigram
@@ -850,11 +1133,127 @@ migrated before workspace with 15,840 states and 39,600 jobs owed: `topic_states
 21.5 MB and 16.3 MB. Nothing in the product runs one.
 
 What is still unattributed on this axis: `source_versions` at 16.7% has not been
-looked at, and it is now the only copy of every memory's text. The queue's rows
-also still carry their subject twice, once in `payload` and once inside
-`idempotency_key` — 59 MB and 57 MB on the synthetic queue, where the unique
-index over the key was the largest index at 126 MB — which is the next thing
-to narrow.
+looked at, and it is now the only copy of every memory's text.
+
+**The queue said each job's subject three times.** Once in `payload` as JSON,
+once inside `idempotency_key` as `<kind>:<subject>` text, and the kind again in
+`job_type` — 59 MB of payloads and 57 MB of keys on the synthetic queue, where
+the unique index over the key was the largest index at 126 MB. Migration V12
+gives the subject a column and states the uniqueness on
+`(project_id, job_type, subject)`, nulls not distinct so project-wide work
+still coalesces. Filled through `jobs::enqueue_all` on a fresh cluster with
+300,001 owed rows (100,000 subjects, three kinds each), two runs a build:
+the table 67.0 MB → 38.4 MB, the unique index 35.7–35.9 MB → 27.7–28.0 MB,
+the table with its indexes 135.7–135.9 MB → 99.5–99.7 MB, and an enqueue of
+three kinds p50 0.42–0.46 ms → 0.39–0.40 ms.
+
+**The first search on a new connection is slower, and nothing that can be
+moved off it pays.** A search's statements -- the states of sixty candidates,
+the names in the query, their states, a two-hop walk keeping fifty, the states
+it reached, the names at the ends of its paths -- asked on a freshly opened
+resident pool, then again on the same connection: 29 rounds a run, three runs
+a row, a project of 320 memories that name each other, debug build, four cores
+at a load average near 20. The figures are p10, because the medians of the
+same runs moved by up to two thirds:
+
+| | first | second | the warm-up itself |
+| --- | --- | --- | --- |
+| a new backend, nothing run on it | 9.8 -- 12.7 ms | 6.2 -- 7.5 ms | |
+| after the statements ran once, matching nothing | 7.1 ms | 6.1 -- 6.2 ms | 4.4 -- 4.6 ms |
+
+The server's statement log (`log_min_duration_statement = 0`) puts about three
+of the four to five milliseconds in the backend. Planning took 3.4 -- 3.6 ms
+against 1.5 -- 1.7 (17.7 in one of three traced rounds), parsing 0.6 -- 0.8 ms
+against 0.2 -- 0.3 for the same statements parsed again on the warm backend,
+and executing 1.3 -- 1.5 against 1.1 -- 1.2. Nearly all of it lands on the first
+statement to touch each table: `EXPLAIN (ANALYZE, SUMMARY)` of the state lookup
+in a new session plans in 1.8 -- 2.4 ms and in 0.3 -- 0.8 ms the next time. So
+it is the backend filling its catalog and relation caches, which also shows as
+423 minor page faults in the first run against 8 in the second. `sqlx`'s own
+share is the four statements it prepares, one round trip each, and clearing its
+cache on the warm backend puts that at 0.5 -- 1.0 ms. No index or model work is
+in these figures, because the harness asks only the store.
+
+Running the statements first does remove the cost from the search, and it
+costs as much as it removes: the caches have to be filled once per backend,
+whoever fills them. So the only question is where the cost lands. A resident
+server opens its first connection at start, and its first search in a project
+also opens that project's index and loads its model, which costs far more than
+five milliseconds. Every other connection is opened by a request that finds the
+pool busy. That request would pay a warm-up at the same moment it now pays for
+the cold statements, and if it were a write it would pay for a search's
+statements. Connections are kept for the server's life (`idle_timeout` and
+`max_lifetime` are off), so each backend is cold once. The server therefore
+does not warm its connections. One lead for a later change: every search plans
+each of its statements again, and planning is 1.5 of the 2.6 ms the warm
+backend spends.
+
+**What else the index engine offers was measured.**
+`zvec-rust` 0.7.2 adds a half-precision vector field, IVF-RaBitQ and DiskANN
+beside the graph, a memory limit and a document iterator. Each was held to a
+rule written before its first number, in the order accuracy, latency, memory,
+disk, and the storages were run through `search_reranked` at the default tier
+and profile with both caches bypassed and the arms in rotated order: all 157
+own-corpus queries, 595 of XQuAD-R's and 200 of MuSiQue's, on four cores two
+other evaluations were sharing, so times are ratios within a question.
+
+| against fp32 | nDCG@10: own / XQuAD-R / MuSiQue | search time | vectors on disk, MIRACL | resident, MIRACL | recall@10, MIRACL / synthetic |
+| --- | --- | --- | --- | --- | --- |
+| int8 codes and refiner | identical on all 952 questions | 0.998 (p = 0.47) | +27% | +25% | 1.0000 / 0.9980, as fp32 |
+| fp16 vector field | −0.0004 / −0.0002 / 0.0000, none significant | 0.997 (p = 0.39) | −45% | −45% | 0.9985 / **0.9650**, against 1.0000 / 0.9980 |
+| IVF-RaBitQ, half the lists probed | not run | not run | +18% | +12% | 0.9981 / 0.951 |
+| DiskANN | not run | not run | +95% | **−96%** | 1.0000 / — |
+
+Int8 makes the index itself answer in about half to four-fifths of the time,
+and that does not reach the search: the index is a few milliseconds of a search
+the reranker spends one to six seconds on. The fp16 field halves the vector
+bytes, but the engine's fp16 arithmetic loses recall on clustered vectors that
+rounding alone does not, and the rule allowed 0.002 (the next paragraph takes
+that loss back with a rescore). DiskANN is the only
+memory lever, holding 22 MB where the graph holds 565, at 2.5 to 5 times the
+index query time, twice the disk and fourteen times the build, so it was left
+as the path for a project whose resident set is the constraint -- until the
+decision below made it the default.
+An explicit memory limit changed nothing, because it sizes a pool only an index
+created with mmap off reads. The iterator reads 131,924 documents in 0.28 s
+against 1.5 s of keyed fetches, which is about 1% of a rebuild; it failed its
+rule and ships anyway, because it changes nothing a rebuild lends and the owner
+takes every optimization that costs no accuracy. The tables and the rules are
+in [the ADR](adr/0001-tech-selection.md#what-else-zvec-rust-072-offers-measured);
+the runs were scratch builds and cannot be re-run from the repository.
+
+**Vectors are now half precision, under `disk` or `memory`.** The owner set
+the storage directly: fp16 vectors, the HNSW graph in memory by default
+(`memory`) or a DiskANN graph on disk (`disk`), both ranking twice the
+candidates again by an exact f32 cosine, because the engine's own fp16 scores
+lose recall in their arithmetic rather than in the rounding. Against exact
+search, with fp32 HNSW -- what shipped before -- as the bar:
+
+| | recall@10 / @50, 50,000 synthetic | recall@10 / @50, MIRACL | vector query, MIRACL | full build, MIRACL | resident, MIRACL | disk, MIRACL |
+| --- | --- | --- | --- | --- | --- | --- |
+| fp32 HNSW (before) | 0.9980 / 0.9974 | 1.0000 / 0.9999 | 9.5 ms | 171 s | 575 MB | 595.5 MB |
+| `memory` (default) | 0.9965 / 0.9965 | 1.0000 / 0.9997 | 5.9 ms | 84 s | 320 MB | 327.8 MB |
+| `disk` | 0.9985 / 0.9975 | 1.0000 / 0.9996 | 68.6 ms | 1,379 s | 34 MB | 618.1 MB |
+
+Query times are medians at k = 10 on four cores other evaluations were
+sharing at load 9 to 13, so they are directions. `disk` reaches the bar only
+at a search width of 1,200 (0.981 at its default of 300 on the synthetic set),
+and its cost on the write path is the open question: through the product's
+index, five `optimize` calls after 64 new documents each took 114 to 310 s
+under `disk` and 1.1 to 1.6 s under `memory`. Both keep a new memory
+searchable before any build and neither holds a search up while one runs.
+`disk` was the default at first, because this project ranks resident memory
+above disk; once that write-path cost was measured the owner made `memory` the
+default, and `disk` stays for a project whose memory is scarce.
+Through `search_reranked` at the shipped defaults neither index moved a
+ranking against fp32: nDCG@10 +0.0003 on the own corpus's 157 questions
+(p = 0.76) and −0.0003 on 595 XQuAD-R questions (p = 0.68), the two indexes
+identical on every question. A whole search took 1.03 and 1.05 of `memory`'s
+time under `disk` (medians 1,371 against 1,287 ms and 2,339 against 2,236),
+and rebuilding XQuAD-R's 13,014 documents took 424 s under `disk` and 30 s
+under `memory`.
+The table, the tuning and the write-path measurement are in
+[the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-disk-by-default).
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,

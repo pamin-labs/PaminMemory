@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::{Channel, Derivation, EdgeKind, Why};
-use pamin_index::{Profile, Rerank};
+use pamin_index::{Profile, Rerank, VectorIndex};
 
 use serde::{Deserialize, Serialize};
 
@@ -41,15 +41,12 @@ pub struct Args {
     ///
     /// A cross-encoder reads the query and a memory together, which is what
     /// lets it correct an order the channels got wrong and what makes it cost
-    /// a forward pass per candidate. Only the candidates no lexical channel
-    /// found are reordered -- not, as this used to say, the ones in another
-    /// language; the rule is the absence of a lexical hit rather than a
-    /// language test, because a language detector is absent on exactly the
-    /// short queries an agent asks.
+    /// a forward pass per candidate. `accurate` scores the whole fused head,
+    /// including lexical hits, and blends model and fusion scores. `fast`
+    /// reorders only candidates no lexical channel found.
     ///
-    /// The default is `accurate`, the tier that ranks best on every corpus
-    /// measured and costs about a second and a half a search on four cores;
-    /// `fast` and `off` buy that time back at a measured price. See
+    /// The default is `accurate`, the highest-accuracy tier measured here;
+    /// `fast` and `off` buy back search time at a measured accuracy price. See
     /// `docs/cli.md`.
     #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
     pub rerank: String,
@@ -176,12 +173,13 @@ pub async fn execute(
     session: &Session,
     project: &str,
     profile: Profile,
+    vector_index: VectorIndex,
     args: Args,
 ) -> Result<Results> {
     let rerank = Rerank::parse(&args.rerank)
         .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
 
-    let engine = session.engine(project, profile).await?;
+    let engine = session.engine(project, profile, vector_index).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
@@ -259,8 +257,7 @@ fn describe(why: &[Trace]) -> String {
             }
             // One word, because the fact is the whole content. A line reading
             // `vector#12 reranked` says the fused list had this twelfth and
-            // the model moved it, which is what a reader auditing a ranking
-            // wants and could not previously get from anywhere.
+            // the model scored it; the accurate tier also uses fusion's score.
             Trace::Reranked {} => "reranked".to_string(),
         })
         .collect::<Vec<_>>()

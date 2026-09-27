@@ -1,4 +1,5 @@
-//! Whether recording topic names in one statement matches doing it one at a time.
+//! Whether recording topic names in one statement records each name against
+//! its own topic.
 //!
 //! Ignored by default: it provisions PostgreSQL. Run with
 //! `cargo test -p pamin-store --test namebatch -- --ignored --nocapture`.
@@ -9,11 +10,13 @@
 //! form is one `unnest` statement, which is the shape the *reads* on this table
 //! already use.
 //!
-//! What this asserts is the only thing that makes the substitution safe: the
-//! two forms leave the table in the same state, including the `ON CONFLICT`
+//! What this asserts is the only thing that makes it safe: every row holds the
+//! key and count given for its own topic, including through the `ON CONFLICT`
 //! path. That path is not incidental -- a rebuild runs against a table that
 //! already has these rows, so the update branch is the one a rebuild takes
-//! every time after the first.
+//! every time after the first. It used to compare against the one-row-at-a-time
+//! form, which is gone: a write now files its name with the topic, in the
+//! statement that creates it. The expected rows are written out instead.
 //!
 //! The failure this is really for is an `unnest` whose arrays disagree in
 //! order. Three parallel arrays are zipped by position, and a batch that
@@ -22,6 +25,8 @@
 //! `topics_named_by` would still match something, and mention derivation would
 //! quietly derive edges to the wrong topics. Nothing downstream can notice
 //! that, which is why it is checked here by name and not by row count.
+
+mod common;
 
 use pamin_store::{Connections, Database, Workspace, repository};
 
@@ -47,7 +52,7 @@ async fn topics_in(
     let mut connection = database.pool().acquire().await.expect("connection");
     let mut topics = Vec::new();
     for (name, _) in NAMES {
-        let topic = repository::ensure_topic(&mut connection, project, name)
+        let topic = common::ensure_topic(&mut connection, project, name)
             .await
             .expect("create the topic");
         topics.push(topic.id);
@@ -56,8 +61,8 @@ async fn topics_in(
 }
 
 /// The rows recorded for `project`, each topic given as its position in
-/// `topics`. Position `i` is the same name in both projects, so a key
-/// recorded against the wrong topic reads back as a different row.
+/// `topics` and in that order, so a key recorded against the wrong topic reads
+/// back at the wrong position.
 async fn recorded(
     database: &Database,
     project: pamin_core::ProjectId,
@@ -65,13 +70,14 @@ async fn recorded(
 ) -> Vec<(usize, String, i16)> {
     let rows: Vec<(uuid::Uuid, String, i16)> = sqlx::query_as(
         "SELECT topic_id, name_key, token_count FROM topic_name_tokens
-          WHERE project_id = $1 ORDER BY name_key",
+          WHERE project_id = $1",
     )
     .bind(project.0)
     .fetch_all(database.pool())
     .await
     .expect("read the recorded names");
-    rows.into_iter()
+    let mut rows = rows
+        .into_iter()
         .map(|(topic, key, tokens)| {
             let position = topics
                 .iter()
@@ -79,12 +85,14 @@ async fn recorded(
                 .expect("every recorded topic is one of the project's");
             (position, key, tokens)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(position, _, _)| *position);
+    rows
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres"]
-async fn one_statement_records_what_one_per_topic_did() {
+async fn one_statement_records_each_name_against_its_topic() {
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -99,16 +107,6 @@ async fn one_statement_records_what_one_per_topic_did() {
         .await
         .expect("open the database");
 
-    // Two projects rather than two runs against one, so the comparison is a
-    // comparison and not a sequence: the batched write must not be reading
-    // anything the row-at-a-time write left behind.
-    let singly = repository::ensure_project(
-        database.pool(),
-        &format!("namebatch-single-{}", uuid::Uuid::now_v7()),
-    )
-    .await
-    .expect("ensure project")
-    .id;
     let batched = repository::ensure_project(
         database.pool(),
         &format!("namebatch-batch-{}", uuid::Uuid::now_v7()),
@@ -116,17 +114,22 @@ async fn one_statement_records_what_one_per_topic_did() {
     .await
     .expect("ensure project")
     .id;
-
-    // Each project has its own topics, created in the same order, so the rows
-    // are compared by which name each topic stands for.
-    let single_topics = topics_in(&database, singly).await;
     let batched_topics = topics_in(&database, batched).await;
-
-    for (topic, (key, tokens)) in single_topics.iter().zip(NAMES) {
-        repository::record_topic_name(database.pool(), singly, *topic, key, *tokens)
+    assert!(
+        recorded(&database, batched, &batched_topics)
             .await
-            .expect("record one name");
-    }
+            .is_empty(),
+        "the topics came with names, so the insert branch would not be tested"
+    );
+
+    // What each position should hold.
+    let expected = |names: &[(pamin_core::TopicId, String, usize)]| {
+        names
+            .iter()
+            .enumerate()
+            .map(|(position, (_, key, tokens))| (position, key.clone(), *tokens as i16))
+            .collect::<Vec<_>>()
+    };
 
     let names: Vec<(pamin_core::TopicId, String, usize)> = batched_topics
         .iter()
@@ -138,9 +141,9 @@ async fn one_statement_records_what_one_per_topic_did() {
         .expect("record the names in one statement");
 
     assert_eq!(
-        recorded(&database, singly, &single_topics).await,
         recorded(&database, batched, &batched_topics).await,
-        "the batched write recorded something different from the row-at-a-time write"
+        expected(&names),
+        "the batched write recorded a name against some other topic"
     );
 
     // And the update branch, which is the one a rebuild takes every time after
@@ -150,24 +153,15 @@ async fn one_statement_records_what_one_per_topic_did() {
         .iter()
         .map(|(topic, key, tokens)| (*topic, format!("{key} again"), tokens + 1))
         .collect();
-    for (topic, (_, key, tokens)) in single_topics.iter().zip(&renamed) {
-        repository::record_topic_name(database.pool(), singly, *topic, key, *tokens)
-            .await
-            .expect("re-record one name");
-    }
     repository::record_topic_names(database.pool(), batched, &renamed)
         .await
         .expect("re-record the names in one statement");
 
     let after = recorded(&database, batched, &batched_topics).await;
     assert_eq!(
-        recorded(&database, singly, &single_topics).await,
         after,
-        "the batched write took a different conflict path from the row-at-a-time write"
-    );
-    assert!(
-        after.iter().all(|(_, key, _)| key.ends_with("again")),
-        "the conflict clause did not update every row of the batch: {after:?}"
+        expected(&renamed),
+        "the batched write's conflict path left a row it should have updated"
     );
 
     // Empty is a real call: a project with no topics rebuilds to no names, and
@@ -177,5 +171,5 @@ async fn one_statement_records_what_one_per_topic_did() {
         .expect("an empty batch is a no-op");
     assert_eq!(recorded(&database, batched, &batched_topics).await, after);
 
-    println!("  the batched write matches the row-at-a-time write, insert and update");
+    println!("  the batched write records each name against its topic, insert and update");
 }

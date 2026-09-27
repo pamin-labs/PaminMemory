@@ -15,6 +15,9 @@ pub mod workspace;
 
 pub use database::{Connections, Database};
 pub use error::{Result, StoreError};
+/// One connection, for a caller that asks several statements in a row and
+/// would otherwise take a connection from the pool and return it for each.
+pub use sqlx::PgConnection;
 /// What every `repository` and `graph` function takes as its first argument.
 ///
 /// Re-exported because those signatures are generic over it, so a caller
