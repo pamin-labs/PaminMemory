@@ -714,9 +714,14 @@ so the shipped pair has not changed. The n-gram channel is the weaker of the
 two wherever either is measured alone. An eighth rather than the quarter that shipped
 before because on MIRACL Swahili — 482 questions people asked, judged by
 people — the quarter ranked *worse* than the vector channel by itself, and
-because the quarter had never been compared against anything smaller than
-itself. Three corpora and the sweep behind that are in
+because at the time the quarter had not been compared against anything smaller.
+Three corpora and the sweep behind that are in
 [ADR 0001](adr/0001-tech-selection.md).
+
+The next two paragraphs describe the historical 2026-09-22 XQuAD-R run on a
+content-only index with the old same-language answer key. Its 0.6114/0.7829
+fusion baseline is not comparable with the current named-index, corrected-key
+0.6372/0.8438 baseline; the [ADR](adr/0001-tech-selection.md) records both.
 
 One weight serves every workspace, and the evidence says that is the wrong
 shape rather than the wrong value. What the lexical pair is worth depends on
