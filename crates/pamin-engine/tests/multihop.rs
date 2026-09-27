@@ -298,7 +298,7 @@ async fn search_answers_questions_that_take_several_steps() {
     )
     .await
     .expect("open the engine");
-    if std::env::var("CHANNELS").is_ok() {
+    if std::env::var("CHANNELS").is_ok() && home.is_some() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
         assert_eq!(
             engine.indexed_documents().expect("count documents") as usize,
@@ -306,6 +306,13 @@ async fn search_answers_questions_that_take_several_steps() {
         );
     }
     write_corpus(&engine, &corpus).await;
+    if std::env::var("CHANNELS").is_ok() {
+        assert_eq!(engine.passage(), pamin_index::Passage::Named);
+        assert_eq!(
+            engine.indexed_documents().expect("count documents") as usize,
+            corpus.memories.len()
+        );
+    }
 
     let edges = channels::live_edges(&engine).await;
     let total: i64 = edges.iter().map(|(_, count)| count).sum();
