@@ -7,22 +7,20 @@ Everything below was gathered from primary sources in September 2026. Each
 figure carries its source so it can be rechecked; this field moves fast and
 several of these numbers have already changed meaning once.
 
-**Every Påmin Memory retrieval figure on this page was taken with the lexical
-fusion weight at a quarter, which was halved to an eighth afterwards** on
-evidence from a third corpus — see [measured.md](measured.md) and
-[ADR 0001](adr/0001-tech-selection.md). The change reorders a fused list
-without changing which candidates are retrieved, so every latency figure here
-stands as taken and so does recall measured at the full fused depth. Anything
-decided by the order — nDCG, and a Recall@5 whose five the order picks — is
-not re-taken. The direction to expect is the one measured everywhere else:
-cross-language ranking up, and same-language ranking down only on questions
-written out of their answers' own wording.
+The comparisons below retain the code, model and machine conditions each run
+actually used. The earlier retrieval runs used lexical weights of a quarter
+before the current eighths, and the LoCoMo answer-quality run predates the
+full-head `accurate` rerank. Those rows are historical head-to-head evidence,
+not a leaderboard for today's default. Current named-index, corrected-key
+XQuAD-R figures are in [measured.md](measured.md) and
+[ADR 0001](adr/0001-tech-selection.md); an older result cannot be subtracted
+from one of them to credit a single change.
 
 ## What the field publishes
 
-Agent-memory projects report **LLM-judge accuracy on conversational QA**:
-LOCOMO, LongMemEval, DMR. An LLM answers questions from the memory system's
-output and a second LLM grades the answers.
+Many agent-memory projects report **LLM-judge accuracy on conversational QA**:
+LOCOMO, LongMemEval, DMR. An LLM answers from the memory system's output and a
+second LLM grades it. MemPalace's row instead reports retrieval metrics.
 
 | Project | Benchmark | Claimed | LLM on write path | Local or API |
 | --- | --- | --- | --- | --- |
@@ -32,10 +30,27 @@ output and a second LLM grades the answers.
 | Letta ([blog][letta]) | LoCoMo | 74.0% with plain files + grep | No extraction step | Framework |
 | Memobase ([repo][memobase]) | LOCOMO | 75.78% | Yes — profile extraction | API |
 | Cognee ([site][cognee]) | BEAM | 0.79 against 0.73 prior | Yes — LLM graph construction | API |
-| MemPalace ([repo][mempalace]) | LongMemEval | R@5 96.6%, **NDCG@10 0.889** | Not in the mode it publishes; **yes by default** | Local |
+| MemPalace ([repo][mempalace]) | LongMemEval | recall-any@5 96.6%; reported nDCG@10 0.889 | Not in the mode it publishes; **yes by default** | Local |
+| xMemory ([paper][xmemory-paper]) | LoCoMo | answer token F1 43.98 with Qwen3-8B; 4,711 tokens/query | Yes — component extraction | Local reader, API embedding |
 | Supermemory ([site][supermemory]) | — | "#1", no figures published | Yes | API |
 
 Every one of these is self-reported.
+
+MemPalace's `R@5` asks whether **any** labelled session is in the top five;
+the strict all-evidence version is measured below. Its [nDCG implementation][mempalace-ndcg]
+builds the ideal ranking from relevant hits **already retrieved** in the top
+`k`, so a missed gold session is absent from the denominator. The reported
+0.889 is not conventional nDCG when a question has multiple gold sessions.
+
+xMemory's figure is generated-answer F1 rather than retrieval recall. Its
+[May 2026 paper][xmemory-paper] describes positive predictive-entropy gain and
+message-level expansion. The [February 2026 public code][xmemory-code] instead
+uses the average negative log probability of generated tokens; its
+[episode thresholds][xmemory-routing] are negative, and its
+[expansion path][xmemory-expansion] loads all messages of an admitted episode. The
+public [evaluation tree][xmemory-evaluation] provides a LoCoMo runner but no
+PerLTQA runner. This is a useful
+research result, not a drop-in accuracy or latency claim for this product.
 
 **One of those "No"s needs a footnote, because this page measured the opposite.**
 MemPalace's headline is "96.6% R@5 **raw** — zero API calls", and raw is real:
@@ -1126,6 +1141,12 @@ methodology. When refreshing it:
 [memobase]: https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md
 [cognee]: https://www.cognee.ai/ai-memory-evals-0825
 [mempalace]: https://github.com/MemPalace/mempalace/blob/develop/benchmarks/BENCHMARKS.md
+[mempalace-ndcg]: https://github.com/MemPalace/mempalace/blob/8c4865f70c49b6346c53474a9e5684c5f17d3fa9/benchmarks/longmemeval_bench.py#L61-L69
+[xmemory-paper]: https://arxiv.org/html/2602.02007v4
+[xmemory-code]: https://github.com/HU-xiaobai/xMemory/blob/375ae1495095aa14a39eb169f83737f4779391c6/evaluation/locomo/xMemory_search_framework.py#L898-L949
+[xmemory-routing]: https://github.com/HU-xiaobai/xMemory/blob/375ae1495095aa14a39eb169f83737f4779391c6/evaluation/locomo/xMemory_search_framework.py#L1004-L1011
+[xmemory-expansion]: https://github.com/HU-xiaobai/xMemory/blob/375ae1495095aa14a39eb169f83737f4779391c6/evaluation/locomo/xMemory_search_framework.py#L660-L735
+[xmemory-evaluation]: https://github.com/HU-xiaobai/xMemory/tree/375ae1495095aa14a39eb169f83737f4779391c6/evaluation
 [mempalace-teardown]: https://github.com/lhl/agentic-memory/blob/main/ANALYSIS-mempalace.md
 [supermemory]: https://supermemory.ai/research/longmembench/
 [locomo-critique]: https://dev.to/gde03/the-ai-memory-benchmark-everyone-quotes-forbids-saying-i-dont-know-o1n
