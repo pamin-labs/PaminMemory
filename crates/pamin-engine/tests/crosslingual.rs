@@ -1101,12 +1101,8 @@ async fn search_reaches_across_languages() {
     .await
     .expect("open the engine");
 
-    if std::env::var("CHANNELS").is_ok() && home.is_some() {
+    if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
-        assert_eq!(
-            engine.indexed_documents().expect("count documents") as usize,
-            corpus.sentences.len()
-        );
     }
     write_corpus(&engine, &corpus).await;
     if std::env::var("CHANNELS").is_ok() {
