@@ -1992,9 +1992,10 @@ int8 ONNX export replaced only the cross-encoder. Candidate retrieval, depth
 30, and the 0.2 fusion/model-score blend stayed fixed. GTE scored 0.6868
 cross-lingual and 0.8611 same-language nDCG@10; the shipped BGE reranker
 scored 0.7268 and 0.8682. Recall@50 was identical at 0.9032 and 0.9647.
-The full evaluation took 644 seconds with GTE and 1,605 seconds with BGE,
-about 2.5 times faster for GTE. Those were separate runs on a shared machine,
-not an alternated latency comparison. The large cross-lingual accuracy loss
+The observed full-run wall times were 644 seconds with GTE and 1,605 seconds
+with BGE, a ratio of 2.49 in these runs. They were separate, non-alternated
+runs on a shared machine, so that ratio is not an established model speedup or
+per-search latency result. The large cross-lingual accuracy loss
 rules out a default swap under the accuracy-first policy; the speed result is
 a lead for future distillation or model work, not a measured search p95 gain.
 
