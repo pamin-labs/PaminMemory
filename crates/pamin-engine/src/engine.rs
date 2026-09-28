@@ -1440,6 +1440,17 @@ impl Engine {
             .count())
     }
 
+    /// What the reranker at `tier` has done in this process, or `None` if it
+    /// was never loaded.
+    ///
+    /// Here because three deferred decisions turn on these counters and none
+    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
+    /// wants them across a run reads them once at the end: they are lifetime
+    /// totals for the loaded model and are lost when an idle tier is released.
+    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+        self.models.counted(tier)
+    }
+
     /// Search, then reorder the head of the result with a cross-encoder.
     /// `accurate` sees the whole head; `fast` keeps the non-lexical rule.
     ///
@@ -1462,17 +1473,6 @@ impl Engine {
     /// rule that quietly does nothing on the commonest shape of query is worse
     /// than a slightly different rule, and this one asks only what the search
     /// already recorded.
-    /// What the reranker at `tier` has done in this process, or `None` if it
-    /// was never loaded.
-    ///
-    /// Here because three deferred decisions turn on these counters and none
-    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
-    /// wants them across a run reads them once at the end: they are lifetime
-    /// totals for the loaded model and are lost when an idle tier is released.
-    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        self.models.counted(tier)
-    }
-
     pub async fn search_reranked(
         &self,
         query: &str,
