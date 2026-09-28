@@ -535,6 +535,75 @@ fn stale_cached_questions_are_rejected() {
     fetch(dir.path());
 }
 
+/// A pinned embedding space, checked before a benchmark reuses its vectors.
+/// The production index marker names the repository, not its hub revision.
+fn pinned_embedding_id(models: &Path) -> String {
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+    ))
+    .unwrap();
+    let model = manifest["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["role"] == "embedder")
+        .unwrap();
+    let repository = model["repository"].as_str().unwrap();
+    let revision = model["revision"].as_str().unwrap();
+    let hub = models.join(format!("models--{}", repository.replace('/', "--")));
+    assert_eq!(
+        std::fs::read_to_string(hub.join("refs/main"))
+            .expect("run prepare_pinned_xquad_models before scoring")
+            .trim(),
+        revision,
+        "XQuAD-R embedding revision differs from the pinned model"
+    );
+    let snapshot = hub.join("snapshots").join(revision);
+    for (file, expected) in model["files_sha256"].as_object().unwrap() {
+        let actual = Sha256::digest(std::fs::read(snapshot.join(file)).unwrap());
+        assert_eq!(format!("{actual:x}"), expected.as_str().unwrap(), "{file}");
+    }
+    let weights = model["source_onnx"].as_str().unwrap();
+    let source_hash = match std::fs::read(snapshot.join(weights)) {
+        Ok(bytes) => format!("{:x}", Sha256::digest(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let label = format!(
+                "{}--{}.source",
+                repository.replace('/', "--"),
+                weights.replace('/', "--")
+            );
+            std::fs::read_to_string(models.join("prepared").join(label))
+                .expect("the released download must have a prepared source record")
+                .lines()
+                .next()
+                .expect("the source record contains the download hash")
+                .to_string()
+        }
+        Err(error) => panic!("read pinned embedding weights: {error}"),
+    };
+    assert_eq!(source_hash, model["source_onnx_sha256"].as_str().unwrap());
+    let identity = serde_json::json!({
+        "repository": repository,
+        "revision": revision,
+        "source_onnx_sha256": source_hash,
+        "files_sha256": model["files_sha256"],
+    });
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&identity).unwrap())
+    )
+}
+
+#[test]
+#[should_panic(expected = "XQuAD-R embedding revision differs")]
+fn stale_embedding_revision_is_rejected_before_index_reuse() {
+    let models = tempfile::tempdir().unwrap();
+    let refs = models.path().join("models--gpahal--bge-m3-onnx-int8/refs");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::write(refs.join("main"), "stale").unwrap();
+    pinned_embedding_id(models.path());
+}
+
 #[test]
 #[ignore = "downloads the pinned XQuAD-R model artifacts into a persistent cache"]
 fn prepare_pinned_xquad_models() {
@@ -1202,7 +1271,14 @@ async fn search_reaches_across_languages() {
 
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
-    let project = format!("xquad-{named}-{}", corpus.fingerprint());
+    let mut project = format!("xquad-{named}-{}", corpus.fingerprint());
+    if profile == pamin_index::Profile::Accuracy {
+        let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
+        project.push('-');
+        project.push_str(&embedding_id[..16]);
+        println!("  index embedding identity: {embedding_id}");
+    }
+    println!("  index project: {project}");
     let engine = Engine::open(
         &workspace,
         &project,
@@ -1229,6 +1305,14 @@ async fn search_reaches_across_languages() {
         "the reused XQuAD-R index has extra or missing documents"
     );
     println!("  indexed documents: {documents}");
+    let completeness = engine
+        .vector_index_completeness()
+        .expect("the vector index's completeness");
+    assert_eq!(
+        completeness, 1.0,
+        "XQuAD-R needs every document in the vector index before scoring"
+    );
+    println!("  vector index completeness: {completeness:.4}");
 
     // `PASSAGES`: the same memories in a second project whose vectors embed
     // the topic's name, asked every question alongside this one. See
@@ -1244,6 +1328,11 @@ async fn search_reaches_across_languages() {
         .await
         .expect("open the named project");
         write_corpus(&other, &corpus).await;
+        assert_eq!(
+            other.vector_index_completeness().expect("completeness"),
+            1.0,
+            "the paired named index must also be complete"
+        );
         assert_eq!(
             engine.passage(),
             pamin_index::Passage::Content,
