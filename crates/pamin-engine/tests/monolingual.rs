@@ -368,6 +368,10 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
         return;
     }
     println!(
+        "  loaded reranker truncation: {} tokens",
+        counted.maximum_tokens
+    );
+    println!(
         "  {}: {:.1} candidates a query reached the model of {:.1} offered, \
          {:.0} characters each, longest {}, cache {:.1}% of {} lookups",
         tier.name(),

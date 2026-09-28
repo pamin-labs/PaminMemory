@@ -680,6 +680,8 @@ struct Lengths {
 /// the run.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Reranked {
+    /// Actual truncation limit of this loaded model, before batch padding.
+    pub maximum_tokens: usize,
     /// Scores held in the cache.
     pub remembered: usize,
     /// Candidates handed to [`Reranker::rank`], cached or not.
@@ -735,6 +737,7 @@ impl Reranker {
         tracing::info!(
             tier = tier.name(),
             device = device.name(),
+            maximum_tokens = model.maximum_tokens(),
             "reranker loaded"
         );
 
@@ -878,6 +881,7 @@ impl Reranker {
             "reranker work counters disagree"
         );
         Reranked {
+            maximum_tokens: self.model.maximum_tokens(),
             remembered: self.scores.known.len(),
             offered: self.scores.hits + self.scores.misses,
             scored: self.work.pairs,
