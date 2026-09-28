@@ -17,12 +17,15 @@ same-language answer key. All 1,190 queries use `search_reranked`:
 
 | group | nDCG@10 | recall@50 |
 | --- | ---: | ---: |
-| cross-language | **0.7274** | **0.9032** |
-| same-language | **0.8691** | **0.9647** |
+| cross-language | **0.7268** | **0.9032** |
+| same-language | **0.8682** | **0.9647** |
 
-The previous full run reported 0.7268 and 0.8682 nDCG@10 with the same
-recall. These were separate runs; the small differences here are not credited
-to an optimization.
+Separate earlier runs with automatic provider selection reported 0.7274 and
+0.8691 nDCG@10 with the same recall. A separate probe on this Mac selected
+CoreML and the fp16 export; those earlier runs did not record their provider.
+The current run explicitly records CPU and the int8 export. The small score
+differences are not credited to an optimization or treated as interchangeable
+measurements across exports.
 
 The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
 records the model, index encoding and harness command.
