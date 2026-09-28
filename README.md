@@ -257,7 +257,9 @@ indexes retain content-only vectors until `pamin reindex`. Through the product
 | XQuAD-R, query and answer in the same language | nDCG@10 **0.8682**, recall@50 **0.9647** | the same queries, with the same-language answer key |
 
 The [committed run summary](benchmarks/results/retrieval/summary-current-xquad.json)
-records the path and its reproducible harness command.
+records the path and reproduction command. A fresh run with the new
+revision-bound index identity is pending; the retained index did not record
+its embedding revision.
 
 The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
 It is outside this headline table until its code, device and raw-run evidence

@@ -22,11 +22,15 @@
     "reranker_export": "onnx/model_int8.onnx"
   },
   "machine": {
-    "os": "Darwin 25.6.0 arm64",
-    "model": "Mac16,12",
-    "logical_cpus": 10,
-    "memory_bytes": 34359738368,
-    "load": "shared with a MuSiQue dual-vector evaluation and native build/tests; run duration is not a paired latency result"
+    "verified_from_source_log": false,
+    "provenance": "manual host observation; the archived harness did not emit machine metadata",
+    "reported_separately": {
+      "os": "Darwin 25.6.0 arm64",
+      "model": "Mac16,12",
+      "logical_cpus": 10,
+      "memory_bytes": 34359738368,
+      "load": "shared with a MuSiQue dual-vector evaluation and native build/tests; run duration is not a paired latency result"
+    }
   },
   "metrics": {
     "cross_language": {
@@ -49,8 +53,11 @@
     "index_profile": "xquad-r-index-profile.txt",
     "index_profile_sha256": "91c78fc151309c1cb86f99df1eb414090b4ca2ab3abda4921c8edfb66949d73f",
     "index_project": "xquad-accuracy-24ad7f1862182925",
-    "index_profile_original_mtime": "2026-09-26 16:53:10 +1000",
+    "index_embedding_revision_verified": false,
+    "index_completeness_asserted_in_run": false,
+    "index_provenance": "the retained index records the repository but not the embedding revision; a fresh revision-bound rerun is pending",
     "model_artifacts": "xquad-r-model-artifacts.json",
-    "model_artifacts_sha256": "d8616e71f9a49eb88b19066448d109b72acd4beb01c0b67d43a03700bb26c71a"
+    "model_artifacts_sha256": "75ff42b82260ba95ea8e26bdbcd7f4f52da05d0819625e2cbab3602643c2d4ee",
+    "index_profile_original_mtime": "2026-09-26 16:53:10 +1000"
   }
 }
