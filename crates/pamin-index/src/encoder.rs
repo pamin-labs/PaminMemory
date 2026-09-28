@@ -57,6 +57,14 @@ impl Encoder {
         })
     }
 
+    /// The actual pair truncation limit, after the model's own cap is applied.
+    pub(crate) fn maximum_tokens(&self) -> usize {
+        self.tokenizer
+            .get_truncation()
+            .expect("loaded encoders configure truncation")
+            .max_length
+    }
+
     /// One forward pass over `inputs` -- texts, or pairs of them -- as one
     /// batch.
     pub(crate) fn run<'s, E>(&mut self, inputs: Vec<E>) -> Result<SessionOutputs<'_>>

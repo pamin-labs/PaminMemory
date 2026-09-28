@@ -545,6 +545,10 @@ async fn search_answers_questions_that_take_several_steps() {
     }
     if let Some(work) = engine.reranked(Rerank::default()) {
         println!(
+            "  loaded reranker truncation: {} tokens",
+            work.maximum_tokens
+        );
+        println!(
             "  both arms: {} scored pairs, {} tokens, {} padded tokens, {} batches; \
              encoding {:.1} ms, padding + inference {:.1} ms",
             work.scored,
