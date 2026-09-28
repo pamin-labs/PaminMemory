@@ -723,9 +723,22 @@ impl Reranker {
                 // `crate::prepared` for what that saves -- and the download
                 // removed once the copy has loaded.
                 Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                Device::CoreMl if tier == Rerank::Accurate => {
+                    let source = repository.get(tier.onnx(device))?;
+                    crate::native::prepare(&source, cache_dir)
+                }
                 _ => repository.get(tier.onnx(device)),
             };
-            let encoder = Encoder::load(model, &repository, max_tokens(), providers)
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
+                Encoder::load_fixed_coreml(model, &repository, max_tokens())
+            } else {
+                Encoder::load(model, &repository, max_tokens(), providers)
+            };
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let loaded = Encoder::load(model, &repository, max_tokens(), providers);
+            let encoder = loaded
                 .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
             if device == Device::Cpu {
                 crate::prepared::release(&weights, cache_dir);
@@ -919,9 +932,16 @@ fn score(
     let mut pending = sorted.into_iter();
     let mut work = Work::default();
     let mut start = 0;
-    for size in batches(&lengths, budget, most) {
+    let batching_lengths: Vec<_> = lengths
+        .iter()
+        .map(|&length| model.batching_length(length))
+        .collect();
+    let (budget, most) = model.batch_limits(budget, most);
+    for size in batches(&batching_lengths, budget, most) {
         work.batches += 1;
-        work.padded_tokens += (size * lengths[start + size - 1]) as u64;
+        let (physical_rows, physical_tokens) =
+            model.execution_shape(size, lengths[start + size - 1]);
+        work.padded_tokens += (physical_rows * physical_tokens) as u64;
         start += size;
         let (positions, batch): (Vec<usize>, Vec<Encoding>) = pending.by_ref().take(size).unzip();
         let forward = Instant::now();

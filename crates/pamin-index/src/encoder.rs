@@ -25,6 +25,8 @@ use crate::tokenizer::Tokenizer;
 pub(crate) struct Encoder {
     tokenizer: Tokenizer,
     session: Session,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fixed: Option<(PathBuf, Option<Session>)>,
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
@@ -53,8 +55,57 @@ impl Encoder {
         Ok(Self {
             tokenizer,
             session,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            fixed: None,
             token_type_ids,
         })
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn load_fixed_coreml(
+        model: impl FnOnce() -> Result<PathBuf>,
+        repository: &Repository,
+        max_length: usize,
+    ) -> Result<Self> {
+        if max_length > 256 {
+            return Err(failed(
+                &"static CoreML reranker currently requires at most 256 tokens",
+            ));
+        }
+        let (session, path) = crate::inference::fixed_coreml(model, 4, 128)?;
+        let tokenizer = crate::tokenizer::load(repository, max_length)?;
+        Ok(Self {
+            tokenizer,
+            session,
+            fixed: Some((path, None)),
+            token_type_ids: false,
+        })
+    }
+
+    pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.fixed.is_some() {
+            // Both native buckets execute 512 tokens; larger sweep settings
+            // cannot enlarge a compiled session's physical shape.
+            return (budget.min(512), most.min(4));
+        }
+        (budget, most)
+    }
+
+    pub(crate) fn batching_length(&self, length: usize) -> usize {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.fixed.is_some() {
+            return if length <= 128 { 128 } else { 256 };
+        }
+        length
+    }
+
+    pub(crate) fn execution_shape(&self, rows: usize, length: usize) -> (usize, usize) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.fixed.is_some() {
+            return if length <= 128 { (4, 128) } else { (2, 256) };
+        }
+        (rows, length)
     }
 
     /// The actual pair truncation limit, after the model's own cap is applied.
@@ -112,7 +163,25 @@ impl Encoder {
             .first()
             .ok_or_else(|| failed(&"nothing to encode"))?
             .len();
-        let shape = [encodings.len(), length];
+        let logical_rows = encodings.len();
+        let (rows, tokens) = self.execution_shape(logical_rows, length);
+        if logical_rows > rows || length > tokens {
+            return Err(failed(&"batch exceeds the static execution shape"));
+        }
+        let mut fixed_encodings;
+        let encodings = if (rows, tokens) != (logical_rows, length) {
+            fixed_encodings = encodings.to_vec();
+            for encoding in &mut fixed_encodings {
+                encoding.pad(tokens, 1, 0, "<pad>", tokenizers::PaddingDirection::Right);
+            }
+            while fixed_encodings.len() < rows {
+                fixed_encodings.push(fixed_encodings.last().expect("nonempty").clone());
+            }
+            &fixed_encodings
+        } else {
+            encodings
+        };
+        let shape = [rows, tokens];
         let column = |field: fn(&Encoding) -> &[u32]| {
             let values: Vec<i64> = encodings
                 .iter()
@@ -131,7 +200,39 @@ impl Encoder {
                 column(Encoding::get_type_ids)?.into(),
             ));
         }
-        self.session.run(feed).map_err(|error| failed(&error))
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let session = if let Some((path, long)) = &mut self.fixed {
+            if tokens == 256 {
+                if long.is_none() {
+                    *long = Some(crate::inference::fixed_coreml(|| Ok(path.clone()), 2, 256)?.0);
+                }
+                long.as_mut().expect("loaded long bucket")
+            } else {
+                &mut self.session
+            }
+        } else {
+            &mut self.session
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let session = &mut self.session;
+        let outputs = session.run(feed).map_err(|error| failed(&error))?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut outputs = outputs;
+        if rows != logical_rows {
+            let output = outputs
+                .get_mut("logits")
+                .ok_or_else(|| failed(&"static reranker returned no logits"))?;
+            let (shape, values) = output
+                .try_extract_tensor::<f32>()
+                .map_err(|error| failed(&error))?;
+            if shape.as_ref() != [rows as i64, 1] {
+                return Err(failed(&"static reranker returned an unexpected shape"));
+            }
+            *output = Tensor::from_array(([logical_rows, 1], values[..logical_rows].to_vec()))
+                .map_err(|error| failed(&error))?
+                .into_dyn();
+        }
+        Ok(outputs)
     }
 }
 
