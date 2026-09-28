@@ -39,7 +39,7 @@
     }
   },
   "prepare_models": "env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored",
-  "reproduce": "env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture",
+  "reproduce": "env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture",
   "verify_models": "python3 benchmarks/results/retrieval/verify_xquad_models.py $PAMIN_EVAL_HOME/models",
   "resources": "Fresh execution downloads models and builds a 13,014-sentence index; inspect disk and memory headroom before running.",
   "source_run": {
