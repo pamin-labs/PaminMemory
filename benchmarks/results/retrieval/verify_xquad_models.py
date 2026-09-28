@@ -26,11 +26,14 @@ for model in models:
     source = workspace_models / "prepared" / (label + ".source")
     assert source.read_text().splitlines()[0] == model["source_onnx_sha256"]
     preferred = workspace_models / "prepared" / model["prepared_key_on_measured_host"]
-    candidates = [preferred] + list((workspace_models / "prepared").glob("*/model.onnx"))
-    assert any(
-        digest(path / "model.onnx") == model["prepared_graph_sha256"]
-        and digest(path / "model.onnx.data") == model["prepared_data_sha256"]
-        for path in (candidate if candidate.is_dir() else candidate.parent for candidate in candidates)
-        if (path / "model.onnx").is_file() and (path / "model.onnx.data").is_file()
-    ), f"{model['role']}: prepared ONNX differs"
+    assert digest(preferred / "model.onnx") == model["prepared_graph_sha256"]
+    assert digest(preferred / "model.onnx.data") == model["prepared_data_sha256"]
+    # This is prepared::settled's default selection, not an arbitrary valid
+    # copy elsewhere in the cache. A fused graph appearing later must fail
+    # verification rather than silently change the executed artifact.
+    selected = preferred / ("attention.onnx" if (preferred / "attention.onnx").exists() else "model.onnx")
+    assert selected.name == model["selected_graph"], f"{model['role']}: graph selection changed"
+    assert digest(selected) == model["selected_graph_sha256"]
+    if selected.name == "model.onnx":
+        assert digest(preferred / "attention.unfused") == model["unfused_decision_sha256"]
     print(f"{model['role']}: pinned revision and model files match")

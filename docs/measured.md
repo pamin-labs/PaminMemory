@@ -29,6 +29,11 @@ measurements across exports.
 
 The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
 records the model, index encoding and harness command.
+The retained index's marker records the embedding repository, not its revision.
+The archived run did not assert vector completeness. The current harness
+checks both before scoring and uses a revision-bound project name, which
+requires a fresh build. That full rerun is pending; verifying the current model
+cache does not retroactively prove the old index's embedding revision.
 
 **Recorded MIRACL Swahili dev full-head run**, through the
 `search_reranked` path on 131,924 passages and 482 judged queries: nDCG@10
@@ -68,9 +73,9 @@ complete code/device provenance has not yet been archived beside XQuAD-R.
 The LoCoMo and LongMemEval rows below also retain their original configurations
 rather than claiming that every later retrieval change was rerun on them.
 
-Each XQuAD-R row was reproduced identically to four decimals by a second run
-before being placed here, which is what this harness does: fixed corpus, fixed
-index, fixed model, a greedy pass.
+The older XQuAD-R tables reported a second run agreeing to four decimals.
+The current explicit-CPU row above has one archived full run; the earlier
+automatic-provider runs are not interchangeable confirmations of it.
 
 **But reproducible is not the same as significant, and until recently nothing
 here could tell the difference.** Every comparison on this page is between two

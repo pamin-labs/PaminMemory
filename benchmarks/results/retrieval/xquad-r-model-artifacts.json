@@ -14,7 +14,11 @@
       },
       "prepared_key_on_measured_host": "549712a50abc9b4ab711de76de12c56a",
       "prepared_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
-      "prepared_data_sha256": "e5ea60bbb78f8f6af7ce66032ed6c3f59496e247846b28a3fc91c0a5151e677f"
+      "prepared_data_sha256": "e5ea60bbb78f8f6af7ce66032ed6c3f59496e247846b28a3fc91c0a5151e677f",
+      "selected_graph": "model.onnx",
+      "selected_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
+      "unfused_decision_sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
+      "selection_provenance": "default selection checked against retained cache; unfused decision and graph predate the archived run"
     },
     {
       "role": "reranker",
@@ -30,7 +34,11 @@
       },
       "prepared_key_on_measured_host": "d9df182f15964c336e41a7b0bcd9f536",
       "prepared_graph_sha256": "01fea914044b8346af02875be07cc9fd2af43fd814b12e85e979393c45a56589",
-      "prepared_data_sha256": "6188fbb5b4176ba108a1fbebf09207765ed6448656ca63e4e0259bba6651e0fd"
+      "prepared_data_sha256": "6188fbb5b4176ba108a1fbebf09207765ed6448656ca63e4e0259bba6651e0fd",
+      "selected_graph": "model.onnx",
+      "selected_graph_sha256": "01fea914044b8346af02875be07cc9fd2af43fd814b12e85e979393c45a56589",
+      "unfused_decision_sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
+      "selection_provenance": "default selection checked against retained cache; unfused decision and graph predate the archived run"
     }
   ]
 }
