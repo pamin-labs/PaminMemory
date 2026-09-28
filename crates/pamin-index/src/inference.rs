@@ -183,6 +183,24 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
     ort::ep::CPU::default().with_arena_allocator(false).build()
 }
 
+/// One provider policy for every model. The loader owns model/export choice;
+/// this owns accelerator order, reporting and the final CPU attempt.
+pub(crate) fn preferred<T>(
+    mut load: impl FnMut(Device, Vec<ExecutionProviderDispatch>) -> Result<T>,
+) -> Result<(T, Device)> {
+    for (device, provider) in accelerators() {
+        match load(device, vec![provider]) {
+            Ok(model) => return Ok((model, device)),
+            Err(error) => tracing::warn!(
+                device = device.name(),
+                %error,
+                "model could not use this accelerator; trying the next provider"
+            ),
+        }
+    }
+    load(Device::Cpu, vec![cpu()]).map(|model| (model, Device::Cpu))
+}
+
 /// The accelerators to try before the CPU, best first.
 ///
 /// Whatever this platform's runtime carries, with no build flag: CUDA on
@@ -225,6 +243,27 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_accelerators_end_with_one_cpu_attempt() {
+        let mut attempted = Vec::new();
+        let (model, device) = preferred(|device, _| {
+            attempted.push(device);
+            if device == Device::Cpu {
+                Ok(42)
+            } else {
+                Err(IndexError::Engine("unavailable accelerator".into()))
+            }
+        })
+        .expect("CPU fallback");
+        assert_eq!((model, device), (42, Device::Cpu));
+        let expected: Vec<_> = accelerators()
+            .into_iter()
+            .map(|(device, _)| device)
+            .chain([Device::Cpu])
+            .collect();
+        assert_eq!(attempted, expected);
+    }
 
     /// Every session's intra-op threads block rather than spin; see
     /// [`options`]. Read back from ONNX Runtime rather than from our own

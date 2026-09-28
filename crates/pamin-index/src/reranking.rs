@@ -731,32 +731,7 @@ impl Reranker {
             Ok(encoder)
         };
 
-        // Each accelerator this build carries, then the CPU. An accelerator
-        // that will not register -- no device, no driver, the wrong CUDA -- is
-        // a machine without one rather than an error, so it is logged and the
-        // next is tried.
-        let mut loaded = None;
-        for (device, provider) in crate::inference::accelerators() {
-            match session(device, vec![provider]) {
-                Ok(model) => {
-                    loaded = Some((model, device));
-                    break;
-                }
-                Err(error) => tracing::warn!(
-                    tier = tier.name(),
-                    device = device.name(),
-                    %error,
-                    "the reranker could not use this accelerator; trying the next"
-                ),
-            }
-        }
-        let (model, device) = match loaded {
-            Some(found) => found,
-            None => (
-                session(Device::Cpu, vec![crate::inference::cpu()])?,
-                Device::Cpu,
-            ),
-        };
+        let (model, device) = crate::inference::preferred(session)?;
         tracing::info!(
             tier = tier.name(),
             device = device.name(),
