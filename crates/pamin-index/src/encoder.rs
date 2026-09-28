@@ -218,6 +218,7 @@ impl Encoder {
         let outputs = session.run(feed).map_err(|error| failed(&error))?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut outputs = outputs;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if rows != logical_rows {
             let output = outputs
                 .get_mut("logits")
