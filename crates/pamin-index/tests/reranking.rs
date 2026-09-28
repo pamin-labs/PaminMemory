@@ -2,6 +2,9 @@
 //!
 //! Ignored by default: the first run downloads weights. Run with
 //! `cargo test -p pamin-index --test reranking -- --ignored --nocapture`.
+//! On a host expected to accelerate, set `PAMIN_EXPECT_DEVICE=directml`,
+//! `cuda` or `coreml` when running `every_device_orders_like_the_cpu` so a
+//! failed accelerator load cannot pass unnoticed as a CPU-only comparison.
 //!
 //! What this is for is narrower than accuracy, and worth stating because the
 //! accuracy harnesses are elsewhere and are expensive. A tier is six matched
@@ -120,6 +123,13 @@ fn every_device_orders_like_the_cpu() {
     };
 
     let mut chosen = Reranker::load(Rerank::Fast, &models).expect("load on any device");
+    if let Ok(expected) = std::env::var("PAMIN_EXPECT_DEVICE") {
+        assert_eq!(
+            chosen.device().name(),
+            expected,
+            "the accelerator validation fell back to another provider"
+        );
+    }
     let chosen_order = order(&mut chosen);
 
     // SAFETY: nothing else in this binary reads the environment concurrently;

@@ -90,8 +90,23 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
         Some(threads) => threads,
         None => std::thread::available_parallelism()?.get(),
     };
-    Session::builder()
-        .map_err(|error| unready(&error))?
+    let builder = Session::builder().map_err(|error| unready(&error))?;
+    #[cfg(target_os = "windows")]
+    let builder = if providers
+        .iter()
+        .any(|provider| provider.downcast_ref::<ort::ep::DirectML>().is_some())
+    {
+        // DirectML requires these before registration. Registration alone
+        // does not validate them; model loading otherwise falls back to CPU.
+        builder
+            .with_memory_pattern(false)
+            .map_err(|error| unready(&error))?
+            .with_parallel_execution(false)
+            .map_err(|error| unready(&error))?
+    } else {
+        builder
+    };
+    builder
         .with_execution_providers(providers)
         .map_err(|error| unready(&error))?
         .with_optimization_level(crate::prepared::LEVEL)
@@ -115,14 +130,16 @@ pub(crate) fn threads() -> Option<usize> {
     pamin_core::env::positive("PAMIN_INFERENCE_THREADS")
 }
 
-/// Where a model's forward passes run.
+/// The execution provider selected for a model's forward passes.
 ///
 /// Recorded on every loaded model rather than inferred, because the answer is
 /// not what the platform says: every x86-64 Linux build can use CUDA, and one
 /// on a machine with no GPU, or with the wrong CUDA, runs on the CPU -- and a
 /// score cannot be read without knowing which. The CPU runs the int8 export and a GPU the fp16 one, so the two do
 /// not produce bit-identical scores and are not interchangeable in a
-/// measurement.
+/// measurement. A registered accelerator may still delegate unsupported
+/// nodes to CPU; CoreML itself may use CPU, GPU or the Neural Engine. Inspect
+/// the runtime's node profile before calling this a GPU measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Device {
     Cpu,
@@ -172,7 +189,8 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
 /// x86-64 Linux, Core ML on Apple silicon, DirectML on Windows, nothing
 /// elsewhere. A machine without the device -- or, for CUDA, without the
 /// driver, CUDA 13 and cuDNN 9 -- fails to register it and runs on the CPU,
-/// so a GPU is used when there is one and costs nothing when there is not.
+/// so the available provider is tried before the CPU. Successful registration
+/// does not establish how much of the graph that provider accelerates.
 /// `PAMIN_DEVICE=cpu` empties this, for a measurement that must be comparable
 /// with a CPU one or a machine whose GPU belongs to something else.
 ///
@@ -250,10 +268,7 @@ mod tests {
     #[test]
     fn a_device_that_will_not_register_is_never_asked_for_its_model() {
         for (device, provider) in accelerators() {
-            let registers = Session::builder()
-                .expect("a session builder")
-                .with_execution_providers([provider.clone()])
-                .is_ok();
+            let registers = options(vec![provider.clone()]).is_ok();
             if registers {
                 continue;
             }
