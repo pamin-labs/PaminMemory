@@ -91,6 +91,7 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
         None => std::thread::available_parallelism()?.get(),
     };
     let builder = Session::builder().map_err(|error| unready(&error))?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let builder = if providers
         .iter()
         .any(|provider| provider.downcast_ref::<ort::ep::CoreML>().is_some())
