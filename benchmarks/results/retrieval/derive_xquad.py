@@ -9,6 +9,7 @@ root = Path(__file__).resolve().parent
 log = root / "xquad-r-current-run.log"
 text = log.read_text()
 assert "test search_reaches_across_languages ... ok" in text
+assert re.findall(r"^\s*the shipped search path, (\w+)\s*$", text, re.M) == ["accuracy"]
 commits = re.findall(r"^\s*benchmark code commit: ([0-9a-f]{40})\s*$", text, re.M)
 assert len(commits) == 1
 assert re.search(r"^\s*index passage: named\s*$", text, re.M)
