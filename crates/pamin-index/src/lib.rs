@@ -11,6 +11,7 @@ pub mod error;
 mod half;
 mod hub;
 mod inference;
+mod onnx;
 mod prepared;
 pub mod projection;
 pub mod reranking;
