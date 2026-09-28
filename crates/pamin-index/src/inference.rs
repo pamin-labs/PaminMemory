@@ -130,6 +130,30 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
         .map_err(|error| unready(&error))
 }
 
+/// Static shapes prevent CoreML from silently rejecting unbounded ANE regions.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn fixed_coreml(
+    model: impl FnOnce() -> Result<PathBuf>,
+    rows: usize,
+    tokens: usize,
+) -> Result<(Session, PathBuf)> {
+    let provider = ort::ep::CoreML::default()
+        .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+        .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+        .build()
+        .error_on_failure();
+    let error =
+        |e: &dyn std::fmt::Display| IndexError::Engine(format!("static CoreML session: {e}"));
+    let mut builder = options(vec![provider])?
+        .with_dimension_override("batch_size", rows as i64)
+        .map_err(|e| error(&e))?
+        .with_dimension_override("sequence_length", tokens as i64)
+        .map_err(|e| error(&e))?;
+    let path = model()?;
+    let session = builder.commit_from_file(&path).map_err(|e| error(&e))?;
+    Ok((session, path))
+}
+
 /// Intra-op threads per inference session, or `None` for one per core.
 ///
 /// Read from `PAMIN_INFERENCE_THREADS`. Unset -- the default -- means

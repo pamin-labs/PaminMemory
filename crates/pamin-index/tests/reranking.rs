@@ -192,3 +192,61 @@ fn every_device_orders_like_the_cpu() {
         println!("{} chose {} and orders like CPU", tier.name(), chosen.0);
     }
 }
+
+/// The short/long buckets must keep logical rows and physical work distinct.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "loads the accurate CoreML model; reuses PAMIN_TEST_MODEL_CACHE"]
+fn coreml_buckets_preserve_partial_batches_and_work() {
+    let temporary = tempfile::tempdir().unwrap();
+    let cache = std::env::var_os("PAMIN_TEST_MODEL_CACHE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| temporary.path().join("models"));
+    let mut model = Reranker::load(Rerank::Accurate, &cache).expect("load accurate model");
+    assert_eq!(
+        model.device(),
+        pamin_index::Device::CoreMl,
+        "the premise fell back to CPU"
+    );
+    assert_eq!(
+        model.counted().maximum_tokens,
+        256,
+        "unset token-limit sweep overrides"
+    );
+    let mut documents = vec![
+        "short document one".to_string(),
+        "short document two".to_string(),
+        "short document three".to_string(),
+    ];
+    for index in 0..4 {
+        documents.push(format!(
+            "{} record {index}",
+            "database migration rollback ".repeat(300)
+        ));
+    }
+    let borrowed: Vec<_> = documents.iter().map(String::as_str).collect();
+    let ranked = model
+        .rank("failed migration", &borrowed)
+        .expect("score both buckets");
+    assert_eq!(
+        ranked.len(),
+        7,
+        "physical padding rows escaped into results"
+    );
+    let positions: std::collections::BTreeSet<_> = ranked.iter().map(|r| r.position).collect();
+    assert_eq!(positions, (0..7).collect());
+    assert!(ranked.iter().all(|r| r.score.is_finite()));
+    let work = model.counted();
+    assert_eq!(work.scored, 7);
+    assert_eq!(work.batches, 3);
+    assert_eq!(
+        work.padded_tokens,
+        3 * 512,
+        "work counts only logical padding rather than model input"
+    );
+    let alone = model
+        .rank("another failed migration", &["one new short document"])
+        .expect("single-row bucket");
+    assert_eq!(alone.len(), 1);
+    assert_eq!(model.counted().padded_tokens - work.padded_tokens, 512);
+}
