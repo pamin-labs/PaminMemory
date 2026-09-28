@@ -33,9 +33,9 @@ use crate::error::{IndexError, Result};
 /// tokenizer it would not let them share (see `crate::tokenizer`), and what
 /// its builder chose decides the scores: the execution providers in order,
 /// ONNX Runtime's layout optimizations, and [`threads`] or one per core. So
-/// those are what this chooses, in the order it chose them. It asked for
-/// nothing else on these platforms -- its DirectML adjustments are behind a
-/// feature of its own that this build does not enable.
+/// those are what this chooses, in the order it chose them. This also applies
+/// DirectML's required execution flags and excludes MatMulAddFusion on CoreML
+/// to keep transposed constant weights out of the serialized graph.
 ///
 /// `model` is asked for only once the providers have registered, because
 /// asking for it can mean downloading it, and each device has an export of
@@ -91,6 +91,18 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
         None => std::thread::available_parallelism()?.get(),
     };
     let builder = Session::builder().map_err(|error| unready(&error))?;
+    let builder = if providers
+        .iter()
+        .any(|provider| provider.downcast_ref::<ort::ep::CoreML>().is_some())
+    {
+        // Gemm fusion transposes large constant weights into inline MIL
+        // tensors. Keep the original initializer blobs for CoreML instead.
+        builder
+            .with_disabled_optimizers("MatMulAddFusion")
+            .map_err(|error| unready(&error))?
+    } else {
+        builder
+    };
     #[cfg(target_os = "windows")]
     let builder = if providers
         .iter()
@@ -327,5 +339,136 @@ mod tests {
                 device.name()
             );
         }
+    }
+
+    /// MatMul/Add fusion transposes a large FFN weight into an inline MIL
+    /// constant. Check the serialized native graph, not our option value.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "compiles a small native CoreML model"]
+    fn coreml_keeps_matrix_weights_out_of_the_graph()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::onnx::*;
+        use ort::ep::coreml::{ComputeUnits, ModelFormat};
+
+        fn tensor(name: &str, dimensions: &[u64], values: &[f32]) -> Vec<u8> {
+            let mut tensor = Vec::new();
+            for &dimension in dimensions {
+                put_varint_field(&mut tensor, TENSOR_DIMS, dimension);
+            }
+            put_varint_field(&mut tensor, TENSOR_DATA_TYPE, 1);
+            put_bytes(&mut tensor, TENSOR_NAME, name.as_bytes());
+            let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            put_bytes(&mut tensor, TENSOR_RAW_DATA, &bytes);
+            tensor
+        }
+        fn info(name: &str, dimensions: &[u64]) -> Vec<u8> {
+            let mut shape = Vec::new();
+            for &dimension in dimensions {
+                let mut value = Vec::new();
+                put_varint_field(&mut value, 1, dimension);
+                put_bytes(&mut shape, 1, &value);
+            }
+            let mut tensor = Vec::new();
+            put_varint_field(&mut tensor, TENSOR_TYPE_ELEM_TYPE, 1);
+            put_bytes(&mut tensor, 2, &shape);
+            let mut ty = Vec::new();
+            put_bytes(&mut ty, TYPE_TENSOR, &tensor);
+            let mut info = Vec::new();
+            put_bytes(&mut info, VALUE_INFO_NAME, name.as_bytes());
+            put_bytes(&mut info, VALUE_INFO_TYPE, &ty);
+            info
+        }
+        fn node(op: &str, inputs: &[&str], output: &str) -> Vec<u8> {
+            let mut node = Vec::new();
+            for input in inputs {
+                put_bytes(&mut node, NODE_INPUT, input.as_bytes());
+            }
+            put_bytes(&mut node, NODE_OUTPUT, output.as_bytes());
+            put_bytes(&mut node, NODE_NAME, op.as_bytes());
+            put_bytes(&mut node, NODE_OP_TYPE, op.as_bytes());
+            node
+        }
+        let mut graph = Vec::new();
+        put_bytes(&mut graph, 2, b"FFN matrix and bias");
+        put_bytes(
+            &mut graph,
+            GRAPH_NODE,
+            &node("MatMul", &["x", "weight"], "product"),
+        );
+        put_bytes(
+            &mut graph,
+            GRAPH_NODE,
+            &node("Add", &["product", "bias"], "y"),
+        );
+        put_bytes(
+            &mut graph,
+            GRAPH_INITIALIZER,
+            &tensor("weight", &[1024, 4096], &vec![1.0 / 4096.0; 1024 * 4096]),
+        );
+        put_bytes(
+            &mut graph,
+            GRAPH_INITIALIZER,
+            &tensor("bias", &[4096], &vec![0.125; 4096]),
+        );
+        put_bytes(&mut graph, GRAPH_INPUT, &info("x", &[1, 32, 1024]));
+        put_bytes(
+            &mut graph,
+            GRAPH_VALUE_INFO,
+            &info("product", &[1, 32, 4096]),
+        );
+        put_bytes(&mut graph, GRAPH_OUTPUT, &info("y", &[1, 32, 4096]));
+        let mut model = Vec::new();
+        put_varint_field(&mut model, 1, 8);
+        let mut opset = Vec::new();
+        put_varint_field(&mut opset, 2, 17);
+        put_bytes(&mut model, MODEL_OPSET_IMPORT, &opset);
+        put_bytes(&mut model, MODEL_GRAPH, &graph);
+
+        let cache = tempfile::tempdir()?;
+        let provider = ort::ep::CoreML::default()
+            .with_model_format(ModelFormat::MLProgram)
+            .with_compute_units(ComputeUnits::CPUAndGPU)
+            .with_model_cache_dir(cache.path().display())
+            .build()
+            .error_on_failure();
+        let mut session = options(vec![provider])?.commit_from_memory(&model)?;
+        let output = session.run(ort::inputs!["x" => ort::value::Tensor::from_array(([1,32,1024],vec![0.25f32;32*1024]))?])?;
+        let (_, values) = output["y"].try_extract_tensor::<f32>()?;
+        assert_eq!(values.len(), 32 * 4096);
+        assert!(
+            values.iter().all(|v| (*v - 0.1875).abs() < 1e-5),
+            "matrix or bias result changed"
+        );
+
+        let mut directories = vec![cache.path().to_path_buf()];
+        let mut graphs = Vec::new();
+        let mut native_matmul = false;
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(directory)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    directories.push(entry.path());
+                } else if entry.file_name() == "model.mlmodel" {
+                    let bytes = std::fs::read(entry.path())?;
+                    native_matmul |= bytes.windows(6).any(|word| word == b"matmul");
+                    graphs.push(bytes.len() as u64);
+                }
+            }
+        }
+        println!("native CoreML graph sizes: {graphs:?}");
+        assert!(
+            graphs.iter().any(|&bytes| bytes > 0),
+            "no native CoreML graph was produced; the premise fell back to CPU"
+        );
+        assert!(
+            native_matmul,
+            "the matrix operation was not lowered into the native CoreML graph"
+        );
+        assert!(
+            graphs.iter().all(|&bytes| bytes < 1024 * 1024),
+            "matrix weights were serialized inline instead of into the weights file: {graphs:?}"
+        );
+        Ok(())
     }
 }
