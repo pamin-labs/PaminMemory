@@ -147,32 +147,59 @@ pub(crate) fn fixed_coreml(
 ) -> Result<(Session, PathBuf)> {
     let path = model()?;
     let cache = coreml_cache(&path, rows, tokens)?;
-    std::fs::create_dir_all(&cache)?;
-    // CoreML writes its package and compiled model in place. Serialize builds
-    // across processes as well as the model registry's in-process loading.
+    std::fs::create_dir_all(cache.parent().expect("cache has a parent"))?;
+    // Keep the lock outside the directory being rebuilt. Unlinking a held
+    // lock would let another process lock a different inode concurrently.
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(cache.join("build.lock"))?;
+        .open(cache.with_extension("lock"))?;
     lock.lock()?;
-    let provider = ort::ep::CoreML::default()
-        .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
-        .with_compute_units(ort::ep::coreml::ComputeUnits::All)
-        .with_model_cache_dir(cache.to_string_lossy())
-        .build()
-        .error_on_failure();
-    let error =
-        |e: &dyn std::fmt::Display| IndexError::Engine(format!("static CoreML session: {e}"));
-    let mut builder = options(vec![provider])?
-        .with_dimension_override("batch_size", rows as i64)
-        .map_err(|e| error(&e))?
-        .with_dimension_override("sequence_length", tokens as i64)
-        .map_err(|e| error(&e))?;
-    let session = builder.commit_from_file(&path).map_err(|e| error(&e))?;
+    let reused = cache.join("ready").is_file();
+    if !reused {
+        reset_coreml_cache(&cache)?;
+    }
+    let load = || -> Result<Session> {
+        let provider = ort::ep::CoreML::default()
+            .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+            .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+            .with_model_cache_dir(cache.to_string_lossy())
+            .build()
+            .error_on_failure();
+        let error =
+            |e: &dyn std::fmt::Display| IndexError::Engine(format!("static CoreML session: {e}"));
+        let mut builder = options(vec![provider])?
+            .with_dimension_override("batch_size", rows as i64)
+            .map_err(|e| error(&e))?
+            .with_dimension_override("sequence_length", tokens as i64)
+            .map_err(|e| error(&e))?;
+        builder.commit_from_file(&path).map_err(|e| error(&e))
+    };
+    let session = match load() {
+        Ok(session) => session,
+        Err(error) if reused => {
+            tracing::warn!(%error, "cached CoreML package failed to load; rebuilding once");
+            reset_coreml_cache(&cache)?;
+            load()?
+        }
+        Err(error) => return Err(error),
+    };
+    // A crash before every partition loads leaves no marker. Its files must
+    // be rebuilt under the same lock rather than mistaken for a valid cache.
+    std::fs::File::create(cache.join("ready"))?.sync_all()?;
     report_graph(&path);
     Ok((session, path))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn reset_coreml_cache(cache: &Path) -> Result<()> {
+    if cache.exists() {
+        std::fs::remove_dir_all(cache)?;
+    }
+    std::fs::create_dir_all(cache)?;
+    Ok(())
 }
 
 /// The prepared parent already identifies the external weights by content.
@@ -187,7 +214,7 @@ fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<P
     let runtime = format!("{:x}", Sha256::digest(ort::info().as_bytes()));
     // Bump this policy version when the compile options above change.
     Ok(parent
-        .join("coreml-all-v1")
+        .join("coreml-all-v2")
         .join(runtime)
         .join(format!("{graph}-{rows}-{tokens}")))
 }
@@ -493,6 +520,52 @@ mod tests {
                     "CoreML wrote no cache"
                 );
             }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "compiles a tiny native CoreML model and corrupts only its temporary cache"]
+    fn coreml_rebuilds_interrupted_and_damaged_published_caches()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let model = temporary.path().join("model.onnx");
+        std::fs::write(
+            &model,
+            include_bytes!("../tests/fixtures/coreml-cache-2.onnx"),
+        )?;
+        for published in [false, true] {
+            let (session, _) = fixed_coreml(|| Ok(model.clone()), 4, 64)?;
+            drop(session);
+            let cache = coreml_cache(&model, 4, 64)?;
+            assert!(cache.join("ready").is_file());
+            let mut damaged = 0;
+            for directory in std::fs::read_dir(&cache)? {
+                let directory = directory?.path();
+                if !directory.is_dir() {
+                    continue;
+                }
+                for partition in std::fs::read_dir(directory)? {
+                    let package = partition?.path().join("model");
+                    if package.join("Manifest.json").is_file() {
+                        std::fs::remove_file(package.join("Manifest.json"))?;
+                        std::fs::remove_dir_all(package.join("compiled_model.mlmodelc"))?;
+                        damaged += 1;
+                    }
+                }
+            }
+            assert!(damaged > 0, "did not reproduce the missing manifest");
+            if !published {
+                std::fs::remove_file(cache.join("ready"))?;
+            }
+            let (mut session, _) = fixed_coreml(|| Ok(model.clone()), 4, 64)?;
+            let output = session.run(ort::inputs!["x" => ort::value::Tensor::from_array((
+                [4, 64, 8], vec![0.25f32; 4 * 64 * 8],
+            ))?])?;
+            let (_, values) = output["y"].try_extract_tensor::<f32>()?;
+            assert!(values.iter().all(|value| *value == 0.625));
+            assert!(cache.join("ready").is_file());
         }
         Ok(())
     }
