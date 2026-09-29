@@ -200,7 +200,7 @@ the input manifest covers all eleven upstream JSON files, including the
 question and answer keys, and the harness rejects stale cached copies. The
 archived index marker is checked as `named` by the extractor. The model
 manifest records both hub revisions, tokenizer files and prepared ONNX bytes;
-`python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models`
+`python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log`
 checks the cache before treating a run as the same configuration. The
 concurrent rerun was used for accuracy only; its wall time is not a latency
 measurement.
