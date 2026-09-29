@@ -772,6 +772,126 @@ fn report_loaded_graphs() {
         .try_init();
 }
 
+fn pinned_model_api(models: &Path) -> hf_hub::api::sync::Api {
+    let mut builder = hf_hub::api::sync::ApiBuilder::new()
+        .with_cache_dir(models.to_path_buf())
+        .with_progress(false);
+    if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
+        builder = builder.with_endpoint(endpoint);
+    }
+    builder.build().expect("reach the model hub")
+}
+
+fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &serde_json::Value) {
+    let name = model["repository"].as_str().unwrap();
+    let revision = model["revision"].as_str().unwrap();
+    let repository = api.repo(hf_hub::Repo::with_revision(
+        name.to_string(),
+        hf_hub::RepoType::Model,
+        revision.to_string(),
+    ));
+    for file in model["files_sha256"].as_object().unwrap().keys() {
+        repository
+            .get(file)
+            .unwrap_or_else(|error| panic!("fetching {name}/{file}: {error}"));
+    }
+    let (weights, _) = pinned_source(model);
+    repository
+        .get(weights)
+        .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
+    let refs = models
+        .join(format!("models--{}", name.replace('/', "--")))
+        .join("refs");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::write(refs.join("main"), revision).unwrap();
+    println!("  prepared {name} at {revision}");
+}
+
+/// Load the architecture-selected Fast export and rank two unambiguous pairs.
+/// This tests the manifest against the actual product loader, without a corpus.
+#[test]
+#[ignore = "downloads a pinned Fast reranker into PAMIN_EVAL_HOME"]
+fn pinned_fast_reranker_loads_and_scores() {
+    let Some(home) = pinned_benchmark_home("pinned_fast_reranker_loads_and_scores") else {
+        return;
+    };
+    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+    assert!(std::env::var_os("HF_HOME").is_none());
+    let models = Path::new(&home).join("models");
+    let fast: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+    ))
+    .unwrap();
+    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
+    let identity = pinned_model_id(&models, "reranker_fast");
+    report_loaded_graphs();
+    let mut reranker =
+        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
+    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
+    let ranked = reranker
+        .rank(
+            "Where does the harbour pilot board ships?",
+            &[
+                "The harbour pilot boards ships at the outer buoy.",
+                "Chocolate cake is baked with flour and cocoa.",
+            ],
+        )
+        .expect("score the pinned Fast tier");
+    assert_eq!(ranked.len(), 2);
+    assert!(ranked.iter().all(|item| item.score.is_finite()));
+    assert_eq!(ranked[0].position, 0);
+    assert_eq!(
+        pinned_model_id(&models, "reranker_fast"),
+        identity,
+        "release changed the pinned source identity"
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires a cached pinned Fast FP32 export and CoreML"]
+fn pinned_fast_coreml_model_loads_and_scores() {
+    let Some(home) = pinned_benchmark_home("pinned_fast_coreml_model_loads_and_scores") else {
+        return;
+    };
+    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("auto"));
+    assert!(std::env::var_os("HF_HOME").is_none());
+    let models = Path::new(&home).join("models");
+    let fast: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+    ))
+    .unwrap();
+    let model = &fast["models"][0];
+    let repository = model["repository"].as_str().unwrap();
+    let revision = model["revision"].as_str().unwrap();
+    let fp32 = models
+        .join(format!("models--{}", repository.replace('/', "--")))
+        .join("snapshots")
+        .join(revision)
+        .join("onnx/model.onnx");
+    let expected = model["source_onnx_sha256"]["other"].as_str().unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(fp32).unwrap())),
+        expected
+    );
+    report_loaded_graphs();
+    let mut reranker =
+        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
+    assert_eq!(reranker.device(), pamin_index::Device::CoreMl);
+    let ranked = reranker
+        .rank(
+            "Where does the harbour pilot board ships?",
+            &[
+                "The harbour pilot boards ships at the outer buoy.",
+                "Chocolate cake is baked with flour and cocoa.",
+            ],
+        )
+        .expect("score on CoreML");
+    assert_eq!(ranked.len(), 2);
+    assert!(ranked.iter().all(|item| item.score.is_finite()));
+    assert_eq!(ranked[0].position, 0);
+}
+
 /// A cheap real-loader check for the reproduction log and verifier, without
 /// indexing or scoring a corpus. The Python verifier consumes its stdout.
 #[test]
@@ -804,14 +924,7 @@ fn prepare_pinned_xquad_models() {
         std::env::var_os("HF_HOME").is_none(),
         "unset HF_HOME to keep the pinned cache in this workspace"
     );
-    let cache = models.clone();
-    let mut builder = hf_hub::api::sync::ApiBuilder::new()
-        .with_cache_dir(cache.clone())
-        .with_progress(false);
-    if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
-        builder = builder.with_endpoint(endpoint);
-    }
-    let api = builder.build().expect("reach the model hub");
+    let api = pinned_model_api(&models);
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
         "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
     ))
@@ -831,34 +944,7 @@ fn prepare_pinned_xquad_models() {
         .iter()
         .chain(selected_fast)
     {
-        let name = model["repository"].as_str().unwrap();
-        let revision = model["revision"].as_str().unwrap();
-        let repository = api.repo(hf_hub::Repo::with_revision(
-            name.to_string(),
-            hf_hub::RepoType::Model,
-            revision.to_string(),
-        ));
-        for file in model["files_sha256"].as_object().unwrap().keys() {
-            repository
-                .get(file)
-                .unwrap_or_else(|error| panic!("fetching {name}/{file}: {error}"));
-        }
-
-        // Fetch the pinned source instead of checking a prepared directory
-        // from the archived host. A scoring run records its actual selection.
-        // Preparation is needed once per fresh cache; repeating it may fetch
-        // a source that the product released after preparing a mapped copy.
-        let (weights, _) = pinned_source(model);
-        repository
-            .get(weights)
-            .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
-
-        let refs = cache
-            .join(format!("models--{}", name.replace('/', "--")))
-            .join("refs");
-        std::fs::create_dir_all(&refs).unwrap();
-        std::fs::write(refs.join("main"), revision).unwrap();
-        println!("  prepared {name} at {revision}");
+        prepare_pinned_model(&api, &models, model);
     }
 }
 
