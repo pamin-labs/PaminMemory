@@ -1,0 +1,167 @@
+{
+  "protocol": {
+    "scope": "actual native::prepare cache-hit boundary; no model inference/search",
+    "source": "/private/tmp/pamin-gpu-research/rust-native/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/source.onnx",
+    "source_bytes": 1136209678,
+    "cache": "/private/tmp/pamin-perf58/models",
+    "prepared": "/private/tmp/pamin-perf58/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx",
+    "source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+    "orders": [
+      [
+        "before",
+        "after"
+      ],
+      [
+        "after",
+        "before"
+      ],
+      [
+        "before",
+        "after"
+      ]
+    ],
+    "profile": "release",
+    "memory": "maximum resident set size from macOS time -l per independent process",
+    "premise": "same existing prepared path and graph digest; input remains fully content-hashed",
+    "after_binary_sha256": "22047b849d7e6a948cccc045ed08b2f962ffe17cdf785d46fb146b0de38caf9c",
+    "after_native_source_sha256": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27",
+    "binaries": {
+      "before": {
+        "path": "/private/tmp/pamin-stream-cache-before-frozen",
+        "sha256": "726638a0ff74589a50eff4940a48ca40af3dcdc4c12a8666da12916940696dc0"
+      },
+      "after": {
+        "path": "/private/tmp/pamin-stream-cache-after-frozen",
+        "sha256": "22047b849d7e6a948cccc045ed08b2f962ffe17cdf785d46fb146b0de38caf9c"
+      }
+    },
+    "shared_machine": true,
+    "source_commit_before": "90b0225",
+    "source_files_before": {
+      "native": "b7f49baf8895830957075ea4efcd551019d5449baa3ab5204f27c7c7200276b0",
+      "prepared": "59242bad4f084ba5220ab0495e8261a86f81c5d955e7d2f21d4521e038e7c089"
+    },
+    "harness_source": "//! Projection index: multilingual segmentation, lexical and vector recall channels.\n//!\n//! Everything here is derived data. Losing it costs a reindex, not a migration,\n//! which is what makes a pre-1.0 index engine an acceptable dependency.\n\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/attention.rs\"]\nmod attention;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/descriptors.rs\"]\nmod descriptors;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/embedding.rs\"]\npub mod embedding;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/encoder.rs\"]\nmod encoder;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/error.rs\"]\npub mod error;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/half.rs\"]\nmod half;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/hub.rs\"]\nmod hub;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/inference.rs\"]\nmod inference;\n#[cfg(all(target_os = \"macos\", target_arch = \"aarch64\"))]\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/native.rs\"]\nmod native;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/onnx.rs\"]\nmod onnx;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/prepared.rs\"]\nmod prepared;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/projection.rs\"]\npub mod projection;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/reranking.rs\"]\npub mod reranking;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/reshape.rs\"]\nmod reshape;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/segmentation.rs\"]\npub mod segmentation;\n#[path = \"/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index/src/tokenizer.rs\"]\nmod tokenizer;\n\npub use descriptors::raise_open_file_limit;\npub use embedding::{Embedder, Profile};\npub use error::{IndexError, Result};\npub use half::as_stored;\npub use inference::Device;\npub use projection::{\n    Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorIndex,\n    is_fragmented, segment_documents, vector_index_lags, wastes_disk,\n};\npub use reranking::{Ranked, Rerank, Reranked, Reranker};\npub use reshape::{Held, Reshape, Reshaped};\npub use segmentation::{Segmenter, detect_language};\n\n#[test]\n#[ignore = \"uses an existing full source and prepared graph; no downloads or inference\"]\nfn scratch_cached_native_prepare_probe() {\n    let source = std::path::PathBuf::from(std::env::var_os(\"PAMIN_NATIVE_MODEL_SOURCE\").unwrap());\n    let cache = std::path::PathBuf::from(std::env::var_os(\"PAMIN_NATIVE_TEST_CACHE\").unwrap());\n    let expected =\n        std::path::PathBuf::from(std::env::var_os(\"PAMIN_EXPECT_PREPARED_PATH\").unwrap());\n    assert!(expected.is_file());\n    let start = std::time::Instant::now();\n    let path = native::prepare(&source, &cache).unwrap();\n    let seconds = start.elapsed().as_secs_f64();\n    assert_eq!(path, expected, \"different cache content identity\");\n    use sha2::Digest as _;\n    let graph = std::fs::read(&path).unwrap();\n    println!(\n        \"cache_probe seconds={seconds:.9} graph_sha256={:x} source_bytes={} graph_bytes={}\",\n        sha2::Sha256::digest(&graph),\n        std::fs::metadata(source).unwrap().len(),\n        graph.len()\n    );\n}\n",
+    "runner_source": "import json, subprocess, os, re, hashlib, statistics\nfrom pathlib import Path\nroot=Path('/private/tmp/pamin-stream-cache-results');root.mkdir(exist_ok=True)\nprotocol=json.load(open('/private/tmp/pamin-stream-cache-protocol.json'))\nbinaries={'before':'/private/tmp/pamin-stream-cache-before-frozen','after':'/private/tmp/pamin-stream-cache-after-frozen'}\nenv=os.environ.copy();env.update(PAMIN_NATIVE_MODEL_SOURCE=protocol['source'],PAMIN_NATIVE_TEST_CACHE=protocol['cache'],PAMIN_EXPECT_PREPARED_PATH=protocol['prepared'],DYLD_LIBRARY_PATH='/private/tmp/pamin-gpu-research/runtime')\nassert all(Path(p).is_file() for p in binaries.values())\nprotocol['binaries']={k:{'path':v,'sha256':hashlib.sha256(Path(v).read_bytes()).hexdigest()} for k,v in binaries.items()}\nprotocol['shared_machine']=True\n(root/'protocol.json').write_text(json.dumps(protocol,indent=2))\nrows=[]\nfor round_index,order in enumerate(protocol['orders']):\n for arm in order:\n  result=subprocess.run(['/usr/bin/time','-l','/usr/bin/env','DYLD_LIBRARY_PATH=/private/tmp/pamin-gpu-research/runtime',binaries[arm],'--exact','scratch_cached_native_prepare_probe','--ignored','--nocapture'],env=env,capture_output=True,text=True)\n  stem=root/f'round-{round_index+1}-{arm}'\n  stem.with_suffix('.stdout').write_text(result.stdout);stem.with_suffix('.stderr').write_text(result.stderr)\n  assert result.returncode==0,(arm,result.returncode,result.stderr)\n  m=re.search(r'cache_probe seconds=([0-9.]+) graph_sha256=(\\w+) source_bytes=(\\d+) graph_bytes=(\\d+)',result.stdout)\n  assert m,result.stdout\n  rss=re.search(r'(\\d+)\\s+maximum resident set size',result.stderr);assert rss,result.stderr\n  row={'round':round_index+1,'arm':arm,'seconds':float(m[1]),'graph_sha256':m[2],'source_bytes':int(m[3]),'graph_bytes':int(m[4]),'peak_rss_bytes':int(rss[1])}\n  assert row['source_bytes']==protocol['source_bytes']\n  rows.append(row);print(json.dumps(row),flush=True)\n  (root/'rows.json').write_text(json.dumps(rows,indent=2))\nassert len(rows)==6 and len({r['graph_sha256'] for r in rows})==1\nsummary={arm:{key:statistics.median(r[key] for r in rows if r['arm']==arm) for key in ['seconds','peak_rss_bytes']} for arm in binaries}\nsummary['scope']=protocol['scope'];summary['shared_machine']=True\n(root/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)\n",
+    "raw_files": {
+      "round-2-after.stdout": "b96b3d863bedaed3fc26470dbe716bf91ece9dc1ea855b75de8ed9a5ed184fc3",
+      "round-3-before.stdout": "92962d357046ed382ffcae02f24507711d8b25173bb2fccacf31fbc169b16b0d",
+      "round-3-after.stdout": "b77c819bf7b0f6f9533b9abb4b023f34a13935198aa727558c14117538d846a5",
+      "round-3-after.stderr": "5a60c1237c311f1cc5da7a1a2a0352852562e11056f49e6abc8722b307a1c118",
+      "round-3-before.stderr": "24cc35c59d0ac28e62f5b18a58b918c7b236a23ea068c06c0e3f8c1d8656baf0",
+      "round-2-after.stderr": "516e028d1daca3780fb72900d52fd4f1b4fa01370ae2a21aea994e3a143cfe8f",
+      "round-1-before.stderr": "ee241cdb342cb67f263e1431c4632eefbb32d22b3d7dc5d60dc3ad2e1869b8d9",
+      "round-1-after.stderr": "638cf6d3383a72090955ce21cf0131d9f20654e50d1d3b37219b5338deae7f58",
+      "round-2-before.stderr": "ec5d5c2d199c18b9122f804faa31e808d9fbb570481d39b56b48aa1713103180",
+      "round-2-before.stdout": "5288144eab3bcff89c7e431255a9085ccf38938aa9caf98e85babbdeb0ca0098",
+      "round-1-after.stdout": "c1f78cc67dde417d42619ec6f4b96abc94f6af728323423c64dceb5303af0e04",
+      "round-1-before.stdout": "c56a7cadf7d86494336c3c2fcccff2f0d6de94a568581e299395adde6bca7161"
+    },
+    "source_commit_after": "45ee7e71a9c3027805dc5414db16fea38ae74881",
+    "source_files_after": {
+      "native": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27",
+      "prepared": "17022ab77e8f9696bc8111c675b69749658bc0a50c7d2d6ccba2f9b07a48671c"
+    }
+  },
+  "rows": [
+    {
+      "round": 1,
+      "arm": "before",
+      "seconds": 1.947483667,
+      "graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "source_bytes": 1136209678,
+      "graph_bytes": 924562,
+      "peak_rss_bytes": 1153597440
+    },
+    {
+      "round": 1,
+      "arm": "after",
+      "seconds": 1.1079985,
+      "graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "source_bytes": 1136209678,
+      "graph_bytes": 924562,
+      "peak_rss_bytes": 18825216
+    },
+    {
+      "round": 2,
+      "arm": "after",
+      "seconds": 1.078013083,
+      "graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "source_bytes": 1136209678,
+      "graph_bytes": 924562,
+      "peak_rss_bytes": 18972672
+    },
+    {
+      "round": 2,
+      "arm": "before",
+      "seconds": 1.147207792,
+      "graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "source_bytes": 1136209678,
+      "graph_bytes": 924562,
+      "peak_rss_bytes": 1155006464
+    },
+    {
+      "round": 3,
+      "arm": "before",
+      "seconds": 1.16562625,
+      "graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "source_bytes": 1136209678,
+      "graph_bytes": 924562,
+      "peak_rss_bytes": 1155039232
+    },
+    {
+      "round": 3,
+      "arm": "after",
+      "seconds": 1.08308575,
+      "graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "source_bytes": 1136209678,
+      "graph_bytes": 924562,
+      "peak_rss_bytes": 18792448
+    }
+  ],
+  "summary": {
+    "before": {
+      "seconds": 1.16562625,
+      "peak_rss_bytes": 1155006464
+    },
+    "after": {
+      "seconds": 1.08308575,
+      "peak_rss_bytes": 18825216
+    },
+    "scope": "actual native::prepare cache-hit boundary; no model inference/search",
+    "shared_machine": true,
+    "deltas": {
+      "seconds": {
+        "absolute": -0.08254050000000013,
+        "percent": -7.081214926311086
+      },
+      "peak_rss_bytes": {
+        "absolute": -1136181248,
+        "percent": -98.37012029051294
+      }
+    }
+  },
+  "limits": [
+    "Actual native::prepare cache-hit boundary, not inference or whole search.",
+    "Three rotated rounds on a shared machine; timing is directional, not a statistical speed acceptance.",
+    "Each process fully hashes the same 1,136,209,678-byte source and returns the same prepared path and graph SHA-256.",
+    "RSS is macOS time -l maximum resident set size for the process, not system-wide accelerator memory.",
+    "This change does not remove retained bucket sessions or their compiled packages.",
+    "Initial graph preparation still allocates the source snapshot and verifies its digest before publication."
+  ],
+  "verification": {
+    "fmt": "passed",
+    "clippy_all_targets_all_features": "passed",
+    "workspace_tests": "passed",
+    "complete_cached_BGE_first_write_and_reuse": "passed",
+    "budget": "passed",
+    "engineering_budget": {
+      "binary_bytes": 30700896,
+      "distribution_bytes": 54509776,
+      "total_dependencies": 389,
+      "target_bytes": 1951421588,
+      "cold_build_seconds": 176.0,
+      "incremental_check_seconds": 5.5
+    }
+  }
+}
