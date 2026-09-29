@@ -627,6 +627,27 @@ fn stale_reranker_revision_is_rejected_before_indexing_or_scoring() {
     pinned_model_id(models.path(), "reranker");
 }
 
+fn xquad_project_name(named: &str, fingerprint: &str, embedding: Option<&str>) -> String {
+    let mut project = format!("xquad-{named}-{fingerprint}");
+    if let Some(identity) = embedding {
+        project.push('-');
+        project.push_str(&identity[..16]);
+    }
+    project
+}
+
+#[test]
+fn content_passage_diagnostic_keeps_its_retained_project_identity() {
+    assert_eq!(
+        xquad_project_name("accuracy", "corpus", None),
+        "xquad-accuracy-corpus"
+    );
+    assert_eq!(
+        xquad_project_name("accuracy", "corpus", Some("0123456789abcdefmore")),
+        "xquad-accuracy-corpus-0123456789abcdef"
+    );
+}
+
 fn report_loaded_graphs() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("pamin_index=info")
@@ -1317,13 +1338,23 @@ async fn search_reaches_across_languages() {
 
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
-    let mut project = format!("xquad-{named}-{}", corpus.fingerprint());
-    if profile == pamin_index::Profile::Accuracy {
-        let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
-        project.push('-');
-        project.push_str(&embedding_id[..16]);
-        println!("  index embedding identity: {embedding_id}");
-    }
+    let embedding_id = (profile == pamin_index::Profile::Accuracy).then(|| {
+        let identity = pinned_embedding_id(&workspace.root().join("models"));
+        println!("  index embedding identity: {identity}");
+        identity
+    });
+    // PASSAGES compares a retained content-only index with a named one. A
+    // fresh revision-bound index would be Named and cannot serve that baseline.
+    let content_baseline = std::env::var_os("PASSAGES").is_some();
+    let project = xquad_project_name(
+        &named,
+        &corpus.fingerprint(),
+        if content_baseline {
+            None
+        } else {
+            embedding_id.as_deref()
+        },
+    );
     println!("  index project: {project}");
     let engine = Engine::open(
         &workspace,
@@ -1335,7 +1366,13 @@ async fn search_reaches_across_languages() {
     .await
     .expect("open the engine");
 
-    if std::env::var("PASSAGES").is_err() {
+    if content_baseline {
+        assert_eq!(
+            engine.passage(),
+            pamin_index::Passage::Content,
+            "PASSAGES requires the retained content-only baseline before writing the corpus"
+        );
+    } else {
         assert_eq!(
             engine.passage(),
             pamin_index::Passage::Named,
