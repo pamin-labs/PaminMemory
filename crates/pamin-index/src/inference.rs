@@ -412,6 +412,26 @@ mod tests {
 
     #[test]
     fn preparation_probes_do_not_claim_to_be_product_model_loads() {
+        // Tracing callsite interest is process-global. Other parallel session
+        // tests use these same callsites without this thread-local collector.
+        // Isolate the capture, while retaining real model loads and assertions.
+        const CHILD: &str = "MODEL_LOAD_CAPTURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "inference::tests::preparation_probes_do_not_claim_to_be_product_model_loads",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "isolated model provenance regression failed"
+            );
+            return;
+        }
         use std::io::Write;
         use std::sync::{Arc, Mutex};
 
