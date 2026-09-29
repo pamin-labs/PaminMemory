@@ -575,8 +575,9 @@ fn pinned_embedding_id(models: &Path) -> String {
             std::fs::read_to_string(models.join("prepared").join(label))
                 .expect("the released download must have a prepared source record")
                 .lines()
-                .next()
-                .expect("the source record contains the download hash")
+                .nth(3)
+                .and_then(|line| line.strip_prefix("sha256 "))
+                .expect("prepared source record lacks a digest; rerun prepare_pinned_xquad_models")
                 .to_string()
         }
         Err(error) => panic!("read pinned embedding weights: {error}"),
