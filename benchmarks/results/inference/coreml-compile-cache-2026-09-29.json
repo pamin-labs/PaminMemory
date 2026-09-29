@@ -1,0 +1,377 @@
+{
+  "boundary": "direct ORT commit_from_file load/compile plus one synthetic BGE 4x64 forward; not whole product/search latency",
+  "shared_machine": true,
+  "runtime": "ORT 1.28.0 Release",
+  "model": "native typed-reranker-v3 BGE FP16 encoder with FP32 classifier",
+  "prepared_graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+  "source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+  "physical_shape": [
+    4,
+    64
+  ],
+  "provider": "CoreML ALL; real CoreML kernel confirmed from each ORT profile",
+  "options": {
+    "optimization_level": 3,
+    "disabled_optimizer": "MatMulAddFusion",
+    "intra_threads": 2,
+    "intra_op_spinning": false
+  },
+  "orders": [
+    [
+      "before",
+      "after"
+    ],
+    [
+      "after",
+      "before"
+    ],
+    [
+      "before",
+      "after"
+    ]
+  ],
+  "oracle_logits_bits": [
+    3204421756,
+    3204421756,
+    3204421756,
+    3204421756
+  ],
+  "small_model_probes": [
+    {
+      "name": "disabled64",
+      "tokens": 64,
+      "scale": 2,
+      "cache": "disabled",
+      "exit_code": 0,
+      "wall_seconds": 1.4508256670087576,
+      "source_sha256": "899473db11a4ce511b5cd4c5ae0d681d085e685d6791d7910274cba2ccfcc3a1",
+      "stdout": "\nrunning 1 test\ncompile_probe tokens=64 scale=2 load_seconds=0.382859042 forward_seconds=0.014544333 max_error=0 profile=/private/tmp/pamin-coreml-compiled-cache/disabled64_2026-09-29_19-43-36_033.json\ntest compile_cache_probe ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "shared64",
+      "tokens": 64,
+      "scale": 2,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/shared-cache",
+      "exit_code": 0,
+      "wall_seconds": 0.22578279208391905,
+      "source_sha256": "899473db11a4ce511b5cd4c5ae0d681d085e685d6791d7910274cba2ccfcc3a1",
+      "stdout": "\nrunning 1 test\ncompile_probe tokens=64 scale=2 load_seconds=0.186315541 forward_seconds=0.006538416 max_error=0 profile=/private/tmp/pamin-coreml-compiled-cache/shared64_2026-09-29_19-43-36_460.json\ntest compile_cache_probe ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "shared128",
+      "tokens": 128,
+      "scale": 2,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/shared-cache",
+      "exit_code": 101,
+      "wall_seconds": 0.08740325039252639,
+      "source_sha256": "899473db11a4ce511b5cd4c5ae0d681d085e685d6791d7910274cba2ccfcc3a1",
+      "stdout": "\nrunning 1 test\ntest compile_cache_probe ... FAILED\n\nfailures:\n\nfailures:\n    compile_cache_probe\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s\n\n",
+      "stderr": "2026-09-29 19:43:36.727 pamin-coreml-compile-cache-frozen[48542:141586340] 2026-09-29 19:43:36.727434 [E:onnxruntime:, sequential_executor.cc:671 ExecuteKernel] Non-zero status code returned while running 13578556818124637282_CoreML_13578556818124637282_0 node. Name:'CoreMLExecutionProvider_13578556818124637282_CoreML_13578556818124637282_0_0' Status Message: Error executing model: MultiArray shape (4 x 128 x 8) does not match the shape (4 x 64 x 8) specified in the model description\nError: Error { code: GenericFailure, message: \"Non-zero status code returned while running 13578556818124637282_CoreML_13578556818124637282_0 node. Name:'CoreMLExecutionProvider_13578556818124637282_CoreML_13578556818124637282_0_0' Status Message: Error executing model: MultiArray shape (4 x 128 x 8) does not match the shape (4 x 64 x 8) specified in the model description\", ptr: 0x95edc6400 }\n"
+    },
+    {
+      "name": "isolated128",
+      "tokens": 128,
+      "scale": 2,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/bucket128",
+      "exit_code": 0,
+      "wall_seconds": 0.17843387508764863,
+      "source_sha256": "899473db11a4ce511b5cd4c5ae0d681d085e685d6791d7910274cba2ccfcc3a1",
+      "stdout": "\nrunning 1 test\ncompile_probe tokens=128 scale=2 load_seconds=0.148193250 forward_seconds=0.006309166 max_error=0 profile=/private/tmp/pamin-coreml-compiled-cache/isolated128_2026-09-29_19-43-36_769.json\ntest compile_cache_probe ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "isolated64",
+      "tokens": 64,
+      "scale": 2,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/bucket64",
+      "exit_code": 0,
+      "wall_seconds": 0.17767154099419713,
+      "source_sha256": "899473db11a4ce511b5cd4c5ae0d681d085e685d6791d7910274cba2ccfcc3a1",
+      "stdout": "\nrunning 1 test\ncompile_probe tokens=64 scale=2 load_seconds=0.146157584 forward_seconds=0.006395916 max_error=0 profile=/private/tmp/pamin-coreml-compiled-cache/isolated64_2026-09-29_19-43-36_946.json\ntest compile_cache_probe ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "isolated64reuse",
+      "tokens": 64,
+      "scale": 2,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/bucket64",
+      "exit_code": 0,
+      "wall_seconds": 0.10035475017502904,
+      "source_sha256": "899473db11a4ce511b5cd4c5ae0d681d085e685d6791d7910274cba2ccfcc3a1",
+      "stdout": "\nrunning 1 test\ncompile_probe tokens=64 scale=2 load_seconds=0.066063292 forward_seconds=0.008312417 max_error=0 profile=/private/tmp/pamin-coreml-compiled-cache/isolated64reuse_2026-09-29_19-43-37_130.json\ntest compile_cache_probe ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s\n\n",
+      "stderr": ""
+    },
+    {
+      "name": "shared64changedweights",
+      "tokens": 64,
+      "scale": 3,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/shared-cache",
+      "exit_code": 101,
+      "wall_seconds": 0.08709166571497917,
+      "source_sha256": "d0c3aefff6d22df82286e44d850200b115869a0424de192f2c5815bca9ab7a22",
+      "stdout": "\nrunning 1 test\ntest compile_cache_probe ... FAILED\n\nfailures:\n\nfailures:\n    compile_cache_probe\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s\n\n",
+      "stderr": "\nthread 'compile_cache_probe' (141586476) panicked at crates/pamin-index/tests/scratch_coreml_compile_cache.rs:27:5:\nstale shape or weights: 0.25\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    },
+    {
+      "name": "isolatedchangedweights",
+      "tokens": 64,
+      "scale": 3,
+      "cache": "/private/tmp/pamin-coreml-compiled-cache/weight3-bucket64",
+      "exit_code": 0,
+      "wall_seconds": 0.16516008274629712,
+      "source_sha256": "d0c3aefff6d22df82286e44d850200b115869a0424de192f2c5815bca9ab7a22",
+      "stdout": "\nrunning 1 test\ncompile_probe tokens=64 scale=3 load_seconds=0.136796250 forward_seconds=0.006389542 max_error=0 profile=/private/tmp/pamin-coreml-compiled-cache/isolatedchangedweights_2026-09-29_19-43-37_314.json\ntest compile_cache_probe ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n",
+      "stderr": ""
+    }
+  ],
+  "bge_rows": [
+    {
+      "round": 0,
+      "arm": "prime",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 2101641216,
+      "wall_seconds": 59.851483250036836,
+      "guard_failure": null,
+      "load_seconds": 58.691801667,
+      "forward_seconds": 0.130238,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    },
+    {
+      "round": 1,
+      "arm": "before",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 2101968896,
+      "wall_seconds": 64.40780450031161,
+      "guard_failure": null,
+      "load_seconds": 63.99108175,
+      "forward_seconds": 0.114451125,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    },
+    {
+      "round": 1,
+      "arm": "after",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 1591590912,
+      "wall_seconds": 2.349509541876614,
+      "guard_failure": null,
+      "load_seconds": 2.09192275,
+      "forward_seconds": 0.085711458,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    },
+    {
+      "round": 2,
+      "arm": "after",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 1070907392,
+      "wall_seconds": 0.7852467079646885,
+      "guard_failure": null,
+      "load_seconds": 0.434908875,
+      "forward_seconds": 0.089866334,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    },
+    {
+      "round": 2,
+      "arm": "before",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 2101821440,
+      "wall_seconds": 59.699888959061354,
+      "guard_failure": null,
+      "load_seconds": 59.343033292,
+      "forward_seconds": 0.117096333,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    },
+    {
+      "round": 3,
+      "arm": "before",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 2101477376,
+      "wall_seconds": 56.04469395801425,
+      "guard_failure": null,
+      "load_seconds": 55.542713834,
+      "forward_seconds": 0.110841792,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    },
+    {
+      "round": 3,
+      "arm": "after",
+      "exit_code": 0,
+      "sampled_peak_rss_bytes": 1591705600,
+      "wall_seconds": 2.3496134588494897,
+      "guard_failure": null,
+      "load_seconds": 2.112073042,
+      "forward_seconds": 0.076357625,
+      "max_error": 0.0,
+      "retained_cache_logical_bytes": 2278103629
+    }
+  ],
+  "summary": {
+    "before": {
+      "load_seconds": 59.343033292,
+      "forward_seconds": 0.114451125,
+      "sampled_peak_rss_bytes": 2101821440
+    },
+    "after": {
+      "load_seconds": 2.09192275,
+      "forward_seconds": 0.085711458,
+      "sampled_peak_rss_bytes": 1591590912
+    },
+    "load_speedup": 28.367698229774497,
+    "cache_bytes": 2278103629
+  },
+  "harness_source": "#[test]\n#[ignore = \"compiles a tiny native CoreML graph\"]\nfn compile_cache_probe() -> Result<(), Box<dyn std::error::Error>> {\n    use ort::{ep::{CoreML,coreml::{ModelFormat,ComputeUnits}},session::{Session,builder::GraphOptimizationLevel},value::Tensor};\n    use std::{path::PathBuf,time::Instant};\n    let model=PathBuf::from(std::env::var(\"PROBE_MODEL\")?);\n    let cache=std::env::var(\"PROBE_CACHE\")?;\n    let tokens:usize=std::env::var(\"PROBE_TOKENS\")?.parse()?;\n    let rows=4usize;\n    let scale:f32=std::env::var(\"PROBE_SCALE\")?.parse()?;\n    let profile=std::env::var(\"PROBE_PROFILE\")?;\n    let mut provider=CoreML::default().with_model_format(ModelFormat::MLProgram).with_compute_units(ComputeUnits::All);\n    if cache!=\"disabled\" { provider=provider.with_model_cache_dir(cache); }\n    let start=Instant::now();\n    let mut session=Session::builder()?.with_execution_providers([provider.build().error_on_failure()])?\n        .with_optimization_level(GraphOptimizationLevel::Level3)?.with_disabled_optimizers(\"MatMulAddFusion\")?\n        .with_intra_threads(2)?.with_intra_op_spinning(false)?\n        .with_dimension_override(\"batch_size\",rows as i64)?.with_dimension_override(\"sequence_length\",tokens as i64)?\n        .with_profiling(&profile)?.commit_from_file(model)?;\n    let load=start.elapsed().as_secs_f64();\n    let start=Instant::now();\n    let bge=std::env::var_os(\"PROBE_BGE\").is_some();\n    let output=if bge {\n        let ids=Tensor::from_array(([rows,tokens],vec![23i64;rows*tokens]))?;\n        let mask=Tensor::from_array(([rows,tokens],vec![1i64;rows*tokens]))?;\n        session.run(ort::inputs![\"input_ids\"=>ids,\"attention_mask\"=>mask])?\n    } else { session.run(ort::inputs![\"x\"=>Tensor::from_array(([rows,tokens,8],vec![0.25f32;rows*tokens*8]))?])? };\n    let (shape,values)=output[if bge {\"logits\"} else {\"y\"}].try_extract_tensor::<f32>()?;\n    if bge { assert_eq!(values.len(),rows); } else { assert_eq!(shape.as_ref(),[rows as i64,tokens as i64,8]); }\n    let expected=scale*0.25+0.125;\n    let mut max_error=values.iter().map(|x|(x-expected).abs()).fold(0.0f32,f32::max);\n    if bge {\n        let oracle=std::path::PathBuf::from(std::env::var(\"PROBE_ORACLE\")?);\n        let bits:Vec<u32>=values.iter().map(|x| {assert!(x.is_finite());x.to_bits()}).collect();\n        if oracle.exists() { let previous:Vec<u32>=serde_json::from_slice(&std::fs::read(oracle)?)?;assert_eq!(bits,previous,\"compiled reuse changed logits\"); }\n        else { std::fs::write(oracle,serde_json::to_vec(&bits)?)?; }\n        max_error=0.0;\n    }\n    assert!(max_error<1e-5,\"stale shape or weights: {max_error}\");\n    let forward=start.elapsed().as_secs_f64();drop(output);\n    let path=session.end_profiling()?;\n    let events:serde_json::Value=serde_json::from_slice(&std::fs::read(&path)?)?;\n    let coreml=events.as_array().unwrap().iter().any(|event|event[\"args\"][\"provider\"]==\"CoreMLExecutionProvider\");\n    assert!(coreml,\"provider registration did not execute the graph: {path}\");\n    println!(\"compile_probe tokens={tokens} scale={scale} load_seconds={load:.9} forward_seconds={forward:.9} max_error={max_error} profile={path}\");\n    Ok(())\n}\n",
+  "runner_source": "import subprocess,json,os,shutil,re,time\nfrom pathlib import Path\nroot=Path('/private/tmp/pamin-coreml-compiled-cache/bge64');root.mkdir(exist_ok=True)\nmodel='/private/tmp/pamin-perf58/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx'\nexe='/private/tmp/pamin-coreml-compile-cache-bge-frozen'\norders=[['before','after'],['after','before'],['before','after']]\nrows=[]\ncases=[('prime',0)]+[(arm,i+1) for i,order in enumerate(orders) for arm in order]\nfor arm,round_index in cases:\n assert shutil.disk_usage(root).free>=10*1024**3+2500000000,'disk preflight: reserve plus temporary model copy'\n name=f'{round_index}-{arm}'\n env=os.environ.copy();env.update(DYLD_LIBRARY_PATH='/private/tmp/pamin-gpu-research/runtime',PROBE_MODEL=model,PROBE_CACHE='disabled' if arm=='before' else str(root/'cache'),PROBE_TOKENS='64',PROBE_SCALE='2',PROBE_PROFILE=str(root/name),PROBE_BGE='1',PROBE_ORACLE=str(root/'logits-bits.json'))\n with open(root/(name+'.stdout'),'w') as stdout,open(root/(name+'.stderr'),'w') as stderr:\n  start=time.monotonic();proc=subprocess.Popen([exe,'--exact','compile_cache_probe','--ignored','--nocapture'],env=env,stdout=stdout,stderr=stderr)\n  peak=0;failure=None\n  while proc.poll() is None:\n   status=subprocess.run(['ps','-o','rss=','-p',str(proc.pid)],capture_output=True,text=True)\n   if status.returncode==0 and status.stdout.strip():peak=max(peak,int(status.stdout.strip())*1024)\n   if peak>8*1024**3:failure='RSS guard'\n   if shutil.disk_usage(root).free<10*1024**3:failure='disk guard'\n   if failure:proc.terminate();proc.wait();break\n   time.sleep(0.25)\n  row={'round':round_index,'arm':arm,'exit_code':proc.returncode,'sampled_peak_rss_bytes':peak,'wall_seconds':time.monotonic()-start,'guard_failure':failure}\n  output=(root/(name+'.stdout')).read_text();match=re.search(r'load_seconds=([0-9.]+) forward_seconds=([0-9.]+) max_error=([0-9.]+)',output)\n  if match:row.update(load_seconds=float(match[1]),forward_seconds=float(match[2]),max_error=float(match[3]))\n  row['retained_cache_logical_bytes']=sum(f.stat().st_size for f in (root/'cache').rglob('*') if f.is_file())\n  rows.append(row);(root/'results.json').write_text(json.dumps(rows,indent=2));print(json.dumps(row),flush=True)\n  assert row['exit_code']==0 and not failure,(row,(root/(name+'.stderr')).read_text())\nassert len(rows)==7\n",
+  "raw_hashes": {
+    "bge64/1-before.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bge64/1-after.stderr": "56f27acffebec2942899ba1aa586d3c4dd0b90288120f28e8a8d8639230b128d",
+    "bge64/1-after_2026-09-29_19-48-38_605.json": "6e798ef15537820dfd91065c9367480f7e744b795d7a86da844e9600bdcaacc6",
+    "bge64/0-prime.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bge64/2-before.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bge64/3-after_2026-09-29_19-50-37_495.json": "32681f844ef0791fefd7f02088ab132f19dd2b2f361ff1c08b37d42e888e2849",
+    "bge64/0-prime_2026-09-29_19-46-35_109.json": "f6b7a6a92ba98092bbe69384d7acb270ec99a293936603af424f5fc9e41c6705",
+    "bge64/2-before.stdout": "c69fae66f6c386cf743128fd33081c71546fac3b3de15fcbac470e58bde10294",
+    "bge64/3-before_2026-09-29_19-49-41_444.json": "f6db175e14619fa43884001b56cf45a7df6a6ec255183554e7775a47fff61099",
+    "bge64/0-prime.stdout": "fd3d73623b5e71bb99d39f5afb1a4b58217d70988c19f03447874760d50e08e1",
+    "bge64/1-after.stdout": "19c87834097497acb6a8dff120546b08955d535359cea87e0785bd45a85f7d0e",
+    "bge64/1-before.stdout": "d2473c3beda3604c1c02c042a122e6d18fb84e6b647ad201e2027a1b26e67721",
+    "bge64/3-after.stdout": "09ce23675bc2899f268936e525ad33e3fe1c42d97b3cf5b5082bdf204ecf2acc",
+    "bge64/3-before.stdout": "fd5054a6740dff58545d7da59594dfe2a0920975775388ce5e943ba5f3a06b16",
+    "bge64/2-after.stdout": "26c02d8391b61fc578312956f13c52b5a5b40f0ec24c9250afbc25497300ef5d",
+    "bge64/2-after_2026-09-29_19-48-40_945.json": "f6eb982830b82b0e6aee2c25bd29ae10b7d571638bb25c8a83b7ed76fa9ff154",
+    "bge64/2-before_2026-09-29_19-48-41_733.json": "86237ea7439bcad5062bdb6431e970b8286c59326735100fe1c1f40363657cc9",
+    "bge64/2-after.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bge64/3-before.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bge64/3-after.stderr": "d43e44deb161910dee788468f67902f80f9b54d75ddaf47d19b2bc924698b323",
+    "bge64/1-before_2026-09-29_19-47-34_182.json": "83e511fb6520b289ada9d3a7c9aee9746d32e0adfedf504f55482802247049cd"
+  },
+  "retired_cache_inventory": {
+    "reason": "All seven pilot processes exited 0; retain graph/metadata evidence and source model, retire only this experiment cache to preserve build headroom.",
+    "files": [
+      {
+        "path": "6175562152482906696/model.txt",
+        "bytes": 126,
+        "sha256": "4ddf97ecc7f0707dae3524751c592c63e4f9e45c016e27c4bb80d66346f3e163"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/Manifest.json",
+        "bytes": 653,
+        "sha256": "97b7c03ab7a21238ba58247a8d4986e076c434daf80161010454ac0acc0a6f38"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/compiled_model.mlmodelc/model.mil",
+        "bytes": 1602746,
+        "sha256": "7b114feda6f047aace16b81d7e865011cce85c667eb79a88af372d43429d87e7"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/compiled_model.mlmodelc/coremldata.bin",
+        "bytes": 268,
+        "sha256": "7ae3f82efd5b5242db53c2da01147357b1b439379b4f6710b8e2b4a39c68950d"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/tmp/model.mlmodel",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/tmp/weight.bin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/Data/com.microsoft.OnnxRuntime/model.mlmodel",
+        "bytes": 586520,
+        "sha256": "797438bbcdd684927352a3a8b1e6c7181a7a897a32d60bc78acbb8a2dc2f2648"
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/Data/com.microsoft.OnnxRuntime/weights/weight.bin",
+        "bytes": 625424704
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/compiled_model.mlmodelc/weights/weight.bin",
+        "bytes": 625424704
+      },
+      {
+        "path": "6175562152482906696/1_dynamic_mlprogram/model/compiled_model.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "2705cb2f1956be58c98cfe4d3c4d2fda50d4c72048bb8bbbecb53b494aef0c14"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/Manifest.json",
+        "bytes": 653,
+        "sha256": "a5f1a690b7fdae5a070dc7dbb961b687bbb15c709c19c234a9de87254cb041b5"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/compiled_model.mlmodelc/model.mil",
+        "bytes": 2608,
+        "sha256": "536ae7eb531e814feaae4ad44aacf5ff57f68f3b4104fe749b44008fe1efa686"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/compiled_model.mlmodelc/coremldata.bin",
+        "bytes": 353,
+        "sha256": "387b01789f162363c2ff5da6aa034cc170795aae15620e27e74c81693d53f6b1"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/tmp/model.mlmodel",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/tmp/weight.bin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/Data/com.microsoft.OnnxRuntime/model.mlmodel",
+        "bytes": 2656,
+        "sha256": "b959e46841880dd3078aaeadbcb92bf1edaf351620854b6a90b33923bacaf36e"
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/Data/com.microsoft.OnnxRuntime/weights/weight.bin",
+        "bytes": 512528576
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/compiled_model.mlmodelc/weights/weight.bin",
+        "bytes": 512528576
+      },
+      {
+        "path": "6175562152482906696/0_dynamic_mlprogram/model/compiled_model.mlmodelc/analytics/coremldata.bin",
+        "bytes": 243,
+        "sha256": "706fea7f83b0324a655705ee3e77c2106add492453816ffaafae74b0997e8b55"
+      }
+    ],
+    "logical_bytes": 2278103629
+  },
+  "limits": [
+    "No corpus accuracy or full search latency comparison.",
+    "BGE uses identical synthetic token IDs (23), masks and shape across seven independent processes; not natural-language quality acceptance.",
+    "Three rotated rounds, shared host: startup result is workload-specific, not universal speed ratio.",
+    "Prototype uses two CPU threads; production uses its existing configured thread count.",
+    "First cache population still costs 58.69 seconds; reuse is the benefit.",
+    "Two other production bucket sizes are checked on tiny fixtures, not fully benchmarked on BGE.",
+    "Sampled process RSS excludes CoreML system services; no system-wide memory claim.",
+    "Persistent disk grows by 2,278,103,629 logical bytes for this one bucket; no unique APFS physical extent claim.",
+    "Compilation cache does not share live model sessions or repair ANE numerical drift."
+  ],
+  "binary_sha256": "25c536e909232440003000fd5d65b3d96f79b06e74bbe3e1186462144648f247",
+  "production_parent_commit": "bd67c35e943c35bdff394affc70ba8762e9e1e3f",
+  "references": [
+    "https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html"
+  ],
+  "verification": {
+    "tiny_actual_fixed_coreml_regression": "passed",
+    "cache_key_unit_test": "passed",
+    "clippy_all_targets_all_features": "passed",
+    "workspace": "passed",
+    "budgets": "numeric gate exited 0, but invalid distribution evidence: zvec staging race omitted the native sidecar and release CLI cannot start",
+    "fmt": "passed",
+    "release_cli": "failed: no LC_RPATH for libzvec_c_api.dylib; separate packaging fix required"
+  },
+  "production_implementation_commit": "ce30a4d756c4e61202a159981ceaf8e709e23168"
+}

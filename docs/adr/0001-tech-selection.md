@@ -3115,3 +3115,27 @@ All six prepared graph hashes and byte counts match. This reduces preparation
 peak allocation; it does not reduce the retained 64/128/256 sessions or claim
 search speed/accuracy gains. First-write/cache-reuse verification uses the full
 cached BGE graph. [Conditions and all round values](../../benchmarks/results/inference/coreml-stream-cache-2026-09-29.md).
+
+
+### 2026-09-29: isolate and reuse static CoreML compilation caches
+
+ORT's default URL-based CoreML cache key omits static dimension overrides and
+changed content at the same path. Tiny native controls reproduce both failure
+modes: a 128-token invocation loads a cached 64-token description, and updated
+weights return stale output. Key the compiled cache by the prepared model's
+content-addressed parent, graph digest, runtime info, compile-policy version,
+rows and tokens. Hold a process-safe lock while ORT constructs the package.
+Native regressions exercise shape changes, repeated loading and weight updates.
+
+A direct ORT BGE 4×64 pilot, three rotated rounds, reduces median load time
+59.343 → 2.092 seconds (28.37×) and sampled process peak RSS
+2,101,821,440 → 1,591,590,912 bytes (-24.3%). All seven synthetic-input outputs
+are bit-identical and profiles confirm CoreML kernel execution. First cache
+population still takes 58.692 seconds. This is compile/reload cost, not complete
+product startup, retrieval accuracy or search speed; the pilot uses two CPU
+threads, while production keeps its existing configured count.
+
+The cost is 2,278,103,629 persistent logical bytes for one bucket. The other BGE
+shapes and complete product/corpus gates remain unmeasured. Do not delete the
+conversion package's duplicate weights without verifying runtime cache behavior.
+[Source, limits and all rounds](../../benchmarks/results/inference/coreml-compile-cache-2026-09-29.md).
