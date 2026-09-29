@@ -1,0 +1,56 @@
+{
+  "product_code_commit": "bd523771551874fb47f38c70c2cacb6b01bc7b06",
+  "platform": {
+    "model": "Mac16,12",
+    "logical_cpus": 10,
+    "ram_bytes": 34359738368,
+    "macos": "26.6.2",
+    "host": "shared"
+  },
+  "corpus": {
+    "name": "XQuAD-R",
+    "documents": 13014,
+    "queries": 1190,
+    "embedding_profile": "accuracy",
+    "vector_index": "memory",
+    "rerank_tier": "fast",
+    "rerank_head": 30,
+    "returned_limit": 60,
+    "entry_point": "Engine::search_reranked"
+  },
+  "fast_model": {
+    "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    "revision": "1427fd652930e4ba29e8149678df786c240d8825",
+    "cpu_arm_int8_source_sha256": "1825907d6c1a9001ff78124780bbde20a614a8c3df3b63409cf3c72c6fe5c8b4",
+    "coreml_fp32_source_sha256": "3e9a03ed1e966f7c5288dd4230e3d6a9bf5e3a170a06f1f4241c5bca12c6487c",
+    "cpu_arm_int8_source_bytes": 118620017,
+    "coreml_fp32_source_bytes": 470883696
+  },
+  "selected_cpu_graph_postrun_sha256": {
+    "model_onnx": "c1b5c8244095cbb3fee2dc6f64d36e2b14beef5d081b53b6fbb901775cd43b5f",
+    "model_onnx_data": "d2163269c4fd53cd9634ec16bcf79fcd24849e9d13e3d2a5f61382a00eaae204",
+    "scope": "postrun path contents; load log identified the path, but did not emit the hash at load time"
+  },
+  "frozen_binaries_sha256": {
+    "cpu": "7177cdfdc5730cb2cf184cdb2ad58128729ff434d25e0cc8a327bd2d8cda925d",
+    "coreml_initial": "f776a6c9d0513dc66d733c122654ab0f49d99990123e38f1c44b6af7752ba7a9",
+    "coreml_resume": "f0edfbaa28a1cb537cbda6251313d669310193c06a294a58d88c03d62285791b"
+  },
+  "frozen_harness_sources_sha256": {
+    "cpu": "63c5d5116abeeaf597d5330365718b4234d2882180b48c2b3be028e99f4c7f4b",
+    "coreml_initial": "5e286ee6002c7846d6ffe4ba2c9565805999c1a087dafbfdf84ed743b0b66557",
+    "coreml_resume": "01567b01fece03514d7d0a4e0f0103972fcbf1d5c12f2224f5e5ed38ab143712"
+  },
+  "actual_reranker_provider_assignments": {
+    "cpu": {"CPUExecutionProvider": 528},
+    "coreml": {"CoreMLExecutionProvider": 574, "CPUExecutionProvider": 246}
+  },
+  "coreml_resume": {
+    "initial_queries_completed": 770,
+    "second_run_query_range": "760..1190",
+    "overlap_queries": 10,
+    "overlap_id_rankings_and_both_ndcg_groups_identical": true,
+    "initial_arm_rejected_for_latency": "free disk below 10 GiB",
+    "completion_scope": "complete paired rankings and accuracy; stitched two-process latency is descriptive"
+  }
+}

@@ -1,0 +1,28 @@
+[
+  {
+    "device": "cpu",
+    "pid": 65312,
+    "state": "terminal",
+    "code_head": "bd52377",
+    "binary_sha256": "7177cdfdc5730cb2cf184cdb2ad58128729ff434d25e0cc8a327bd2d8cda925d",
+    "exit_code": 0,
+    "guard_failure": null,
+    "wall_seconds": 532.9450970832258,
+    "peak_process_rss_bytes": 1304920064,
+    "cpu_user_seconds": 1180.620441,
+    "cpu_system_seconds": 174.524724
+  },
+  {
+    "device": "coreml",
+    "pid": 73543,
+    "state": "terminal",
+    "code_head": "bd52377",
+    "binary_sha256": "f776a6c9d0513dc66d733c122654ab0f49d99990123e38f1c44b6af7752ba7a9",
+    "exit_code": -15,
+    "guard_failure": "free disk <10 GiB",
+    "wall_seconds": 1440.66656170832,
+    "peak_process_rss_bytes": 4452089856,
+    "cpu_user_seconds": 1631.141075,
+    "cpu_system_seconds": 216.812228
+  }
+]

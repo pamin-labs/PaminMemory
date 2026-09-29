@@ -1,0 +1,10 @@
+--- lib.rs
++++ lib.rs
+@@ -1258,2 +1258,2 @@
+-        Ok("auto"),
+-        "this separate candidate run requires the automatic accelerator policy"
++        Ok("cpu"),
++        "this separate candidate run requires the CPU INT8 export"
+@@ -1276 +1276 @@
+-    println!("  requested reranker device: auto; actual device must be checked in loader logs");
++    println!("  requested reranker device: cpu; actual device must be checked in loader logs");
