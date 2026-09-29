@@ -1861,6 +1861,40 @@ fn jittered(wait: Duration) -> Duration {
     wait / 2 + (wait / 2).mul_f64(f64::from(nanos % 1_000) / 1_000.0)
 }
 
+// Apple's Accelerate uses SIMD for this small host-side operation; moving
+// each shortlist to a GPU costs more than the arithmetic on this workload.
+#[cfg(target_os = "macos")]
+#[link(name = "Accelerate", kind = "framework")]
+unsafe extern "C" {
+    fn cblas_sdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f32;
+}
+
+/// The dot product used for exact rescoring after vector-index recall.
+fn dot(left: &[f32], right: &[f32]) -> f32 {
+    #[cfg(target_os = "macos")]
+    {
+        let count = i32::try_from(left.len().min(right.len())).expect("vector dimensions fit i32");
+        // SAFETY: both slices contain `count` contiguous f32 values, and the
+        // framework reads them only for this synchronous call.
+        unsafe { cblas_sdot(count, left.as_ptr(), 1, right.as_ptr(), 1) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        left.iter().zip(right).map(|(a, b)| a * b).sum()
+    }
+}
+
+#[cfg(test)]
+mod vector_math {
+    use super::dot;
+
+    #[test]
+    fn dot_reads_only_the_shared_prefix_and_handles_zero() {
+        assert_eq!(dot(&[2.0, 3.0], &[4.0]), 8.0);
+        assert_eq!(dot(&[0.0; 1024], &[1.0; 1024]), 0.0);
+    }
+}
+
 /// The topics a query returned, best first, each with the score it was ranked by.
 ///
 /// A document whose primary key does not parse is dropped rather than reported.
@@ -1871,11 +1905,6 @@ fn jittered(wait: Duration) -> Duration {
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a
 /// branch on the field so that adding a channel cannot forget it.
-/// The dot product, accumulated in f32.
-fn dot(left: &[f32], right: &[f32]) -> f32 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
 fn collect_scored(keys: Keys, docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
     docs.iter()
         .filter_map(|doc| {
