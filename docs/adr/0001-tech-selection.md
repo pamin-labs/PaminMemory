@@ -3161,3 +3161,21 @@ The cost is 2,278,103,629 persistent logical bytes for one bucket. The other BGE
 shapes and complete product/corpus gates remain unmeasured. Do not delete the
 conversion package's duplicate weights without verifying runtime cache behavior.
 [Source, limits and all rounds](../../benchmarks/results/inference/coreml-compile-cache-2026-09-29.md).
+
+### 2026-09-30: complete CoreML product-path control
+
+The [complete default-main comparison](../../benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md)
+measures all 1,190 XQuAD-R queries on the same complete revision-bound index.
+Both default arms actually select CoreML: legacy NeuralNetwork on main versus
+MLProgram + ALL, fixed buckets and a repaired FP32 classifier on the candidate.
+Observed p50 5.085653 → 0.483738 s, p95 7.374466 → 0.814224 s, peak process
+RSS −30.84%, process CPU user+system −98.46%. CPU cost excludes external
+services/devices; this is not energy or a per-PR causal gain.
+Cross-language nDCG changes −0.000168, same-language +0.000298, adjusted
+p 0.1532/1.0; recall is identical per query. The
+[CPU control](../../benchmarks/results/inference/coreml-search-full-2026-09-30.md)
+provides a separate baseline and shows increased RSS versus CPU. Retain these
+separate scopes. One sequential shared-host run per arm establishes complete
+product-path evidence, while rotated timings, other corpora, full ignored/e2e
+and other platforms remain open. Do not label this pure ANE execution or
+attribute the whole improvement to any one commit.

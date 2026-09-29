@@ -11,29 +11,45 @@ in [benchmarks.md](benchmarks.md), along with what that comparison holds fixed
 and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
-**Current XQuAD-R retrieval quality**, with the named-passage BGE-M3 index,
-the CPU int8 `accurate` tier reranking the whole fused head, and the corrected
-same-language answer key. All 1,190 queries use `search_reranked`:
+**Complete XQuAD-R product-path comparison (2026-09-30)**: all 1,190 queries
+through `search_reranked`, accuracy profile, accurate reranker, head 30, limit
+60, same complete revision-bound 13,014-sentence memory index.
 
-| group | nDCG@10 | recall@50 |
-| --- | ---: | ---: |
-| cross-language | **0.7268** | **0.9032** |
-| same-language | **0.8682** | **0.9647** |
+| group | Main CPU int8 nDCG@10 | Main default auto nDCG@10 | Optimized CoreML nDCG@10 | recall@50 (all) |
+| --- | ---: | ---: | ---: | ---: |
+| cross-language | 0.726808 | 0.727362 | 0.727194 | 0.903193 |
+| same-language | 0.868201 | 0.869148 | 0.869446 | 0.964706 |
 
-Separate earlier runs with automatic provider selection reported 0.7274 and
-0.8691 nDCG@10 with the same recall. A separate probe on this Mac selected
-CoreML and the fp16 export; those earlier runs did not record their provider.
-The current run explicitly records CPU and the int8 export. The small score
-differences are not credited to an optimization or treated as interchangeable
-measurements across exports.
+| Whole-search / process metric | Main default auto | Optimized CoreML | Absolute change | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| p50 | 5.085653 s | 0.483738 s | −4.601915 s | −90.49% |
+| p95 | 7.374466 s | 0.814224 s | −6.560242 s | −88.96% |
+| Search-call wall total | 6177.679 s | 723.069 s | −5454.610 s | −88.30% |
+| Sampled peak process RSS | 4436525056 B | 3068149760 B | −1368375296 B | −30.84% |
+| Process CPU user + system | 26080.018 s | 402.627 s | −25677.390 s | −98.46% |
+| Matched total persistent model/cache disk | Not measured | Not measured | N/A | N/A |
 
-The [committed summary](../benchmarks/results/retrieval/summary-current-xquad.json)
-records the model, index encoding and harness command.
-The retained index's marker records the embedding repository, not its revision.
-The archived run did not assert vector completeness. The current harness
-checks both before scoring and uses a revision-bound project name, which
-requires a fresh build. That full rerun is pending; verifying the current model
-cache does not retroactively prove the old index's embedding revision.
+Both default arms actually selected CoreML; main used legacy NeuralNetwork,
+while the optimized reranker used MLProgram + ALL with FP16 encoder / FP32
+classifier and static buckets. Embedding stayed CPU int8. ALL permits CPU/GPU/
+ANE cooperation; the run did not capture their internal operation placement.
+CPU time excludes external CoreML services and device work; RSS includes model
+startup/compilation, not isolated steady residency. Compared with the CPU
+control instead, optimized CoreML RSS increased 104.44%; baseline matters.
+
+The [default-main evidence](../benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md)
+and [CPU-control evidence](../benchmarks/results/inference/coreml-search-full-2026-09-30.md)
+archive pinned artifacts, complete rankings, judgments and paired tests.
+Recall is identical per query. Default-main nDCG deltas −0.000168 cross /
++0.000298 same have paragraph-cluster, four-metric adjusted p 0.1532 / 1.0.
+These are small nonsignificant differences, not proof of numerical equivalence.
+Timing is one sequential shared-host process per arm; repeated rotated timings
+and other corpora remain pending. The combined-stack result cannot establish
+any individual PR's speed contribution.
+
+The [older summary](../benchmarks/results/retrieval/summary-current-xquad.json)
+retains its original incomplete index provenance. The fresh revision-bound run
+above supersedes its pending-rerun status without retroactively validating it.
 
 **Recorded MIRACL Swahili dev full-head run**, through the
 `search_reranked` path on 131,924 passages and 482 judged queries: nDCG@10
@@ -87,8 +103,8 @@ The LoCoMo and LongMemEval rows below also retain their original configurations
 rather than claiming that every later retrieval change was rerun on them.
 
 The older XQuAD-R tables reported a second run agreeing to four decimals.
-The current explicit-CPU row above has one archived full run; the earlier
-automatic-provider runs are not interchangeable confirmations of it.
+The complete CPU and automatic-provider rows above retain their separate
+model/runtime provenance; different exports are not interchangeable repeats.
 
 **But reproducible is not the same as significant, and until recently nothing
 here could tell the difference.** Every comparison on this page is between two
