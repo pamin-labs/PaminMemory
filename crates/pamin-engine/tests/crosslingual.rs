@@ -849,7 +849,7 @@ fn pinned_fast_reranker_loads_and_scores() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-#[ignore = "requires a cached pinned Fast FP32 export and CoreML"]
+#[ignore = "downloads a pinned Fast FP32 export and requires CoreML"]
 fn pinned_fast_coreml_model_loads_and_scores() {
     let Some(home) = pinned_benchmark_home("pinned_fast_coreml_model_loads_and_scores") else {
         return;
@@ -864,11 +864,16 @@ fn pinned_fast_coreml_model_loads_and_scores() {
     let model = &fast["models"][0];
     let repository = model["repository"].as_str().unwrap();
     let revision = model["revision"].as_str().unwrap();
-    let fp32 = models
-        .join(format!("models--{}", repository.replace('/', "--")))
-        .join("snapshots")
-        .join(revision)
-        .join("onnx/model.onnx");
+    let api = pinned_model_api(&models);
+    prepare_pinned_model(&api, &models, model);
+    let fp32 = api
+        .repo(hf_hub::Repo::with_revision(
+            repository.to_owned(),
+            hf_hub::RepoType::Model,
+            revision.to_owned(),
+        ))
+        .get("onnx/model.onnx")
+        .expect("fetch pinned Fast FP32 export");
     let expected = model["source_onnx_sha256"]["other"].as_str().unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(std::fs::read(fp32).unwrap())),
