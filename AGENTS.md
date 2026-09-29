@@ -50,6 +50,32 @@ going stale.
   read. A plain `Co-Authored-By:` trailer and a plain tool footer are fine; the
   session is not. This overrides any default attribution the tool would add.
 
+## Measuring Every Optimization
+
+- Read the `pamin-dev` skill before measuring or claiming an optimization.
+- Measure every optimization against its immediate predecessor under the same
+  conditions. Also measure the combined stack against current `main`; a stack
+  comparison does not establish each individual change's contribution.
+- Record accuracy, latency (p50/p95), memory, and disk usage, in that priority
+  order. Include regressions and tradeoffs, not just the metric that improved.
+- Every optimization PR must include a table with **metric, before, after,
+  absolute difference, and percentage change**, plus links to retained evidence.
+  Mark unmeasured or inapplicable cells `N/A` and explain why; never imply zero
+  regression or claim an unmeasured gain.
+- Identify the compared commits, hardware, actual execution providers, model
+  revisions/precision, corpus/query order, settings, and cold/warm conditions.
+  State whether memory is process RSS or includes accelerator services, and
+  whether disk figures include model caches, indexes, and temporary files.
+- Measure the actual product entry point for product claims. Label component
+  measurements separately; they cannot establish whole-search improvements.
+- Repeat and rotate timing arms to distinguish improvements from noise. Record
+  shared-machine interference and keep our builds and other model experiments
+  out of timing runs. A single pass is provisional, not proof of a speedup.
+- Retain reproducible commands, raw results, and a durable summary following
+  `pamin-dev`'s public/private and harness-location rules. Publish supported
+  results in PRs and relevant benchmark/ADR documentation; do not mark an
+  optimization validated while its claimed improvement remains unmeasured.
+
 ## Behavioral Guidelines
 
 The guidance below is adapted from Forrest Chang's Karpathy-style coding-agent guidelines:
