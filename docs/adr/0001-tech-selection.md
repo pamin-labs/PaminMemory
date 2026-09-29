@@ -2780,6 +2780,10 @@ and hardware acceptance work remains in progress.
   accelerator. Execution failures, invalid/non-finite tensors and resource
   exhaustion still need a viable fallback; index encoding changes retain
   their migration/reindex contract.
+- Every CPU compute path must consider SIMD, including preprocessing,
+  postprocessing, vector/numeric operations and scoring. Reuse existing
+  optimized kernels; preserve scalar execution when hardware/operations or
+  measured small-input cost require it, with material exceptions documented.
 - CPU SIMD comes from optimized runtime kernels. CoreML has no distinct
   CPUAndGPUWithSIMD compute-unit flag. Provider registration is not proof of
   hardware utilization or optimal scheduling.
