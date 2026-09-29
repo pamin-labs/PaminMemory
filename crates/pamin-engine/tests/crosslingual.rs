@@ -849,9 +849,9 @@ fn pinned_fast_reranker_loads_and_scores() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-#[ignore = "downloads a pinned Fast FP32 export and requires CoreML"]
-fn pinned_fast_coreml_model_loads_and_scores() {
-    let Some(home) = pinned_benchmark_home("pinned_fast_coreml_model_loads_and_scores") else {
+#[ignore = "downloads a pinned Fast INT8 export and checks the Apple auto route"]
+fn pinned_fast_auto_prefers_cpu_model() {
+    let Some(home) = pinned_benchmark_home("pinned_fast_auto_prefers_cpu_model") else {
         return;
     };
     assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("auto"));
@@ -861,28 +861,12 @@ fn pinned_fast_coreml_model_loads_and_scores() {
         "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
     ))
     .unwrap();
-    let model = &fast["models"][0];
-    let repository = model["repository"].as_str().unwrap();
-    let revision = model["revision"].as_str().unwrap();
-    let api = pinned_model_api(&models);
-    prepare_pinned_model(&api, &models, model);
-    let fp32 = api
-        .repo(hf_hub::Repo::with_revision(
-            repository.to_owned(),
-            hf_hub::RepoType::Model,
-            revision.to_owned(),
-        ))
-        .get("onnx/model.onnx")
-        .expect("fetch pinned Fast FP32 export");
-    let expected = model["source_onnx_sha256"]["other"].as_str().unwrap();
-    assert_eq!(
-        format!("{:x}", Sha256::digest(std::fs::read(fp32).unwrap())),
-        expected
-    );
+    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
+    let identity = pinned_model_id(&models, "reranker_fast");
     report_loaded_graphs();
     let mut reranker =
         pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
-    assert_eq!(reranker.device(), pamin_index::Device::CoreMl);
+    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
     let ranked = reranker
         .rank(
             "Where does the harbour pilot board ships?",
@@ -891,10 +875,11 @@ fn pinned_fast_coreml_model_loads_and_scores() {
                 "Chocolate cake is baked with flour and cocoa.",
             ],
         )
-        .expect("score on CoreML");
+        .expect("score on optimized CPU");
     assert_eq!(ranked.len(), 2);
     assert!(ranked.iter().all(|item| item.score.is_finite()));
     assert_eq!(ranked[0].position, 0);
+    assert_eq!(pinned_model_id(&models, "reranker_fast"), identity);
 }
 
 /// A cheap real-loader check for the reproduction log and verifier, without

@@ -762,7 +762,18 @@ impl Reranker {
             Ok(encoder)
         };
 
-        let (model, device) = crate::inference::preferred(session)?;
+        // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
+        // XQuAD-R quality and beat its CoreML FP32 export on every paired
+        // search. Accurate still uses the shared CoreML-first policy.
+        let (model, device) =
+            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
+                (
+                    session(Device::Cpu, vec![crate::inference::cpu()])?,
+                    Device::Cpu,
+                )
+            } else {
+                crate::inference::preferred(session)?
+            };
         tracing::info!(
             tier = tier.name(),
             device = device.name(),
