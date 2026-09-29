@@ -364,7 +364,69 @@
   "references": [
     "https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html"
   ],
-  "verification": {
+  "production_implementation_commit": "ce30a4d756c4e61202a159981ceaf8e709e23168",
+  "verification_post_restack": {
+    "base": "fe17e4352cfd13b8d8df0928c5966dbbf5e7a90e",
+    "implementation": "3d71a11",
+    "patches": "two patches identical by git range-diff",
+    "native_cache_regression": "passed",
+    "fmt": "passed",
+    "clippy": "passed",
+    "workspace": "passed",
+    "budgets_and_release_start": "passed",
+    "gates": [
+      {
+        "gate": "native-cache-regression",
+        "exit_code": 0,
+        "seconds": 35.5290557499975,
+        "log": "/private/tmp/pamin-compiled-cache-final-native-cache-regression.log"
+      },
+      {
+        "gate": "fmt",
+        "exit_code": 0,
+        "seconds": 1.2618264579214156,
+        "log": "/private/tmp/pamin-compiled-cache-final-fmt.log"
+      },
+      {
+        "gate": "clippy",
+        "exit_code": 0,
+        "seconds": 10.249706374946982,
+        "log": "/private/tmp/pamin-compiled-cache-final-clippy.log"
+      },
+      {
+        "gate": "workspace",
+        "exit_code": 0,
+        "seconds": 254.04460283275694,
+        "log": "/private/tmp/pamin-compiled-cache-final-workspace.log"
+      },
+      {
+        "gate": "budgets",
+        "exit_code": 0,
+        "seconds": 291.2776600420475,
+        "log": "/private/tmp/pamin-compiled-cache-final-budgets.log"
+      },
+      {
+        "gate": "cold release starts without loader environment",
+        "exit_code": 0,
+        "native_sidecar_bytes": 23808880
+      }
+    ],
+    "engineering_budgets": {
+      "binary_bytes": 30700992,
+      "distribution_bytes": 54509872,
+      "total_dependencies": 389,
+      "target_bytes": 1951471116,
+      "cold_build_seconds": 200.3,
+      "incremental_check_seconds": 6.9
+    },
+    "artifact_deltas_from_base": {
+      "binary_bytes": 96,
+      "distribution_bytes": 96,
+      "total_dependencies": 0,
+      "target_bytes": 48680
+    }
+  },
+  "verification_before_packaging_fix": {
     "tiny_actual_fixed_coreml_regression": "passed",
     "cache_key_unit_test": "passed",
     "clippy_all_targets_all_features": "passed",
@@ -372,6 +434,5 @@
     "budgets": "numeric gate exited 0, but invalid distribution evidence: zvec staging race omitted the native sidecar and release CLI cannot start",
     "fmt": "passed",
     "release_cli": "failed: no LC_RPATH for libzvec_c_api.dylib; separate packaging fix required"
-  },
-  "production_implementation_commit": "ce30a4d756c4e61202a159981ceaf8e709e23168"
+  }
 }
