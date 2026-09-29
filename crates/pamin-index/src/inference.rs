@@ -71,10 +71,13 @@ fn report_model(session: &Session, model: &Path) {
     tracing::info!(model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"), "loaded ONNX graph");
     match assigned_providers(session) {
         Ok(nodes) => tracing::info!(
+            model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"),
             assigned_nodes = %serde_json::to_string(&nodes).expect("serialize provider counts"),
             "ONNX graph execution-provider assignment"
         ),
-        Err(error) => tracing::warn!(%error, "could not inspect execution-provider assignment"),
+        Err(error) => {
+            tracing::warn!(model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"), %error, "could not inspect execution-provider assignment")
+        }
     }
 }
 
