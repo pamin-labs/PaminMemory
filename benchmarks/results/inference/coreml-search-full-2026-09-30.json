@@ -189,5 +189,38 @@
       "sha256": "3082527b5c3411aac88f797784493c0dee5fce73c7687951fcce4aa1bc2df152",
       "scope": "public synthetic benchmark IDs/rankings or labels, no private memory contents"
     }
+  },
+  "model_provenance": {
+    "embedder_all_arms": {
+      "repository": "gpahal/bge-m3-onnx-int8",
+      "revision": "2b34e84df040034d4b9eabb62383a87c18955822",
+      "source_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "selected_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
+      "data_sha256": "e5ea60bbb78f8f6af7ce66032ed6c3f59496e247846b28a3fc91c0a5151e677f",
+      "precision": "int8 CPU"
+    },
+    "reranker_repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+    "reranker_revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+    "main_cpu": {
+      "source_file": "onnx/model_int8.onnx",
+      "source_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "selected_graph_sha256": "ea66c3cab7d3387e50ed0a20ba08dec0ed0034d181c0f5449c91352b9074317d",
+      "data_sha256": "730a4d0d54e61c72ffe10222705c9485f63012ff688440b94f00bede622b8559"
+    },
+    "main_default_auto": {
+      "source_file": "onnx/model_fp16.onnx",
+      "cache_source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+      "source_size_bytes": 1136209678,
+      "graph_selection_evidence": "loader reports CoreML; main tier export selection plus retained pinned cache identifies source; main did not log a per-load selected graph hash",
+      "limitation": "cache hash is an inspected retained artifact, not a contemporaneous graph hash emitted by the baseline runtime"
+    },
+    "candidate_coreml": {
+      "source_file": "onnx/model_fp16.onnx",
+      "source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+      "selected_typed_graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "precision": "FP16 encoder, FP32 classifier",
+      "graph_selection_evidence": "actual loaded typed-model path and retained artifact inventory"
+    },
+    "index_embedding_identity": "705ffaf38623fb5c71a2ced99d8674e45fb19e8ad05f263bfa09474e4d9b153f"
   }
 }

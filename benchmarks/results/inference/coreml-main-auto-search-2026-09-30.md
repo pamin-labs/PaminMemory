@@ -65,3 +65,13 @@ and paragraph-cluster/family sign-flip owners.
 Remaining: clean rotated timing, other corpora, full ignored/e2e suite, steady/
 service memory, isolated total disk, shared embedding/NPU integration and native
 hardware/platform checks. Overall goal and whole-stack merge readiness are open.
+
+Generating source, exact arm invocation and CPU/RSS collection are retained in
+[the measurement archive](../../harnesses/product-search-2026-09-30/README.md).
+
+The JSON includes model repository revisions, source and selected graph/data
+hashes for each arm. The main default-auto loader did not emit its selected
+graph hash: its source selection is inferred from the immutable main export
+selection and retained pinned cache, explicitly distinguished from candidate
+per-load path evidence. Inspecting a retained source hash is not a retrospective
+runtime attestation. A fresh rerun should collect per-load graph identities.
