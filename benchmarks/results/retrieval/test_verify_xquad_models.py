@@ -21,7 +21,9 @@ class LoadedGraphTest(unittest.TestCase):
             (snapshot / "config.json").write_bytes(b"config")
             prepared = models / "prepared"
             prepared.mkdir()
-            (prepared / "someone--model--model.onnx.source").write_text("source-hash\n1\n2\n")
+            source_record = prepared / "someone--model--model.onnx.source"
+            source_hash = hashlib.sha256(b"source").hexdigest()
+            source_record.write_text("model.onnx\n6\n2\nsha256 " + source_hash + "\n")
             files = {"model.onnx": b"graph", "model.onnx.data": b"weights", "attention.unfused": b"decision"}
             current = prepared / "current-runtime-key"
             unused = prepared / "unused-old-key"
@@ -31,7 +33,7 @@ class LoadedGraphTest(unittest.TestCase):
                     (directory / name).write_bytes(data)
             sha = lambda data: hashlib.sha256(data).hexdigest()
             manifest = [{"role": "reranker", "repository": "someone/model", "revision": "revision",
-                         "source_onnx": "model.onnx", "source_onnx_sha256": "source-hash",
+                         "source_onnx": "model.onnx", "source_onnx_sha256": source_hash,
                          "files_sha256": {"config.json": sha(b"config")},
                          "prepared_key_on_measured_host": "missing-historical-key",
                          "selected_graph": "model.onnx", "selected_graph_sha256": sha(b"graph"),
@@ -40,6 +42,11 @@ class LoadedGraphTest(unittest.TestCase):
             log = Path(home) / "run.log"
             log.write_text("INFO loaded ONNX graph model_graph=" + json.dumps(str(current / "model.onnx")) + "\n")
             verify(models, log, manifest)
+            valid_record = source_record.read_text()
+            source_record.write_text("model.onnx\n6\n2\n")
+            with self.assertRaisesRegex(AssertionError, "source record lacks a digest"):
+                verify(models, log, manifest)
+            source_record.write_text(valid_record)
             (current / "model.onnx").write_bytes(b"changed graph")
             with self.assertRaisesRegex(AssertionError, "loaded graph must match"):
                 verify(models, log, manifest)

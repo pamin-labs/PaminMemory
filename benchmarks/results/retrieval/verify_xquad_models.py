@@ -46,7 +46,10 @@ def verify(workspace_models, run_log, models):
 
         label = model["repository"].replace("/", "--") + "--" + model["source_onnx"].replace("/", "--")
         source = workspace_models / "prepared" / (label + ".source")
-        assert source.read_text().splitlines()[0] == model["source_onnx_sha256"]
+        record = source.read_text().splitlines()
+        assert len(record) >= 4 and record[0] and record[1].isdigit() and record[2].isdigit(), (
+            "prepared source record lacks a digest; rerun prepare_pinned_xquad_models")
+        assert record[3] == "sha256 " + model["source_onnx_sha256"], f"{model['role']}: source digest changed"
         candidates = [path for path, actual in observed_hashes.items()
                       if actual == model["selected_graph_sha256"]]
         assert len(candidates) == 1, f"{model['role']}: exactly one loaded graph must match the archived artifact"
