@@ -1504,10 +1504,12 @@ stays at 512.
 
 ### pplx-embed-v1-0.6b on the shipped path: measured, not adopted
 
-**Status: rejected.** BGE-M3 remains the default. The accuracy gain held up
-with the export a product would ship, but the maintainer weighed it against a
-3.4× slower write path and chose BGE-M3; the decision and the figures it rests
-on close this section.
+**Status: rejected.** BGE-M3 remains the default. The earlier experiment
+reported an accuracy gain and rejected its 3.4× slower write path; those
+historical figures close this section. The current full-head rerank recheck
+below finds no significant aggregate gain and rejects the preselected Greek
+accuracy weakness. The historical cost decision is not the current accuracy
+verdict.
 
 **Rechecked against the current full-head `accurate` path, 2026-09-27:
 still rejected on accuracy.** An experimental profile loaded
