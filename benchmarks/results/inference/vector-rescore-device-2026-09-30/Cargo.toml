@@ -1,0 +1,11 @@
+[package]
+name="pamin-vector-compute-experiment"
+version="0.1.0"
+edition="2024"
+[dependencies]
+ort={version="=2.0.0-rc.13",default-features=false,features=["std","coreml","download-binaries","tls-native","api-24"]}
+serde_json="1"
+half="2"
+[profile.release]
+lto="thin"
+codegen-units=1

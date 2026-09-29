@@ -1,0 +1,36 @@
+scalar max error vs FP64 oracle 0.000001274
+maximum absolute score difference 0.000000119
+numkong maximum absolute score difference 0.000001252
+numkong max error vs FP64 oracle 0.000000029
+accelerate maximum absolute score difference 0.000001311
+accelerate max error vs FP64 oracle 0.000000268
+scalar 125.714 us per 100x1024
+simd 114.274 us per 100x1024
+numkong 263.981 us per 100x1024
+accelerate 13.243 us per 100x1024
+accelerate 13.158 us per 100x1024
+numkong 264.646 us per 100x1024
+simd 116.171 us per 100x1024
+scalar 113.734 us per 100x1024
+scalar 116.186 us per 100x1024
+simd 115.341 us per 100x1024
+numkong 263.300 us per 100x1024
+accelerate 13.305 us per 100x1024
+accelerate 13.143 us per 100x1024
+numkong 265.224 us per 100x1024
+simd 115.468 us per 100x1024
+scalar 115.161 us per 100x1024
+scalar 114.839 us per 100x1024
+simd 109.232 us per 100x1024
+numkong 248.102 us per 100x1024
+accelerate 13.031 us per 100x1024
+accelerate 12.630 us per 100x1024
+numkong 257.592 us per 100x1024
+simd 112.359 us per 100x1024
+scalar 108.782 us per 100x1024
+scalar median 115.000 us
+simd median 114.807 us
+numkong median 263.641 us
+accelerate median 13.150 us
+near-tie scalar: top10 agreement 5/10, max error 0.000002348
+near-tie accelerate: top10 agreement 6/10, max error 0.000000280
