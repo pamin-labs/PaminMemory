@@ -137,9 +137,22 @@ pub(crate) fn fixed_coreml(
     rows: usize,
     tokens: usize,
 ) -> Result<(Session, PathBuf)> {
+    let path = model()?;
+    let cache = coreml_cache(&path, rows, tokens)?;
+    std::fs::create_dir_all(&cache)?;
+    // CoreML writes its package and compiled model in place. Serialize builds
+    // across processes as well as the model registry's in-process loading.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(cache.join("build.lock"))?;
+    lock.lock()?;
     let provider = ort::ep::CoreML::default()
         .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
         .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+        .with_model_cache_dir(cache.to_string_lossy())
         .build()
         .error_on_failure();
     let error =
@@ -149,9 +162,25 @@ pub(crate) fn fixed_coreml(
         .map_err(|e| error(&e))?
         .with_dimension_override("sequence_length", tokens as i64)
         .map_err(|e| error(&e))?;
-    let path = model()?;
     let session = builder.commit_from_file(&path).map_err(|e| error(&e))?;
     Ok((session, path))
+}
+
+/// The prepared parent already identifies the external weights by content.
+/// Also key the graph, runtime and overrides: ORT's URL key omits all three.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let parent = model.parent().ok_or_else(|| {
+        IndexError::Engine("prepared CoreML model has no parent directory".into())
+    })?;
+    let graph = crate::prepared::source_digest(model)?;
+    let runtime = format!("{:x}", Sha256::digest(ort::info().as_bytes()));
+    // Bump this policy version when the compile options above change.
+    Ok(parent
+        .join("coreml-all-v1")
+        .join(runtime)
+        .join(format!("{graph}-{rows}-{tokens}")))
 }
 
 /// Intra-op threads per inference session, or `None` for one per core.
@@ -364,6 +393,55 @@ mod tests {
                 device.name()
             );
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn coreml_cache_isolates_graph_content_and_static_shapes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let model = temporary.path().join("model.onnx");
+        std::fs::write(&model, b"first graph").unwrap();
+        let first = coreml_cache(&model, 4, 64).unwrap();
+        assert_eq!(first, coreml_cache(&model, 4, 64).unwrap());
+        assert_ne!(first, coreml_cache(&model, 4, 128).unwrap());
+        assert_ne!(first, coreml_cache(&model, 2, 64).unwrap());
+        std::fs::write(&model, b"updated graph").unwrap();
+        assert_ne!(first, coreml_cache(&model, 4, 64).unwrap());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "compiles two tiny native CoreML models"]
+    fn coreml_compiled_cache_preserves_shapes_and_updated_weights()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let model = temporary.path().join("model.onnx");
+        // Same dynamic MatMul/Add/Relu graph; diagonal weights are 2 or 3.
+        // Loading 64, then 128, then 64 also checks compiled cache reuse.
+        let models: [(&[u8], f32); 2] = [
+            (include_bytes!("../tests/fixtures/coreml-cache-2.onnx"), 2.0),
+            (include_bytes!("../tests/fixtures/coreml-cache-3.onnx"), 3.0),
+        ];
+        for (bytes, scale) in models {
+            std::fs::write(&model, bytes)?;
+            for tokens in [64, 128, 64] {
+                let (mut session, _) = fixed_coreml(|| Ok(model.clone()), 4, tokens)?;
+                let input = ort::value::Tensor::from_array((
+                    [4, tokens, 8],
+                    vec![0.25f32; 4 * tokens * 8],
+                ))?;
+                let output = session.run(ort::inputs!["x" => input])?;
+                let (shape, values) = output["y"].try_extract_tensor::<f32>()?;
+                assert_eq!(shape.as_ref(), [4, tokens as i64, 8]);
+                assert!(values.iter().all(|value| *value == scale * 0.25 + 0.125));
+                let cache = coreml_cache(&model, 4, tokens)?;
+                assert!(
+                    std::fs::read_dir(cache)?.count() > 1,
+                    "CoreML wrote no cache"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// MatMul/Add fusion transposes a large FFN weight into an inline MIL
