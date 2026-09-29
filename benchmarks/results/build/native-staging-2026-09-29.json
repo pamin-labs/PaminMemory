@@ -1,0 +1,93 @@
+{
+  "before_branch": "codex/perf-85-coreml-compile-cache",
+  "before_commit": "ce30a4d",
+  "observed_failure": "release CLI exits 134 with dyld Library not loaded: @rpath/libzvec_c_api.dylib; no LC_RPATH found",
+  "budget_false_pass": {
+    "binary_bytes": 30700992,
+    "distribution_bytes": 30700992,
+    "native_sidecar_present": false
+  },
+  "cause": "CLI build script scans output of a transitive dependency without a direct build dependency ordering edge",
+  "current_base": "bd67c35",
+  "reference": "https://doc.rust-lang.org/cargo/reference/build-scripts.html#the-links-manifest-key",
+  "final_commits": [
+    "fc8358d43c65889ad1bec8c2aa371d55c15d0d23 ci: reject distributions missing the zvec runtime",
+    "33769f6482599ca48c35e2f837817cf979f08cf2 fix(build): stage zvec after native preparation"
+  ],
+  "final_gates": [
+    {
+      "gate": "fmt",
+      "exit_code": 0,
+      "seconds": 0.99670987483114,
+      "log": "/private/tmp/pamin-native-stage-fmt.log"
+    },
+    {
+      "gate": "clippy",
+      "exit_code": 0,
+      "seconds": 6.166145708877593,
+      "log": "/private/tmp/pamin-native-stage-clippy.log"
+    },
+    {
+      "gate": "workspace",
+      "exit_code": 0,
+      "seconds": 198.9642560831271,
+      "log": "/private/tmp/pamin-native-stage-workspace.log"
+    },
+    {
+      "gate": "budgets",
+      "exit_code": 0,
+      "seconds": 160.88808845775202,
+      "log": "/private/tmp/pamin-native-stage-budgets.log"
+    },
+    {
+      "gate": "cold release starts without loader environment",
+      "exit_code": 0,
+      "native_sidecar_bytes": 23808880
+    }
+  ],
+  "final_budget_summary": "## Engineering budgets\n\n| Metric | Value | Budget |\n| --- | ---: | ---: |\n| binary_bytes | 30,700,896 | 48,000,000 |\n| total_dependencies | 389 | 470 |\n| distribution_bytes | 54,509,776 | 92,000,000 |\n| accelerator_bytes | 0 | 98,000,000 |\n| cold_build_seconds | 112.3 | reported |\n| incremental_check_seconds | 3.3 | reported |\n| target_bytes | 1,951,422,436 | reported |\n",
+  "final_build_outputs": [
+    "cargo:rerun-if-changed=build.rs\ncargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path\ncargo:rustc-link-arg-bins=-Wl,-rpath,/Users/jason/.cargo/lib/pamin\n"
+  ],
+  "metadata_control": {
+    "build_dependency_metadata": "Err(NotPresent)",
+    "normal_dependency_metadata": "Ok(/tmp/target-library)",
+    "reference": "https://doc.rust-lang.org/cargo/reference/build-scripts.html#the-links-manifest-key",
+    "sources": {
+      "Cargo.toml": "[workspace]\nmembers=[\"native\",\"cli\"]\nresolver=\"3\"\n",
+      "native/Cargo.toml": "[package]\nname=\"metadata-fixture-sys\"\nversion=\"0.1.0\"\nedition=\"2024\"\nlinks=\"fixture\"\n",
+      "native/build.rs": "fn main() { println!(\"cargo:lib_dir=/tmp/target-library\"); }\n",
+      "cli/Cargo.toml": "[package]\nname=\"metadata-fixture-cli\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[dependencies]\nmetadata-fixture-sys={path=\"../native\"}\n",
+      "cli/build.rs": "fn main() { println!(\"cargo:warning=metadata={:?}\",std::env::var(\"DEP_FIXTURE_LIB_DIR\")); }\n",
+      "cli/src/main.rs": "fn main() {}\n",
+      "native/src/lib.rs": "pub fn marker() {}\n"
+    }
+  },
+  "final_cold_start_output_sha256": "922d60be0fce3c838a0e2375336fd5d564a7652528650107286bc46dd5f0dc40",
+  "scope": "macOS aarch64 packaging correctness; not model or search performance",
+  "final_source_hashes": {
+    "crates/pamin-cli/Cargo.toml": "327baead6dc7c8ac8b73da4cd1062021edb94d974e9fdf8715205dedd2ceee63",
+    "crates/pamin-cli/build.rs": "3e4762dbbbbf1f82f5e9f0bff2edb971785cc45e312b670aa7568045bde8cfd0",
+    "ci/budget.py": "6faa68b300ab61086e8056991a7b0ac545fbb5964ec9d0e50bbce58bc5f017c7",
+    "ci/test_budget.py": "3caadd85987baccbc0d9d45ee029a18f2d73fb4443932780936e206599929b48"
+  },
+  "limits": [
+    "Original failed binary was on separate compile-cache branch; CLI manifest and build script identical to PR148 parent.",
+    "Earlier build-dependency/native-host controls are superseded by direct normal target dependency.",
+    "Linux/Windows real binaries and cross-target linking are not locally run; remote Linux CI pending.",
+    "No accuracy, model RSS or search latency claim; runtime staging and budget completeness only."
+  ],
+  "superseded_initial_fix": "direct build dependency on existing zvec-rust-sys 0.7.2 and DEP_ZVEC_C_API_LIB_DIR metadata",
+  "fix": "direct normal target dependency supplies links metadata; delete transitive output scan; fail missing-runtime budget",
+  "native_host_control_artifact_bytes": {
+    "pamin": 30700912,
+    "libzvec_c_api.dylib": 23808880
+  },
+  "native_host_control_build_outputs": [
+    "cargo:rerun-if-changed=build.rs\ncargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path\ncargo:rustc-link-arg-bins=-Wl,-rpath,/Users/jason/.cargo/lib/pamin\n"
+  ],
+  "final_artifact_bytes": {
+    "pamin": 30700896,
+    "libzvec_c_api.dylib": 23808880
+  }
+}
