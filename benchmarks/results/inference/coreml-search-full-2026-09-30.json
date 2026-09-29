@@ -1,0 +1,193 @@
+{
+  "main_cpu_commit": "a249554cc2c8fe9ddb4f9438df8c10b0b2501af5",
+  "candidate_compiled_commit": "0a222d18493a5453753f70f216ae90194f50632a",
+  "candidate_equivalent_runtime_stack_commit": "fbbcc2661397366d491045003579f80002c774f3",
+  "candidate_checkout_commit": "c9ab0245940bb6c40059ad812ed061502e18810d",
+  "queries": 1190,
+  "index_documents": 13014,
+  "index_completeness": 1.0,
+  "metrics": [
+    {
+      "metric": "cross_lingual ndcg_at_10",
+      "before": 0.7268079922499678,
+      "after": 0.7271935801807232,
+      "absolute_difference": 0.0003855879307553822,
+      "percentage_change": 0.05305224142647687,
+      "scope": "paired queries; precision differences tested by paragraph clusters"
+    },
+    {
+      "metric": "cross_lingual recall_at_50",
+      "before": 0.9031932773109234,
+      "after": 0.9031932773109234,
+      "absolute_difference": 0.0,
+      "percentage_change": 0.0,
+      "scope": "paired queries; precision differences tested by paragraph clusters"
+    },
+    {
+      "metric": "same_language ndcg_at_10",
+      "before": 0.8682008854268028,
+      "after": 0.869445521405225,
+      "absolute_difference": 0.0012446359784221706,
+      "percentage_change": 0.1433580637055345,
+      "scope": "paired queries; precision differences tested by paragraph clusters"
+    },
+    {
+      "metric": "same_language recall_at_50",
+      "before": 0.9647058823529412,
+      "after": 0.9647058823529412,
+      "absolute_difference": 0.0,
+      "percentage_change": 0.0,
+      "scope": "paired queries; precision differences tested by paragraph clusters"
+    },
+    {
+      "metric": "search p50 seconds",
+      "before": 2.243566334,
+      "after": 0.483737958,
+      "absolute_difference": -1.759828376,
+      "percentage_change": -78.4388831892679,
+      "scope": "single non-alternating shared-host runs; not repeated speed acceptance"
+    },
+    {
+      "metric": "search p95 seconds",
+      "before": 4.343058167,
+      "after": 0.814224166,
+      "absolute_difference": -3.528834001,
+      "percentage_change": -81.25228503300404,
+      "scope": "single non-alternating shared-host runs; not repeated speed acceptance"
+    },
+    {
+      "metric": "1190 search calls wall seconds",
+      "before": 2976.234032339,
+      "after": 723.068731845,
+      "absolute_difference": -2253.165300494,
+      "percentage_change": -75.70524616047261,
+      "scope": "includes first-query load; excludes index build and off-route diagnostics"
+    },
+    {
+      "metric": "whole harness peak process RSS bytes",
+      "before": 1500790784,
+      "after": 3068149760,
+      "absolute_difference": 1567358976,
+      "percentage_change": 104.43554109671292,
+      "scope": "both reuse the same index; includes startup/compilation; excludes CoreML service and device memory"
+    }
+  ],
+  "cpu_time_after": {
+    "phase": "auto-search-recovery",
+    "exit_code": 0,
+    "wall_seconds": 777.2497505419888,
+    "sampled_peak_rss_bytes": 3068149760,
+    "cpu_user_seconds": 316.351126,
+    "cpu_system_seconds": 86.276058,
+    "cpu_total_seconds": 402.62718400000006,
+    "average_cpu_cores": 0.5180151987430573,
+    "cpu_scope": "benchmark process and its threads; CoreML/ANE daemon CPU and accelerator execution excluded"
+  },
+  "cpu_time_before": null,
+  "cpu_time_limit": "Not captured for completed CPU arm; no CPU-cost saving percentage claimed. After is main benchmark process only.",
+  "compiled_cache_logical_bytes": 6836411689,
+  "cache_limit": "3 bucket persistent compiled cache at end of acceptance; subsequently retired for headroom, original ONNX preserved. Logical bytes are not unique APFS allocation. Total isolated model+cache+temporary disk not measured.",
+  "precision_tests": {
+    "complete": true,
+    "family_scope": "four predefined group metrics; shared sign flips across paragraphs preserve correlated queries/translations",
+    "latency_after": {
+      "p50": 0.483737958,
+      "p95": 0.814224166
+    },
+    "latency_before": {
+      "p50": 2.243566334,
+      "p95": 4.343058167
+    },
+    "latency_limit": "single sequential shared-host passes, not repeated rotated speed acceptance",
+    "metrics": [
+      {
+        "after": 0.7271935801807232,
+        "before": 0.7268079922499678,
+        "family_adjusted_p": 0.8537146285371463,
+        "group": "cross_lingual",
+        "mean_difference": 0.00038558793075538195,
+        "metric": "ndcg",
+        "paragraph_cluster_sign_flip_p": 0.6149385061493851,
+        "query_losses": 210,
+        "query_ties": 766,
+        "query_wins": 214
+      },
+      {
+        "after": 0.9031932773109234,
+        "before": 0.9031932773109234,
+        "family_adjusted_p": 1.0,
+        "group": "cross_lingual",
+        "mean_difference": 0.0,
+        "metric": "recall",
+        "paragraph_cluster_sign_flip_p": 1.0,
+        "query_losses": 0,
+        "query_ties": 1190,
+        "query_wins": 0
+      },
+      {
+        "after": 0.869445521405225,
+        "before": 0.8682008854268028,
+        "family_adjusted_p": 0.5782421757824218,
+        "group": "same_language",
+        "mean_difference": 0.0012446359784218475,
+        "metric": "ndcg",
+        "paragraph_cluster_sign_flip_p": 0.35056494350564943,
+        "query_losses": 20,
+        "query_ties": 1138,
+        "query_wins": 32
+      },
+      {
+        "after": 0.9647058823529412,
+        "before": 0.9647058823529412,
+        "family_adjusted_p": 1.0,
+        "group": "same_language",
+        "mean_difference": 0.0,
+        "metric": "recall",
+        "paragraph_cluster_sign_flip_p": 1.0,
+        "query_losses": 0,
+        "query_ties": 1190,
+        "query_wins": 0
+      }
+    ],
+    "paragraph_clusters": 240,
+    "queries": 1190
+  },
+  "hardware_scope": "CoreML ALL requested and runtime coreml loader confirmed; per-operation CPU/GPU/ANE placement not captured for this full run.",
+  "limits": [
+    "single shared-machine accuracy run per arm; repeat/rotate timing before causal speed claims",
+    "main default auto control still running",
+    "other corpora and ignored e2e suite remain pending"
+  ],
+  "hardware": {
+    "model": "Mac16,12",
+    "logical_cpus": 10,
+    "memory_bytes": 34359738368,
+    "shared": true
+  },
+  "protocol": {
+    "product_entry": "Engine::search_reranked",
+    "profile": "accuracy",
+    "tier": "accurate",
+    "head_depth": 30,
+    "result_limit": 60,
+    "vector_index": "memory",
+    "query_order": "same canonical 1190 question IDs and 11 language sequence",
+    "timing": "one sequential process per arm; initial model/shape loads included; no own build or model experiment during timers",
+    "rss_scope": "process peak sampled once per second, startup/compilation included; CoreML services/device memory excluded"
+  },
+  "compiled_cache_note": "Archived 63 generated cache files before retiring them for main-auto headroom; original model source kept. This retirement is not a product optimization.",
+  "evidence": {
+    "coreml-search-full-2026-09-30-main-rows.json": {
+      "sha256": "1af1982486829475215e70c7223e316b939ae6cee9b6988b5c15537ad7a2c5c1",
+      "scope": "public synthetic benchmark IDs/rankings or labels, no private memory contents"
+    },
+    "coreml-search-full-2026-09-30-candidate-rows.json": {
+      "sha256": "a91e0d16c6258bc999ee0308dc9ab64ea918ae402c986d20935cd34ed8817d02",
+      "scope": "public synthetic benchmark IDs/rankings or labels, no private memory contents"
+    },
+    "coreml-search-full-2026-09-30-judgments.json": {
+      "sha256": "3082527b5c3411aac88f797784493c0dee5fce73c7687951fcce4aa1bc2df152",
+      "scope": "public synthetic benchmark IDs/rankings or labels, no private memory contents"
+    }
+  }
+}
