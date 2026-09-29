@@ -1,0 +1,14 @@
+{
+  "wrapper_release": "v0.7.2",
+  "release_asset_sha256": "sha256:5fd12d7659b495bf6b06ba173876e400dae1dc19d5e04e8468381c82867ea47f",
+  "native_library_sha256": "06f183bf51ebd8b460fd0415f6b39c2556bdd6ef63a270efa35bdf76154512e2",
+  "actual_loaded_library_matches_official_release": true,
+  "release_vendor_gitlink": "1ab7975dfc2d2160054bafff614831b7099cd930",
+  "vendor_source_url": "https://github.com/alibaba/zvec/tree/1ab7975dfc2d2160054bafff614831b7099cd930",
+  "build_workflow": "v0.7.2 build-prebuilt.yml checks out recursive submodules and builds vendor/zvec",
+  "limits": "Workflow/reference provenance is verified; archive contains no independent engine build attestation. Auto-build fallback can still clone a different upstream default branch.",
+  "release_asset": "https://github.com/zvec-ai/zvec-rust/releases/download/v0.7.2/zvec-prebuilt-aarch64-apple-darwin.tar.gz",
+  "scope": "current macOS product-search sidecar; not an attestation of the historical Linux DiskANN benchmark",
+  "native_library_bytes": 23808880,
+  "release_archive_bytes": 10544718
+}

@@ -791,10 +791,11 @@ const DISKANN_DEGREE: i32 = 64;
 
 /// How wide the build searches to place each document in the on-disk graph.
 ///
-/// One hundred, within the shipped engine's effective build-list ceiling.
+/// One hundred, within the audited 0.7.2 prebuilt engine's build-list ceiling.
 /// A historical run requested 200 but did not record the effective native
-/// value. The pinned engine clamps this parameter to 100, so those timings
-/// cannot establish the effect of widening it. See ADR 0001.
+/// value. The audited prebuilt clamps this parameter to 100; the source-build
+/// fallback follows upstream's default branch and can differ. Those historical
+/// timings cannot establish the effect of widening it. See ADR 0001.
 const DISKANN_BUILD_LIST: i32 = 100;
 
 /// Product-quantization chunks for in-memory navigation of the on-disk graph;
