@@ -23,7 +23,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
-| | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
+| | `PAMIN_DEVICE` | automatic tier-specific route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
@@ -135,16 +135,17 @@ kept only if it scores a probe bit-for-bit as the first does, and otherwise
 `attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
 graph, for measuring one against the other.
 
-The reranker runs on a GPU when the machine has one, with no flag and no
-separate build. Each platform's inference runtime carries the accelerator that
-platform has -- CUDA on x86-64 Linux, Core ML on Apple silicon, DirectML on
-Windows -- and loading a reranker tries it first and falls back to the CPU when
-it will not start. On a GPU it runs the model's half-precision export rather
-than the CPU's int8 one, so the scores are close but not identical; which one
-ran is logged when the model loads. `PAMIN_DEVICE=cpu` keeps it on the CPU, for
-a comparison that has to be like for like or a GPU that belongs to something
-else. Embedding stays on the CPU either way: the index was built with the CPU's
-vectors and a query has to be embedded the same way to be compared with them.
+The `accurate` reranker tries the available accelerator before optimized CPU:
+CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, and DirectML on Windows.
+The `fast` tier does the same except on Apple silicon, where its measured ARM
+INT8 CPU export is both faster and no less accurate on the complete XQuAD-R
+comparison than its CoreML FP32 export. Provider selection is logged when a
+model loads; Core ML may itself use CPU, GPU or ANE, and its internal placement
+is not established by the provider label. The different weight exports can
+produce different scores. `PAMIN_DEVICE=cpu` forces CPU for comparable tests
+or when another job needs the accelerator. Embedding currently stays on CPU;
+changing it also changes the query and stored vector encoding contract and
+needs paired quality and reindex validation.
 
 On Linux the CUDA path has two requirements the program cannot meet for you.
 The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
@@ -160,11 +161,13 @@ their own copy in System32 -- but that copy can be older than the runtime
 needs, in which case the reranker quietly stays on the CPU. On Apple silicon
 nothing needs copying: Core ML is linked into the binary from the system.
 
-What a GPU is worth has not been measured here, because nothing this project
-is measured on has one. The ordering is checked instead: `every_device_orders_like_the_cpu`
-in `crates/pamin-index/tests/reranking.rs` loads the reranker wherever it lands
-and again forced onto the CPU, and asserts the two order clearly separated
-candidates the same way.
+Apple CoreML has been measured on the full XQuAD-R product path: it wins for
+`accurate` with static buckets and loses for `fast` against optimized CPU on
+this machine. [Full Fast conditions and rows](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).
+CUDA and DirectML still require their own device-specific timing and precision
+checks. The `every_device_orders_like_the_cpu` test in
+`crates/pamin-index/tests/reranking.rs` checks clearly separated pairs; it is
+not a replacement for a corpus-level accuracy result.
 
 A handful of other `PAMIN_*` variables exist and are deliberately not listed
 here: they shorten a window or a budget so a test can reach a case, and a
@@ -479,6 +482,13 @@ current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemor
 | `off` | nothing | 99 ms | 0.6114 | 0.7829 |
 | `fast` | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
 | `accurate` | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
+
+The current Apple Silicon `fast` route uses optimized CPU. On the complete
+XQuAD-R product path it scored cross-language nDCG@10 0.657172 at a 0.330 s
+whole-search p50, versus CoreML FP32's 0.656096 and stitched 1.630 s p50;
+the CoreML latency came from two processes after a disk-guard interruption.
+These [current backend measurements](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md)
+must not be substituted into the historical table's different setup.
 
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; it now reranks thirty, which the `accurate` tier

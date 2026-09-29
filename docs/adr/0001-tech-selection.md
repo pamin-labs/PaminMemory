@@ -3184,6 +3184,20 @@ product-path evidence, while rotated timings, other corpora, full ignored/e2e
 and other platforms remain open. Do not label this pure ANE execution or
 attribute the whole improvement to any one commit.
 
+### 2026-09-30: route Apple Fast reranking to optimized CPU
+
+CoreML is not the fastest viable route for every model. On the same pinned
+Fast model and complete 1,190-query XQuAD-R index, Apple ARM INT8 CPU changed
+cross-language nDCG@10 by +0.001077 (four-metric adjusted p=0.1558),
+same-language by +0.000133 (p=0.9609), and recall@50 not at all versus
+CoreML NeuralNetwork FP32. CPU was faster on every paired query; whole-search
+p50 was 0.330 s versus 1.630 s, with the CoreML timing stitched from two
+processes after a disk-guard interruption. The source export was 118.6 MB
+versus 470.9 MB; total disk was not isolated. This chooses CPU SIMD for the
+opt-in **Fast** tier on Apple Silicon. Accurate remains the precision-first
+default and keeps its measured static CoreML MLProgram route. Other platforms
+need their own same-model backend checks. [Full conditions and rows](../../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).
+
 ### Lexical sweep evidence retention correction (2026-09-30)
 
 The [historical complete terminal outputs](../../benchmarks/results/fusion/lexical-2026-09-27/README.md)
