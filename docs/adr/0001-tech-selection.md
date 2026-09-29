@@ -3075,3 +3075,26 @@ Exceeding a budget is a trade to record in the pull request, not drift to accept
 - Building `zvec` downloads a prebuilt native library, and ONNX Runtime does the same. Neither compiles C++ locally, but both require network access at build time and a measure of supply-chain trust.
 - Two full-text fields roughly double the lexical index. This is a measured trade, revisited when the evaluation harness exists.
 - Fusion in our own layer means more code than calling an engine helper. That code is the explainability contract, so it is the product rather than overhead.
+
+
+### CoreML 64-token bucket: controlled tradeoff (2026-09-29)
+
+Three alternating complete fixed-head XQuAD-R rounds now measure the added
+4×64 bucket against the otherwise identical 4×128 / 2×256 control. All six
+runs preserve every returned logit and ranking. Median round p50 is 616.875 →
+531.703 ms (-13.8%); p95 857.948 → 782.844 ms (-8.8%). The geometric mean
+paired-query ratio is 0.85745, with paragraph-cluster sign-flip p=0.0001.
+
+The gain costs memory and temporary disk: sampled peak process RSS median
+2.578 → 2.859 GiB (+10.9%), warm process RSS median 0.307 → 0.770 GiB
+(+150.7%), and PID-owned temporary-package logical bytes 4.558 → 6.836 GB
+(+50.0%). The shared model-cache folder remains 9.652 GB. These are distinct
+from global ANE caches, unique APFS physical extents and whole-system RAM.
+
+[Full rows, conditions and source](../../benchmarks/results/inference/coreml-short-bucket-2026-09-29.md)
+record the shared-machine/disk-pause limits and match the actual 256-token cap.
+This is a real reranker/fusion replay on fixed candidates, not `search_reranked`
+latency or proof on another corpus. It supports continuing the latency-first
+backend experiment with its accuracy parity; complete product and model/e2e
+acceptance stays open. Future optimization must reduce residency/compilation
+without silently changing the input or claiming this ~14% as whole-search gain.
