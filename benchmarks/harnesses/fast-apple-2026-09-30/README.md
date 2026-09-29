@@ -44,7 +44,8 @@ for arm in ('coreml', 'cpu', 'resume'):
         subprocess.run(['patch', '-s', 'lib.rs'], cwd=directory,
                        input=patch, text=True, check=True)
     manifest = (archive / 'Cargo.toml.in').read_text().replace('${EVIDENCE_REPO}', str(repo))
-    manifest = manifest.replace('pamin-fast-coreml-program', f'pamin-fast-{arm}')
+    if arm != 'coreml':
+        manifest = manifest.replace('pamin-fast-coreml-program', f'pamin-fast-{arm}')
     (directory / 'Cargo.toml').write_text(manifest)
     (directory / 'Cargo.lock').write_bytes((archive / 'Cargo.lock').read_bytes())
 PY
