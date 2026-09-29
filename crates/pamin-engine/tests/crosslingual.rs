@@ -538,6 +538,11 @@ fn stale_cached_questions_are_rejected() {
 /// A pinned embedding space, checked before a benchmark reuses its vectors.
 /// The production index marker names the repository, not its hub revision.
 fn pinned_embedding_id(models: &Path) -> String {
+    pinned_model_id(models, "embedder")
+}
+
+/// Validate every pinned role before opening or scoring a project.
+fn pinned_model_id(models: &Path, role: &str) -> String {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
         "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
     ))
@@ -546,7 +551,7 @@ fn pinned_embedding_id(models: &Path) -> String {
         .as_array()
         .unwrap()
         .iter()
-        .find(|model| model["role"] == "embedder")
+        .find(|model| model["role"] == role)
         .unwrap();
     let repository = model["repository"].as_str().unwrap();
     let revision = model["revision"].as_str().unwrap();
@@ -556,7 +561,12 @@ fn pinned_embedding_id(models: &Path) -> String {
             .expect("run prepare_pinned_xquad_models before scoring")
             .trim(),
         revision,
-        "XQuAD-R embedding revision differs from the pinned model"
+        "XQuAD-R {} revision differs from the pinned model",
+        if role == "embedder" {
+            "embedding"
+        } else {
+            role
+        }
     );
     let snapshot = hub.join("snapshots").join(revision);
     for (file, expected) in model["files_sha256"].as_object().unwrap() {
@@ -580,7 +590,7 @@ fn pinned_embedding_id(models: &Path) -> String {
                 .expect("prepared source record lacks a digest; rerun prepare_pinned_xquad_models")
                 .to_string()
         }
-        Err(error) => panic!("read pinned embedding weights: {error}"),
+        Err(error) => panic!("read pinned {role} weights: {error}"),
     };
     assert_eq!(source_hash, model["source_onnx_sha256"].as_str().unwrap());
     let identity = serde_json::json!({
@@ -605,6 +615,18 @@ fn stale_embedding_revision_is_rejected_before_index_reuse() {
     pinned_embedding_id(models.path());
 }
 
+#[test]
+#[should_panic(expected = "XQuAD-R reranker revision differs")]
+fn stale_reranker_revision_is_rejected_before_indexing_or_scoring() {
+    let models = tempfile::tempdir().unwrap();
+    let refs = models
+        .path()
+        .join("models--onnx-community--bge-reranker-v2-m3-ONNX/refs");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::write(refs.join("main"), "stale").unwrap();
+    pinned_model_id(models.path(), "reranker");
+}
+
 fn report_loaded_graphs() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("pamin_index=info")
@@ -624,6 +646,7 @@ fn pinned_model_loads_report_actual_graph_paths() {
     let home = std::env::var("PAMIN_EVAL_HOME").expect("persistent model cache");
     let models = Path::new(&home).join("models");
     pinned_embedding_id(&models);
+    pinned_model_id(&models, "reranker");
     report_loaded_graphs();
     let _embedder = pamin_index::Embedder::load(pamin_index::Profile::Accuracy, &models)
         .expect("load pinned embedding model");
@@ -1288,6 +1311,9 @@ async fn search_reaches_across_languages() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
+
+    let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
+    println!("  pinned reranker identity: {reranker_id}");
 
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
