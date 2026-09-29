@@ -32,7 +32,7 @@ zvec-rust = { workspace = true }
 # sessions on it (see `encoder`), the E5 models run on it through `fastembed`,
 # and it configures the CPU execution provider (see `inference::cpu`) and, per
 # platform below, asks for a GPU one.
-ort = { workspace = true }
+ort = { workspace = true, features = ["api-24"] }
 
 # A GPU, when the machine has one, with no build flag: each platform's ONNX
 # Runtime build carries the accelerator that platform has, and it is tried at

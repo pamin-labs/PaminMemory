@@ -50,7 +50,7 @@ pub(crate) fn session(
     let mut builder = options(providers)?;
     let model = model()?;
     let session = commit(&mut builder, &model)?;
-    report_graph(&model);
+    report_model(&session, &model);
     Ok(session)
 }
 
@@ -66,9 +66,71 @@ fn commit(builder: &mut SessionBuilder, model: &Path) -> Result<Session> {
     Ok(session)
 }
 
-/// Record only models handed to a caller, not temporary preparation probes.
-fn report_graph(model: &Path) {
+/// Preparation probes do not report themselves as scoring sessions.
+fn report_model(session: &Session, model: &Path) {
     tracing::info!(model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"), "loaded ONNX graph");
+    match assigned_providers(session) {
+        Ok(nodes) => tracing::info!(
+            assigned_nodes = %serde_json::to_string(&nodes).expect("serialize provider counts"),
+            "ONNX graph execution-provider assignment"
+        ),
+        Err(error) => tracing::warn!(%error, "could not inspect execution-provider assignment"),
+    }
+}
+
+/// Counts assigned nodes after basic optimizations, not executed kernel time.
+/// CoreML dispatch does not reveal its internal CPU/GPU/ANE placement.
+fn assigned_providers(session: &Session) -> Result<std::collections::BTreeMap<String, usize>> {
+    use ort::AsPointer;
+    let checked = |status| {
+        // SAFETY: each status comes directly from ORT; this consumes it once
+        // and the error wrapper releases it, including on an early return.
+        unsafe { ort::Error::result_from_status(status) }
+            .map_err(|error| IndexError::Engine(format!("reading provider assignment: {error}")))
+    };
+    let mut subgraphs = std::ptr::null();
+    let mut count = 0;
+    // SAFETY: the session and both output variables remain live. Returned
+    // arrays and entries are borrowed from this session, never freed here.
+    checked(unsafe {
+        (ort::api().Session_GetEpGraphAssignmentInfo)(session.ptr(), &mut subgraphs, &mut count)
+    })?;
+    let mut providers = std::collections::BTreeMap::new();
+    if count == 0 {
+        return Ok(providers);
+    }
+    if subgraphs.is_null() {
+        return Err(IndexError::Engine(
+            "provider assignment returned a null array".into(),
+        ));
+    }
+    // SAFETY: ORT returned `count` entries, valid for the session borrow.
+    for &subgraph in unsafe { std::slice::from_raw_parts(subgraphs, count) } {
+        if subgraph.is_null() {
+            return Err(IndexError::Engine(
+                "provider assignment returned a null subgraph".into(),
+            ));
+        }
+        let mut name = std::ptr::null();
+        let mut nodes = std::ptr::null();
+        let mut node_count = 0;
+        // SAFETY: this is a live session-owned subgraph and valid outputs.
+        checked(unsafe { (ort::api().EpAssignedSubgraph_GetEpName)(subgraph, &mut name) })?;
+        checked(unsafe {
+            (ort::api().EpAssignedSubgraph_GetNodes)(subgraph, &mut nodes, &mut node_count)
+        })?;
+        if name.is_null() {
+            return Err(IndexError::Engine(
+                "provider assignment returned a null name".into(),
+            ));
+        }
+        // SAFETY: ORT returns a session-owned NUL-terminated provider name.
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned();
+        *providers.entry(name).or_default() += node_count;
+    }
+    Ok(providers)
 }
 
 /// What [`session`] asks of ONNX Runtime before it has a model to load.
@@ -130,6 +192,8 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
     builder
         .with_execution_providers(providers)
         .map_err(|error| unready(&error))?
+        .with_config_entry("session.record_ep_graph_assignment_info", "1")
+        .map_err(|error| unready(&error))?
         .with_optimization_level(crate::prepared::LEVEL)
         .map_err(|error| unready(&error))?
         .with_intra_threads(threads)
@@ -189,7 +253,7 @@ pub(crate) fn fixed_coreml(
     // A crash before every partition loads leaves no marker. Its files must
     // be rebuilt under the same lock rather than mistaken for a valid cache.
     std::fs::File::create(cache.join("ready"))?.sync_all()?;
-    report_graph(&path);
+    report_model(&session, &path);
     Ok((session, path))
 }
 
@@ -388,6 +452,39 @@ mod tests {
         let log = std::str::from_utf8(&bytes).unwrap();
         assert_eq!(log.matches("loaded ONNX graph").count(), 1);
         assert!(log.contains("attention.onnx.partial"));
+    }
+
+    #[test]
+    fn sessions_record_actual_provider_assignment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("model.onnx");
+        std::fs::write(
+            &path,
+            include_bytes!("../tests/fixtures/coreml-cache-2.onnx"),
+        )
+        .unwrap();
+        let session = session(vec![cpu()], || Ok(path.clone())).unwrap();
+        let assigned = assigned_providers(&session).unwrap();
+        assert!(
+            assigned
+                .get("CPUExecutionProvider")
+                .is_some_and(|nodes| *nodes > 0)
+        );
+        assert_eq!(
+            assigned.len(),
+            1,
+            "a CPU-only session reported another provider"
+        );
+        let unrecorded = Session::builder()
+            .unwrap()
+            .with_execution_providers(vec![cpu()])
+            .unwrap()
+            .commit_from_file(path)
+            .unwrap();
+        assert!(
+            assigned_providers(&unrecorded).is_err(),
+            "assignment inspection worked without enabling its collection premise"
+        );
     }
 
     #[test]
