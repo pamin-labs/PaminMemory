@@ -740,6 +740,22 @@ impl Reranker {
             let loaded = Encoder::load(model, &repository, max_tokens(), providers);
             let encoder = loaded
                 .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
+            #[cfg(target_os = "windows")]
+            let mut encoder = encoder;
+            #[cfg(target_os = "windows")]
+            if device == Device::DirectMl {
+                // Compare the same accelerator export, not CPU int8 versus
+                // accelerator FP16: quantization is a separate source of drift.
+                let path = repository.get(tier.onnx(device))?;
+                check_accelerator(&mut encoder, || {
+                    Encoder::load(
+                        || Ok(path.clone()),
+                        &repository,
+                        max_tokens(),
+                        vec![crate::inference::cpu()],
+                    )
+                })?;
+            }
             if device == Device::Cpu {
                 crate::prepared::release(&weights, cache_dir);
             }
@@ -909,6 +925,64 @@ impl Reranker {
     }
 }
 
+/// A startup ordering guard for the actual model/export. A failed attempt
+/// returns to `preferred`, which tries the next viable provider. No persistent
+/// CPU-only setting is written; a later load can retry a repaired accelerator.
+#[cfg(target_os = "windows")]
+fn check_accelerator(
+    accelerator: &mut Encoder,
+    reference: impl FnOnce() -> Result<Encoder>,
+) -> Result<()> {
+    const PAIRS: [(&str, &str); 4] = [
+        (
+            "Where does the harbour pilot board ships?",
+            "The harbour pilot boards ships at the outer buoy.",
+        ),
+        (
+            "Where does the harbour pilot board ships?",
+            "Chocolate cake is baked with flour and cocoa.",
+        ),
+        (
+            "部署流水线在哪里运行？",
+            "部署流水线运行在持续集成服务器上。",
+        ),
+        ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
+    ];
+    let encodings = accelerator.encode(PAIRS.to_vec())?;
+    let observed = score(accelerator, encodings, batch_tokens(), batch())?.0;
+    let mut reference = reference()?;
+    let encodings = reference.encode(PAIRS.to_vec())?;
+    let expected = score(&mut reference, encodings, batch_tokens(), batch())?.0;
+    check_accelerator_ordering(&expected, &observed)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
+    let failed =
+        || IndexError::Engine("accelerator failed the startup reranker ordering fixture".into());
+    if expected.len() != 4
+        || observed.len() != 4
+        || expected
+            .iter()
+            .chain(observed)
+            .any(|score| !score.is_finite())
+    {
+        return Err(failed());
+    }
+    for (expected, observed) in expected
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(observed.as_chunks::<2>().0)
+    {
+        let order = expected[0].total_cmp(&expected[1]);
+        if order.is_eq() || order != observed[0].total_cmp(&observed[1]) {
+            return Err(failed());
+        }
+    }
+    Ok(())
+}
+
 /// The model's score for each of `encodings` -- (query, document) pairs from
 /// [`Encoder::encode`] -- in their order.
 ///
@@ -995,6 +1069,18 @@ fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn accelerator_startup_checks_ordering_without_rejecting_score_drift() {
+        let reference = [3.0, -2.0, 4.0, -1.0];
+        assert!(super::check_accelerator_ordering(&reference, &[3.1, -1.9, 4.2, -0.8]).is_ok());
+        assert!(super::check_accelerator_ordering(&reference, &[-2.0, 3.0, 4.0, -1.0]).is_err());
+        assert!(
+            super::check_accelerator_ordering(&reference, &[f32::NAN, -2.0, 4.0, -1.0]).is_err()
+        );
+        assert!(super::check_accelerator_ordering(&reference, &[3.0]).is_err());
+        assert!(super::check_accelerator_ordering(&[0.0; 4], &[0.0; 4]).is_err());
+    }
     use super::*;
 
     #[test]
