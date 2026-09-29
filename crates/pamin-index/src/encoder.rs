@@ -26,7 +26,7 @@ pub(crate) struct Encoder {
     tokenizer: Tokenizer,
     session: Session,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fixed: Option<(PathBuf, Option<Session>, Option<Session>)>,
+    fixed: Option<(Session, Session)>,
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
@@ -72,12 +72,18 @@ impl Encoder {
                 &"static CoreML reranker currently requires at most 256 tokens",
             ));
         }
-        let (session, path) = crate::inference::fixed_coreml(model, 4, 128)?;
+        let path = model()?;
+        // Validate every independently compiled shape inside `preferred`'s
+        // fallback window. A lazy shape failure otherwise breaks later searches
+        // after the model has already been accepted as CoreML.
+        let (session, short, long) = coreml_buckets(|rows, tokens| {
+            crate::inference::fixed_coreml(|| Ok(path.clone()), rows, tokens).map(|loaded| loaded.0)
+        })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         Ok(Self {
             tokenizer,
             session,
-            fixed: Some((path, None, None)),
+            fixed: Some((short, long)),
             token_type_ids: false,
         })
     }
@@ -201,16 +207,11 @@ impl Encoder {
             ));
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let session = if let Some((path, short, long)) = &mut self.fixed {
-            if tokens != 128 {
-                let bucket = if tokens == 64 { short } else { long };
-                if bucket.is_none() {
-                    *bucket =
-                        Some(crate::inference::fixed_coreml(|| Ok(path.clone()), rows, tokens)?.0);
-                }
-                bucket.as_mut().expect("loaded native bucket")
-            } else {
-                &mut self.session
+        let session = if let Some((short, long)) = &mut self.fixed {
+            match tokens {
+                64 => short,
+                128 => &mut self.session,
+                _ => long,
             }
         } else {
             &mut self.session
@@ -239,6 +240,11 @@ impl Encoder {
     }
 }
 
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+fn coreml_buckets<T>(mut load: impl FnMut(usize, usize) -> Result<T>) -> Result<(T, T, T)> {
+    Ok((load(4, 128)?, load(4, 64)?, load(2, 256)?))
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn native_shape(length: usize) -> (usize, usize) {
     if length <= 64 {
@@ -265,6 +271,27 @@ fn pad(tokenizer: &Tokenizer, batch: &mut [Encoding]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_native_shape_must_load_before_accepting_the_accelerator() {
+        for rejected in [64, 128, 256] {
+            let result = super::coreml_buckets(|_, tokens| {
+                if tokens == rejected {
+                    Err(super::failed(&"rejected shape"))
+                } else {
+                    Ok(tokens)
+                }
+            });
+            assert!(
+                result.is_err(),
+                "accepted a model whose {rejected} bucket fails"
+            );
+        }
+        assert_eq!(
+            super::coreml_buckets(|_, tokens| Ok(tokens)).unwrap(),
+            (128, 64, 256)
+        );
+    }
     use super::*;
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
