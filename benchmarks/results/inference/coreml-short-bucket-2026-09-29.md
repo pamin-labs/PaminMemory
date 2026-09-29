@@ -68,3 +68,19 @@ The model-boundary tradeoff is measurable: preserved outputs and lower latency
 at higher residency and temporary storage. Under the requested ordering this
 supports continuing the implementation to complete search/corpus acceptance;
 it does not declare all of #142/#145 or the broader optimization goal complete.
+
+## Review correction (2026-09-30)
+
+The original warmup only asserted padded-token totals. Both 4×128 and 2×256
+produce 512, so that guard did not independently distinguish those shapes.
+The original source remains unchanged in JSON; a revised source adds logical
+token intervals (short 1–64, medium 65–128, long 129–256) for new runs. Existing
+timing is conditional on the inferred warmup shape, not a recorded shape trace.
+
+The [review supplement](coreml-short-bucket-2026-09-29-review.json) records inspection of the retained model/tokenizer snapshot and
+the same host (Apple M4, Mac16,12, 10 cores, 32 GiB; OS 26.6.2 inspected on
+2026-09-30). These inspections are explicitly distinguished from missing
+contemporaneous model/hash/OS logs. The
+[actual resource collectors and summarizer](../../harnesses/coreml-short-bucket-2026-09-29/README.md)
+are retained with source hashes. Later eager bucket validation changes startup
+behavior; the old six-arm observation does not measure that new startup cost.

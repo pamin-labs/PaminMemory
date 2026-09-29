@@ -1,0 +1,69 @@
+from pathlib import Path
+import json,math,statistics,ast,hashlib
+r=Path('${RUN_ROOT}/pamin-gpu-research');o=r/'gpu-normalizer/short64-paired-v2'
+status=json.loads((o/'status.json').read_text())
+assert len(status)==6 and all(v['exit']==0 and v['rejected'] is None for v in status),'paired experiment is not terminal and accepted'
+expected_arms={(n,arm) for n in range(3) for arm in ['baseline','short64']}
+assert {(v['round'],v['arm']) for v in status}==expected_arms
+protocol=json.loads((o/'protocol.json').read_text())
+input=r/'xquad-fixed-candidates.json'
+assert hashlib.sha256(input.read_bytes()).hexdigest()==protocol['input_sha256']
+source=json.loads(input.read_text());assert len(source)==1190
+tree=ast.parse(Path('${RUN_ROOT}/pamin_native_product_metrics.py').read_text())
+function=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='metrics')
+namespace={'math':math};exec(compile(ast.Module(body=[function],type_ignores=[]),'existing_metric_owner','exec'),namespace)
+metric=namespace['metrics'];assert metric(['a','b'],{'a'},set())==(1.,1.)
+runs={};timings=[]
+expected={q['id'] for q in source}
+for round in range(3):
+    for arm in ['baseline','short64']:
+        data=json.loads((o/f'round-{round}-{arm}.json').read_text())
+        assert data['warmup_calls']==24
+        assert data['complete'] and data['completed_queries']==1190 and data['maximum_tokens']==256
+        rows={q['id']:q for q in data['rows']};assert len(rows)==1190 and set(rows)==expected
+        assert all(len(q['scores'])==30 and all(math.isfinite(v) for v in q['scores']) for q in rows.values())
+        runs[(round,arm)]=rows
+        values=sorted(q['rank_seconds']*1000 for q in rows.values() if q['scored']==30)
+        timings.append({'round':round,'arm':arm,'uncached_queries':len(values),
+                        'p50_ms':statistics.median(values),'p95_ms':values[math.ceil(.95*len(values))-1],
+                        'physical_tokens':sum(q['padded_tokens'] for q in rows.values()),
+                        'rank_seconds':sum(q['rank_seconds'] for q in rows.values())})
+labels=['cross_ndcg10','cross_recall50','same_ndcg10','same_recall50'];query_metrics=[];ratios=[]
+repeatability={}
+for arm in ['baseline','short64']:
+    repeatability[arm]={
+        'changed_logit_queries':sum(any(runs[(n,arm)][key]['scores']!=runs[(0,arm)][key]['scores'] for n in [1,2]) for key in expected),
+        'changed_ranking_queries':sum(any(runs[(n,arm)][key]['ranking']!=runs[(0,arm)][key]['ranking'] for n in [1,2]) for key in expected)}
+uncached_sets={key:{q for q,v in rows.items() if v['scored']==30} for key,rows in runs.items()}
+assert all(values==uncached_sets[(0,'baseline')] for values in uncached_sets.values()), 'cache premises differ across arms/rounds'
+for q in source:
+    own=q['answers'][q['language']];other=set(q['answers'].values())-{own};assert len(other)==10
+    item={'id':q['id'],'language':q['language'],'paragraph_cluster':q['answers']['en'].split(':')[1]}
+    for group,gold,drop in [('cross',other,{own}),('same',{own},other)]:
+        for arm in ['baseline','short64']:
+            values=[metric(runs[(round,arm)][q['id']]['ranking'],gold,drop) for round in range(3)]
+            for i,label in enumerate(['ndcg10','recall50']):item.setdefault(group+'_'+label,{})[arm]=statistics.mean(v[i] for v in values)
+    matching=all(runs[(round,arm)][q['id']]['scored']==30 for round in range(3) for arm in ['baseline','short64'])
+    if matching:
+        before=statistics.median(runs[(round,'baseline')][q['id']]['rank_seconds'] for round in range(3))
+        after=statistics.median(runs[(round,'short64')][q['id']]['rank_seconds'] for round in range(3))
+        ratios.append(after/before)
+    query_metrics.append(item)
+summary={'scope':protocol['scope'],'whole_search_acceptance':False,'shared_machine':True,
+ 'cross_round_repeatability':repeatability,
+ 'queries':1190,'rounds':3,'metrics':{},'by_language':{},'timing_rounds':timings,
+ 'paired_query_latency':{'fully_uncached_pairs':len(ratios),'median_ratio':statistics.median(ratios),
+                         'geometric_mean_ratio':math.exp(statistics.mean(math.log(v) for v in ratios))},
+ 'resources':status,'temporary_package_inventories':json.loads((o/'temporary-package-inventories.json').read_text()),'disk_observer_limits':json.loads((o/'protocol-supplement.json').read_text()),'disk_inventories':[json.loads((o/f'round-{n}-{arm}-inventory.json').read_text()) for n in range(3) for arm in ['baseline','short64']]}
+for label in labels:summary['metrics'][label]={arm:statistics.mean(q[label][arm] for q in query_metrics) for arm in ['baseline','short64']}
+for language in sorted({q['language'] for q in source}):
+    group=[q for q in query_metrics if q['language']==language]
+    summary['by_language'][language]={label:{arm:statistics.mean(q[label][arm] for q in group) for arm in ['baseline','short64']} for label in labels}
+assert {(v['round'],v['arm']) for v in summary['temporary_package_inventories']}==expected_arms
+assert all(v['visible'] for v in summary['temporary_package_inventories']), 'temporary package coverage unavailable'
+(o/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+(o/'query-metrics.json').write_text(json.dumps(query_metrics,indent=2)+'\n')
+with (o/'baseline-vs-short64.tsv').open('w') as stream:
+    for q in query_metrics:
+        for label in labels:stream.write(f"{label}\t{q['paragraph_cluster']}\t{q[label]['baseline']}\t{q[label]['short64']}\n")
+print(json.dumps({k:v for k,v in summary.items() if k not in ['by_language','resources']},indent=2))

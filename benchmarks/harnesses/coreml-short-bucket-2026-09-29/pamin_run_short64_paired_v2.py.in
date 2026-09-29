@@ -1,0 +1,93 @@
+from pathlib import Path
+import subprocess,os,time,json,shutil,hashlib,re,statistics
+r=Path('${RUN_ROOT}/pamin-gpu-research')
+o=r/'gpu-normalizer/short64-paired-v2';o.mkdir(exist_ok=True)
+binary={'baseline':r/'native-short64-warm-v2-baseline-frozen','short64':r/'native-short64-warm-v2-score-frozen'}
+input=r/'xquad-fixed-candidates.json'
+env=os.environ.copy()
+for name in ['HF_HOME','PAMIN_DEVICE','PAMIN_RERANK_BATCH','PAMIN_RERANK_BATCH_TOKENS','PAMIN_RERANK_MAX_TOKENS','PAMIN_INFERENCE_THREADS']:
+    env.pop(name,None)
+env.update(DYLD_LIBRARY_PATH=str(r/'runtime'),HF_ENDPOINT='http://127.0.0.1:9')
+orders=[['baseline','short64'],['short64','baseline'],['baseline','short64']]
+assert shutil.disk_usage(r).free>15*2**30
+def free_memory():
+    text=subprocess.run(['memory_pressure','-Q'],capture_output=True,text=True,check=True).stdout
+    return int(re.search(r'memory free percentage: (\d+)%',text).group(1))
+
+def inventory(pid):
+    output=subprocess.run(['lsof','-p',str(pid),'-Fn'],capture_output=True,text=True,timeout=30)
+    roots=set()
+    for line in output.stdout.splitlines():
+        if not line.startswith('n/'):continue
+        name=line[1:]
+        for suffix in ['.mlmodelc','.mlpackage']:
+            if suffix in name:
+                roots.add(Path(name.split(suffix,1)[0]+suffix))
+    records=[]
+    for root in sorted(roots):
+        if not root.is_dir():continue
+        files=[p for p in root.rglob('*') if p.is_file()]
+        stats=[p.stat() for p in files]
+        records.append({'root':str(root),'files':len(files),'logical_bytes':sum(s.st_size for s in stats),
+                        'allocated_blocks_bytes':sum(s.st_blocks*512 for s in stats)})
+    model=Path('${RUN_ROOT}/pamin-perf58/models')
+    files=[p for p in model.rglob('*') if p.is_file() and not p.is_symlink()]
+    stats=[p.stat() for p in files]
+    return {'compiled_roots_visible_to_lsof':records,'lsof_exit':output.returncode,
+            'model_cache_logical_bytes':sum(s.st_size for s in stats),
+            'model_cache_allocated_blocks_bytes':sum(s.st_blocks*512 for s in stats),
+            'disk_free_bytes':shutil.disk_usage(r).free,
+            'scope':'visible compiled roots only; stat-block sum is not unique APFS physical allocation'}
+assert free_memory()>=25
+protocol={'scope':'1190 fixed heads at real Reranker::rank plus product fusion/placement; not end-to-end search',
+ 'baseline_commit':'d681ecbe3fda9cc1cdc6f1c40296eb4737199230',
+ 'candidate_commit':'6fae5db4e270b98d1b9c78b28c26724ae1eaa3c9','shared_machine':True,'orders':orders,'build_profile':'release, thin LTO, codegen-units1, panic abort','common_condition':'ARM checksum backend enabled equally; control only reverts short64 bucket',
+ 'input_sha256':hashlib.sha256(input.read_bytes()).hexdigest(),
+ 'binary_sha256':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in binary.items()},
+ 'build':json.loads((r/'gpu-normalizer/short64-v2-build-lock.json').read_text()),
+ 'selection_rule':json.loads((r/'gpu-normalizer/short64-selection-rule.json').read_text()),
+ 'warmup_pair_token_lengths':[17,92,256],'warmup_protocol':'three separate rank calls with exact physical-token counters asserted','runtime_info':'asserted from each process log',
+ 'single_model_process_at_once':True}
+(o/'protocol.json').write_text(json.dumps(protocol,indent=2)+'\n')
+records=[]
+for round,order in enumerate(orders):
+    for arm in order:
+        output=o/f'round-{round}-{arm}.json';log=o/f'round-{round}-{arm}.log';ready=o/f'round-{round}-{arm}.ready'
+        assert not output.exists(),'fresh run required; do not silently overwrite completed evidence'
+        assert not ready.exists()
+        assert shutil.disk_usage(r).free>15*2**30
+        assert free_memory()>=25
+        start=time.monotonic();peak=0;rejected=None;minimum_memory=100;released=False;rss_series=[]
+        with log.open('w') as stream:
+            p=subprocess.Popen([str(binary[arm]),str(input),str(output),'${RUN_ROOT}/pamin-perf58/models','coreml','256' if arm=='short64' else '512',str(ready)],env=env,stdout=stream,stderr=subprocess.STDOUT)
+            print('launched',round,arm,p.pid,flush=True)
+            while p.poll() is None:
+                time.sleep(5)
+                rss=subprocess.run(['ps','-o','rss=','-p',str(p.pid)],capture_output=True,text=True).stdout.strip()
+                peak=max(peak,int(rss or 0));text=log.read_text(errors='replace')
+                if 'warmup_complete' in text and not released:
+                    snapshot=inventory(p.pid)
+                    snapshot['warm_process_RSS_kib']=int(rss or 0)
+                    (o/f'round-{round}-{arm}-inventory.json').write_text(json.dumps(snapshot,indent=2)+'\n')
+                    ready.write_text('inventory complete\n');released=True
+                if released:rss_series.append(int(rss or 0))
+                minimum_memory=min(minimum_memory,free_memory())
+                if any(v in text for v in ['ANECCompile() FAILED','MILCompilerForANE failed','ANE model load has failed','E5RT encountered an STL exception']):rejected='native failure'
+                if peak>8*1024**2:rejected='8GiB RSS guard'
+                if minimum_memory<25:rejected='25% memory reserve'
+                if shutil.disk_usage(r).free<10*2**30:rejected='10GiB disk reserve'
+                if time.monotonic()-start>3600:rejected='one-hour arm budget'
+                if rejected:
+                    p.terminate()
+                    try:p.wait(timeout=30)
+                    except subprocess.TimeoutExpired:p.kill();p.wait()
+                    break
+        row={'round':round,'arm':arm,'exit':p.returncode,'rejected':rejected,'peak_RSS_kib':peak,
+             'warm_process_RSS_kib':int(statistics.median(rss_series)) if rss_series else None,
+             'minimum_free_memory_percent':minimum_memory,'wall_seconds':time.monotonic()-start}
+        records.append(row);(o/'status.json').write_text(json.dumps(records,indent=2)+'\n');print(row,flush=True)
+        if rejected or p.returncode:raise SystemExit(1)
+        data=json.loads(output.read_text())
+        assert data['complete'] and len(data['rows'])==1190 and data['maximum_tokens']==256
+        assert all(len(row['scores'])==30 for row in data['rows'])
+        assert 'runtime ORT Build Info:' in log.read_text()

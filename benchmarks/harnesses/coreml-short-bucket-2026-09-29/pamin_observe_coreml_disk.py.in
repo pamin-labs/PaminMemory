@@ -1,0 +1,36 @@
+from pathlib import Path
+import subprocess,time,tempfile,json,datetime
+o=Path('${RUN_ROOT}/pamin-gpu-research/gpu-normalizer/short64-paired-v2')
+names={'native-short64-warm-v2-baseline-frozen':'baseline','native-short64-warm-v2-score-frozen':'short64'}
+seen=set();records=[]
+end=time.monotonic()+7200
+while time.monotonic()<end:
+    status=o/'status.json'
+    if status.exists():
+        completed=json.loads(status.read_text())
+        if any(v['exit'] or v['rejected'] for v in completed) or len(completed)==6:break
+    result=subprocess.run(['ps','-axo','pid=,comm='],capture_output=True,text=True,check=True)
+    for line in result.stdout.splitlines():
+        fields=line.strip().split(None,1)
+        if len(fields)!=2 or Path(fields[1]).name not in names:continue
+        pid=int(fields[0]);arm=names[Path(fields[1]).name]
+        if pid in seen:continue
+        number=sum(v['arm']==arm for v in records)
+        ready=o/f'round-{number}-{arm}.ready'
+        if not ready.exists():continue
+        birth=subprocess.run(['ps','-p',str(pid),'-o','lstart='],capture_output=True,text=True,check=True).stdout.strip()
+        started=time.mktime(time.strptime(birth,'%a %b %d %H:%M:%S %Y'))
+        roots=[p for p in Path(tempfile.gettempdir()).glob(f'onnxruntime-*-{pid}-*') if p.is_dir() and p.stat().st_birthtime>=started-2]
+        items=[]
+        for root in roots:
+            files=[p for p in root.rglob('*') if p.is_file()]
+            stats=[p.stat() for p in files]
+            items.append({'root':str(root),'files':len(files),'logical_bytes':sum(s.st_size for s in stats),
+                          'allocated_blocks_bytes':sum(s.st_blocks*512 for s in stats)})
+        record={'pid':pid,'round':number,'arm':arm,'snapshot_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                'process_started_epoch':started,'items':items,'visible':bool(items),
+                'scope':'one metadata-only snapshot after warmup; exact PID and birth-time filtered ORT temporary packages; not unique APFS extents or global ANE cache'}
+        records.append(record);seen.add(pid)
+        (o/'temporary-package-inventories.json').write_text(json.dumps(records,indent=2)+'\n')
+        print(pid,arm,'packages',len(items),'logical bytes',sum(v['logical_bytes'] for v in items),flush=True)
+    time.sleep(5)

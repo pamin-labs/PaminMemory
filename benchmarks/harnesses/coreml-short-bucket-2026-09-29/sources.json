@@ -1,0 +1,22 @@
+[
+  {
+    "file": "pamin_observe_coreml_disk.py.in",
+    "original_sha256": "c932168a75df83bf73f0232737be3b9a50328bcc451c23cbd12f469eb406bac3",
+    "template_sha256": "1cd0a4ee7d98b21bd8d5ea1206c0e34d84505cbc1df802c1e5ed5ff10c04f554"
+  },
+  {
+    "file": "pamin_run_short64_paired_v2.py.in",
+    "original_sha256": "09589ca17aea9ce275cc74ca55ba960c988461d352f4dac67551e8caf22928b7",
+    "template_sha256": "a7ad2606a0287a86501131e3f4c08a9af51cce49a1e820d2b76a8c1b2b2923d1"
+  },
+  {
+    "file": "pamin_resume_short64_paired_v2.py.in",
+    "original_sha256": "485bfa5b0a3aac04531723c324aa8c51dc57485dadcc6a87448324ddf65db3db",
+    "template_sha256": "d74ba425e4d5a8fb66620de7839328dd5c0cd5d47540d98809430f0b4f1b4c7f"
+  },
+  {
+    "file": "pamin_summarize_short64_v2.py.in",
+    "original_sha256": "89a089f7af2aaeefbd0e0d1079434dc7aa558b767e32e2a83fc82e2b70057790",
+    "template_sha256": "bcf9175b25b48782885b403d65736d4d6d3525556eda23166d48311966b4ea1d"
+  }
+]

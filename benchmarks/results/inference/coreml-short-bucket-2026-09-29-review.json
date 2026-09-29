@@ -1,0 +1,46 @@
+{
+  "host_inspection": {
+    "hw.model": "Mac16,12",
+    "machdep.cpu.brand_string": "Apple M4",
+    "hw.logicalcpu": "10",
+    "hw.physicalcpu": "10",
+    "hw.memsize": "34359738368",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+    "scope": "inspection of the same measurement host on 2026-09-30; not a retrospectively captured runtime trace"
+  },
+  "retained_model_cache_inspection": {
+    "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+    "revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+    "sha256": {
+      "onnx/model_fp16.onnx": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+      "tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+      "tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+      "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"
+    },
+    "scope": "inspected retained cache; original six arms did not emit per-load model hashes, so this is not a retrospective runtime attestation"
+  },
+  "warmup_guard_limit": "Original physical-token guard cannot distinguish 4x128 from 2x256. Old source retained unchanged; revised source below asserts logical-token intervals. Original latency remains conditional on the inferred warmup shape, not an independently recorded shape trace.",
+  "retained_source_revisions": [
+    {
+      "role": "baseline",
+      "commit": "d681ecbe3fda9cc1cdc6f1c40296eb4737199230",
+      "tree": "bdaace286ec2345c44621b5918224f9a38e8a04a",
+      "public_ref": "codex/bench-short64-baseline"
+    },
+    {
+      "role": "candidate",
+      "commit": "6fae5db4e270b98d1b9c78b28c26724ae1eaa3c9",
+      "tree": "063ef3f1529231ff981d744154a3f78a5a706143",
+      "public_ref": "codex/bench-short64-candidate"
+    },
+    {
+      "role": "control-base",
+      "commit": "c9f436f56bba3c47ec41e4df6f6753805626a38a",
+      "tree": "3a658a18dd4a764ced5b4417de2e1cb7731fc5f4",
+      "public_ref": "codex/bench-short64-control-base"
+    }
+  ],
+  "harness_source_with_shape_guards": "use std::{collections::HashSet, path::PathBuf, time::Instant};\nuse pamin_index::{Rerank, Reranker};\nuse pamin_engine::{place, score_blend_order, RERANK_FUSION};\n\nfn main() -> Result<(), Box<dyn std::error::Error>> {\n    println!(\"runtime {}\", ort::info());\n    let args: Vec<_> = std::env::args().collect();\n    assert_eq!(args.len(), 7, \"input output cache expected_device short_physical_tokens ready_marker\");\n    let short_physical_tokens: u64 = args[5].parse()?;\n    assert!([256, 512].contains(&short_physical_tokens));\n    let input = PathBuf::from(&args[1]);\n    let output = PathBuf::from(&args[2]);\n    let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(input)?)?;\n    assert_eq!(rows.len(), 1190);\n    let ids: HashSet<_> = rows.iter().map(|r| r[\"id\"].as_str().unwrap()).collect();\n    assert_eq!(ids.len(), rows.len());\n    assert!(rows.iter().all(|r| r[\"candidates\"].as_array().unwrap().len() == 30));\n    let load = Instant::now();\n    let mut model = Reranker::load(Rerank::Accurate, &PathBuf::from(&args[3]))?;\n    let load_seconds = load.elapsed().as_secs_f64();\n    assert_eq!(model.device().name(), args[4], \"unexpected provider fallback\");\n    assert_eq!(model.counted().maximum_tokens, 256, \"different input truncation contract\");\n    // Unique queries warm both short and long physical buckets without warming\n    // any evaluation pair's score-cache key.\n    let long = \"database migration rollback \".repeat(300);\n    let medium = \"database migration rollback \".repeat(20);\n    for i in 0..8 {\n        let q = format!(\"measurement warmup {i}: migration failure\");\n        // Separate calls are essential: batching short + medium together\n        // otherwise warms only the 128-token bucket, leaving 64 cold.\n        for (document, expected_tokens, interval) in [\n            (\"a migration rolls back\", short_physical_tokens, 1..=64),\n            (medium.as_str(), 512, 65..=128),\n            (long.as_str(), 512, 129..=256),\n        ] {\n            let before = model.counted();\n            let scored = model.rank(&q, &[document])?;\n            let after = model.counted();\n            assert!(interval.contains(&(after.tokens - before.tokens)), \"warmup did not execute its intended logical-token interval\");\n            assert_eq!(scored.len(), 1);\n            assert!(scored[0].score.is_finite());\n            assert_eq!(after.batches - before.batches, 1);\n            assert_eq!(after.padded_tokens - before.padded_tokens, expected_tokens,\n                       \"warmup did not execute the intended physical bucket\");\n        }\n    }\n    println!(\"warmup_complete\");\n    use std::io::Write as _;\n    std::io::stdout().flush()?;\n    let ready = PathBuf::from(&args[6]);\n    let waiting = Instant::now();\n    while !ready.is_file() {\n        assert!(waiting.elapsed().as_secs() < 60, \"resource inventory did not release the measurement barrier\");\n        std::thread::sleep(std::time::Duration::from_millis(20));\n    }\n    let mut results = Vec::with_capacity(rows.len());\n    let start = Instant::now();\n    for (index, row) in rows.iter().enumerate() {\n        let candidates = row[\"candidates\"].as_array().unwrap();\n        let docs: Vec<_> = candidates.iter().map(|c| c[\"shown\"].as_str().unwrap()).collect();\n        let before = model.counted();\n        let timer = Instant::now();\n        let ranked = model.rank(row[\"text\"].as_str().unwrap(), &docs)?;\n        let seconds = timer.elapsed().as_secs_f64();\n        let after = model.counted();\n        assert_eq!(ranked.len(), docs.len());\n        assert_eq!(after.offered - before.offered, 30);\n        let mut scores = vec![f32::NAN; docs.len()];\n        for r in ranked { assert!(r.score.is_finite()); assert!(scores[r.position].is_nan()); scores[r.position] = r.score; }\n        assert!(scores.iter().all(|v| v.is_finite()));\n        let fused: Vec<_> = candidates.iter().map(|c| c[\"fused\"].as_f64().unwrap()).collect();\n        let scores64: Vec<_> = scores.iter().map(|&s| f64::from(s)).collect();\n        let order = score_blend_order(&fused, &scores64, RERANK_FUSION);\n        let topics: Vec<String> = serde_json::from_value(row[\"topics\"].clone())?;\n        let shown: Vec<_> = candidates.iter().map(|c| c[\"position\"].as_u64().unwrap() as usize).collect();\n        assert!(shown.iter().all(|&i| i < topics.len()));\n        let ranking = place(topics, &shown, 30, &order);\n        results.push(serde_json::json!({\"id\":row[\"id\"], \"scores\":scores, \"ranking\":ranking,\n            \"rank_seconds\":seconds, \"scored\":after.scored-before.scored,\n            \"batches\":after.batches-before.batches, \"padded_tokens\":after.padded_tokens-before.padded_tokens,\n            \"encode_us\":after.encode_us-before.encode_us, \"forward_us\":after.forward_us-before.forward_us}));\n        if (index + 1) % 11 == 0 || index + 1 == rows.len() {\n            let value = serde_json::json!({\"device\":model.device().name(), \"maximum_tokens\":256,\n                \"completed_queries\":results.len(), \"expected_queries\":1190, \"expected_pairs\":35700,\n                \"complete\":results.len()==rows.len(), \"load_seconds\":load_seconds,\n                \"wall_seconds\":start.elapsed().as_secs_f64(), \"warmup_calls\":24,\n                \"shared_machine\":true, \"whole_product_latency\":false,\n                \"boundary\":\"Reranker::rank plus product fusion/placement replay on fixed candidates\", \"rows\":results});\n            let partial = output.with_extension(\"partial\");\n            std::fs::write(&partial, serde_json::to_vec(&value)?)?;\n            std::fs::rename(partial, &output)?;\n            println!(\"{} {}/1190\", model.device().name(), index + 1);\n        }\n    }\n    assert_eq!(results.len(), 1190);\n    Ok(())\n}\n",
+  "resource_collectors": "../../harnesses/coreml-short-bucket-2026-09-29/README.md"
+}
