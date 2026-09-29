@@ -254,5 +254,14 @@
       "graph_selection_evidence": "actual loaded typed-model path and retained artifact inventory"
     },
     "index_embedding_identity": "705ffaf38623fb5c71a2ced99d8674e45fb19e8ad05f263bfa09474e4d9b153f"
-  }
+  },
+  "measured_source_tree_proof": {
+  "original_compiled_commit": "0a222d18493a5453753f70f216ae90194f50632a",
+  "original_tree": "368a202bb6c00ab6a018e666a1ab6668a836759e",
+  "equivalent_public_commit": "fbbcc2661397366d491045003579f80002c774f3",
+  "equivalent_tree": "368a202bb6c00ab6a018e666a1ab6668a836759e",
+  "tree_equal": true,
+  "reproduce": "git rev-parse <original>^{tree}; git rev-parse <equivalent>^{tree}; compare exact tree IDs",
+  "reference_branch": "codex/bench-measured-runtime-2026-09-30"
+}
 }
