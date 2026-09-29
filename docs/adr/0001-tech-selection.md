@@ -1814,7 +1814,9 @@ Resident is what opening the vector-only collection and answering the 482 querie
 0.7.2 prebuilt release references native commit
 [`1ab7975`](https://github.com/alibaba/zvec/tree/1ab7975dfc2d2160054bafff614831b7099cd930).
 The actual macOS library used by the current search benchmark matches the
-library contained in the published release archive byte-for-byte. Its
+library contained in the published release archive byte-for-byte. The
+[retained comparison and reproduction procedure](../../benchmarks/results/index/zvec-native-0.7.2-2026-09-30.md)
+record both SHA256 identities and the audit limits. Its
 [`DiskAnnIndex::create_and_init_streamer`](https://github.com/alibaba/zvec/blob/1ab7975dfc2d2160054bafff614831b7099cd930/src/core/interface/indexes/diskann_index.cc#L96)
 clamps build `list_size` to at most 100 and `max_degree` to at most 100 before
 passing them to the builder. Therefore the historical requested-200 timing
