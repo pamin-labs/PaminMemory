@@ -424,9 +424,8 @@ pub(crate) fn preferred<T>(
     load(Device::Cpu, vec![cpu()]).map(|model| (model, Device::Cpu))
 }
 
-/// Use the same modern format for every CoreML model. The legacy NeuralNetwork
-/// format cannot accept the standard normalization operators used by modern
-/// transformer graphs. ALL permits the framework's CPU/GPU/ANE combination.
+/// Static Accurate buckets need MLProgram for their normalization operators.
+/// ALL permits the framework's CPU/GPU/ANE combination.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn coreml() -> ort::ep::CoreML {
     ort::ep::CoreML::default()
@@ -461,7 +460,16 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
             ort::ep::CUDA::default().build().error_on_failure(),
         ),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        (Device::CoreMl, coreml().build().error_on_failure()),
+        // General CoreML currently serves the Fast reranker. Its dynamic
+        // MLProgram search was slower than the legacy NeuralNetwork path on
+        // the same model; Accurate builds its static MLProgram separately.
+        (
+            Device::CoreMl,
+            ort::ep::CoreML::default()
+                .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+                .build()
+                .error_on_failure(),
+        ),
         #[cfg(target_os = "windows")]
         (
             Device::DirectMl,
