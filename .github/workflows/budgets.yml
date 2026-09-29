@@ -27,6 +27,9 @@ jobs:
       - name: Show toolchain
         run: rustup show active-toolchain
 
+      - name: Check native distribution gate
+        run: python3 ci/test_budget.py
+
       # No dependency cache here on purpose: this job measures the cold build.
       - name: Measure budgets
         run: python3 ci/budget.py "$GITHUB_STEP_SUMMARY"
