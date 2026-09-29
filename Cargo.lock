@@ -1847,6 +1847,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "zvec-rust-sys",
 ]
 
 [[package]]
