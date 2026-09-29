@@ -869,9 +869,11 @@ impl Source {
     /// Preserve byte provenance before release deletes the original file.
     /// The first three metadata lines and cache key stay compatible with old records.
     fn record_with_digest(&self, source: &Path) -> Result<String> {
-        let mut digest = Sha256::new();
-        std::io::copy(&mut File::open(source)?, &mut digest)?;
-        Ok(format!("{}sha256 {:x}\n", self.record(), digest.finalize()))
+        Ok(format!(
+            "{}sha256 {}\n",
+            self.record(),
+            source_digest(source)?
+        ))
     }
 
     fn parse(record: &str) -> Option<Self> {
@@ -918,6 +920,13 @@ impl Source {
             );
         }
     }
+}
+
+/// Content identity without keeping the complete model on the heap.
+pub(crate) fn source_digest(source: &Path) -> Result<String> {
+    let mut digest = Sha256::new();
+    std::io::copy(&mut File::open(source)?, &mut digest)?;
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 /// The CPU features that decide how the matrix kernels pack a weight.
