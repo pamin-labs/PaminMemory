@@ -1,5 +1,10 @@
 {
   "product_code_commit": "bd523771551874fb47f38c70c2cacb6b01bc7b06",
+  "runtime_control": {
+    "stack_predecessor": "ed3ab210b59f8830182929204693940d70a0a627",
+    "patch": "inference.patch",
+    "status": "experimental NeuralNetwork comparator; not part of the final CPU-routing stack"
+  },
   "platform": {
     "model": "Mac16,12",
     "logical_cpus": 10,
