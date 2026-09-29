@@ -2,6 +2,9 @@
 
 ## PaminMemory Workflow
 
+- When changing compute/inference dispatch, follow the [mixed accelerator policy](docs/adr/0001-tech-selection.md#mixed-accelerator-policy-2026-09-29): choose measured speed across supported single/mixed plans; do not permanently retreat to CPU solely for numerical drift.
+
+
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
 - Sync submodules and read the relevant `internal-docs/pamin-memory/` materials before implementing PaminMemory changes.
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
