@@ -62,9 +62,22 @@ shortlist and leaves its full-depth recall unchanged. The current XQuAD-R
 result is in the table above; its gain over these older rows cannot be assigned
 to reranking alone because the passage encoding and answer key also changed.
 
-Both corpora are fetched rather than vendored, and each has a harness in the
-repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
-XQuAD-R and `--test monolingual` for MIRACL.
+Both corpora are fetched rather than vendored. For XQuAD-R, prepare a fresh
+persistent cache, then run only the search test:
+
+```sh
+env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log
+```
+
+Preparation is needed once per fresh cache. Repeating preparation can fetch
+source weights the product has released after making mapped copies. The
+verifier reads the actual selected graph paths from this run's log; a prepared
+key from the archived machine cannot identify another host's active copy.
+Prepared graph hashes remain an exact archived-artifact check: a different
+runtime or CPU can require fresh evidence rather than matching those bytes.
+MIRACL uses `--test monolingual`.
 
 **The historical MIRACL row predates the current harness and fusion.** The
 fusion weight that produced 0.7359 was later halved; that row remains a record
@@ -83,7 +96,7 @@ averages, and an average cannot distinguish every query moving slightly from
 one query moving a great deal. That matters at the sizes being reported: the
 fusion weight moved on +0.0056 and the reranker is priced at −0.0152, and both
 are small enough that a handful of queries decides them. The harnesses now
-report per-query wins, losses and a paired bootstrap p beside every mean — see
+report per-query wins, losses and a paired randomisation p beside every mean — see
 `crates/pamin-engine/tests/statistics/mod.rs` and the section in
 [ADR 0001](adr/0001-tech-selection.md). Until a figure below carries a win/loss
 count, read it as a difference of means and nothing stronger.
