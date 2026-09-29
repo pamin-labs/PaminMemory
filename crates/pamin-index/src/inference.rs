@@ -226,9 +226,7 @@ pub(crate) fn fixed_coreml(
         reset_coreml_cache(&cache)?;
     }
     let load = || -> Result<Session> {
-        let provider = ort::ep::CoreML::default()
-            .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
-            .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+        let provider = coreml()
             .with_model_cache_dir(cache.to_string_lossy())
             .build()
             .error_on_failure();
@@ -367,6 +365,16 @@ pub(crate) fn preferred<T>(
     load(Device::Cpu, vec![cpu()]).map(|model| (model, Device::Cpu))
 }
 
+/// Use the same modern format for every CoreML model. The legacy NeuralNetwork
+/// format cannot accept the standard normalization operators used by modern
+/// transformer graphs. ALL permits the framework's CPU/GPU/ANE combination.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn coreml() -> ort::ep::CoreML {
+    ort::ep::CoreML::default()
+        .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+        .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+}
+
 /// The accelerators to try before the CPU, best first.
 ///
 /// Whatever this platform's runtime carries, with no build flag: CUDA on
@@ -394,10 +402,7 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
             ort::ep::CUDA::default().build().error_on_failure(),
         ),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        (
-            Device::CoreMl,
-            ort::ep::CoreML::default().build().error_on_failure(),
-        ),
+        (Device::CoreMl, coreml().build().error_on_failure()),
         #[cfg(target_os = "windows")]
         (
             Device::DirectMl,
@@ -472,6 +477,59 @@ mod tests {
         let log = std::str::from_utf8(&bytes).unwrap();
         assert_eq!(log.matches("loaded ONNX graph").count(), 1);
         assert!(log.contains("attention.onnx.partial"));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "requires the native CoreML execution provider"]
+    fn modern_coreml_assigns_normalization_that_legacy_format_cannot() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("normalization.onnx");
+        std::fs::write(
+            &path,
+            include_bytes!("../tests/fixtures/coreml-normalization.onnx"),
+        )?;
+        let mut modern = session(vec![coreml().build().error_on_failure()], || {
+            Ok(path.clone())
+        })?;
+        let assigned = assigned_providers(&modern)?;
+        assert!(
+            assigned
+                .get("CoreMLExecutionProvider")
+                .is_some_and(|nodes| *nodes > 0)
+        );
+        let legacy = session(
+            vec![
+                ort::ep::CoreML::default()
+                    .with_model_format(ort::ep::coreml::ModelFormat::NeuralNetwork)
+                    .build()
+                    .error_on_failure(),
+            ],
+            || Ok(path.clone()),
+        )?;
+        let old = assigned_providers(&legacy)?;
+        assert_eq!(old.get("CoreMLExecutionProvider").copied().unwrap_or(0), 0);
+        assert!(
+            old.get("CPUExecutionProvider")
+                .is_some_and(|nodes| *nodes > 0)
+        );
+        let input = ort::value::Tensor::from_array(([1, 4], vec![1.0f32, 2.0, 3.0, 4.0]))
+            .map_err(|error| IndexError::Engine(error.to_string()))?;
+        let output = modern
+            .run(ort::inputs!["x" => input])
+            .map_err(|error| IndexError::Engine(error.to_string()))?;
+        let (_, values) = output["y"]
+            .try_extract_tensor::<f32>()
+            .map_err(|error| IndexError::Engine(error.to_string()))?;
+        let expected = [-1.5f32, -0.5, 0.5, 1.5].map(|x| x / 1.25001f32.sqrt());
+        assert_eq!(values.len(), expected.len());
+        assert!(
+            values
+                .iter()
+                .zip(expected)
+                .all(|(value, expected)| (*value - expected).abs() < 1e-3)
+        );
+        Ok(())
     }
 
     #[test]
