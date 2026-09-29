@@ -3181,3 +3181,12 @@ separate scopes. One sequential shared-host run per arm establishes complete
 product-path evidence, while rotated timings, other corpora, full ignored/e2e
 and other platforms remain open. Do not label this pure ANE execution or
 attribute the whole improvement to any one commit.
+
+### Lexical sweep evidence retention correction (2026-09-30)
+
+The [historical complete terminal outputs](../../benchmarks/results/fusion/lexical-2026-09-27/README.md)
+retain all printed grid rows and fold choices behind the lexical verdict.
+They did not retain per-query score matrices or full artifact provenance;
+that limitation is not repaired retrospectively. New `CHANNELS_OUT` runs save
+the paired vectors and configurations through the shared diagnostic owner,
+with stdout retained beside them. No new weight is selected from old means.

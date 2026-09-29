@@ -675,6 +675,22 @@ impl Default for Diagnosis {
 }
 
 impl Diagnosis {
+    /// Raw paired grid rows; the existing statistics owner can replay fold
+    /// selection and family tests without rerunning models or retrieval.
+    fn evidence(&self, title: &str, edges: &[(String, i64)]) -> serde_json::Value {
+        serde_json::json!({
+            "title": title,
+            "edges": edges,
+            "whole": self.whole,
+            "alone": self.alone,
+            "without": self.without,
+            "variants": self.variants.iter().zip(&self.offline).map(|((label, fusion), scores)| {
+                serde_json::json!({"label": label, "fusion": format!("{fusion:?}"), "scores": scores})
+            }).collect::<Vec<_>>(),
+            "pairing": "per-query vectors retain each group's observation order",
+        })
+    }
+
     /// One query's trace, fused at the shipped settings with room to spare
     /// (see [`enough_room`]), and how to score a ranking of it.
     ///
@@ -716,6 +732,11 @@ impl Diagnosis {
     /// them. `edges` is the live-edge census, printed beside the graph rows so
     /// a zero there is read as "nothing to walk" rather than as a result.
     pub fn report(&self, title: &str, edges: &[(String, i64)]) {
+        if let Some(path) = std::env::var_os("CHANNELS_OUT") {
+            let bytes = serde_json::to_vec_pretty(&self.evidence(title, edges))
+                .expect("serialize paired channel evidence");
+            std::fs::write(path, bytes).expect("write requested channel evidence");
+        }
         use crate::scoring::{NDCG_AT, RECALL_AT};
         use crate::statistics;
 
@@ -958,6 +979,35 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn channel_evidence_retains_the_complete_paired_grid() {
+        let mut diagnosis = super::Diagnosis::default();
+        let scores = crate::scoring::Scores {
+            queries: 2,
+            per_query: vec![0.2, 0.8],
+            ..Default::default()
+        };
+        diagnosis.whole.insert("group".into(), scores.clone());
+        for variant in &mut diagnosis.offline {
+            variant.insert("group".into(), scores.clone());
+        }
+        let evidence = diagnosis.evidence("fixture", &[]);
+        assert_eq!(
+            evidence["whole"]["group"]["per_query"],
+            serde_json::json!([0.2, 0.8])
+        );
+        assert_eq!(
+            evidence["variants"].as_array().unwrap().len(),
+            diagnosis.variants.len()
+        );
+        for row in evidence["variants"].as_array().unwrap() {
+            assert_eq!(
+                row["scores"]["group"]["per_query"],
+                serde_json::json!([0.2, 0.8])
+            );
+        }
+    }
     use super::*;
 
     #[test]
