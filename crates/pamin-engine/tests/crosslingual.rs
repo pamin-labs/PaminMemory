@@ -541,12 +541,65 @@ fn pinned_embedding_id(models: &Path) -> String {
     pinned_model_id(models, "embedder")
 }
 
+fn fast_reranker_requested() -> bool {
+    std::env::var_os("ROUTES").is_some()
+        || std::env::var("TIERS")
+            .is_ok_and(|tiers| tiers == "1" || tiers.split(',').any(|tier| tier.trim() == "fast"))
+}
+
+fn pinned_source(model: &serde_json::Value) -> (&str, &str) {
+    let source = &model["source_onnx"];
+    let digest = &model["source_onnx_sha256"];
+    let variant = if source.is_object() {
+        #[cfg(target_arch = "aarch64")]
+        let variant = "aarch64";
+        #[cfg(target_arch = "x86_64")]
+        let variant = if std::arch::is_x86_feature_detected!("avx512vnni") {
+            "x86_vnni"
+        } else {
+            "x86_avx2"
+        };
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+        let variant = "other";
+        Some(variant)
+    } else {
+        None
+    };
+    let (source, digest) = match variant {
+        Some(variant) => (&source[variant], &digest[variant]),
+        None => (source, digest),
+    };
+    (
+        source.as_str().expect("pinned ONNX path"),
+        digest.as_str().expect("pinned ONNX SHA256"),
+    )
+}
+
+#[test]
+#[should_panic(expected = "XQuAD-R reranker_fast revision differs")]
+fn stale_fast_reranker_revision_is_rejected_before_scoring() {
+    let models = tempfile::tempdir().unwrap();
+    let refs = models
+        .path()
+        .join("models--cross-encoder--mmarco-mMiniLMv2-L12-H384-v1/refs");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::write(refs.join("main"), "stale").unwrap();
+    pinned_model_id(models.path(), "reranker_fast");
+}
+
 /// Validate every pinned role before opening or scoring a project.
 fn pinned_model_id(models: &Path, role: &str) -> String {
-    let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
-    ))
-    .unwrap();
+    let manifest: serde_json::Value = if role == "reranker_fast" {
+        serde_json::from_str(include_str!(
+            "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+        ))
+        .unwrap()
+    } else {
+        serde_json::from_str(include_str!(
+            "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+        ))
+        .unwrap()
+    };
     let model = manifest["models"]
         .as_array()
         .unwrap()
@@ -573,7 +626,7 @@ fn pinned_model_id(models: &Path, role: &str) -> String {
         let actual = Sha256::digest(std::fs::read(snapshot.join(file)).unwrap());
         assert_eq!(format!("{actual:x}"), expected.as_str().unwrap(), "{file}");
     }
-    let weights = model["source_onnx"].as_str().unwrap();
+    let (weights, expected_source) = pinned_source(model);
     let source_hash = match std::fs::read(snapshot.join(weights)) {
         Ok(bytes) => format!("{:x}", Sha256::digest(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -592,7 +645,7 @@ fn pinned_model_id(models: &Path, role: &str) -> String {
         }
         Err(error) => panic!("read pinned {role} weights: {error}"),
     };
-    assert_eq!(source_hash, model["source_onnx_sha256"].as_str().unwrap());
+    assert_eq!(source_hash, expected_source);
     let identity = serde_json::json!({
         "repository": repository,
         "revision": revision,
@@ -627,25 +680,29 @@ fn stale_reranker_revision_is_rejected_before_indexing_or_scoring() {
     pinned_model_id(models.path(), "reranker");
 }
 
-fn xquad_project_name(named: &str, fingerprint: &str, embedding: Option<&str>) -> String {
-    let mut project = format!("xquad-{named}-{fingerprint}");
-    if let Some(identity) = embedding {
-        project.push('-');
-        project.push_str(&identity[..16]);
-    }
-    project
+fn xquad_project_name(named: &str, fingerprint: &str, embedding: &str) -> String {
+    format!("xquad-{named}-{fingerprint}-{}", &embedding[..16])
 }
 
 #[test]
-fn content_passage_diagnostic_keeps_its_retained_project_identity() {
+fn xquad_project_is_revision_bound() {
     assert_eq!(
-        xquad_project_name("accuracy", "corpus", None),
-        "xquad-accuracy-corpus"
-    );
-    assert_eq!(
-        xquad_project_name("accuracy", "corpus", Some("0123456789abcdefmore")),
+        xquad_project_name("accuracy", "corpus", "0123456789abcdefmore"),
         "xquad-accuracy-corpus-0123456789abcdef"
     );
+}
+
+fn require_revision_bound_passages(content_only: bool) {
+    assert!(
+        !content_only,
+        "PASSAGES cannot authenticate the retained content-only index's embedder revision; rebuild a revision-bound diagnostic before comparing passages"
+    );
+}
+
+#[test]
+#[should_panic(expected = "PASSAGES cannot authenticate")]
+fn old_content_only_passage_diagnostic_is_refused() {
+    require_revision_bound_passages(true);
 }
 
 fn requested_pinned_home(home: Option<String>, explicitly_selected: bool) -> Option<String> {
@@ -759,7 +816,21 @@ fn prepare_pinned_xquad_models() {
         "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
     ))
     .unwrap();
-    for model in manifest["models"].as_array().unwrap() {
+    let fast: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+    ))
+    .unwrap();
+    let selected_fast = fast["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|_| fast_reranker_requested());
+    for model in manifest["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(selected_fast)
+    {
         let name = model["repository"].as_str().unwrap();
         let revision = model["revision"].as_str().unwrap();
         let repository = api.repo(hf_hub::Repo::with_revision(
@@ -777,7 +848,7 @@ fn prepare_pinned_xquad_models() {
         // from the archived host. A scoring run records its actual selection.
         // Preparation is needed once per fresh cache; repeating it may fetch
         // a source that the product released after preparing a mapped copy.
-        let weights = model["source_onnx"].as_str().unwrap();
+        let (weights, _) = pinned_source(model);
         repository
             .get(weights)
             .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
@@ -1356,6 +1427,7 @@ async fn search_reaches_across_languages() {
     if pinned_benchmark_home("search_reaches_across_languages").is_none() {
         return;
     }
+    require_revision_bound_passages(std::env::var_os("PASSAGES").is_some());
     assert!(
         std::env::var_os("HF_HOME").is_none(),
         "unset HF_HOME for this pinned benchmark"
@@ -1400,26 +1472,21 @@ async fn search_reaches_across_languages() {
 
     let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
     println!("  pinned reranker identity: {reranker_id}");
+    if fast_reranker_requested() {
+        let fast_id = pinned_model_id(&workspace.root().join("models"), "reranker_fast");
+        println!("  pinned fast reranker identity: {fast_id}");
+    }
 
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
-    let embedding_id = (profile == pamin_index::Profile::Accuracy).then(|| {
-        let identity = pinned_embedding_id(&workspace.root().join("models"));
-        println!("  index embedding identity: {identity}");
-        identity
-    });
-    // PASSAGES compares a retained content-only index with a named one. A
-    // fresh revision-bound index would be Named and cannot serve that baseline.
-    let content_baseline = std::env::var_os("PASSAGES").is_some();
-    let project = xquad_project_name(
-        &named,
-        &corpus.fingerprint(),
-        if content_baseline {
-            None
-        } else {
-            embedding_id.as_deref()
-        },
+    assert_eq!(
+        profile,
+        pamin_index::Profile::Accuracy,
+        "the pinned XQuAD-R search benchmark uses the accuracy profile"
     );
+    let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
+    println!("  index embedding identity: {embedding_id}");
+    let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
     println!("  index project: {project}");
     let engine = Engine::open(
         &workspace,
@@ -1431,20 +1498,12 @@ async fn search_reaches_across_languages() {
     .await
     .expect("open the engine");
 
-    if content_baseline {
-        assert_eq!(
-            engine.passage(),
-            pamin_index::Passage::Content,
-            "PASSAGES requires the retained content-only baseline before writing the corpus"
-        );
-    } else {
-        assert_eq!(
-            engine.passage(),
-            pamin_index::Passage::Named,
-            "XQuAD-R needs named passages; run pamin reindex for an older workspace"
-        );
-        println!("  index passage: named");
-    }
+    assert_eq!(
+        engine.passage(),
+        pamin_index::Passage::Named,
+        "XQuAD-R needs named passages; run pamin reindex for an older workspace"
+    );
+    println!("  index passage: named");
     write_corpus(&engine, &corpus).await;
     let documents = engine.indexed_documents().expect("count documents") as usize;
     assert_eq!(
@@ -1461,58 +1520,6 @@ async fn search_reaches_across_languages() {
         "XQuAD-R needs every document in the vector index before scoring"
     );
     println!("  vector index completeness: {completeness:.4}");
-
-    // `PASSAGES`: the same memories in a second project whose vectors embed
-    // the topic's name, asked every question alongside this one. See
-    // `channels::Paired`.
-    if std::env::var("PASSAGES").is_ok() {
-        let other = Engine::open(
-            &workspace,
-            &format!("{project}-named"),
-            profile,
-            VectorIndex::default(),
-            Access::ReadWrite,
-        )
-        .await
-        .expect("open the named project");
-        write_corpus(&other, &corpus).await;
-        assert_eq!(
-            other.vector_index_completeness().expect("completeness"),
-            1.0,
-            "the paired named index must also be complete"
-        );
-        assert_eq!(
-            engine.passage(),
-            pamin_index::Passage::Content,
-            "the baseline project was built from content"
-        );
-        assert_eq!(
-            other.passage(),
-            pamin_index::Passage::Named,
-            "the new project embeds names"
-        );
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
-        let mut paired = channels::Paired::default();
-        for query in &queries {
-            let before = engine
-                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
-                .await
-                .expect("search");
-            let after = other
-                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
-                .await
-                .expect("search");
-            for group in GROUPS {
-                paired.observe(group, &before, &after, |into, ranking| {
-                    score_group(into, query, group, ranking)
-                });
-            }
-        }
-        paired.report(&format!(
-            "vectors embedding the topic name, XQuAD-R, {named}"
-        ));
-        return;
-    }
 
     if let Some(settings) = sweep() {
         println!("\n  setting              cross nDCG@10   same nDCG@10   cross recall@50");
