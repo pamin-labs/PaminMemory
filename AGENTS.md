@@ -58,6 +58,12 @@ going stale.
   comparison does not establish each individual change's contribution.
 - Record accuracy, latency (p50/p95), memory, and disk usage, in that priority
   order. Include regressions and tradeoffs, not just the metric that improved.
+- Record elapsed (wall) time separately from CPU user/system time. For aggregate
+  time comparisons, hold the amount of work fixed and separate startup, index
+  preparation, search calls, and diagnostics. CPU time includes worker threads
+  and can exceed elapsed time; declare whether child processes, CoreML services,
+  and GPU/NPU device execution are included. Process CPU time alone is not total
+  accelerator cost. Retain missing historical measurements as `N/A`.
 - Every optimization PR must include a table with **metric, before, after,
   absolute difference, and percentage change**, plus links to retained evidence.
   Mark unmeasured or inapplicable cells `N/A` and explain why; never imply zero
