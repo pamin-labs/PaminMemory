@@ -26,20 +26,24 @@ through `search_reranked`, accuracy profile, accurate reranker, head 30, limit
 | p95 | 7.374466 s | 0.814224 s | −6.560242 s | −88.96% |
 | Search-call wall total | 6177.679 s | 723.069 s | −5454.610 s | −88.30% |
 | Sampled peak process RSS | 4436525056 B | 3068149760 B | −1368375296 B | −30.84% |
-| Process CPU user + system | 26080.018 s | 402.627 s | −25677.390 s | −98.46% |
+| Whole accurate-plus-off harness CPU user + system | 26080.018 s | 402.627 s | −25677.390 s | −98.46% |
+| Added three-bucket compiled cache, logical bytes | No equivalent bucket cache | 6836411689 B | +6836411689 B | N/A; zero baseline |
 | Matched total persistent model/cache disk | Not measured | Not measured | N/A | N/A |
 
 Both default arms actually selected CoreML; main used legacy NeuralNetwork,
 while the optimized reranker used MLProgram + ALL with FP16 encoder / FP32
 classifier and static buckets. Embedding stayed CPU int8. ALL permits CPU/GPU/
 ANE cooperation; the run did not capture their internal operation placement.
-CPU time excludes external CoreML services and device work; RSS includes model
+CPU time covers the whole accurate-plus-off harness, including startup; search-only
+CPU was not measured. It excludes external CoreML services and device work; RSS includes model
 startup/compilation, not isolated steady residency. Compared with the CPU
 control instead, optimized CoreML RSS increased 104.44%; baseline matters.
 
 The [default-main evidence](../benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md)
 and [CPU-control evidence](../benchmarks/results/inference/coreml-search-full-2026-09-30.md)
-archive pinned artifacts, complete rankings, judgments and paired tests.
+archive pinned artifacts, complete rankings, judgments and paired tests. The
+[generating wrappers and controllers](../benchmarks/harnesses/product-search-2026-09-30/README.md)
+retain the reproduction source and commands.
 Recall is identical per query. Default-main nDCG deltas −0.000168 cross /
 +0.000298 same have paragraph-cluster, four-metric adjusted p 0.1532 / 1.0.
 These are small nonsignificant differences, not proof of numerical equivalence.

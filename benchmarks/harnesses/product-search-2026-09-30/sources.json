@@ -1,0 +1,79 @@
+[
+  {
+    "file": "candidate.rs.in",
+    "original_sha256": "a95ac00b8848cb8a0c667f352c6e2c14879389e2c92d4ca0ea2e965f1e5725b3",
+    "template_sha256": "f8b5b202bd37484897053715516fa46fa38a7b50871cd7a20d96e765467ac50d",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "candidate-Cargo.toml.in",
+    "original_sha256": "644a733562e00dc40bcf661608147c19e12ad83f82ebc8ad2f7ee69ed0453a9d",
+    "template_sha256": "b6e01c99094ae7cdeee6b935e4ea4fa351134681844cbb2431fa44762de8cac5",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "main-auto.rs.in",
+    "original_sha256": "3b649d1ceaf697799ad25af22d9d6a5665b40183f0f76c378941176cc83a7e07",
+    "template_sha256": "fdeef8413c1a036509ccb5bfa3e96067e34d90f4a34faee28d58996ba9df758f",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "main-auto-Cargo.toml.in",
+    "original_sha256": "ada5ebf848284c73f4c4751f1c1c77bed16f3af8eb67448391d608e4a7c8fe27",
+    "template_sha256": "db71dda41631b65a80ceb15130f2fd78eb2b9778e3c058f4875d70a896f22706",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "main-cpu.rs.in",
+    "original_sha256": "c7ab00309585d6d5ab244326d4e6066fb0b86b5ff6a63516eeaca4ec7fe39c5b",
+    "template_sha256": "7366c4edd916742f7416becd7df3bfbf74d585e135c28269d3815c99541dd312",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "main-cpu-Cargo.toml.in",
+    "original_sha256": "b6d261d538caba75df298df60c25fd3ba6eea5b65ad5b7f640955b7316edafe6",
+    "template_sha256": "4247498f79e6762e78400b2f2e529b1b993c58958bd3d7a816c3495361757691",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "score.rs.in",
+    "original_sha256": "c59903e2e5a20d6b337a8b6b6ecfcf488ab6b75675fda8864f438cf08aaecc27",
+    "template_sha256": "cbf9aa2a7dda09e7c1b4f7827c614e7588d7dce36fdb6103f8f75625e353da6e",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "compare.rs.in",
+    "original_sha256": "d36e0cffcdc540dec44a0e5f6cb7ebb0f28b0edfa639f196cd85b03a862c0334",
+    "template_sha256": "a9d822a2d8c20d726f093cd8d4133d941dc141fd3e64e48f8d672ac5d1751081",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "scoring-Cargo.toml.in",
+    "original_sha256": "4113a40a2c425982bbc21714d860fead7c1146c31e33ca05af3c415e897d8665",
+    "template_sha256": "4113a40a2c425982bbc21714d860fead7c1146c31e33ca05af3c415e897d8665",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "run-main-auto.py.in",
+    "original_sha256": "82e95e71b45289475274c9c76e15975a914a51708f38f293e2dc7e908ea27122",
+    "template_sha256": "e617037e04e944ec951d3863b36b345860808a6b5399ba256c136945ed1c66fe",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "run-candidate.py.in",
+    "original_sha256": "7423e23b04b12ba9fc7e2c27364e4e3b047d3a59d61d22646b246329122b1354",
+    "template_sha256": "f4edb6f28f942cff2887c2b018c4f103f397514202ac68b0d685ed24330420dc",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "file": "run-main-cpu.py.in",
+    "original_sha256": "3172cfa7b249b2ffc9fe29e89e74fb36d587daea1d48453c68c3dd6756c5ac5c",
+    "template_sha256": "5ce1aff9d587c08ea7ca38a7bb35ad23713b4c99e4e6b02cb9a3ddf6a5d483e9",
+    "change": "machine-specific absolute roots replaced with named placeholders; no measurement logic changed"
+  },
+  {
+    "canonical_base_commit": "c9ab0245940bb6c40059ad812ed061502e18810d",
+    "canonical_base_path": "crates/pamin-engine/tests/crosslingual.rs",
+    "wrapper_patches": "Each patch reconstructs the corresponding template SHA256 in this manifest exactly before root substitution."
+  }
+]

@@ -1,0 +1,311 @@
+--- crosslingual-base.rs
++++ lib.rs
+@@ -173,11 +173,17 @@
+ //! the eleven, which is 1,190 queries covering every language and every
+ //! question and takes a eleventh of the time.
+ 
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/channels/mod.rs"]
+ mod channels;
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/features/mod.rs"]
+ mod features;
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/harness/mod.rs"]
+ mod harness;
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/reranking/mod.rs"]
+ mod reranking;
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/scoring/mod.rs"]
+ mod scoring;
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/statistics/mod.rs"]
+ mod statistics;
+ 
+ use std::collections::{BTreeMap, HashMap, HashSet};
+@@ -488,7 +494,7 @@
+     std::fs::create_dir_all(dir)
+         .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
+ 
+-    let manifest = include_str!("../../../benchmarks/results/retrieval/xquad-r-input.sha256");
++    let manifest = include_str!("${EVIDENCE_REPO}/benchmarks/results/retrieval/xquad-r-input.sha256");
+     for language in LANGUAGES {
+         let path = dir.join(format!("{language}.json"));
+         if !path.exists() {
+@@ -538,20 +544,13 @@
+ /// A pinned embedding space, checked before a benchmark reuses its vectors.
+ /// The production index marker names the repository, not its hub revision.
+ fn pinned_embedding_id(models: &Path) -> String {
+-    pinned_model_id(models, "embedder")
+-}
+-
+-/// Validate every pinned role before opening or scoring a project.
+-fn pinned_model_id(models: &Path, role: &str) -> String {
+-    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+-        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+-    ))
++    let manifest: serde_json::Value = serde_json::from_str(include_str!("${EVIDENCE_REPO}/benchmarks/results/retrieval/xquad-r-model-artifacts.json"))
+     .unwrap();
+     let model = manifest["models"]
+         .as_array()
+         .unwrap()
+         .iter()
+-        .find(|model| model["role"] == role)
++        .find(|model| model["role"] == "embedder")
+         .unwrap();
+     let repository = model["repository"].as_str().unwrap();
+     let revision = model["revision"].as_str().unwrap();
+@@ -561,12 +560,7 @@
+             .expect("run prepare_pinned_xquad_models before scoring")
+             .trim(),
+         revision,
+-        "XQuAD-R {} revision differs from the pinned model",
+-        if role == "embedder" {
+-            "embedding"
+-        } else {
+-            role
+-        }
++        "XQuAD-R embedding revision differs from the pinned model"
+     );
+     let snapshot = hub.join("snapshots").join(revision);
+     for (file, expected) in model["files_sha256"].as_object().unwrap() {
+@@ -590,7 +584,7 @@
+                 .expect("prepared source record lacks a digest; rerun prepare_pinned_xquad_models")
+                 .to_string()
+         }
+-        Err(error) => panic!("read pinned {role} weights: {error}"),
++        Err(error) => panic!("read pinned embedding weights: {error}"),
+     };
+     assert_eq!(source_hash, model["source_onnx_sha256"].as_str().unwrap());
+     let identity = serde_json::json!({
+@@ -615,73 +609,6 @@
+     pinned_embedding_id(models.path());
+ }
+ 
+-#[test]
+-#[should_panic(expected = "XQuAD-R reranker revision differs")]
+-fn stale_reranker_revision_is_rejected_before_indexing_or_scoring() {
+-    let models = tempfile::tempdir().unwrap();
+-    let refs = models
+-        .path()
+-        .join("models--onnx-community--bge-reranker-v2-m3-ONNX/refs");
+-    std::fs::create_dir_all(&refs).unwrap();
+-    std::fs::write(refs.join("main"), "stale").unwrap();
+-    pinned_model_id(models.path(), "reranker");
+-}
+-
+-fn xquad_project_name(named: &str, fingerprint: &str, embedding: Option<&str>) -> String {
+-    let mut project = format!("xquad-{named}-{fingerprint}");
+-    if let Some(identity) = embedding {
+-        project.push('-');
+-        project.push_str(&identity[..16]);
+-    }
+-    project
+-}
+-
+-#[test]
+-fn content_passage_diagnostic_keeps_its_retained_project_identity() {
+-    assert_eq!(
+-        xquad_project_name("accuracy", "corpus", None),
+-        "xquad-accuracy-corpus"
+-    );
+-    assert_eq!(
+-        xquad_project_name("accuracy", "corpus", Some("0123456789abcdefmore")),
+-        "xquad-accuracy-corpus-0123456789abcdef"
+-    );
+-}
+-
+-fn requested_pinned_home(home: Option<String>, explicitly_selected: bool) -> Option<String> {
+-    assert!(
+-        home.is_some() || !explicitly_selected,
+-        "set PAMIN_EVAL_HOME when explicitly selecting a pinned XQuAD benchmark"
+-    );
+-    home
+-}
+-
+-fn pinned_benchmark_home(test: &str) -> Option<String> {
+-    let selected = std::env::args()
+-        .skip(1)
+-        .any(|argument| argument.ends_with(test));
+-    let home = requested_pinned_home(std::env::var("PAMIN_EVAL_HOME").ok(), selected);
+-    if home.is_none() {
+-        eprintln!("skipping {test}: set PAMIN_EVAL_HOME and use its documented filtered command");
+-    }
+-    home
+-}
+-
+-#[test]
+-fn unconfigured_workspace_gate_does_not_start_a_pinned_benchmark() {
+-    assert_eq!(requested_pinned_home(None, false), None);
+-    assert_eq!(
+-        requested_pinned_home(Some("evaluation".into()), false),
+-        Some("evaluation".into())
+-    );
+-}
+-
+-#[test]
+-#[should_panic(expected = "set PAMIN_EVAL_HOME")]
+-fn explicitly_selected_pinned_benchmark_requires_setup() {
+-    requested_pinned_home(None, true);
+-}
+-
+ fn report_loaded_graphs() {
+     let _ = tracing_subscriber::fmt()
+         .with_env_filter("pamin_index=info")
+@@ -696,14 +623,11 @@
+ #[test]
+ #[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_DEVICE=cpu"]
+ fn pinned_model_loads_report_actual_graph_paths() {
+-    let Some(home) = pinned_benchmark_home("pinned_model_loads_report_actual_graph_paths") else {
+-        return;
+-    };
+     assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+     assert!(std::env::var_os("HF_HOME").is_none());
++    let home = std::env::var("PAMIN_EVAL_HOME").expect("persistent model cache");
+     let models = Path::new(&home).join("models");
+     pinned_embedding_id(&models);
+-    pinned_model_id(&models, "reranker");
+     report_loaded_graphs();
+     let _embedder = pamin_index::Embedder::load(pamin_index::Profile::Accuracy, &models)
+         .expect("load pinned embedding model");
+@@ -715,9 +639,7 @@
+ #[test]
+ #[ignore = "downloads the pinned XQuAD-R model artifacts into a persistent cache"]
+ fn prepare_pinned_xquad_models() {
+-    let Some(home) = pinned_benchmark_home("prepare_pinned_xquad_models") else {
+-        return;
+-    };
++    let home = std::env::var("PAMIN_EVAL_HOME").expect("set PAMIN_EVAL_HOME for the model cache");
+     let models = Path::new(&home).join("models");
+     assert!(
+         std::env::var_os("HF_HOME").is_none(),
+@@ -731,9 +653,7 @@
+         builder = builder.with_endpoint(endpoint);
+     }
+     let api = builder.build().expect("reach the model hub");
+-    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+-        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+-    ))
++    let manifest: serde_json::Value = serde_json::from_str(include_str!("${EVIDENCE_REPO}/benchmarks/results/retrieval/xquad-r-model-artifacts.json"))
+     .unwrap();
+     for model in manifest["models"].as_array().unwrap() {
+         let name = model["repository"].as_str().unwrap();
+@@ -1050,10 +970,7 @@
+         println!("  the {} tier scored nothing\n", tier.name());
+         return;
+     }
+-    println!(
+-        "  loaded reranker truncation: {} tokens",
+-        counted.maximum_tokens
+-    );
++    println!("  main does not expose the loaded truncation counter");
+     println!(
+         "  {}: {:.1} candidates a query reached the model of {:.1} offered, \
+          {:.0} characters each, longest {}, cache {:.1}% of {} lookups",
+@@ -1329,9 +1246,6 @@
+ #[tokio::test(flavor = "multi_thread")]
+ #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
+ async fn search_reaches_across_languages() {
+-    if pinned_benchmark_home("search_reaches_across_languages").is_none() {
+-        return;
+-    }
+     assert!(
+         std::env::var_os("HF_HOME").is_none(),
+         "unset HF_HOME for this pinned benchmark"
+@@ -1343,13 +1257,13 @@
+     );
+     report_loaded_graphs();
+     let git = Command::new("git")
+-        .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
++        .args(["-C", "${MAIN_REPO}/crates/pamin-engine", "rev-parse", "HEAD"])
+         .output()
+         .expect("identify the benchmark code commit");
+     assert!(git.status.success());
+     assert!(
+         Command::new("git")
+-            .args(["-C", env!("CARGO_MANIFEST_DIR"), "diff", "--quiet", "HEAD"])
++            .args(["-C", "${MAIN_REPO}/crates/pamin-engine", "diff", "--quiet", "HEAD"])
+             .status()
+             .is_ok_and(|status| status.success()),
+         "benchmark checkout has tracked changes"
+@@ -1374,28 +1288,15 @@
+         (None, None) => unreachable!("one of the two is always set"),
+     };
+ 
+-    let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
+-    println!("  pinned reranker identity: {reranker_id}");
+-
+     // The profile is part of the workspace identity: an index records the
+     // profile it was built with and refuses to open under another.
+-    let embedding_id = (profile == pamin_index::Profile::Accuracy).then(|| {
+-        let identity = pinned_embedding_id(&workspace.root().join("models"));
+-        println!("  index embedding identity: {identity}");
+-        identity
+-    });
+-    // PASSAGES compares a retained content-only index with a named one. A
+-    // fresh revision-bound index would be Named and cannot serve that baseline.
+-    let content_baseline = std::env::var_os("PASSAGES").is_some();
+-    let project = xquad_project_name(
+-        &named,
+-        &corpus.fingerprint(),
+-        if content_baseline {
+-            None
+-        } else {
+-            embedding_id.as_deref()
+-        },
+-    );
++    let mut project = format!("xquad-{named}-{}", corpus.fingerprint());
++    if profile == pamin_index::Profile::Accuracy {
++        let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
++        project.push('-');
++        project.push_str(&embedding_id[..16]);
++        println!("  index embedding identity: {embedding_id}");
++    }
+     println!("  index project: {project}");
+     let engine = Engine::open(
+         &workspace,
+@@ -1407,13 +1308,7 @@
+     .await
+     .expect("open the engine");
+ 
+-    if content_baseline {
+-        assert_eq!(
+-            engine.passage(),
+-            pamin_index::Passage::Content,
+-            "PASSAGES requires the retained content-only baseline before writing the corpus"
+-        );
+-    } else {
++    if std::env::var("PASSAGES").is_err() {
+         assert_eq!(
+             engine.passage(),
+             pamin_index::Passage::Named,
+@@ -2848,7 +2743,9 @@
+ /// Scores every query through one of the engine's search paths.
+ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeMap<String, Scores> {
+     let mut groups = BTreeMap::new();
+-    for query in queries {
++    let mut measured_rows = Vec::new();
++    for (index, query) in queries.iter().enumerate() {
++        let timed = std::time::Instant::now();
+         let hits = match &route {
+             // `DEPTH` is sixty and a tier's depth is thirty, so the
+             // rerank path returns the sixty this scores at and the
+@@ -2872,8 +2769,23 @@
+             }
+         }
+         .expect("search");
++        let seconds = timed.elapsed().as_secs_f64();
++        assert!(!hits.is_empty(), "product search returned no candidates");
+         let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
+         score(&mut groups, query, &ranked);
++        measured_rows.push(serde_json::json!({"index": index, "search_seconds": seconds, "ranking": ranked}));
++        if let Ok(prefix) = std::env::var("PAMIN_PRODUCT_ROWS") {
++            if (index + 1) % 11 == 0 || index + 1 == queries.len() {
++                let arm = match &route { Route::Shipped(tier) => tier.name(), _ => "diagnostic" };
++                let body = serde_json::json!({"expected_queries": queries.len(), "completed_queries": index + 1,
++                    "complete": index + 1 == queries.len(), "boundary": "Engine search call", "rows": measured_rows});
++                let output = std::path::PathBuf::from(format!("{prefix}-{arm}.json"));
++                let partial = output.with_extension("partial");
++                std::fs::write(&partial, serde_json::to_vec(&body).unwrap()).unwrap();
++                std::fs::rename(partial, output).unwrap();
++                println!("  product measured {}/{}", index + 1, queries.len());
++            }
++        }
+     }
+     groups
+ }

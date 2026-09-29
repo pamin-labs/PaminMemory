@@ -1,0 +1,33 @@
+use std::{collections::BTreeMap,fs};
+#[path="${EVIDENCE_REPO}/crates/pamin-engine/tests/statistics/mod.rs"]
+mod statistics;
+fn main()->Result<(),Box<dyn std::error::Error>> {
+ let args:Vec<_>=std::env::args().collect();assert_eq!(args.len(),4,"before-summary after-summary output");
+ let before:serde_json::Value=serde_json::from_slice(&fs::read(&args[1])?)?;
+ let after:serde_json::Value=serde_json::from_slice(&fs::read(&args[2])?)?;
+ assert_eq!(before["complete"],true);assert_eq!(after["complete"],true);
+ assert_eq!(before["queries"],1190);assert_eq!(after["queries"],1190);
+ let first=before["rows"].as_array().unwrap();let second=after["rows"].as_array().unwrap();assert_eq!(first.len(),1190);assert_eq!(second.len(),1190);
+ for (index,(a,b)) in first.iter().zip(second).enumerate(){
+  assert_eq!(a["index"],index);assert_eq!(b["index"],index);
+  for key in ["query_id","language","paragraph_cluster"]{assert_eq!(a[key],b[key],"mismatched {key}");}
+ }
+ let mut metrics=Vec::new();let mut clustered_settings=Vec::new();let mut cluster_ids=Vec::new();
+ for group in ["cross_lingual","same_language"] {
+  for metric in ["ndcg","recall"] {
+   let read=|r:&serde_json::Value|{let x=r["metrics"][group][metric].as_f64().unwrap();assert!(x.is_finite());x};
+   let a:Vec<_>=first.iter().map(read).collect();let b:Vec<_>=second.iter().map(read).collect();
+   let per_query=statistics::compare(&a,&b);
+   let mut clusters:BTreeMap<u64,f64>=BTreeMap::new();
+   for ((row,a),b) in first.iter().zip(&a).zip(&b){*clusters.entry(row["paragraph_cluster"].as_u64().unwrap()).or_default()+=b-a;}
+   let ids:Vec<_>=clusters.keys().copied().collect();if cluster_ids.is_empty(){cluster_ids=ids}else{assert_eq!(cluster_ids,ids)}
+   let differences:Vec<_>=clusters.values().copied().collect();let clustered=statistics::compare(&vec![0.;differences.len()],&differences);
+   metrics.push(serde_json::json!({"group":group,"metric":metric,"before":a.iter().sum::<f64>()/a.len() as f64,"after":b.iter().sum::<f64>()/b.len() as f64,"mean_difference":per_query.mean,"query_wins":per_query.wins,"query_losses":per_query.losses,"query_ties":per_query.ties,"paragraph_cluster_sign_flip_p":clustered.p}));
+   clustered_settings.push(differences);
+  }
+ }
+ let adjusted=statistics::family(&vec![0.;cluster_ids.len()],&clustered_settings);
+ for (row,p) in metrics.iter_mut().zip(adjusted){row["family_adjusted_p"]=serde_json::json!(p);}
+ let output=serde_json::json!({"complete":true,"queries":1190,"paragraph_clusters":cluster_ids.len(),"family_scope":"four predefined group metrics; shared sign flips across paragraphs preserve correlated queries/translations","metrics":metrics,"latency_before":before["single_pass_search_seconds"],"latency_after":after["single_pass_search_seconds"],"latency_limit":"single sequential shared-host passes, not repeated rotated speed acceptance"});
+ fs::write(&args[3],serde_json::to_vec_pretty(&output)?)?;println!("{}",serde_json::to_string_pretty(&output["metrics"])?);Ok(())
+}

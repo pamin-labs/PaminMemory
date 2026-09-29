@@ -1,0 +1,28 @@
+import os,subprocess,json,time,shutil,hashlib
+from pathlib import Path
+root=Path('${RUN_ROOT}/pamin-product-main');workspace=Path('${RUN_ROOT}/pamin-perf58')
+env=os.environ.copy()
+for key in ['HF_HOME','PAMIN_RERANK_DEPTH','PAMIN_RERANK_MAX_TOKENS','PAMIN_RERANK_BATCH','PAMIN_RERANK_BATCH_TOKENS','PAMIN_SEARCH_EFFORT','PAMIN_PREPARED','PAMIN_FUSED_ATTENTION','TIERS','CHANNELS','SWEEP','FEATURES_OUT','GATE','PAIRS','ROUTES','RERANK_RULES','PASSAGES']:
+ env.pop(key,None)
+env.update(PAMIN_EVAL_HOME=str(workspace),PAMIN_PROFILE='accuracy',PAMIN_DEVICE='cpu',PAMIN_VECTOR_INDEX='memory',DYLD_LIBRARY_PATH='${RUN_ROOT}/pamin-gpu-research/runtime',GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='diff.ignoreSubmodules',GIT_CONFIG_VALUE_0='all',PAMIN_PRODUCT_ROWS=str(root/'main-search'))
+assert shutil.disk_usage(workspace).free>=10*1024**3+3*1024**3,'reserve for restored sources, mapped copies and fresh index'
+steps=[('main-search','${RUN_ROOT}/pamin-product-main-frozen','search_reaches_across_languages')]
+status=[]
+for name,binary,test in steps:
+ assert Path(binary).is_file(),binary
+ stdout=root/(name+'.stdout');stderr=root/(name+'.stderr');peak=0;failure=None
+ with stdout.open('w') as out,stderr.open('w') as err:
+  start=time.monotonic();proc=subprocess.Popen([binary,'--exact',test,'--ignored','--nocapture'],env=env,stdout=out,stderr=err)
+  print(json.dumps({'phase':name,'pid':proc.pid,'state':'running'}),flush=True)
+  while proc.poll() is None:
+   observed=subprocess.run(['ps','-o','rss=','-p',str(proc.pid)],capture_output=True,text=True)
+   if observed.returncode==0 and observed.stdout.strip():peak=max(peak,int(observed.stdout.strip())*1024)
+   if peak>8*1024**3:failure='process RSS guard'
+   if shutil.disk_usage(workspace).free<10*1024**3:failure='disk guard'
+   if failure:proc.terminate();proc.wait();break
+   time.sleep(1)
+  row={'phase':name,'exit_code':proc.returncode,'wall_seconds':time.monotonic()-start,'sampled_peak_rss_bytes':peak,'guard_failure':failure}
+  status.append(row);(root/'status.json').write_text(json.dumps(status,indent=2));print(json.dumps(row),flush=True)
+  assert row['exit_code']==0 and not failure,(row,'see phase logs')
+assert len(status)==1
+print('Complete main CPU product-path baseline run.',flush=True)
