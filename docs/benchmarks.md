@@ -16,6 +16,12 @@ XQuAD-R figures are in [measured.md](measured.md) and
 [ADR 0001](adr/0001-tech-selection.md); an older result cannot be subtracted
 from one of them to credit a single change.
 
+The complete 2026-09-30 XQuAD-R default-main versus optimized CoreML product
+comparison includes accuracy, whole-search p50/p95, process CPU cost and peak
+RSS, with [all query rows and scope limitations](../benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md).
+It is a single shared-host comparison; repeated rotated performance acceptance
+and complete current MIRACL provenance remain open.
+
 ## What the field publishes
 
 Many agent-memory projects report **LLM-judge accuracy on conversational QA**:
