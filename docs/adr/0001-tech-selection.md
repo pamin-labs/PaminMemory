@@ -2775,11 +2775,15 @@ and hardware acceptance work remains in progress.
 - Select by same-model, same-input-shape measurements at the caller boundary;
   separate startup and warm cost. Reuse results in the shared compute policy
   rather than loading every model/backend or probing every request.
-- Numerical drift is recorded and repaired incrementally while keeping the
-  fast execution path available. Drift alone does not permanently disable an
-  accelerator. Execution failures, invalid/non-finite tensors and resource
-  exhaustion still need a viable fallback; index encoding changes retain
-  their migration/reindex contract.
+- Numerical drift is recorded and repaired incrementally while keeping valid
+  fast execution paths available. Small accepted drift alone does not
+  permanently disable an accelerator. Finite output is not sufficient: wrong
+  operators, omitted transposes or failed predefined retrieval/ordering gates
+  temporarily quarantine the affected model/runtime/shape plan. Select the
+  fastest remaining viable accelerator, mixed or optimized-CPU plan, and retry
+  the repaired plan after revalidation. Execution failures, invalid/non-finite
+  tensors and resource exhaustion still require a viable fallback; index
+  encoding changes retain their migration/reindex contract.
 - Every CPU compute path must consider SIMD, including preprocessing,
   postprocessing, vector/numeric operations and scoring. Reuse existing
   optimized kernels; preserve scalar execution when hardware/operations or
