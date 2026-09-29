@@ -1323,3 +1323,15 @@ already exceeds the 1,024 a Linux process is given by default.
 What was measured, how, and the conclusions that reversed on measurement are in
 [the ADR](adr/0001-tech-selection.md), which is the
 source of truth if it and this page ever disagree.
+
+The old `PASSAGES` content-only versus named diagnostic is disabled: its retained
+content-only project has no recorded embedding revision, so a newer model cache
+could silently compare different vector spaces. Historical rows stay historical;
+the named product index remains revision-bound. Reintroduce the diagnostic only
+with a newly built and verified revision-bound content-only project.
+
+For `TIERS=fast`, `TIERS=1`, or `ROUTES`, the pinned preparation command must
+be run with that environment variable set before the scoring command. The
+[Fast tier manifest](../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json)
+checks the actual CPU export selected by this architecture and its tokenizer.
+The default Accurate-only preparation still fetches only its two models.
