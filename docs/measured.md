@@ -1335,3 +1335,18 @@ be run with that environment variable set before the scoring command. The
 [Fast tier manifest](../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json)
 checks the actual CPU export selected by this architecture and its tokenizer.
 The default Accurate-only preparation still fetches only its two models.
+
+To check only the Fast reranker export and tokenizer before a full corpus run:
+
+```sh
+env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual pinned_fast_reranker_loads_and_scores -- --exact --ignored --nocapture
+```
+
+This validates one real CPU load and two scored pairs; it is not a Fast-tier
+corpus-accuracy or accelerator-speed result.
+
+On Apple Silicon, the optional `pinned_fast_coreml_model_loads_and_scores`
+ignored test uses `PAMIN_DEVICE=auto` and verifies the pinned FP32 export plus
+actual model output on two pairs. Its provider assignment must be read from
+the run log; this small control cannot certify Fast-tier corpus accuracy or
+whole-search latency.
