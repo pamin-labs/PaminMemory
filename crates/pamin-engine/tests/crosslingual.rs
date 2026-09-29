@@ -158,8 +158,8 @@
 //! index them.
 //!
 //! ```text
-//! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored
-//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --ignored --nocapture
+//! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 //! ```
 //!
 //! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
@@ -604,6 +604,33 @@ fn stale_embedding_revision_is_rejected_before_index_reuse() {
     pinned_embedding_id(models.path());
 }
 
+fn report_loaded_graphs() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("pamin_index=info")
+        .with_ansi(false)
+        .without_time()
+        .with_writer(std::io::stdout)
+        .try_init();
+}
+
+/// A cheap real-loader check for the reproduction log and verifier, without
+/// indexing or scoring a corpus. The Python verifier consumes its stdout.
+#[test]
+#[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_DEVICE=cpu"]
+fn pinned_model_loads_report_actual_graph_paths() {
+    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+    assert!(std::env::var_os("HF_HOME").is_none());
+    let home = std::env::var("PAMIN_EVAL_HOME").expect("persistent model cache");
+    let models = Path::new(&home).join("models");
+    pinned_embedding_id(&models);
+    report_loaded_graphs();
+    let _embedder = pamin_index::Embedder::load(pamin_index::Profile::Accuracy, &models)
+        .expect("load pinned embedding model");
+    let reranker = pamin_index::Reranker::load(Rerank::Accurate, &models)
+        .expect("load pinned reranking model");
+    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
+}
+
 #[test]
 #[ignore = "downloads the pinned XQuAD-R model artifacts into a persistent cache"]
 fn prepare_pinned_xquad_models() {
@@ -639,27 +666,14 @@ fn prepare_pinned_xquad_models() {
                 .unwrap_or_else(|error| panic!("fetching {name}/{file}: {error}"));
         }
 
-        // The product can reuse an existing mapped copy after releasing the
-        // original download. A fresh cache fetches the pinned ONNX file.
+        // Fetch the pinned source instead of checking a prepared directory
+        // from the archived host. A scoring run records its actual selection.
+        // Preparation is needed once per fresh cache; repeating it may fetch
+        // a source that the product released after preparing a mapped copy.
         let weights = model["source_onnx"].as_str().unwrap();
-        let label = format!(
-            "{}--{}.source",
-            name.replace('/', "--"),
-            weights.replace('/', "--")
-        );
-        let record = std::fs::read_to_string(models.join("prepared").join(label)).ok();
-        let prepared = models
-            .join("prepared")
-            .join(model["prepared_key_on_measured_host"].as_str().unwrap());
-        let ready = record.as_deref().and_then(|record| record.lines().next())
-            == model["source_onnx_sha256"].as_str()
-            && prepared.join("model.onnx").exists()
-            && prepared.join("model.onnx.data").exists();
-        if !ready {
-            repository
-                .get(weights)
-                .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
-        }
+        repository
+            .get(weights)
+            .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
 
         let refs = cache
             .join(format!("models--{}", name.replace('/', "--")))
@@ -1237,6 +1251,7 @@ async fn search_reaches_across_languages() {
         Ok("cpu"),
         "set PAMIN_DEVICE=cpu for the reproducible XQuAD-R baseline"
     );
+    report_loaded_graphs();
     let git = Command::new("git")
         .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
         .output()

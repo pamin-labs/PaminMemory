@@ -19,7 +19,7 @@
 //! Whether an idle thread in that pool spins is not a setting: it blocks. See
 //! [`session`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ort::ep::ExecutionProviderDispatch;
 use ort::session::{Session, builder::SessionBuilder};
@@ -49,9 +49,18 @@ pub(crate) fn session(
 ) -> Result<Session> {
     let mut builder = options(providers)?;
     let model = model()?;
-    builder
-        .commit_from_file(&model)
-        .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))
+    commit(&mut builder, &model)
+}
+
+/// Every scoring session records the path it actually loaded, after success.
+fn commit(builder: &mut SessionBuilder, model: &Path) -> Result<Session> {
+    let session = builder
+        .commit_from_file(model)
+        .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))?;
+    // Keys vary with the source's metadata, runtime and CPU. A benchmark must
+    // hash this selection rather than an unused copy from its archived host.
+    tracing::info!(model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"), "loaded ONNX graph");
+    Ok(session)
 }
 
 /// What [`session`] asks of ONNX Runtime before it has a model to load.
