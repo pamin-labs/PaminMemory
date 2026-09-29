@@ -266,6 +266,13 @@ statistically significant. Embedding stayed CPU int8. See the
 [CPU control and raw query evidence](benchmarks/results/inference/coreml-search-full-2026-09-30.md)
 for pinned models, index completeness and measurement scope.
 
+The opt-in `fast` tier takes a different route on Apple Silicon: its
+[complete XQuAD-R backend comparison](benchmarks/results/inference/fast-apple-backend-2026-09-30.md)
+found no significant quality loss for ARM INT8 CPU versus CoreML FP32, and
+CPU was faster on all 1,190 paired searches. The CoreML latency distribution
+was completed across two processes after a disk-guard interruption; the
+`accurate` default above still uses its measured CoreML route.
+
 The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
 It is outside this headline table until its code, device and raw-run evidence
 are archived with the same provenance as XQuAD-R.
