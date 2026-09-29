@@ -2759,7 +2759,38 @@ gate is measured on CPU, and **every published figure stays a CPU figure** —
 otherwise the numbers on this page stop being product claims and become
 hardware claims.
 
+### Mixed accelerator policy (2026-09-29)
+
+This user-directed decision supersedes the preceding CPU-only default and
+permanent CPU fallback on numerical parity differences, and the historical
+GPU deferral below. It records the intended policy; cross-platform planner
+and hardware acceptance work remains in progress.
+
+- Apple Silicon starts with CoreML `ALL`, permitting ANE, GPU and optimized
+  CPU cooperation. CPUAndGPU remains a measured candidate, not the preferred
+  default merely because it excludes ANE.
+- Elsewhere, explore supported NPU+GPU+CPU, NPU+CPU SIMD, GPU+CPU SIMD and
+  CPU SIMD plans, plus viable single-accelerator plans. This is a candidate
+  exploration order, not a claim that NPU or a larger combination is faster.
+- Select by same-model, same-input-shape measurements at the caller boundary;
+  separate startup and warm cost. Reuse results in the shared compute policy
+  rather than loading every model/backend or probing every request.
+- Numerical drift is recorded and repaired incrementally while keeping the
+  fast execution path available. Drift alone does not permanently disable an
+  accelerator. Execution failures, invalid/non-finite tensors and resource
+  exhaustion still need a viable fallback; index encoding changes retain
+  their migration/reindex contract.
+- CPU SIMD comes from optimized runtime kernels. CoreML has no distinct
+  CPUAndGPUWithSIMD compute-unit flag. Provider registration is not proof of
+  hardware utilization or optimal scheduling.
+
+[ORT assigns supported subgraphs by provider capability and priority](https://onnxruntime.ai/docs/execution-providers/);
+[CoreML ALL permits all available compute units](https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html).
+Choose actual speed rather than assuming more registered engines are faster.
+
 ### Optional GPU: measured against, not deferred
+
+Historical decision; superseded by the mixed accelerator policy above.
 
 Accelerating the reranker on a GPU was considered and is not being built, and the reason is not the size budget alone.
 
