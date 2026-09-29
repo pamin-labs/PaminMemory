@@ -656,15 +656,39 @@ fn requested_pinned_home(home: Option<String>, explicitly_selected: bool) -> Opt
     home
 }
 
+fn selected_by_libtest(test: &str, args: impl Iterator<Item = String>) -> bool {
+    args.filter(|argument| !argument.starts_with('-'))
+        .any(|filter| test.contains(&filter))
+}
+
 fn pinned_benchmark_home(test: &str) -> Option<String> {
-    let selected = std::env::args()
-        .skip(1)
-        .any(|argument| argument.ends_with(test));
+    let selected = selected_by_libtest(test, std::env::args().skip(1));
     let home = requested_pinned_home(std::env::var("PAMIN_EVAL_HOME").ok(), selected);
     if home.is_none() {
         eprintln!("skipping {test}: set PAMIN_EVAL_HOME and use its documented filtered command");
     }
     home
+}
+
+#[test]
+fn substring_selected_benchmark_requires_setup() {
+    let test = "search_reaches_across_languages";
+    assert!(selected_by_libtest(
+        test,
+        ["search_reaches", "--ignored"]
+            .into_iter()
+            .map(str::to_string)
+    ));
+    assert!(selected_by_libtest(
+        test,
+        [test, "--exact", "--ignored"]
+            .into_iter()
+            .map(str::to_string)
+    ));
+    assert!(!selected_by_libtest(
+        test,
+        ["--ignored", "--nocapture"].into_iter().map(str::to_string)
+    ));
 }
 
 #[test]
