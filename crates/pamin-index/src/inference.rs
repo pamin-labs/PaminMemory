@@ -224,6 +224,7 @@ pub(crate) fn fixed_coreml(
         .write(true)
         .open(cache.with_extension("lock"))?;
     lock.lock()?;
+    recover_coreml_cache(&cache)?;
     let reused = cache.join("ready").is_file();
     if !reused {
         reset_coreml_cache(&cache)?;
@@ -246,16 +247,63 @@ pub(crate) fn fixed_coreml(
         Ok(session) => session,
         Err(error) if reused => {
             tracing::warn!(%error, "cached CoreML package failed to load; rebuilding once");
-            reset_coreml_cache(&cache)?;
-            load()?
+            rebuild_coreml_cache(&cache, load)?
         }
         Err(error) => return Err(error),
     };
     // A crash before every partition loads leaves no marker. Its files must
     // be rebuilt under the same lock rather than mistaken for a valid cache.
-    std::fs::File::create(cache.join("ready"))?.sync_all()?;
+    publish_coreml_cache(&cache)?;
     report_model(&session, &path);
     Ok((session, path))
+}
+
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+fn recover_coreml_cache(cache: &Path) -> Result<()> {
+    let previous = cache.with_extension("previous");
+    if previous.exists() {
+        if cache.join("ready").is_file() {
+            std::fs::remove_dir_all(previous)?;
+        } else {
+            if cache.exists() {
+                std::fs::remove_dir_all(cache)?;
+            }
+            std::fs::rename(previous, cache)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+fn publish_coreml_cache(cache: &Path) -> Result<()> {
+    let partial = cache.join("ready.partial");
+    std::fs::File::create(&partial)?.sync_all()?;
+    std::fs::rename(partial, cache.join("ready"))?;
+    Ok(())
+}
+
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+fn rebuild_coreml_cache<T>(cache: &Path, load: impl FnOnce() -> Result<T>) -> Result<T> {
+    let previous = cache.with_extension("previous");
+    std::fs::rename(cache, &previous)?;
+    std::fs::create_dir_all(cache)?;
+    match load().and_then(|model| {
+        publish_coreml_cache(cache)?;
+        Ok(model)
+    }) {
+        Ok(model) => {
+            // Publication succeeded. Failed retirement can be retried on the
+            // next load; it must not discard the valid replacement.
+            if let Err(error) = std::fs::remove_dir_all(previous) {
+                tracing::warn!(%error, "could not retire previous CoreML cache");
+            }
+            Ok(model)
+        }
+        Err(error) => {
+            recover_coreml_cache(cache)?;
+            Err(error)
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -416,6 +464,34 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn failed_cache_retry_preserves_the_published_cache() {
+        let temporary = tempfile::tempdir().unwrap();
+        let cache = temporary.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("ready"), b"published").unwrap();
+        let result: Result<()> = rebuild_coreml_cache(&cache, || {
+            std::fs::write(cache.join("partial"), b"failed replacement")?;
+            Err(IndexError::Engine("transient provider failure".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(cache.join("ready")).unwrap(), b"published");
+        assert!(!cache.join("partial").exists());
+        assert!(!cache.with_extension("previous").exists());
+        std::fs::rename(&cache, cache.with_extension("previous")).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("partial"), b"interrupted retry").unwrap();
+        recover_coreml_cache(&cache).unwrap();
+        assert_eq!(std::fs::read(cache.join("ready")).unwrap(), b"published");
+        rebuild_coreml_cache(&cache, || {
+            std::fs::write(cache.join("replacement"), b"loaded")?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!cache.with_extension("previous").exists());
+        assert_eq!(std::fs::read(cache.join("replacement")).unwrap(), b"loaded");
+    }
     use super::*;
 
     #[test]
