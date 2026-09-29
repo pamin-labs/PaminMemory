@@ -16,6 +16,8 @@ pamin-core = { workspace = true }
 pamin-engine = { workspace = true }
 pamin-index = { workspace = true }
 pamin-store = { workspace = true }
+# Supply target-native links metadata to build.rs, including cross compilation.
+zvec-rust-sys = { version = "0.7.2", features = ["bundled"] }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
