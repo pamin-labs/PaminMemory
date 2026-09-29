@@ -700,9 +700,7 @@ fn same_on_a_probe(expected: &Path, candidate: &Path) -> std::result::Result<(),
 
     let outputs = |path: &Path| -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
         let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-        let mut session =
-            crate::inference::session(vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
-                .map_err(|error| failed(&error))?;
+        let mut session = crate::inference::probe(path).map_err(|error| failed(&error))?;
         let mut feed = Vec::new();
         for input in session.inputs() {
             let values = match input.name() {
