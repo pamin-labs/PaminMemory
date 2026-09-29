@@ -65,3 +65,4 @@ ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }

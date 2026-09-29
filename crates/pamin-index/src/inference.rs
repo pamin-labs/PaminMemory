@@ -49,18 +49,26 @@ pub(crate) fn session(
 ) -> Result<Session> {
     let mut builder = options(providers)?;
     let model = model()?;
-    commit(&mut builder, &model)
+    let session = commit(&mut builder, &model)?;
+    report_graph(&model);
+    Ok(session)
 }
 
-/// Every scoring session records the path it actually loaded, after success.
+/// Preparation probes use the product options, but are not scoring sessions.
+pub(crate) fn probe(model: &Path) -> Result<Session> {
+    commit(&mut options(vec![cpu()])?, model)
+}
+
 fn commit(builder: &mut SessionBuilder, model: &Path) -> Result<Session> {
     let session = builder
         .commit_from_file(model)
         .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))?;
-    // Keys vary with the source's metadata, runtime and CPU. A benchmark must
-    // hash this selection rather than an unused copy from its archived host.
-    tracing::info!(model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"), "loaded ONNX graph");
     Ok(session)
+}
+
+/// Record only models handed to a caller, not temporary preparation probes.
+fn report_graph(model: &Path) {
+    tracing::info!(model_graph = %serde_json::to_string(&model.to_string_lossy()).expect("serialize a model path"), "loaded ONNX graph");
 }
 
 /// What [`session`] asks of ONNX Runtime before it has a model to load.
@@ -163,6 +171,7 @@ pub(crate) fn fixed_coreml(
         .with_dimension_override("sequence_length", tokens as i64)
         .map_err(|e| error(&e))?;
     let session = builder.commit_from_file(&path).map_err(|e| error(&e))?;
+    report_graph(&path);
     Ok((session, path))
 }
 
@@ -309,6 +318,50 @@ pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_probes_do_not_claim_to_be_product_model_loads() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture(Arc::default());
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let temporary = tempfile::tempdir().unwrap();
+        let model = temporary.path().join("attention.onnx.partial");
+        std::fs::write(
+            &model,
+            include_bytes!("../tests/fixtures/coreml-cache-2.onnx"),
+        )
+        .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            let _probe = probe(&model).unwrap();
+            assert!(
+                capture.0.lock().unwrap().is_empty(),
+                "probe logged a product load"
+            );
+            let _product = session(vec![cpu()], || Ok(model.clone())).unwrap();
+        });
+        let bytes = capture.0.lock().unwrap();
+        let log = std::str::from_utf8(&bytes).unwrap();
+        assert_eq!(log.matches("loaded ONNX graph").count(), 1);
+        assert!(log.contains("attention.onnx.partial"));
+    }
 
     #[test]
     fn unavailable_accelerators_end_with_one_cpu_attempt() {
