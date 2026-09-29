@@ -54,6 +54,12 @@ ort = { workspace = true, features = ["cuda", "copy-dylibs"] }
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 ort = { workspace = true, features = ["coreml"] }
 
+# sha2 0.10 enables its ARM SHA instructions only with this feature. Its
+# backend checks CPU support and retains the software fallback. Keep the
+# assembly build off MSVC; x86 already detects SHA instructions by default.
+[target.'cfg(all(unix, target_arch = "aarch64"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 

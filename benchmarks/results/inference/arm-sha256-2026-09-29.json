@@ -1,0 +1,163 @@
+{
+  "scope": "one 64MiB deterministic fixture, SHA256 kernel only after file read; three rotated rounds on shared Apple Silicon; not model-load or search speed",
+  "fixture": {
+    "bytes": 67108864,
+    "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6",
+    "scope": "hash kernel only; not model load or query latency"
+  },
+  "rows": [
+    {
+      "profile": "debug",
+      "round": 0,
+      "arm": "software",
+      "digest_seconds": 5.802901917,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "debug",
+      "round": 0,
+      "arm": "hardware",
+      "digest_seconds": 0.8231685,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "debug",
+      "round": 1,
+      "arm": "hardware",
+      "digest_seconds": 0.78156675,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "debug",
+      "round": 1,
+      "arm": "software",
+      "digest_seconds": 5.738871667,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "debug",
+      "round": 2,
+      "arm": "software",
+      "digest_seconds": 6.030588166,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "debug",
+      "round": 2,
+      "arm": "hardware",
+      "digest_seconds": 0.792079875,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "release",
+      "round": 0,
+      "arm": "software",
+      "digest_seconds": 0.22769225,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "release",
+      "round": 0,
+      "arm": "hardware",
+      "digest_seconds": 0.044743666,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "release",
+      "round": 1,
+      "arm": "hardware",
+      "digest_seconds": 0.045276291,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "release",
+      "round": 1,
+      "arm": "software",
+      "digest_seconds": 0.244810667,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "release",
+      "round": 2,
+      "arm": "software",
+      "digest_seconds": 0.227770417,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    },
+    {
+      "profile": "release",
+      "round": 2,
+      "arm": "hardware",
+      "digest_seconds": 0.046531,
+      "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6"
+    }
+  ],
+  "profiles": {
+    "debug": {
+      "median_seconds": {
+        "software": 5.802901917,
+        "hardware": 0.792079875
+      },
+      "hardware_over_software": 0.13649720197398954,
+      "speedup": 7.32615750021423
+    },
+    "release": {
+      "median_seconds": {
+        "software": 0.227770417,
+        "hardware": 0.045276291
+      },
+      "hardware_over_software": 0.19878038419712776,
+      "speedup": 5.030677468699898
+    }
+  },
+  "builds": [
+    {
+      "profile": "debug",
+      "arm": "software",
+      "binary_sha256": "3f21dea715907646570269ad961456bac648ce03265bddb096f79f5206a6b4bc"
+    },
+    {
+      "profile": "debug",
+      "arm": "hardware",
+      "binary_sha256": "3ca34035157c28a09ce0496fc92698cd227d4ee038b95741ba4a8e0c9d20657a"
+    },
+    {
+      "profile": "release",
+      "arm": "software",
+      "binary_sha256": "a4e0159c00688ae1a65817451ae2b8a1fe57020a401cfea8ed62fd3f238e4986"
+    },
+    {
+      "profile": "release",
+      "arm": "hardware",
+      "binary_sha256": "e8903bd8a18431eb557027954e485c3615b6aa576d29ba2408755dc7803894da"
+    }
+  ],
+  "premises": {
+    "same_sha2_version": "0.10.9",
+    "feature_difference": "sha2/asm on ARM64 Unix",
+    "standard_vectors": "empty, abc, one million a; both implementations passed",
+    "native_windows": "not changed; target feature tree excludes asm",
+    "native_linux_arm": "not run; target feature tree enables asm",
+    "whole_query_latency": "not measured; no retrieval gain claimed",
+    "memory_and_disk": "not measured for kernel experiment"
+  },
+  "reproduction": {
+    "cargo_toml": "[package]\nname = \"pamin-sha-trial\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nsha2 = \"=0.10.9\"\n[features]\nfast = [\"sha2/asm\"]\n",
+    "main_rs": "use sha2::{Digest, Sha256};\nuse std::{fs::File, io::Read, time::Instant};\n\nfn main() -> Result<(), Box<dyn std::error::Error>> {\n    assert_eq!(format!(\"{:x}\", Sha256::digest(b\"\")),\n               \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\");\n    assert_eq!(format!(\"{:x}\", Sha256::digest(b\"abc\")),\n               \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\");\n    assert_eq!(format!(\"{:x}\", Sha256::digest(vec![b'a'; 1_000_000])),\n               \"cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0\");\n    let path = std::env::args().nth(1).expect(\"fixture file\");\n    let mut bytes = Vec::new();\n    File::open(path)?.read_to_end(&mut bytes)?;\n    assert_eq!(bytes.len(), 64 * 1024 * 1024);\n    let start = Instant::now();\n    let digest = Sha256::digest(&bytes);\n    println!(\"{} {} {} {:x}\", cfg!(feature = \"fast\"), bytes.len(),\n             start.elapsed().as_secs_f64(), digest);\n    #[cfg(target_arch = \"aarch64\")]\n    assert!(std::arch::is_aarch64_feature_detected!(\"sha2\"), \"this arm must actually support ARM SHA\");\n    Ok(())\n}\n",
+    "fixture": "bytes(range(256)) repeated 262144 times (64MiB)",
+    "build": "cargo build; cargo build --features fast; repeat both with --release and freeze each executable before running",
+    "run_orders": [
+      [
+        "software",
+        "hardware"
+      ],
+      [
+        "hardware",
+        "software"
+      ],
+      [
+        "software",
+        "hardware"
+      ]
+    ]
+  }
+}
