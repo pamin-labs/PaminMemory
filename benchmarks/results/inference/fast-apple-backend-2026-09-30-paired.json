@@ -1,0 +1,65 @@
+{
+  "complete": true,
+  "family_scope": "four predefined group metrics; shared sign flips across paragraphs preserve correlated queries/translations",
+  "latency_after": {
+    "p50": 0.330034917,
+    "p95": 0.769941708
+  },
+  "latency_before": {
+    "p50": 1.629954292,
+    "p95": 2.833080417
+  },
+  "latency_limit": "single sequential shared-host passes, not repeated rotated speed acceptance",
+  "metrics": [
+    {
+      "after": 0.6571724434616713,
+      "before": 0.6560956665366225,
+      "family_adjusted_p": 0.15578442155784422,
+      "group": "cross_lingual",
+      "mean_difference": 0.0010767769250489866,
+      "metric": "ndcg",
+      "paragraph_cluster_sign_flip_p": 0.0827917208279172,
+      "query_losses": 137,
+      "query_ties": 886,
+      "query_wins": 167
+    },
+    {
+      "after": 0.9031932773109234,
+      "before": 0.9031932773109234,
+      "family_adjusted_p": 1.0,
+      "group": "cross_lingual",
+      "mean_difference": 0.0,
+      "metric": "recall",
+      "paragraph_cluster_sign_flip_p": 1.0,
+      "query_losses": 0,
+      "query_ties": 1190,
+      "query_wins": 0
+    },
+    {
+      "after": 0.8415331035847047,
+      "before": 0.8414001016770424,
+      "family_adjusted_p": 0.960903909609039,
+      "group": "same_language",
+      "mean_difference": 0.00013300190766202735,
+      "metric": "ndcg",
+      "paragraph_cluster_sign_flip_p": 0.7983201679832017,
+      "query_losses": 7,
+      "query_ties": 1178,
+      "query_wins": 5
+    },
+    {
+      "after": 0.9647058823529412,
+      "before": 0.9647058823529412,
+      "family_adjusted_p": 1.0,
+      "group": "same_language",
+      "mean_difference": 0.0,
+      "metric": "recall",
+      "paragraph_cluster_sign_flip_p": 1.0,
+      "query_losses": 0,
+      "query_ties": 1190,
+      "query_wins": 0
+    }
+  ],
+  "paragraph_clusters": 240,
+  "queries": 1190
+}
