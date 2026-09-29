@@ -26,7 +26,7 @@ pub(crate) struct Encoder {
     tokenizer: Tokenizer,
     session: Session,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fixed: Option<(PathBuf, Option<Session>, Option<Session>)>,
+    fixed: Option<(PathBuf, Option<Session>)>,
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
@@ -77,7 +77,7 @@ impl Encoder {
         Ok(Self {
             tokenizer,
             session,
-            fixed: Some((path, None, None)),
+            fixed: Some((path, None)),
             token_type_ids: false,
         })
     }
@@ -85,7 +85,7 @@ impl Encoder {
     pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.fixed.is_some() {
-            // Native buckets execute at most 512 tokens; larger sweep settings
+            // Both native buckets execute 512 tokens; larger sweep settings
             // cannot enlarge a compiled session's physical shape.
             return (budget.min(512), most.min(4));
         }
@@ -95,7 +95,7 @@ impl Encoder {
     pub(crate) fn batching_length(&self, length: usize) -> usize {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.fixed.is_some() {
-            return native_shape(length).1;
+            return if length <= 128 { 128 } else { 256 };
         }
         length
     }
@@ -103,7 +103,7 @@ impl Encoder {
     pub(crate) fn execution_shape(&self, rows: usize, length: usize) -> (usize, usize) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.fixed.is_some() {
-            return native_shape(length);
+            return if length <= 128 { (4, 128) } else { (2, 256) };
         }
         (rows, length)
     }
@@ -201,14 +201,12 @@ impl Encoder {
             ));
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let session = if let Some((path, short, long)) = &mut self.fixed {
-            if tokens != 128 {
-                let bucket = if tokens == 64 { short } else { long };
-                if bucket.is_none() {
-                    *bucket =
-                        Some(crate::inference::fixed_coreml(|| Ok(path.clone()), rows, tokens)?.0);
+        let session = if let Some((path, long)) = &mut self.fixed {
+            if tokens == 256 {
+                if long.is_none() {
+                    *long = Some(crate::inference::fixed_coreml(|| Ok(path.clone()), 2, 256)?.0);
                 }
-                bucket.as_mut().expect("loaded native bucket")
+                long.as_mut().expect("loaded long bucket")
             } else {
                 &mut self.session
             }
@@ -239,17 +237,6 @@ impl Encoder {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn native_shape(length: usize) -> (usize, usize) {
-    if length <= 64 {
-        (4, 64)
-    } else if length <= 128 {
-        (4, 128)
-    } else {
-        (2, 256)
-    }
-}
-
 fn failed(error: &dyn std::fmt::Display) -> IndexError {
     IndexError::Engine(format!("running the model: {error}"))
 }
@@ -266,23 +253,6 @@ fn pad(tokenizer: &Tokenizer, batch: &mut [Encoding]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[test]
-    fn native_buckets_keep_short_inputs_short_without_truncating_longer_inputs() {
-        for (length, shape) in [
-            (1, (4, 64)),
-            (64, (4, 64)),
-            (65, (4, 128)),
-            (128, (4, 128)),
-            (129, (2, 256)),
-            (256, (2, 256)),
-        ] {
-            assert_eq!(native_shape(length), shape);
-            assert!(length <= shape.1);
-            assert!(shape.0 * shape.1 <= 512);
-        }
-    }
 
     /// Tokenizing each pair alone and padding a group of them hands the model
     /// what tokenizing that group together does.
