@@ -3098,3 +3098,20 @@ latency or proof on another corpus. It supports continuing the latency-first
 backend experiment with its accuracy parity; complete product and model/e2e
 acceptance stays open. Future optimization must reduce residency/compilation
 without silently changing the input or claiming this ~14% as whole-search gain.
+
+
+### 2026-09-29: stream content validation on a native preparation cache hit
+
+A prepared CoreML reranker cache hit still read the entire 1,136,209,678-byte
+source into a retained array just to compute its content key. Reuse the existing
+streaming SHA-256 helper instead. Preserve full-byte validation, cache identity,
+and inference arithmetic. On a miss, rewrite a private copied snapshot only
+after verifying that its digest matches the key; discard a failed partial copy.
+
+Three rotated independent-process rounds give median maximum RSS
+1,155,006,464 → 18,825,216 bytes (-98.4%) and prepare time
+1.165626 → 1.083086 seconds (-7.1%, directional on a shared machine).
+All six prepared graph hashes and byte counts match. This reduces preparation
+peak allocation; it does not reduce the retained 64/128/256 sessions or claim
+search speed/accuracy gains. First-write/cache-reuse verification uses the full
+cached BGE graph. [Conditions and all round values](../../benchmarks/results/inference/coreml-stream-cache-2026-09-29.md).
