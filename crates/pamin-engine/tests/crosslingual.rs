@@ -648,6 +648,40 @@ fn content_passage_diagnostic_keeps_its_retained_project_identity() {
     );
 }
 
+fn requested_pinned_home(home: Option<String>, explicitly_selected: bool) -> Option<String> {
+    assert!(
+        home.is_some() || !explicitly_selected,
+        "set PAMIN_EVAL_HOME when explicitly selecting a pinned XQuAD benchmark"
+    );
+    home
+}
+
+fn pinned_benchmark_home(test: &str) -> Option<String> {
+    let selected = std::env::args()
+        .skip(1)
+        .any(|argument| argument.ends_with(test));
+    let home = requested_pinned_home(std::env::var("PAMIN_EVAL_HOME").ok(), selected);
+    if home.is_none() {
+        eprintln!("skipping {test}: set PAMIN_EVAL_HOME and use its documented filtered command");
+    }
+    home
+}
+
+#[test]
+fn unconfigured_workspace_gate_does_not_start_a_pinned_benchmark() {
+    assert_eq!(requested_pinned_home(None, false), None);
+    assert_eq!(
+        requested_pinned_home(Some("evaluation".into()), false),
+        Some("evaluation".into())
+    );
+}
+
+#[test]
+#[should_panic(expected = "set PAMIN_EVAL_HOME")]
+fn explicitly_selected_pinned_benchmark_requires_setup() {
+    requested_pinned_home(None, true);
+}
+
 fn report_loaded_graphs() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("pamin_index=info")
@@ -662,9 +696,11 @@ fn report_loaded_graphs() {
 #[test]
 #[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_DEVICE=cpu"]
 fn pinned_model_loads_report_actual_graph_paths() {
+    let Some(home) = pinned_benchmark_home("pinned_model_loads_report_actual_graph_paths") else {
+        return;
+    };
     assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
     assert!(std::env::var_os("HF_HOME").is_none());
-    let home = std::env::var("PAMIN_EVAL_HOME").expect("persistent model cache");
     let models = Path::new(&home).join("models");
     pinned_embedding_id(&models);
     pinned_model_id(&models, "reranker");
@@ -679,7 +715,9 @@ fn pinned_model_loads_report_actual_graph_paths() {
 #[test]
 #[ignore = "downloads the pinned XQuAD-R model artifacts into a persistent cache"]
 fn prepare_pinned_xquad_models() {
-    let home = std::env::var("PAMIN_EVAL_HOME").expect("set PAMIN_EVAL_HOME for the model cache");
+    let Some(home) = pinned_benchmark_home("prepare_pinned_xquad_models") else {
+        return;
+    };
     let models = Path::new(&home).join("models");
     assert!(
         std::env::var_os("HF_HOME").is_none(),
@@ -1291,6 +1329,9 @@ const RERANK_IS_WORTH: f64 = 0.040;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads a dataset and model weights, and indexes thirteen thousand sentences"]
 async fn search_reaches_across_languages() {
+    if pinned_benchmark_home("search_reaches_across_languages").is_none() {
+        return;
+    }
     assert!(
         std::env::var_os("HF_HOME").is_none(),
         "unset HF_HOME for this pinned benchmark"
