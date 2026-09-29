@@ -205,6 +205,14 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
         .map_err(|error| unready(&error))
 }
 
+/// Refuse an unavailable CoreML provider before fetching its export. The
+/// cache-aware session registers again once the content-derived path is known.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn coreml_source(model: impl FnOnce() -> Result<PathBuf>) -> Result<PathBuf> {
+    drop(options(vec![coreml().build().error_on_failure()])?);
+    model()
+}
+
 /// Static shapes prevent CoreML from silently rejecting unbounded ANE regions.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn fixed_coreml(
@@ -212,7 +220,7 @@ pub(crate) fn fixed_coreml(
     rows: usize,
     tokens: usize,
 ) -> Result<(Session, PathBuf)> {
-    let path = model()?;
+    let path = coreml_source(model)?;
     let cache = coreml_cache(&path, rows, tokens)?;
     std::fs::create_dir_all(cache.parent().expect("cache has a parent"))?;
     // Keep the lock outside the directory being rebuilt. Unlinking a held

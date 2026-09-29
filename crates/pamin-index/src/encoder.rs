@@ -72,7 +72,7 @@ impl Encoder {
                 &"static CoreML reranker currently requires at most 256 tokens",
             ));
         }
-        let path = model()?;
+        let path = crate::inference::coreml_source(model)?;
         // Validate every independently compiled shape inside `preferred`'s
         // fallback window. A lazy shape failure otherwise breaks later searches
         // after the model has already been accepted as CoreML.
