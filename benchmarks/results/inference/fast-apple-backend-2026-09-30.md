@@ -1,10 +1,12 @@
 # Apple Fast reranker: CPU INT8 versus CoreML NeuralNetwork
 
-At public code commit `bd523771551874fb47f38c70c2cacb6b01bc7b06`,
+At experimental code commit `bd523771551874fb47f38c70c2cacb6b01bc7b06`,
 frozen release binaries called `Engine::search_reranked` on the same complete
 13,014-document, revision-bound XQuAD-R memory index. Both used the default
 `accuracy` embedding profile, memory vector index, Fast rerank head 30,
-return limit 60, and the same 1,190 query order. The host was shared Apple
+return limit 60, and the same 1,190 query order. This NeuralNetwork control
+commit is archived for reproduction but is not a required intermediate merge.
+The host was shared Apple
 Mac16,12 (10 logical CPUs, 32 GiB RAM, macOS 26.6.2). The model was the pinned
 [`mmarco-mMiniLMv2-L12-H384-v1`](../retrieval/xquad-r-fast-model-artifacts.json):
 ARM INT8 on ONNX Runtime's optimized CPU EP against FP32 on CoreML's legacy
@@ -21,7 +23,7 @@ The disk-volume swing has no established CoreML cause; the 99 temporary
 directories owned by the stopped process allocated about 389 MB in total and
 were all born at startup.
 
-| Measure | Before: Fast CoreML FP32 | After: Fast CPU INT8 | Change |
+| Measure | Legacy CoreML NN FP32 control | Selected Fast CPU INT8 | Change |
 | --- | ---: | ---: | ---: |
 | Cross-language nDCG@10 | 0.656096 | 0.657172 | +0.001077 (+0.16%) |
 | Same-language nDCG@10 | 0.841400 | 0.841533 | +0.000133 (+0.02%) |

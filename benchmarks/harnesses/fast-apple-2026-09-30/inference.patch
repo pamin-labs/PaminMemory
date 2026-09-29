@@ -1,0 +1,20 @@
+--- crates/pamin-index/src/inference.rs
++++ crates/pamin-index/src/inference.rs
+@@ -427,3 +427,2 @@
+-/// Use the same modern format for every CoreML model. The legacy NeuralNetwork
+-/// format cannot accept the standard normalization operators used by modern
+-/// transformer graphs. ALL permits the framework's CPU/GPU/ANE combination.
++/// Static Accurate buckets need MLProgram for their normalization operators.
++/// ALL permits the framework's CPU/GPU/ANE combination.
+@@ -464 +463,10 @@
+-        (Device::CoreMl, coreml().build().error_on_failure()),
++        // General CoreML currently serves the Fast reranker. Its dynamic
++        // MLProgram search was slower than the legacy NeuralNetwork path on
++        // the same model; Accurate builds its static MLProgram separately.
++        (
++            Device::CoreMl,
++            ort::ep::CoreML::default()
++                .with_compute_units(ort::ep::coreml::ComputeUnits::All)
++                .build()
++                .error_on_failure(),
++        ),
