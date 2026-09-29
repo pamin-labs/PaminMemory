@@ -306,7 +306,7 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
         }
         let record = root.join(record_name(download));
         let partial = record.with_extension("source.partial");
-        std::fs::write(&partial, identity.record_with_digest(&source)?)?;
+        std::fs::write(&partial, identity.record_reusing_digest(&source, &record)?)?;
         std::fs::rename(&partial, &record)?;
         Ok(download.remove()?.then_some(identity.length))
     })();
@@ -874,6 +874,24 @@ impl Source {
         ))
     }
 
+    /// Shared downloads remain on disk. Reuse byte provenance only while
+    /// the complete source identity still matches and the digest is valid.
+    fn record_reusing_digest(&self, source: &Path, saved: &Path) -> Result<String> {
+        if let Ok(record) = std::fs::read_to_string(saved)
+            && Self::parse(&record).as_ref() == Some(self)
+            && record
+                .lines()
+                .nth(3)
+                .and_then(|line| line.strip_prefix("sha256 "))
+                .is_some_and(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        {
+            return Ok(record);
+        }
+        self.record_with_digest(source)
+    }
+
     fn parse(record: &str) -> Option<Self> {
         let mut lines = record.lines();
         let source = Self {
@@ -1268,6 +1286,30 @@ mod tests {
         );
         std::fs::remove_file(path).unwrap();
         assert_eq!(Source::parse(&record), Some(source));
+    }
+
+    #[test]
+    fn a_matching_digest_record_never_reopens_the_download() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.onnx");
+        let saved = temporary.path().join("source.record");
+        std::fs::write(&source, b"source bytes").unwrap();
+        let identity = Source::of(&source).unwrap();
+        let recorded = identity.record_with_digest(&source).unwrap();
+        std::fs::write(&saved, &recorded).unwrap();
+        let absent = temporary.path().join("must-not-be-opened");
+        assert_eq!(
+            identity.record_reusing_digest(&absent, &saved).unwrap(),
+            recorded
+        );
+        std::fs::write(&saved, identity.record()).unwrap();
+        assert!(identity.record_reusing_digest(&absent, &saved).is_err());
+        std::fs::write(&source, b"changed source bytes").unwrap();
+        let changed = Source::of(&source).unwrap();
+        std::fs::write(&saved, &recorded).unwrap();
+        assert!(changed.record_reusing_digest(&absent, &saved).is_err());
+        std::fs::write(&saved, format!("{}sha256 invalid\n", identity.record())).unwrap();
+        assert!(identity.record_reusing_digest(&absent, &saved).is_err());
     }
 
     /// The same source keys the same way twice, and a different one does not
