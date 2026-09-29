@@ -25,8 +25,7 @@ pub(crate) struct Rewritten {
 /// copy of the original GPU export, as required by ONNX external-data validation.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
-    let bytes = std::fs::read(source)?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let digest = crate::prepared::source_digest(source)?;
     let root = cache.join(RULE);
     std::fs::create_dir_all(&root)?;
     let destination = root.join(&digest);
@@ -41,17 +40,27 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
     if model.is_file() && destination.join("source.onnx").is_file() {
         return Ok(model);
     }
-    let rewritten = rewrite(&bytes)
-        .map_err(|error| IndexError::Engine(format!("preparing typed reranker: {error}")))?;
     let partial = root.join(format!("{digest}.partial"));
     if partial.exists() {
         std::fs::remove_dir_all(&partial)?;
     }
     std::fs::create_dir(&partial)?;
-    let original = std::fs::canonicalize(source)?;
-    // ONNX rejects symlinks and multiply-linked external data files.
-    std::fs::copy(&original, partial.join("source.onnx"))?;
-    std::fs::write(partial.join("model.onnx"), &rewritten.model)?;
+    // Read and rewrite the private copy, so its bytes and the graph's
+    // external offsets agree even if the input changes during preparation.
+    let written = (|| -> Result<Rewritten> {
+        let bytes = snapshot(source, &partial.join("source.onnx"), &digest)?;
+        let rewritten = rewrite(&bytes)
+            .map_err(|error| IndexError::Engine(format!("preparing typed reranker: {error}")))?;
+        std::fs::write(partial.join("model.onnx"), &rewritten.model)?;
+        Ok(rewritten)
+    })();
+    let rewritten = match written {
+        Ok(rewritten) => rewritten,
+        Err(error) => {
+            std::fs::remove_dir_all(&partial)?;
+            return Err(error);
+        }
+    };
     if destination.exists() {
         std::fs::remove_dir_all(&destination)?;
     }
@@ -63,6 +72,19 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
         "prepared typed accelerator reranker"
     );
     Ok(model)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn snapshot(source: &Path, into: &Path, expected: &str) -> Result<Vec<u8>> {
+    // ONNX rejects symlinks and multiply-linked external data files.
+    std::fs::copy(std::fs::canonicalize(source)?, into)?;
+    let bytes = std::fs::read(into)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != expected {
+        return Err(IndexError::Engine(
+            "source changed while preparing typed reranker".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn rewrite(model: &[u8]) -> std::result::Result<Rewritten, String> {
@@ -554,6 +576,44 @@ fn external_initializer(raw: &[u8], model: &[u8]) -> std::result::Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_changed_source_is_not_published_under_the_previous_digest() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let copy = temporary.path().join("copy");
+        std::fs::write(&source, b"before").unwrap();
+        let expected = crate::prepared::source_digest(&source).unwrap();
+        std::fs::write(&source, b"after").unwrap();
+        assert!(snapshot(&source, &copy, &expected).is_err());
+        let current = crate::prepared::source_digest(&source).unwrap();
+        assert_eq!(snapshot(&source, &copy, &current).unwrap(), b"after");
+        assert!(
+            !std::fs::symlink_metadata(copy)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_rejected_graph_leaves_no_partial_weight_copy() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("unsupported.onnx");
+        std::fs::write(&source, b"not an ONNX graph").unwrap();
+        let cache = temporary.path().join("cache");
+        assert!(prepare(&source, &cache).is_err());
+        let entries = std::fs::read_dir(cache.join(RULE)).unwrap();
+        assert!(entries.into_iter().all(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_none_or(|ext| ext != "partial")
+        }));
+    }
 
     #[test]
     #[ignore = "PAMIN_NATIVE_MODEL_SOURCE supplies a cached FP16 BGE export"]
