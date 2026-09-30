@@ -21,6 +21,8 @@ raw=[json.loads(x) for x in (root/'raw.jsonl').read_text().splitlines()]
 expected_commits={'predecessor':'f57f9c218d03d88666b3cc89fae9ae7e9eed2e50','candidate':'11493c1388f74b087db23136a94e4b8feed1efe3','main':'315c10242ddf7a1cec3bccbf550a942320e09557'}
 assert set(r['arm'] for r in raw)==set(expected_commits)
 assert len([r for r in raw if r['phase']=='process_total'])==9
+assert {(r['arm'],r['repetition']) for r in raw}=={(arm,rep) for arm in expected_commits for rep in range(3)}, 'unexpected raw repetition'
+expected_queries=[j*(18000-2)//25+1 for j in range(1,25)]
 warm={}
 for arm,commit in expected_commits.items():
     for rep in range(3):
@@ -29,6 +31,7 @@ for arm,commit in expected_commits.items():
         phases={phase:[r for r in rows if r['phase']==phase] for phase in {r['phase'] for r in rows}}
         for phase in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']:assert len(phases[phase])==1,(arm,rep,phase)
         assert len(phases['search_warmup'])==2 and len(phases['search_warm'])==24
+        assert [r['extra']['query_document'] for r in phases['search_warm']]==expected_queries, 'query workload differs from fixed order'
         assert phases['open'][0]['extra']['documents']==18000
         maintenance=phases['maintenance'][0]
         assert maintenance['extra']['documents']==18001
@@ -44,6 +47,10 @@ for arm,commit in expected_commits.items():
         for row in rows:
             if row['phase']!='process_total':
                 assert row['index']=='disk'
+                assert row['clock_ticks_per_second']==100
+                for kind in ['user','system']:
+                    expected=None if row['process_before'] is None or row['process_after'] is None else (row['process_after'][kind+'_ticks']-row['process_before'][kind+'_ticks'])/row['clock_ticks_per_second']
+                    assert row['cpu_'+kind+'_seconds']==expected, 'derived CPU field disagrees with retained tick delta'
                 assert set(row['actual_providers'])=={'embedding','reranker'}
                 for provider in row['actual_providers'].values():
                     assert set(provider['assigned_nodes'])=={'CPUExecutionProvider'} and provider['assigned_nodes']['CPUExecutionProvider']>0
@@ -90,6 +97,11 @@ for key, entry in libraries['libraries'].items():
     assert entry==provenance[key], 'post-trial runtime/native identity mismatch'
 post=json.loads((root/'post-trial-assets.json').read_text())
 assert post['all_recorded_source_graphs_and_prepared_external_weights_unchanged']
+pre_assets=provenance['source_assets']+provenance['prepared_graphs_and_external_weights']+provenance['prepared_source_metadata']
+def inventory(entries):
+    assert len(entries)==len({entry['path'] for entry in entries}), 'duplicate asset path'
+    return {entry['path']:(entry['bytes'],entry['sha256']) for entry in entries}
+assert inventory(post['assets'])==inventory(pre_assets), 'post-trial inventory differs from pretrial provenance'
 assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
 assert any(x['path'].endswith('.onnx.data') for x in post['assets'])
 assert calculator.summarize(raw)==json.loads((root/'summary.json').read_text())
@@ -104,4 +116,38 @@ for arm in expected_commits:
 for arm in ['predecessor','main']:
     a=episode['arms'][arm]['median_seconds'];b=episode['arms']['candidate']['median_seconds']
     assert episode['comparisons'][arm]=={'before':a,'after':b,'absolute_difference':b-a,'percentage_change':100*(b-a)/a}
+labels=[
+('Known-topic recall@10 (synthetic)','known_topic_recall_at_10',1,''),
+('Known-topic MRR@10 (synthetic)','known_topic_mrr_at_10',1,''),
+('Optimize jobs per first upkeep tick','optimize_jobs',1,''),
+('Full-process elapsed median, includes diagnostics','episode',1,' s'),
+('Engine open wall median','open_ms',1,' ms'),
+('Write + urgent drain wall median','write_ms',1,' ms'),
+('Durability flush wall median','durability_flush_ms',1,' ms'),
+('Maintenance wall median','maintenance_ms',1,' ms'),
+('Maintenance process CPU median, 10ms tick counters','maintenance_cpu_s',1,' s'),
+('First-search wall median, model load included','first_search_ms',1,' ms'),
+('Warm search p50, median across processes','warm_p50_ms',1,' ms'),
+('Warm search p95, median across processes','warm_p95_ms',1,' ms'),
+('Peak process RSS','peak_process_rss_bytes',2**20,' MiB'),
+('RSS after maintenance','maintenance_rss_bytes',2**20,' MiB'),
+('Open index apparent bytes','index_apparent_bytes',2**20,' MiB'),
+('Open index allocated bytes','index_allocated_bytes',2**20,' MiB'),
+('Closed index apparent bytes','closed_index_apparent_bytes',2**20,' MiB'),
+('Closed index allocated bytes','closed_index_allocated_bytes',2**20,' MiB'),
+('Vector graph completeness, hybrid visibility checked','vector_completeness',1,'')]
+summary=json.loads((root/'summary.json').read_text())
+displayed=[line for line in (root/'README.md').read_text().splitlines() if line.startswith('|')]
+expected=[]
+for reference in ['predecessor','main']:
+    expected+=['| Metric | Before | After | Absolute difference | Percentage change |','| --- | ---: | ---: | ---: | ---: |']
+    for label,key,divisor,unit in labels:
+        if key=='episode':
+            value=episode['comparisons'][reference]
+            before,after,delta,percent=[value[k] for k in ['before','after','absolute_difference','percentage_change']]
+        else:
+            value=summary['comparisons'][reference]['metric_differences'][key]
+            before,after,delta,percent=[value[k] for k in ['before','after','absolute_delta','percent_delta']]
+        expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | {delta/divisor:+.6f}{unit} | {percent:+.3f}% |')
+assert displayed==expected, 'published README tables disagree with recomputed summaries'
 print('verified DiskANN:9 processes,72/72 paired ordered top10 per reference,work counts,CPU providers,new-write visibility,native profile/schema/digest,external weight identities and recomputed metrics')
