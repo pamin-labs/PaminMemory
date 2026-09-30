@@ -62,6 +62,7 @@ ort = { workspace = true, features = ["coreml"] }
 sha2 = { workspace = true, features = ["asm"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 
 [dev-dependencies]
