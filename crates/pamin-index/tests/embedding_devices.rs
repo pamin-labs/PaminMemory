@@ -7,6 +7,10 @@ use pamin_index::{Device, Embedder, Profile};
 #[ignore = "loads embedding models; PAMIN_TEST_MODEL_CACHE reuses an existing cache"]
 fn accelerated_embeddings_preserve_the_embedding_space() {
     if let Some(output) = std::env::var_os("PAMIN_EMBEDDING_TEST_OUTPUT") {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
         let models = std::path::PathBuf::from(
             std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("the parent supplies a cache"),
         );
