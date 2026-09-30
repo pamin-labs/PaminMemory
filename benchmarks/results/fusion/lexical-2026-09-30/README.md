@@ -1,7 +1,7 @@
 # Current paired lexical-channel sweep evidence
 
 This is a **new** complete run at public code commit
-`0ecfb43852071011aa32e5314a5fbe809485b45f`, not a reconstruction of
+`f97635099e08aa8696aa3b0237424d486a255ecd`, not a reconstruction of
 missing 2026-09-27 per-query matrices. It runs `CHANNELS=1` before reranking
 through the real `Engine::search_fused` trace, then replays the project's
 `Fusion::fuse` over the same candidates. `CHANNELS_OUT` now persists the exact
@@ -31,9 +31,15 @@ shipped 0.7405 (`p=0.2321`); MuSiQue scored 0.6829 versus 0.6814
 (`p=0.3811`). Folds do not choose one stable pair across corpora, so no new
 weight is selected. The historical table and complete printed output remain
 [separate](../lexical-2026-09-27/README.md); their unrecorded matrices cannot
-be recreated from this run. `python3 benchmarks/results/fusion/lexical-2026-09-30/verify.py`
-checks the archived query counts, variant labels, raw vector lengths and
-printed shipped means.
+be recreated from this run. The first 2026-09-30 XQuAD archive omitted an
+empty `lexical_segmented` ranking for one query and had no `graph` standalone
+vector. Its 1,189-query standalone mean of 0.740896 for same-language is now
+0.740274 over all 1,190 queries; cross-language is 0.026661 → 0.026638.
+The shipped fused macro nDCG@10 stays 0.7405, and MuSiQue's paired output is
+byte-identical after the same code fix. Run
+`python3 benchmarks/results/fusion/lexical-2026-09-30/verify.py` to check that
+every channel and variant has one score per query and that the printed shipped
+means agree. The scoring loops preserve query order.
 
 To rerun with prepopulated revision-bound XQuAD-R and cached MuSiQue projects,
 set `PAMIN_EVAL_HOME`, `PAMIN_DEVICE=cpu`, `PAMIN_PROFILE=accuracy`,
@@ -46,7 +52,7 @@ stdout next to its JSON. A run that does not write the expected complete raw
 rows must not be published as a sweep result.
 
 The committed JSON is whitespace-packed for review; parsed content was checked
-equal to the harness's original pretty-printed files. Their original SHA256s
-were `70bb5cf94d1b99f9c2fe47c2963bcdb272177d4dc72dfb1e41916000df74891d`
+equal to the harness's corrected pretty-printed files. Their original SHA256s
+were `26fa6ce967ee90dc5757d52e187ed69c18736d6359f43a78b6dcac185f8974b1`
 (XQuAD-R) and `a18e913fef82afe93a6c686c224578b778c777a524a9813f78a9e3947185b2ad`
 (MuSiQue).

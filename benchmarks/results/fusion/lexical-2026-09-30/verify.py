@@ -15,8 +15,18 @@ for name, groups, count in [
     assert len({row["label"] for row in evidence["variants"]}) == 37
     assert all(evidence["whole"][group]["queries"] == count for group in groups)
     assert all(len(evidence["whole"][group]["per_query"]) == count for group in groups)
+    for view in ("alone", "without"):
+        assert set(evidence[view]) == {
+            "graph", "lexical_ngram", "lexical_segmented", "vector"
+        }
+        for channel in evidence[view].values():
+            for group in groups:
+                assert channel[group]["queries"] == count
+                assert len(channel[group]["per_query"]) == count
     for variant in evidence["variants"]:
-        assert all(len(variant["scores"][group]["per_query"]) == count for group in groups)
+        for group in groups:
+            assert variant["scores"][group]["queries"] == count
+            assert len(variant["scores"][group]["per_query"]) == count
     macro = statistics.mean(
         evidence["whole"][group]["ndcg"] / count for group in groups
     )
