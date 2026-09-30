@@ -3141,13 +3141,16 @@ streaming SHA-256 helper instead. Preserve full-byte validation, cache identity,
 and inference arithmetic. On a miss, rewrite a private copied snapshot only
 after verifying that its digest matches the key; discard a failed partial copy.
 
-Three rotated independent-process rounds give median maximum RSS
-1,155,006,464 → 18,825,216 bytes (-98.4%) and prepare time
-1.165626 → 1.083086 seconds (-7.1%, directional on a shared machine).
-All six prepared graph hashes and byte counts match. This reduces preparation
+The original three independent-process rounds showed peak RSS
+1,155,006,464 → 18,825,216 bytes but their apparent −7.1% prepare-time
+change was too noisy to accept. Two later strict 30-round cache-hit replays
+reproduced about 1.136 GB less process memory and disagreed on latency; there
+is **no accepted speed percentage**. All prepared graph hashes and byte counts
+match. This reduces preparation
 peak allocation; it does not reduce the retained 64/128/256 sessions or claim
 search speed/accuracy gains. First-write/cache-reuse verification uses the full
-cached BGE graph. [Conditions and all round values](../../benchmarks/results/inference/coreml-stream-cache-2026-09-29.md).
+cached BGE graph. [Original rows](../../benchmarks/results/inference/coreml-stream-cache-2026-09-29.md)
+and [strict correction](../../benchmarks/results/inference/coreml-stream-cache-recheck-2026-09-30.md).
 
 
 ### 2026-09-29: isolate and reuse static CoreML compilation caches
@@ -3172,6 +3175,14 @@ The cost is 2,278,103,629 persistent logical bytes for one bucket. The other BGE
 shapes and complete product/corpus gates remain unmeasured. Do not delete the
 conversion package's duplicate weights without verifying runtime cache behavior.
 [Source, limits and all rounds](../../benchmarks/results/inference/coreml-compile-cache-2026-09-29.md).
+
+The current `coreml-all-v2` namespace does not reuse older `coreml-all-v1`
+packages. Old processes may use v1 after releasing their build lock, so there
+is no safe automatic concurrent collector. An [offline, exact-namespace
+retirement command](../cli.md) lists candidates by default and removes them
+only after every process using that model directory has stopped. This
+recovers abandoned v1 bytes without touching v2 or mapped CPU models; total
+APFS free-space recovery is not inferred from logical package sizes.
 
 ### 2026-09-30: complete CoreML product-path control
 
