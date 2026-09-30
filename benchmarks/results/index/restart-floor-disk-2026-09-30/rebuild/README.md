@@ -1,0 +1,15 @@
+The three measured restart executables were reproduced byte for byte on 2026-09-30 from their original checkout paths, the selected archived integration-test source, Rust/Cargo 1.98.1, original runtime identities and shared target directory. Each rebuild freshly compiled all four product libraries and the helper. The original binaries and original compiler/build logs were preserved.
+
+| Arm | Revision | Executable bytes | Rebuilt SHA256 equals original |
+| --- | --- | ---: | --- |
+| main | 315c10242ddf7a1cec3bccbf550a942320e09557 | 15615632 | 450e0fa6fba7c028e402389d6466a4a043c01e7251a6e65e35e707c23860a1dc |
+| predecessor | f57f9c218d03d88666b3cc89fae9ae7e9eed2e50 | 15615696 | 1b7c6b406c4278551290f58248bbf22278b6c1d49698b8748e8ae608126d7275 |
+| candidate | 11493c1388f74b087db23136a94e4b8feed1efe3 | 15617104 | 14ab5805223a2fc7d79aa7197ab08c37ea5cab11b9a4581e68630277eeb31c79 |
+
+[audit.json.gz](audit.json.gz) retains dated clean-source checks, all 384 inputs per arm before/after, tracked symlink targets and gitlink revisions, toolchain/flags/runtime identities, frozen binary hashes/bytes and direct byte-comparison results. The selected ignored harness hash matches [harness.rs.in](../../../../harnesses/restart-floor-2026-09-30/harness.rs.in). The candidate's separate ignored conversion/bootstrap helpers were recorded but were not selected for this executable. Private submodule contents were not read or archived.
+
+The `*-build.jsonl.gz`, `*-build.log.gz` and `*-clean.log.gz` files retain the fresh-build compiler records and logs. The `original-*-build.*.gz` files retain the preserved original compiler/build logs. Canonical placeholders replace local paths without changing observations or record order. The verifier recovers documented path mappings from the immutable original builder to independently check the original raw log SHA256/byte identities. No executables are published.
+
+Run `python3 benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py` from a repository checkout with Git objects for all three revisions. It independently compares the source hashes with those revisions' Git blobs, compares both HNSW and Disk frozen identities, checks actual compiler source paths and all four libraries plus helper `fresh:false`, and verifies the retained original/fresh raw logs, binary comparisons and runtime/toolchain identities. It does not build, run models or open a database.
+
+This establishes retrospective reproducible artifact binding for both archived restart matrices. It does not certify what source contents were present at the original build time, recover unrecorded historical inherited tuning, or prove historical loaded-library mappings. The runtime checks here identify surviving files used by the rebuild. The four Cargo build jobs are distinct from inference threads; no measured executable, model or database ran during this audit. The inert [audit.py.in](audit.py.in) preserves the audit procedure with placeholder paths; restore the exact recorded paths and obtain an exclusive build slot before executing it.
