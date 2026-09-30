@@ -354,6 +354,13 @@ and the expected document counts before collecting scores. These are fusion-only
 | 0.25 / 0 | 0.6358 | 0.8395 | 0.6802 | 0.8035 |
 | 0.25 / 0.125 | 0.6195 | 0.8510 | 0.6834 | 0.8050 |
 
+The 2026-09-27 rows remain historical: complete printed grids were retained,
+but their per-query matrices were not. A [current full XQuAD-R and MuSiQue
+rerun](../../benchmarks/results/fusion/lexical-2026-09-30/README.md) now
+retains every paired score vector, all 37 settings and the fold output. It is
+new evidence, not a retroactive claim that the old raw rows were saved;
+MuSiQue's reused index still lacks an exact embedding-source revision marker.
+
 The selection rule maximises macro-mean nDCG@10 over groups in five folds,
 breaking ties toward the shipped setting. **For the lexical-weight question it
 chooses only among the 25 lexical pairs.** On XQuAD-R it chose 0 / 0.125 in
