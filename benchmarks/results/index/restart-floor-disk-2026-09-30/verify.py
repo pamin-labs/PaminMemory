@@ -181,7 +181,11 @@ for reference in ['predecessor','main']:
         else:
             value=summary['comparisons'][reference]['metric_differences'][key]
             before,after,delta,percent=[value[k] for k in ['before','after','absolute_delta','percent_delta']]
-        if key in timing_review[reference] and timing_review[reference][key]['withhold_comparison']:
+        if key=='maintenance_cpu_s' and after==0:
+            rows=[r for r in raw if r['arm']=='candidate' and r['phase']=='maintenance']
+            assert len(rows)==3 and all(r['cpu_user_seconds']==r['cpu_system_seconds']==0 for r in rows), 'censored maintenance CPU does not match raw counters'
+            expected.append(f'| {label} | {before:.6f} s | <0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation |')
+        elif key in timing_review[reference] and timing_review[reference][key]['withhold_comparison']:
             expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | Withheld: unstable three-process sample | Withheld: unstable three-process sample |')
         else:
             expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | {delta/divisor:+.6f}{unit} | {percent:+.3f}% |')
