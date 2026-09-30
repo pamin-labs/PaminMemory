@@ -67,8 +67,8 @@ for role,path,expected in models:
  actual=digest(path);assert actual==expected,(role,actual)
  provenance['model_sources'].append({'role':role,'path':str(path),'sha256':actual})
 provenance['model_sources'].extend(tokenizer_records)
-for library in [Path('/workspace/.cargo/lib/pamin/libzvec_c_api.so'),Path('/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0')]:
- provenance['runtime_libraries'].append({'path':str(library),'sha256':digest(library)})
+runtime_expected=[{'path': '/workspace/.cargo/lib/pamin/libzvec_c_api.so', 'sha256': '58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a', 'bytes': 38067280}, {'path': '/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0', 'sha256': '1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab', 'bytes': 24268848}]
+provenance['runtime_libraries']=premises.runtime_assets(runtime_expected)
 OUTPUT.mkdir()
 for arm in binaries:
  assert digest(Path(arm['binary']))==arm['sha256']
@@ -95,14 +95,33 @@ for name in ['PAMIN_RERANK_DEPTH','PAMIN_FUSION','PAMIN_PROFILE']:
  if name!='PAMIN_PROFILE':assert name not in env,(name,'unexpected override')
 all_rows={};providers={}
 provenance['tokenizer_assets_after_arms']={}
+provenance['runtime_libraries_after_arms']={}
+provenance['sampled_live_runtime_mappings']={}
+provenance['runtime_mapping_scope']='prospective child /proc maps samples when available; absent mappings are unobserved, not certified; historical helper mappings were not retained'
 for arm in binaries:
  name=arm['arm']; home=OUTPUT/(name+'-home');env['PAMIN_EVAL_HOME']=str(home)
  assert premises.tokenizer_assets(models,tokenizer_expected)==tokenizer_records
+ assert premises.runtime_assets(runtime_expected)==provenance['runtime_libraries']
  print('MODEL_ARM_START',name,flush=True)
  try:
   with (OUTPUT/(name+'.log')).open('w') as out:
-   completed=subprocess.run([arm['binary']],env=env,stdout=out,stderr=subprocess.STDOUT)
-  assert completed.returncode==0,(name,completed.returncode,'abort; preserve failed log')
+   seen={};unavailable=set()
+   with subprocess.Popen([arm['binary']],env=env,stdout=out,stderr=subprocess.STDOUT) as child:
+    try:
+     while child.poll() is None:
+      try:premises.mapped_runtime(Path(f'/proc/{child.pid}/maps').read_text(),runtime_expected,seen)
+      except (FileNotFoundError,PermissionError) as error:unavailable.add(type(error).__name__)
+      try:child.wait(timeout=.25)
+      except subprocess.TimeoutExpired:continue
+    except BaseException:
+     child.kill();child.wait()
+     raise
+   code=child.returncode
+  # Retain post-arm identities before reporting success or failing an arm.
+  provenance['runtime_libraries_after_arms'][name]=premises.runtime_assets(runtime_expected)
+  provenance['sampled_live_runtime_mappings'][name]={'records':list(seen.values()),'unavailable':sorted(unavailable)}
+  (OUTPUT/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
+  assert code==0,(name,code,'abort; preserve failed log')
  finally:
   if (home/'postgres/data/postmaster.pid').exists():
    stop=home/'postgres/install/17.6.0/bin/pg_ctl'
