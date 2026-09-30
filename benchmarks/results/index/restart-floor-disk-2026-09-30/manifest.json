@@ -26,7 +26,7 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/episode-elapsed.json": "7224b831d0a80fdad6a942421d77641afdc68e716cc6e79e748b833d6a42a3a2",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/post-trial-libraries.json": "d3b88079ce8822ffbda7f019f4d5341d040e9575090d2ae68a7c690ee1b121bf",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema_guarded.rs.in": "61083ba54700c5c809a226d29ed292e21bda69092357a1a727e644269b164fee",
-    "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "bddfe6123e4e3649dddd0ca7ec5db330be225092e0f66f18ee95cdab19b19a63",
+    "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "eaa2f6c1f38703528aef61931ee8ded8e12318e10f396d55e16c7a10a8242392",
     "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "1803fe82bd27436b4100326061161b05da4a3623f27488e264946af812658b11",
     "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/main-build.log.gz": "be03df91e6f8b31e9afae655d95bd2565ccb3f303c3250422c6a4896d1296de2",
