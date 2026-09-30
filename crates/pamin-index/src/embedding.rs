@@ -459,7 +459,7 @@ fn check_vectors(
                     .zip(reference.iter())
                     .all(|(a, b)| compatible_vectors(a, b, dimensions)) => {}
         _ => {
-            return Err(IndexError::Engine(
+            return Err(IndexError::Incompatible(
                 "embedding plan failed same-export compatibility".into(),
             ));
         }
@@ -674,7 +674,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
                             .zip(reference)
                             .all(|(a, b)| compatible_vectors(a, b, 1024)) => {}
                     _ => {
-                        return Err(IndexError::Engine(
+                        return Err(IndexError::Incompatible(
                             "complementary embedding output incompatible".into(),
                         ));
                     }
