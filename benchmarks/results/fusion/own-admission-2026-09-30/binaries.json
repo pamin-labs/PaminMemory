@@ -1,0 +1,18 @@
+[
+  {
+    "arm": "baseline",
+    "binary": "${EXPERIMENT}/acceptance/bin/own-baseline-v3",
+    "sha256": "934a91e92ff53725bd367269f33758e827a5f300d05afdd25c3b2f4c98298977",
+    "bytes": 16295216,
+    "source": "${EXPERIMENT}/variants/baseline/crates/pamin-engine/tests/scratch_pool_retrieval.rs",
+    "source_sha256": "69f2f02d8fd3b66c50406899c99bddf425c5095b5e4ac1cb95bacdc6387e4119"
+  },
+  {
+    "arm": "pooled",
+    "binary": "${EXPERIMENT}/acceptance/bin/own-pooled-v3",
+    "sha256": "ac373a295e8d0e7266063785a22ccb8c73cdb3b07b665589469a34fd12ae0c8f",
+    "bytes": 16296880,
+    "source": "${EXPERIMENT}/variants/pooled/crates/pamin-engine/tests/scratch_pool_retrieval.rs",
+    "source_sha256": "69f2f02d8fd3b66c50406899c99bddf425c5095b5e4ac1cb95bacdc6387e4119"
+  }
+]
