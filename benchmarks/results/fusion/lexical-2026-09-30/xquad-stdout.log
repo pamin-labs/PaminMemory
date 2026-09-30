@@ -250,7 +250,7 @@
    Compiling tokenizers v0.23.2
    Compiling postgresql_archive v0.21.0
    Compiling hashbrown v0.14.5
-   Compiling pamin-core v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-core)
+   Compiling pamin-core v0.0.1 (${REPO}/crates/pamin-core)
    Compiling safetensors v0.8.0
    Compiling postgresql_commands v0.21.0
    Compiling lazy_static v1.5.0
@@ -263,11 +263,11 @@
    Compiling postgresql_embedded v0.21.0
    Compiling nu-ansi-term v0.50.3
    Compiling tracing-subscriber v0.3.23
-   Compiling pamin-store v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-store)
+   Compiling pamin-store v0.0.1 (${REPO}/crates/pamin-store)
    Compiling ort v2.0.0-rc.13
    Compiling fastembed v6.1.0
-   Compiling pamin-index v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index)
-   Compiling pamin-engine v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-engine)
+   Compiling pamin-index v0.0.1 (${REPO}/crates/pamin-index)
+   Compiling pamin-engine v0.0.1 (${REPO}/crates/pamin-engine)
     Finished `release` profile [optimized] target(s) in 1m 31s
      Running tests/crosslingual.rs (target/release/deps/crosslingual-9fa45a71fdc2ad6d)
 
@@ -280,8 +280,8 @@ running 1 test
   index passage: named
   indexed documents: 13014
   vector index completeness: 1.0000
- INFO pamin_index::inference: loaded ONNX graph model_graph="/private/tmp/pamin-perf58/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx"
- INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="/private/tmp/pamin-perf58/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx" assigned_nodes={"CPUExecutionProvider":1023}
+ INFO pamin_index::inference: loaded ONNX graph model_graph="${EVAL_HOME}/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx"
+ INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx" assigned_nodes={"CPUExecutionProvider":1023}
 
   each channel on its own, cross_lingual, accuracy
   channel               queries   nDCG@10   recall@50
