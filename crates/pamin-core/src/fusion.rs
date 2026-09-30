@@ -460,6 +460,14 @@ impl Fusion {
         self.k
     }
 
+    /// Preserve the existing semantic vote budget while adding a second model.
+    /// This is an equal allocation, not a parameter fitted on evaluation queries.
+    pub fn with_secondary_vector(self) -> Self {
+        let half = self.weight(Channel::Vector) / 2.0;
+        self.with_weight(Channel::Vector, half)
+            .with_weight(Channel::VectorSecondary, half)
+    }
+
     fn weight(&self, channel: Channel) -> f32 {
         self.weights.get(&channel).copied().unwrap_or(1.0)
     }
@@ -616,6 +624,18 @@ mod tests {
 
     fn id(byte: u8) -> TopicId {
         TopicId(uuid::Uuid::from_bytes([byte; 16]))
+    }
+
+    #[test]
+    fn second_vector_preserves_the_custom_semantic_vote_budget() {
+        let primary = Fusion::default().with_weight(Channel::Vector, 3.0);
+        let dual = primary.with_secondary_vector();
+        assert_eq!(dual.weight(Channel::Vector), 1.5);
+        assert_eq!(dual.weight(Channel::VectorSecondary), 1.5);
+        assert_eq!(
+            dual.weight(Channel::LexicalSegmented),
+            Fusion::default().weight(Channel::LexicalSegmented)
+        );
     }
 
     #[test]

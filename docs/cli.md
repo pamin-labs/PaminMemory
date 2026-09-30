@@ -1283,3 +1283,7 @@ row and paying startup once.
   assembled context can be reused rather than rebuilt.
 - Evidence is never translated and never rewritten. Anything a memory lost in
   summarizing is still in the source it came from, and `pamin grep` reaches it.
+
+### Experimental dual-space profile
+
+`dual_accuracy` uses pinned BGE-M3 INT8 plus a pinned complementary PPLX 0.6B singleton/int8-pooled encoding. It is opt-in; the default remains `accuracy`. Its marker identity is distinct, so changing to it requires `reindex`. Both vectors are written atomically, retained during same-profile rebuild/reshape, and included in recall. The two streams split the existing semantic candidate/vote budget equally; adding a model does not silently double either budget. Full product precision and resource comparisons are required before considering it a default.
