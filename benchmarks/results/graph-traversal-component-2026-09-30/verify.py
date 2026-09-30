@@ -18,7 +18,7 @@ assert provenance['scope'].startswith('native search_fused component')
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 for name,record in provenance['redactions'].items():
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
-EXPECTED_FILES = {'baseline.log', 'baseline.trace.jsonl', 'test_verify.py', 'README.md', 'baseline.usage.json', 'source/graph_trace.rs.in', 'source/experimental-traversal.patch', 'comparison.json', 'scored.usage.json', 'baseline.jsonl', 'scored.jsonl', 'scored.trace.jsonl', 'provenance.json', 'scored.log', 'source/fixture.rs.in', 'source/prepare.py', 'verify.py'}
+EXPECTED_FILES = {'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
 assert {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()} == EXPECTED_FILES, 'required file inventory differs'
 assert set(provenance['archive_files']) == EXPECTED_FILES - {'provenance.json'}, 'hash inventory differs'
 for name, digest in provenance['archive_files'].items():
@@ -68,11 +68,50 @@ ASSET_PINS = {'${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84
  '${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data': '06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c',
  '${ORT_LIB}/libonnxruntime.so.1.28.0': '1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab',
  '${ZVEC_LIB}/libzvec_c_api.so': '58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a'}
+BINARY_PINS = {'baseline': '485cbd023d9e5c8b1b4cdd3f94419199fe634a1a66a9d67d44dd90b7a1facdd1', 'scored': 'ac308a0b9438eb897d1601d185583026d2f07b1a268b47b7b1082e56daf72bd0'}
+PAYLOAD_MAP_DIGESTS = {'baseline': 'b2cba4a77820f63e0ea869b5099f631705aae850dee17e6a2a4d287e29c4397b', 'scored': 'b2cba4a77820f63e0ea869b5099f631705aae850dee17e6a2a4d287e29c4397b'}
+CURRENT_PLATFORM_PINS = {'cpu_model': 'AMD EPYC 9V74 80-Core Processor', 'kernel': '6.18.44', 'architecture': 'x86_64', 'cpu_quota': '400000 100000', 'cpu_affinity': [0, 1, 2, 3, 4], 'memory_max_bytes': 17179869184}
+SQL_MAP_DIGEST = '6264b33b89775579e92b4d903a16b1fed165942498d5f2b3acc024b38e834513'
+inventory_scope = provenance['source_inventory_scope']
+assert inventory_scope['original_captured_entries_per_arm'] == 52
+assert inventory_scope['original_status'] == 'partial: migration SQL omitted'
+assert inventory_scope['original_sql_build_attestation'] == 'N/A: not captured'
+assert inventory_scope['retrospective_sql_audit'] == 'retrospective-sql-audit.json'
+audit = load('retrospective-sql-audit.json')
+assert audit['source_base'] == provenance['source_base']
+assert audit['original_build_sql_attestation'] == 'N/A: SQL omitted from the original 52-entry pre/post-build inventory'
+assert re.fullmatch(r'2026-09-30T[0-9:.]+\+00:00', audit['captured_at_utc'])
+sql_sources = audit['migration_sources']
+assert len(sql_sources) == 14
+assert hashlib.sha256(json.dumps({k:v['sha256'] for k,v in sql_sources.items()},sort_keys=True,separators=(',',':')).encode()).hexdigest() == SQL_MAP_DIGEST
+assert {v['published_file'] for v in sql_sources.values()} == {name for name in EXPECTED_FILES if name.startswith('source/migrations/')}
+for name, source in sql_sources.items():
+ assert name == 'crates/pamin-store/migrations/' + Path(source['published_file']).name
+ assert source['matches_recorded_git_base'] is True
+ assert sha(ROOT/source['published_file']) == source['sha256']
+ assert (ROOT/source['published_file']).stat().st_size == source['bytes']
+assert set(audit['arms']) == {'baseline','scored'}
+for arm, binary in audit['arms'].items():
+ assert binary['binary_sha256'] == BINARY_PINS[arm]
+ assert set(binary['migration_payloads']) == set(sql_sources)
+ assert hashlib.sha256(json.dumps(binary['migration_payloads'],sort_keys=True,separators=(',',':')).encode()).hexdigest() == PAYLOAD_MAP_DIGESTS[arm], 'retrospective payload capture differs'
+ for name, payload in binary['migration_payloads'].items():
+  assert payload['sha256'] == sql_sources[name]['sha256'] and payload['bytes'] == sql_sources[name]['bytes']
+  assert type(payload['first_binary_offset']) is int and 0 <= payload['first_binary_offset'] <= binary['binary_bytes'] - payload['bytes']
+platform_observation = load(provenance['hardware_observation'])
+assert re.fullmatch(r'2026-09-30T[0-9:.]+\+00:00', platform_observation['captured_at_utc'])
+assert platform_observation['historical'] == {'cpu_model':'N/A: not captured','kernel':'N/A: not captured','cpu_quota':'N/A: not captured','cpu_affinity':'N/A: not captured','memory_max_bytes':{'baseline':17179869184,'scored':17179869184}}
+assert platform_observation['current'] == CURRENT_PLATFORM_PINS, 'dated current platform capture differs'
+assert platform_observation['current']['cpu_model'] and platform_observation['current']['kernel'] and platform_observation['current']['cpu_affinity']
+assert platform_observation['current']['memory_max_bytes'] == 17179869184
+assert platform_observation['current']['cpu_quota'] == '400000 100000'
+
 arm_records={r['arm']:r for r in provenance['arms']}
 assert len(provenance['arms']) == 2 and set(arm_records) == {'baseline','scored'}
 SOURCE_PATHS = {'crates/pamin-engine/tests/graph_trace/mod.rs', 'crates/pamin-cli/Cargo.toml', 'crates/pamin-store/src/error.rs', 'crates/pamin-index/src/half.rs', 'crates/pamin-index/src/tokenizer.rs', 'crates/pamin-index/src/encoder.rs', 'crates/pamin-index/src/hub.rs', 'crates/pamin-index/src/inference.rs', 'crates/pamin-index/src/reshape.rs', 'crates/pamin-index/src/segmentation.rs', 'crates/pamin-core/src/version.rs', 'crates/pamin-core/src/graph.rs', 'benchmarks/results/inference/vector-rescore-device-2026-09-30/Cargo.toml', 'Cargo.lock', 'crates/pamin-store/src/lib.rs', 'crates/pamin-core/src/lib.rs', 'crates/pamin-index/src/onnx.rs', 'crates/pamin-index/src/reranking.rs', 'crates/pamin-core/Cargo.toml', 'crates/pamin-store/src/workspace.rs', 'crates/pamin-engine/Cargo.toml', 'crates/pamin-index/src/error.rs', 'crates/pamin-core/src/env.rs', 'crates/pamin-index/src/descriptors.rs', 'Cargo.toml', 'crates/pamin-core/src/id.rs', 'crates/pamin-store/src/sql.rs', 'crates/pamin-index/src/lib.rs', 'crates/pamin-core/src/channel.rs', 'crates/pamin-index/Cargo.toml', 'crates/pamin-index/src/prepared.rs', 'crates/pamin-store/src/repository.rs', 'crates/pamin-core/src/fusion.rs', 'crates/pamin-index/src/projection.rs', 'crates/pamin-engine/src/reshape.rs', 'crates/pamin-index/src/attention.rs', 'crates/pamin-store/src/database.rs', 'crates/pamin-engine/src/cascade.rs', 'benchmarks/results/inference/vector-rescore-accelerate-2026-09-30-Cargo.toml', 'crates/pamin-core/src/cascade.rs', 'crates/pamin-core/src/ledger.rs', 'crates/pamin-engine/tests/scratch_scored_fixture.rs', 'crates/pamin-store/src/migrate.rs', 'crates/pamin-index/src/native.rs', 'crates/pamin-store/Cargo.toml', 'crates/pamin-store/src/jobs.rs', 'crates/pamin-engine/src/engine.rs', 'crates/pamin-core/src/filter.rs', 'crates/pamin-engine/src/lib.rs', 'crates/pamin-store/src/graph.rs', 'crates/pamin-engine/tests/harness/mod.rs', 'crates/pamin-index/src/embedding.rs'}
 SOURCE_MAP_DIGESTS = {'baseline': 'a1559290a3d29640e927e2570191c90e3958caf75c224f7d70e61ac5f1107171', 'scored': '57410269c8ae2da52143afbb1c0b8e7a8644582785f2dc44a0e331bbce3eb0fa'}
 for arm, record in arm_records.items():
+ assert record['binary_sha256'] == BINARY_PINS[arm], 'recorded binary digest differs'
  sources = record['source_hashes']
  assert set(sources) == SOURCE_PATHS, 'compiled source inventory differs'
  assert all(re.fullmatch('[0-9a-f]{64}',digest) for digest in sources.values()), 'malformed source digest'
@@ -80,6 +119,8 @@ for arm, record in arm_records.items():
  assert sources['crates/pamin-engine/tests/scratch_scored_fixture.rs'] == sha(ROOT/'source/fixture.rs.in')
  assert sources['crates/pamin-engine/tests/graph_trace/mod.rs'] == sha(ROOT/'source/graph_trace.rs.in')
 assert {name for name in SOURCE_PATHS if arm_records['baseline']['source_hashes'][name] != arm_records['scored']['source_hashes'][name]} == {'crates/pamin-engine/src/engine.rs'}, 'cross-arm source relationship differs'
+assert sha(ROOT/'source/fixture.rs.in') == '0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1', 'exact measured fixture differs'
+assert 'let query = \"quartzanchor orbital navigation calibration beacon\";' in (ROOT/'source/fixture.rs.in').read_text()
 rows = {}
 
 for arm,weak_rank in [('baseline',23),('scored',22)]:
@@ -90,6 +131,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert launch['GRAPH_OUT'] == '${RESULTS}/'+arm+'.jsonl' and launch['GRAPH_TRACE'] == '${RESULTS}/'+arm+'.trace.jsonl'
  assert launch['effective_product_settings'] == {'PAMIN_PROFILE':'accuracy','PAMIN_DEVICE':'cpu','GRAPH_ARM':arm,'GRAPH_CLK_TCK':'100'}
 
+ assert row['query'] == 'quartzanchor orbital navigation calibration beacon', 'native fixture query differs'
  assert row['record']=='fixture' and row['arm']==arm and row['documents']==241
  assert row['expected_scores'] == [.8,.5,.5]
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
@@ -197,4 +239,4 @@ for p in ROOT.rglob('*'):
  data=p.read_text()
  assert not re.search(r'(?:/workspace/(?:scratch|\.pamin|\.cargo|\.onnxruntime|PaminMemory)|/home/|postgres(?:ql)?://|Bearer\s+[A-Za-z0-9]|claude\.ai/|app://)',data),f'private path/credential/session marker: {p.name}'
  assert p.suffix not in {'.onnx','.bin','.data','.so'},'binary/model material must not be published'
-print('PASS: four native component cases, exact weak-rank arithmetic, fresh builds, pinned inference/assets, disclosed limits, sanitized text-only evidence')
+print('PASS: four native component cases, exact weak-rank arithmetic, fresh builds, exact query/binary pins, retrospective SQL payloads, disclosed historical hardware limits, pinned inference/assets, sanitized text-only evidence')
