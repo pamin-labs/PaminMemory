@@ -738,8 +738,7 @@ impl Reranker {
             };
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             let loaded = Encoder::load(model, &repository, max_tokens(), providers);
-            let encoder = loaded
-                .map_err(|error| error.context("loading the reranker"))?;
+            let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
             // The shared calibration compares actual candidate scores with
             // the already resident product CPU reference. Do not allocate a
             // third FP16 CPU session while both plans are live.
@@ -772,6 +771,20 @@ impl Reranker {
                     ),
                     session,
                     |model, _device| {
+                        let long = "harbour migration rollback policy ".repeat(max_tokens());
+                        let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
+                        let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
+                        if longest != max_tokens() {
+                            return Err(IndexError::Engine(
+                                "maximum-token fixture did not reach the configured limit".into(),
+                            ));
+                        }
+                        let values = score(model, encoded, batch_tokens(), batch())?.0;
+                        if values.len() != 1 || !values[0].is_finite() {
+                            return Err(IndexError::Numerical(
+                                "maximum-token reranker fixture returned invalid output".into(),
+                            ));
+                        }
                         crate::inference::time_calls(|| {
                             let pairs = ORDER_PAIRS.repeat(8);
                             let encoded = model.encode(pairs)?;
@@ -973,9 +986,8 @@ const ORDER_PAIRS: [(&str, &str); 4] = [
 /// Compare the startup fixture's semantic ordering, allowing ordinary score
 /// drift between a candidate export and the product's optimized CPU export.
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
-    let failed = || {
-        IndexError::Numerical("accelerator failed the startup reranker ordering fixture".into())
-    };
+    let failed =
+        || IndexError::Numerical("accelerator failed the startup reranker ordering fixture".into());
     if expected.len() != 4
         || observed.len() != 4
         || expected
