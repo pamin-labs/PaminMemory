@@ -486,6 +486,24 @@ pub(crate) fn preferred<T>(
     load(Device::Cpu, vec![cpu()].into()).map(|model| (model, Device::Cpu))
 }
 
+#[derive(Clone)]
+struct CachedPlan {
+    device: Device,
+    target: Target,
+    revalidate: Option<std::time::Instant>,
+}
+
+impl CachedPlan {
+    fn fresh(device: Device, target: Target, numerical: bool) -> Self {
+        Self {
+            device,
+            target,
+            revalidate: numerical
+                .then(|| std::time::Instant::now() + std::time::Duration::from_secs(300)),
+        }
+    }
+}
+
 /// Calibrate complete model-call fixtures, then reuse the validated target
 /// through idle reloads. This is a bounded workload choice, not a claim about
 /// every query shape or an accelerator's internal hardware placement.
@@ -496,7 +514,7 @@ pub(crate) fn measured<T>(
 ) -> Result<(T, Device)> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static PLANS: OnceLock<Mutex<HashMap<String, (Device, Target)>>> = OnceLock::new();
+    static PLANS: OnceLock<Mutex<HashMap<String, CachedPlan>>> = OnceLock::new();
     let plans = accelerators();
     let signature: Vec<_> = plans
         .iter()
@@ -527,7 +545,7 @@ pub(crate) fn measured<T>(
 fn calibrated<T>(
     key: &str,
     plans: Vec<(Device, Target)>,
-    cache: &std::sync::Mutex<std::collections::HashMap<String, (Device, Target)>>,
+    cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -539,8 +557,12 @@ fn calibrated<T>(
         .expect("compute-plan cache poisoned")
         .get(key)
         .cloned();
-    if let Some((device, target)) = remembered {
-        match load(device, target, true) {
+    if let Some(plan) = remembered.filter(|plan| {
+        plan.revalidate
+            .is_none_or(|deadline| std::time::Instant::now() < deadline)
+    }) {
+        let device = plan.device;
+        match load(device, plan.target, true) {
             Ok(model) => return Ok((model, device)),
             Err(error) => {
                 tracing::warn!(%error, "cached compute plan failed; recalibrating");
@@ -559,13 +581,18 @@ fn calibrated<T>(
     let mut fastest = (Device::Cpu, vec![cpu()].into());
     let mut fastest_elapsed = std::time::Duration::MAX;
     let mut transient_failure = false;
+    let mut numerical_failure = false;
     // Keep at most the CPU reference and one candidate resident. Drop every
     // candidate before loading the next; reload the winner after calibration.
     for (device, target) in plans {
         let mut candidate = match load(device, target.clone(), false) {
             Ok(model) => model,
             Err(error) => {
-                transient_failure |= !matches!(error, IndexError::Incompatible(_));
+                numerical_failure |= matches!(error, IndexError::Numerical(_));
+                transient_failure |= !matches!(
+                    error,
+                    IndexError::Incompatible(_) | IndexError::Numerical(_)
+                );
                 tracing::warn!(device = device.name(), %error, "compute candidate unavailable");
                 continue;
             }
@@ -574,7 +601,11 @@ fn calibrated<T>(
         let elapsed = match evaluate(&mut candidate, device) {
             Ok(elapsed) => elapsed,
             Err(error) => {
-                transient_failure |= !matches!(error, IndexError::Incompatible(_));
+                numerical_failure |= matches!(error, IndexError::Numerical(_));
+                transient_failure |= !matches!(
+                    error,
+                    IndexError::Incompatible(_) | IndexError::Numerical(_)
+                );
                 tracing::warn!(device = device.name(), %error, "compute candidate failed validation");
                 continue;
             }
@@ -602,10 +633,10 @@ fn calibrated<T>(
     let (device, target) = fastest;
     if device == Device::Cpu {
         if !transient_failure {
-            cache
-                .lock()
-                .expect("compute-plan cache poisoned")
-                .insert(key.into(), (device, target));
+            cache.lock().expect("compute-plan cache poisoned").insert(
+                key.into(),
+                CachedPlan::fresh(device, target, numerical_failure),
+            );
         }
         return Ok((reference, device));
     }
@@ -613,10 +644,10 @@ fn calibrated<T>(
     match load(device, target.clone(), true) {
         Ok(model) => {
             if !transient_failure {
-                cache
-                    .lock()
-                    .expect("compute-plan cache poisoned")
-                    .insert(key.into(), (device, target));
+                cache.lock().expect("compute-plan cache poisoned").insert(
+                    key.into(),
+                    CachedPlan::fresh(device, target, numerical_failure),
+                );
             }
             Ok((model, device))
         }
@@ -772,7 +803,7 @@ mod tests {
         use std::time::Duration;
         let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
             "fixture".into(),
-            (Device::Cuda, vec![cpu()].into()),
+            CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false),
         )]));
         let (_, device) = calibrated(
             "fixture",
@@ -795,7 +826,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(device, Device::Cpu);
-        assert_eq!(cache.lock().unwrap()["fixture"].0, Device::Cpu);
+        assert_eq!(cache.lock().unwrap()["fixture"].device, Device::Cpu);
     }
 
     #[test]
@@ -867,6 +898,38 @@ mod tests {
         );
         recovered.set(true);
         assert_eq!(run().unwrap().1, Device::Cuda);
+    }
+
+    #[test]
+    fn numerical_quarantine_expires_before_an_idle_reload() {
+        use std::time::{Duration, Instant};
+        let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
+            "fixture".into(),
+            CachedPlan {
+                device: Device::Cpu,
+                target: vec![cpu()].into(),
+                revalidate: Some(Instant::now()),
+            },
+        )]));
+        let (_, device) = calibrated(
+            "fixture",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            |device, _, _| Ok(device),
+            |_, device| {
+                Ok(Duration::from_millis(if device == Device::Cpu {
+                    10
+                } else {
+                    1
+                }))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            device,
+            Device::Cuda,
+            "expired CPU quarantine blocked a repaired accelerator"
+        );
     }
 
     #[test]
