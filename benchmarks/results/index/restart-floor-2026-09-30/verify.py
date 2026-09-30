@@ -37,7 +37,32 @@ source=repo/'benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in'
 loader=importlib.machinery.SourceFileLoader('archived_restart_analysis',str(source))
 spec=importlib.util.spec_from_loader(loader.name,loader)
 module=importlib.util.module_from_spec(spec);loader.exec_module(module)
-assert module.summarize(raw)==json.loads((root/'summary.json').read_text())
+summary=module.summarize(raw)
+assert summary==json.loads((root/'summary.json').read_text())
+review_path=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py'
+review_loader=importlib.machinery.SourceFileLoader('restart_evidence_review',str(review_path))
+review_spec=importlib.util.spec_from_loader(review_loader.name,review_loader)
+review=importlib.util.module_from_spec(review_spec);review_loader.exec_module(review)
+review.runner_binding(repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in',json.loads((root/'provenance.json').read_text()))
+memory_binaries=json.loads((root/'binaries.json').read_text())
+disk_binaries=json.loads((root.with_name('restart-floor-disk-2026-09-30')/'binaries.json').read_text())
+assert len(memory_binaries)==3 and {b['arm'] for b in memory_binaries}=={'main','predecessor','candidate'}, 'HNSW duplicate/incomplete binary arms'
+for b in memory_binaries:
+    prior=next(p for p in disk_binaries if p['arm']==b['arm'])
+    assert b['commit']==prior['commit'] and b['sha256']==prior['sha256'] and b['binary'].replace('${SCRATCH}','<SCRATCH>')==prior['binary'], 'HNSW arm-keyed executable binding'
+timing_review=review.timing_review(summary,raw)
+assert timing_review==json.loads((root/'timing-review.json').read_text()), 'HNSW timing screen differs'
+labels={'First-search wall median (model load included)':'first_search_ms','Maintenance wall median':'maintenance_ms','Warm search p50: median across processes':'warm_p50_ms','Warm search p95: median across processes':'warm_p95_ms'}
+reference='predecessor'
+for line in (root/'README.md').read_text().splitlines():
+    if line.startswith('## Combined'):reference='main'
+    if not line.startswith('|'):continue
+    cells=[c.strip() for c in line.split('|')];key=labels.get(cells[1])
+    if key:
+        metric=summary['comparisons'][reference]['metric_differences'][key]
+        assert abs(float(cells[2].split()[0])-metric['before'])<.0006 and abs(float(cells[3].split()[0])-metric['after'])<.0006, 'HNSW displayed medians differ'
+        withheld=timing_review[reference][key]['withhold_comparison']
+        assert (cells[4].startswith('Withheld') and cells[5].startswith('Withheld'))==withheld, 'HNSW unstable timing comparison shown'
 binding_source=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'
 binding_loader=importlib.machinery.SourceFileLoader('retrospective_restart_binding',str(binding_source))
 binding_spec=importlib.util.spec_from_loader(binding_loader.name,binding_loader)

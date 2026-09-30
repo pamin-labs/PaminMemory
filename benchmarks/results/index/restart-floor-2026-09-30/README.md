@@ -17,7 +17,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Optimize jobs per first upkeep tick | 1.000 | 0.000 | -1.000 | -100.000% |
 | Maintenance wall median | 500.255 ms | 0.479 ms | -499.776 ms | -99.904% |
 | First-search wall median (model load included) | 2618.299 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Warm search p50: median across processes | 2126.304 ms | 2139.206 ms | +12.902 ms | +0.607% |
+| Warm search p50: median across processes | 2126.304 ms | 2139.206 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p95: median across processes | 2289.523 ms | 2368.295 ms | +78.771 ms | +3.441% |
 | Peak process RSS | 1768.152 MiB | 1780.238 MiB | +12.086 MiB | +0.684% |
 | RSS after maintenance | 1304.809 MiB | 1230.020 MiB | -74.789 MiB | -5.732% |
@@ -44,7 +44,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Closed index apparent bytes | 126.662 MiB | 131.678 MiB | +5.016 MiB | +3.961% |
 | Vector graph completeness (hybrid visibility checked) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
-Warm p50/p95 and peak RSS are descriptive observations. The observed predecessor-to-candidate warm p95 increase is 3.441%; peak process RSS increases 0.684%. Three independent process repetitions are insufficient to assign these changes to the patch. Both the increases and individual process values are retained. No query-level significance test is reported.
+Warm p50/p95 and peak RSS are descriptive observations. Peak process RSS increases 0.684%; the warm timing comparison screen is retained separately. Three independent process repetitions are insufficient to assign these changes to the patch. Both the increases and individual process values are retained. No query-level significance test is reported.
 
 ## Conditions and measurement limits
 
@@ -67,3 +67,5 @@ Source and setup/build/runner instructions are in [the inert harness archive](..
 A [retrospective rebuild audit](../restart-floor-disk-2026-09-30/rebuild/README.md) reproduces all three frozen executables byte for byte from their stated revisions and the retained harness. The read-only verifier checks this binding against local Git objects for all three revisions; shallow checkouts must obtain them first. Historical build-time source state and inherited inference-thread tuning remain unknown, so these are not certified shipped-default cost comparisons.
 
 First-search change comparisons are withheld because the three predecessor observations span 20.5% of their median and candidate observations span 25.6%. The observed arm medians and raw arithmetic remain inspectable; further controlled rounds are needed for a latency comparison.
+
+Timing comparison policy now scans every retained wall/CPU timing metric and full-process elapsed for both references. It withholds difference/percentage cells when either arm spans more than 10% of its process median or matched repetition deltas reverse sign. Before/after medians and raw arithmetic remain descriptive observations; this screen is not a significance test. [Timing review](timing-review.json) retains all process values and reasons, plus every actual timed phase/query row including warmups and new-memory search. The saved work counts still establish skipped optimize work, including when small candidate upkeep timings are unstable.

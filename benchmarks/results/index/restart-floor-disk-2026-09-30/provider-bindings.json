@@ -1,0 +1,28 @@
+{
+  "recorded_utc": "2026-09-30T22:55:34.096785+00:00",
+  "scope": "New read-only metadata-content observation; bytes match retained historical pretrial digest. Role graph paths and external-data inventory bind actual CPU assignments. This does not certify original preparation, derive its cache key or retroactively assert pretrial external-weight hashing. No model/runtime execution.",
+  "roles": {
+    "embedding": {
+      "prepared_graph": "<MODEL_CACHE>/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+      "external_data": "<MODEL_CACHE>/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data",
+      "source_graph": "<MODEL_CACHE>/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx",
+      "revision": "2b34e84df040034d4b9eabb62383a87c18955822",
+      "cpu_nodes": 1023,
+      "source_metadata": {
+        "path": "<MODEL_CACHE>/prepared/gpahal--bge-m3-onnx-int8--model_quantized.onnx.source",
+        "text": "model_quantized.onnx\n569958496\n1790750060426206767\nsha256 16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb\n"
+      }
+    },
+    "reranker": {
+      "prepared_graph": "<MODEL_CACHE>/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+      "external_data": "<MODEL_CACHE>/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data",
+      "source_graph": "<MODEL_CACHE>/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx",
+      "revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "cpu_nodes": 295,
+      "source_metadata": {
+        "path": "<MODEL_CACHE>/prepared/onnx-community--bge-reranker-v2-m3-ONNX--onnx--model_int8.onnx.source",
+        "text": "model_int8.onnx\n570727094\n1790750162174540356\nsha256 912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d\n"
+      }
+    }
+  }
+}
