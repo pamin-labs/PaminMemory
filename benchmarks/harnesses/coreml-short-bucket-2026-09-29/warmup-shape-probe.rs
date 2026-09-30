@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use pamin_index::{Device, Rerank, Reranker};
@@ -18,6 +19,10 @@ impl Write for LogWriter {
     }
 }
 
+fn hash(path: &Path) -> String {
+    format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
+}
+
 #[test]
 #[ignore = "loads the pinned Accurate model to inspect actual warmup token lengths"]
 fn original_warmups_reach_each_bucket() {
@@ -29,17 +34,16 @@ fn original_warmups_reach_each_bucket() {
     );
     let repository = models.join("models--onnx-community--bge-reranker-v2-m3-ONNX");
     let revision = "6f5ff65298512715a1e669753bc754d2bc8f367b";
+    let source_hash = "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3";
     let selected = repository.join("refs/main");
     assert_eq!(std::fs::read_to_string(&selected).unwrap().trim(), revision);
-    let tokenizer = repository
-        .join("snapshots")
-        .join(revision)
-        .join("tokenizer.json");
-    let tokenizer_hash = || format!("{:x}", Sha256::digest(std::fs::read(&tokenizer).unwrap()));
+    let snapshot = repository.join("snapshots").join(revision);
+    let tokenizer = snapshot.join("tokenizer.json");
     assert_eq!(
-        tokenizer_hash(),
+        hash(&tokenizer),
         "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3"
     );
+    assert_eq!(hash(&snapshot.join("onnx/model_fp16.onnx")), source_hash);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let writer = Arc::clone(&logs);
     tracing_subscriber::fmt()
@@ -53,8 +57,14 @@ fn original_warmups_reach_each_bucket() {
     assert_eq!(reranker.counted().maximum_tokens, 256);
     assert_eq!(std::fs::read_to_string(&selected).unwrap().trim(), revision);
     assert_eq!(
-        tokenizer_hash(),
+        hash(&tokenizer),
         "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3"
+    );
+    let prepared = models.join("typed-reranker-v3").join(source_hash);
+    assert_eq!(hash(&prepared.join("source.onnx")), source_hash);
+    assert_eq!(
+        hash(&prepared.join("model.onnx")),
+        "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109"
     );
     let recorded = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
     let assignments: Vec<BTreeMap<String, usize>> = recorded
