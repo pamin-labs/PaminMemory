@@ -25,6 +25,6 @@ for arm,rounds in all_rows.items():
         times = re.search(r'\n\s*([\d.]+) real\s+([\d.]+) user\s+([\d.]+) sys',text)
         rss = re.search(r'\n\s*(\d+)\s+maximum resident set size',text)
         costs.append({'real':float(times[1]),'user':float(times[2]),'system':float(times[3]),'peak_process_rss':int(rss[1])})
-    report[arm] = {'rank_p50':percentile(medians[arm],.5),'rank_p95':percentile(medians[arm],.95),'median_rank_wall_total':statistics.median(sum(row['seconds'] for row in rows) for rows in rounds),'process_rounds':costs,'median_process_cpu_seconds':statistics.median(row['user']+row['system'] for row in costs),'median_peak_process_rss_bytes':statistics.median(row['peak_process_rss'] for row in costs)}
+    report[arm] = {'rank_p50':percentile(medians[arm],.5),'rank_p95':percentile(medians[arm],.95),'median_rank_wall_total':statistics.median(sum(row['seconds'] for row in rows) for rows in rounds),'process_rounds':costs}
 (root/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
 print(json.dumps(report,indent=2))

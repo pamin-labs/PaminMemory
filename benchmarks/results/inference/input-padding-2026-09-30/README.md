@@ -14,12 +14,16 @@ values. Only the test thread's allocation/reallocation requests during input
 preparation are counted. This is cumulative requested memory, not live memory,
 allocator overhead or process/model RSS; no timing claim comes from the observer.
 
-| Static batch | Before calls | After calls | Before requested bytes | After requested bytes |
+| Case / metric | Before | After | Absolute difference | Percentage change |
 | --- | ---: | ---: | ---: | ---: |
-| Short, 1 logical row → 4×64 | 303 | 2 | 27,676 | 4,096 |
-| Short, 4 logical rows → 4×64 | 323 | 2 | 30,684 | 4,096 |
-| Medium, 3 logical rows → 4×128 | 573 | 2 | 81,956 | 8,192 |
-| Long, 1 logical row → 2×256 | 1,064 | 2 | 86,980 | 8,192 |
+| short_partial / requests | 303 | 2 | -301 | -99.34% |
+| short_partial / bytes requested | 27,676 | 4,096 | -23,580 | -85.20% |
+| short_full / requests | 323 | 2 | -321 | -99.38% |
+| short_full / bytes requested | 30,684 | 4,096 | -26,588 | -86.65% |
+| medium_partial / requests | 573 | 2 | -571 | -99.65% |
+| medium_partial / bytes requested | 81,956 | 8,192 | -73,764 | -90.00% |
+| long_partial / requests | 1,064 | 2 | -1,062 | -99.81% |
+| long_partial / bytes requested | 86,980 | 8,192 | -78,788 | -90.58% |
 
 Requested bytes fall 85.2%–90.6% in these four cases. [Raw counts](allocations.json)
 and the [temporary observer](sources/allocation-observer.rs) are retained; the
@@ -36,20 +40,23 @@ per query so a score-cache hit fails the experiment. Warmups reach all three
 static buckets before timing. ORT reports 765 CoreML and 5 CPU nodes in each
 session; this does not attest CoreML's internal GPU/ANE/CPU execution.
 
-| Metric | Before | Candidate |
-| --- | ---: | ---: |
-| Rank p50, per-query median over three rounds | 0.739786 s | 0.729956 s |
-| Rank p95, same scope | 0.951109 s | 0.968910 s |
-| Median 60-query sum of rank-call wall time | 42.993843 s | 43.955873 s |
-| Median whole-process CPU user+system | 9.94 s | 10.37 s |
-| Median peak process RSS | 2,230,321,152 B | 2,231,648,256 B |
-| Whole search / model-only steady RSS / isolated total disk | Not measured | Not measured |
+| Metric | Before | Candidate | Absolute difference | Percentage change |
+| --- | ---: | ---: | ---: | ---: |
+| Candidate score checks per arm | 5,400 | 5,400, exactly equal | 0 | 0% |
+| Rank p50 | 0.739786 s | 0.729956 s | -0.009831 s | -1.33% |
+| Rank p95 | 0.951109 s | 0.968910 s | +0.017801 s | +1.87% |
+| Median 60-query rank-call wall sum | 42.993843 s | 43.955873 s | +0.962030 s | +2.24% |
+| Median whole-process CPU user+system | 9.94 s | 10.37 s | +0.43 s | +4.33% |
+| Median peak process RSS | 2,230,321,152 B | 2,231,648,256 B | +1,327,104 B | +0.06% |
+| Whole search latency | N/A | N/A | N/A | N/A |
+| Model-only steady RSS | N/A | N/A | N/A | N/A |
+| Isolated total disk | N/A | N/A | N/A | N/A |
 
 Candidate/before paired geometric timing ratio is 1.016012, p=0.2275 from
 19,999 query-paired log-ratio sign flips (seed 0), with 23/60 queries faster.
 Percentiles use nearest rank on each query's median. This supports no stable
 rank-speed improvement. The boundary is rank only, not `Engine::search_reranked`.
-The host was a shared Apple M4, Mac16,12, 10 logical CPUs, 32 GiB RAM.
+N/A means these scopes were not measured, so no delta exists. The host was a shared Apple M4, Mac16,12, 10 logical CPUs, 32 GiB RAM.
 Process CPU/RSS include load and warmup but exclude CoreML service/device costs.
 The first process round was substantially colder than later rounds, so do not
 interpret whole-process differences as a model memory or energy improvement.
@@ -69,7 +76,7 @@ All six raw JSON row files, stdout and resource logs are retained beside this
 page. Local paths become `${REPO}`, `${EVAL_HOME}`, `${RUN_ROOT}` and `${INPUT_FILE}`.
 The actual generating [rank harness](sources/rank.rs), [controller](sources/run.py.in),
 [summary](sources/summarize.py.in), and [runtime patch](sources/candidate.patch)
-are retained. Templates change local paths only. To rerun, expand their path
+are retained. The original summarizer is retained as `sources/summarize-original.py.in`; the derived summarizer adds durable CPU/RSS aggregates. Other templates change local paths only. To rerun, expand their path
 placeholders, decompress the input, build the ignored rank harness in separate
 reference/candidate checkouts, and copy their executables to `RUN_ROOT/baseline`
 and `RUN_ROOT/candidate`. Record the fresh executable hashes in the controller's
