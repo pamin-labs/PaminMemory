@@ -23,7 +23,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
-| | `PAMIN_DEVICE` | automatic tier-specific route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
+| | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
 | | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible ONNX Runtime plugin EP libraries; unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
@@ -170,9 +170,13 @@ comparison than its CoreML FP32 export. Provider selection is logged when a
 model loads; Core ML may itself use CPU, GPU or ANE, and its internal placement
 is not established by the provider label. The different weight exports can
 produce different scores. `PAMIN_DEVICE=cpu` forces CPU for comparable tests
-or when another job needs the accelerator. Embedding currently stays on CPU;
-changing it also changes the query and stored vector encoding contract and
-needs paired quality and reindex validation.
+or when another job needs the accelerator. Embedding also tries shared
+accelerator plans using the same export, tokenizer, prefixes and indexed model
+identity. Compatibility checks compare vectors with the CPU export; a rejected
+plan falls back. The finite startup fixtures are a smoke check, not full-corpus
+retrieval certification. Backend performance and broader validation remain
+under review. Changing a model/export or encoding contract needs paired quality
+and reindex validation.
 
 On Linux the CUDA path has two requirements the program cannot meet for you.
 The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
