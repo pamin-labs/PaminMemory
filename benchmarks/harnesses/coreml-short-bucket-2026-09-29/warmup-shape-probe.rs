@@ -38,11 +38,30 @@ fn original_warmups_reach_each_bucket() {
     let selected = repository.join("refs/main");
     assert_eq!(std::fs::read_to_string(&selected).unwrap().trim(), revision);
     let snapshot = repository.join("snapshots").join(revision);
-    let tokenizer = snapshot.join("tokenizer.json");
-    assert_eq!(
-        hash(&tokenizer),
-        "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3"
-    );
+    let token_files = [
+        (
+            "config.json",
+            "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+        ),
+        (
+            "tokenizer.json",
+            "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+        ),
+        (
+            "tokenizer_config.json",
+            "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        ),
+        (
+            "special_tokens_map.json",
+            "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        ),
+    ];
+    let attest_tokenizer = || {
+        for (file, expected) in token_files {
+            assert_eq!(hash(&snapshot.join(file)), expected, "{file} changed");
+        }
+    };
+    attest_tokenizer();
     assert_eq!(hash(&snapshot.join("onnx/model_fp16.onnx")), source_hash);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let writer = Arc::clone(&logs);
@@ -56,10 +75,7 @@ fn original_warmups_reach_each_bucket() {
     assert_eq!(reranker.device(), Device::CoreMl);
     assert_eq!(reranker.counted().maximum_tokens, 256);
     assert_eq!(std::fs::read_to_string(&selected).unwrap().trim(), revision);
-    assert_eq!(
-        hash(&tokenizer),
-        "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3"
-    );
+    attest_tokenizer();
     let prepared = models.join("typed-reranker-v3").join(source_hash);
     assert_eq!(hash(&prepared.join("source.onnx")), source_hash);
     assert_eq!(
