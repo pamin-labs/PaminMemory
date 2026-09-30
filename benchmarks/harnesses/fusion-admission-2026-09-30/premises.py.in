@@ -53,6 +53,36 @@ def tokenizer_assets(models,expected):
             records.append({'role':role,'asset':filename,'path':str(path),'sha256':actual})
     return records
 
+def runtime_assets(expected):
+    records=[]
+    for record in expected:
+        path=Path(record['path'])
+        actual={'path':str(path),'sha256':digest(path),'bytes':path.stat().st_size}
+        assert actual==record, 'runtime library differs from pinned identity'
+        records.append(actual)
+    return records
+
+def mapped_runtime(text,expected,seen):
+    """Verify newly observed runtime mappings; hash each library once/arm."""
+    bypath={str(Path(x['path']).resolve()):x for x in expected}
+    for line in text.splitlines():
+        fields=line.split(None,5)
+        if len(fields)!=6:continue
+        path=fields[5]
+        if not (Path(path).name.startswith('libonnxruntime.so') or 'libzvec_c_api.so' in Path(path).name):continue
+        assert not path.endswith(' (deleted)'), 'mapped runtime was deleted'
+        canonical=str(Path(path).resolve())
+        assert canonical in bypath, 'unexpected mapped runtime library'
+        stat=Path(canonical).stat();major,minor=fields[3].split(':')
+        assert stat.st_ino==int(fields[4]) and stat.st_dev==os.makedev(int(major,16),int(minor,16)), 'runtime path no longer identifies mapped inode'
+        if canonical in seen:continue
+        expected_record=bypath[canonical]
+        assert digest(Path(canonical))==expected_record['sha256'] and stat.st_size==expected_record['bytes']
+        after=Path(canonical).stat()
+        assert (after.st_ino,after.st_dev)==(stat.st_ino,stat.st_dev), 'runtime replaced while hashing'
+        seen[canonical]={**expected_record,'mapped_path':path,'device':fields[3],'inode':int(fields[4])}
+    return seen
+
 def hardware():
     def read(path):
         p=Path(path)
