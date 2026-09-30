@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Prospective cleared tuning for setup/trials; preserve historical run.py.in."""
+import argparse,hashlib,json,os,subprocess,sys
+from datetime import datetime,timezone
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Run guards require assertions; remove -O/PYTHONOPTIMIZE')
+def controlled_environment(parent):
+    inherited=sorted(key for key in parent if key.startswith('PAMIN_'))
+    assert not inherited, 'refuse inherited PAMIN tuning: '+', '.join(inherited)
+    # Clear setup controls too; every relevant field is explicit below.
+    env={key:value for key,value in parent.items() if not key.startswith('FLOOR_')}
+    env.update(PAMIN_DEVICE='cpu',PAMIN_PROFILE='accuracy',PAMIN_INFERENCE_THREADS='4',
+               HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
+    return env
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
+    return h.hexdigest()
+def binary(arm,attestation):
+    name,commit,path=arm.split(',',2);entry=attestation['arms'][name];path=Path(path).resolve()
+    assert entry['commit']==commit and Path(entry['binary']).resolve()==path
+    assert digest(path)==entry['binary_sha256'] and path.stat().st_size==entry['binary_bytes']
+    return path
+def main():
+    env=controlled_environment(os.environ) # before any output/setup/trial
+    p=argparse.ArgumentParser()
+    p.add_argument('--attestation',type=Path,required=True)
+    p.add_argument('--record',type=Path,required=True,help='new private safe-config record outside timing')
+    p.add_argument('--documents',type=int,required=True)
+    p.add_argument('--index',choices=['memory','disk'],required=True)
+    sub=p.add_subparsers(dest='mode',required=True)
+    setup=sub.add_parser('setup');setup.add_argument('--home',type=Path,required=True)
+    setup.add_argument('--arm',required=True);setup.add_argument('--stage',choices=['bootstrap','seed'],required=True)
+    trial=sub.add_parser('trials');trial.add_argument('--seed',type=Path,required=True)
+    trial.add_argument('--output',type=Path,required=True);trial.add_argument('--arm',action='append',required=True)
+    a=p.parse_args();assert not a.record.exists(), 'preserve previous configuration evidence'
+    attestation=json.loads(a.attestation.read_text())
+    assert attestation['scope']=='prospective build-time inputs/outputs only; no historical binary binding'
+    if a.mode=='setup':
+        executable=binary(a.arm,attestation)
+        env.update(PAMIN_EVAL_HOME=str(a.home.resolve()),FLOOR_MODE=a.stage,FLOOR_DOCUMENTS=str(a.documents),FLOOR_VECTOR_INDEX=a.index)
+        command=[str(executable),'--ignored','--exact','restart_floor','--nocapture']
+    else:
+        assert len(a.arm)==3 and {x.split(',',1)[0] for x in a.arm}=={'main','predecessor','candidate'}
+        for arm in a.arm:binary(arm,attestation)
+        assert not a.output.exists()
+        command=[sys.executable,str(Path(__file__).with_name('run.py.in')),'--seed',str(a.seed),'--output',str(a.output),'--documents',str(a.documents),'--index',a.index]
+        for arm in a.arm:command+=['--arm',arm]
+    record={'recorded_utc':datetime.now(timezone.utc).isoformat(),
+            'scope':'prospective setup/trial configuration only; historical inherited tuning remains unknown',
+            'build_attestation_sha256':digest(a.attestation),'command':command,
+            'controlled_environment':{key:env[key] for key in env if key.startswith(('PAMIN_','FLOOR_','HF_HUB_'))},
+            'inherited_pamin_overrides':{},'status':'prepared'}
+    descriptor=os.open(a.record,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(descriptor,'w') as stream:json.dump(record,stream,indent=2);stream.write('\n')
+    result=subprocess.run(command,env=env)
+    record.update(status='finished',returncode=result.returncode)
+    a.record.write_text(json.dumps(record,indent=2)+'\n')
+    assert result.returncode==0
+if __name__=='__main__':main()
