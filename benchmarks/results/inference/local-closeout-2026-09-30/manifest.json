@@ -1,0 +1,545 @@
+{
+  "binary_sha256": "2f7675003ce730719029e3a6d245a7730a575e6d6330023bb14a5eb25aacce93",
+  "commit": "be329b00636987781689ec6ef0c4fc48611cdf1d",
+  "sample_queries": [
+    0,
+    50,
+    100,
+    150,
+    200,
+    250,
+    300,
+    350,
+    400,
+    450,
+    500,
+    550,
+    600,
+    650,
+    700,
+    750,
+    800,
+    850,
+    900,
+    950,
+    1000,
+    1050,
+    1100,
+    1150
+  ],
+  "warmup_queries": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "rounds": 3,
+  "scope": "Engine::search_reranked; whole device plan changes embedding and reranking; CPU INT8 vs CoreML FP16/FP32 tier-specific exports; shared workstation",
+  "hardware": {
+    "chip": "Apple M4",
+    "physical_cores": 10,
+    "performance_cores": 4,
+    "efficiency_cores": 6,
+    "logical_cores": 10,
+    "ram_bytes": 34359738368,
+    "sharing": "shared workstation"
+  },
+  "software": {
+    "macOS": "26.6.2",
+    "build": "25G83",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "onnx_runtime": "1.28.0",
+    "ort_build_info": "git-branch=rel-1.28.0, git-commit-id=da9b5e3, fp8-kv-cache=1, build type=Release"
+  },
+  "identity_provenance": "Hardware/OS and cache identities collected after the runs; ORT version/build recovered from frozen measured executable. No per-run pre/post model-file hashes. OS-at-run not independently recorded.",
+  "models": [
+    {
+      "role": "embedder",
+      "repository": "gpahal/bge-m3-onnx-int8",
+      "cached_revision_observed_after_run": "2b34e84df040034d4b9eabb62383a87c18955822",
+      "source_file": "model_quantized.onnx",
+      "precision": "INT8",
+      "source_sha256_observed_after_run": null
+    },
+    {
+      "role": "accurate-coreml",
+      "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "cached_revision_observed_after_run": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "source_file": "onnx/model_fp16.onnx",
+      "precision": "FP16",
+      "source_sha256_observed_after_run": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3"
+    },
+    {
+      "role": "accurate-cpu",
+      "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "cached_revision_observed_after_run": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "source_file": "onnx/model_int8.onnx",
+      "precision": "INT8",
+      "source_sha256_observed_after_run": null
+    },
+    {
+      "role": "fast-coreml",
+      "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "cached_revision_observed_after_run": "1427fd652930e4ba29e8149678df786c240d8825",
+      "source_file": "onnx/model.onnx",
+      "precision": "FP32",
+      "source_sha256_observed_after_run": "3e9a03ed1e966f7c5288dd4230e3d6a9bf5e3a170a06f1f4241c5bca12c6487c"
+    },
+    {
+      "role": "fast-cpu",
+      "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "cached_revision_observed_after_run": "1427fd652930e4ba29e8149678df786c240d8825",
+      "source_file": "onnx/model_qint8_arm64.onnx",
+      "precision": "ARM INT8",
+      "source_sha256_observed_after_run": null
+    }
+  ],
+  "execution_order": [
+    [
+      "accurate-all",
+      "accurate-gpu",
+      "accurate-cpu",
+      "fast-all",
+      "fast-gpu",
+      "fast-cpu"
+    ],
+    [
+      "accurate-cpu",
+      "fast-all",
+      "fast-gpu",
+      "fast-cpu",
+      "accurate-all",
+      "accurate-gpu"
+    ],
+    [
+      "fast-gpu",
+      "fast-cpu",
+      "accurate-all",
+      "accurate-gpu",
+      "accurate-cpu",
+      "fast-all"
+    ]
+  ],
+  "queries": [
+    {
+      "position": 0,
+      "question_index": 0,
+      "language": "ar",
+      "question_id": "56beb4343aeaaa14008c925b",
+      "text_sha256": "db091018cd0c4bd699efc5d2775a13adae91e92fe0f29470b64d631459beaffa"
+    },
+    {
+      "position": 50,
+      "question_index": 50,
+      "language": "ru",
+      "question_id": "56d7253b0d65d214001983d5",
+      "text_sha256": "7145eb5b6b89adc593bcb8cd976cb0e1007a273964ff3ebb6a6baf152266f59c"
+    },
+    {
+      "position": 100,
+      "question_index": 100,
+      "language": "de",
+      "question_id": "56e0d6cf231d4119001ac424",
+      "text_sha256": "274fa92c7fe4a6fbb0af02c12c4a43a1b5da27bb7bd7cf2e44e7f82ffeb895a1"
+    },
+    {
+      "position": 150,
+      "question_index": 150,
+      "language": "th",
+      "question_id": "56e77da237bdd419002c403c",
+      "text_sha256": "c4eb8a6c34145e5771f54cd0922fcb2f6977cf8428aa4633f743f479d5746025"
+    },
+    {
+      "position": 200,
+      "question_index": 200,
+      "language": "el",
+      "question_id": "5706149552bb891400689883",
+      "text_sha256": "72f7acaf7ecc154f931dc8cc2e4eb5de93588b0096828b051dd9fb8178dfe66f"
+    },
+    {
+      "position": 250,
+      "question_index": 250,
+      "language": "tr",
+      "question_id": "570d4a6bfed7b91900d45e16",
+      "text_sha256": "73fb4d272cc28bc8d75474d170b55ae6a585f2f7445b5433f9894558352fcbe1"
+    },
+    {
+      "position": 300,
+      "question_index": 300,
+      "language": "en",
+      "question_id": "571c8539dd7acb1400e4c0e3",
+      "text_sha256": "d071b9c8372c41f0e1ca4cef89a12eaac8594922b7eb027e2dad4d0773398614"
+    },
+    {
+      "position": 350,
+      "question_index": 350,
+      "language": "vi",
+      "question_id": "5725cc38ec44d21400f3d5bc",
+      "text_sha256": "446e698b938cd57ad1e49cb53b8b74307d9f1ac73e3e93d0333e12d14d95d492"
+    },
+    {
+      "position": 400,
+      "question_index": 400,
+      "language": "es",
+      "question_id": "5726241189a1e219009ac2e2",
+      "text_sha256": "8194b9a80cc4a255492e70ea79beb1c2e078995b77bdeaddeecaaa59ed89d3b8"
+    },
+    {
+      "position": 450,
+      "question_index": 450,
+      "language": "zh",
+      "question_id": "572651f9f1498d1400e8dbee",
+      "text_sha256": "a0b9085e34d321f594a53746fde61f126dd5b6f85ee70743e54b037db975f5c1"
+    },
+    {
+      "position": 500,
+      "question_index": 500,
+      "language": "hi",
+      "question_id": "572683f95951b619008f7525",
+      "text_sha256": "debe695b44cf51d1c62062848ab3b0b29f3724ffd47bbe4da594d99a678875df"
+    },
+    {
+      "position": 550,
+      "question_index": 550,
+      "language": "ar",
+      "question_id": "5726a299dd62a815002e8b9f",
+      "text_sha256": "326088c0d0a203c61127f31aee93867f390f037e74a22f4777d563b01ef059bb"
+    },
+    {
+      "position": 600,
+      "question_index": 600,
+      "language": "ru",
+      "question_id": "5726eb8bf1498d1400e8efe3",
+      "text_sha256": "81f7ea8af6c36e08ce3c3404373ffa8dd60254edad40430bd91be41f7fecfc3c"
+    },
+    {
+      "position": 650,
+      "question_index": 650,
+      "language": "de",
+      "question_id": "57273f27dd62a815002e9a0a",
+      "text_sha256": "c0ac064869c069ad8b3236722ffba023e3db4d8b3096eedcece598cf86dbdc99"
+    },
+    {
+      "position": 700,
+      "question_index": 700,
+      "language": "th",
+      "question_id": "5727aec03acd2414000de991",
+      "text_sha256": "4772c3eb2dbb23b14981c87845fb445b41d40ec7cfe0f4e1c4c462b73cdf0dd3"
+    },
+    {
+      "position": 750,
+      "question_index": 750,
+      "language": "el",
+      "question_id": "57281a952ca10214002d9deb",
+      "text_sha256": "5270328e05c450b989379674595f668749fca550174e1dcb184fe007e1b9bc92"
+    },
+    {
+      "position": 800,
+      "question_index": 800,
+      "language": "tr",
+      "question_id": "57286951ff5b5019007da20f",
+      "text_sha256": "17e41b06e042c84200987ab95a8c4c3d5f133c4dfafae400f945027387b2935b"
+    },
+    {
+      "position": 850,
+      "question_index": 850,
+      "language": "en",
+      "question_id": "5728eb1a3acd2414000e01c9",
+      "text_sha256": "1a325614fa63b2b922b99485b08714643df197910047bab307a99507510f8645"
+    },
+    {
+      "position": 900,
+      "question_index": 900,
+      "language": "vi",
+      "question_id": "57294e6b1d04691400779276",
+      "text_sha256": "f91ce3df6504a2eb21428709f5b89adaace4cf7935bcb8bb49c5ff6550016dba"
+    },
+    {
+      "position": 950,
+      "question_index": 950,
+      "language": "es",
+      "question_id": "5729e2316aef0514001550c6",
+      "text_sha256": "1ce2e26a2921263f62d46f0260e595db58aba019408e092c358e2fb0ac607ae6"
+    },
+    {
+      "position": 1000,
+      "question_index": 1000,
+      "language": "zh",
+      "question_id": "572a13841d0469140077973c",
+      "text_sha256": "d48b7064b0664303e62c43d9a1aed2cf3b7fede9643694322406e9b6f866412d"
+    },
+    {
+      "position": 1050,
+      "question_index": 1050,
+      "language": "hi",
+      "question_id": "572ff932a23a5019007fcbd7",
+      "text_sha256": "298b97e8a1f16584a41fde7c6ab71da4e2a11e29d0100153818b903876b519b3"
+    },
+    {
+      "position": 1100,
+      "question_index": 1100,
+      "language": "ar",
+      "question_id": "573093598ab72b1400f9c5b0",
+      "text_sha256": "886e9aa937ac2d319004d2bd1e79323fc994ea39747b0ab93e1a7f56fd2aa5fb"
+    },
+    {
+      "position": 1150,
+      "question_index": 1150,
+      "language": "ru",
+      "question_id": "5733a32bd058e614000b5f34",
+      "text_sha256": "3311a4e6e7b9829e7b0c69ddd8df995298f6cba870c0f12a3eb960ea12194e84"
+    }
+  ],
+  "query_order_rule": "Corpus::questions order at source commit, one language per question, LANGUAGES[position % 11]; XQUAD_ALL_QUERIES unset; measured positions 0..1190 step 50.",
+  "index": {
+    "project": "xquad-accuracy-24ad7f1862182925-705ffaf38623fb5c",
+    "documents": 13014,
+    "profile": "accuracy",
+    "vector_index": "memory",
+    "completeness": 1.0
+  },
+  "warnings": "Fast CoreML logs contain E5RT shape/ANE warnings despite positive CoreML node assignment. ALL is a requested compute-unit policy, not proof all hardware executes the model.",
+  "files": {
+    "rows/accurate-all-0.attestation.txt": {
+      "sha256": "ee9e5c998499d11b2964992d2004516babd5ac203b9f5c791aebf0bc6d748571",
+      "bytes": 1705
+    },
+    "rows/accurate-all-0.json.gz": {
+      "sha256": "6934c906857446a8c9c5221e363326ade99231a22b03ba4c8d9f05b6c19abe38",
+      "bytes": 5356
+    },
+    "rows/accurate-all-0.resource": {
+      "sha256": "a01923eb4bb475ea5fe19e57cd079e77df7ab4006cb6a4c22f9b0f28f12ddaaf",
+      "bytes": 777
+    },
+    "rows/accurate-all-1.attestation.txt": {
+      "sha256": "8909d67460655e97db2ec3ff649109ddcbe88c6945db9f2d00f945fc23533636",
+      "bytes": 1704
+    },
+    "rows/accurate-all-1.json.gz": {
+      "sha256": "e2f5ec2e472e766acf5cea7e658e85873ded1ed2b6cb9a56c10e97fa73016805",
+      "bytes": 5358
+    },
+    "rows/accurate-all-1.resource": {
+      "sha256": "5f485b8e2bf46ff5956d48dc7f0335398a8d0dc9d1b1889abad0ee36e0376622",
+      "bytes": 777
+    },
+    "rows/accurate-all-2.attestation.txt": {
+      "sha256": "578d0ab2bc7ddb273730f11785524936a643cd039618563085a053eb74313aa5",
+      "bytes": 1704
+    },
+    "rows/accurate-all-2.json.gz": {
+      "sha256": "ac4e010230db35fe85f3bbf76769e4a9118ac39b32555a74bd7cd00107ae8810",
+      "bytes": 5367
+    },
+    "rows/accurate-all-2.resource": {
+      "sha256": "4c6603221da42f2db596f689c899f6c6cc9e496aa360d28d92a2b5896d859595",
+      "bytes": 777
+    },
+    "rows/accurate-cpu-0.attestation.txt": {
+      "sha256": "1b737b4a5bffeeee251dc22150119ff0eb07d66b396d9b0f6927c50ffae1049a",
+      "bytes": 1094
+    },
+    "rows/accurate-cpu-0.json.gz": {
+      "sha256": "cce361b2478b6e0837603919f0918f7a9243ecb925b7f785cfbfbcbdc49cbbe9",
+      "bytes": 5392
+    },
+    "rows/accurate-cpu-0.resource": {
+      "sha256": "68b714fcd7506313077195b49f284e4f6be83af73b0c7835f64b332d298a2a91",
+      "bytes": 777
+    },
+    "rows/accurate-cpu-1.attestation.txt": {
+      "sha256": "81b8c4f6dea3660e15fa4f7c93df09c4f91116af2da0da4b3222de05f5be501d",
+      "bytes": 1094
+    },
+    "rows/accurate-cpu-1.json.gz": {
+      "sha256": "90ccd3a96d9c533edd4732a6699204cdc5fc086f9a8e8356eb5f627a580fdd79",
+      "bytes": 5387
+    },
+    "rows/accurate-cpu-1.resource": {
+      "sha256": "ecc41ff1143bc34ea032d4062a103a42eda10d802d58180fe0e9a0a605683d66",
+      "bytes": 777
+    },
+    "rows/accurate-cpu-2.attestation.txt": {
+      "sha256": "6df149417a8e272ae12930983b508aa6acb1f0b46493661cc057f8210dc22370",
+      "bytes": 1095
+    },
+    "rows/accurate-cpu-2.json.gz": {
+      "sha256": "c4f5fa29381697d6d0dd2b12a85b1771a391efaa03fbba4e2bc240d938c82f50",
+      "bytes": 5410
+    },
+    "rows/accurate-cpu-2.resource": {
+      "sha256": "973851acbaeb750f63f7085aac09a4de079fdf89cabd4075640667047c11078a",
+      "bytes": 777
+    },
+    "rows/accurate-gpu-0.attestation.txt": {
+      "sha256": "bac9d6d6dcf8928bd0b44761decf9bad583410a4675546c42027ea94460aad6f",
+      "bytes": 1705
+    },
+    "rows/accurate-gpu-0.json.gz": {
+      "sha256": "722a829845b7913e85c02e3faec5b8c2c563638c706944d49304fcce5a50d20d",
+      "bytes": 5397
+    },
+    "rows/accurate-gpu-0.resource": {
+      "sha256": "e21758228c442e39660ca726ba7f540e781f6dc8e9fa3c74c39fdb2bca3867be",
+      "bytes": 777
+    },
+    "rows/accurate-gpu-1.attestation.txt": {
+      "sha256": "75e8a53a35deef43f1315b93224575a0e851391e387c04c8adce639eecb304ff",
+      "bytes": 1705
+    },
+    "rows/accurate-gpu-1.json.gz": {
+      "sha256": "f7e27f8caa11959c677a39d6c975bc0b70e28c663d2ad87a952b6cdf05250b04",
+      "bytes": 5403
+    },
+    "rows/accurate-gpu-1.resource": {
+      "sha256": "9d10f3e3e4b3379e2b64cfd654a9134b000dd63f071fdbb56f98e464c841103e",
+      "bytes": 777
+    },
+    "rows/accurate-gpu-2.attestation.txt": {
+      "sha256": "9cdeec2b20647f644a53e79b65178acbe142ce29c135623868fb11d281344bba",
+      "bytes": 1705
+    },
+    "rows/accurate-gpu-2.json.gz": {
+      "sha256": "1e69b28e0419543a66f0ecb0e55932b158620414df2827c52eba5ffa69783701",
+      "bytes": 5391
+    },
+    "rows/accurate-gpu-2.resource": {
+      "sha256": "8510d4be72f773a730ecab624a371a9a62918221c5d4e3b53c1584a01fde06ce",
+      "bytes": 777
+    },
+    "rows/fast-all-0.attestation.txt": {
+      "sha256": "a706ff95b4564f10c22febb4d0105019a4b538c518a2903aa66f5db3892118a5",
+      "bytes": 1185
+    },
+    "rows/fast-all-0.json.gz": {
+      "sha256": "c125fd46708d5ad0d373e8ea34a9e4b12431590b62712d13848cfeeb8c57a41c",
+      "bytes": 5609
+    },
+    "rows/fast-all-0.resource": {
+      "sha256": "046bcbe0d8c3b5c304ad183122f6ffb22a265c92ba63f012ff40ec5b1a2f7121",
+      "bytes": 777
+    },
+    "rows/fast-all-1.attestation.txt": {
+      "sha256": "7c2cad6ab64b8489907e9bd26241dcf39d08e32e2e6988b6fbd6993e6c30dd9b",
+      "bytes": 1185
+    },
+    "rows/fast-all-1.json.gz": {
+      "sha256": "ccd95abe596b75aa18bc320ac304a977b8f8d9c4bad97f08689225b76960d77d",
+      "bytes": 5631
+    },
+    "rows/fast-all-1.resource": {
+      "sha256": "e109ceedfa0191607508977515e76c2b5cb4b5ff25e8ce5eb726436c3c2f2a88",
+      "bytes": 777
+    },
+    "rows/fast-all-2.attestation.txt": {
+      "sha256": "13a1e785e084bc4e3eeb823d304d7324e36832edf3c78e817b15f070361dc468",
+      "bytes": 1185
+    },
+    "rows/fast-all-2.json.gz": {
+      "sha256": "fdd5bac4dd82c4e9677cf945a7509a0da6d244b9beb451df78606b508c70ea90",
+      "bytes": 5607
+    },
+    "rows/fast-all-2.resource": {
+      "sha256": "991e2e0e76c1bf795068698b1fb97e80c56dae48be983ee3fc1d05a6866bead3",
+      "bytes": 777
+    },
+    "rows/fast-cpu-0.attestation.txt": {
+      "sha256": "30efd9d078614210bfbd570cdd704b41e65720ef73572bd30c150d67dfcd2114",
+      "bytes": 1086
+    },
+    "rows/fast-cpu-0.json.gz": {
+      "sha256": "59b863a76bcae55797728727fed65e737a57e30f152db886bb33708c512351c9",
+      "bytes": 5583
+    },
+    "rows/fast-cpu-0.resource": {
+      "sha256": "c39f6b70eb44ea70b5aa0053f4de1827562bdf2e632b1602eefd4916a5facc0e",
+      "bytes": 777
+    },
+    "rows/fast-cpu-1.attestation.txt": {
+      "sha256": "478d3a1c3d572ad9d72c85a1499172d6a175b3f96eae3ed4640e96551fc1066b",
+      "bytes": 1086
+    },
+    "rows/fast-cpu-1.json.gz": {
+      "sha256": "34c2820832faf407a19a928a5e7545932836b708a1d94fa7f8f5abffccc7a94a",
+      "bytes": 5605
+    },
+    "rows/fast-cpu-1.resource": {
+      "sha256": "00cc1c718d7107f32174cab8cfae238389799471b43aa0da6bd87137a3e1a1b7",
+      "bytes": 777
+    },
+    "rows/fast-cpu-2.attestation.txt": {
+      "sha256": "c6acb19b1cc748fb181730641481e1e612e4c27e50ea82c4828d15984b48bfc4",
+      "bytes": 1086
+    },
+    "rows/fast-cpu-2.json.gz": {
+      "sha256": "56540f54db932612321b44f81ddb8b901303ea080d35efab7dca57f00be80e48",
+      "bytes": 5605
+    },
+    "rows/fast-cpu-2.resource": {
+      "sha256": "42efcb0d0c2d1d024c7249bc4b36e9648ff3f4b507b40b4db788ca82521c04ae",
+      "bytes": 777
+    },
+    "rows/fast-gpu-0.attestation.txt": {
+      "sha256": "806a6954f577d9fc209add2261efdb3f87804e699153cd800832d42b6a54166c",
+      "bytes": 1185
+    },
+    "rows/fast-gpu-0.json.gz": {
+      "sha256": "898cf91630ee85626fc30e2b4346acb051c41cbebc975b4b0a373968932a85f4",
+      "bytes": 5626
+    },
+    "rows/fast-gpu-0.resource": {
+      "sha256": "b1b43799cd07295506d0e0e286fee4a2ec7501fb6f18db001663e39556acc520",
+      "bytes": 777
+    },
+    "rows/fast-gpu-1.attestation.txt": {
+      "sha256": "595a54b6a2763fc829e0ab5d7b83c092be330d97928e78cb32fbc8e7d9688384",
+      "bytes": 1185
+    },
+    "rows/fast-gpu-1.json.gz": {
+      "sha256": "fab0fea549b46e7ef3e80ca0071ad1dba5ec60216ede23cbfad985e4c2ae2fa0",
+      "bytes": 5626
+    },
+    "rows/fast-gpu-1.resource": {
+      "sha256": "2684a2c36411a51f09e75bd25026ea55e26391472c29c0bc7f1eda1957e7dd76",
+      "bytes": 777
+    },
+    "rows/fast-gpu-2.attestation.txt": {
+      "sha256": "97ed40ea66b871eddae9daace5d4b5652349365ffc11cbc4dd591ba68a521f5f",
+      "bytes": 1185
+    },
+    "rows/fast-gpu-2.json.gz": {
+      "sha256": "fa42bd94da370fbe4dd115a9e03a412c0ba745cfa5f2c894e24957716ccb8329",
+      "bytes": 5635
+    },
+    "rows/fast-gpu-2.resource": {
+      "sha256": "968334b729dfccd70a6e953d4e384ed7500388ff8178c486fb1a7d191d961cfd",
+      "bytes": 777
+    },
+    "sources/experiment.patch": {
+      "sha256": "9f8581de85ad8ff59127db77c0ee747499066c52356a0e72172fd37b5fb61562",
+      "bytes": 4775
+    },
+    "sources/harness.rs": {
+      "sha256": "eee95708a8d5a717c28e988b6d0db8f840014fa9df640b686405c32d0629d889",
+      "bytes": 2404
+    },
+    "sources/run.py.in": {
+      "sha256": "dc6f7e51bb22a656f9ee2e992c041efbc04d481d661f42f7d6d9189a6d7cab17",
+      "bytes": 2586
+    },
+    "summarize.py": {
+      "sha256": "f00d240fb2b57df67bdb667bc04f988155c3e4310a564beb19ad51078baa592e",
+      "bytes": 2947
+    },
+    "verify.py": {
+      "sha256": "c010f6e3a38e0047d67ec34258455cbd3403a7c99919dd977fd7b5e62f90ef60",
+      "bytes": 803
+    }
+  },
+  "dataset_source": "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r"
+}
