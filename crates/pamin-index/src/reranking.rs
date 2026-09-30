@@ -739,7 +739,7 @@ impl Reranker {
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             let loaded = Encoder::load(model, &repository, max_tokens(), providers);
             let encoder = loaded
-                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
+                .map_err(|error| error.context("loading the reranker"))?;
             // The shared calibration compares actual candidate scores with
             // the already resident product CPU reference. Do not allocate a
             // third FP16 CPU session while both plans are live.
@@ -777,7 +777,7 @@ impl Reranker {
                             let encoded = model.encode(pairs)?;
                             let values = score(model, encoded, batch_tokens(), batch())?.0;
                             if values.len() != 32 || !values.iter().all(|v| v.is_finite()) {
-                                return Err(IndexError::Incompatible(
+                                return Err(IndexError::Numerical(
                                     "reranker calibration returned invalid scores".into(),
                                 ));
                             }
@@ -974,7 +974,7 @@ const ORDER_PAIRS: [(&str, &str); 4] = [
 /// drift between a candidate export and the product's optimized CPU export.
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
     let failed = || {
-        IndexError::Incompatible("accelerator failed the startup reranker ordering fixture".into())
+        IndexError::Numerical("accelerator failed the startup reranker ordering fixture".into())
     };
     if expected.len() != 4
         || observed.len() != 4
