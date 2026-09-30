@@ -87,3 +87,20 @@ def timing_review(summary,raw):
                 screens[key+'/'+metric]={'before_process_values':av,'after_process_values':bv,'reference_spread_fraction':sa,'candidate_spread_fraction':sb,'paired_deltas':d,'withhold_comparison':bool(reasons),'reasons':reasons}
         result[reference]['raw_call_timing']=screens
     return result
+
+
+def seed_endpoint(provenance, record):
+    """Late surviving-file endpoint identity; never historical per-copy proof."""
+    entries=provenance['seed_files']
+    inventory={entry['path']:[entry['bytes'],entry['sha256']] for entry in entries}
+    assert len(inventory)==len(entries)
+    encoded=json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()
+    assert record['canonical_inventory_sha256']==hashlib.sha256(encoded).hexdigest()
+    assert record['file_count']==len(entries)
+    assert record['total_bytes']==sum(entry['bytes'] for entry in entries)
+    assert record['matches_pretrial_inventory'] and record['seed_postgresql_stopped'] and record['metadata_stable_during_capture']
+    assert record['seed_models_symlink_target']==provenance['seed_models_symlink_target']=='<MODEL_CACHE>'
+    assert record['historical_per_copy_attested'] is False
+    assert record['started_utc'] and record['finished_utc'] and record['started_utc']<=record['finished_utc']
+    assert 'not historical per-copy attestation' in record['scope']
+    assert record['canonical_encoding']=='UTF-8 JSON object path -> [bytes, sha256], sorted keys, separators comma/colon'
