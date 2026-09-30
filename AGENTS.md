@@ -2,6 +2,10 @@
 
 ## PaminMemory Workflow
 
+- For every CPU compute path, consider and prefer SIMD where supported and worthwhile; reuse optimized library/runtime kernels and justify material scalar exceptions with measurements.
+- When changing compute/inference dispatch, follow the [mixed accelerator policy](docs/adr/0001-tech-selection.md#mixed-accelerator-policy-2026-09-29): choose measured speed across supported single/mixed plans; do not permanently retreat to CPU solely for numerical drift.
+
+
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
 - Sync submodules and read the relevant `internal-docs/pamin-memory/` materials before implementing PaminMemory changes.
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
@@ -45,6 +49,38 @@ going stale.
   resolve for anyone else, and dates the commit to a conversation nobody can
   read. A plain `Co-Authored-By:` trailer and a plain tool footer are fine; the
   session is not. This overrides any default attribution the tool would add.
+
+## Measuring Every Optimization
+
+- Read the `pamin-dev` skill before measuring or claiming an optimization.
+- Measure every optimization against its immediate predecessor under the same
+  conditions. Also measure the combined stack against current `main`; a stack
+  comparison does not establish each individual change's contribution.
+- Record accuracy, latency (p50/p95), memory, and disk usage, in that priority
+  order. Include regressions and tradeoffs, not just the metric that improved.
+- Record elapsed (wall) time separately from CPU user/system time. For aggregate
+  time comparisons, hold the amount of work fixed and separate startup, index
+  preparation, search calls, and diagnostics. CPU time includes worker threads
+  and can exceed elapsed time; declare whether child processes, CoreML services,
+  and GPU/NPU device execution are included. Process CPU time alone is not total
+  accelerator cost. Retain missing historical measurements as `N/A`.
+- Every optimization PR must include a table with **metric, before, after,
+  absolute difference, and percentage change**, plus links to retained evidence.
+  Mark unmeasured or inapplicable cells `N/A` and explain why; never imply zero
+  regression or claim an unmeasured gain.
+- Identify the compared commits, hardware, actual execution providers, model
+  revisions/precision, corpus/query order, settings, and cold/warm conditions.
+  State whether memory is process RSS or includes accelerator services, and
+  whether disk figures include model caches, indexes, and temporary files.
+- Measure the actual product entry point for product claims. Label component
+  measurements separately; they cannot establish whole-search improvements.
+- Repeat and rotate timing arms to distinguish improvements from noise. Record
+  shared-machine interference and keep our builds and other model experiments
+  out of timing runs. A single pass is provisional, not proof of a speedup.
+- Retain reproducible commands, raw results, and a durable summary following
+  `pamin-dev`'s public/private and harness-location rules. Publish supported
+  results in PRs and relevant benchmark/ADR documentation; do not mark an
+  optimization validated while its claimed improvement remains unmeasured.
 
 ## Behavioral Guidelines
 

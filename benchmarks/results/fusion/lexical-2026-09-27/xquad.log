@@ -1,0 +1,179 @@
+   Compiling pamin-engine v0.0.1 (<source-checkout>/crates/pamin-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.71s
+     Running tests/crosslingual.rs (<binary-build-checkout>/target/debug/deps/crosslingual-892ab1f261f9fc79)
+
+running 1 test
+
+  each channel on its own, cross_lingual, accuracy
+  channel               queries   nDCG@10   recall@50
+  ---------------------------------------------------------------
+  LexicalSegmented          1189    0.0266      0.0558
+  LexicalNgram              1190    0.0120      0.0233
+  Vector                    1190    0.6677      0.9033
+  all four fused            1190    0.6372      0.9032
+
+  with one channel taken away, cross_lingual:
+  LexicalSegmented       +0.0170  425W/17L/748T  p=0.0001
+  LexicalNgram           +0.0151  391W/12L/787T  p=0.0001
+  Vector                 -0.6196  4W/1099L/87T  p=0.0001
+  Graph                  +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+
+  each channel on its own, same_language, accuracy
+  channel               queries   nDCG@10   recall@50
+  ---------------------------------------------------------------
+  LexicalSegmented          1189    0.7409      0.9024
+  LexicalNgram              1190    0.7351      0.9017
+  Vector                    1190    0.8138      0.9580
+  all four fused            1190    0.8438      0.9647
+
+  with one channel taken away, same_language:
+  LexicalSegmented       -0.0126  13W/85L/1092T  p=0.0001
+  LexicalNgram           -0.0133  13W/83L/1094T  p=0.0001
+  Vector                 -0.0507  112W/224L/854T  p=0.0001
+  Graph                  +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+
+  every setting against the one that ships, cross_lingual, accuracy
+  setting                        nDCG@10   recall@50     diff   can see   family p   own comparison
+  ----------------------------------------------------------------------------------------------------------------------
+  lex seg 0.0000 ngram 0.0000     0.6677      0.9033   +0.0305    0.0042     0.0001   +0.0305  554W/17L/619T  p=0.0001
+  lex seg 0.0000 ngram 0.0625     0.6605      0.9033   +0.0232    0.0036     0.0001   +0.0232  504W/15L/671T  p=0.0001
+  lex seg 0.0000 ngram 0.1250     0.6542      0.9033   +0.0170    0.0029     0.0001   +0.0170  425W/17L/748T  p=0.0001
+  lex seg 0.0000 ngram 0.2500     0.6377      0.9022   +0.0004    0.0023     1.0000   +0.0004  202W/196L/792T  p=0.5913  (not significant)
+  lex seg 0.0000 ngram 0.5000     0.6002      0.8923   -0.0370    0.0057     0.0001   -0.0370  87W/573L/530T  p=0.0001
+  lex seg 0.0625 ngram 0.0000     0.6601      0.9034   +0.0229    0.0034     0.0001   +0.0229  508W/13L/669T  p=0.0001
+  lex seg 0.0625 ngram 0.0625     0.6536      0.9033   +0.0164    0.0027     0.0001   +0.0164  442W/10L/738T  p=0.0001
+  lex seg 0.0625 ngram 0.1250     0.6460      0.9033   +0.0088    0.0018     0.0001   +0.0088  324W/10L/856T  p=0.0001
+  lex seg 0.0625 ngram 0.2500     0.6292      0.9018   -0.0081    0.0023     0.0001   -0.0081  86W/321L/783T  p=0.0001
+  lex seg 0.0625 ngram 0.5000     0.5915      0.8906   -0.0457    0.0061     0.0001   -0.0457  56W/634L/500T  p=0.0001
+  lex seg 0.1250 ngram 0.0000     0.6523      0.9034   +0.0151    0.0027     0.0001   +0.0151  391W/12L/787T  p=0.0001
+  lex seg 0.1250 ngram 0.0625     0.6448      0.9033   +0.0076    0.0017     0.0001   +0.0076  298W/8L/884T  p=0.0001
+  lex seg 0.1250 ngram 0.1250     0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  lex seg 0.1250 ngram 0.2500     0.6207      0.9010   -0.0165    0.0028     0.0001   -0.0165  10W/430L/750T  p=0.0001
+  lex seg 0.1250 ngram 0.5000     0.5818      0.8895   -0.0554    0.0066     0.0001   -0.0554  11W/683L/496T  p=0.0001
+  lex seg 0.2500 ngram 0.0000     0.6358      0.9023   -0.0015    0.0022     0.4508   -0.0015  147W/214L/829T  p=0.0581  (not significant)
+  lex seg 0.2500 ngram 0.0625     0.6273      0.9018   -0.0099    0.0023     0.0001   -0.0099  61W/365L/764T  p=0.0001
+  lex seg 0.2500 ngram 0.1250     0.6195      0.9008   -0.0177    0.0030     0.0001   -0.0177  13W/460L/717T  p=0.0001
+  lex seg 0.2500 ngram 0.2500     0.6028      0.8987   -0.0344    0.0047     0.0001   -0.0344  17W/617L/556T  p=0.0001
+  lex seg 0.2500 ngram 0.5000     0.5639      0.8863   -0.0734    0.0076     0.0001   -0.0734  16W/787L/387T  p=0.0001
+  lex seg 0.5000 ngram 0.0000     0.5966      0.8950   -0.0406    0.0055     0.0001   -0.0406  62W/631L/497T  p=0.0001
+  lex seg 0.5000 ngram 0.0625     0.5875      0.8940   -0.0497    0.0059     0.0001   -0.0497  41W/681L/468T  p=0.0001
+  lex seg 0.5000 ngram 0.1250     0.5797      0.8925   -0.0575    0.0064     0.0001   -0.0575  13W/715L/462T  p=0.0001
+  lex seg 0.5000 ngram 0.2500     0.5632      0.8892   -0.0740    0.0076     0.0001   -0.0740  16W/808L/366T  p=0.0001
+  lex seg 0.5000 ngram 0.5000     0.5205      0.8790   -0.1167    0.0101     0.0001   -0.1167  15W/901L/274T  p=0.0001
+  combine rrf                     0.6321      0.9032   -0.0051    0.0032     0.0001   -0.0051  242W/349L/599T  p=0.0001
+  combine band                    0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  k 0                             0.6475      0.8924   +0.0102    0.0020     0.0001   +0.0102  378W/14L/798T  p=0.0001
+  k 5                             0.6434      0.9013   +0.0062    0.0015     0.0001   +0.0062  257W/10L/923T  p=0.0001
+  k 10                            0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  k 20                            0.6260      0.9033   -0.0112    0.0023     0.0001   -0.0112  10W/386L/794T  p=0.0001
+  k 60                            0.5751      0.9033   -0.0621    0.0068     0.0001   -0.0621  18W/758L/414T  p=0.0001
+  graph 0.00                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 0.15                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 0.30                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 0.50                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 1.00                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+
+  every setting against the one that ships, same_language, accuracy
+  setting                        nDCG@10   recall@50     diff   can see   family p   own comparison
+  ----------------------------------------------------------------------------------------------------------------------
+  lex seg 0.0000 ngram 0.0000     0.8138      0.9580   -0.0300    0.0094     0.0001   -0.0300  17W/140L/1033T  p=0.0001
+  lex seg 0.0000 ngram 0.0625     0.8222      0.9597   -0.0216    0.0079     0.0001   -0.0216  15W/115L/1060T  p=0.0001
+  lex seg 0.0000 ngram 0.1250     0.8312      0.9597   -0.0126    0.0060     0.0001   -0.0126  13W/85L/1092T  p=0.0001
+  lex seg 0.0000 ngram 0.2500     0.8445      0.9597   +0.0007    0.0043     1.0000   +0.0007  27W/29L/1134T  p=0.6811  (not significant)
+  lex seg 0.0000 ngram 0.5000     0.8575      0.9613   +0.0137    0.0082     0.0001   +0.0137  90W/35L/1065T  p=0.0001
+test search_reaches_across_languages has been running for over 60 seconds
+  lex seg 0.0625 ngram 0.0000     0.8225      0.9630   -0.0213    0.0078     0.0001   -0.0213  13W/113L/1064T  p=0.0001
+  lex seg 0.0625 ngram 0.0625     0.8305      0.9630   -0.0133    0.0059     0.0001   -0.0133  9W/84L/1097T  p=0.0001
+  lex seg 0.0625 ngram 0.1250     0.8384      0.9605   -0.0054    0.0038     0.0017   -0.0054  7W/53L/1130T  p=0.0001
+  lex seg 0.0625 ngram 0.2500     0.8501      0.9613   +0.0062    0.0048     0.0051   +0.0062  47W/17L/1126T  p=0.0004
+  lex seg 0.0625 ngram 0.5000     0.8597      0.9647   +0.0159    0.0085     0.0001   +0.0159  94W/33L/1063T  p=0.0001
+  lex seg 0.1250 ngram 0.0000     0.8305      0.9630   -0.0133    0.0064     0.0001   -0.0133  13W/83L/1094T  p=0.0001
+  lex seg 0.1250 ngram 0.0625     0.8372      0.9630   -0.0066    0.0043     0.0004   -0.0066  6W/53L/1131T  p=0.0001
+  lex seg 0.1250 ngram 0.1250     0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  lex seg 0.1250 ngram 0.2500     0.8526      0.9647   +0.0088    0.0052     0.0001   +0.0088  60W/11L/1119T  p=0.0001
+  lex seg 0.1250 ngram 0.5000     0.8628      0.9647   +0.0190    0.0087     0.0001   +0.0190  97W/27L/1066T  p=0.0001
+  lex seg 0.2500 ngram 0.0000     0.8395      0.9655   -0.0043    0.0056     0.3780   -0.0043  30W/45L/1115T  p=0.0317
+  lex seg 0.2500 ngram 0.0625     0.8465      0.9664   +0.0027    0.0050     0.8276   +0.0027  47W/24L/1119T  p=0.1315  (not significant)
+  lex seg 0.2500 ngram 0.1250     0.8510      0.9672   +0.0072    0.0049     0.0007   +0.0072  57W/12L/1121T  p=0.0001
+  lex seg 0.2500 ngram 0.2500     0.8582      0.9689   +0.0144    0.0068     0.0001   +0.0144  95W/19L/1076T  p=0.0001
+  lex seg 0.2500 ngram 0.5000     0.8664      0.9655   +0.0226    0.0096     0.0001   +0.0226  112W/28L/1050T  p=0.0001
+  lex seg 0.5000 ngram 0.0000     0.8522      0.9672   +0.0084    0.0085     0.0813   +0.0084  85W/48L/1057T  p=0.0051
+  lex seg 0.5000 ngram 0.0625     0.8569      0.9681   +0.0131    0.0088     0.0007   +0.0131  97W/44L/1049T  p=0.0002
+  lex seg 0.5000 ngram 0.1250     0.8596      0.9681   +0.0158    0.0090     0.0001   +0.0158  106W/40L/1044T  p=0.0001
+  lex seg 0.5000 ngram 0.2500     0.8620      0.9681   +0.0182    0.0100     0.0001   +0.0182  111W/42L/1037T  p=0.0001
+  lex seg 0.5000 ngram 0.5000     0.8680      0.9639   +0.0242    0.0116     0.0001   +0.0242  128W/48L/1014T  p=0.0001
+  combine rrf                     0.8360      0.9655   -0.0078    0.0061     0.0056   -0.0078  27W/63L/1100T  p=0.0002
+  combine band                    0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  k 0                             0.8388      0.9664   -0.0050    0.0031     0.0002   -0.0050  1W/46L/1143T  p=0.0001
+  k 5                             0.8406      0.9664   -0.0032    0.0024     0.0024   -0.0032  0W/27L/1163T  p=0.0001
+  k 10                            0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  k 20                            0.8482      0.9630   +0.0044    0.0027     0.0002   +0.0044  35W/0L/1155T  p=0.0001
+  k 60                            0.8611      0.9630   +0.0173    0.0064     0.0001   +0.0173  96W/9L/1085T  p=0.0001
+  graph 0.00                      0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 0.15                      0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 0.30                      0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 0.50                      0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+  graph 1.00                      0.8438      0.9647   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+
+  choosing from this sweep, cross-validated over five folds, XQuAD-R, accuracy
+  both answer keys for each physical query share one fold
+  rule: maximise the mean over 2 groups of nDCG@10, ties to what ships
+  best row, scored on the queries that chose it   0.7431   <- what a sweep used to report
+  the procedure, on queries it did not choose on  0.7426
+  what ships, on the same queries                 0.7405
+  optimism of choosing in-sample                  +0.0006
+  the procedure against what ships: +0.0021  390W/70L/1920T  p=0.0148
+  chosen per fold: ["k 0", "lex seg 0.0000 ngram 0.1250", "k 0", "k 0", "k 0"]
+  chosen on all of this corpus's queries: "k 0"  <- look this row up in another corpus's table
+  the folds disagree, so no single setting is a stable choice at this size
+
+  choosing from this sweep, cross-validated over five folds, XQuAD-R lexical weights only, accuracy
+  both answer keys for each physical query share one fold
+  rule: maximise the mean over 2 groups of nDCG@10, ties to what ships
+  best row, scored on the queries that chose it   0.7427   <- what a sweep used to report
+  the procedure, on queries it did not choose on  0.7420
+  what ships, on the same queries                 0.7405
+  optimism of choosing in-sample                  +0.0007
+  the procedure against what ships: +0.0014  418W/100L/1862T  p=0.2193  (not significant)
+  chosen per fold: ["lex seg 0.0000 ngram 0.1250", "lex seg 0.0000 ngram 0.1250", "lex seg 0.0000 ngram 0.1250", "lex seg 0.0000 ngram 0.1250", "lex seg 0.0625 ngram 0.1250"]
+  chosen on all of this corpus's queries: "lex seg 0.0000 ngram 0.1250"  <- look this row up in another corpus's table
+  the folds disagree, so no single setting is a stable choice at this size
+
+  per language, fused against the vector channel alone, accuracy
+  group and language     queries   nDCG@10   dense@10   fused-dense   recall@50
+  --------------------------------------------------------------------------------
+  cross_lingual/ar           109    0.6317    0.6583       -0.0265      0.8982
+  cross_lingual/de           109    0.6615    0.6828       -0.0212      0.9037
+  cross_lingual/el           108    0.6504    0.6811       -0.0307      0.9259
+  cross_lingual/en           108    0.6395    0.6760       -0.0365      0.9213
+  cross_lingual/es           108    0.6705    0.6960       -0.0255      0.9083
+  cross_lingual/hi           108    0.6018    0.6355       -0.0337      0.8917
+  cross_lingual/ru           108    0.6637    0.6883       -0.0245      0.8991
+  cross_lingual/th           108    0.6386    0.6691       -0.0305      0.8833
+  cross_lingual/tr           108    0.6486    0.6683       -0.0197      0.8972
+  cross_lingual/vi           108    0.6444    0.6821       -0.0377      0.9028
+  cross_lingual/zh           108    0.5585    0.6075       -0.0490      0.9037
+  same_language/ar           109    0.7951    0.7522       +0.0429      0.9633
+  same_language/de           109    0.8211    0.7899       +0.0311      0.9450
+  same_language/el           108    0.8668    0.8266       +0.0402      0.9815
+  same_language/en           108    0.8720    0.8370       +0.0350      0.9722
+  same_language/es           108    0.8618    0.8375       +0.0243      0.9907
+  same_language/hi           108    0.8527    0.8402       +0.0125      0.9815
+  same_language/ru           108    0.8556    0.8403       +0.0153      0.9537
+  same_language/th           108    0.8025    0.7767       +0.0258      0.9444
+  same_language/tr           108    0.8460    0.8202       +0.0258      0.9444
+  same_language/vi           108    0.8537    0.8090       +0.0447      0.9537
+  same_language/zh           108    0.8551    0.8231       +0.0320      0.9815
+  what language each channel's top 10 is in, accuracy
+  channel                own language   of returned   share
+  ----------------------------------------------------------
+  LexicalSegmented              11211         11805    95.0%
+  LexicalNgram                  11451         11890    96.3%
+  Vector                         2188         11900    18.4%
+
+  the two lexical channels agree at Kendall tau 0.3218 over 1182 queries
+
+test search_reaches_across_languages ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 64.31s
+

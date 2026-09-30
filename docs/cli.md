@@ -23,7 +23,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
-| | `PAMIN_DEVICE` | a GPU if there is one | `cpu` keeps the reranker off the GPU |
+| | `PAMIN_DEVICE` | automatic tier-specific route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
@@ -118,8 +118,9 @@ has loaded it for two weeks. So a directory shared by two versions keeps both
 copies while both are in use, and a version that goes two weeks without running
 while the other does writes its copies again when it next runs -- fetching the
 model first, if its download was removed. A model nothing loads any more -- a
-reranker tier switched off -- keeps its copy until it is deleted. It is safe to
-delete `models/prepared/` at any time, and the next load downloads the model
+reranker tier switched off -- keeps its copy until it is deleted. Delete
+`models/prepared/` only after every process using that model directory has
+stopped; the next load downloads the model
 again. The download is kept when `HF_HOME` is set -- that cache is shared with
 other tools -- or when the model directory, or one model's directory inside it,
 is a link to somewhere else. `PAMIN_PREPARED=off` loads from the download,
@@ -135,16 +136,42 @@ kept only if it scores a probe bit-for-bit as the first does, and otherwise
 `attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
 graph, for measuring one against the other.
 
-The reranker runs on a GPU when the machine has one, with no flag and no
-separate build. Each platform's inference runtime carries the accelerator that
-platform has -- CUDA on x86-64 Linux, Core ML on Apple silicon, DirectML on
-Windows -- and loading a reranker tries it first and falls back to the CPU when
-it will not start. On a GPU it runs the model's half-precision export rather
-than the CPU's int8 one, so the scores are close but not identical; which one
-ran is logged when the model loads. `PAMIN_DEVICE=cpu` keeps it on the CPU, for
-a comparison that has to be like for like or a GPU that belongs to something
-else. Embedding stays on the CPU either way: the index was built with the CPU's
-vectors and a query has to be embedded the same way to be compared with them.
+CoreML packages written by older versions under
+`models/typed-reranker-v3/<SHA-256>/coreml-all-v1`
+are not reused by the current `coreml-all-v2` policy. Old processes can still
+use a compiled package after its build lock is released, so the application
+does not delete v1 automatically. During an **offline** maintenance window,
+stop every Påmin server and CLI process using this model directory, then list
+the exact v1 packages and their logical bytes:
+
+```sh
+python3 maintenance/retire_coreml_v1.py ~/.pamin/models
+```
+
+After verifying the list and that those processes remain stopped, remove only
+that obsolete namespace:
+
+```sh
+python3 maintenance/retire_coreml_v1.py ~/.pamin/models --apply --all-processes-stopped
+```
+
+Use your configured `PAMIN_HOME/models` in place of `~/.pamin/models` when it
+differs. The script refuses an arbitrary parent path, skips linked prepared
+entries and preserves v2 packages and mapped CPU models. Logical bytes are
+not a measure of unique APFS allocation; the actual free-space change may
+differ.
+
+The `accurate` reranker tries the available accelerator before optimized CPU:
+CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, and DirectML on Windows.
+The `fast` tier does the same except on Apple silicon, where its measured ARM
+INT8 CPU export is both faster and no less accurate on the complete XQuAD-R
+comparison than its CoreML FP32 export. Provider selection is logged when a
+model loads; Core ML may itself use CPU, GPU or ANE, and its internal placement
+is not established by the provider label. The different weight exports can
+produce different scores. `PAMIN_DEVICE=cpu` forces CPU for comparable tests
+or when another job needs the accelerator. Embedding currently stays on CPU;
+changing it also changes the query and stored vector encoding contract and
+needs paired quality and reindex validation.
 
 On Linux the CUDA path has two requirements the program cannot meet for you.
 The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
@@ -160,11 +187,13 @@ their own copy in System32 -- but that copy can be older than the runtime
 needs, in which case the reranker quietly stays on the CPU. On Apple silicon
 nothing needs copying: Core ML is linked into the binary from the system.
 
-What a GPU is worth has not been measured here, because nothing this project
-is measured on has one. The ordering is checked instead: `every_device_orders_like_the_cpu`
-in `crates/pamin-index/tests/reranking.rs` loads the reranker wherever it lands
-and again forced onto the CPU, and asserts the two order clearly separated
-candidates the same way.
+Apple CoreML has been measured on the full XQuAD-R product path: it wins for
+`accurate` with static buckets and loses for `fast` against optimized CPU on
+this machine. [Full Fast conditions and rows](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).
+CUDA and DirectML still require their own device-specific timing and precision
+checks. The `every_device_orders_like_the_cpu` test in
+`crates/pamin-index/tests/reranking.rs` checks clearly separated pairs; it is
+not a replacement for a corpus-level accuracy result.
 
 A handful of other `PAMIN_*` variables exist and are deliberately not listed
 here: they shorten a window or a budget so a test can reach a case, and a
@@ -480,6 +509,13 @@ current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemor
 | `fast` | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
 | `accurate` | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
 
+The current Apple Silicon `fast` route uses optimized CPU. On the complete
+XQuAD-R product path it scored cross-language nDCG@10 0.657172 at a 0.330 s
+whole-search p50, versus CoreML FP32's 0.656096 and stitched 1.630 s p50;
+the CoreML latency came from two processes after a disk-guard interruption.
+These [current backend measurements](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md)
+must not be substituted into the historical table's different setup.
+
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; it now reranks thirty, which the `accurate` tier
 turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
@@ -561,10 +597,12 @@ lexical channel found. Both tiers can also see strong graph-only candidates
 below the head.
 
 On MIRACL Swahili dev's full 131,924 passages and 482 judged queries, the
-current `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
+recorded `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
 and recall@50 0.9568 through `search_reranked`; replay reproduced every
 returned order. The earlier confined pass's +0.0257 over `off` was measured
 on the `speed` profile and is historical, not a paired comparison with this run.
+The raw run's complete code/device provenance is not yet archived, so this
+record is not a verified current headline measurement.
 
 A score depends on the query as well as the memory, so a resident server
 remembers the ones it has computed and a repeated search pays nothing for them:
@@ -708,14 +746,20 @@ matches and the meaning does not. They were also once described here as nearly
 the same channel, and they are not: Kendall tau-b between their rankings is
 0.2816, 0.3188 and 0.2973 on the three corpora this project measures, so they
 agree about a third of the time. They share a field, not a ranking. The eighth
-each is one number doing the work of two — no sweep has ever moved them
-independently, and the n-gram channel is the weaker of the two wherever either
-is measured alone. An eighth rather than the quarter that shipped
+each is one number doing the work of two. A later independent 25-pair sweep
+on XQuAD-R and MuSiQue found different preferred pairs across the corpora,
+so the shipped pair has not changed. The n-gram channel is the weaker of the
+two wherever either is measured alone. An eighth rather than the quarter that shipped
 before because on MIRACL Swahili — 482 questions people asked, judged by
 people — the quarter ranked *worse* than the vector channel by itself, and
-because the quarter had never been compared against anything smaller than
-itself. Three corpora and the sweep behind that are in
+because at the time the quarter had not been compared against anything smaller.
+Three corpora and the sweep behind that are in
 [ADR 0001](adr/0001-tech-selection.md).
+
+The next two paragraphs describe the historical 2026-09-22 XQuAD-R run on a
+content-only index with the old same-language answer key. Its 0.6114/0.7829
+fusion baseline is not comparable with the current named-index, corrected-key
+0.6372/0.8438 baseline; the [ADR](adr/0001-tech-selection.md) records both.
 
 One weight serves every workspace, and the evidence says that is the wrong
 shape rather than the wrong value. What the lexical pair is worth depends on

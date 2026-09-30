@@ -277,7 +277,7 @@ impl Routes {
     }
 
     pub fn report(&self, title: &str) {
-        report(title, &self.labels, Some(1), &self.measured);
+        report(title, &self.labels, Some(1), &self.measured, false);
         println!("  pairs a search, small model / large model");
         for ((label, _), (cheap, dear)) in self.labels.iter().zip(&self.pairs) {
             println!(
@@ -298,6 +298,7 @@ pub fn report<T>(
     labels: &[(String, T)],
     ship: Option<usize>,
     measured: &[BTreeMap<String, crate::scoring::Scores>],
+    linked: bool,
 ) {
     let shipped = &measured[ship.expect("the shipped row is measured")];
     println!("\n  {title}");
@@ -319,6 +320,7 @@ pub fn report<T>(
         labels,
         ship,
         measured,
+        linked,
     );
     println!();
 }

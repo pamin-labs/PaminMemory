@@ -103,6 +103,17 @@ def sidecar_bytes() -> int:
     )
 
 
+def require_runtime_library(profile: pathlib.Path) -> None:
+    """Do not report a smaller distribution when native staging failed."""
+    if not any(
+        f.is_file()
+        and f.name.startswith(("libzvec_c_api.", "zvec_c_api."))
+        and f.suffix in SIDECAR_SUFFIXES
+        for f in profile.iterdir()
+    ):
+        raise RuntimeError("zvec runtime missing beside release binary; distribution budget is incomplete")
+
+
 def accelerator_bytes() -> int:
     """Return the bytes of the accelerator providers shipped beside the binary.
 
@@ -137,6 +148,7 @@ def measure() -> dict[str, float]:
     run("cargo", "check", "--workspace")
     incremental_check_seconds = time.monotonic() - start
 
+    require_runtime_library(BINARY.parent)
     binary_bytes = BINARY.stat().st_size
     return {
         "binary_bytes": binary_bytes,

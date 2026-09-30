@@ -25,6 +25,8 @@ use crate::tokenizer::Tokenizer;
 pub(crate) struct Encoder {
     tokenizer: Tokenizer,
     session: Session,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fixed: Option<(Session, Session)>,
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
@@ -53,8 +55,71 @@ impl Encoder {
         Ok(Self {
             tokenizer,
             session,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            fixed: None,
             token_type_ids,
         })
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn load_fixed_coreml(
+        model: impl FnOnce() -> Result<PathBuf>,
+        repository: &Repository,
+        max_length: usize,
+    ) -> Result<Self> {
+        if max_length > 256 {
+            return Err(failed(
+                &"static CoreML reranker currently requires at most 256 tokens",
+            ));
+        }
+        let path = crate::inference::coreml_source(model)?;
+        // Validate every independently compiled shape inside `preferred`'s
+        // fallback window. A lazy shape failure otherwise breaks later searches
+        // after the model has already been accepted as CoreML.
+        let (session, short, long) = coreml_buckets(|rows, tokens| {
+            crate::inference::fixed_coreml(|| Ok(path.clone()), rows, tokens).map(|loaded| loaded.0)
+        })?;
+        let tokenizer = crate::tokenizer::load(repository, max_length)?;
+        Ok(Self {
+            tokenizer,
+            session,
+            fixed: Some((short, long)),
+            token_type_ids: false,
+        })
+    }
+
+    pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.fixed.is_some() {
+            // Native buckets execute at most 512 tokens; larger sweep settings
+            // cannot enlarge a compiled session's physical shape.
+            return (budget.min(512), most.min(4));
+        }
+        (budget, most)
+    }
+
+    pub(crate) fn batching_length(&self, length: usize) -> usize {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.fixed.is_some() {
+            return native_shape(length).1;
+        }
+        length
+    }
+
+    pub(crate) fn execution_shape(&self, rows: usize, length: usize) -> (usize, usize) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.fixed.is_some() {
+            return native_shape(length);
+        }
+        (rows, length)
+    }
+
+    /// The actual pair truncation limit, after the model's own cap is applied.
+    pub(crate) fn maximum_tokens(&self) -> usize {
+        self.tokenizer
+            .get_truncation()
+            .expect("loaded encoders configure truncation")
+            .max_length
     }
 
     /// One forward pass over `inputs` -- texts, or pairs of them -- as one
@@ -94,9 +159,19 @@ impl Encoder {
 
     /// One forward pass over `batch`, from [`encode`](Self::encode), padded to
     /// its longest member.
-    pub(crate) fn run_encoded(&mut self, mut batch: Vec<Encoding>) -> Result<SessionOutputs<'_>> {
+    pub(crate) fn run_encoded(&mut self, batch: Vec<Encoding>) -> Result<SessionOutputs<'_>> {
+        self.run_padded(batch).map(|(_, outputs)| outputs)
+    }
+
+    /// The exact padded encodings sent to the session, for a model that pools
+    /// token vectors using its attention mask.
+    pub(crate) fn run_padded(
+        &mut self,
+        mut batch: Vec<Encoding>,
+    ) -> Result<(Vec<Encoding>, SessionOutputs<'_>)> {
         pad(&self.tokenizer, &mut batch)?;
-        self.forward(&batch)
+        let outputs = self.forward(&batch)?;
+        Ok((batch, outputs))
     }
 
     fn forward(&mut self, encodings: &[Encoding]) -> Result<SessionOutputs<'_>> {
@@ -104,26 +179,91 @@ impl Encoder {
             .first()
             .ok_or_else(|| failed(&"nothing to encode"))?
             .len();
-        let shape = [encodings.len(), length];
-        let column = |field: fn(&Encoding) -> &[u32]| {
-            let values: Vec<i64> = encodings
-                .iter()
-                .flat_map(|encoding| field(encoding).iter().map(|value| i64::from(*value)))
-                .collect();
+        let logical_rows = encodings.len();
+        let (rows, tokens) = self.execution_shape(logical_rows, length);
+        if logical_rows > rows || length > tokens {
+            return Err(failed(&"batch exceeds the static execution shape"));
+        }
+        let shape = [rows, tokens];
+        let column = |field: fn(&Encoding) -> &[u32], padding| {
+            let values = input_values(encodings, shape, field, padding);
             Tensor::from_array((shape, values)).map_err(|error| failed(&error))
         };
 
         let mut feed = ort::inputs![
-            "input_ids" => column(Encoding::get_ids)?,
-            "attention_mask" => column(Encoding::get_attention_mask)?,
+            "input_ids" => column(Encoding::get_ids, 1)?,
+            "attention_mask" => column(Encoding::get_attention_mask, 0)?,
         ];
         if self.token_type_ids {
             feed.push((
                 "token_type_ids".into(),
-                column(Encoding::get_type_ids)?.into(),
+                column(Encoding::get_type_ids, 0)?.into(),
             ));
         }
-        self.session.run(feed).map_err(|error| failed(&error))
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let session = if let Some((short, long)) = &mut self.fixed {
+            match tokens {
+                64 => short,
+                128 => &mut self.session,
+                _ => long,
+            }
+        } else {
+            &mut self.session
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let session = &mut self.session;
+        let outputs = session.run(feed).map_err(|error| failed(&error))?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut outputs = outputs;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if rows != logical_rows {
+            let output = outputs
+                .get_mut("logits")
+                .ok_or_else(|| failed(&"static reranker returned no logits"))?;
+            let (shape, values) = output
+                .try_extract_tensor::<f32>()
+                .map_err(|error| failed(&error))?;
+            if shape.as_ref() != [rows as i64, 1] {
+                return Err(failed(&"static reranker returned an unexpected shape"));
+            }
+            *output = Tensor::from_array(([logical_rows, 1], values[..logical_rows].to_vec()))
+                .map_err(|error| failed(&error))?
+                .into_dyn();
+        }
+        Ok(outputs)
+    }
+}
+
+/// Fill only the model inputs. Static CoreML rows duplicate the last logical
+/// row, as before, without cloning token text, offsets, or word mappings.
+fn input_values(
+    encodings: &[Encoding],
+    [rows, tokens]: [usize; 2],
+    field: fn(&Encoding) -> &[u32],
+    padding: i64,
+) -> Vec<i64> {
+    let mut values = Vec::with_capacity(rows * tokens);
+    for row in 0..rows {
+        let encoding = &encodings[row.min(encodings.len() - 1)];
+        values.extend(field(encoding).iter().copied().map(i64::from));
+        values.resize((row + 1) * tokens, padding);
+    }
+    values
+}
+
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+fn coreml_buckets<T>(mut load: impl FnMut(usize, usize) -> Result<T>) -> Result<(T, T, T)> {
+    Ok((load(4, 128)?, load(4, 64)?, load(2, 256)?))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn native_shape(length: usize) -> (usize, usize) {
+    if length <= 64 {
+        (4, 64)
+    } else if length <= 128 {
+        (4, 128)
+    } else {
+        (2, 256)
     }
 }
 
@@ -142,7 +282,77 @@ fn pad(tokenizer: &Tokenizer, batch: &mut [Encoding]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn tensor_padding_matches_full_encoding_padding() {
+        let tokenizer = crate::tokenizer::tests::fixture();
+        for (count, rows, tokens) in [(1, 4, 64), (3, 4, 128), (2, 2, 256), (4, 4, 8)] {
+            let mut logical = tokenizer
+                .encode_batch(vec![("memory", "memory memory"); count], true)
+                .unwrap();
+            pad(&tokenizer, &mut logical).unwrap();
+            let mut old = logical.clone();
+            for encoding in &mut old {
+                encoding.pad(tokens, 1, 0, "<pad>", tokenizers::PaddingDirection::Right);
+            }
+            while old.len() < rows {
+                old.push(old.last().unwrap().clone());
+            }
+            for (field, padding) in [
+                (Encoding::get_ids as fn(&Encoding) -> &[u32], 1),
+                (Encoding::get_attention_mask, 0),
+                (Encoding::get_type_ids, 0),
+            ] {
+                let expected: Vec<i64> = old
+                    .iter()
+                    .flat_map(|encoding| field(encoding).iter().copied().map(i64::from))
+                    .collect();
+                assert_eq!(
+                    input_values(&logical, [rows, tokens], field, padding),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_native_shape_must_load_before_accepting_the_accelerator() {
+        for rejected in [64, 128, 256] {
+            let result = super::coreml_buckets(|_, tokens| {
+                if tokens == rejected {
+                    Err(super::failed(&"rejected shape"))
+                } else {
+                    Ok(tokens)
+                }
+            });
+            assert!(
+                result.is_err(),
+                "accepted a model whose {rejected} bucket fails"
+            );
+        }
+        assert_eq!(
+            super::coreml_buckets(|_, tokens| Ok(tokens)).unwrap(),
+            (128, 64, 256)
+        );
+    }
     use super::*;
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn native_buckets_keep_short_inputs_short_without_truncating_longer_inputs() {
+        for (length, shape) in [
+            (1, (4, 64)),
+            (64, (4, 64)),
+            (65, (4, 128)),
+            (128, (4, 128)),
+            (129, (2, 256)),
+            (256, (2, 256)),
+        ] {
+            assert_eq!(native_shape(length), shape);
+            assert!(length <= shape.1);
+            assert!(shape.0 * shape.1 <= 512);
+        }
+    }
 
     /// Tokenizing each pair alone and padding a group of them hands the model
     /// what tokenizing that group together does.

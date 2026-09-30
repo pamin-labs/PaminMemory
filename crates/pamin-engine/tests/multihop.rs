@@ -298,7 +298,17 @@ async fn search_answers_questions_that_take_several_steps() {
     )
     .await
     .expect("open the engine");
+    if std::env::var("CHANNELS").is_ok() {
+        assert_eq!(engine.passage(), pamin_index::Passage::Named);
+    }
     write_corpus(&engine, &corpus).await;
+    if std::env::var("CHANNELS").is_ok() {
+        assert_eq!(engine.passage(), pamin_index::Passage::Named);
+        assert_eq!(
+            engine.indexed_documents().expect("count documents") as usize,
+            corpus.memories.len()
+        );
+    }
 
     let edges = channels::live_edges(&engine).await;
     let total: i64 = edges.iter().map(|(_, count)| count).sum();
@@ -494,6 +504,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &labels,
             reranking::shipped_context(),
             &measured,
+            false,
         );
         return;
     }
@@ -533,6 +544,10 @@ async fn search_answers_questions_that_take_several_steps() {
         );
     }
     if let Some(work) = engine.reranked(Rerank::default()) {
+        println!(
+            "  loaded reranker truncation: {} tokens",
+            work.maximum_tokens
+        );
         println!(
             "  both arms: {} scored pairs, {} tokens, {} padded tokens, {} batches; \
              encoding {:.1} ms, padding + inference {:.1} ms",

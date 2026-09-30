@@ -1,0 +1,53 @@
+import hashlib, json, os, re, shutil, signal, subprocess, time
+from pathlib import Path
+root = Path('${RUN_ROOT}')
+native = Path('${REPO}/target/release/build/zvec-rust-sys-3f0a228669f2b701/out/zvec-prebuilt/libzvec_c_api.dylib')
+models = Path('${EVAL_HOME}/models')
+snapshot = models / 'models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b'
+source = '9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3'
+prepared = models / 'typed-reranker-v3' / source
+manifest = json.loads(Path('${REPO}/benchmarks/results/retrieval/xquad-r-model-artifacts.json').read_text())
+files = next(value['files_sha256'] for value in manifest['models'] if value['role'] == 'reranker')
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+native_hash = '06f183bf51ebd8b460fd0415f6b39c2556bdd6ef63a270efa35bdf76154512e2'
+assert digest(native) == native_hash
+def attest():
+    for name, expected in files.items():
+        assert digest(snapshot / name) == expected, name
+    assert digest(snapshot / 'onnx/model_fp16.onnx') == source
+    assert digest(prepared / 'source.onnx') == source
+    assert digest(prepared / 'model.onnx') == '3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109'
+def memory_free():
+    result = subprocess.run(['memory_pressure'], capture_output=True, text=True, check=True)
+    return int(re.search(r'System-wide memory free percentage: (\d+)%', result.stdout)[1])
+def headroom():
+    return shutil.disk_usage(root).free >= 12 * 1024**3 and memory_free() >= 25
+expected = {'baseline':'227793100df5358a53b6413d272006df48116dd8d89afd82562f02942e2f42f3','candidate':'3d2567c6b8db21a866f3813abac82355a2fc95b125f30cc9f5c7c9c1dc4e184b'}
+for round_index, order in enumerate([('baseline','candidate'),('candidate','baseline'),('baseline','candidate')]):
+    for arm in order:
+        assert headroom(), 'resource headroom below guard'
+        assert digest(root / arm) == expected[arm], 'binary changed'
+        attest()
+        name = f'{arm}-{round_index}'
+        env = {key:value for key,value in os.environ.items() if not key.startswith('PAMIN_') and key not in ('HF_HOME','HF_ENDPOINT')}
+        env.update(PAMIN_EVAL_HOME='${EVAL_HOME}',PAMIN_DEVICE='auto',PAD_INPUT='${INPUT_FILE}',PAD_OUTPUT=str(root / f'{name}.json'),DYLD_LIBRARY_PATH=str(native.parent),DYLD_PRINT_LIBRARIES='1')
+        with (root / f'{name}.log').open('w') as log, (root / f'{name}.resource').open('w') as resource:
+            process = subprocess.Popen(['/usr/bin/time','-l','/usr/bin/env',f'DYLD_LIBRARY_PATH={native.parent}','DYLD_PRINT_LIBRARIES=1',str(root/arm),'fixed_candidate_rank','--ignored','--nocapture'], env=env, stdout=log, stderr=resource, start_new_session=True)
+            while process.poll() is None:
+                if not headroom():
+                    os.killpg(process.pid, signal.SIGINT)
+                    process.wait()
+                    raise RuntimeError('stopped this arm at resource guard')
+                time.sleep(5)
+            assert process.returncode == 0, name
+        attest()
+        assert digest(native) == native_hash
+        assert str(native) in (root/f'{name}.resource').read_text(), 'native library not loaded from controlled path'
+        assignments = [json.loads(value) for value in re.findall(r'assigned_nodes=(\{[^\n]+\})',(root/f'{name}.log').read_text())]
+        assert len(assignments) == 3 and all(value.get('CoreMLExecutionProvider',0)>0 for value in assignments), name
+        rows = json.loads((root/f'{name}.json').read_text())
+        assert len(rows) == 60 and len({row['id'] for row in rows}) == 60
+        print(name, 'complete', flush=True)
+print('ALL_ARMS_COMPLETE', flush=True)

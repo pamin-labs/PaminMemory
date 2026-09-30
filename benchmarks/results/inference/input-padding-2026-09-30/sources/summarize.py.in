@@ -1,0 +1,30 @@
+import json, math, random, re, statistics
+from pathlib import Path
+root = Path('${RUN_ROOT}')
+all_rows = {arm:[json.loads((root/f'{arm}-{round_index}.json').read_text()) for round_index in range(3)] for arm in ('baseline','candidate')}
+reference = all_rows['baseline'][0]
+assert len(reference) == 60
+same = True
+for rounds in all_rows.values():
+    for rows in rounds:
+        assert [row['id'] for row in rows] == [row['id'] for row in reference]
+        same &= all(row['scores'] == expected['scores'] for row,expected in zip(rows,reference))
+        assert all(row['batches']==expected['batches'] and row['padded_tokens']==expected['padded_tokens'] for row,expected in zip(rows,reference))
+medians = {arm:[statistics.median(rounds[round_index][query]['seconds'] for round_index in range(3)) for query in range(60)] for arm,rounds in all_rows.items()}
+logs = [math.log(after/before) for before,after in zip(medians['baseline'],medians['candidate'])]
+observed = abs(sum(logs))
+rng = random.Random(0)
+extreme = sum(abs(sum(value if rng.getrandbits(1) else -value for value in logs)) >= observed for _ in range(19999))
+def percentile(values,p):
+    return sorted(values)[math.ceil(len(values)*p)-1]
+report = {'queries':60,'pairs_per_round':1800,'rounds':3,'same_scores_across_all_arms':same,'candidate_over_baseline_geomean':math.exp(statistics.mean(logs)),'paired_sign_flip_p':(extreme+1)/20000,'faster_queries':sum(after<before for before,after in zip(medians['baseline'],medians['candidate']))}
+for arm,rounds in all_rows.items():
+    costs = []
+    for round_index in range(3):
+        text = (root/f'{arm}-{round_index}.resource').read_text()
+        times = re.search(r'\n\s*([\d.]+) real\s+([\d.]+) user\s+([\d.]+) sys',text)
+        rss = re.search(r'\n\s*(\d+)\s+maximum resident set size',text)
+        costs.append({'real':float(times[1]),'user':float(times[2]),'system':float(times[3]),'peak_process_rss':int(rss[1])})
+    report[arm] = {'rank_p50':percentile(medians[arm],.5),'rank_p95':percentile(medians[arm],.95),'median_rank_wall_total':statistics.median(sum(row['seconds'] for row in rows) for rows in rounds),'process_rounds':costs,'median_process_cpu_seconds':statistics.median(row['user']+row['system'] for row in costs),'median_peak_process_rss_bytes':statistics.median(row['peak_process_rss'] for row in costs)}
+(root/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
+print(json.dumps(report,indent=2))

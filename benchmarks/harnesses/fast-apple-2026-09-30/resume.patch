@@ -1,0 +1,23 @@
+--- lib.rs
++++ lib.rs
+@@ -1705,0 +1706,5 @@
++    // A resource guard stopped the original complete arm after query 770.
++    // Repeat 760..769 as an overlap check and finish 770..1189 in a new
++    // process; the merge script will exclude the overlap and require parity.
++    let selected = &queries[760..];
++    println!("  CoreML resume range: 760..1190 with 10-query overlap");
+@@ -1707 +1712 @@
+-    let groups = run(&engine, &queries, Route::Shipped(Rerank::Fast)).await;
++    let groups = run(&engine, selected, Route::Shipped(Rerank::Fast)).await;
+@@ -1711 +1716 @@
+-        started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
++        started.elapsed().as_secs_f64() * 1000.0 / selected.len() as f64,
+@@ -1713 +1718 @@
+-    report_reranking(&engine, Rerank::Fast, queries.len());
++    report_reranking(&engine, Rerank::Fast, selected.len());
+@@ -1716 +1721,4 @@
+-    assert!(groups.values().all(|scores| scores.queries == queries.len()));
++    assert!(groups.values().all(|scores| scores.queries == selected.len()));
++    if std::env::var_os("PAMIN_RESUME_ONLY").is_some() {
++        return;
++    }

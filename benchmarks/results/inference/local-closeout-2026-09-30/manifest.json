@@ -1,0 +1,1173 @@
+{
+  "binary_sha256": "2f7675003ce730719029e3a6d245a7730a575e6d6330023bb14a5eb25aacce93",
+  "commit": "be329b00636987781689ec6ef0c4fc48611cdf1d",
+  "sample_queries": [
+    0,
+    50,
+    100,
+    150,
+    200,
+    250,
+    300,
+    350,
+    400,
+    450,
+    500,
+    550,
+    600,
+    650,
+    700,
+    750,
+    800,
+    850,
+    900,
+    950,
+    1000,
+    1050,
+    1100,
+    1150
+  ],
+  "warmup_queries": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "rounds": 3,
+  "scope": "Whole product search boundary; BGE-M3 embedding fixed on CPU; only reranker provider/export varies (CPU INT8 vs CoreML FP16/FP32 by tier).",
+  "hardware": {
+    "chip": "Apple M4",
+    "physical_cores": 10,
+    "performance_cores": 4,
+    "efficiency_cores": 6,
+    "logical_cores": 10,
+    "ram_bytes": 34359738368,
+    "sharing": "shared workstation"
+  },
+  "software": {
+    "macOS": "26.6.2",
+    "build": "25G83",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "onnx_runtime": "1.28.0",
+    "ort_build_info": "git-branch=rel-1.28.0, git-commit-id=da9b5e3, fp8-kv-cache=1, build type=Release"
+  },
+  "identity_provenance": "Hardware/OS and cache identities collected after the runs; ORT version/build recovered from frozen measured executable. No per-run pre/post model-file hashes. OS-at-run not independently recorded.",
+  "models": [
+    {
+      "role": "embedder",
+      "repository": "gpahal/bge-m3-onnx-int8",
+      "cached_revision_observed_after_run": "2b34e84df040034d4b9eabb62383a87c18955822",
+      "source_file": "model_quantized.onnx",
+      "precision": "INT8",
+      "source_sha256_observed_after_run": null
+    },
+    {
+      "role": "accurate-coreml",
+      "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "cached_revision_observed_after_run": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "source_file": "onnx/model_fp16.onnx",
+      "precision": "FP16",
+      "source_sha256_observed_after_run": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3"
+    },
+    {
+      "role": "accurate-cpu",
+      "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "cached_revision_observed_after_run": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "source_file": "onnx/model_int8.onnx",
+      "precision": "INT8",
+      "source_sha256_observed_after_run": null
+    },
+    {
+      "role": "fast-coreml",
+      "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "cached_revision_observed_after_run": "1427fd652930e4ba29e8149678df786c240d8825",
+      "source_file": "onnx/model.onnx",
+      "precision": "FP32",
+      "source_sha256_observed_after_run": "3e9a03ed1e966f7c5288dd4230e3d6a9bf5e3a170a06f1f4241c5bca12c6487c"
+    },
+    {
+      "role": "fast-cpu",
+      "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "cached_revision_observed_after_run": "1427fd652930e4ba29e8149678df786c240d8825",
+      "source_file": "onnx/model_qint8_arm64.onnx",
+      "precision": "ARM INT8",
+      "source_sha256_observed_after_run": null
+    }
+  ],
+  "execution_order": [
+    [
+      "accurate-all",
+      "accurate-gpu",
+      "accurate-cpu",
+      "fast-all",
+      "fast-gpu",
+      "fast-cpu"
+    ],
+    [
+      "accurate-cpu",
+      "fast-all",
+      "fast-gpu",
+      "fast-cpu",
+      "accurate-all",
+      "accurate-gpu"
+    ],
+    [
+      "fast-gpu",
+      "fast-cpu",
+      "accurate-all",
+      "accurate-gpu",
+      "accurate-cpu",
+      "fast-all"
+    ]
+  ],
+  "queries": [
+    {
+      "position": 0,
+      "question_index": 0,
+      "language": "ar",
+      "question_id": "56beb4343aeaaa14008c925b",
+      "text_sha256": "db091018cd0c4bd699efc5d2775a13adae91e92fe0f29470b64d631459beaffa"
+    },
+    {
+      "position": 50,
+      "question_index": 50,
+      "language": "ru",
+      "question_id": "56d7253b0d65d214001983d5",
+      "text_sha256": "7145eb5b6b89adc593bcb8cd976cb0e1007a273964ff3ebb6a6baf152266f59c"
+    },
+    {
+      "position": 100,
+      "question_index": 100,
+      "language": "de",
+      "question_id": "56e0d6cf231d4119001ac424",
+      "text_sha256": "274fa92c7fe4a6fbb0af02c12c4a43a1b5da27bb7bd7cf2e44e7f82ffeb895a1"
+    },
+    {
+      "position": 150,
+      "question_index": 150,
+      "language": "th",
+      "question_id": "56e77da237bdd419002c403c",
+      "text_sha256": "c4eb8a6c34145e5771f54cd0922fcb2f6977cf8428aa4633f743f479d5746025"
+    },
+    {
+      "position": 200,
+      "question_index": 200,
+      "language": "el",
+      "question_id": "5706149552bb891400689883",
+      "text_sha256": "72f7acaf7ecc154f931dc8cc2e4eb5de93588b0096828b051dd9fb8178dfe66f"
+    },
+    {
+      "position": 250,
+      "question_index": 250,
+      "language": "tr",
+      "question_id": "570d4a6bfed7b91900d45e16",
+      "text_sha256": "73fb4d272cc28bc8d75474d170b55ae6a585f2f7445b5433f9894558352fcbe1"
+    },
+    {
+      "position": 300,
+      "question_index": 300,
+      "language": "en",
+      "question_id": "571c8539dd7acb1400e4c0e3",
+      "text_sha256": "d071b9c8372c41f0e1ca4cef89a12eaac8594922b7eb027e2dad4d0773398614"
+    },
+    {
+      "position": 350,
+      "question_index": 350,
+      "language": "vi",
+      "question_id": "5725cc38ec44d21400f3d5bc",
+      "text_sha256": "446e698b938cd57ad1e49cb53b8b74307d9f1ac73e3e93d0333e12d14d95d492"
+    },
+    {
+      "position": 400,
+      "question_index": 400,
+      "language": "es",
+      "question_id": "5726241189a1e219009ac2e2",
+      "text_sha256": "8194b9a80cc4a255492e70ea79beb1c2e078995b77bdeaddeecaaa59ed89d3b8"
+    },
+    {
+      "position": 450,
+      "question_index": 450,
+      "language": "zh",
+      "question_id": "572651f9f1498d1400e8dbee",
+      "text_sha256": "a0b9085e34d321f594a53746fde61f126dd5b6f85ee70743e54b037db975f5c1"
+    },
+    {
+      "position": 500,
+      "question_index": 500,
+      "language": "hi",
+      "question_id": "572683f95951b619008f7525",
+      "text_sha256": "debe695b44cf51d1c62062848ab3b0b29f3724ffd47bbe4da594d99a678875df"
+    },
+    {
+      "position": 550,
+      "question_index": 550,
+      "language": "ar",
+      "question_id": "5726a299dd62a815002e8b9f",
+      "text_sha256": "326088c0d0a203c61127f31aee93867f390f037e74a22f4777d563b01ef059bb"
+    },
+    {
+      "position": 600,
+      "question_index": 600,
+      "language": "ru",
+      "question_id": "5726eb8bf1498d1400e8efe3",
+      "text_sha256": "81f7ea8af6c36e08ce3c3404373ffa8dd60254edad40430bd91be41f7fecfc3c"
+    },
+    {
+      "position": 650,
+      "question_index": 650,
+      "language": "de",
+      "question_id": "57273f27dd62a815002e9a0a",
+      "text_sha256": "c0ac064869c069ad8b3236722ffba023e3db4d8b3096eedcece598cf86dbdc99"
+    },
+    {
+      "position": 700,
+      "question_index": 700,
+      "language": "th",
+      "question_id": "5727aec03acd2414000de991",
+      "text_sha256": "4772c3eb2dbb23b14981c87845fb445b41d40ec7cfe0f4e1c4c462b73cdf0dd3"
+    },
+    {
+      "position": 750,
+      "question_index": 750,
+      "language": "el",
+      "question_id": "57281a952ca10214002d9deb",
+      "text_sha256": "5270328e05c450b989379674595f668749fca550174e1dcb184fe007e1b9bc92"
+    },
+    {
+      "position": 800,
+      "question_index": 800,
+      "language": "tr",
+      "question_id": "57286951ff5b5019007da20f",
+      "text_sha256": "17e41b06e042c84200987ab95a8c4c3d5f133c4dfafae400f945027387b2935b"
+    },
+    {
+      "position": 850,
+      "question_index": 850,
+      "language": "en",
+      "question_id": "5728eb1a3acd2414000e01c9",
+      "text_sha256": "1a325614fa63b2b922b99485b08714643df197910047bab307a99507510f8645"
+    },
+    {
+      "position": 900,
+      "question_index": 900,
+      "language": "vi",
+      "question_id": "57294e6b1d04691400779276",
+      "text_sha256": "f91ce3df6504a2eb21428709f5b89adaace4cf7935bcb8bb49c5ff6550016dba"
+    },
+    {
+      "position": 950,
+      "question_index": 950,
+      "language": "es",
+      "question_id": "5729e2316aef0514001550c6",
+      "text_sha256": "1ce2e26a2921263f62d46f0260e595db58aba019408e092c358e2fb0ac607ae6"
+    },
+    {
+      "position": 1000,
+      "question_index": 1000,
+      "language": "zh",
+      "question_id": "572a13841d0469140077973c",
+      "text_sha256": "d48b7064b0664303e62c43d9a1aed2cf3b7fede9643694322406e9b6f866412d"
+    },
+    {
+      "position": 1050,
+      "question_index": 1050,
+      "language": "hi",
+      "question_id": "572ff932a23a5019007fcbd7",
+      "text_sha256": "298b97e8a1f16584a41fde7c6ab71da4e2a11e29d0100153818b903876b519b3"
+    },
+    {
+      "position": 1100,
+      "question_index": 1100,
+      "language": "ar",
+      "question_id": "573093598ab72b1400f9c5b0",
+      "text_sha256": "886e9aa937ac2d319004d2bd1e79323fc994ea39747b0ab93e1a7f56fd2aa5fb"
+    },
+    {
+      "position": 1150,
+      "question_index": 1150,
+      "language": "ru",
+      "question_id": "5733a32bd058e614000b5f34",
+      "text_sha256": "3311a4e6e7b9829e7b0c69ddd8df995298f6cba870c0f12a3eb960ea12194e84"
+    }
+  ],
+  "query_order_rule": "Corpus::questions order at source commit, one language per question, LANGUAGES[position % 11]; XQUAD_ALL_QUERIES unset; measured positions 0..1190 step 50.",
+  "index": {
+    "project": "xquad-accuracy-24ad7f1862182925-705ffaf38623fb5c",
+    "documents": 13014,
+    "profile": "accuracy",
+    "vector_index": "memory",
+    "completeness": 1.0
+  },
+  "warnings": "Fast CoreML logs contain E5RT shape/ANE warnings despite positive CoreML node assignment. ALL is a requested compute-unit policy, not proof all hardware executes the model.",
+  "files": {
+    "rows/accurate-all-0.attestation.txt": {
+      "sha256": "ee9e5c998499d11b2964992d2004516babd5ac203b9f5c791aebf0bc6d748571",
+      "bytes": 1705
+    },
+    "rows/accurate-all-0.json.gz": {
+      "sha256": "6934c906857446a8c9c5221e363326ade99231a22b03ba4c8d9f05b6c19abe38",
+      "bytes": 5356
+    },
+    "rows/accurate-all-0.resource": {
+      "sha256": "a01923eb4bb475ea5fe19e57cd079e77df7ab4006cb6a4c22f9b0f28f12ddaaf",
+      "bytes": 777
+    },
+    "rows/accurate-all-1.attestation.txt": {
+      "sha256": "8909d67460655e97db2ec3ff649109ddcbe88c6945db9f2d00f945fc23533636",
+      "bytes": 1704
+    },
+    "rows/accurate-all-1.json.gz": {
+      "sha256": "e2f5ec2e472e766acf5cea7e658e85873ded1ed2b6cb9a56c10e97fa73016805",
+      "bytes": 5358
+    },
+    "rows/accurate-all-1.resource": {
+      "sha256": "5f485b8e2bf46ff5956d48dc7f0335398a8d0dc9d1b1889abad0ee36e0376622",
+      "bytes": 777
+    },
+    "rows/accurate-all-2.attestation.txt": {
+      "sha256": "578d0ab2bc7ddb273730f11785524936a643cd039618563085a053eb74313aa5",
+      "bytes": 1704
+    },
+    "rows/accurate-all-2.json.gz": {
+      "sha256": "ac4e010230db35fe85f3bbf76769e4a9118ac39b32555a74bd7cd00107ae8810",
+      "bytes": 5367
+    },
+    "rows/accurate-all-2.resource": {
+      "sha256": "4c6603221da42f2db596f689c899f6c6cc9e496aa360d28d92a2b5896d859595",
+      "bytes": 777
+    },
+    "rows/accurate-cpu-0.attestation.txt": {
+      "sha256": "1b737b4a5bffeeee251dc22150119ff0eb07d66b396d9b0f6927c50ffae1049a",
+      "bytes": 1094
+    },
+    "rows/accurate-cpu-0.json.gz": {
+      "sha256": "cce361b2478b6e0837603919f0918f7a9243ecb925b7f785cfbfbcbdc49cbbe9",
+      "bytes": 5392
+    },
+    "rows/accurate-cpu-0.resource": {
+      "sha256": "68b714fcd7506313077195b49f284e4f6be83af73b0c7835f64b332d298a2a91",
+      "bytes": 777
+    },
+    "rows/accurate-cpu-1.attestation.txt": {
+      "sha256": "81b8c4f6dea3660e15fa4f7c93df09c4f91116af2da0da4b3222de05f5be501d",
+      "bytes": 1094
+    },
+    "rows/accurate-cpu-1.json.gz": {
+      "sha256": "90ccd3a96d9c533edd4732a6699204cdc5fc086f9a8e8356eb5f627a580fdd79",
+      "bytes": 5387
+    },
+    "rows/accurate-cpu-1.resource": {
+      "sha256": "ecc41ff1143bc34ea032d4062a103a42eda10d802d58180fe0e9a0a605683d66",
+      "bytes": 777
+    },
+    "rows/accurate-cpu-2.attestation.txt": {
+      "sha256": "6df149417a8e272ae12930983b508aa6acb1f0b46493661cc057f8210dc22370",
+      "bytes": 1095
+    },
+    "rows/accurate-cpu-2.json.gz": {
+      "sha256": "c4f5fa29381697d6d0dd2b12a85b1771a391efaa03fbba4e2bc240d938c82f50",
+      "bytes": 5410
+    },
+    "rows/accurate-cpu-2.resource": {
+      "sha256": "973851acbaeb750f63f7085aac09a4de079fdf89cabd4075640667047c11078a",
+      "bytes": 777
+    },
+    "rows/accurate-gpu-0.attestation.txt": {
+      "sha256": "bac9d6d6dcf8928bd0b44761decf9bad583410a4675546c42027ea94460aad6f",
+      "bytes": 1705
+    },
+    "rows/accurate-gpu-0.json.gz": {
+      "sha256": "722a829845b7913e85c02e3faec5b8c2c563638c706944d49304fcce5a50d20d",
+      "bytes": 5397
+    },
+    "rows/accurate-gpu-0.resource": {
+      "sha256": "e21758228c442e39660ca726ba7f540e781f6dc8e9fa3c74c39fdb2bca3867be",
+      "bytes": 777
+    },
+    "rows/accurate-gpu-1.attestation.txt": {
+      "sha256": "75e8a53a35deef43f1315b93224575a0e851391e387c04c8adce639eecb304ff",
+      "bytes": 1705
+    },
+    "rows/accurate-gpu-1.json.gz": {
+      "sha256": "f7e27f8caa11959c677a39d6c975bc0b70e28c663d2ad87a952b6cdf05250b04",
+      "bytes": 5403
+    },
+    "rows/accurate-gpu-1.resource": {
+      "sha256": "9d10f3e3e4b3379e2b64cfd654a9134b000dd63f071fdbb56f98e464c841103e",
+      "bytes": 777
+    },
+    "rows/accurate-gpu-2.attestation.txt": {
+      "sha256": "9cdeec2b20647f644a53e79b65178acbe142ce29c135623868fb11d281344bba",
+      "bytes": 1705
+    },
+    "rows/accurate-gpu-2.json.gz": {
+      "sha256": "1e69b28e0419543a66f0ecb0e55932b158620414df2827c52eba5ffa69783701",
+      "bytes": 5391
+    },
+    "rows/accurate-gpu-2.resource": {
+      "sha256": "8510d4be72f773a730ecab624a371a9a62918221c5d4e3b53c1584a01fde06ce",
+      "bytes": 777
+    },
+    "rows/fast-all-0.attestation.txt": {
+      "sha256": "a706ff95b4564f10c22febb4d0105019a4b538c518a2903aa66f5db3892118a5",
+      "bytes": 1185
+    },
+    "rows/fast-all-0.json.gz": {
+      "sha256": "c125fd46708d5ad0d373e8ea34a9e4b12431590b62712d13848cfeeb8c57a41c",
+      "bytes": 5609
+    },
+    "rows/fast-all-0.resource": {
+      "sha256": "046bcbe0d8c3b5c304ad183122f6ffb22a265c92ba63f012ff40ec5b1a2f7121",
+      "bytes": 777
+    },
+    "rows/fast-all-1.attestation.txt": {
+      "sha256": "7c2cad6ab64b8489907e9bd26241dcf39d08e32e2e6988b6fbd6993e6c30dd9b",
+      "bytes": 1185
+    },
+    "rows/fast-all-1.json.gz": {
+      "sha256": "ccd95abe596b75aa18bc320ac304a977b8f8d9c4bad97f08689225b76960d77d",
+      "bytes": 5631
+    },
+    "rows/fast-all-1.resource": {
+      "sha256": "e109ceedfa0191607508977515e76c2b5cb4b5ff25e8ce5eb726436c3c2f2a88",
+      "bytes": 777
+    },
+    "rows/fast-all-2.attestation.txt": {
+      "sha256": "13a1e785e084bc4e3eeb823d304d7324e36832edf3c78e817b15f070361dc468",
+      "bytes": 1185
+    },
+    "rows/fast-all-2.json.gz": {
+      "sha256": "fdd5bac4dd82c4e9677cf945a7509a0da6d244b9beb451df78606b508c70ea90",
+      "bytes": 5607
+    },
+    "rows/fast-all-2.resource": {
+      "sha256": "991e2e0e76c1bf795068698b1fb97e80c56dae48be983ee3fc1d05a6866bead3",
+      "bytes": 777
+    },
+    "rows/fast-cpu-0.attestation.txt": {
+      "sha256": "30efd9d078614210bfbd570cdd704b41e65720ef73572bd30c150d67dfcd2114",
+      "bytes": 1086
+    },
+    "rows/fast-cpu-0.json.gz": {
+      "sha256": "59b863a76bcae55797728727fed65e737a57e30f152db886bb33708c512351c9",
+      "bytes": 5583
+    },
+    "rows/fast-cpu-0.resource": {
+      "sha256": "c39f6b70eb44ea70b5aa0053f4de1827562bdf2e632b1602eefd4916a5facc0e",
+      "bytes": 777
+    },
+    "rows/fast-cpu-1.attestation.txt": {
+      "sha256": "478d3a1c3d572ad9d72c85a1499172d6a175b3f96eae3ed4640e96551fc1066b",
+      "bytes": 1086
+    },
+    "rows/fast-cpu-1.json.gz": {
+      "sha256": "34c2820832faf407a19a928a5e7545932836b708a1d94fa7f8f5abffccc7a94a",
+      "bytes": 5605
+    },
+    "rows/fast-cpu-1.resource": {
+      "sha256": "00cc1c718d7107f32174cab8cfae238389799471b43aa0da6bd87137a3e1a1b7",
+      "bytes": 777
+    },
+    "rows/fast-cpu-2.attestation.txt": {
+      "sha256": "c6acb19b1cc748fb181730641481e1e612e4c27e50ea82c4828d15984b48bfc4",
+      "bytes": 1086
+    },
+    "rows/fast-cpu-2.json.gz": {
+      "sha256": "56540f54db932612321b44f81ddb8b901303ea080d35efab7dca57f00be80e48",
+      "bytes": 5605
+    },
+    "rows/fast-cpu-2.resource": {
+      "sha256": "42efcb0d0c2d1d024c7249bc4b36e9648ff3f4b507b40b4db788ca82521c04ae",
+      "bytes": 777
+    },
+    "rows/fast-gpu-0.attestation.txt": {
+      "sha256": "806a6954f577d9fc209add2261efdb3f87804e699153cd800832d42b6a54166c",
+      "bytes": 1185
+    },
+    "rows/fast-gpu-0.json.gz": {
+      "sha256": "898cf91630ee85626fc30e2b4346acb051c41cbebc975b4b0a373968932a85f4",
+      "bytes": 5626
+    },
+    "rows/fast-gpu-0.resource": {
+      "sha256": "b1b43799cd07295506d0e0e286fee4a2ec7501fb6f18db001663e39556acc520",
+      "bytes": 777
+    },
+    "rows/fast-gpu-1.attestation.txt": {
+      "sha256": "595a54b6a2763fc829e0ab5d7b83c092be330d97928e78cb32fbc8e7d9688384",
+      "bytes": 1185
+    },
+    "rows/fast-gpu-1.json.gz": {
+      "sha256": "fab0fea549b46e7ef3e80ca0071ad1dba5ec60216ede23cbfad985e4c2ae2fa0",
+      "bytes": 5626
+    },
+    "rows/fast-gpu-1.resource": {
+      "sha256": "2684a2c36411a51f09e75bd25026ea55e26391472c29c0bc7f1eda1957e7dd76",
+      "bytes": 777
+    },
+    "rows/fast-gpu-2.attestation.txt": {
+      "sha256": "97ed40ea66b871eddae9daace5d4b5652349365ffc11cbc4dd591ba68a521f5f",
+      "bytes": 1185
+    },
+    "rows/fast-gpu-2.json.gz": {
+      "sha256": "fa42bd94da370fbe4dd115a9e03a412c0ba745cfa5f2c894e24957716ccb8329",
+      "bytes": 5635
+    },
+    "rows/fast-gpu-2.resource": {
+      "sha256": "968334b729dfccd70a6e953d4e384ed7500388ff8178c486fb1a7d191d961cfd",
+      "bytes": 777
+    },
+    "sources/experiment.patch": {
+      "sha256": "06d6988b5bf79fa4bb8573cff104c12ab772ba17210ea3270f09408385fcaf10",
+      "bytes": 4936
+    },
+    "sources/harness.rs": {
+      "sha256": "eee95708a8d5a717c28e988b6d0db8f840014fa9df640b686405c32d0629d889",
+      "bytes": 2404
+    },
+    "sources/run.py.in": {
+      "sha256": "1171c0b5c99f0abfbdc6409ffd5a96bcf8a29c4f1fa6d05ecac22f0037e78a94",
+      "bytes": 2676
+    },
+    "summarize.py": {
+      "sha256": "fd3f23b07ee8d4d535b472619f09e678c781ed9fd0d8c72fe74d5bfbe548c7ab",
+      "bytes": 3965
+    },
+    "verify.py": {
+      "sha256": "b8e8bf7165a2e2bf286bb11caff1d22306d07323df654fff6cc3813607353c42",
+      "bytes": 1768
+    },
+    "fp64/miracl-results.json.gz": {
+      "sha256": "2549e4f455a99baeb6ac7607336819a53d5ba9f1746b668e884b7e385cf4779e",
+      "bytes": 114322
+    },
+    "fp64/50k-results.json.gz": {
+      "sha256": "b0c334821c62c7f079efb9d66879ac6e76b36b2b4a88b846fb1674dbd7764613",
+      "bytes": 41613
+    },
+    "fp64/judgements.json.gz": {
+      "sha256": "9a40f899db8ce455b2c17c8bc32a0daa361e2cfc0d82f466ed945c70a683797e",
+      "bytes": 35650
+    },
+    "fp64/xquad-results.json.gz": {
+      "sha256": "359568852111658942b7a4468c90c2b1d91751756621c6ba7285b2fe5c6ed267",
+      "bytes": 251893
+    },
+    "fp64/sources/cosine-f64.onnx": {
+      "sha256": "a1654764a36dc62827085ae66c30fdb8e1bdd4e3d3d10047862f21e364b242f0",
+      "bytes": 693
+    },
+    "fp64/sources/experiment.patch": {
+      "sha256": "46c289bb4bbd531bb254714d727ffceba79da131c7897d983535622f7efad012",
+      "bytes": 13097
+    },
+    "fp64/sources/50k.rs": {
+      "sha256": "88b04fdc4a34fc805e56e1b61213e7a90a67147da900013e82bf8dd94dd6b246",
+      "bytes": 9002
+    },
+    "fp64.py": {
+      "sha256": "5f94342cfdde645f407b4cb4d3b501b888e4277e64a623c0d9d465119358bef4",
+      "bytes": 3990
+    },
+    "profiling/4x128.json.gz": {
+      "sha256": "1fdb7fafbb639a9d1f0a5d9e09bac0bdf40d0546b08977c13ba2334499d75c4e",
+      "bytes": 5889
+    },
+    "profiling/4x64.json.gz": {
+      "sha256": "e041182ab0de6792b763b91b4fa154d5177435a2fd1ba8c33d518b706428869d",
+      "bytes": 2925
+    },
+    "profiling/2x256.json.gz": {
+      "sha256": "89e8119ae974c9d571bc7fc1639c337b6f35056b7f16100749bda46a880506f9",
+      "bytes": 1563
+    },
+    "fp64/sources/measured-experiment.patch": {
+      "sha256": "7e443db7afcfbc11c5ec1e20b6359067e3a239611134cd246d81420863052d14",
+      "bytes": 12712
+    },
+    "profiling.py": {
+      "sha256": "6968e32f60b81914414e4b6f95f2dd8c53ce57e8203444272d6a94d3e85f8e85",
+      "bytes": 1101
+    },
+    "policy.py": {
+      "sha256": "432c0d8e1f433d37c1043f2f68b023a1db682f134f48b14bb1c24e74de570ccc",
+      "bytes": 345
+    },
+    "sources/measured-experiment.patch": {
+      "sha256": "9f8581de85ad8ff59127db77c0ee747499066c52356a0e72172fd37b5fb61562",
+      "bytes": 4775
+    }
+  },
+  "dataset_source": "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r",
+  "fp64": {
+    "source_commit": "be329b00636987781689ec6ef0c4fc48611cdf1d",
+    "modes": {
+      "0": "current FP32",
+      "1": "ORT CPU FP64",
+      "2": "native SIMD FP64"
+    },
+    "50k": {
+      "documents": 50000,
+      "dimensions": 1024,
+      "queries": 100,
+      "seed": "0x5eed",
+      "rounds": 3,
+      "vector_index": "memory"
+    },
+    "xquad": {
+      "queries": 1190,
+      "documents": 13014,
+      "profile": "accuracy"
+    },
+    "miracl": {
+      "queries": 482,
+      "documents": 131924,
+      "profile": "accuracy",
+      "dataset": {
+        "files": {
+          "docs.jsonl": {
+            "sha256": "23762236979d25b7384b8ba9bf47d6616f46b5d235a53f35e52f18d42a89557d",
+            "bytes": 36401795
+          },
+          "topics.tsv": {
+            "sha256": "15cde3f614cb75b3106fb4606a16162140ee157da22c4a57aae756571788b722",
+            "bytes": 21465
+          },
+          "qrels.tsv": {
+            "sha256": "a1e6438ac732dabd9a24fd5c8dfc0c64168aea81ff477d8b1986fde5ad193a63",
+            "bytes": 89581
+          }
+        },
+        "identity_provenance": "Hashes collected from retained evaluation cache after the run, not a historical pre-run attestation; the measured corpus fingerprint/project is retained. Reruns must reject hash mismatch.",
+        "measured_project": "miracl-sw-accuracy-6b059f0f073a436b",
+        "query_order": [
+          "6",
+          "8",
+          "12",
+          "13",
+          "22",
+          "29",
+          "32",
+          "34",
+          "35",
+          "38",
+          "43",
+          "49",
+          "52",
+          "56",
+          "62",
+          "72",
+          "80",
+          "99",
+          "105",
+          "108",
+          "119",
+          "122",
+          "128",
+          "136",
+          "138",
+          "141",
+          "144",
+          "146",
+          "172",
+          "178",
+          "182",
+          "185",
+          "187",
+          "193",
+          "195",
+          "203",
+          "209",
+          "213",
+          "214",
+          "215",
+          "221",
+          "226",
+          "232",
+          "234",
+          "238",
+          "242",
+          "244",
+          "248",
+          "254",
+          "256",
+          "258",
+          "259",
+          "265",
+          "279",
+          "283",
+          "284",
+          "289",
+          "301",
+          "302",
+          "304",
+          "309",
+          "317",
+          "320",
+          "321",
+          "325",
+          "337",
+          "338",
+          "343",
+          "351",
+          "354",
+          "358",
+          "364",
+          "366",
+          "384",
+          "388",
+          "395",
+          "396",
+          "399",
+          "404",
+          "408",
+          "409",
+          "421",
+          "422",
+          "423",
+          "425",
+          "429",
+          "435",
+          "438",
+          "450",
+          "458",
+          "459",
+          "466",
+          "472",
+          "478",
+          "480",
+          "482",
+          "491",
+          "499",
+          "501",
+          "502",
+          "504",
+          "513",
+          "516",
+          "519",
+          "527",
+          "534",
+          "536",
+          "539",
+          "543",
+          "544",
+          "555",
+          "558",
+          "564",
+          "568",
+          "570",
+          "572",
+          "573",
+          "575",
+          "596",
+          "613",
+          "616",
+          "622",
+          "623",
+          "627",
+          "628",
+          "637",
+          "640",
+          "653",
+          "660",
+          "677",
+          "680",
+          "686",
+          "688",
+          "689",
+          "693",
+          "695",
+          "698",
+          "699",
+          "705",
+          "716",
+          "718",
+          "719",
+          "726",
+          "734",
+          "740",
+          "754",
+          "755",
+          "756",
+          "760",
+          "780",
+          "789",
+          "795",
+          "800",
+          "802",
+          "805",
+          "807",
+          "808",
+          "814",
+          "821",
+          "827",
+          "828",
+          "834",
+          "837",
+          "850",
+          "862",
+          "869",
+          "871",
+          "876",
+          "879",
+          "885",
+          "898",
+          "904",
+          "909",
+          "913",
+          "920",
+          "924",
+          "925",
+          "932",
+          "934",
+          "937",
+          "938",
+          "939",
+          "940",
+          "957",
+          "958",
+          "959",
+          "962",
+          "963",
+          "971",
+          "978",
+          "979",
+          "981",
+          "986",
+          "987",
+          "988",
+          "993",
+          "1016",
+          "1018",
+          "1020",
+          "1030",
+          "1031",
+          "1033",
+          "1038",
+          "1040",
+          "1041",
+          "1045",
+          "1048",
+          "1049",
+          "1056",
+          "1058",
+          "1068",
+          "1077",
+          "1084",
+          "1085",
+          "1087",
+          "1089",
+          "1090",
+          "1105",
+          "1118",
+          "1126",
+          "1135",
+          "1138",
+          "1141",
+          "1143",
+          "1150",
+          "1151",
+          "1152",
+          "1154",
+          "1170",
+          "1177",
+          "1178",
+          "1179",
+          "1181",
+          "1182",
+          "1193",
+          "1204",
+          "1221",
+          "1233",
+          "1236",
+          "1244",
+          "1246",
+          "1247",
+          "1249",
+          "1252",
+          "1258",
+          "1259",
+          "1261",
+          "1264",
+          "1270",
+          "1275",
+          "1277",
+          "1280",
+          "1282",
+          "1302",
+          "1304",
+          "1306",
+          "1310",
+          "1313",
+          "1315",
+          "1316",
+          "1319",
+          "1321",
+          "1335",
+          "1338",
+          "1339",
+          "1343",
+          "1348",
+          "1349",
+          "1356",
+          "1376",
+          "1377",
+          "1379",
+          "1380",
+          "1383",
+          "1384",
+          "1386",
+          "1387",
+          "1399",
+          "1407",
+          "1408",
+          "1411",
+          "1416",
+          "1422",
+          "1423",
+          "1425",
+          "1430",
+          "1432",
+          "1440",
+          "1441",
+          "1455",
+          "1459",
+          "1463",
+          "1465",
+          "1477",
+          "1479",
+          "1480",
+          "1484",
+          "1491",
+          "1495",
+          "1498",
+          "1503",
+          "1507",
+          "1514",
+          "1517",
+          "1523",
+          "1528",
+          "1533",
+          "1535",
+          "1541",
+          "1550",
+          "1555",
+          "1557",
+          "1564",
+          "1576",
+          "1587",
+          "1588",
+          "1600",
+          "1605",
+          "1609",
+          "1610",
+          "1629",
+          "1639",
+          "1648",
+          "1656",
+          "1661",
+          "1669",
+          "1674",
+          "1677",
+          "1689",
+          "1694",
+          "1697",
+          "1703",
+          "1714",
+          "1722",
+          "1729",
+          "1748",
+          "1749",
+          "1754",
+          "1756",
+          "1770",
+          "1772",
+          "1778",
+          "1782",
+          "1796",
+          "1797",
+          "1804",
+          "1808",
+          "1809",
+          "1813",
+          "1816",
+          "1818",
+          "1826",
+          "1835",
+          "1840",
+          "1843",
+          "1844",
+          "1845",
+          "1849",
+          "1853",
+          "1858",
+          "1860",
+          "1867",
+          "1874",
+          "1892",
+          "1893",
+          "1895",
+          "1897",
+          "1899",
+          "1905",
+          "1914",
+          "1923",
+          "1926",
+          "1928",
+          "1936",
+          "1938",
+          "1944",
+          "1951",
+          "1958",
+          "1961",
+          "1968",
+          "1994",
+          "2000",
+          "2013",
+          "2023",
+          "2026",
+          "2047",
+          "2062",
+          "2068",
+          "2071",
+          "2081",
+          "2083",
+          "2086",
+          "2089",
+          "2091",
+          "2092",
+          "2095",
+          "2097",
+          "2098",
+          "2100",
+          "2105",
+          "2113",
+          "2122",
+          "2125",
+          "2132",
+          "2133",
+          "2134",
+          "2140",
+          "2141",
+          "2142",
+          "2147",
+          "2148",
+          "2153",
+          "2155",
+          "2180",
+          "2181",
+          "2192",
+          "2196",
+          "2197",
+          "2205",
+          "2220",
+          "2224",
+          "2227",
+          "2234",
+          "2236",
+          "2245",
+          "2258",
+          "2260",
+          "2275",
+          "2276",
+          "2278",
+          "2286",
+          "2288",
+          "2297",
+          "2308",
+          "2330",
+          "2340",
+          "2344",
+          "2348",
+          "2353",
+          "2364",
+          "2372",
+          "2382",
+          "2384",
+          "2388",
+          "2389",
+          "2393",
+          "2407",
+          "2408",
+          "2412",
+          "2414",
+          "2434",
+          "2439",
+          "2440",
+          "2449",
+          "2453",
+          "2455",
+          "2458",
+          "2465",
+          "2466",
+          "2470",
+          "2471",
+          "2477",
+          "2485",
+          "2493",
+          "2501",
+          "2514",
+          "2522",
+          "2530",
+          "2535",
+          "2542",
+          "2545",
+          "2546",
+          "2549",
+          "2561",
+          "2564",
+          "2566",
+          "2569",
+          "2575",
+          "2577",
+          "2580",
+          "2592",
+          "2597"
+        ],
+        "mode_order": [
+          0,
+          1,
+          2
+        ]
+      },
+      "rerun_profile_policy": "accuracy only; fail rather than substitute speed"
+    },
+    "scope": "same ANN pools asserted during execution; shared embeddings and reranker scores to isolate vector math; no comparative inference timing claim"
+  },
+  "scope_correction": "Earlier both-embedding-and-reranking description was incorrect; embedding::joint() and retained provider attestations confirm CPU embedding for every arm.",
+  "statistics": {
+    "assignment_unit": "whole process",
+    "blocks": 3,
+    "design": "three deterministic rotations, not randomized",
+    "test": "all 8 paired process-round log-time sign flips, four contrasts",
+    "interpretation": "descriptive/diagnostic; old query-level p=0.0002 withdrawn"
+  },
+  "coreml_cache_state": {
+    "accurate-all-0": "not recorded/controlled; process costs incomparable",
+    "accurate-all-1": "not recorded/controlled; process costs incomparable",
+    "accurate-all-2": "not recorded/controlled; process costs incomparable",
+    "accurate-gpu-0": "not recorded/controlled; process costs incomparable",
+    "accurate-gpu-1": "not recorded/controlled; process costs incomparable",
+    "accurate-gpu-2": "not recorded/controlled; process costs incomparable",
+    "accurate-cpu-0": "CoreML not requested; cross-arm process costs still incomparable",
+    "accurate-cpu-1": "CoreML not requested; cross-arm process costs still incomparable",
+    "accurate-cpu-2": "CoreML not requested; cross-arm process costs still incomparable",
+    "fast-all-0": "not recorded/controlled; process costs incomparable",
+    "fast-all-1": "not recorded/controlled; process costs incomparable",
+    "fast-all-2": "not recorded/controlled; process costs incomparable",
+    "fast-gpu-0": "not recorded/controlled; process costs incomparable",
+    "fast-gpu-1": "not recorded/controlled; process costs incomparable",
+    "fast-gpu-2": "not recorded/controlled; process costs incomparable",
+    "fast-cpu-0": "CoreML not requested; cross-arm process costs still incomparable",
+    "fast-cpu-1": "CoreML not requested; cross-arm process costs still incomparable",
+    "fast-cpu-2": "CoreML not requested; cross-arm process costs still incomparable"
+  },
+  "coreml_policy_attestation": {
+    "historical_runs": "compute-unit policy not logged; provider assignment and source/binary identity retained, but ALL vs CPUAndGPU not independently asserted per process",
+    "guarded_reruns": "emit policy from the same units variable passed to CoreML builder; runner and fresh summarizer reject missing/wrong policy",
+    "policy_validation": "ALL for all, CPUAndGPU for gpu; no CoreML-policy claim for CPU"
+  }
+}

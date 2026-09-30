@@ -1,0 +1,267 @@
+{
+  "complete": true,
+  "before_main_commit": "a249554cc2c8fe9ddb4f9438df8c10b0b2501af5",
+  "after_compiled_commit": "0a222d18493a5453753f70f216ae90194f50632a",
+  "after_runtime_tree_equivalent_ref": "codex/fix-coreml-interrupted-cache",
+  "after_logged_checkout_commit": "c9ab0245940bb6c40059ad812ed061502e18810d",
+  "metrics": [
+    {
+      "metric": "cross_lingual ndcg_at_10",
+      "before": 0.7273620056995279,
+      "after": 0.7271935801807232,
+      "absolute_difference": -0.00016842551880469347,
+      "percentage_change": -0.023155666296139996,
+      "scope": "same paired complete query identities/judgments"
+    },
+    {
+      "metric": "cross_lingual recall_at_50",
+      "before": 0.9031932773109234,
+      "after": 0.9031932773109234,
+      "absolute_difference": 0.0,
+      "percentage_change": 0.0,
+      "scope": "same paired complete query identities/judgments"
+    },
+    {
+      "metric": "same_language ndcg_at_10",
+      "before": 0.8691475084932025,
+      "after": 0.869445521405225,
+      "absolute_difference": 0.0002980129120224717,
+      "percentage_change": 0.03428795562437057,
+      "scope": "same paired complete query identities/judgments"
+    },
+    {
+      "metric": "same_language recall_at_50",
+      "before": 0.9647058823529412,
+      "after": 0.9647058823529412,
+      "absolute_difference": 0.0,
+      "percentage_change": 0.0,
+      "scope": "same paired complete query identities/judgments"
+    },
+    {
+      "metric": "search p50 seconds",
+      "before": 5.085653292,
+      "after": 0.483737958,
+      "absolute_difference": -4.601915334,
+      "percentage_change": -90.48818450205906,
+      "scope": "single sequential shared-host observations; setup included"
+    },
+    {
+      "metric": "search p95 seconds",
+      "before": 7.374466291,
+      "after": 0.814224166,
+      "absolute_difference": -6.560242125,
+      "percentage_change": -88.95887330865284,
+      "scope": "single sequential shared-host observations; setup included"
+    },
+    {
+      "metric": "sum search-call wall seconds",
+      "before": 6177.678680804,
+      "after": 723.068731845,
+      "absolute_difference": -5454.609948959,
+      "percentage_change": -88.29546227304112,
+      "scope": "1190 accurate search calls, no index build or off diagnostics"
+    },
+    {
+      "metric": "whole harness wall_seconds",
+      "before": 6232.904304583091,
+      "after": 777.2497505419888,
+      "absolute_difference": -5455.6545540411025,
+      "percentage_change": -87.5298943709039,
+      "scope": "accurate+off phases; startup included; process accounting excludes CoreML/ANE services and device execution"
+    },
+    {
+      "metric": "whole harness cpu_user_seconds",
+      "before": 24491.185271,
+      "after": 316.351126,
+      "absolute_difference": -24174.834144999997,
+      "percentage_change": -98.70830618241007,
+      "scope": "accurate+off phases; startup included; process accounting excludes CoreML/ANE services and device execution"
+    },
+    {
+      "metric": "whole harness cpu_system_seconds",
+      "before": 1588.832361,
+      "after": 86.276058,
+      "absolute_difference": -1502.556303,
+      "percentage_change": -94.5698451191101,
+      "scope": "accurate+off phases; startup included; process accounting excludes CoreML/ANE services and device execution"
+    },
+    {
+      "metric": "whole harness cpu_total_seconds",
+      "before": 26080.017632,
+      "after": 402.62718400000006,
+      "absolute_difference": -25677.390448,
+      "percentage_change": -98.45618515416193,
+      "scope": "accurate+off phases; startup included; process accounting excludes CoreML/ANE services and device execution"
+    },
+    {
+      "metric": "whole harness sampled_peak_rss_bytes",
+      "before": 4436525056,
+      "after": 3068149760,
+      "absolute_difference": -1368375296,
+      "percentage_change": -30.84340285984401,
+      "scope": "accurate+off phases; startup included; process accounting excludes CoreML/ANE services and device execution"
+    }
+  ],
+  "before_resource": {
+    "phase": "main-auto-search",
+    "exit_code": 0,
+    "wall_seconds": 6232.904304583091,
+    "sampled_peak_rss_bytes": 4436525056,
+    "guard_failure": null,
+    "cpu_user_seconds": 24491.185271,
+    "cpu_system_seconds": 1588.832361,
+    "cpu_total_seconds": 26080.017632,
+    "average_cpu_cores": 4.184248041931786,
+    "cpu_scope": "benchmark process and its threads; CoreML/ANE daemon CPU and accelerator execution excluded"
+  },
+  "after_resource": {
+    "phase": "auto-search-recovery",
+    "exit_code": 0,
+    "wall_seconds": 777.2497505419888,
+    "sampled_peak_rss_bytes": 3068149760,
+    "guard_failure": null,
+    "cpu_user_seconds": 316.351126,
+    "cpu_system_seconds": 86.276058,
+    "cpu_total_seconds": 402.62718400000006,
+    "average_cpu_cores": 0.5180151987430573,
+    "cpu_scope": "benchmark process and its threads; CoreML/ANE daemon CPU and accelerator execution excluded"
+  },
+  "precision_tests": {
+    "complete": true,
+    "family_scope": "four predefined group metrics; shared sign flips across paragraphs preserve correlated queries/translations",
+    "latency_after": {
+      "p50": 0.483737958,
+      "p95": 0.814224166
+    },
+    "latency_before": {
+      "p50": 5.085653292,
+      "p95": 7.374466291
+    },
+    "latency_limit": "single sequential shared-host passes, not repeated rotated speed acceptance",
+    "metrics": [
+      {
+        "after": 0.7271935801807232,
+        "before": 0.7273620056995279,
+        "family_adjusted_p": 0.1531846815318468,
+        "group": "cross_lingual",
+        "mean_difference": -0.00016842551880496764,
+        "metric": "ndcg",
+        "paragraph_cluster_sign_flip_p": 0.1533846615338466,
+        "query_losses": 23,
+        "query_ties": 1154,
+        "query_wins": 13
+      },
+      {
+        "after": 0.9031932773109234,
+        "before": 0.9031932773109234,
+        "family_adjusted_p": 1.0,
+        "group": "cross_lingual",
+        "mean_difference": 0.0,
+        "metric": "recall",
+        "paragraph_cluster_sign_flip_p": 1.0,
+        "query_losses": 0,
+        "query_ties": 1190,
+        "query_wins": 0
+      },
+      {
+        "after": 0.869445521405225,
+        "before": 0.8691475084932025,
+        "family_adjusted_p": 1.0,
+        "group": "same_language",
+        "mean_difference": 0.0002980129120225167,
+        "metric": "ndcg",
+        "paragraph_cluster_sign_flip_p": 1.0,
+        "query_losses": 1,
+        "query_ties": 1188,
+        "query_wins": 1
+      },
+      {
+        "after": 0.9647058823529412,
+        "before": 0.9647058823529412,
+        "family_adjusted_p": 1.0,
+        "group": "same_language",
+        "mean_difference": 0.0,
+        "metric": "recall",
+        "paragraph_cluster_sign_flip_p": 1.0,
+        "query_losses": 0,
+        "query_ties": 1190,
+        "query_wins": 0
+      }
+    ],
+    "paragraph_clusters": 240,
+    "queries": 1190
+  },
+  "native_library": {
+    "wrapper_crate": "zvec-rust 0.7.2",
+    "sys_crate": "zvec-rust-sys 0.7.2",
+    "actual_loaded_library_filename": "libzvec_c_api.dylib",
+    "actual_loaded_library_bytes": 23808880,
+    "actual_loaded_library_sha256": "06f183bf51ebd8b460fd0415f6b39c2556bdd6ef63a270efa35bdf76154512e2",
+    "upstream_commit": "not yet recovered from prebuilt artifact metadata"
+  },
+  "main_rows": {
+    "file": "coreml-main-auto-search-2026-09-30-rows.json",
+    "sha256": "fc1ada134a4fd20fffe1ccd98293a276acb331f5db9787f8b8a65049d6183392"
+  },
+  "candidate_rows": "coreml-search-full-2026-09-30-candidate-rows.json",
+  "judgments": "coreml-search-full-2026-09-30-judgments.json",
+  "index_documents": 13014,
+  "index_completeness": 1.0,
+  "profile": "accuracy",
+  "tier": "accurate",
+  "head_depth": 30,
+  "return_limit": 60,
+  "vector_index": "memory",
+  "hardware": "shared Mac16,12, 10 logical CPUs, 32 GiB RAM",
+  "provider": "CoreML load confirmed in both arms; main uses legacy NeuralNetwork defaults, candidate MLProgram ALL/static buckets; per-operation internal hardware placement not measured",
+  "disk": "candidate compiled cache adds 6836411689 logical bytes for three buckets; total isolated source/prepared/temp/device disk not measured; cache retired after complete candidate acceptance for main headroom",
+  "diagnostic": "main run included a recorded one-second CPU sample at 2026-09-30 01:00:16.962 +1000; no build or other model experiment ran during timing",
+  "limits": [
+    "non-alternating shared-host single passes; clean rotated repetitions pending",
+    "non-significant accuracy difference is not proof of exact or zero-loss equivalence",
+    "RSS is sampled process peak including startup/compilation, not steady model-only or total accelerator memory",
+    "other corpora/ignored-e2e/platform NPU/embedding integration still pending"
+  ],
+  "model_provenance": {
+    "embedder_all_arms": {
+      "repository": "gpahal/bge-m3-onnx-int8",
+      "revision": "2b34e84df040034d4b9eabb62383a87c18955822",
+      "source_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "selected_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
+      "data_sha256": "e5ea60bbb78f8f6af7ce66032ed6c3f59496e247846b28a3fc91c0a5151e677f",
+      "precision": "int8 CPU"
+    },
+    "reranker_repository": "onnx-community/bge-reranker-v2-m3-ONNX",
+    "reranker_revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+    "main_cpu": {
+      "source_file": "onnx/model_int8.onnx",
+      "source_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "selected_graph_sha256": "ea66c3cab7d3387e50ed0a20ba08dec0ed0034d181c0f5449c91352b9074317d",
+      "data_sha256": "730a4d0d54e61c72ffe10222705c9485f63012ff688440b94f00bede622b8559"
+    },
+    "main_default_auto": {
+      "source_file": "onnx/model_fp16.onnx",
+      "cache_source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+      "source_size_bytes": 1136209678,
+      "graph_selection_evidence": "loader reports CoreML; main tier export selection plus retained pinned cache identifies source; main did not log a per-load selected graph hash",
+      "limitation": "cache hash is an inspected retained artifact, not a contemporaneous graph hash emitted by the baseline runtime"
+    },
+    "candidate_coreml": {
+      "source_file": "onnx/model_fp16.onnx",
+      "source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+      "selected_typed_graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+      "precision": "FP16 encoder, FP32 classifier",
+      "graph_selection_evidence": "actual loaded typed-model path and retained artifact inventory"
+    },
+    "index_embedding_identity": "705ffaf38623fb5c71a2ced99d8674e45fb19e8ad05f263bfa09474e4d9b153f"
+  },
+  "measured_source_tree_proof": {
+  "original_compiled_commit": "0a222d18493a5453753f70f216ae90194f50632a",
+  "original_tree": "368a202bb6c00ab6a018e666a1ab6668a836759e",
+  "equivalent_public_commit": "fbbcc2661397366d491045003579f80002c774f3",
+  "equivalent_tree": "368a202bb6c00ab6a018e666a1ab6668a836759e",
+  "tree_equal": true,
+  "reproduce": "git rev-parse <original>^{tree}; git rev-parse <equivalent>^{tree}; compare exact tree IDs",
+  "reference_branch": "codex/bench-measured-runtime-2026-09-30"
+}
+}

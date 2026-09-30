@@ -1,0 +1,46 @@
+[
+  {
+    "after_bytes_requested": 4096,
+    "after_calls": 2,
+    "before_bytes_requested": 27676,
+    "before_calls": 303,
+    "case": "short_partial",
+    "logical_rows": 1,
+    "logical_tokens": 17,
+    "rows": 4,
+    "tokens": 64
+  },
+  {
+    "after_bytes_requested": 4096,
+    "after_calls": 2,
+    "before_bytes_requested": 30684,
+    "before_calls": 323,
+    "case": "short_full",
+    "logical_rows": 4,
+    "logical_tokens": 17,
+    "rows": 4,
+    "tokens": 64
+  },
+  {
+    "after_bytes_requested": 8192,
+    "after_calls": 2,
+    "before_bytes_requested": 81956,
+    "before_calls": 573,
+    "case": "medium_partial",
+    "logical_rows": 3,
+    "logical_tokens": 92,
+    "rows": 4,
+    "tokens": 128
+  },
+  {
+    "after_bytes_requested": 8192,
+    "after_calls": 2,
+    "before_bytes_requested": 86980,
+    "before_calls": 1064,
+    "case": "long_partial",
+    "logical_rows": 1,
+    "logical_tokens": 256,
+    "rows": 2,
+    "tokens": 256
+  }
+]

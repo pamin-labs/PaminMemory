@@ -14,6 +14,7 @@ repository.workspace = true
 libc = { workspace = true }
 pamin-core = { workspace = true }
 fastembed = { workspace = true }
+ndarray = { workspace = true }
 hf-hub = { workspace = true }
 icu_segmenter = { workspace = true }
 icu_provider = { workspace = true }
@@ -32,7 +33,7 @@ zvec-rust = { workspace = true }
 # sessions on it (see `encoder`), the E5 models run on it through `fastembed`,
 # and it configures the CPU execution provider (see `inference::cpu`) and, per
 # platform below, asks for a GPU one.
-ort = { workspace = true }
+ort = { workspace = true, features = ["api-24"] }
 
 # A GPU, when the machine has one, with no build flag: each platform's ONNX
 # Runtime build carries the accelerator that platform has, and it is tried at
@@ -54,8 +55,15 @@ ort = { workspace = true, features = ["cuda", "copy-dylibs"] }
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 ort = { workspace = true, features = ["coreml"] }
 
+# sha2 0.10 enables its ARM SHA instructions only with this feature. Its
+# backend checks CPU support and retains the software fallback. Keep the
+# assembly build off MSVC; x86 already detects SHA instructions by default.
+[target.'cfg(all(unix, target_arch = "aarch64"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }

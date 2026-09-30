@@ -368,6 +368,10 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
         return;
     }
     println!(
+        "  loaded reranker truncation: {} tokens",
+        counted.maximum_tokens
+    );
+    println!(
         "  {}: {:.1} candidates a query reached the model of {:.1} offered, \
          {:.0} characters each, longest {}, cache {:.1}% of {} lookups",
         tier.name(),
@@ -1085,6 +1089,7 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
         &rules,
         reranking::shipped(&rules),
         &measured,
+        false,
     );
 }
 
@@ -1127,6 +1132,7 @@ async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named:
         &labels,
         reranking::shipped_context(),
         &measured,
+        false,
     );
 }
 
@@ -1259,6 +1265,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         &variants,
         channels::shipped_row(&variants),
         &offline.iter().map(keyed).collect::<Vec<_>>(),
+        false,
     );
 
     println!(

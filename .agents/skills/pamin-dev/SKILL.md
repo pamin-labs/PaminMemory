@@ -394,6 +394,27 @@ When you find one, fix the claim rather than deleting it, and say in the commit
 message which commit made it stale. That is the record of how it happened, and
 it is what stops the next person re-deriving the same wrong thing.
 
+## Where measurement evidence may be published
+
+Public PRs, ADRs and `benchmarks/results/` may contain reproducible commands,
+raw rows and summaries made from public or synthetic inputs, when their source
+licence permits redistribution. Include model/runtime/index identities and
+measurement scope. Retaining raw evidence does not override confidentiality.
+
+Private planning, strategy, sensitive internal notes and experiments using
+private user/workspace data belong in `InternalDocs`, not public files or PR
+links. Update that repository first, then the public submodule pointer. Public
+PRs describe the pointer change without copying the private note's contents.
+For private-input measurements, publish only an approved non-sensitive summary
+or a public/synthetic reproduction; state when the raw data cannot be public.
+
+Before publication, inspect commands, logs, paths and rows for credentials,
+tokens, database connection strings, personal/private content and session URLs.
+Remove sensitive fields from the published copy and document redaction and
+its effect on reproducibility. Preserve the original evidence privately; do
+not silently replace an original raw artifact with a sanitized one. Check
+repository-relative evidence links from the document that contains them.
+
 ## The gate
 
 Before pushing anything:

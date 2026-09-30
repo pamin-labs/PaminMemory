@@ -1,0 +1,16 @@
+[
+  {
+    "file": "xquad.log",
+    "original_sha256": "d22550baae21c488eb213acec62c5757138b934b6a35aaa4323730f1ecfbf908",
+    "published_sha256": "70ca817ca45e4012b506704f113f119150462e354920b05cb3b3d82f59a47deb",
+    "redaction": "machine-specific build checkout paths only; numbers unchanged",
+    "limitation": "historical terminal output, not per-query raw score matrix; full provenance not retrospectively established"
+  },
+  {
+    "file": "musique.log",
+    "original_sha256": "6af0075845862ffc19b8b17d90eebbc418c7bf68217b66a24a4d40f27639a8de",
+    "published_sha256": "6a9111a3048357346a0fdb877d3a822b7111cae9ec39174cf68c0a25b00726da",
+    "redaction": "machine-specific build checkout paths only; numbers unchanged",
+    "limitation": "historical terminal output, not per-query raw score matrix; full provenance not retrospectively established"
+  }
+]

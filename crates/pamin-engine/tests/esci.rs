@@ -545,6 +545,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         &variants,
         channels::shipped_row(&variants),
         &offline,
+        false,
     );
     println!();
 }

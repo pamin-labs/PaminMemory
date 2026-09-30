@@ -1,0 +1,5 @@
+gpahal/bge-m3-onnx-int8
+topic
+memory
+named
+reversed-keys

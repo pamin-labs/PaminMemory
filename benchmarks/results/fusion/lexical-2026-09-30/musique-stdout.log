@@ -1,0 +1,92 @@
+   Compiling pamin-engine v0.0.1 (${REPO}/crates/pamin-engine)
+    Finished `release` profile [optimized] target(s) in 1m 19s
+     Running tests/multihop.rs (target/release/deps/multihop-660d94bfc7f05666)
+
+running 1 test
+  10785 memories under distinct titles, 1000 questions
+    2hop: 1000 questions, 2.0 supporting titles a question
+  12840 live edges: [("mentions", 12840)]
+test search_answers_questions_that_take_several_steps has been running for over 60 seconds
+
+  MuSiQue, accuracy: 12840 live edges [("mentions", 12840)]
+
+  each channel on its own, 2hop
+  channel               queries   nDCG@10   recall@50
+  LexicalSegmented          1000    0.4566      0.6380
+  LexicalNgram              1000    0.2437      0.4070
+  Vector                    1000    0.6572      0.7995
+  Graph                     1000    0.1599      0.4070
+  fused                     1000    0.6814      0.8060
+
+  the fused list with each channel removed, against all four, 2hop
+  LexicalSegmented       -0.0082  83W/126L/791T  p=0.0001
+  LexicalNgram           -0.0056  65W/92L/843T  p=0.0003
+  Vector                 -0.2708  99W/678L/223T  p=0.0001
+  Graph                  -0.0122  87W/137L/776T  p=0.0001
+
+  every setting against the one that ships, 2hop
+  setting                        nDCG@10   recall@50     diff   can see   family p   own comparison
+  ----------------------------------------------------------------------------------------------------------------------
+  lex seg 0.0000 ngram 0.0000     0.6704      0.7995   -0.0111    0.0065     0.0002   -0.0111  100W/166L/734T  p=0.0001
+  lex seg 0.0000 ngram 0.0625     0.6730      0.8015   -0.0085    0.0055     0.0002   -0.0085  84W/140L/776T  p=0.0001
+  lex seg 0.0000 ngram 0.1250     0.6732      0.8030   -0.0082    0.0049     0.0002   -0.0082  83W/126L/791T  p=0.0001
+  lex seg 0.0000 ngram 0.2500     0.6753      0.8025   -0.0062    0.0053     0.0290   -0.0062  96W/142L/762T  p=0.0007
+  lex seg 0.0000 ngram 0.5000     0.6656      0.7985   -0.0158    0.0078     0.0001   -0.0158  106W/241L/653T  p=0.0001
+  lex seg 0.0625 ngram 0.0000     0.6741      0.8030   -0.0073    0.0054     0.0039   -0.0073  86W/130L/784T  p=0.0003
+  lex seg 0.0625 ngram 0.0625     0.6767      0.8035   -0.0047    0.0044     0.0483   -0.0047  72W/106L/822T  p=0.0033
+  lex seg 0.0625 ngram 0.1250     0.6773      0.8050   -0.0041    0.0033     0.0113   -0.0041  55W/84L/861T  p=0.0008
+  lex seg 0.0625 ngram 0.2500     0.6776      0.8040   -0.0038    0.0049     0.3946   -0.0038  83W/119L/798T  p=0.0255
+  lex seg 0.0625 ngram 0.5000     0.6672      0.8000   -0.0142    0.0075     0.0001   -0.0142  92W/227L/681T  p=0.0001
+  lex seg 0.1250 ngram 0.0000     0.6759      0.8035   -0.0056    0.0043     0.0063   -0.0056  65W/92L/843T  p=0.0003
+  lex seg 0.1250 ngram 0.0625     0.6797      0.8030   -0.0018    0.0030     0.8080   -0.0018  37W/51L/912T  p=0.0942  (not significant)
+  lex seg 0.1250 ngram 0.1250     0.6814      0.8060   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1000T  p=1.0000  (not significant)
+  lex seg 0.1250 ngram 0.2500     0.6784      0.8050   -0.0030    0.0047     0.7151   -0.0030  71W/101L/828T  p=0.0710  (not significant)
+  lex seg 0.1250 ngram 0.5000     0.6688      0.8020   -0.0127    0.0075     0.0002   -0.0127  88W/216L/696T  p=0.0001
+  lex seg 0.2500 ngram 0.0000     0.6802      0.8035   -0.0013    0.0052     1.0000   -0.0013  94W/110L/796T  p=0.4837  (not significant)
+  lex seg 0.2500 ngram 0.0625     0.6829      0.8045   +0.0015    0.0045     0.9998   +0.0015  92W/90L/818T  p=0.3738  (not significant)
+  lex seg 0.2500 ngram 0.1250     0.6834      0.8050   +0.0019    0.0045     0.9880   +0.0019  89W/90L/821T  p=0.2322  (not significant)
+  lex seg 0.2500 ngram 0.2500     0.6803      0.8055   -0.0011    0.0058     1.0000   -0.0011  110W/133L/757T  p=0.6028  (not significant)
+  lex seg 0.2500 ngram 0.5000     0.6699      0.8050   -0.0116    0.0085     0.0034   -0.0116  118W/224L/658T  p=0.0002
+  lex seg 0.5000 ngram 0.0000     0.6737      0.8025   -0.0077    0.0081     0.1400   -0.0077  133W/199L/668T  p=0.0082
+  lex seg 0.5000 ngram 0.0625     0.6723      0.8030   -0.0091    0.0082     0.0371   -0.0091  134W/197L/669T  p=0.0022
+  lex seg 0.5000 ngram 0.1250     0.6732      0.8045   -0.0082    0.0082     0.0951   -0.0082  134W/199L/667T  p=0.0062
+  lex seg 0.5000 ngram 0.2500     0.6716      0.8075   -0.0098    0.0086     0.0308   -0.0098  136W/212L/652T  p=0.0015
+  lex seg 0.5000 ngram 0.5000     0.6632      0.8030   -0.0182    0.0101     0.0001   -0.0182  140W/254L/606T  p=0.0001
+  combine rrf                     0.6653      0.8560   -0.0162    0.0075     0.0001   -0.0162  111W/195L/694T  p=0.0001
+  combine band                    0.6814      0.8060   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1000T  p=1.0000  (not significant)
+  k 0                             0.6790      0.8545   -0.0024    0.0039     0.7792   -0.0024  69W/93L/838T  p=0.0853  (not significant)
+  k 5                             0.6796      0.8600   -0.0018    0.0021     0.2764   -0.0018  31W/53L/916T  p=0.0147
+  k 10                            0.6814      0.8060   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1000T  p=1.0000  (not significant)
+  k 20                            0.6808      0.8000   -0.0006    0.0036     1.0000   -0.0006  79W/68L/853T  p=0.6280  (not significant)
+  k 60                            0.6702      0.7995   -0.0113    0.0087     0.0062   -0.0113  149W/195L/656T  p=0.0003
+  graph 0.00                      0.6692      0.8000   -0.0122    0.0063     0.0001   -0.0122  87W/137L/776T  p=0.0001
+  graph 0.15                      0.6771      0.8010   -0.0043    0.0042     0.0823   -0.0043  64W/86L/850T  p=0.0028
+  graph 0.30                      0.6814      0.8060   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1000T  p=1.0000  (not significant)
+  graph 0.50                      0.6801      0.8545   -0.0013    0.0045     1.0000   -0.0013  85W/89L/826T  p=0.4152  (not significant)
+  graph 1.00                      0.6735      0.8185   -0.0080    0.0129     0.7642   -0.0080  199W/229L/572T  p=0.0825  (not significant)
+
+  choosing from this sweep, cross-validated over five folds, MuSiQue, accuracy
+  rule: maximise the mean over 1 groups of nDCG@10, ties to what ships
+  best row, scored on the queries that chose it   0.6834   <- what a sweep used to report
+  the procedure, on queries it did not choose on  0.6829
+  what ships, on the same queries                 0.6814
+  optimism of choosing in-sample                  +0.0005
+  the procedure against what ships: +0.0014  93W/88L/819T  p=0.3811  (not significant)
+  chosen per fold: ["lex seg 0.2500 ngram 0.1250", "lex seg 0.2500 ngram 0.0625", "lex seg 0.2500 ngram 0.1250", "lex seg 0.2500 ngram 0.1250", "lex seg 0.2500 ngram 0.1250"]
+  chosen on all of this corpus's queries: "lex seg 0.2500 ngram 0.1250"  <- look this row up in another corpus's table
+  the folds disagree, so no single setting is a stable choice at this size
+
+  choosing from this sweep, cross-validated over five folds, MuSiQue, accuracy, lexical weights only
+  rule: maximise the mean over 1 groups of nDCG@10, ties to what ships
+  best row, scored on the queries that chose it   0.6834   <- what a sweep used to report
+  the procedure, on queries it did not choose on  0.6829
+  what ships, on the same queries                 0.6814
+  optimism of choosing in-sample                  +0.0005
+  the procedure against what ships: +0.0014  93W/88L/819T  p=0.3811  (not significant)
+  chosen per fold: ["lex seg 0.2500 ngram 0.1250", "lex seg 0.2500 ngram 0.0625", "lex seg 0.2500 ngram 0.1250", "lex seg 0.2500 ngram 0.1250", "lex seg 0.2500 ngram 0.1250"]
+  chosen on all of this corpus's queries: "lex seg 0.2500 ngram 0.1250"  <- look this row up in another corpus's table
+  the folds disagree, so no single setting is a stable choice at this size
+
+test search_answers_questions_that_take_several_steps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 71.09s

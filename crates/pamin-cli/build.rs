@@ -42,19 +42,16 @@ fn main() {
     };
     let out_dir = PathBuf::from(out_dir);
 
-    // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out, so two levels up
-    // is the directory holding every build script's output, and three is the
-    // profile directory where the binary is written.
-    let Some(build_root) = out_dir.ancestors().nth(2) else {
-        return;
-    };
+    // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out.
     let Some(profile_dir) = out_dir.ancestors().nth(3) else {
         return;
     };
 
-    let Some(library) = find_library(build_root) else {
-        // Not fatal: the library may be installed system-wide, or supplied
-        // through ZVEC_LIB_DIR. Warn rather than fail so those paths still work.
+    // Normal-dependency links metadata names the target library. A build
+    // dependency would prepare a host library and does not expose this key.
+    let library =
+        std::env::var_os("DEP_ZVEC_C_API_LIB_DIR").and_then(|dir| search(&PathBuf::from(dir)));
+    let Some(library) = library else {
         println!("cargo:warning=zvec native library not found; the binary may not start");
         return;
     };
@@ -70,9 +67,12 @@ fn main() {
         return;
     };
 
-    let _ = std::fs::copy(&library, profile_dir.join(name));
+    std::fs::copy(&library, profile_dir.join(name))
+        .expect("could not stage zvec runtime beside the binary");
 
-    if let Some(staged) = stage_under_cargo_home(&library, name) {
+    if matches!(target_os.as_str(), "macos" | "linux")
+        && let Some(staged) = stage_under_cargo_home(&library, name)
+    {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{}", staged.display());
     }
 }
@@ -103,29 +103,20 @@ fn stage_under_cargo_home(library: &Path, name: &std::ffi::OsStr) -> Option<Path
     Some(staged)
 }
 
-/// Finds the engine's native library among the build script outputs.
-fn find_library(build_root: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(build_root).ok()?;
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if !name.to_string_lossy().starts_with("zvec-rust-sys-") {
-            continue;
-        }
-        if let Some(found) = search(&entry.path().join("out")) {
-            return Some(found);
-        }
-    }
-
-    None
-}
-
 /// Looks for the library within one build script's output, one level deep.
 fn search(dir: &Path) -> Option<PathBuf> {
     let matches = |path: &Path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("libzvec_c_api."))
+            .is_some_and(|name| {
+                [
+                    "libzvec_c_api.so",
+                    "libzvec_c_api.dylib",
+                    "libzvec_c_api.dll",
+                    "zvec_c_api.dll",
+                ]
+                .contains(&name)
+            })
     };
 
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
