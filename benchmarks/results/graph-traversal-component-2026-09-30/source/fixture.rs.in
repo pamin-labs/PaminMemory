@@ -1,0 +1,573 @@
+//! Scratch-only native Engine fixture. It asserts premises before graph work.
+mod graph_trace;
+mod harness;
+use pamin_core::{Channel, Derivation, EdgeKind, Fusion, TopicId, Validity, Why};
+use pamin_engine::{Depths, Engine, SearchHit};
+use pamin_index::{Access, Profile, VectorIndex};
+use pamin_store::{
+    Workspace,
+    graph::{EdgeClaim, assert_edges},
+    repository,
+};
+use std::collections::HashSet;
+
+const WIDE: u32 = 301;
+const DEPTHS: Depths = Depths {
+    channel: 50,
+    graph: 2,
+};
+
+fn premise(hits: &[SearchHit]) -> Vec<(String, TopicId, Vec<(Channel, u32, Option<f32>)>)> {
+    hits.iter()
+        .map(|hit| {
+            (
+                hit.topic.clone(),
+                hit.state.topic_id,
+                hit.result
+                    .why
+                    .iter()
+                    .filter_map(|why| match why {
+                        Why::Channel {
+                            channel,
+                            rank,
+                            score,
+                            ..
+                        } if *channel != Channel::Graph => {
+                            assert!(score.is_none_or(f32::is_finite));
+                            Some((*channel, *rank, *score))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+fn graph_score(hit: &SearchHit) -> Option<f32> {
+    hit.result.why.iter().find_map(|why| match why {
+        Why::Channel {
+            channel: Channel::Graph,
+            score,
+            ..
+        } => *score,
+        _ => None,
+    })
+}
+fn assert_path(hits: &[SearchHit], target: &str, origin: &str, via: &str, hops: u8, score: f32) {
+    let hit = hits
+        .iter()
+        .find(|hit| hit.topic == target)
+        .expect("target recalled by graph");
+    assert!(
+        (graph_score(hit).expect("graph channel evidence") - score).abs() < 1e-6,
+        "wrong graph strength for {target}: {:?}",
+        hit.result.why
+    );
+    assert!(
+        hit.result.why.iter().any(|why| matches!(why,
+        Why::Path { from, via: actual_via, hops: actual_hops, .. }
+        if from == origin && actual_via == via && *actual_hops == hops)),
+        "wrong path for {target}: {:?}",
+        hit.result.why
+    );
+}
+fn high_water_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("VmHWM:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+fn cpu_ticks() -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let fields: Vec<_> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    Some((fields.get(11)?.parse().ok()?, fields.get(12)?.parse().ok()?))
+}
+fn cpu_seconds(before: Option<(u64, u64)>, after: Option<(u64, u64)>) -> Option<(f64, f64)> {
+    let (before, after) = (before?, after?);
+    let ticks: f64 = std::env::var("GRAPH_CLK_TCK").ok()?.parse().ok()?;
+    Some((
+        (after.0.checked_sub(before.0)?) as f64 / ticks,
+        (after.1.checked_sub(before.1)?) as f64 / ticks,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real Engine fixture: provisions PostgreSQL and CPU inference"]
+async fn scratch_scored_graph_finite_fixture() {
+    graph_trace::start();
+    let arm = std::env::var("GRAPH_ARM").expect("declare baseline or scored");
+    let enabled = match arm.as_str() {
+        "baseline" | "main" => false,
+        "scored" => true,
+        _ => panic!("unknown arm"),
+    };
+    if arm == "main" {
+        assert!(!include_str!("../src/engine.rs").contains("USE_SCORED_GRAPH_RECALL"));
+    } else {
+        assert!(
+            include_str!("../src/engine.rs")
+                .contains(&format!("const USE_SCORED_GRAPH_RECALL: bool = {enabled};"))
+        );
+    }
+    assert_eq!(harness::profile().1, Profile::Accuracy);
+    let workspace = Workspace::at(harness::eval_home());
+    let name = format!("graph-fixture-{}", uuid::Uuid::now_v7());
+    let engine = Engine::open(
+        &workspace,
+        &name,
+        Profile::Accuracy,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open Engine");
+    // No topic title occurs in any content. Native mention derivation must leave zero edges.
+    let strong = "quartzanchor";
+    harness::write_absent(
+        &engine,
+        strong,
+        "orbital navigation calibration beacon",
+        "eng",
+        "synthetic graph fixture",
+    )
+    .await;
+    let distractors = 240;
+    for n in 0..distractors {
+        let text = format!(
+            "orbital navigation calibration beacon archival report category {} revision {}",
+            n % 17,
+            n
+        );
+        harness::write_absent(
+            &engine,
+            &format!("islandnode{n:04}"),
+            &text,
+            "eng",
+            "synthetic graph fixture",
+        )
+        .await;
+    }
+    harness::drain(&engine).await;
+    pamin_store::jobs::enqueue(
+        engine.database.pool(),
+        engine.project,
+        pamin_core::JobKind::OptimizeIndex,
+        None,
+    )
+    .await
+    .expect("request native OptimizeIndex setup");
+    let optimized = harness::drain(&engine).await;
+    assert!(
+        optimized.completed > 0,
+        "explicit setup OptimizeIndex did no work"
+    );
+    assert_eq!(
+        engine.indexed_documents().expect("document count"),
+        distractors + 1
+    );
+    assert_eq!(
+        engine
+            .vector_index_completeness()
+            .expect("complete projection"),
+        1.0
+    );
+    let count_edges = || async {
+        sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM relationship_versions WHERE project_id=$1 AND invalidated_at IS NULL")
+        .bind(engine.project.0).fetch_one(engine.database.pool()).await.expect("live edge count")
+    };
+    assert_eq!(
+        count_edges().await,
+        0,
+        "automatic edges changed fixture premise"
+    );
+    let query = "quartzanchor orbital navigation calibration beacon";
+    let graphless = Depths {
+        channel: 50,
+        graph: 0,
+    };
+    let before = engine
+        .search_fused(query, WIDE, graphless, Fusion::default())
+        .await
+        .expect("graphless frozen probe");
+    assert!(before.len() < WIDE as usize);
+    let frozen = premise(&before);
+    let strong_id = repository::find_topic(engine.database.pool(), engine.project, strong)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    // Choose weak origin from actual product seeding order, not assumed vector scores.
+    let weak_hit = before
+        .iter()
+        .take(63)
+        .find(|hit| {
+            hit.topic != strong
+                && hit
+                    .result
+                    .why
+                    .iter()
+                    .filter_map(|why| match why {
+                        Why::Channel { channel, rank, .. } if *channel != Channel::Graph => {
+                            Some(*rank)
+                        }
+                        _ => None,
+                    })
+                    .min()
+                    .is_some_and(|rank| rank >= 22)
+        })
+        .expect("need actual weak origin among Engine's first 64 seeds");
+    let weak_rank = weak_hit
+        .result
+        .why
+        .iter()
+        .filter_map(|why| match why {
+            Why::Channel { channel, rank, .. } if *channel != Channel::Graph => Some(*rank),
+            _ => None,
+        })
+        .min()
+        .unwrap();
+    let weak_relevance = (pamin_core::DEFAULT_K + 1.0) / (pamin_core::DEFAULT_K + weak_rank as f32);
+    assert!(weak_relevance < 0.8);
+    let existing: HashSet<_> = before.iter().map(|hit| hit.state.topic_id).collect();
+    let topics = repository::all_topics(engine.database.pool(), engine.project)
+        .await
+        .expect("all fixture topics");
+    let hidden: Vec<_> = topics
+        .iter()
+        .filter(|topic| !existing.contains(&topic.id))
+        .take(67)
+        .collect();
+    assert_eq!(
+        hidden.len(),
+        67,
+        "graph-only targets/intermediates must miss every non-graph top50 list"
+    );
+    let (shared, longer, bridge, samehop, low, high) = (
+        hidden[0], hidden[1], hidden[2], hidden[3], hidden[4], hidden[5],
+    );
+    // Product graph is undirected; these finite components have no other seeded origins.
+    let specs = [
+        (weak_hit.state.topic_id, shared.id, 1.0),
+        (strong_id, shared.id, 0.8),
+        (strong_id, longer.id, 0.1),
+        (strong_id, bridge.id, 0.01),
+        (bridge.id, longer.id, 1.0),
+        (strong_id, low.id, 0.8),
+        (strong_id, high.id, 0.7),
+        (low.id, samehop.id, 0.1),
+        (high.id, samehop.id, 1.0),
+    ];
+    let edges: Vec<_> = specs
+        .iter()
+        .map(|&(from, to, confidence)| {
+            (
+                from,
+                to,
+                EdgeClaim {
+                    kind: EdgeKind::RelatedTo,
+                    derivation: Derivation::Deterministic,
+                    confidence,
+                    validity: Validity::ALWAYS,
+                    caused_by_topic_state: None,
+                },
+            )
+        })
+        .collect();
+    assert_edges(engine.database.pool(), engine.project, &edges)
+        .await
+        .expect("assert controlled edges");
+    assert_eq!(count_edges().await, edges.len() as i64);
+    let after = engine
+        .search_fused(query, WIDE, graphless, Fusion::default())
+        .await
+        .expect("repeat frozen probe");
+    assert_eq!(
+        frozen,
+        premise(&after),
+        "non-graph ranks changed after edge setup"
+    );
+    let cpu_before = cpu_ticks();
+    let start = std::time::Instant::now();
+    let hits = engine
+        .search_fused(query, WIDE, DEPTHS, Fusion::default())
+        .await
+        .expect("native graph search");
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let graph_cpu = cpu_seconds(cpu_before, cpu_ticks());
+    assert!(hits.len() < WIDE as usize);
+    assert_eq!(
+        count_edges().await,
+        edges.len() as i64,
+        "measurement mutated graph"
+    );
+    // Baseline is recorded rather than required to satisfy repaired invariants.
+    if enabled {
+        assert_path(&hits, &shared.name, strong, strong, 1, 0.8);
+        assert_path(&hits, &longer.name, strong, &bridge.name, 2, 0.5);
+        assert_path(&hits, &samehop.name, strong, &high.name, 2, 0.5);
+    }
+    let targets = [&shared.name, &longer.name, &samehop.name];
+    let rows: Vec<_> = hits
+        .iter()
+        .filter(|hit| targets.contains(&&hit.topic))
+        .map(|hit| serde_json::json!({"topic":hit.topic,"why":hit.result.why,"seed":hit.seed}))
+        .collect();
+    assert_eq!(rows.len(), 3);
+    // A separate phase isolates the BFS keep-stop defect from arrival selection.
+    let early = hidden[6];
+    let mut extra: Vec<_> = hidden[7..67]
+        .iter()
+        .map(|topic| {
+            (
+                strong_id,
+                topic.id,
+                EdgeClaim {
+                    kind: EdgeKind::RelatedTo,
+                    derivation: Derivation::Deterministic,
+                    confidence: 0.1,
+                    validity: Validity::ALWAYS,
+                    caused_by_topic_state: None,
+                },
+            )
+        })
+        .collect();
+    extra.push((
+        bridge.id,
+        early.id,
+        EdgeClaim {
+            kind: EdgeKind::RelatedTo,
+            derivation: Derivation::Deterministic,
+            confidence: 1.0,
+            validity: Validity::ALWAYS,
+            caused_by_topic_state: None,
+        },
+    ));
+    assert_edges(engine.database.pool(), engine.project, &extra)
+        .await
+        .expect("add controlled keep-stop phase");
+    assert_eq!(count_edges().await, (edges.len() + extra.len()) as i64);
+    let after_extra = engine
+        .search_fused(query, WIDE, graphless, Fusion::default())
+        .await
+        .expect("freeze extra phase");
+    assert_eq!(
+        frozen,
+        premise(&after_extra),
+        "keep-stop phase changed non-graph premise"
+    );
+    let start = std::time::Instant::now();
+    let early_hits = engine
+        .search_fused(query, WIDE, DEPTHS, Fusion::default())
+        .await
+        .expect("keep-stop search");
+    let early_ms = start.elapsed().as_secs_f64() * 1000.0;
+    assert!(early_hits.len() < WIDE as usize);
+    let early_hit = early_hits.iter().find(|hit| hit.topic == early.name);
+    if enabled {
+        assert_path(&early_hits, &early.name, strong, &bridge.name, 2, 0.5);
+    }
+    assert_eq!(count_edges().await, (edges.len() + extra.len()) as i64);
+    let labels: std::collections::HashMap<_, _> = topics.iter().map(|t| (t.id, &t.name)).collect();
+    let known: Vec<_> = edges
+        .iter()
+        .map(|(a, b, claim)| {
+            serde_json::json!({
+        "from":labels[a],"to":labels[b],"confidence":claim.confidence})
+        })
+        .collect();
+    let row = serde_json::json!({"record":"fixture", "arm":arm,"documents":distractors+1,
+        "query":query,"strong":strong,"weak":weak_hit.topic,"weak_rank":weak_rank,
+        "weak_relevance":weak_relevance,"non_graph":frozen.iter().map(|(name,id,ranks)|
+            serde_json::json!({"topic":name,"id":id.to_string(),"ranks":ranks.iter().map(|(channel,rank,score)|
+                serde_json::json!({"channel":channel,"rank":rank,"score":score})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "known_edges":known,"target_labels":[shared.name,longer.name,samehop.name],
+        "early_stop":{"target":early.name,"via":bridge.name,"decoys":60,"expected_score":0.5,
+            "reached":early_hit.is_some(),"why":early_hit.map(|h| &h.result.why),"elapsed_ms":early_ms},
+        "setup":"native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved",
+        "targets":rows,"expected_scores":[0.8,0.5,0.5],"elapsed_ms":elapsed_ms,"graph_process_cpu_user_system_seconds":graph_cpu,
+        "process_lifetime_high_water_kib":high_water_kib(),"shared_machine":std::env::var("GRAPH_SHARED_MACHINE").expect("declare interference")});
+    std::fs::write(
+        std::env::var("GRAPH_OUT").expect("output path"),
+        format!("{row}\n"),
+    )
+    .expect("persist fixture");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "native Engine hub stress: thousands of writes, PostgreSQL and model inference"]
+async fn scratch_scored_graph_hub_cost() {
+    graph_trace::start();
+    let arm = std::env::var("GRAPH_ARM").expect("arm");
+    let enabled = match arm.as_str() {
+        "baseline" | "main" => false,
+        "scored" => true,
+        _ => panic!("arm"),
+    };
+    if arm == "main" {
+        assert!(!include_str!("../src/engine.rs").contains("USE_SCORED_GRAPH_RECALL"));
+    } else {
+        assert!(
+            include_str!("../src/engine.rs")
+                .contains(&format!("const USE_SCORED_GRAPH_RECALL: bool = {enabled};"))
+        );
+    }
+    let degree: usize = std::env::var("GRAPH_HUB_DEGREE")
+        .expect("declare degree >= 2050")
+        .parse()
+        .expect("degree");
+    assert!(degree >= 2050, "stress must exceed unresolved frontier cap");
+    let workspace = Workspace::at(harness::eval_home());
+    let engine = Engine::open(
+        &workspace,
+        &format!("graph-hub-{}", uuid::Uuid::now_v7()),
+        Profile::Accuracy,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open Engine");
+    let strong = "zincanchor";
+    harness::write_absent(
+        &engine,
+        strong,
+        "orbital navigation calibration beacon",
+        "eng",
+        "synthetic hub fixture",
+    )
+    .await;
+    for n in 0..degree + 240 {
+        harness::write_absent(
+            &engine,
+            &format!("hubisland{n:06}"),
+            &format!(
+                "orbital navigation calibration beacon archival category {} revision {}",
+                n % 17,
+                n
+            ),
+            "eng",
+            "synthetic hub fixture",
+        )
+        .await;
+    }
+    harness::drain(&engine).await;
+    pamin_store::jobs::enqueue(
+        engine.database.pool(),
+        engine.project,
+        pamin_core::JobKind::OptimizeIndex,
+        None,
+    )
+    .await
+    .expect("request native OptimizeIndex setup");
+    let optimized = harness::drain(&engine).await;
+    assert!(
+        optimized.completed > 0,
+        "explicit setup OptimizeIndex did no work"
+    );
+    assert_eq!(engine.indexed_documents().unwrap() as usize, degree + 241);
+    assert_eq!(engine.vector_index_completeness().unwrap(), 1.0);
+    let automatic: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM relationship_versions WHERE project_id=$1 AND invalidated_at IS NULL",
+    )
+    .bind(engine.project.0)
+    .fetch_one(engine.database.pool())
+    .await
+    .unwrap();
+    assert_eq!(automatic, 0);
+    let query = "zincanchor orbital navigation calibration beacon";
+    let graphless = Depths {
+        channel: 50,
+        graph: 0,
+    };
+    let frozen = engine
+        .search_fused(query, WIDE, graphless, Fusion::default())
+        .await
+        .unwrap();
+    assert!(frozen.len() < WIDE as usize);
+    let seen: HashSet<_> = frozen.iter().map(|h| h.state.topic_id).collect();
+    let mut topics = repository::all_topics(engine.database.pool(), engine.project)
+        .await
+        .unwrap();
+    topics.sort_by_key(|topic| topic.id.0);
+    let hidden: Vec<_> = topics
+        .iter()
+        .filter(|topic| !seen.contains(&topic.id))
+        .take(degree + 2)
+        .collect();
+    assert_eq!(hidden.len(), degree + 2);
+    let origin = repository::find_topic(engine.database.pool(), engine.project, strong)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    let (hub, target) = (hidden[0], hidden[degree + 1]);
+    let spokes = &hidden[1..degree + 1];
+    let mut specs = vec![(origin, hub.id, 0.01)];
+    specs.extend(spokes.iter().map(|spoke| (hub.id, spoke.id, 0.01)));
+    // The sole route to a 0.25 three-hop target uses a spoke beyond the 2,000-position cap.
+    specs.push((spokes[degree - 1].id, target.id, 1.0));
+    let claims: Vec<_> = specs
+        .iter()
+        .map(|&(from, to, confidence)| {
+            (
+                from,
+                to,
+                EdgeClaim {
+                    kind: EdgeKind::RelatedTo,
+                    derivation: Derivation::Deterministic,
+                    confidence,
+                    validity: Validity::ALWAYS,
+                    caused_by_topic_state: None,
+                },
+            )
+        })
+        .collect();
+    assert_edges(engine.database.pool(), engine.project, &claims)
+        .await
+        .unwrap();
+    let repeated = engine
+        .search_fused(query, WIDE, graphless, Fusion::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        premise(&frozen),
+        premise(&repeated),
+        "hub setup changed non-graph ranks"
+    );
+    let hwm_before = high_water_kib();
+    let cpu_before = cpu_ticks();
+    let start = std::time::Instant::now();
+    let hits = engine
+        .search_fused(
+            query,
+            WIDE,
+            Depths {
+                channel: 50,
+                graph: 3,
+            },
+            Fusion::default(),
+        )
+        .await
+        .unwrap();
+    let graph_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let graph_cpu = cpu_seconds(cpu_before, cpu_ticks());
+    assert!(hits.len() < WIDE as usize);
+    let target_hit = hits.iter().find(|h| h.state.topic_id == target.id);
+    let row = serde_json::json!({"record":"hub", "arm":arm,"degree":degree,
+        "documents":degree+241,"edges":claims.len(),"target":target.name,
+        "unbounded_expected_score":0.25,"target_reached":target_hit.is_some(),
+        "target_why":target_hit.map(|h| &h.result.why),"graph_ms":graph_ms,"graph_process_cpu_user_system_seconds":graph_cpu,
+        "process_lifetime_high_water_kib_before":hwm_before,"process_lifetime_high_water_kib_after":high_water_kib(),
+        "scope":"search_fused component; memory includes prior setup/model loading",
+        "frontier_cap":2000,"shared_machine":std::env::var("GRAPH_SHARED_MACHINE").expect("interference declaration")});
+    std::fs::write(
+        std::env::var("GRAPH_OUT").expect("raw output"),
+        format!("{row}\n"),
+    )
+    .unwrap();
+}

@@ -1,0 +1,53 @@
+//! Scratch-only structured inference evidence; no product instrumentation edits.
+use std::{collections::BTreeMap, io::Write, sync::Mutex};
+use tracing_subscriber::{layer::Context, prelude::*};
+struct Fields(BTreeMap<String, serde_json::Value>);
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let text = format!("{value:?}");
+        let parsed = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+        self.0.insert(field.name().to_string(), parsed);
+    }
+}
+struct Evidence(Mutex<std::fs::File>);
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Evidence {
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        let mut fields = Fields(BTreeMap::new());
+        event.record(&mut fields);
+        let message = fields
+            .0
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if ![
+            "loaded ONNX graph",
+            "execution-provider assignment",
+            "graph fixture runtime",
+        ]
+        .iter()
+        .any(|wanted| message.contains(wanted))
+        {
+            return;
+        }
+        let row = serde_json::json!({"target":event.metadata().target(), "fields":fields.0,
+            "runtime_maps":std::fs::read_to_string("/proc/self/maps").ok().map(|maps| maps.lines()
+                .filter(|line| line.contains("libonnxruntime"))
+                .filter_map(|line| line.split_whitespace().find(|part| part.starts_with('/')))
+                .map(str::to_string).collect::<std::collections::BTreeSet<_>>())});
+        let mut file = self.0.lock().expect("trace lock");
+        writeln!(file, "{row}").expect("persist inference evidence");
+        file.flush().expect("flush inference evidence");
+    }
+}
+pub fn start() {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(std::env::var("GRAPH_TRACE").expect("structured trace path"))
+        .expect("new trace file");
+    tracing_subscriber::registry()
+        .with(Evidence(Mutex::new(file)))
+        .try_init()
+        .expect("initialize evidence subscriber");
+    tracing::info!(runtime_info = %ort::info(), "graph fixture runtime");
+}

@@ -1,0 +1,25 @@
+{
+  "invariants": [
+    {
+      "case": "cross_origin",
+      "baseline": 0.3333333432674408,
+      "scored": 0.800000011920929,
+      "expected": 0.8
+    },
+    {
+      "case": "later_hop",
+      "baseline": 0.10000000149011612,
+      "scored": 0.5,
+      "expected": 0.5
+    },
+    {
+      "case": "same_hop",
+      "baseline": 0.05000000074505806,
+      "scored": 0.5,
+      "expected": 0.5
+    }
+  ],
+  "early_stop_recovered": true,
+  "cross_arm_non_graph_identical": false,
+  "scope": "native Engine component fixture; fresh UUID projects may change tie orders; no timing claim"
+}
