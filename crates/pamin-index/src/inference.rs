@@ -519,6 +519,8 @@ pub(crate) fn accelerators() -> Vec<(Device, Target)> {
     let mut result = Vec::new();
     if let Ok(environment) = ort::environment::Environment::current() {
         register_plugins(&environment);
+        #[cfg(target_os = "windows")]
+        crate::winml::register(&environment);
         for device in environment.devices() {
             let hardware = device.hardware_device();
             if hardware.ty() == ort::memory::DeviceType::NPU
