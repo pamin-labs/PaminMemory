@@ -553,7 +553,7 @@ fn calibrated<T>(
     }
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut fastest = (Device::Cpu, vec![cpu()].into());
-    let mut best_ratio = 1.0;
+    let mut fastest_elapsed = std::time::Duration::MAX;
     // Keep at most the CPU reference and one candidate resident. Drop every
     // candidate before loading the next; reload the winner after calibration.
     for (device, target) in plans {
@@ -587,8 +587,8 @@ fn calibrated<T>(
             ratio_to_cpu = ratio,
             "complete model-call calibration"
         );
-        if ratio < best_ratio {
-            best_ratio = ratio;
+        if ratio < 1.0 && elapsed < fastest_elapsed {
+            fastest_elapsed = elapsed;
             fastest = (device, target);
         }
     }
@@ -785,6 +785,41 @@ mod tests {
         .unwrap();
         assert_eq!(device, Device::Cpu);
         assert_eq!(cache.lock().unwrap()["fixture"].0, Device::Cpu);
+    }
+
+    #[test]
+    fn qualified_candidates_are_ordered_by_absolute_call_time() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let controls = Cell::new(0);
+        let (_, device) = calibrated(
+            "fixture",
+            vec![
+                (Device::Cuda, vec![cpu()].into()),
+                (Device::DirectMl, vec![cpu()].into()),
+            ],
+            &cache,
+            |device, _, _| Ok(device),
+            |_, device| {
+                let ms = match device {
+                    Device::Cpu => {
+                        let n = controls.get();
+                        controls.set(n + 1);
+                        if n < 2 { 10 } else { 20 }
+                    }
+                    Device::Cuda => 5,
+                    _ => 6,
+                };
+                Ok(Duration::from_millis(ms))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            device,
+            Device::Cuda,
+            "ratio must not choose slower DirectML"
+        );
     }
 
     #[test]
