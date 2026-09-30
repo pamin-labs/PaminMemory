@@ -70,6 +70,9 @@ pub(crate) fn register(environment: &Arc<Environment>) {
 }
 
 fn load(environment: &Arc<Environment>) -> Result<Registered, String> {
+    if CATALOG.is_empty() {
+        return Err("optional catalog was unavailable during this build".into());
+    }
     use std::os::windows::ffi::OsStrExt;
     let path = catalog_path().map_err(|error| error.to_string())?;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
