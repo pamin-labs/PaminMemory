@@ -14,6 +14,7 @@ mod inference;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 mod onnx;
+mod pplx;
 mod prepared;
 pub mod projection;
 pub mod reranking;
