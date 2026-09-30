@@ -40,3 +40,17 @@ Set FP64_OUTPUT to a fresh per-test output file, FP64_50K_HOME to a fresh index 
 ## Statistical correction
 
 The assignment unit is a complete process, not a query. Pair search-time totals within each of the three rotated rounds and enumerate all 2^3 sign patterns; keep the 24 queries within each process together. No query-independent significance claim is supported. Deterministic order/shared load also limits exchangeability, so these p-values are diagnostic, not a randomized confirmatory trial. Original p=0.0002 is withdrawn.
+
+## Profiling and MIRACL identity checks
+
+`profiling/*.json.gz` contains only public node names, provider names and microsecond durations, in recorded execution order. `profiling.py` groups by node/provider, discards the first eight warmups per group/bucket and recomputes steady CPU/all kernel fractions. `verify.py` checks these against the retained summary and generated table. Full traces, tensor contents and local paths are excluded. Kernel durations still include wrapper/prediction/waits, not isolated hardware or bus timing.
+
+Before an FP64 MIRACL rerun, verify the exact complete cached input files:
+
+```sh
+python3 benchmarks/results/inference/local-closeout-2026-09-30/verify.py --miracl-dir "$MIRACL_DIR"
+```
+
+The manifest stores byte lengths/SHA256 for docs.jsonl, topics.tsv and qrels.tsv, and the measured order of all 482 query IDs and modes 0/1/2. These are post-run hashes of retained cache inputs, not claimed pre-run attestations. A future resolve/main change must fail the hash check; do not accept mere count equality.
+
+`fp64/sources/measured-experiment.patch` is the exact historical test source. `experiment.patch` adds guarded rerun assertions: positive offered pairs and zero new reranker scores for modes 1/2. `fp64.py` also checks zero newly scored pairs and unchanged offered count in every retained comparison. Reference mode 0 is allowed to reuse a prior identical query; it is not used as an uncached inference timing arm.

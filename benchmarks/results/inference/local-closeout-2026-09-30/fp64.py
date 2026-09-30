@@ -36,6 +36,9 @@ def compute_fp64(root):
         assert len(rows) == count * 3
         base = {r["query"]: r for r in rows if r["mode"] == 0}
         assert len(base) == count
+        if corpus == "miracl":
+            manifest = json.loads((root / "manifest.json").read_text())
+            assert list(base) == manifest["fp64"]["miracl"]["dataset"]["query_order"]
         result[corpus] = {"queries": count, "changed_returned_lists": {}, "ndcg": {}}
         for mode in range(3):
             selected = [r for r in rows if r["mode"] == mode]
@@ -44,6 +47,9 @@ def compute_fp64(root):
                 result[corpus]["changed_returned_lists"][str(mode)] = sum(r["ranked"] != base[r["query"]]["ranked"] for r in selected)
             values = {"same_language": [], "cross_lingual": []} if corpus == "xquad" else []
             for r in selected:
+                assert r["offered"] == base[r["query"]]["offered"] > 0
+                assert 0 <= r["new_pairs"] <= r["offered"]
+                if mode != 0: assert r["new_pairs"] == 0, "FP64 arm recomputed reranker scores"
                 if corpus == "xquad":
                     key = gold[corpus][str(r["query"])]; own = key["answers"][key["language"]]
                     translations = set(key["answers"].values()) - {own}
