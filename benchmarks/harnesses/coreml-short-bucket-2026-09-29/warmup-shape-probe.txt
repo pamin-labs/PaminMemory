@@ -1,9 +1,8 @@
-   Compiling pamin-index v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.15s
+   Compiling pamin-index v0.0.1 (${REPO}/crates/pamin-index)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
      Running tests/scratch_bucket_warmups.rs (target/debug/deps/scratch_bucket_warmups-e0c471ac0e05e07b)
 
 running 1 test
-test original_warmups_reach_each_bucket has been running for over 60 seconds
 CoreML scoring session 0: {"CPUExecutionProvider": 5, "CoreMLExecutionProvider": 765}
 CoreML scoring session 1: {"CPUExecutionProvider": 5, "CoreMLExecutionProvider": 765}
 CoreML scoring session 2: {"CPUExecutionProvider": 5, "CoreMLExecutionProvider": 765}
@@ -33,4 +32,4 @@ medium 7: logical=92 physical=512
 long 7: logical=256 physical=512
 test original_warmups_reach_each_bucket ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 100.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.37s

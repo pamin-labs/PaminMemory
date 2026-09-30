@@ -18,7 +18,9 @@ The [later real-model probe](warmup-shape-probe.rs) uses the original three
 warmup texts and all eight distinct queries per text. It rejects an alternate
 Hugging Face cache or endpoint, checks that the loader's `refs/main` selects
 the pinned revision before and after loading, and hashes that revision's
-tokenizer. It also asserts the loaded 256-token limit, actual CoreML device,
+tokenizer and FP16 source. After loading, it hashes the native source copy and
+the typed graph actually handed to ONNX Runtime. It also asserts the loaded
+256-token limit, actual CoreML device,
 nonzero CoreML graph assignment in each of the three static scoring sessions,
 one newly scored pair per call, logical intervals 1–64 / 65–128 / 129–256,
 and physical padded totals 256 / 512 / 512. The [new real-model run](warmup-shape-probe.txt)
