@@ -156,25 +156,82 @@ impl Embedder {
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
 
-        let model = match profile {
-            Profile::Accuracy => joint(cache_dir)?,
-            _ => e5(profile, cache_dir)?,
-        };
+        let mut reference: Option<Self> = None;
+        let (model, device) = crate::inference::preferred(|device, target| {
+            if device == crate::inference::Device::Cpu {
+                return match reference.take() {
+                    Some(reference) => Ok(*reference.model),
+                    None => load_on(profile, cache_dir, device, target),
+                };
+            }
+            let encoder = load_on(profile, cache_dir, device, target)?;
+            let mut candidate = Self {
+                model: Box::new(encoder),
+                profile,
+                device,
+                remembered: Queries::default(),
+            };
+            if reference.is_none() {
+                reference = Some(Self {
+                    model: Box::new(load_on(
+                        profile,
+                        cache_dir,
+                        crate::inference::Device::Cpu,
+                        vec![crate::inference::cpu()].into(),
+                    )?),
+                    profile,
+                    device: crate::inference::Device::Cpu,
+                    remembered: Queries::default(),
+                });
+            }
+            let cpu = reference.as_mut().expect("reference was loaded");
+            for text in [
+                "deployment rollback",
+                "数据库迁移失败后如何回滚？",
+                "migration ".repeat(600).as_str(),
+            ] {
+                let actual = candidate.embed_passage(text)?;
+                let expected = cpu.embed_passage(text)?;
+                if !compatible_vectors(&actual, &expected, profile.dimensions() as usize) {
+                    return Err(IndexError::Engine(format!(
+                        "{} embedding output failed same-export compatibility",
+                        device.name()
+                    )));
+                }
+            }
+            if profile != Profile::Accuracy {
+                let batch = ["deployment rollback", "数据库迁移失败后如何回滚？"];
+                let actual = candidate.embed_passages(&batch)?;
+                let expected = cpu.embed_passages(&batch)?;
+                if actual.len() != expected.len()
+                    || !actual
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| compatible_vectors(a, b, profile.dimensions() as usize))
+                {
+                    return Err(IndexError::Engine(format!(
+                        "{} batched embedding failed same-export compatibility",
+                        device.name()
+                    )));
+                }
+            }
+            Ok(*candidate.model)
+        })?;
 
         tracing::info!(
             model = profile.model_id(),
-            device = "cpu",
+            device = device.name(),
             "embedder loaded"
         );
         Ok(Self {
             model: Box::new(model),
             profile,
-            device: crate::inference::Device::Cpu,
+            device,
             remembered: Queries::default(),
         })
     }
 
-    /// Provider selected for this model. The default embedding loader currently uses CPU.
+    /// The provider selected for this model; graph assignment is logged separately.
     pub fn device(&self) -> crate::inference::Device {
         self.device
     }
@@ -293,18 +350,54 @@ const JOINT_MAX_TOKENS: usize = 512;
 /// Load an E5 model through the same scoring-session owner as BGE-M3.
 /// FastEmbed still supplies its model registry and pooling implementation;
 /// its private session cannot report which execution provider ran the graph.
-fn e5(profile: Profile, cache_dir: &std::path::Path) -> Result<Encoder> {
+fn load_on(
+    profile: Profile,
+    cache_dir: &std::path::Path,
+    device: crate::inference::Device,
+    target: crate::inference::Target,
+) -> Result<Encoder> {
+    if profile == Profile::Accuracy {
+        let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
+        let weights = repository.file(cache_dir, JOINT_FILE);
+        let encoder = joint_session(&repository, &weights, cache_dir, device, target)?;
+        crate::prepared::release(&weights, cache_dir);
+        return Ok(encoder);
+    }
     let model = profile.model();
     let info = TextEmbedding::get_model_info(&model)
         .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
     let repository = Repository::open(cache_dir, &info.model_code)?;
-    Encoder::load(
+    let encoder = Encoder::load(
         || repository.get(&info.model_file),
         &repository,
         JOINT_MAX_TOKENS,
-        vec![crate::inference::cpu()],
+        target,
     )
-    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
+    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
+    encoder.require_accelerator(device)?;
+    Ok(encoder)
+}
+
+/// Numerical compatibility with an already indexed CPU export. This is the
+/// same predeclared near-unit-cosine contract exercised by the provider test,
+/// not a retrieval-quality score or a fit on a benchmark corpus.
+fn compatible_vectors(actual: &[f32], expected: &[f32], dimensions: usize) -> bool {
+    if actual.len() != dimensions
+        || expected.len() != dimensions
+        || !actual.iter().chain(expected).all(|v| v.is_finite())
+    {
+        return false;
+    }
+    let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+    let denominator = norm(actual) * norm(expected);
+    denominator > 0.0
+        && actual
+            .iter()
+            .zip(expected)
+            .map(|(a, b)| f64::from(*a) * f64::from(*b))
+            .sum::<f64>()
+            / denominator
+            >= 0.99999
 }
 
 /// E5's FastEmbed 6.1 contract: batches of 256, attention-masked mean pooling,
@@ -354,24 +447,29 @@ fn e5_vectors(model: &mut Encoder, texts: &[String]) -> Result<Vec<Vec<f32>>> {
     Ok(vectors)
 }
 
-/// Loads the joint BGE-M3 export on the CPU, from its prepared copy.
+/// Loads the same joint export through the shared provider policy.
+/// Provider selection does not change the model revision or embedding prefixes.
 ///
 /// Its int8 export is 570 MB, and loaded from the file the hub serves it is
 /// copied onto the heap whole and its matrix weights packed into a second copy
 /// -- see `crate::prepared`, which writes a copy the runtime maps instead, and
 /// falls back to the file itself when it cannot. Once the copy has loaded the
 /// download is removed, since nothing reads it again.
-fn joint(cache_dir: &std::path::Path) -> Result<Encoder> {
-    let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
-    let weights = repository.file(cache_dir, JOINT_FILE);
+fn joint_session(
+    repository: &Repository,
+    weights: &impl crate::prepared::Download,
+    cache_dir: &std::path::Path,
+    device: crate::inference::Device,
+    providers: impl Into<crate::inference::Target>,
+) -> Result<Encoder> {
     let encoder = Encoder::load(
-        || crate::prepared::load_path(&weights, cache_dir),
-        &repository,
+        || crate::prepared::load_path(weights, cache_dir),
+        repository,
         JOINT_MAX_TOKENS,
-        vec![crate::inference::cpu()],
+        providers,
     )
     .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
-    crate::prepared::release(&weights, cache_dir);
+    encoder.require_accelerator(device)?;
     Ok(encoder)
 }
 
@@ -508,6 +606,142 @@ mod tests {
     #[ignore = "loads the real multilingual E5 base model"]
     fn balanced_shared_session_matches_fastembed() {
         matches_fastembed(Profile::Balanced);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "isolates same-export BGE-M3 CoreML compute units against CPU"]
+    fn incompatible_coreml_joint_is_rejected() {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stdout)
+            .try_init();
+        let cache = std::path::PathBuf::from(std::env::var("PAMIN_TEST_MODEL_CACHE").unwrap());
+        let repository = Repository::open(&cache, JOINT_REPOSITORY).unwrap();
+        let weights = repository.file(&cache, JOINT_FILE);
+        let inputs = [
+            "How does a failed database migration roll back?",
+            "数据库迁移失败后如何回滚？",
+        ];
+        let run = |device, provider| {
+            let model = if let Some(path) = std::env::var_os("PAMIN_TEST_JOINT_GRAPH") {
+                Encoder::load(
+                    || Ok(std::path::PathBuf::from(path)),
+                    &repository,
+                    JOINT_MAX_TOKENS,
+                    vec![provider],
+                )
+                .unwrap()
+            } else {
+                joint_session(&repository, &weights, &cache, device, vec![provider]).unwrap()
+            };
+            let mut embedder = Embedder {
+                model: Box::new(model),
+                profile: Profile::Accuracy,
+                device,
+                remembered: Queries::default(),
+            };
+            inputs
+                .iter()
+                .map(|text| embedder.embed_passage(text).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let cpu = run(crate::inference::Device::Cpu, crate::inference::cpu());
+        let path = std::env::var_os("PAMIN_TEST_JOINT_GRAPH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| crate::prepared::load_path(&weights, &cache).unwrap());
+        let session = crate::inference::options(vec![crate::inference::cpu()])
+            .unwrap()
+            .with_disabled_optimizers("MatMulAddFusion")
+            .unwrap()
+            .commit_from_file(&path)
+            .unwrap();
+        let model = Encoder::from_session(session, &repository, JOINT_MAX_TOKENS).unwrap();
+        let mut control = Embedder {
+            model: Box::new(model),
+            profile: Profile::Accuracy,
+            device: crate::inference::Device::Cpu,
+            remembered: Queries::default(),
+        };
+        for (index, text) in inputs.iter().enumerate() {
+            let actual = control.embed_passage(text).unwrap();
+            let cosine = actual
+                .iter()
+                .zip(&cpu[index])
+                .map(|(a, b)| f64::from(*a) * f64::from(*b))
+                .sum::<f64>()
+                / (actual
+                    .iter()
+                    .map(|v| f64::from(*v).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+                    * cpu[index]
+                        .iter()
+                        .map(|v| f64::from(*v).powi(2))
+                        .sum::<f64>()
+                        .sqrt());
+            println!("CPU without MatMulAddFusion case {index} cosine {cosine:.9}");
+        }
+        drop(control);
+        let mut cosines = Vec::new();
+        for units in [
+            ort::ep::coreml::ComputeUnits::CPUOnly,
+            ort::ep::coreml::ComputeUnits::CPUAndGPU,
+            ort::ep::coreml::ComputeUnits::All,
+        ] {
+            let provider = ort::ep::CoreML::default()
+                .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+                .with_compute_units(units)
+                .build()
+                .error_on_failure();
+            let actual = run(crate::inference::Device::CoreMl, provider);
+            for (index, (left, right)) in actual.iter().zip(&cpu).enumerate() {
+                let dot: f64 = left
+                    .iter()
+                    .zip(right)
+                    .map(|(a, b)| f64::from(*a) * f64::from(*b))
+                    .sum();
+                let norm = |values: &Vec<f32>| {
+                    values
+                        .iter()
+                        .map(|v| f64::from(*v).powi(2))
+                        .sum::<f64>()
+                        .sqrt()
+                };
+                let cosine = dot / (norm(left) * norm(right));
+                let maximum = left
+                    .iter()
+                    .zip(right)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                println!(
+                    "units {units:?} case {index} cosine {cosine:.9} max_abs {maximum:.9} norm_ratio {:.9}",
+                    norm(left) / norm(right)
+                );
+                cosines.push(cosine);
+            }
+        }
+        assert!(
+            cosines.iter().any(|c| *c < 0.99999),
+            "control must exercise the known incompatible CoreML graph"
+        );
+        let mut accepted = Embedder::load(Profile::Accuracy, &cache).unwrap();
+        assert_eq!(
+            accepted.device(),
+            crate::inference::Device::Cpu,
+            "incompatible graph accepted"
+        );
+        for (index, text) in inputs.iter().enumerate() {
+            assert_eq!(accepted.embed_passage(text).unwrap(), cpu[index]);
+        }
+    }
+
+    #[test]
+    fn compatibility_refuses_invalid_or_changed_embedding_vectors() {
+        assert!(compatible_vectors(&[1.0, 0.0], &[1.0, 0.0], 2));
+        assert!(!compatible_vectors(&[0.0, 1.0], &[1.0, 0.0], 2));
+        assert!(!compatible_vectors(&[f32::NAN, 0.0], &[1.0, 0.0], 2));
+        assert!(!compatible_vectors(&[0.0, 0.0], &[1.0, 0.0], 2));
+        assert!(!compatible_vectors(&[1.0], &[1.0, 0.0], 2));
     }
 
     /// A remembered query is the same vector, and a different one is not.
