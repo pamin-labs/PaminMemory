@@ -3,7 +3,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema.rs.in": "d21c7cc2b5f0825f93388eac3a2732409c4a5a75d065a35926e3eba32a1e39ce",
     "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "d6210a68e9556625f0a08af5e9ea4abf3583e7075ddb31ca04286582ae5bf7ef",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "b19bdff652c8d94ed5b6357e079a50cd29d073f167d4612ad3fede26b821f5df",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/binaries.json": "48c7c274ba590e5317502b9e9f6f7663c38b4cf8b7bdfac277e5e586d87b9f03",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-candidate.log.gz": "c972869e6178ef9f1fea84b859bca994af626cf701816ff123669cc53a13c1d1",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-main.log.gz": "88207bb853f77f8c72a865341cc47a1e37c33ad175190d71942c12a9cd692b4f",
@@ -21,7 +21,7 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/provenance.json": "31ddf3e7963978d767e57683d38ca9a331b256b0e69c15afb5cc086d9a5a14af",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/raw.jsonl": "817b907934688c585f7c88347649f46ebebbff38390d85313bd7e96b1391621d",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/summary.json": "4e7d0a4b4967479bfe7550eb8b9b69c5fb79550053d0cc15e94a20e8c70962e5",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "61882ae4640afe041efba72e8f6bbb24378b37145ef6bf3e489b7ebae06213bb",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "969e18d3742edc00cb72628597ad67fadad8bc12e01bee34b92d2409edb19e2a",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk-README.md": "4bbafebaf1fa821ffc4691b9927d133243b968d5f9fc5aed43268a2fd1eb2ae0",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/episode-elapsed.json": "7224b831d0a80fdad6a942421d77641afdc68e716cc6e79e748b833d6a42a3a2"
   },
