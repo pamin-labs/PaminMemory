@@ -13,7 +13,8 @@ use pamin_core::{
     Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
-    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker, VectorIndex,
+    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
+    VectorDocument, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -935,9 +936,13 @@ impl Engine {
             .pop()
             .expect("one passage for one state");
         off_the_runtime(|| {
-            let embedding = self.embedding()?.embed_passage(&passage)?;
-            self.index()
-                .upsert(state.topic_id, &state.content, &embedding)
+            let embedding = self.embedding()?.encode_passage(&passage)?;
+            self.index().upsert_vectors(&[(
+                state.topic_id,
+                &state.content,
+                embedding.primary.as_slice(),
+                embedding.secondary.as_deref(),
+            )])
         })?;
         Ok(())
     }
@@ -997,15 +1002,20 @@ impl Engine {
         let passages = self.passages(states).await?;
         let contents: Vec<&str> = passages.iter().map(String::as_str).collect();
         off_the_runtime(|| {
-            let embeddings = self.embedding()?.embed_passages(&contents)?;
-            let documents: Vec<(TopicId, &str, &[f32])> = states
+            let embeddings = self.embedding()?.encode_passages(&contents)?;
+            let documents: Vec<VectorDocument<'_>> = states
                 .iter()
                 .zip(&embeddings)
                 .map(|(state, embedding)| {
-                    (state.topic_id, state.content.as_str(), embedding.as_slice())
+                    (
+                        state.topic_id,
+                        state.content.as_str(),
+                        embedding.primary.as_slice(),
+                        embedding.secondary.as_deref(),
+                    )
                 })
                 .collect();
-            self.index().upsert_batch(&documents)
+            self.index().upsert_vectors(&documents)
         })?;
         Ok(())
     }
@@ -1627,9 +1637,14 @@ impl Engine {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
-            let embedding = self.embedding()?.embed_query(query)?;
+            let embedding = self.embedding()?.encode_query(query)?;
             let index = self.index();
-            Ok::<_, pamin_index::IndexError>(vec![
+            let primary_depth = if embedding.secondary.is_some() {
+                depths.channel.div_ceil(2)
+            } else {
+                depths.channel
+            };
+            let mut lists = vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
                     index.recall_segmented(query, depths.channel)?,
@@ -1640,10 +1655,22 @@ impl Engine {
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector(&embedding, depths.channel)?,
+                    index.recall_vector(&embedding.primary, primary_depth)?,
                 ),
-            ])
+            ];
+            if let Some(secondary) = embedding.secondary {
+                lists.push(ChannelResults::new(
+                    Channel::VectorSecondary,
+                    index.recall_secondary(&secondary, depths.channel / 2)?,
+                ));
+            }
+            Ok::<_, pamin_index::IndexError>(lists)
         })?;
+        let fusion = if self.profile == Profile::DualAccuracy {
+            fusion.with_secondary_vector()
+        } else {
+            fusion
+        };
 
         // Only the ledger knows what a topic stands for now, what it is worth,
         // and whether it still stands for anything -- so what the index
@@ -1970,15 +1997,20 @@ impl Engine {
                 let embeddings = embedder
                     .as_mut()
                     .expect("the model is loaded whenever a vector is missing")
-                    .embed_passages(&texts)?;
+                    .encode_passages(&texts)?;
                 let documents: Vec<_> = batch
                     .iter()
                     .zip(&embeddings)
                     .map(|((state, _), embedding)| {
-                        (state.topic_id, state.content.as_str(), embedding.as_slice())
+                        (
+                            state.topic_id,
+                            state.content.as_str(),
+                            embedding.primary.as_slice(),
+                            embedding.secondary.as_deref(),
+                        )
                     })
                     .collect();
-                index.upsert_batch(&documents)?;
+                index.upsert_vectors(&documents)?;
             }
             index.flush()?;
             // A rebuild is the one point where building the vector graph is
