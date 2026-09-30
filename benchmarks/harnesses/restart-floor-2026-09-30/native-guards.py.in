@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Declared native loader inputs only; no process-mapping/system-library claim."""
+import hashlib,json,os,sys
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Native guards require assertions; remove -O/PYTHONOPTIMIZE')
+LOADER_DIRS=['/workspace/.cargo/lib/pamin','/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib']
+SEARCH_DIRS=LOADER_DIRS+['/workspace/.cargo/lib/lib64','/workspace/.cargo/lib/lib']
+SCOPE='declared loader directories and resolved .so files; system/transitive libraries and actual process mappings excluded'
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
+    return h.hexdigest()
+def snapshot(loader_dirs=LOADER_DIRS,search_dirs=SEARCH_DIRS):
+    assert loader_dirs and len(set(search_dirs))==len(search_dirs) and set(loader_dirs)<=set(search_dirs)
+    rows={}
+    for name in search_dirs:
+        directory=Path(name)
+        assert directory.is_absolute() and not directory.is_symlink(), 'loader directory must be an absolute real directory'
+        if not directory.exists():
+            assert name not in loader_dirs, 'required loader directory absent'
+            rows[name]={'absent':True};continue
+        assert directory.is_dir()
+        entries={}
+        for path in sorted(directory.iterdir()):
+            if '.so' not in path.name:continue
+            resolved=path.resolve(strict=True)
+            assert resolved.is_file() and any(resolved.is_relative_to(Path(base).resolve()) for base in loader_dirs), 'native library resolves outside pinned loader directories'
+            before=resolved.stat();sha=digest(resolved);after=resolved.stat()
+            assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns), 'native library changed while hashing'
+            entries[path.name]={'symlink':os.readlink(path) if path.is_symlink() else None,'resolved':str(resolved),'bytes':after.st_size,'sha256':sha}
+        rows[name]={'entries':entries}
+    return {'scope':SCOPE,'loader_directories':list(loader_dirs),'search_directories':list(search_dirs),'directories':rows}
+def verify(expected):
+    assert expected['scope']==SCOPE
+    assert snapshot(expected['loader_directories'],expected['search_directories'])==expected, 'declared native loader inputs changed'
+    return {'recorded_identity_sha256':hashlib.sha256(json.dumps(expected,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'scope':SCOPE}
+def environment(parent,expected):
+    verify(expected)
+    env={key:value for key,value in parent.items() if not key.startswith('LD_') and key!='GLIBC_TUNABLES'}
+    env['LD_LIBRARY_PATH']=os.pathsep.join(expected['loader_directories'])
+    return env
