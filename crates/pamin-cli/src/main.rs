@@ -346,6 +346,9 @@ mod tests {
         // Cached-export inputs used only by the native preparation regression.
         "PAMIN_NATIVE_MODEL_SOURCE",
         "PAMIN_NATIVE_TEST_CACHE",
+        // Embedding conformance controls compiled only under cfg(test).
+        "PAMIN_TEST_MODEL_CACHE",
+        "PAMIN_TEST_JOINT_GRAPH",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
