@@ -22,9 +22,9 @@ fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let host = std::env::var("HOST").unwrap();
     let status = extractor(host.contains("windows"))
-        .env("PAMIN_WINML_OUT", out)
-        .env("PAMIN_WINML_ARCH", arch)
-        .env("PAMIN_WINML_DLL_HASH", dll_hash)
+        .env("WINML_BUILD_OUT", out)
+        .env("WINML_BUILD_ARCH", arch)
+        .env("WINML_BUILD_DLL_HASH", dll_hash)
         .status()
         .expect("run the Windows ML catalog extractor");
     assert!(
@@ -47,8 +47,8 @@ fn extractor(windows: bool) -> Command {
         command
     };
     command
-        .env("PAMIN_WINML_URL", URL)
-        .env("PAMIN_WINML_PACKAGE_HASH", PACKAGE_HASH);
+        .env("WINML_BUILD_URL", URL)
+        .env("WINML_BUILD_PACKAGE_HASH", PACKAGE_HASH);
     command
 }
 
@@ -60,18 +60,18 @@ const PACKAGE_HASH: &str = "5c68ecfb947223267abf159a023f5192ad42725e4e9cc995e7c1
 const PYTHON: &str = r#"
 import hashlib, os, subprocess, zipfile
 from pathlib import Path
-out=Path(os.environ['PAMIN_WINML_OUT'])
-arch=os.environ['PAMIN_WINML_ARCH']
+out=Path(os.environ['WINML_BUILD_OUT'])
+arch=os.environ['WINML_BUILD_ARCH']
 dll=out/'winml-catalog.dll'
 license=out/'winml-license.txt'
-expected=os.environ['PAMIN_WINML_DLL_HASH']
+expected=os.environ['WINML_BUILD_DLL_HASH']
 if dll.exists() and license.exists() and hashlib.sha256(dll.read_bytes()).hexdigest()==expected:
     raise SystemExit(0)
 package=out/'winml.nupkg'
 try:
     if not package.exists():
-        subprocess.run(['curl','--fail','--location','--silent','--show-error','--proto','=https','--proto-redir','=https','--max-time','900','--output',str(package),os.environ['PAMIN_WINML_URL']],check=True)
-    if hashlib.sha256(package.read_bytes()).hexdigest()!=os.environ['PAMIN_WINML_PACKAGE_HASH']:
+        subprocess.run(['curl','--fail','--location','--silent','--show-error','--proto','=https','--proto-redir','=https','--max-time','900','--output',str(package),os.environ['WINML_BUILD_URL']],check=True)
+    if hashlib.sha256(package.read_bytes()).hexdigest()!=os.environ['WINML_BUILD_PACKAGE_HASH']:
         raise RuntimeError('Windows ML package checksum mismatch')
     with zipfile.ZipFile(package) as archive:
         image=archive.read(f'runtimes/win-{arch}/native/Microsoft.Windows.AI.MachineLearning.dll')
@@ -90,23 +90,23 @@ function Digest([string]$path) {
     try { return [BitConverter]::ToString($sha.ComputeHash([System.IO.File]::ReadAllBytes($path))).Replace('-','').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
-$dll=Join-Path $env:PAMIN_WINML_OUT 'winml-catalog.dll'
-$license=Join-Path $env:PAMIN_WINML_OUT 'winml-license.txt'
-if ((Test-Path $dll) -and (Test-Path $license) -and ((Digest $dll) -eq $env:PAMIN_WINML_DLL_HASH)) { exit 0 }
-$package=Join-Path $env:PAMIN_WINML_OUT 'winml.nupkg'
+$dll=Join-Path $env:WINML_BUILD_OUT 'winml-catalog.dll'
+$license=Join-Path $env:WINML_BUILD_OUT 'winml-license.txt'
+if ((Test-Path $dll) -and (Test-Path $license) -and ((Digest $dll) -eq $env:WINML_BUILD_DLL_HASH)) { exit 0 }
+$package=Join-Path $env:WINML_BUILD_OUT 'winml.nupkg'
 try {
     if (!(Test-Path $package)) {
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 900 -Uri $env:PAMIN_WINML_URL -OutFile $package
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 900 -Uri $env:WINML_BUILD_URL -OutFile $package
     }
-    if ((Digest $package) -ne $env:PAMIN_WINML_PACKAGE_HASH) { throw 'Windows ML package checksum mismatch' }
+    if ((Digest $package) -ne $env:WINML_BUILD_PACKAGE_HASH) { throw 'Windows ML package checksum mismatch' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive=[System.IO.Compression.ZipFile]::OpenRead($package)
     try {
-        $entry=$archive.GetEntry("runtimes/win-$($env:PAMIN_WINML_ARCH)/native/Microsoft.Windows.AI.MachineLearning.dll")
+        $entry=$archive.GetEntry("runtimes/win-$($env:WINML_BUILD_ARCH)/native/Microsoft.Windows.AI.MachineLearning.dll")
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$dll,$true)
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($archive.GetEntry('license.txt'),$license,$true)
     } finally { $archive.Dispose() }
-    if ((Digest $dll) -ne $env:PAMIN_WINML_DLL_HASH) { throw 'Windows ML DLL checksum mismatch' }
+    if ((Digest $dll) -ne $env:WINML_BUILD_DLL_HASH) { throw 'Windows ML DLL checksum mismatch' }
 } finally { if (Test-Path $package) { Remove-Item $package } }
 "#;
 
@@ -119,9 +119,9 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         std::fs::write(out.path().join("winml.nupkg"), b"corrupt").unwrap();
         let output = extractor(cfg!(windows))
-            .env("PAMIN_WINML_OUT", out.path())
-            .env("PAMIN_WINML_ARCH", "x64")
-            .env("PAMIN_WINML_DLL_HASH", "unused")
+            .env("WINML_BUILD_OUT", out.path())
+            .env("WINML_BUILD_ARCH", "x64")
+            .env("WINML_BUILD_DLL_HASH", "unused")
             .env("PYTHONOPTIMIZE", "1")
             .output()
             .unwrap();

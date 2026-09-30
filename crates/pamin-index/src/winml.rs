@@ -160,7 +160,7 @@ fn install(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
         return Err(std::io::Error::other("Windows ML cache checksum mismatch"));
     }
-    let pending = path.with_extension(format!("{}.partial", uuid::Uuid::new_v4()));
+    let pending = path.with_extension(format!("{}.partial", uuid::Uuid::now_v7()));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
