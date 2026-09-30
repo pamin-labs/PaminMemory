@@ -139,6 +139,7 @@ impl Profile {
 pub struct Embedder {
     model: Box<Encoder>,
     profile: Profile,
+    device: crate::inference::Device,
     /// Query vectors already computed.
     ///
     /// Shared with every project on this profile, because the vector depends on
@@ -160,11 +161,18 @@ impl Embedder {
             _ => e5(profile, cache_dir)?,
         };
 
+        tracing::info!(model = profile.model_id(), device = "cpu", "embedder loaded");
         Ok(Self {
             model: Box::new(model),
             profile,
+            device: crate::inference::Device::Cpu,
             remembered: Queries::default(),
         })
+    }
+
+    /// Provider selected for this model. The default embedding loader currently uses CPU.
+    pub fn device(&self) -> crate::inference::Device {
+        self.device
     }
 
     pub fn profile(&self) -> Profile {
