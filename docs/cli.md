@@ -162,7 +162,7 @@ entries and preserves v2 packages and mapped CPU models. Logical bytes are
 not a measure of unique APFS allocation; the actual free-space change may
 differ.
 
-The `accurate` reranker tries the available accelerator before optimized CPU:
+The `accurate` reranker calibrates viable shared accelerator plans against optimized CPU:
 CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, and DirectML on Windows.
 The `fast` tier does the same except on Apple silicon, where its measured ARM
 INT8 CPU export is both faster and no less accurate on the complete XQuAD-R
@@ -174,8 +174,14 @@ or when another job needs the accelerator. Embedding also tries shared
 accelerator plans using the same export, tokenizer, prefixes and indexed model
 identity. Compatibility checks compare vectors with the CPU export; a rejected
 plan falls back. The finite startup fixtures are a smoke check, not full-corpus
-retrieval certification. Backend performance and broader validation remain
-under review. Changing a model/export or encoding contract needs paired quality
+retrieval certification. With automatic dispatch, a bounded complete model-call
+fixture compares viable plans against interleaved optimized-CPU controls. Its
+validated winner is cached for process-local idle reloads using the model
+snapshot, device inventory and runtime settings. This estimates the fastest
+plan for that fixture; it is not universal per-query autotuning. E5 accelerator
+batches are capped at eight (CPU retains 256), including maximum-token startup
+fixtures, so a 64/256-passage request is split into those bounded shapes.
+Broader retrieval and resource validation remain under review. Changing a model/export or encoding contract needs paired quality
 and reindex validation.
 
 On Linux the CUDA path has two requirements the program cannot meet for you.
