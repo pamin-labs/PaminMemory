@@ -133,11 +133,14 @@ impl crate::prepared::Download for File<'_> {
         // Pinned and moving revisions can share a content-addressed blob.
         // Removing it would strand the other snapshot's symlink, and the hub
         // client cannot repair a dangling entry by creating it again.
-        let snapshots = blob
-            .parent()
-            .and_then(Path::parent)
-            .expect("a hub blob has a repository parent")
-            .join("snapshots");
+        // Find snapshots from the entry, not the resolved blob: platforms
+        // without symlinks may cache the file directly in its snapshot.
+        let snapshots = std::fs::canonicalize(
+            entry
+                .ancestors()
+                .nth(Path::new(self.file).components().count() + 1)
+                .expect("a hub entry has a snapshots ancestor"),
+        )?;
         let own = std::fs::canonicalize(entry.parent().expect("snapshot entry parent"))?
             .join(entry.file_name().expect("snapshot file name"));
         if referenced_elsewhere(&snapshots, &own, &blob)? {
@@ -230,6 +233,17 @@ mod tests {
             "the entry is left"
         );
         assert!(!blob.exists(), "the blob is left");
+    }
+
+    #[test]
+    fn a_snapshot_cached_without_symlinks_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (entry, _) = downloaded(dir.path());
+        std::fs::remove_file(&entry).unwrap();
+        std::fs::write(&entry, b"direct weights").unwrap();
+        let repository = Repository::open(dir.path(), NAME).unwrap();
+        assert!(repository.file(dir.path(), FILE).remove().unwrap());
+        assert!(!entry.exists());
     }
 
     #[test]
