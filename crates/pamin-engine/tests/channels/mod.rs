@@ -65,6 +65,13 @@ use std::collections::BTreeMap;
 use pamin_core::{Channel, ChannelResults, Combine, Fusion, Scored, TopicId, Why};
 use pamin_engine::SearchHit;
 
+pub const CHANNELS: [Channel; 4] = [
+    Channel::LexicalSegmented,
+    Channel::LexicalNgram,
+    Channel::Vector,
+    Channel::Graph,
+];
+
 /// Every channel that returned anything, and the order it returned it in.
 ///
 /// Keyed by channel; each value is topic names in that channel's own rank
@@ -711,15 +718,14 @@ impl Diagnosis {
             &mut self.whole,
             &hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>(),
         );
-        for (channel, ranking) in each_alone(hits) {
-            note(self.alone.entry(channel).or_default(), &ranking);
+        let each = each_alone(hits);
+        for channel in CHANNELS {
+            note(
+                self.alone.entry(channel).or_default(),
+                each.get(&channel).map(Vec::as_slice).unwrap_or(&[]),
+            );
         }
-        for channel in [
-            Channel::LexicalSegmented,
-            Channel::LexicalNgram,
-            Channel::Vector,
-            Channel::Graph,
-        ] {
+        for channel in CHANNELS {
             let ranking = as_if(hits, &Fusion::default().without(channel));
             note(self.without.entry(channel).or_default(), &ranking);
         }
@@ -979,6 +985,22 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn absent_channels_keep_zero_scores_in_paired_order() {
+        let mut diagnosis = super::Diagnosis::default();
+        diagnosis.observe("group", &[], |scores, ranking| {
+            scores.queries += 1;
+            scores.per_query.push(ranking.len() as f64);
+        });
+        for channel in super::CHANNELS {
+            assert_eq!(
+                diagnosis.alone[&channel]["group"].per_query,
+                vec![0.0],
+                "{channel:?} lost the empty query"
+            );
+        }
+    }
 
     #[test]
     fn channel_evidence_retains_the_complete_paired_grid() {
