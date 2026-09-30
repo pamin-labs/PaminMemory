@@ -715,7 +715,7 @@ impl Reranker {
 
         let repository = Repository::open(cache_dir, tier.repository())?;
 
-        let session = |device: Device, providers| -> Result<Encoder> {
+        let session = |device: Device, providers, validated: bool| -> Result<Encoder> {
             let weights = repository.file(cache_dir, tier.onnx(device));
             let model = || match device {
                 // The file the hub serves is copied onto the heap whole; on
@@ -741,7 +741,7 @@ impl Reranker {
             let encoder = loaded
                 .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
             let mut encoder = encoder;
-            if matches!(device, Device::DirectMl | Device::Npu) {
+            if !validated && matches!(device, Device::DirectMl | Device::Npu) {
                 // Compare the same accelerator export, not CPU int8 versus
                 // accelerator FP16: quantization is a separate source of drift.
                 let path = repository.get(tier.onnx(device))?;
@@ -767,11 +767,41 @@ impl Reranker {
         let (model, device) =
             if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
                 (
-                    session(Device::Cpu, vec![crate::inference::cpu()].into())?,
+                    session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
                     Device::Cpu,
                 )
             } else {
-                crate::inference::preferred(session)?
+                let mut expected: Option<Vec<f32>> = None;
+                crate::inference::measured(
+                    &format!(
+                        "reranker-v1:{}:{}:{}:{}:{}",
+                        tier.name(),
+                        repository.identity(cache_dir),
+                        max_tokens(),
+                        batch(),
+                        batch_tokens()
+                    ),
+                    session,
+                    |model, _device| {
+                        crate::inference::time_calls(|| {
+                            let pairs = ORDER_PAIRS.repeat(8);
+                            let encoded = model.encode(pairs)?;
+                            let values = score(model, encoded, batch_tokens(), batch())?.0;
+                            if values.len() != 32 || !values.iter().all(|v| v.is_finite()) {
+                                return Err(IndexError::Engine(
+                                    "reranker calibration returned invalid scores".into(),
+                                ));
+                            }
+                            match &expected {
+                                None => expected = Some(values),
+                                Some(reference) => {
+                                    check_accelerator_ordering(&reference[..4], &values[..4])?
+                                }
+                            }
+                            Ok(())
+                        })
+                    },
+                )?
             };
         tracing::info!(
             tier = tier.name(),
@@ -935,6 +965,22 @@ impl Reranker {
     }
 }
 
+const ORDER_PAIRS: [(&str, &str); 4] = [
+    (
+        "Where does the harbour pilot board ships?",
+        "The harbour pilot boards ships at the outer buoy.",
+    ),
+    (
+        "Where does the harbour pilot board ships?",
+        "Chocolate cake is baked with flour and cocoa.",
+    ),
+    (
+        "部署流水线在哪里运行？",
+        "部署流水线运行在持续集成服务器上。",
+    ),
+    ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
+];
+
 /// A startup ordering guard for the actual model/export. A failed attempt
 /// returns to `preferred`, which tries the next viable provider. No persistent
 /// CPU-only setting is written; a later load can retry a repaired accelerator.
@@ -942,25 +988,10 @@ fn check_accelerator(
     accelerator: &mut Encoder,
     reference: impl FnOnce() -> Result<Encoder>,
 ) -> Result<()> {
-    const PAIRS: [(&str, &str); 4] = [
-        (
-            "Where does the harbour pilot board ships?",
-            "The harbour pilot boards ships at the outer buoy.",
-        ),
-        (
-            "Where does the harbour pilot board ships?",
-            "Chocolate cake is baked with flour and cocoa.",
-        ),
-        (
-            "部署流水线在哪里运行？",
-            "部署流水线运行在持续集成服务器上。",
-        ),
-        ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
-    ];
-    let encodings = accelerator.encode(PAIRS.to_vec())?;
+    let encodings = accelerator.encode(ORDER_PAIRS.to_vec())?;
     let observed = score(accelerator, encodings, batch_tokens(), batch())?.0;
     let mut reference = reference()?;
-    let encodings = reference.encode(PAIRS.to_vec())?;
+    let encodings = reference.encode(ORDER_PAIRS.to_vec())?;
     let expected = score(&mut reference, encodings, batch_tokens(), batch())?.0;
     check_accelerator_ordering(&expected, &observed)
 }

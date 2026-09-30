@@ -182,71 +182,77 @@ impl Embedder {
     /// not pay for it.
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
-        let mut reference: Option<Self> = None;
-        let (model, device) = crate::inference::preferred(|device, target| {
-            if device == crate::inference::Device::Cpu {
-                return match reference.take() {
-                    Some(reference) => Ok(*reference.model),
-                    None => load_on(profile, cache_dir, device, target),
-                };
-            }
-            let encoder = load_on(profile, cache_dir, device, target)?;
-            let mut candidate = Self {
-                model: Box::new(encoder),
-                profile,
-                device,
-                secondary: None,
-                remembered: Queries::default(),
-            };
-            if reference.is_none() {
-                reference = Some(Self {
-                    model: Box::new(load_on(
-                        profile,
-                        cache_dir,
-                        crate::inference::Device::Cpu,
-                        vec![crate::inference::cpu()].into(),
-                    )?),
-                    profile,
-                    device: crate::inference::Device::Cpu,
-                    secondary: None,
-                    remembered: Queries::default(),
-                });
-            }
-            let cpu = reference.as_mut().expect("reference was loaded");
-            for text in [
-                "deployment rollback",
-                "数据库迁移失败后如何回滚？",
-                "migration ".repeat(600).as_str(),
-            ] {
-                let actual = candidate.embed_passage(text)?;
-                let expected = cpu.embed_passage(text)?;
-                if !compatible_vectors(&actual, &expected, profile.dimensions() as usize) {
-                    return Err(IndexError::Engine(format!(
-                        "{} embedding output failed same-export compatibility",
-                        device.name()
-                    )));
-                }
-            }
-            if profile != Profile::Accuracy {
-                let batch = ["deployment rollback", "数据库迁移失败后如何回滚？"];
-                let actual = candidate.embed_passages(&batch)?;
-                let expected = cpu.embed_passages(&batch)?;
-                if actual.len() != expected.len()
-                    || !actual
-                        .iter()
-                        .zip(&expected)
-                        .all(|(a, b)| compatible_vectors(a, b, profile.dimensions() as usize))
-                {
-                    return Err(IndexError::Engine(format!(
-                        "{} batched embedding failed same-export compatibility",
-                        device.name()
-                    )));
-                }
-            }
-            Ok(*candidate.model)
-        })?;
+        let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+            Repository::open_at(
+                cache_dir,
+                JOINT_REPOSITORY,
+                if profile == Profile::DualAccuracy {
+                    "2b34e84df040034d4b9eabb62383a87c18955822"
+                } else {
+                    "main"
+                },
+            )?
+        } else {
+            let model = profile.model();
+            let info = TextEmbedding::get_model_info(&model)
+                .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
+            Repository::open(cache_dir, &info.model_code)?
+        };
+        let identity = format!(
+            "embedding-v2:{}:{}",
+            profile.model_id(),
+            repository.identity(cache_dir)
+        );
+        let mut expected: Option<Vec<Vec<f32>>> = None;
+        let long = "migration ".repeat(600);
+        let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
+        {
+            vec![
+                "deployment rollback".into(),
+                "数据库迁移失败后如何回滚？".into(),
+                long,
+            ]
+        } else {
+            // The accelerator's actual batch cap and token limit: large
+            // cascade/reindex inputs are split into these validated chunks.
+            (0..8)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        long.clone()
+                    } else {
+                        "数据库迁移失败后如何回滚？".into()
+                    }
+                })
+                .collect()
+        };
+        let (model, device) = crate::inference::measured(
+            &identity,
+            |device, target, _validated| load_on(profile, cache_dir, device, target),
+            |model, device| {
+                crate::inference::time_calls(|| {
+                    let vectors = profile_vectors(profile, model, device, fixtures.clone())?;
+                    match &expected {
+                        None => expected = Some(vectors),
+                        Some(reference)
+                            if vectors.len() == reference.len()
+                                && vectors.iter().zip(reference).all(|(actual, expected)| {
+                                    compatible_vectors(
+                                        actual,
+                                        expected,
+                                        profile.dimensions() as usize,
+                                    )
+                                }) => {}
+                        _ => {
+                            return Err(IndexError::Engine(
+                                "embedding plan failed same-export compatibility".into(),
+                            ));
+                        }
+                    }
+                    Ok(())
+                })
+            },
+        )?;
 
-        drop(reference);
         let secondary = if profile == Profile::DualAccuracy {
             let (model, device) = complementary(cache_dir)?;
             Some((Box::new(model), device))
@@ -400,13 +406,29 @@ impl Embedder {
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        match self.profile {
-            Profile::Accuracy | Profile::DualAccuracy => texts
-                .iter()
-                .map(|text| dense(&mut self.model, text))
-                .collect(),
-            _ => e5_vectors(&mut self.model, &texts),
+        profile_vectors(self.profile, &mut self.model, self.device, texts)
+    }
+}
+
+fn profile_vectors(
+    profile: Profile,
+    model: &mut Encoder,
+    device: crate::inference::Device,
+    texts: Vec<String>,
+) -> Result<Vec<Vec<f32>>> {
+    match profile {
+        Profile::Accuracy | Profile::DualAccuracy => {
+            texts.iter().map(|text| dense(model, text)).collect()
         }
+        _ => e5_vectors(
+            model,
+            &texts,
+            if device == crate::inference::Device::Cpu {
+                256
+            } else {
+                8
+            },
+        ),
     }
 }
 
@@ -488,7 +510,7 @@ fn compatible_vectors(actual: &[f32], expected: &[f32], dimensions: usize) -> bo
 /// E5's FastEmbed 6.1 contract: batches of 256, attention-masked mean pooling,
 /// then an f32 L2 normalization. Use its pooling owner rather than another
 /// implementation of the numerical reduction.
-fn e5_vectors(model: &mut Encoder, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+fn e5_vectors(model: &mut Encoder, texts: &[String], batch_size: usize) -> Result<Vec<Vec<f32>>> {
     let mut vectors = Vec::with_capacity(texts.len());
     let precedence: &[OutputKey] = &[
         OutputKey::OnlyOne,
@@ -496,7 +518,7 @@ fn e5_vectors(model: &mut Encoder, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         OutputKey::ByName("last_hidden_state"),
         OutputKey::ByName("sentence_embedding"),
     ];
-    for batch in texts.chunks(256) {
+    for batch in texts.chunks(batch_size) {
         let encoded = model.encode(batch.iter().map(String::as_str).collect())?;
         let (padded, outputs) = model.run_padded(encoded)?;
         let tokens = padded[0].len();
@@ -604,30 +626,40 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         model.require_accelerator(device)?;
         Ok(model)
     };
-    let mut reference = None;
-    crate::inference::preferred(|device, target| {
-        if device == crate::inference::Device::Cpu {
-            return reference.take().map_or_else(|| load(device, target), Ok);
-        }
-        let mut candidate = load(device, target)?;
-        if reference.is_none() {
-            reference = Some(load(
-                crate::inference::Device::Cpu,
-                vec![crate::inference::cpu()].into(),
-            )?);
-        }
-        for text in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
-            let actual = complementary_vector(&mut candidate, text)?;
-            let expected =
-                complementary_vector(reference.as_mut().expect("reference loaded"), text)?;
-            if !compatible_vectors(&actual, &expected, 1024) {
-                return Err(IndexError::Engine(
-                    "complementary embedding output incompatible".into(),
-                ));
-            }
-        }
-        Ok(candidate)
-    })
+    let mut expected: Option<Vec<Vec<f32>>> = None;
+    crate::inference::measured(
+        &format!(
+            "complementary-v1:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
+            repository.identity(cache)
+        ),
+        |device, target, _validated| load(device, target),
+        |model, _device| {
+            crate::inference::time_calls(|| {
+                let vectors = [
+                    "deployment rollback".to_string(),
+                    "数据库迁移失败后如何回滚？".to_string(),
+                    "migration ".repeat(600),
+                ]
+                .iter()
+                .map(|text| complementary_vector(model, text))
+                .collect::<Result<Vec<_>>>()?;
+                match &expected {
+                    None => expected = Some(vectors),
+                    Some(reference)
+                        if vectors
+                            .iter()
+                            .zip(reference)
+                            .all(|(a, b)| compatible_vectors(a, b, 1024)) => {}
+                    _ => {
+                        return Err(IndexError::Engine(
+                            "complementary embedding output incompatible".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            })
+        },
+    )
 }
 
 fn complementary_vector(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
