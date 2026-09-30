@@ -118,8 +118,9 @@ has loaded it for two weeks. So a directory shared by two versions keeps both
 copies while both are in use, and a version that goes two weeks without running
 while the other does writes its copies again when it next runs -- fetching the
 model first, if its download was removed. A model nothing loads any more -- a
-reranker tier switched off -- keeps its copy until it is deleted. It is safe to
-delete `models/prepared/` at any time, and the next load downloads the model
+reranker tier switched off -- keeps its copy until it is deleted. Delete
+`models/prepared/` only after every process using that model directory has
+stopped; the next load downloads the model
 again. The download is kept when `HF_HOME` is set -- that cache is shared with
 other tools -- or when the model directory, or one model's directory inside it,
 is a link to somewhere else. `PAMIN_PREPARED=off` loads from the download,
@@ -134,6 +135,30 @@ Where the runtime left a model's attention as separate operators -- the
 kept only if it scores a probe bit-for-bit as the first does, and otherwise
 `attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
 graph, for measuring one against the other.
+
+CoreML packages written by older versions under `models/prepared/*/coreml-all-v1`
+are not reused by the current `coreml-all-v2` policy. Old processes can still
+use a compiled package after its build lock is released, so the application
+does not delete v1 automatically. During an **offline** maintenance window,
+stop every Påmin server and CLI process using this model directory, then list
+the exact v1 packages and their logical bytes:
+
+```sh
+python3 maintenance/retire_coreml_v1.py ~/.pamin/models
+```
+
+After verifying the list and that those processes remain stopped, remove only
+that obsolete namespace:
+
+```sh
+python3 maintenance/retire_coreml_v1.py ~/.pamin/models --apply --all-processes-stopped
+```
+
+Use your configured `PAMIN_HOME/models` in place of `~/.pamin/models` when it
+differs. The script refuses an arbitrary parent path, skips linked prepared
+entries and preserves v2 packages and mapped CPU models. Logical bytes are
+not a measure of unique APFS allocation; the actual free-space change may
+differ.
 
 The `accurate` reranker tries the available accelerator before optimized CPU:
 CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, and DirectML on Windows.
