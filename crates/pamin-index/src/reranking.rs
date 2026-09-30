@@ -200,12 +200,14 @@
 //! part of each document to pay for itself, and until it was exposed nothing
 //! in this project could read it.
 //!
-//! What is here is the one thing that can be kept: the score itself. A query
-//! and a memory score the same every time, so a resident server remembers them,
-//! and a repeated search costs nothing -- 69.6 ms the first time, 0.0 ms the
-//! second, for the same ordering. It does nothing for a query never asked
-//! before, which is most of them; it is worth its quarter of a megabyte because
-//! agents retry.
+//! What is kept is a complete ordered batch's logits, within one loaded model
+//! and tokenizer. With this INT8 export, a pair's score can depend on its batch
+//! neighbours and padding, so reusing it in a different context is incorrect.
+//! The cache includes every pair identity and the logical and physical shapes;
+//! changed contexts are scored again. An identical batch avoids a model forward
+//! pass, but a repeated search still pays for tokenization, hashing, planning
+//! and cache lookup, as well as the rest of retrieval. It is not a zero-cost
+//! search. Loading another model or tokenizer creates a new cache.
 //!
 //! ## What the numbers do not say
 //!
