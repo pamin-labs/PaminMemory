@@ -521,20 +521,20 @@
       "bytes": 777
     },
     "sources/experiment.patch": {
-      "sha256": "9f8581de85ad8ff59127db77c0ee747499066c52356a0e72172fd37b5fb61562",
-      "bytes": 4775
+      "sha256": "06d6988b5bf79fa4bb8573cff104c12ab772ba17210ea3270f09408385fcaf10",
+      "bytes": 4936
     },
     "sources/harness.rs": {
       "sha256": "eee95708a8d5a717c28e988b6d0db8f840014fa9df640b686405c32d0629d889",
       "bytes": 2404
     },
     "sources/run.py.in": {
-      "sha256": "9307f96562714a0e2d37e3a0b8aa337845f4e24a2410ef5286bdb47cc90b2427",
-      "bytes": 2584
+      "sha256": "1171c0b5c99f0abfbdc6409ffd5a96bcf8a29c4f1fa6d05ecac22f0037e78a94",
+      "bytes": 2676
     },
     "summarize.py": {
-      "sha256": "28ae62c4a7253c354fa3d9534ee447826b0ad266cbf30fbd71d69ea58328a0f3",
-      "bytes": 3869
+      "sha256": "fd3f23b07ee8d4d535b472619f09e678c781ed9fd0d8c72fe74d5bfbe548c7ab",
+      "bytes": 3965
     },
     "verify.py": {
       "sha256": "b8e8bf7165a2e2bf286bb11caff1d22306d07323df654fff6cc3813607353c42",
@@ -591,6 +591,14 @@
     "profiling.py": {
       "sha256": "6968e32f60b81914414e4b6f95f2dd8c53ce57e8203444272d6a94d3e85f8e85",
       "bytes": 1101
+    },
+    "policy.py": {
+      "sha256": "432c0d8e1f433d37c1043f2f68b023a1db682f134f48b14bb1c24e74de570ccc",
+      "bytes": 345
+    },
+    "sources/measured-experiment.patch": {
+      "sha256": "9f8581de85ad8ff59127db77c0ee747499066c52356a0e72172fd37b5fb61562",
+      "bytes": 4775
     }
   },
   "dataset_source": "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r",
@@ -1156,5 +1164,10 @@
     "fast-cpu-0": "CoreML not requested; cross-arm process costs still incomparable",
     "fast-cpu-1": "CoreML not requested; cross-arm process costs still incomparable",
     "fast-cpu-2": "CoreML not requested; cross-arm process costs still incomparable"
+  },
+  "coreml_policy_attestation": {
+    "historical_runs": "compute-unit policy not logged; provider assignment and source/binary identity retained, but ALL vs CPUAndGPU not independently asserted per process",
+    "guarded_reruns": "emit policy from the same units variable passed to CoreML builder; runner and fresh summarizer reject missing/wrong policy",
+    "policy_validation": "ALL for all, CPUAndGPU for gpu; no CoreML-policy claim for CPU"
   }
 }

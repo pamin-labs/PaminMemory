@@ -60,18 +60,12 @@ index cea3625..3f2b854 100644
          .join(runtime)
          .join(format!("{graph}-{rows}-{tokens}")))
  }
-@@ -431,7 +431,13 @@ pub(crate) fn preferred<T>(
+@@ -431,7 +431,7 @@ pub(crate) fn preferred<T>(
  fn coreml() -> ort::ep::CoreML {
-+    let (units, policy) = if std::env::var("PAMIN_MATRIX_UNITS").as_deref() == Ok("gpu") {
-+        (ort::ep::coreml::ComputeUnits::CPUAndGPU, "CPUAndGPU")
-+    } else {
-+        (ort::ep::coreml::ComputeUnits::All, "ALL")
-+    };
-+    tracing::info!(compute_units = policy, "measurement CoreML policy");
      ort::ep::CoreML::default()
          .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
 -        .with_compute_units(ort::ep::coreml::ComputeUnits::All)
-+        .with_compute_units(units)
++        .with_compute_units(if std::env::var("PAMIN_MATRIX_UNITS").as_deref() == Ok("gpu") { ort::ep::coreml::ComputeUnits::CPUAndGPU } else { ort::ep::coreml::ComputeUnits::All })
  }
  
  /// The accelerators to try before the CPU, best first.
