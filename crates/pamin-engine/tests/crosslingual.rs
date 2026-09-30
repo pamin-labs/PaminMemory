@@ -971,7 +971,14 @@ fn score_group(into: &mut Scores, query: &Query<'_>, group: &str, ranked: &[Stri
 /// here that can say what a channel is worth *per language*, and the only one
 /// where "did the reranker keep the query's own language on top" is a question
 /// with two possible answers.
-async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
+async fn report_channels(
+    engine: &Engine,
+    queries: &[Query<'_>],
+    named: &str,
+    commit: &str,
+    embedding_id: &str,
+    project: &str,
+) {
     use pamin_core::Channel;
 
     /// Past four times the channel depth, so `take(limit)` cannot bite.
@@ -1072,6 +1079,30 @@ async fn report_channels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         {
             lexical_agreement.push(tau);
         }
+    }
+
+    if let Some(path) = std::env::var_os("CHANNELS_OUT") {
+        let evidence = serde_json::json!({
+            "source_commit": commit.trim(),
+            "embedding_identity": embedding_id,
+            "project": project,
+            "profile": named,
+            "queries": queries.len(),
+            "complete": true,
+            "whole": &whole,
+            "alone": &alone,
+            "without": &without,
+            "variants": variants.iter().zip(&offline).map(|((label, fusion), scores)| {
+                serde_json::json!({"label": label, "fusion": format!("{fusion:?}"), "scores": scores})
+            }).collect::<Vec<_>>(),
+            "by_language": &by_language,
+            "dense_by_language": &dense_by_language,
+            "lexical_agreement": &lexical_agreement,
+            "head": &head,
+            "pairing": "per-query vectors retain each group's canonical observation order",
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap())
+            .expect("write requested XQuAD-R channel evidence");
     }
 
     for group in GROUPS {
@@ -1685,7 +1716,7 @@ async fn search_reaches_across_languages() {
     // own language at the top. One run, not four: the trace carries every
     // channel's rank for every candidate. See `channels`.
     if std::env::var("CHANNELS").is_ok() {
-        report_channels(&engine, &queries, &named).await;
+        report_channels(&engine, &queries, &named, &commit, &embedding_id, &project).await;
         return;
     }
 
