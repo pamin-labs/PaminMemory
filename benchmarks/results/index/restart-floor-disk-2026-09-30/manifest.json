@@ -21,13 +21,14 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/provenance.json": "31ddf3e7963978d767e57683d38ca9a331b256b0e69c15afb5cc086d9a5a14af",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/raw.jsonl": "817b907934688c585f7c88347649f46ebebbff38390d85313bd7e96b1391621d",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/summary.json": "4e7d0a4b4967479bfe7550eb8b9b69c5fb79550053d0cc15e94a20e8c70962e5",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "3b506ad8640f944513d71dc25740dffb93d7314e502ad5c428edffea8c905c15",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "b9dd2638302d879ef1375be7ddb0a97cf17afc04dc1bec24be5f3c8c5e14534b",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk-README.md": "79651cf34dbdf393f956dca582a1d2baf164f2e6b8950e228df536ae614072c4",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/episode-elapsed.json": "7224b831d0a80fdad6a942421d77641afdc68e716cc6e79e748b833d6a42a3a2",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/post-trial-libraries.json": "d3b88079ce8822ffbda7f019f4d5341d040e9575090d2ae68a7c690ee1b121bf",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema_guarded.rs.in": "61083ba54700c5c809a226d29ed292e21bda69092357a1a727e644269b164fee",
     "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "8acd92004790da7bee41f1a8827e75a122aa3832748619a92c1415f11cb81464",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "1803fe82bd27436b4100326061161b05da4a3623f27488e264946af812658b11"
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "1803fe82bd27436b4100326061161b05da4a3623f27488e264946af812658b11",
+    "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }
