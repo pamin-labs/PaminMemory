@@ -18,8 +18,13 @@ def load(name,filename):
 code=repo/'benchmarks/harnesses/restart-floor-2026-09-30'
 runner=load('archived_disk_runner',code/'run.py.in')
 calculator=load('archived_disk_calculator',code/'analyze.py.in')
+review=load('restart_evidence_review',root/'evidence_review.py')
+provenance=json.loads((root/'provenance.json').read_text())
+provider_bindings=json.loads((root/'provider-bindings.json').read_text())
+review.runner_binding(code/'run.py.in',provenance)
 raw=[json.loads(x) for x in (root/'raw.jsonl').read_text().splitlines()]
 expected_commits={'predecessor':'f57f9c218d03d88666b3cc89fae9ae7e9eed2e50','candidate':'11493c1388f74b087db23136a94e4b8feed1efe3','main':'315c10242ddf7a1cec3bccbf550a942320e09557'}
+review.binary_binding(json.loads((root/'binaries.json').read_text()),provenance,expected_commits)
 assert set(r['arm'] for r in raw)==set(expected_commits)
 assert len([r for r in raw if r['phase']=='process_total'])==9
 assert {(r['arm'],r['repetition']) for r in raw}=={(arm,rep) for arm in expected_commits for rep in range(3)}, 'unexpected raw repetition'
@@ -53,7 +58,9 @@ for arm,commit in expected_commits.items():
                     expected=None if row['process_before'] is None or row['process_after'] is None else (row['process_after'][kind+'_ticks']-row['process_before'][kind+'_ticks'])/row['clock_ticks_per_second']
                     assert row['cpu_'+kind+'_seconds']==expected, 'derived CPU field disagrees with retained tick delta'
                 assert set(row['actual_providers'])=={'embedding','reranker'}
-                for provider in row['actual_providers'].values():
+                for role,provider in row['actual_providers'].items():
+                    review.provider_binding(provider,role,provenance,provider_bindings)
+                    assert provider['model_graph'].startswith(f'<SCRATCH>/results-disk/{rep}-{arm}/models/'), 'provider process differs'
                     assert set(provider['assigned_nodes'])=={'CPUExecutionProvider'} and provider['assigned_nodes']['CPUExecutionProvider']>0
         warm[(arm,rep)]={r['extra']['query_document']:r['extra']['topics'] for r in phases['search_warm']}
         assert len(warm[(arm,rep)])==24 and all(len(topics)==10 for topics in warm[(arm,rep)].values())
@@ -81,6 +88,7 @@ assert manifest['files'][str((code/'harness.rs.in').relative_to(repo))]==provena
 assert hashlib.sha256((code/'harness.rs.in').read_bytes()).hexdigest()==provenance['harness']['sha256'], 'harness disagrees with recorded compiled source'
 assert len((code/'harness.rs.in').read_bytes())==provenance['harness']['bytes']
 seed_log=gzip.decompress((root/'logs/seed-disk.log.gz').read_bytes()).decode()
+assert seed_log.rstrip().splitlines()[-1].startswith('test result: ok. 1 passed; 0 failed;'), 'seed missing successful final marker'
 seed_rows=[json.loads(line.removeprefix('RESTART_JSON ')) for line in seed_log.splitlines() if line.startswith('RESTART_JSON ')]
 assert Counter(row['phase'] for row in seed_rows)==Counter({'open':1,'seed_complete':1}), 'unexpected seed log phases'
 assert next(row for row in seed_rows if row['phase']=='seed_complete')==provenance['seed_complete_diagnostic'], 'seed diagnostic disagrees with native seed log'
@@ -102,6 +110,7 @@ profile_bytes='\n'.join(expected_profile).encode()
 assert profile_assets[0]['bytes']==len(profile_bytes) and profile_assets[0]['sha256']==hashlib.sha256(profile_bytes).hexdigest()
 conversion=provenance['conversion_schema_and_logical_digest']
 conversion_log=gzip.decompress((root/'logs/disk-conversion.log.gz').read_bytes()).decode()
+assert conversion_log.rstrip().splitlines()[-1].startswith('test result: ok. 1 passed; 0 failed;'), 'conversion missing successful final marker'
 observed=[json.loads(line.split('DISK_SETUP_JSON ',1)[1]) for line in conversion_log.splitlines() if 'DISK_SETUP_JSON ' in line]
 assert observed==conversion, 'conversion provenance disagrees with retained setup log'
 assert [row['phase'] for row in observed]==['before','after']
@@ -158,6 +167,8 @@ labels=[
 ('Closed index allocated bytes','closed_index_allocated_bytes',2**20,' MiB'),
 ('Vector graph completeness, hybrid visibility checked','vector_completeness',1,'')]
 summary=json.loads((root/'summary.json').read_text())
+timing_review=review.timing_review(summary,raw)
+assert timing_review==json.loads((root/'timing-review.json').read_text()), 'timing stability screen differs from raw process observations'
 displayed=[line for line in (root/'README.md').read_text().splitlines() if line.startswith('|')]
 expected=[]
 for reference in ['predecessor','main']:
@@ -169,7 +180,7 @@ for reference in ['predecessor','main']:
         else:
             value=summary['comparisons'][reference]['metric_differences'][key]
             before,after,delta,percent=[value[k] for k in ['before','after','absolute_delta','percent_delta']]
-        if key=='first_search_ms':
+        if key in timing_review[reference] and timing_review[reference][key]['withhold_comparison']:
             expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | Withheld: unstable three-process sample | Withheld: unstable three-process sample |')
         else:
             expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | {delta/divisor:+.6f}{unit} | {percent:+.3f}% |')
