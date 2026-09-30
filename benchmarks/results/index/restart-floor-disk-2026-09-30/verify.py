@@ -174,4 +174,5 @@ for reference in ['predecessor','main']:
         else:
             expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | {delta/divisor:+.6f}{unit} | {percent:+.3f}% |')
 assert displayed==expected, 'published README tables disagree with recomputed summaries'
+load('retrospective_restart_binding',root/'rebuild/verify.py').verify(repo=repo)
 print('verified DiskANN:9 processes,72/72 paired ordered top10 per reference,work counts,CPU providers,new-write visibility,native profile/schema/digest,external weight identities and recomputed metrics')
