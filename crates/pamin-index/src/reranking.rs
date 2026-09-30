@@ -715,7 +715,7 @@ impl Reranker {
 
         let repository = Repository::open(cache_dir, tier.repository())?;
 
-        let session = |device: Device, providers, validated: bool| -> Result<Encoder> {
+        let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
             let weights = repository.file(cache_dir, tier.onnx(device));
             let model = || match device {
                 // The file the hub serves is copied onto the heap whole; on
@@ -740,20 +740,9 @@ impl Reranker {
             let loaded = Encoder::load(model, &repository, max_tokens(), providers);
             let encoder = loaded
                 .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
-            let mut encoder = encoder;
-            if !validated && matches!(device, Device::DirectMl | Device::Npu) {
-                // Compare the same accelerator export, not CPU int8 versus
-                // accelerator FP16: quantization is a separate source of drift.
-                let path = repository.get(tier.onnx(device))?;
-                check_accelerator(&mut encoder, || {
-                    Encoder::load(
-                        || Ok(path.clone()),
-                        &repository,
-                        max_tokens(),
-                        vec![crate::inference::cpu()],
-                    )
-                })?;
-            }
+            // The shared calibration compares actual candidate scores with
+            // the already resident product CPU reference. Do not allocate a
+            // third FP16 CPU session while both plans are live.
             encoder.require_accelerator(device)?;
             if device == Device::Cpu {
                 crate::prepared::release(&weights, cache_dir);
@@ -981,21 +970,8 @@ const ORDER_PAIRS: [(&str, &str); 4] = [
     ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
 ];
 
-/// A startup ordering guard for the actual model/export. A failed attempt
-/// returns to `preferred`, which tries the next viable provider. No persistent
-/// CPU-only setting is written; a later load can retry a repaired accelerator.
-fn check_accelerator(
-    accelerator: &mut Encoder,
-    reference: impl FnOnce() -> Result<Encoder>,
-) -> Result<()> {
-    let encodings = accelerator.encode(ORDER_PAIRS.to_vec())?;
-    let observed = score(accelerator, encodings, batch_tokens(), batch())?.0;
-    let mut reference = reference()?;
-    let encodings = reference.encode(ORDER_PAIRS.to_vec())?;
-    let expected = score(&mut reference, encodings, batch_tokens(), batch())?.0;
-    check_accelerator_ordering(&expected, &observed)
-}
-
+/// Compare the startup fixture's semantic ordering, allowing ordinary score
+/// drift between a candidate export and the product's optimized CPU export.
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
     let failed = || {
         IndexError::Incompatible("accelerator failed the startup reranker ordering fixture".into())
