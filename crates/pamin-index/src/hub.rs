@@ -12,6 +12,7 @@ use crate::error::{IndexError, Result};
 pub(crate) struct Repository {
     repo: hf_hub::api::sync::ApiRepo,
     name: String,
+    revision: String,
 }
 
 impl Repository {
@@ -24,6 +25,10 @@ impl Repository {
     /// not -- a mirror set for one and not the other, or two copies of the
     /// cache. Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
+        Self::open_at(cache_dir, name, "main")
+    }
+
+    pub(crate) fn open_at(cache_dir: &Path, name: &str, revision: &str) -> Result<Self> {
         let cache_dir = cache_root(cache_dir);
         let mut builder = hf_hub::api::sync::ApiBuilder::new()
             .with_cache_dir(cache_dir)
@@ -34,10 +39,15 @@ impl Repository {
         let repo = builder
             .build()
             .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
-            .model(name.to_string());
+            .repo(hf_hub::Repo::with_revision(
+                name.to_string(),
+                hf_hub::RepoType::Model,
+                revision.to_string(),
+            ));
         Ok(Self {
             repo,
             name: name.to_string(),
+            revision: revision.to_string(),
         })
     }
 
@@ -69,11 +79,23 @@ pub(crate) struct File<'a> {
 
 impl crate::prepared::Download for File<'_> {
     fn label(&self) -> String {
-        format!("{}/{}", self.repository.name, self.file)
+        if self.repository.revision == "main" {
+            format!("{}/{}", self.repository.name, self.file)
+        } else {
+            format!(
+                "{}@{}/{}",
+                self.repository.name, self.repository.revision, self.file
+            )
+        }
     }
 
     fn on_disk(&self) -> Option<PathBuf> {
-        cached(self.cache_dir, &self.repository.name, self.file)
+        cached_at(
+            self.cache_dir,
+            &self.repository.name,
+            &self.repository.revision,
+            self.file,
+        )
     }
 
     fn fetch(&self) -> Result<PathBuf> {
@@ -128,9 +150,13 @@ fn cache_root(cache_dir: &Path) -> PathBuf {
 
 /// Where `file` of repository `name` is on disk, without asking the hub
 /// anything, or `None` if it is not.
-fn cached(cache_dir: &Path, name: &str, file: &str) -> Option<PathBuf> {
+fn cached_at(cache_dir: &Path, name: &str, revision: &str, file: &str) -> Option<PathBuf> {
     hf_hub::Cache::new(cache_root(cache_dir))
-        .model(name.to_string())
+        .repo(hf_hub::Repo::with_revision(
+            name.to_string(),
+            hf_hub::RepoType::Model,
+            revision.to_string(),
+        ))
         .get(file)
 }
 
