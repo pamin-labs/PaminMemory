@@ -71,12 +71,31 @@ All process costs include loading and warmups. Process CPU excludes CoreML servi
 | Full XQuAD cross_lingual nDCG@10 | 0.7271936 | 0.7271936 | 0.7271936 | 0 | 0% |
 | Full MIRACL-Swahili nDCG@10 | 0.8204219 | 0.8204219 | 0.8204219 | 0 | 0% |
 
+### 50k vector scorer component latency
+
+| Alternative / metric | Current FP32 | Alternative | Absolute delta | Relative delta |
+| --- | ---: | ---: | ---: | ---: |
+| ORT CPU FP64: p50 ms | 8.137 | 8.307 | +0.170 | +2.09% |
+| ORT CPU FP64: p95 ms | 11.848 | 12.264 | +0.417 | +3.52% |
+| Native SIMD FP64: p50 ms | 8.137 | 7.979 | -0.157 | -1.93% |
+| Native SIMD FP64: p95 ms | 11.848 | 11.275 | -0.573 | -4.84% |
+
+This times ProjectionIndex::recall_vector on one shared 50k memory index, 100 queries, three per-query rotations. Percentiles are nearest-rank over each query's three-round median. It includes the native candidate query and vector rescore, not whole search or model inference. These descriptive timings do not establish a speed gain on a shared machine; the real-corpus cache warning has a different scope.
+
 One shared 50k/1024-dimension HNSW memory index, 100 queries and three rotated rounds; independent original-f32 and stored-FP16 cosine oracles. Full XQuAD has 1,190 queries and 13,014 documents; MIRACL has 482 queries and 131,924 documents, both at accuracy profile through search_reranked. Same native ANN candidate pools asserted for every FP64 arm. No returned-list changes; do not adopt an FP64 scorer based on the earlier synthetic near-tie probe. Real-corpus query embedding/reranker scores were shared to isolate vector math, so their call timings cannot compare inference backends. FP64 process CPU, memory and disk deltas: N/A, not measured.
 
 ## Device copies and synchronization
 
-Steady ORT profiling (eight warmups removed per node/bucket) places 0.17-0.27% of recorded kernel duration in five CPU integer/mask nodes. Most recorded time is in fused CoreML partitions. CoreML durations include prediction, wrapper handling and waits; they cannot isolate actual GPU/ANE execution or physical transfer cost. Declared intermediate tensor volumes are not measured bus bytes. Keep partition-collapse and mask-broadcast changes as future experiments with product precision and latency gates.
+The retained profiling records contain only node names, providers and durations; no private paths, tensor contents or thread identifiers. profiling.py regenerates the kernel-duration fractions after removing the first eight calls per node/bucket. Most recorded time is in fused CoreML partitions. CoreML durations include prediction, wrapper handling and waits; they cannot isolate actual GPU/ANE execution or physical transfer cost. Declared intermediate tensor volumes are not measured bus bytes. Keep partition-collapse and mask-broadcast changes as future experiments with product precision and latency gates.
 
 [ORT I/O binding](https://onnxruntime.ai/docs/performance/tune-performance/iobinding.html), [pinned CoreML wrapper](https://github.com/microsoft/onnxruntime/blob/v1.28.0/onnxruntime/core/providers/coreml/model/model.mm), [Apple compute plans](https://developer.apple.com/documentation/coreml/mlcomputeplan-85vdw).
 
-summary.json retains the aggregate values. python3 tables.py regenerates this text to stdout without modifying the evidence. Sanitized per-query rows, process resource files, provider attestations, exact experimental patch and run template are retained. python3 verify.py recomputes all backend aggregates and process-block diagnostics without modifying evidence. See manifest.json and REPRODUCE.md for identities, order, provenance limits and commands. Device traces are excluded.
+summary.json retains the aggregate values. python3 tables.py regenerates this text to stdout without modifying the evidence. Sanitized per-query rows, process resource files, provider attestations, exact experimental patch and run template are retained. python3 verify.py recomputes all backend aggregates and process-block diagnostics without modifying evidence. See manifest.json and REPRODUCE.md for identities, order, provenance limits and commands. Full device traces are excluded; minimal sanitized profiling node timings and derivation are retained.
+
+### Steady recorded kernel duration
+
+| Bucket | CPU kernel us | All kernel us | CPU fraction |
+| --- | ---: | ---: | ---: |
+| 4x128 | 49572 | 27235635 | 0.1820% |
+| 4x64 | 16285 | 6043254 | 0.2695% |
+| 2x256 | 10157 | 5964002 | 0.1703% |
