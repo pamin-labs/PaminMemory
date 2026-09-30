@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Tiny private fake-fixture checks only: no PostgreSQL, models or builds."""
+import importlib.machinery,importlib.util,json,os,shutil,stat,sys,tempfile,types
+from datetime import datetime,timezone
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Negative guard checks require assertions; remove -O/PYTHONOPTIMIZE')
+sys.dont_write_bytecode=True
+loader=importlib.machinery.SourceFileLoader('fixture_guards',str(Path(__file__).with_name('run-guarded.py.in')))
+spec=importlib.util.spec_from_loader(loader.name,loader);guard=importlib.util.module_from_spec(spec);loader.exec_module(guard)
+def refuse(operation):
+    try:operation()
+    except (AssertionError,RuntimeError):return
+    raise AssertionError('negative case passed')
+def case(kind='normal',copies=9):
+    with tempfile.TemporaryDirectory() as temporary:
+        root=Path(temporary);seed=root/'seed';models=root/'models';models.mkdir()
+        (seed/'postgres/data/nested').mkdir(parents=True);(seed/'index').mkdir()
+        (seed/'postgres/data/nested/data').write_bytes(b'fake stopped data')
+        (seed/'index/data').write_bytes(b'fake index');(seed/'server.json').write_bytes(b'fake private configuration')
+        (seed/'models').symlink_to(models,target_is_directory=True)
+        expected=guard.fixture_snapshot(seed,models)
+        manifest=root/'expected.json';manifest.write_text(json.dumps({'recorded_utc':datetime.now(timezone.utc).isoformat(),'fixture':expected}));manifest.chmod(0o600)
+        executable=root/'binary';executable.write_bytes(b'never executed')
+        names=['predecessor','candidate','main'];arms=[f'{name},{name},{executable}' for name in names]
+        attestation=root/'attestation.json';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','arms':{name:{'commit':name,'binary':str(executable),'binary_sha256':guard.digest(executable),'binary_bytes':executable.stat().st_size} for name in names}}))
+        output=root/'copies';record=root/'record.json'
+        original_copy=shutil.copytree;original_load=guard.load_runner;original_argv=sys.argv;original_env=dict(os.environ)
+        def altered_copy(source,destination,*args,**kwargs):
+            result=original_copy(source,destination,*args,**kwargs)
+            if Path(source).resolve()!=seed:return result
+            clone=Path(destination)
+            if kind=='clone_change':(clone/'index/data').write_bytes(b'changed')
+            elif kind=='source_change':(seed/'index/data').write_bytes(b'changed')
+            elif kind=='shared_inode':
+                (clone/'index/data').unlink();os.link(seed/'index/data',clone/'index/data')
+            elif kind=='external_link':
+                (clone/'index/data').unlink();(clone/'index/data').symlink_to(seed/'index/data')
+            elif kind=='binary_change':executable.write_bytes(b'changed binary')
+            return result
+        def fake_main():
+            output.mkdir();sequence=[(rep,arm.split(',',2)) for rep in range(3) for arm in arms[rep:]+arms[:rep]]
+            if copies==10:sequence.append((3,arms[0].split(',',2)))
+            for index,(rep,(name,_,_)) in enumerate(sequence[:copies]):
+                shutil.copytree(seed,output/f'{rep}-{name}',symlinks=True)
+                if kind=='late_failure' and index==1:raise RuntimeError('fake late failure')
+            if kind=='post_source_change':(seed/'index/data').write_bytes(b'changed after copies')
+        runner=types.SimpleNamespace(shutil=shutil,main=fake_main)
+        try:
+            shutil.copytree=altered_copy;guard.load_runner=lambda path:runner
+            os.environ.clear();os.environ.update({key:value for key,value in original_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})
+            sys.argv=['run-guarded.py.in','--attestation',str(attestation),'--record',str(record),'--documents','18000','--index','disk','trials','--seed',str(seed),'--output',str(output),'--fixture-manifest',str(manifest)]
+            for arm in arms:sys.argv+=['--arm',arm]
+            before_env=dict(os.environ);before_argv=sys.argv
+            if kind=='normal' and copies==9:
+                guard.main();data=json.loads(record.read_text());assert data['status']=='finished' and len(data['copies'])==9
+                assert all(row['clone']==row['source'] and row['independent_regular_files'] for row in data['copies'])
+                assert len(data['copies'])==9, 'recursive subtree copies must not generate duplicate attestations'
+                assert isinstance(data['fixture_before_trials']['entries'],int), 'credential/path content map must stay out of safe aggregate record'
+            else:
+                refuse(guard.main);data=json.loads(record.read_text());assert data['status']=='failed' and len(data.get('copies',[]))<=9
+                if kind=='late_failure':assert len(data['copies'])==2
+            assert stat.S_IMODE(record.stat().st_mode)==0o600
+            assert shutil.copytree is altered_copy and sys.argv is before_argv and dict(os.environ)==before_env, 'scope not restored'
+        finally:
+            shutil.copytree=original_copy;guard.load_runner=original_load;sys.argv=original_argv
+            os.environ.clear();os.environ.update(original_env)
+for kind in ['normal','clone_change','source_change','shared_inode','external_link','binary_change','late_failure','post_source_change']:
+    case(kind);print('passed',kind)
+case(copies=8);case(copies=10);print('passed exact nine-copy count')
+for key in ['HF_HOME','HF_HUB_CACHE']:refuse(lambda:guard.controlled_environment({key:'unexpected'}))
+with tempfile.TemporaryDirectory() as temporary:
+    root=Path(temporary);seed=root/'seed';models=root/'models';models.mkdir();(seed/'postgres/data').mkdir(parents=True);(seed/'index').mkdir();(seed/'models').symlink_to(models,target_is_directory=True)
+    (seed/'index/data').write_bytes(b'original');expected=guard.fixture_snapshot(seed,models)
+    (seed/'index/data').write_bytes(b'changed before first copy');refuse(lambda:guard.verify_fixture(seed,expected))
+    (seed/'postgres/data/postmaster.pid').write_text('fake');refuse(lambda:guard.fixture_snapshot(seed,models))
+print('passed inherited cache override, pre-copy mutation, running source guards; no real trial executed')
