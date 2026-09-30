@@ -455,6 +455,11 @@ impl Fusion {
         self
     }
 
+    /// Rank constant used by fusion and graph seed relevance.
+    pub fn k(&self) -> f32 {
+        self.k
+    }
+
     fn weight(&self, channel: Channel) -> f32 {
         self.weights.get(&channel).copied().unwrap_or(1.0)
     }
