@@ -622,8 +622,11 @@ its neighbours and padding, so the cache includes every query/memory pair in
 order, including duplicates, and both the logical and physical batch shapes.
 Changed contexts are scored again, so earlier searches do not change the
 result of scoring the same final candidate list. An identical batch avoids a
-model forward pass; repeated searches still pay for tokenization, hashing,
-batch planning, cache lookup and retrieval. The cache holds up to 4,096 logical
+model forward pass. The most recent complete input list also skips tokenization
+and batch planning when its ordered pairs and effective limits match and all
+referenced batches remain cached. Changed inputs or evicted references require
+tokenizing every pair and planning complete batches before cache lookup. Hashing,
+lookup and retrieval still cost work. The cache holds up to 4,096 logical
 score slots across complete batches and goes when the model is released or the
 server stops. The older pair-cache timings are historical, as recorded in the
 [ADR](adr/0001-tech-selection.md), and do not measure this implementation.
