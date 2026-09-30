@@ -1,0 +1,16 @@
+[
+  {
+    "graph": "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+    "nodes": {
+      "CPUExecutionProvider": 1023
+    },
+    "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4"
+  },
+  {
+    "graph": "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+    "nodes": {
+      "CPUExecutionProvider": 295
+    },
+    "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164"
+  }
+]
