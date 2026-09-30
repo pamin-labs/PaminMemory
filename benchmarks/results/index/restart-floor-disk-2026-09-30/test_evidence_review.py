@@ -34,7 +34,22 @@ def changed_screen(repo):update(repo/DISK/'timing-review.json',lambda x:x['prede
 def shown_unstable(repo):
     p=repo/DISK/'README.md';s=p.read_text();s=s.replace('| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |','| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | -33.848672 ms | -2.381% |');p.write_text(s)
 def hnsw_screen(repo):update(repo/HNSW/'timing-review.json',lambda x:x['predecessor']['warm_p50_ms'].update(withhold_comparison=False))
-checks=[missing_binary,duplicate_arm,wrong_commit,wrong_path,wrong_bytes,runner,failed_seed,failed_conversion,wrong_role_graph,wrong_metadata,wrong_source_revision,wrong_external_data,changed_screen,shown_unstable,hnsw_screen]
+def hnsw_readme_cell(repo,reference,column,replacement):
+    p=repo/HNSW/'README.md';lines=p.read_text().splitlines();section='predecessor';changed=0
+    for at,line in enumerate(lines):
+        if line.startswith('## Combined'):section='main'
+        if section==reference and line.startswith('| Warm search p95: median across processes |'):
+            cells=line.split('|');cells[column]=' '+replacement+' ';lines[at]='|'.join(cells);changed+=1
+    assert changed==1, 'expected stable HNSW row missing'
+    p.write_text('\n'.join(lines)+'\n')
+def hnsw_predecessor_delta(repo):hnsw_readme_cell(repo,'predecessor',4,'-999.000 ms')
+def hnsw_predecessor_percent(repo):hnsw_readme_cell(repo,'predecessor',5,'-99.000%')
+def hnsw_main_delta(repo):hnsw_readme_cell(repo,'main',4,'-999.000 ms')
+def hnsw_main_percent(repo):hnsw_readme_cell(repo,'main',5,'-99.000%')
+def hnsw_stable_withheld(repo):hnsw_readme_cell(repo,'main',4,'Withheld: unstable three-process sample')
+def hnsw_missing_row(repo):
+    p=repo/HNSW/'README.md';lines=p.read_text().splitlines();index=next(i for i,l in enumerate(lines) if l.startswith('| Maintenance wall median |'));lines.pop(index);p.write_text('\n'.join(lines)+'\n')
+checks=[missing_binary,duplicate_arm,wrong_commit,wrong_path,wrong_bytes,runner,failed_seed,failed_conversion,wrong_role_graph,wrong_metadata,wrong_source_revision,wrong_external_data,changed_screen,shown_unstable,hnsw_screen,hnsw_predecessor_delta,hnsw_predecessor_percent,hnsw_main_delta,hnsw_main_percent,hnsw_stable_withheld,hnsw_missing_row]
 if __name__=='__main__':
     for rel in [DISK,HNSW]:
         result=execute(REPO,rel);assert result.returncode==0,result.stderr
@@ -46,7 +61,9 @@ if __name__=='__main__':
             repo=Path(td);(repo/'.git').symlink_to(gitdir,target_is_directory=True)
             for name in names:
                 dst=repo/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(REPO/name,dst)
-            change(repo);manifests(repo);result=execute(repo,HNSW if change==hnsw_screen else DISK)
+            change(repo);manifests(repo);result=execute(repo,HNSW if change.__name__.startswith('hnsw_') else DISK)
             assert result.returncode!=0,change.__name__+' corruption accepted'
             assert 'AssertionError' in result.stderr and 'manifest' not in result.stderr.split('AssertionError')[-1],change.__name__+' did not reach semantic guard: '+result.stderr
-    print('PASS: both positive archives and15 refreshed-manifest semantic negatives; no Cargo/models/DB')
+            if change.__name__.startswith('hnsw_') and change!=hnsw_screen:
+                assert 'HNSW complete displayed rows disagree' in result.stderr,change.__name__+' did not reach exact table guard: '+result.stderr
+    print(f'PASS: both positive archives and {len(checks)} refreshed-manifest semantic negatives; no Cargo/models/DB')

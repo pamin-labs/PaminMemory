@@ -21,7 +21,7 @@
     "benchmarks/results/index/restart-floor-2026-09-30/provenance.json": "6dc977d5bb6a84d75c3b7198005019ed36c7e6e0c2dfb880941428420473d887",
     "benchmarks/results/index/restart-floor-2026-09-30/raw.jsonl": "a2018bfb4f7eff6f893a30b3483df2293cd29c2b90d0b79dd34c22e532adb079",
     "benchmarks/results/index/restart-floor-2026-09-30/summary.json": "f2af9584033fcc9dbdcf687512c10479b712b76789ea5ed41edc8e72adcddb57",
-    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "b96c006be1fa694d3adbc65ee7379414fbcdec9e0e0b97b68de01af1f6368d5a",
+    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "57dcbedcd67786ad8d1cddc198ef987c78c6b8f7cdadfb9bb1584a59de3ac388",
     "benchmarks/results/index/restart-floor-2026-09-30/post-trial-assets.json": "22028e54cf1bc2c5f0747e0522fd1068458cfa4033ed385b1200589934d07c98",
     "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "eaa2f6c1f38703528aef61931ee8ded8e12318e10f396d55e16c7a10a8242392",
     "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "d2b3aa07bc668f972df22fc3a0bfcedac7310322e83e35553ad2fbe5cc760ee8",

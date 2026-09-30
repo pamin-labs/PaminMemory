@@ -52,17 +52,35 @@ for b in memory_binaries:
     assert b['commit']==prior['commit'] and b['sha256']==prior['sha256'] and b['binary'].replace('${SCRATCH}','<SCRATCH>')==prior['binary'], 'HNSW arm-keyed executable binding'
 timing_review=review.timing_review(summary,raw)
 assert timing_review==json.loads((root/'timing-review.json').read_text()), 'HNSW timing screen differs'
-labels={'First-search wall median (model load included)':'first_search_ms','Maintenance wall median':'maintenance_ms','Warm search p50: median across processes':'warm_p50_ms','Warm search p95: median across processes':'warm_p95_ms'}
-reference='predecessor'
-for line in (root/'README.md').read_text().splitlines():
-    if line.startswith('## Combined'):reference='main'
-    if not line.startswith('|'):continue
-    cells=[c.strip() for c in line.split('|')];key=labels.get(cells[1])
-    if key:
+# Bind every displayed row/cell, including stable difference and percentage
+# cells; matching medians or a non-Withheld marker alone is insufficient.
+labels=[
+('Known-topic recall@10 (synthetic)','known_topic_recall_at_10',1,'',6),
+('Known-topic MRR@10 (synthetic)','known_topic_mrr_at_10',1,'',6),
+('Optimize jobs per first upkeep tick','optimize_jobs',1,'',3),
+('Maintenance wall median','maintenance_ms',1,' ms',3),
+('First-search wall median (model load included)','first_search_ms',1,' ms',3),
+('Warm search p50: median across processes','warm_p50_ms',1,' ms',3),
+('Warm search p95: median across processes','warm_p95_ms',1,' ms',3),
+('Peak process RSS','peak_process_rss_bytes',2**20,' MiB',3),
+('RSS after maintenance','maintenance_rss_bytes',2**20,' MiB',3),
+('Closed index allocated bytes','closed_index_allocated_bytes',2**20,' MiB',3),
+('Closed index apparent bytes','closed_index_apparent_bytes',2**20,' MiB',3),
+('Vector graph completeness (hybrid visibility checked)','vector_completeness',1,'',6)]
+expected=[]
+for reference in ['predecessor','main']:
+    expected+=['| Metric | Before | After | Absolute difference | Percentage change |','| --- | ---: | ---: | ---: | ---: |']
+    for label,key,divisor,unit,precision in labels:
         metric=summary['comparisons'][reference]['metric_differences'][key]
-        assert abs(float(cells[2].split()[0])-metric['before'])<.0006 and abs(float(cells[3].split()[0])-metric['after'])<.0006, 'HNSW displayed medians differ'
-        withheld=timing_review[reference][key]['withhold_comparison']
-        assert (cells[4].startswith('Withheld') and cells[5].startswith('Withheld'))==withheld, 'HNSW unstable timing comparison shown'
+        before,after,delta,percent=[metric[k] for k in ['before','after','absolute_delta','percent_delta']]
+        if key in timing_review[reference] and timing_review[reference][key]['withhold_comparison']:
+            difference=percentage='Withheld: unstable three-process sample'
+        else:
+            difference=f'{delta/divisor:+.{precision}f}{unit}'
+            percentage=f'{percent:+.3f}%' if percent is not None else 'N/A'
+        expected.append(f'| {label} | {before/divisor:.{precision}f}{unit} | {after/divisor:.{precision}f}{unit} | {difference} | {percentage} |')
+displayed=[line for line in (root/'README.md').read_text().splitlines() if line.startswith('|')]
+assert displayed==expected, 'HNSW complete displayed rows disagree with recomputed summary/timing policy'
 binding_source=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'
 binding_loader=importlib.machinery.SourceFileLoader('retrospective_restart_binding',str(binding_source))
 binding_spec=importlib.util.spec_from_loader(binding_loader.name,binding_loader)
