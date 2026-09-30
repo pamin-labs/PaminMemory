@@ -73,6 +73,11 @@ assert conversion[1]['same_all_stored_document_bits'] and not conversion[1]['flo
 schema=conversion[1]['schema'];assert schema['segment_documents']==2000
 vector=schema['fields']['embedding']
 assert {key:vector[key] for key in ['dtype','dimension','index_type','metric','degree','build_list','pq_chunks','quantize','quantizer_rotate']}=={'dtype':22,'dimension':1024,'index_type':5,'metric':3,'degree':64,'build_list':100,'pq_chunks':0,'quantize':0,'quantizer_rotate':False}
+libraries=json.loads((root/'post-trial-libraries.json').read_text())
+assert libraries['recorded_utc'] and libraries['scope']
+assert set(libraries['libraries'])=={'runtime_library','native_zvec_library'}
+for key, entry in libraries['libraries'].items():
+    assert entry==provenance[key], 'post-trial runtime/native identity mismatch'
 post=json.loads((root/'post-trial-assets.json').read_text())
 assert post['all_recorded_source_graphs_and_prepared_external_weights_unchanged']
 assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
