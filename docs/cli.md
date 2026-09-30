@@ -24,6 +24,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 | | `PAMIN_DEVICE` | automatic tier-specific route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
+| | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible ONNX Runtime plugin EP libraries; unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
