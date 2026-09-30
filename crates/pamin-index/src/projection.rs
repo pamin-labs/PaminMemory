@@ -75,6 +75,7 @@ const FIELD_SEGMENTED: &str = "content_segmented";
 /// Substring recall over raw text: paths, error codes, identifiers.
 const FIELD_NGRAM: &str = "content_ngram";
 const FIELD_VECTOR: &str = "embedding";
+const FIELD_SECONDARY: &str = "embedding_secondary";
 
 static INITIALIZE: Once = Once::new();
 
@@ -97,6 +98,10 @@ pub enum Access {
     /// Writes and rebuilds. Exclusive.
     ReadWrite,
 }
+
+/// A topic's text, primary vector and optional complementary vector.
+pub type VectorDocument<'a> = (TopicId, &'a str, &'a [f32], Option<&'a [f32]>);
+type PendingVectorDocument<'a> = (TopicId, &'a str, Vec<f32>, Option<Vec<f32>>);
 
 /// What the layer above needs a projection to do.
 ///
@@ -127,10 +132,21 @@ pub trait Projection {
     fn segmenter(&self) -> Arc<Segmenter>;
 
     /// Adds or replaces one topic.
-    fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()>;
+    fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()> {
+        self.upsert_vectors(&[(topic, content, embedding, None)])
+    }
 
     /// Adds or replaces many.
-    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()>;
+    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()> {
+        let vectors: Vec<_> = documents
+            .iter()
+            .map(|(topic, content, embedding)| (*topic, *content, *embedding, None))
+            .collect();
+        self.upsert_vectors(&vectors)
+    }
+
+    /// Adds or replaces documents with all vector fields in one write.
+    fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()>;
 
     /// Word-level lexical recall, best first.
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>>;
@@ -156,6 +172,9 @@ pub trait Projection {
 
     /// Semantic recall over dense embeddings, nearest first.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
+
+    /// Recall in the complementary dense space, when the index has one.
+    fn recall_secondary(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
 
     /// What this index holds for these topics, as it was written, in the
     /// order asked; `None` for a topic it does not hold.
@@ -224,6 +243,8 @@ pub struct Stored {
     /// The vector, as it was embedded under the index's [`Passage`] and then
     /// stored: each component rounded to half precision (see [`crate::as_stored`]).
     pub embedding: Vec<f32>,
+    /// The complementary vector, absent in a single-vector index.
+    pub secondary: Option<Vec<f32>>,
 }
 
 /// A lexical or vector index over topics.
@@ -234,6 +255,7 @@ pub struct ProjectionIndex {
     /// Which vector index this collection was built with, as its marker
     /// records -- and so how a query asks it.
     index: VectorIndex,
+    secondary_dimensions: Option<u32>,
     /// What this index's vectors were embedded from. See [`Passage`].
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
@@ -1028,7 +1050,7 @@ impl ProjectionIndex {
         };
 
         let mut opened =
-            Self::open_with_dimensions(dir, profile.dimensions(), index, access, segment)?;
+            Self::open_with_dimensions(dir, profile.dimensions(), None, index, access, segment)?;
         opened.passage = passage;
         opened.keys = keys;
         Ok(opened)
@@ -1096,6 +1118,7 @@ impl ProjectionIndex {
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
+        secondary_dimensions: Option<u32>,
         index: VectorIndex,
         access: Access,
         segment: u64,
@@ -1138,9 +1161,18 @@ impl ProjectionIndex {
                 DataType::VectorFp16,
                 dimensions,
                 index.params()?,
-            )
-            .max_doc_count_per_segment(segment)
-            .build()?;
+            );
+        let schema = match secondary_dimensions {
+            Some(dimensions) => schema.add_vector_field(
+                FIELD_SECONDARY,
+                DataType::VectorFp16,
+                dimensions,
+                index.params()?,
+            ),
+            None => schema,
+        }
+        .max_doc_count_per_segment(segment)
+        .build()?;
 
         // The engine refuses to create over an existing path, so reopen when
         // the collection is already there. Every command after the first opens
@@ -1164,13 +1196,25 @@ impl ProjectionIndex {
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
             index,
+            secondary_dimensions,
             passage: PASSAGE,
             keys: KEYS,
             optimized_files: AtomicU64::new(saved_optimize_floor(dir)),
         })
     }
 
-    fn document(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<Doc> {
+    fn document(
+        &self,
+        topic: TopicId,
+        content: &str,
+        embedding: &[f32],
+        secondary: Option<&[f32]>,
+    ) -> Result<Doc> {
+        if self.secondary_dimensions.is_some() != secondary.is_some() {
+            return Err(IndexError::Engine(
+                "a document must carry exactly the vector fields of its index".into(),
+            ));
+        }
         let mut doc = Doc::new()?;
         let key = self.keys.key(topic);
         doc.set_pk(&key);
@@ -1178,11 +1222,55 @@ impl ProjectionIndex {
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
         doc.add_string(FIELD_NGRAM, content)?;
         crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
+        if let Some(secondary) = secondary {
+            crate::half::add(&mut doc, FIELD_SECONDARY, secondary)?;
+        }
         Ok(doc)
     }
 
     fn recall_text(&self, field: &str, query: &str, limit: u32) -> Result<Vec<Scored>> {
         self.recall_fts(field, query, limit, false)
+    }
+
+    fn recall_dense(&self, field: &str, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+        let candidates = limit.saturating_mul(RESCORE);
+        let mut search =
+            SearchQuery::new(field, &crate::half::query(embedding), candidates as i32)?;
+        search.set_output_fields(&[FIELD_ID])?;
+        search.set_include_vector(true)?;
+        self.index.ask(&mut search, candidates)?;
+
+        let length = dot(embedding, embedding).sqrt();
+        let mut scored = Vec::with_capacity(candidates as usize);
+        for doc in self.collection.query(&search)? {
+            let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) else {
+                continue;
+            };
+            let vector = crate::half::get(&doc, field)?.ok_or_else(|| {
+                IndexError::Engine(format!(
+                    "a candidate for topic {topic} came without its {field} vector"
+                ))
+            })?;
+            let lengths = length * dot(&vector, &vector).sqrt();
+            let similarity = if lengths > 0.0 {
+                dot(embedding, &vector) / lengths
+            } else {
+                0.0
+            };
+            scored.push(Scored::new(topic, similarity));
+        }
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .unwrap_or(f32::MIN)
+                .total_cmp(&left.score.unwrap_or(f32::MIN))
+        });
+        scored.truncate(limit as usize);
+        Ok(scored)
+    }
+
+    fn vector_fields(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(FIELD_VECTOR).chain(self.secondary_dimensions.map(|_| FIELD_SECONDARY))
     }
 
     /// Lexical recall, either ranking whatever matches or requiring every term.
@@ -1399,6 +1487,7 @@ impl Previous {
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
             profile.dimensions(),
+            None,
             VectorIndex::default(),
             Access::ReadOnly,
             segment_documents(0),
@@ -1440,14 +1529,16 @@ impl Previous {
         &self,
         wanted: &HashMap<TopicId, &str>,
         batch: usize,
-        mut take: impl FnMut(&[(TopicId, &str, &[f32])]) -> Result<()>,
+        mut take: impl FnMut(&[VectorDocument<'_>]) -> Result<()>,
     ) -> Result<HashSet<TopicId>> {
         let mut lent = HashSet::new();
-        let mut pending: Vec<(TopicId, &str, Vec<f32>)> = Vec::with_capacity(batch);
-        let mut hand_over = |pending: &mut Vec<(TopicId, &str, Vec<f32>)>| {
-            let documents: Vec<(TopicId, &str, &[f32])> = pending
+        let mut pending: Vec<PendingVectorDocument<'_>> = Vec::with_capacity(batch);
+        let mut hand_over = |pending: &mut Vec<PendingVectorDocument<'_>>| {
+            let documents: Vec<VectorDocument<'_>> = pending
                 .iter()
-                .map(|(topic, content, vector)| (*topic, *content, vector.as_slice()))
+                .map(|(topic, content, vector, secondary)| {
+                    (*topic, *content, vector.as_slice(), secondary.as_deref())
+                })
                 .collect();
             take(&documents)?;
             pending.clear();
@@ -1465,8 +1556,17 @@ impl Previous {
             let vector = vector.ok_or_else(|| {
                 IndexError::Engine(format!("the document for topic {topic} has no vector"))
             })?;
+            let secondary = if self.index.secondary_dimensions.is_some() {
+                Some(crate::half::get(&doc, FIELD_SECONDARY)?.ok_or_else(|| {
+                    IndexError::Engine(format!(
+                        "the document for topic {topic} has no secondary vector"
+                    ))
+                })?)
+            } else {
+                None
+            };
             lent.insert(topic);
-            pending.push((topic, wanted[&topic], vector));
+            pending.push((topic, wanted[&topic], vector, secondary));
             if pending.len() == batch {
                 hand_over(&mut pending)?;
             }
@@ -1549,29 +1649,19 @@ impl Projection for ProjectionIndex {
     /// No flush: a caller writing in batches decides when the result becomes
     /// visible, and flushing between batches would make that decision for them
     /// once per batch.
-    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()> {
+    fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
         for chunk in documents.chunks(WRITE_BATCH) {
             let docs = chunk
                 .iter()
-                .map(|(topic, content, embedding)| self.document(*topic, content, embedding))
+                .map(|(topic, content, embedding, secondary)| {
+                    self.document(*topic, content, embedding, *secondary)
+                })
                 .collect::<Result<Vec<_>>>()?;
 
             let refs: Vec<&Doc> = docs.iter().collect();
             self.collection.upsert(&refs)?;
         }
 
-        Ok(())
-    }
-
-    /// Adds or replaces one topic.
-    ///
-    /// The embedding is required rather than optional. The engine enforces it,
-    /// and it is the right constraint: a document indexed without one is
-    /// invisible to the vector channel, which would show up as unexplained
-    /// recall gaps rather than as an error.
-    fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()> {
-        let doc = self.document(topic, content, embedding)?;
-        self.collection.upsert(&[&doc])?;
         Ok(())
     }
 
@@ -1585,11 +1675,24 @@ impl Projection for ProjectionIndex {
                 let Some(doc) = stored.get(topic) else {
                     return Ok(None);
                 };
+                let secondary = if self.secondary_dimensions.is_some() {
+                    Some(crate::half::get(doc, FIELD_SECONDARY)?.ok_or_else(|| {
+                        IndexError::Engine(format!(
+                            "the document for topic {topic} came back without its secondary vector"
+                        ))
+                    })?)
+                } else {
+                    None
+                };
                 match (
                     doc.get_string(FIELD_NGRAM)?,
                     crate::half::get(doc, FIELD_VECTOR)?,
                 ) {
-                    (Some(content), Some(embedding)) => Ok(Some(Stored { content, embedding })),
+                    (Some(content), Some(embedding)) => Ok(Some(Stored {
+                        content,
+                        embedding,
+                        secondary,
+                    })),
                     _ => Err(IndexError::Engine(format!(
                         "the document for topic {topic} came back without its text or its vector"
                     ))),
@@ -1650,43 +1753,15 @@ impl Projection for ProjectionIndex {
     /// each keeps is that cosine similarity, where larger is better as
     /// `Scored` requires.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        let candidates = limit.saturating_mul(RESCORE);
-        let mut search = SearchQuery::new(
-            FIELD_VECTOR,
-            &crate::half::query(embedding),
-            candidates as i32,
-        )?;
-        search.set_output_fields(&[FIELD_ID])?;
-        search.set_include_vector(true)?;
-        self.index.ask(&mut search, candidates)?;
+        self.recall_dense(FIELD_VECTOR, embedding, limit)
+    }
 
-        let length = dot(embedding, embedding).sqrt();
-        let mut scored = Vec::with_capacity(candidates as usize);
-        for doc in self.collection.query(&search)? {
-            let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) else {
-                continue;
-            };
-            let vector = crate::half::get(&doc, FIELD_VECTOR)?.ok_or_else(|| {
-                IndexError::Engine(format!(
-                    "a candidate for topic {topic} came without its vector"
-                ))
-            })?;
-            let lengths = length * dot(&vector, &vector).sqrt();
-            let similarity = if lengths > 0.0 {
-                dot(embedding, &vector) / lengths
-            } else {
-                0.0
-            };
-            scored.push(Scored::new(topic, similarity));
+    fn recall_secondary(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+        if self.secondary_dimensions.is_some() {
+            self.recall_dense(FIELD_SECONDARY, embedding, limit)
+        } else {
+            Ok(Vec::new())
         }
-        scored.sort_by(|left, right| {
-            right
-                .score
-                .unwrap_or(f32::MIN)
-                .total_cmp(&left.score.unwrap_or(f32::MIN))
-        });
-        scored.truncate(limit as usize);
-        Ok(scored)
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -1727,13 +1802,17 @@ impl Projection for ProjectionIndex {
     /// 1.0 the remainder is still answered by the flat buffer -- correctly, and
     /// at a cost that grows with the project.
     fn vector_index_completeness(&self) -> Result<f32> {
+        let stats = self.collection.stats()?;
         Ok(self
-            .collection
-            .stats()?
-            .indexes
-            .iter()
-            .find(|index| index.name == FIELD_VECTOR)
-            .map_or(0.0, |index| index.completeness))
+            .vector_fields()
+            .map(|field| {
+                stats
+                    .indexes
+                    .iter()
+                    .find(|index| index.name == field)
+                    .map_or(0.0, |index| index.completeness)
+            })
+            .fold(1.0, f32::min))
     }
 
     /// How many documents the index holds.
@@ -1775,7 +1854,6 @@ impl Projection for ProjectionIndex {
     /// segment once it has compacted. So every block past a segment's first is
     /// one a compaction would merge.
     fn unmerged_blocks(&self) -> Result<u64> {
-        let prefix = format!("{FIELD_VECTOR}.index.");
         let Ok(segments) = std::fs::read_dir(self.dir.join(COLLECTION)) else {
             return Ok(0);
         };
@@ -1783,17 +1861,28 @@ impl Projection for ProjectionIndex {
             .flatten()
             .filter(|segment| segment.file_type().is_ok_and(|kind| kind.is_dir()))
             .map(|segment| {
-                let blocks = std::fs::read_dir(segment.path()).map_or(0, |files| {
-                    files
-                        .flatten()
-                        .filter(|file| {
-                            let name = file.file_name();
-                            let name = name.to_string_lossy();
-                            name.starts_with(&prefix) && name.ends_with(".proxima")
-                        })
-                        .count() as u64
-                });
-                blocks.saturating_sub(1)
+                let names: Vec<String> = std::fs::read_dir(segment.path()).map_or_else(
+                    |_| Vec::new(),
+                    |files| {
+                        files
+                            .flatten()
+                            .map(|file| file.file_name().to_string_lossy().into_owned())
+                            .collect()
+                    },
+                );
+                // One flush writes both fields. Count the worst field's
+                // fragmentation, so adding a field does not double upkeep frequency.
+                self.vector_fields()
+                    .map(|field| {
+                        let prefix = format!("{field}.index.");
+                        let blocks = names
+                            .iter()
+                            .filter(|name| name.starts_with(&prefix) && name.ends_with(".proxima"))
+                            .count() as u64;
+                        blocks.saturating_sub(1)
+                    })
+                    .max()
+                    .unwrap_or(0)
             })
             .sum())
     }
@@ -2118,6 +2207,59 @@ mod upkeep {
     fn a_nonsense_completeness_does_not_wrap() {
         assert!(vector_index_lags(30_000, -1.0));
         assert!(!vector_index_lags(30_000, 2.0));
+    }
+}
+
+#[cfg(test)]
+mod secondary_vectors {
+    use super::*;
+
+    #[test]
+    fn two_vector_fields_share_the_document_and_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            ProjectionIndex::open_with_dimensions(
+                dir.path(),
+                2,
+                Some(2),
+                VectorIndex::Memory,
+                Access::ReadWrite,
+                segment_documents(2),
+            )
+            .unwrap()
+        };
+        let first = TopicId::new();
+        let second = TopicId::new();
+        let index = open();
+        index
+            .upsert_vectors(&[
+                (first, "first topic", &[1.0, 0.0], Some(&[0.0, 1.0])),
+                (second, "second topic", &[0.0, 1.0], Some(&[1.0, 0.0])),
+            ])
+            .unwrap();
+        assert!(
+            index
+                .upsert(TopicId::new(), "incomplete", &[1.0, 0.0])
+                .is_err()
+        );
+        index.flush().unwrap();
+        index.optimize().unwrap();
+        assert_eq!(index.document_count().unwrap(), 2);
+        assert_eq!(index.vector_index_completeness().unwrap(), 1.0);
+        assert_eq!(index.recall_vector(&[1.0, 0.0], 1).unwrap()[0].topic, first);
+        assert_eq!(
+            index.recall_secondary(&[1.0, 0.0], 1).unwrap()[0].topic,
+            second
+        );
+        let stored = index.stored(&[first]).unwrap().pop().unwrap().unwrap();
+        assert_eq!(stored.embedding, vec![1.0, 0.0]);
+        assert_eq!(stored.secondary, Some(vec![0.0, 1.0]));
+        drop(index);
+        let reopened = open();
+        assert_eq!(
+            reopened.recall_secondary(&[1.0, 0.0], 1).unwrap()[0].topic,
+            second
+        );
     }
 }
 
