@@ -7,7 +7,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/legacy_schema.rs.in": "c815294086542340d998c346bfa2f3dc3dcddf27f82201746efd40a2df12fca3",
     "benchmarks/harnesses/restart-floor-2026-09-30/provenance.py.in": "573ed5b1bf840b5ab3bc8964aad1679795758d11c8cbebdb292a663e10ee8d02",
     "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
-    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "b579035f0076399d7172cc1c3f322138bb62300c0f44c93c5d808c09e03286a1",
+    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "c1eb17e20ae8a6436973649c0f3e250ec08c61cca62eb584e115f794cb3b38be",
     "benchmarks/results/index/restart-floor-2026-09-30/binaries.json": "54bb7087b7d8ad2059e4dc6379e13404c5f861ce1c001d5940bbfdf316dbd56f",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-candidate.log": "46d336d7e5744a4a82ecb1e0893f77eaa4595e2f61d2956e5649d8ca556f6949",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-main.log": "edce0e144c0d58a3e11ff3eb11c64b6754a69b431cd29f6336c39fa788ac6908",
@@ -21,6 +21,7 @@
     "benchmarks/results/index/restart-floor-2026-09-30/provenance.json": "6dc977d5bb6a84d75c3b7198005019ed36c7e6e0c2dfb880941428420473d887",
     "benchmarks/results/index/restart-floor-2026-09-30/raw.jsonl": "a2018bfb4f7eff6f893a30b3483df2293cd29c2b90d0b79dd34c22e532adb079",
     "benchmarks/results/index/restart-floor-2026-09-30/summary.json": "f2af9584033fcc9dbdcf687512c10479b712b76789ea5ed41edc8e72adcddb57",
-    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "a54fc0192ebdb094e1561bd8c7a88f92675793a88ab33b669cf2ef14271054bf"
+    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "a54fc0192ebdb094e1561bd8c7a88f92675793a88ab33b669cf2ef14271054bf",
+    "benchmarks/results/index/restart-floor-2026-09-30/post-trial-assets.json": "22028e54cf1bc2c5f0747e0522fd1068458cfa4033ed385b1200589934d07c98"
   }
 }

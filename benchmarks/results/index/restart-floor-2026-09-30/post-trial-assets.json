@@ -1,0 +1,27 @@
+{
+  "prehashed_source_tokenizer_onnx_assets_unchanged": [
+    "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx",
+    "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json",
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx",
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json",
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx",
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx"
+  ],
+  "prepared_external_weights_post_trial": [
+    {
+      "path": "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data",
+      "bytes": 874217472,
+      "sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "mtime_ns": 1790793669634082575,
+      "hash_scope": "post-trial identity; not independently hashed before timing"
+    },
+    {
+      "path": "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data",
+      "bytes": 872738832,
+      "sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "mtime_ns": 1790793000506673216,
+      "hash_scope": "post-trial identity; not independently hashed before timing"
+    }
+  ]
+}
