@@ -3242,3 +3242,18 @@ single inference in both implementations by at most 5.22e-8 (`speed`) or
 These are model-path and vector-identity checks, not a full retrieval-quality,
 latency, memory, or disk comparison. No provider is selected by an unmeasured
 performance claim.
+
+### 2026-09-30: fill model inputs without copying token metadata
+
+Static input preparation now fills only IDs, masks and optional token types;
+it no longer clones complete Encodings to make native padding and dummy rows.
+The differential input test preserves the previous tensors. A release observer
+on four cached-tokenizer cases measured 303–1,064 allocation/reallocation
+requests per batch becoming two, with requested bytes reduced 85.2%–90.6%.
+These are temporary input allocations, not model residency or process RSS.
+
+Three alternating scoring rounds over 60 fixed queries and 30 candidates each
+produce identical scores and physical batches. Candidate/before paired timing
+ratio is 1.016012, p=0.2275; this supports no stable rank-speed improvement.
+Keep the small allocation simplification without claiming faster whole search.
+[All rows, sources, resource scope and reproduction](../../benchmarks/results/inference/input-padding-2026-09-30/README.md).

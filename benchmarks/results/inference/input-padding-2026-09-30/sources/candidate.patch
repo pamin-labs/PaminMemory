@@ -1,0 +1,109 @@
+diff --git a/crates/pamin-index/src/encoder.rs b/crates/pamin-index/src/encoder.rs
+index c9b0a45..0dedb19 100644
+--- a/crates/pamin-index/src/encoder.rs
++++ b/crates/pamin-index/src/encoder.rs
+@@ -184,36 +184,20 @@ impl Encoder {
+         if logical_rows > rows || length > tokens {
+             return Err(failed(&"batch exceeds the static execution shape"));
+         }
+-        let mut fixed_encodings;
+-        let encodings = if (rows, tokens) != (logical_rows, length) {
+-            fixed_encodings = encodings.to_vec();
+-            for encoding in &mut fixed_encodings {
+-                encoding.pad(tokens, 1, 0, "<pad>", tokenizers::PaddingDirection::Right);
+-            }
+-            while fixed_encodings.len() < rows {
+-                fixed_encodings.push(fixed_encodings.last().expect("nonempty").clone());
+-            }
+-            &fixed_encodings
+-        } else {
+-            encodings
+-        };
+         let shape = [rows, tokens];
+-        let column = |field: fn(&Encoding) -> &[u32]| {
+-            let values: Vec<i64> = encodings
+-                .iter()
+-                .flat_map(|encoding| field(encoding).iter().map(|value| i64::from(*value)))
+-                .collect();
++        let column = |field: fn(&Encoding) -> &[u32], padding| {
++            let values = input_values(encodings, shape, field, padding);
+             Tensor::from_array((shape, values)).map_err(|error| failed(&error))
+         };
+ 
+         let mut feed = ort::inputs![
+-            "input_ids" => column(Encoding::get_ids)?,
+-            "attention_mask" => column(Encoding::get_attention_mask)?,
++            "input_ids" => column(Encoding::get_ids, 1)?,
++            "attention_mask" => column(Encoding::get_attention_mask, 0)?,
+         ];
+         if self.token_type_ids {
+             feed.push((
+                 "token_type_ids".into(),
+-                column(Encoding::get_type_ids)?.into(),
++                column(Encoding::get_type_ids, 0)?.into(),
+             ));
+         }
+         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+@@ -250,6 +234,23 @@ impl Encoder {
+     }
+ }
+ 
++/// Fill only the model inputs. Static CoreML rows duplicate the last logical
++/// row, as before, without cloning token text, offsets, or word mappings.
++fn input_values(
++    encodings: &[Encoding],
++    [rows, tokens]: [usize; 2],
++    field: fn(&Encoding) -> &[u32],
++    padding: i64,
++) -> Vec<i64> {
++    let mut values = Vec::with_capacity(rows * tokens);
++    for row in 0..rows {
++        let encoding = &encodings[row.min(encodings.len() - 1)];
++        values.extend(field(encoding).iter().copied().map(i64::from));
++        values.resize((row + 1) * tokens, padding);
++    }
++    values
++}
++
+ #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
+ fn coreml_buckets<T>(mut load: impl FnMut(usize, usize) -> Result<T>) -> Result<(T, T, T)> {
+     Ok((load(4, 128)?, load(4, 64)?, load(2, 256)?))
+@@ -282,6 +283,38 @@ fn pad(tokenizer: &Tokenizer, batch: &mut [Encoding]) -> Result<()> {
+ #[cfg(test)]
+ mod tests {
+ 
++    #[test]
++    fn tensor_padding_matches_full_encoding_padding() {
++        let tokenizer = crate::tokenizer::tests::fixture();
++        for (count, rows, tokens) in [(1, 4, 64), (3, 4, 128), (2, 2, 256), (4, 4, 8)] {
++            let mut logical = tokenizer
++                .encode_batch(vec![("memory", "memory memory"); count], true)
++                .unwrap();
++            pad(&tokenizer, &mut logical).unwrap();
++            let mut old = logical.clone();
++            for encoding in &mut old {
++                encoding.pad(tokens, 1, 0, "<pad>", tokenizers::PaddingDirection::Right);
++            }
++            while old.len() < rows {
++                old.push(old.last().unwrap().clone());
++            }
++            for (field, padding) in [
++                (Encoding::get_ids as fn(&Encoding) -> &[u32], 1),
++                (Encoding::get_attention_mask, 0),
++                (Encoding::get_type_ids, 0),
++            ] {
++                let expected: Vec<i64> = old
++                    .iter()
++                    .flat_map(|encoding| field(encoding).iter().copied().map(i64::from))
++                    .collect();
++                assert_eq!(
++                    input_values(&logical, [rows, tokens], field, padding),
++                    expected
++                );
++            }
++        }
++    }
++
+     #[test]
+     fn every_native_shape_must_load_before_accepting_the_accelerator() {
+         for rejected in [64, 128, 256] {
