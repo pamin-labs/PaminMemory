@@ -604,12 +604,17 @@ on the `speed` profile and is historical, not a paired comparison with this run.
 The raw run's complete code/device provenance is not yet archived, so this
 record is not a verified current headline measurement.
 
-A score depends on the query as well as the memory, so a resident server
-remembers the ones it has computed and a repeated search pays nothing for them:
-measured at 69.6 ms the first time and 0.0 ms the second, for the same ordering.
-Four thousand scores are kept, about a quarter of a megabyte, for as long as
-the server holds the reranking model: they go when it stops, or when it
-releases a model nothing has used for a while.
+The resident server caches logits for complete ordered batches within one
+loaded model and tokenizer. With the INT8 export, a pair's score can depend on
+its neighbours and padding, so the cache includes every query/memory pair in
+order, including duplicates, and both the logical and physical batch shapes.
+Changed contexts are scored again, so earlier searches do not change the
+result of scoring the same final candidate list. An identical batch avoids a
+model forward pass; repeated searches still pay for tokenization, hashing,
+batch planning, cache lookup and retrieval. The cache holds up to 4,096 logical
+score slots across complete batches and goes when the model is released or the
+server stops. The older pair-cache timings are historical, as recorded in the
+[ADR](adr/0001-tech-selection.md), and do not measure this implementation.
 
 The latencies are from four cores. Published figures for a reranker of this
 size are a few milliseconds per candidate rather than the ten measured here,

@@ -2114,7 +2114,9 @@ One figure elsewhere looks like a contradiction and is not. [measured.md](../mea
 
 **Exempting graph-reached candidates from the pass was measured and dropped.** The relational group scores lower through the shipped path than through fusion alone, and the mechanism is specific: such an answer is relevant because *another* memory mentions it, which a cross-encoder reading the query and that one memory cannot see. The engine already exempts candidates with lexical evidence, so exempting candidates with graph evidence on the same terms was the obvious rule, priced at the `fast` tier from one shipped run by replaying both. It recovered relational (+0.0259, 4 / 0, p = 0.12) and cost cross-lingual (−0.0108, 0 / 10, p = 0.0018): it moved the loss rather than removing it.
 
-A score depends on the query as well as the memory, so a resident process remembers the pairs it has computed: a repeated search measured 69.6 ms the first time and 0.0 ms the second, for the same ordering. Four thousand scores, about a quarter of a megabyte. It does nothing for a query never asked before, which is most of them; it is worth its quarter megabyte because agents retry, widen a limit, and ask again after writing. Without `pamin serve` there is no process to keep it in.
+The earlier pair cache reported 69.6 ms on the first pass and a rounded 0.0 ms on the repeat, for the same ordering, and was described as four thousand scores in about a quarter of a megabyte. Those are historical observations of that implementation, not timings or memory measurements of the current cache, and the rounded figure does not establish a zero-cost search.
+
+The current cache stores complete ordered batches' logits within one loaded model and tokenizer. The INT8 export quantizes activations across a batch, so a pair's score can depend on its neighbours and padding. Cache identity therefore includes every query/document pair in order, including duplicates, and the logical and physical batch shapes. A changed context is scored again; scoring the same final candidate list must produce the same result regardless of earlier searches. An identical batch avoids a model forward pass but still pays for tokenization, hashing, batch planning and lookup, plus retrieval. Capacity is 4,096 logical score slots across complete batches, rather than independently reusable pair scores. Releasing the model or stopping the resident server releases the cache. Widening a limit or writing a memory can change batch context and require new inference; reusing individual pairs from an earlier context is incorrect.
 
 **There is no compilation trick left in the runtime.** Batching was the lever inside it, and it has been pulled twice. Sorting candidates by length before batching and using batches of eight rather than sixteen took the same work from 191 ms to 151, because a batch is padded to its longest member. Grouping pairs by their real length in tokens, each pass within 512 padded tokens and four pairs, then took a whole default search at a depth of thirty to 0.81 of what chunks of eight cost, paired over every query of XQuAD-R, MIRACL and MuSiQue, because on four cores a pair also costs more the more tokens share its pass; no group's nDCG@10 moved significantly, which had to be measured rather than assumed, since the int8 export quantizes a batch's activations together and so scores a pair by its company. The rule it was chosen by and the tables are at `BATCH_TOKENS` in `crates/pamin-index/src/reranking.rs`. Against that, the export format is worth at most 1.45x on identical weights, fp16 is slower than fp32 on a CPU, and the session already runs every core at the highest graph optimization level. The measured 9.75 ms a pair is what twelve transformer layers on four cores cost.
 
@@ -2869,11 +2871,13 @@ figures**; what it still establishes is the shape, and it is not a baseline for
 anything in the five-tier table.
 
 Two of the arms need saying, because both are ways this measurement could
-have lied. The server remembers a query's vector and remembers each
-query-document score it has computed, so asking the same query twice measures
-a different thing from asking it once: a query the server has never seen costs
+have lied. At the time, the server remembered a query's vector and each
+query-document score it had computed, so asking the same query twice measured
+a different thing from asking it once: a query the server had never seen cost
 85 ms with reranking off and 310 ms with `fast`, and the same query asked
-again costs 16 ms either way. Every "unseen" row here is unseen by
+again cost 16 ms either way. These are historical measurements of the earlier
+pair cache; the current ordered-batch cache described above still tokenizes,
+plans and looks up batches on a repeat. Every "unseen" row here is unseen by
 construction -- disjoint halves of query sets drawn fresh from the corpus, no
 half reused across arms -- because the first attempt at this table reported
 16 ms for a cold query and was measuring its own warm-up. And the whole-CLI
