@@ -7,6 +7,26 @@ if sys.flags.optimize:raise SystemExit('Build guards require assertions; remove 
 
 TARGET='crates/pamin-engine/tests/scratch_restart_floor.rs'
 PRODUCTS={'pamin-core','pamin-store','pamin-index','pamin-engine'}
+TOOLCHAIN=Path('/workspace/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin')
+CONTROLLED_CARGO={'CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS'}
+def reject_overrides(parent):
+    unexpected=sorted(key for key in parent if
+        (key.startswith('CARGO_') and key not in CONTROLLED_CARGO) or
+        key.startswith(('RUSTC','RUSTDOC')) or key in {'RUSTFLAGS','RUSTUP_TOOLCHAIN'})
+    assert not unexpected, 'refuse inherited compiler/Cargo overrides: '+', '.join(unexpected)
+def build_environment(parent):
+    reject_overrides(parent)
+    tools={name:TOOLCHAIN.joinpath(name).resolve(strict=True) for name in ['cargo','rustc','rustdoc']}
+    env=dict(parent,RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo',
+             CARGO_TARGET_DIR='/workspace/PaminMemory/target',CARGO_BUILD_JOBS='4',
+             ORT_LIB_LOCATION='/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',ORT_PREFER_DYNAMIC_LINK='1',
+             RUSTC=str(tools['rustc']),RUSTDOC=str(tools['rustdoc']),
+             RUSTC_WRAPPER='',RUSTC_WORKSPACE_WRAPPER='',
+             CARGO_ENCODED_RUSTFLAGS='',CARGO_ENCODED_RUSTDOCFLAGS='')
+    env['PATH']=str(TOOLCHAIN)+os.pathsep+env.get('PATH','')
+    return env,tools
+def tool_identities(tools):
+    return {name:{'path':str(path),'bytes':path.stat().st_size,'sha256':digest(path)} for name,path in tools.items()}
 def digest(path):
     h=hashlib.sha256()
     with path.open('rb') as stream:
@@ -17,8 +37,20 @@ def git(checkout,*args):
 def inputs(checkout,commit,allowed):
     assert git(checkout,'rev-parse','HEAD').decode().strip()==commit
     assert not git(checkout,'status','--porcelain','--untracked-files=no'), 'tracked changes refused'
-    staged=git(checkout,'ls-files','--stage','-z').decode().split('\0')[:-1]
-    tracked={entry.split('\t',1)[1]:entry.split('\t',1)[0].split() for entry in staged}
+    assert not git(checkout,'diff','--cached','--name-only',commit), 'index differs from expected commit'
+    tree=[entry.split('\t',1) for entry in git(checkout,'ls-tree','-r','-z',commit).decode().split('\0')[:-1]]
+    tracked={name:[header.split()[0],header.split()[2]] for header,name in tree}
+    # Read immutable HEAD blobs in one batch. Status can hide worktree changes
+    # under assume-unchanged/skip-worktree; index contents are not the authority.
+    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=checkout,
+        input=('\n'.join(entry[1] for entry in tracked.values() if entry[0]!='160000')+'\n').encode())
+    offset=0;expected={}
+    for name,(mode,oid) in tracked.items():
+        if mode=='160000':continue
+        end=blobs.index(b'\n',offset);header=blobs[offset:end].split()
+        assert header[:2]==[oid.encode(),b'blob']
+        size=int(header[2]);content=blobs[end+1:end+1+size];offset=end+size+2
+        expected[name]={'bytes':size,'sha256':hashlib.sha256(content).hexdigest()}
     assert TARGET not in tracked, 'scratch target must remain untracked'
     extra=set()
     for options in [[],['--ignored']]:
@@ -35,11 +67,12 @@ def inputs(checkout,commit,allowed):
         if name in tracked and tracked[name][0]=='120000':
             assert path.is_symlink(), 'tracked symlink replaced'
             target=os.fsencode(os.readlink(path))
-            assert target==git(checkout,'cat-file','blob',tracked[name][1]), 'tracked link target differs from git blob'
+            assert {'bytes':len(target),'sha256':hashlib.sha256(target).hexdigest()}==expected[name], 'tracked link target differs from HEAD git blob'
             result[name]={'kind':'symlink','bytes':len(target),'sha256':hashlib.sha256(target).hexdigest(),'target':os.fsdecode(target)}
             continue
         assert path.is_file() and not path.is_symlink(), 'non-file/symlink source requires separate explicit audit'
         result[name]={'bytes':path.stat().st_size,'sha256':digest(path)}
+        if name in tracked:assert result[name]==expected[name], 'tracked regular file differs from HEAD git blob'
     assert 'Cargo.lock' in result and 'Cargo.toml' in result
     return result
 def fresh_artifacts(records,checkout):
@@ -52,6 +85,7 @@ def fresh_artifacts(records,checkout):
     assert len(tests)==1 and any(x.get('reason')=='build-finished' and x['success'] is True for x in records)
     return selected,Path(tests[0]['executable'])
 def main():
+    env,tools=build_environment(os.environ) # refuse overrides before copying/writing
     parser=argparse.ArgumentParser(description='New source-attested restart builds; never historical certification')
     parser.add_argument('--plan',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
@@ -64,32 +98,35 @@ def main():
     for arm in plan['arms'].values():
         assert arm['allowed_untracked']=={TARGET:plan['harness_sha256']}
         inputs(Path(arm['checkout']),arm['commit'],arm['allowed_untracked'])
-    env=dict(os.environ,RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo',
-             CARGO_TARGET_DIR='/workspace/PaminMemory/target',CARGO_BUILD_JOBS='4',
-             ORT_LIB_LOCATION='/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',ORT_PREFER_DYNAMIC_LINK='1')
-    env['PATH']='/workspace/.cargo/bin:'+env['PATH']
+    tool_before=tool_identities(tools)
+    rustc_version=subprocess.check_output([env['RUSTC'],'-Vv'],env=env,text=True)
+    rustdoc_version=subprocess.check_output([env['RUSTDOC'],'-V'],env=env,text=True)
+    cargo_version=subprocess.check_output([str(tools['cargo']),'-V'],env=env,text=True)
+    assert rustc_version.startswith('rustc 1.98.1 ') and rustdoc_version.startswith('rustdoc 1.98.1 ') and cargo_version.startswith('cargo 1.98.1 ')
     args.output.mkdir()
     audit={'recorded_utc':datetime.now(timezone.utc).isoformat(),
            'scope':'prospective build-time inputs/outputs only; no historical binary binding',
            'plan_sha256':digest(args.plan),'harness_sha256':digest(harness),
-           'toolchain':subprocess.check_output(['rustc','+1.98.1','-Vv'],env=env,text=True),
-           'cargo':subprocess.check_output(['cargo','+1.98.1','-V'],env=env,text=True),
-           'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
+           'toolchain':rustc_version,'rustdoc':rustdoc_version,'cargo':cargo_version,'tools_before':tool_before,
+           'inherited_compiler_cargo_overrides':{},
+           'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','RUSTC','RUSTDOC','RUSTFLAGS','RUSTDOCFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_ENCODED_RUSTDOCFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
     for name in ['main','predecessor','candidate']:
         arm=plan['arms'][name];checkout=Path(arm['checkout'])
         shutil.copyfile(harness,checkout/TARGET)
         before=inputs(checkout,arm['commit'],arm['allowed_untracked'])
-        command=['cargo','+1.98.1','test','-p','pamin-engine','--test','scratch_restart_floor','--no-run','--release','--offline','--locked','--message-format=json']
+        assert tool_identities(tools)==tool_before
+        command=[str(tools['cargo']),'test','-p','pamin-engine','--test','scratch_restart_floor','--no-run','--release','--offline','--locked','--message-format=json']
         outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
         with outpath.open('w') as out,errpath.open('w') as err:
-            subprocess.run(['cargo','+1.98.1','clean','--release',*[item for product in sorted(PRODUCTS) for item in ['-p',product]]],cwd=checkout,env=env,stdout=err,stderr=err,check=True)
+            subprocess.run([str(tools['cargo']),'clean','--release',*[item for product in sorted(PRODUCTS) for item in ['-p',product]]],cwd=checkout,env=env,stdout=err,stderr=err,check=True)
             subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
         after=inputs(checkout,arm['commit'],arm['allowed_untracked']);assert before==after
+        tool_after=tool_identities(tools);assert tool_after==tool_before
         selected,executable=fresh_artifacts([json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')],checkout)
         frozen=args.output/name;shutil.copy2(executable,frozen)
         assert digest(frozen)==digest(executable)
         audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'inputs_before':before,'inputs_after':after,
                             'command':command,'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
-                            'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size}
+                            'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size,'tools_after':tool_after}
         (args.output/'build-attestation.json').write_text(json.dumps(audit,indent=2)+'\n')
 if __name__=='__main__':main()
