@@ -1,0 +1,89 @@
+"""Read-only semantic evidence guards; no historical runner mutation or inference."""
+import hashlib,json,statistics
+from pathlib import PurePosixPath
+
+def binary_binding(binaries,provenance,expected_commits):
+    assert len(binaries)==len(expected_commits), 'incomplete binary arm inventory'
+    assert len({b['arm'] for b in binaries})==len(binaries), 'duplicate binary arm'
+    frozen=provenance['frozen_arms']
+    assert len(frozen)==len(expected_commits) and len({b['arm'] for b in frozen})==len(frozen), 'duplicate/incomplete pretrial inventory'
+    actual={b['arm']:b for b in binaries};pre={b['arm']:b for b in frozen}
+    assert set(actual)==set(pre)==set(expected_commits), 'binary arm set'
+    assert len({b['binary'] for b in binaries})==len(binaries), 'duplicate executable path'
+    for arm,commit in expected_commits.items():
+        b,p=actual[arm],pre[arm]
+        assert {k:b[k] for k in ['arm','commit','binary','sha256','current_pretrial_hash']}==p, 'arm-keyed pretrial executable differs'
+        assert b['commit']==commit and b['current_pretrial_hash']['path']==b['binary'], 'arm/commit/path binding'
+        assert b['sha256']==b['current_pretrial_hash']['sha256']==b['posttrial_hash']['sha256'], 'executable digest drift'
+        assert b['current_pretrial_hash']['bytes']==b['posttrial_hash']['bytes']>0 and b['posttrial_hash']['path']==b['binary'], 'executable size/path drift'
+        assert b['posttrial_hash']['recorded_utc']
+
+def runner_binding(path,provenance):
+    b=path.read_bytes();record=provenance['runner']
+    assert len(b)==record['bytes'] and hashlib.sha256(b).hexdigest()==record['sha256'], 'historical runner bytes/digest differ'
+
+def provider_binding(provider,role,provenance,bindings):
+    record=bindings['roles'][role]
+    expected_source={'embedding':('model_quantized.onnx','2b34e84df040034d4b9eabb62383a87c18955822','gpahal--bge-m3-onnx-int8--model_quantized.onnx.source'),'reranker':('model_int8.onnx','6f5ff65298512715a1e669753bc754d2bc8f367b','onnx-community--bge-reranker-v2-m3-ONNX--onnx--model_int8.onnx.source')}
+    name,revision,metadata_name=expected_source[role]
+    assert PurePosixPath(record['source_graph']).name==name and record['revision']==revision and PurePosixPath(record['source_metadata']['path']).name==metadata_name, 'role/source artifact differs'
+    path=provider['model_graph'];prefix='<SCRATCH>/results-disk/'
+    assert path.startswith(prefix), 'provider graph outside historical process copy'
+    rest=path[len(prefix):].split('/',1)
+    assert len(rest)==2 and rest[0] in {f'{rep}-{arm}' for rep in range(3) for arm in ['main','predecessor','candidate']}, 'unknown provider process'
+    assert rest[1].startswith('models/prepared/'), 'model symlink path differs'
+    normalized=provenance['seed_models_symlink_target']+'/'+rest[1].removeprefix('models/')
+    assert normalized==record['prepared_graph'], 'actual provider role/graph differs'
+    assert provider['assigned_nodes']=={'CPUExecutionProvider':record['cpu_nodes']}, 'actual provider node count differs'
+    inventory={e['path']:e for e in provenance['prepared_graphs_and_external_weights']}
+    assert record['prepared_graph'] in inventory and record['external_data'] in inventory, 'prepared graph/external data absent'
+    assert PurePosixPath(record['prepared_graph']).parent==PurePosixPath(record['external_data']).parent, 'external data directory differs'
+    metadata=record['source_metadata'];b=metadata['text'].encode()
+    observed=next(e for e in provenance['prepared_source_metadata'] if e['path']==metadata['path'])
+    assert len(b)==observed['bytes'] and hashlib.sha256(b).hexdigest()==observed['sha256'], 'captured metadata not bound to historical inventory'
+    lines=metadata['text'].splitlines();assert len(lines)==4 and lines[3].startswith('sha256 ')
+    source=next(e for e in provenance['source_assets'] if e['path']==record['source_graph'])
+    assert PurePosixPath(source['path']).name==lines[0] and source['bytes']==int(lines[1]) and source['sha256']==lines[3].removeprefix('sha256 '), 'prepared/source identity differs'
+    assert int(lines[2])>0 and '/snapshots/'+record['revision']+'/' in source['path'], 'source revision/mtime identity differs'
+
+def timing_review(summary,raw):
+    timing_keys=['open_ms','write_ms','durability_flush_ms','maintenance_ms','maintenance_cpu_s','first_search_ms','warm_p50_ms','warm_p95_ms','episode']
+    result={}
+    for reference in ['predecessor','main']:
+        result[reference]={}
+        for key in timing_keys:
+            if key=='episode':
+                values=lambda arm:[r['wall_seconds'] for r in sorted((r for r in raw if r['arm']==arm and r['phase']=='process_total'),key=lambda r:r['repetition'])]
+            else:
+                values=lambda arm:[p[key] for p in sorted(summary['arms'][arm]['processes'],key=lambda p:p['repetition'])]
+            a,b=values(reference),values('candidate')
+            spread=lambda xs:(max(xs)-min(xs))/statistics.median(xs) if statistics.median(xs) else (0 if max(xs)==min(xs) else None)
+            sa,sb=spread(a),spread(b);d=[y-x for x,y in zip(a,b)]
+            reasons=[]
+            if sa is None or sa>.10:reasons.append('reference spread >10% of median')
+            if sb is None or sb>.10:reasons.append('candidate spread >10% of median')
+            if min(d)<0<max(d):reasons.append('paired delta sign reversal')
+            result[reference][key]={'before_process_values':a,'after_process_values':b,'reference_spread_fraction':sa,'candidate_spread_fraction':sb,'paired_deltas':d,'withhold_comparison':bool(reasons),'reasons':reasons}
+    # Also retain a screen for each actual timed phase/query row, including
+    # warmups and newly written-memory search that have no published table row.
+    for reference in ['predecessor','main']:
+        groups={}
+        for r in raw:
+            if r['arm'] not in [reference,'candidate'] or r.get('wall_ms') is None:continue
+            key=r['phase']+('/query-'+str(r['extra']['query_document']) if 'query_document' in r.get('extra',{}) else '')
+            groups.setdefault(key,{}).setdefault(r['arm'],[]).append(r)
+        screens={}
+        for key,arms in sorted(groups.items()):
+            a=sorted(arms[reference],key=lambda r:r['repetition']);b=sorted(arms['candidate'],key=lambda r:r['repetition'])
+            assert len(a)==len(b)==3 and [r['repetition'] for r in a]==[0,1,2], 'raw timing replica grouping differs'
+            for metric in ['wall_ms','cpu_user_seconds','cpu_system_seconds']:
+                av=[r[metric] for r in a];bv=[r[metric] for r in b]
+                if any(v is None for v in av+bv):continue
+                spread=lambda xs:(max(xs)-min(xs))/statistics.median(xs) if statistics.median(xs) else (0 if max(xs)==min(xs) else None)
+                sa,sb=spread(av),spread(bv);d=[y-x for x,y in zip(av,bv)];reasons=[]
+                if sa is None or sa>.10:reasons.append('reference spread >10% of median')
+                if sb is None or sb>.10:reasons.append('candidate spread >10% of median')
+                if min(d)<0<max(d):reasons.append('paired delta sign reversal')
+                screens[key+'/'+metric]={'before_process_values':av,'after_process_values':bv,'reference_spread_fraction':sa,'candidate_spread_fraction':sb,'paired_deltas':d,'withhold_comparison':bool(reasons),'reasons':reasons}
+        result[reference]['raw_call_timing']=screens
+    return result
