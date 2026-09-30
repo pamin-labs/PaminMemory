@@ -23,6 +23,36 @@ def provider_records(log, arm, expected, assets):
  assert len(records)==2 and records==expected, 'raw provider records differ from summary/assets'
  return records
 
+def verify_rebuild(rebuild, prior, sources, binaries, provenance):
+ assert rebuild['both_reproduced_byte_for_byte'] is True
+ assert rebuild['source_revision']==sources['revision']==provenance['source_revision']
+ assert rebuild['inherited_pamin_tuning']=={}, 'current rebuild environment only'
+ assert {x['sha256'] for x in rebuild['libraries'].values()}=={x['sha256'] for x in provenance['runtime_libraries']}
+ for arm in ['baseline','pooled']:
+  record=rebuild['arms'][arm]
+  historical=next(x for x in binaries if x['arm']==arm)
+  assert record['byte_for_byte_identical'] is True
+  assert record['historical_binary_sha256']==record['historical_binary_post_rebuild_sha256']==record['rebuilt_binary_sha256']==historical['sha256']
+  assert record['historical_binary_bytes']==record['rebuilt_binary_bytes']==historical['bytes']
+  assert record['inputs_before']==record['inputs_after']
+  expected={'${EXPERIMENT}/variants/'+arm+'/'+path:sha for path,sha in prior['arms'][arm]['variant_files'].items()}
+  for name,sha in [('Cargo.toml',prior['arms'][arm]['helper_manifest_sha256']),('Cargo.lock',prior['arms'][arm]['helper_lockfile_sha256']),('src/main.rs',prior['arms'][arm]['helper_source_sha256'])]:
+   expected['${EXPERIMENT}/helpers/'+arm+'/'+name]=sha
+  assert len(expected)==len(record['inputs_before'])==407
+  assert {p:x['sha256'] for p,x in record['inputs_before'].items()}==expected
+  required={'pamin-core','pamin-store','pamin-index','pamin-engine','identifier-diagnostic'}
+  artifacts=record['compiler_artifacts']
+  assert len(artifacts)==5 and {x['target']['name'].replace('_','-') for x in artifacts}==required
+  for artifact in artifacts:
+   name=artifact['target']['name'].replace('_','-')
+   manifest='${EXPERIMENT}/helpers/'+arm+'/Cargo.toml' if name=='identifier-diagnostic' else '${EXPERIMENT}/variants/'+arm+'/crates/'+name+'/Cargo.toml'
+   assert artifact['manifest_path']==manifest and artifact['fresh'] is False
+  command=record['build_command']
+  assert all(flag in command for flag in ['+1.98.1','--release','--offline','--locked','--message-format=json'])
+  assert command[-1]=='${EXPERIMENT}/helpers/'+arm+'/Cargo.toml'
+  assert rebuild['effective_build_environment']['CARGO_TARGET_DIR']=='${BUILD_TARGET}'
+ return True
+
 root=Path(__file__).resolve().parent
 repo=root.parents[3]
 manifest=json.loads((root/'manifest.json').read_text())
@@ -50,6 +80,17 @@ for arm in ['baseline','pooled']:
 before_files=audit['arms']['baseline']['variant_files'];after_files=audit['arms']['pooled']['variant_files']
 assert before_files.keys()==after_files.keys()
 assert [p for p in before_files if before_files[p]!=after_files[p]]==['crates/pamin-engine/src/engine.rs']
+rebuild=json.loads(gzip.decompress((root/'rebuild-audit.json.gz').read_bytes()))
+for arm,record in rebuild['arms'].items():
+ for name,retained in record['published_logs'].items():
+  data=gzip.decompress((root/retained['file']).read_bytes())
+  assert hashlib.sha256(data).hexdigest()==retained['sanitized_sha256']
+  assert retained['original_sha256']==record['retained_outputs']['${REBUILD_AUDIT}/'+arm+'-'+name]['sha256']
+ compiler=[json.loads(line) for line in gzip.decompress((root/record['published_logs']['build.jsonl']['file']).read_bytes()).decode().splitlines() if line.startswith('{')]
+ assert any(r.get('reason')=='build-finished' and r.get('success') is True for r in compiler)
+ fresh=[r for r in compiler if r.get('reason')=='compiler-artifact' and r['target']['name'].replace('_','-') in {'pamin-core','pamin-store','pamin-index','pamin-engine','identifier-diagnostic'}]
+ assert fresh==record['compiler_artifacts']
+verify_rebuild(rebuild,audit,sources,json.loads((root/'binaries.json').read_text()),json.loads((root/'provenance.json').read_text()))
 arms={}
 for arm in ['baseline','pooled']:
  text=gzip.decompress((root/f'{arm}.jsonl.gz').read_bytes()).decode()
@@ -106,4 +147,4 @@ for name,reciprocal in [('Known-target recall@10',False),('Known-target MRR@10',
  assert metrics[name]=={'before':a,'after':b,'absolute_difference':b-a,'percentage_change':100*(b-a)/a}
 assert sum(r['target_entered_reranker'] for r in arms['baseline'])==21
 assert all(r['target_entered_reranker'] for r in arms['pooled'])
-print('Verified 48 actual Engine traces, same fused candidates, 30 offered candidates/search, raw providers and recomputed diagnostic metrics; historical build binding/tuning remain unverified.')
+print('Verified 48 actual Engine traces, same fused candidates, 30 offered candidates/search, raw providers and recomputed diagnostic metrics; retrospective identical rebuild binding checked; historical tuning remains unverified.')
