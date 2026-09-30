@@ -54,3 +54,17 @@ python3 benchmarks/results/inference/local-closeout-2026-09-30/verify.py --mirac
 The manifest stores byte lengths/SHA256 for docs.jsonl, topics.tsv and qrels.tsv, and the measured order of all 482 query IDs and modes 0/1/2. These are post-run hashes of retained cache inputs, not claimed pre-run attestations. A future resolve/main change must fail the hash check; do not accept mere count equality.
 
 `fp64/sources/measured-experiment.patch` is the exact historical test source. `experiment.patch` adds guarded rerun assertions: positive offered pairs and zero new reranker scores for modes 1/2. `fp64.py` also checks zero newly scored pairs and unchanged offered count in every retained comparison. Reference mode 0 is allowed to reuse a prior identical query; it is not used as an uncached inference timing arm.
+
+## Fresh backend outputs
+
+Fresh runs write raw files in a new RUN_ROOT. Summarize them directly, without copying over the retained archive or changing its manifest:
+
+```sh
+python3 benchmarks/results/inference/local-closeout-2026-09-30/summarize.py --run-root "$RUN_ROOT" > "$RUN_ROOT/summary.json"
+```
+
+This reads runner-produced JSON, log and resource files, enforces the same row/cache/provider checks and uses the same aggregation code as the archived path. The output is a new run's backend report, not a replacement for retained historical FP64/profiling evidence.
+
+CoreML compile-cache warmth was neither recorded nor controlled in the historical runs. Whole-process wall/CPU/RSS values are observed magnitudes only; paired resource deltas are N/A/incomparable. The rerun template currently has the same limitation. Do not infer cold-start savings from these process totals.
+
+The guarded MIRACL rerun patch opens only the accuracy-profile project. Missing or incomplete accuracy data fails the premise even if a complete speed index is available. The separately retained measured patch preserves the historical source; the verifier confirms every measured row used accuracy.

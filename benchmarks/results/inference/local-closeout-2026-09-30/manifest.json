@@ -533,8 +533,8 @@
       "bytes": 2584
     },
     "summarize.py": {
-      "sha256": "2d775d5fdc985da6c4349ce02b7fa4480717eef4f4326071548f9fb7b0e9474f",
-      "bytes": 3377
+      "sha256": "28ae62c4a7253c354fa3d9534ee447826b0ad266cbf30fbd71d69ea58328a0f3",
+      "bytes": 3869
     },
     "verify.py": {
       "sha256": "b8e8bf7165a2e2bf286bb11caff1d22306d07323df654fff6cc3813607353c42",
@@ -561,8 +561,8 @@
       "bytes": 693
     },
     "fp64/sources/experiment.patch": {
-      "sha256": "becee5ccce7b4219ba98794709613c50bdf52317925b29b67d43a55ff3a35b0a",
-      "bytes": 13124
+      "sha256": "46c289bb4bbd531bb254714d727ffceba79da131c7897d983535622f7efad012",
+      "bytes": 13097
     },
     "fp64/sources/50k.rs": {
       "sha256": "88b04fdc4a34fc805e56e1b61213e7a90a67147da900013e82bf8dd94dd6b246",
@@ -1124,7 +1124,8 @@
           1,
           2
         ]
-      }
+      },
+      "rerun_profile_policy": "accuracy only; fail rather than substitute speed"
     },
     "scope": "same ANN pools asserted during execution; shared embeddings and reranker scores to isolate vector math; no comparative inference timing claim"
   },
@@ -1135,5 +1136,25 @@
     "design": "three deterministic rotations, not randomized",
     "test": "all 8 paired process-round log-time sign flips, four contrasts",
     "interpretation": "descriptive/diagnostic; old query-level p=0.0002 withdrawn"
+  },
+  "coreml_cache_state": {
+    "accurate-all-0": "not recorded/controlled; process costs incomparable",
+    "accurate-all-1": "not recorded/controlled; process costs incomparable",
+    "accurate-all-2": "not recorded/controlled; process costs incomparable",
+    "accurate-gpu-0": "not recorded/controlled; process costs incomparable",
+    "accurate-gpu-1": "not recorded/controlled; process costs incomparable",
+    "accurate-gpu-2": "not recorded/controlled; process costs incomparable",
+    "accurate-cpu-0": "CoreML not requested; cross-arm process costs still incomparable",
+    "accurate-cpu-1": "CoreML not requested; cross-arm process costs still incomparable",
+    "accurate-cpu-2": "CoreML not requested; cross-arm process costs still incomparable",
+    "fast-all-0": "not recorded/controlled; process costs incomparable",
+    "fast-all-1": "not recorded/controlled; process costs incomparable",
+    "fast-all-2": "not recorded/controlled; process costs incomparable",
+    "fast-gpu-0": "not recorded/controlled; process costs incomparable",
+    "fast-gpu-1": "not recorded/controlled; process costs incomparable",
+    "fast-gpu-2": "not recorded/controlled; process costs incomparable",
+    "fast-cpu-0": "CoreML not requested; cross-arm process costs still incomparable",
+    "fast-cpu-1": "CoreML not requested; cross-arm process costs still incomparable",
+    "fast-cpu-2": "CoreML not requested; cross-arm process costs still incomparable"
   }
 }
