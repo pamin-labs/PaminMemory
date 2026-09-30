@@ -228,6 +228,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokenizers::Encoding;
 
 use crate::encoder::Encoder;
@@ -320,7 +321,7 @@ fn tuned(name: &str, fallback: usize) -> usize {
 /// pass, so chunks of eight lost twice: to padding where short and long pairs
 /// met, and to size where every pair was long -- MuSiQue's graph candidates,
 /// which carry their seed's text, filled eight-pair passes with 256-token
-/// rows. So every unscored pair is tokenized once, sorted by its real length
+/// rows. So every offered pair is tokenized once, sorted by its real length
 /// and then its position, and each pass takes the next pair while the pass
 /// stays within this many padded tokens.
 ///
@@ -516,79 +517,158 @@ impl Rerank {
     }
 }
 
-/// How many scores are remembered.
+/// How many logical pair scores are remembered across complete batches.
 ///
-/// A score is a query *and* a document, so this helps when a query comes round
-/// again -- which is what an agent does: it retries, it widens a limit, it asks
-/// the same thing again after writing something. It cannot help a query never
-/// asked before, and nothing about a document alone can be remembered, because
-/// a cross-encoder reads the document with the query and that is the whole of
-/// why it is worth running.
-///
-/// Four thousand entries is about a quarter of a megabyte, and the cache
-/// belongs to the loaded model, so it lasts as long as the server holds that
-/// model.
+/// The cache belongs to one loaded model. A repeated list can reuse its
+/// batches, while a changed neighbour or padded shape must be scored again:
+/// this model's dynamic int8 quantization is not pair-independent.
 const REMEMBERED_SCORES: usize = 4096;
 
-/// Scores already computed, oldest first.
-///
-/// Keyed by a 64-bit hash of the query and the document rather than by either:
-/// holding the text would cost more than the model saves, and the pair is what
-/// identifies a score. A collision returns one candidate's score for another,
-/// which misorders a result rather than breaking one, and at this size the
-/// chance of one is around a trillion to one per lookup.
+type PairKey = [u8; 32];
+
+fn pair_key(query: &str, document: &str) -> PairKey {
+    let mut hash = Sha256::new();
+    for text in [query, document] {
+        hash.update((text.len() as u64).to_le_bytes());
+        hash.update(text.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+/// Complete ordered batch identity, within the immutable loaded model.
+/// No document text or token encodings are kept after a rank call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BatchKey([u8; 32]);
+
+impl BatchKey {
+    fn of(pairs: &[PairKey], logical: (usize, usize), physical: (usize, usize)) -> Self {
+        let mut hash = Sha256::new();
+        for value in [logical.0, logical.1, physical.0, physical.1] {
+            hash.update((value as u64).to_le_bytes());
+        }
+        for pair in pairs {
+            hash.update(pair);
+        }
+        Self(hash.finalize().into())
+    }
+}
+
+/// Scores already computed, oldest complete batch first. Capacity counts
+/// logical score slots rather than batch entries. Hashes include duplicates
+/// and row order, because both can change the model's activation range.
 #[derive(Default)]
 struct Scores {
-    known: std::collections::HashMap<u64, f32>,
-    order: std::collections::VecDeque<u64>,
-    /// Lookups that found a score, and lookups that did not.
-    ///
-    /// Counted because the ADR makes them the evidence for a decision it has
-    /// deferred: whether precomputing part of each document's representation
-    /// at index time is worth its storage depends on the hot set being small,
-    /// and this ratio is what says whether it is. Before this the only
-    /// accessor reported occupancy, which says how much has been stored and
-    /// nothing about how often it is read.
+    known: std::collections::HashMap<BatchKey, Vec<f32>>,
+    order: std::collections::VecDeque<BatchKey>,
+    remembered: usize,
     hits: u64,
     misses: u64,
 }
 
 impl Scores {
-    fn key(query: &str, document: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        query.hash(&mut hasher);
-        // Separated, so that a query ending where a document begins cannot
-        // collide with the other split of the same characters.
-        0u8.hash(&mut hasher);
-        document.hash(&mut hasher);
-        hasher.finish()
+    fn get(&self, key: BatchKey) -> Option<&[f32]> {
+        self.known.get(&key).map(Vec::as_slice)
     }
 
-    fn get(&mut self, key: u64) -> Option<f32> {
-        let found = self.known.get(&key).copied();
-        match found {
-            Some(_) => self.hits += 1,
-            None => self.misses += 1,
-        }
-        found
-    }
-
-    /// Remembers a score, forgetting the oldest once full.
-    ///
-    /// Insertion order rather than use order. Keeping a true LRU means writing
-    /// to the queue on every hit, and what this protects is milliseconds of
-    /// inference; a query asked twice is asked twice close together.
-    fn put(&mut self, key: u64, score: f32) {
-        if self.known.insert(key, score).is_some() {
+    /// Whole-batch FIFO. An oversized batch neither enters the cache nor
+    /// purges entries it could not coexist with even in an empty cache.
+    fn put(&mut self, key: BatchKey, values: Vec<f32>) {
+        if values.len() > REMEMBERED_SCORES {
             return;
         }
-        self.order.push_back(key);
-        while self.order.len() > REMEMBERED_SCORES {
-            if let Some(oldest) = self.order.pop_front() {
-                self.known.remove(&oldest);
-            }
+        if let Some(previous) = self.known.get_mut(&key) {
+            debug_assert_eq!(previous.len(), values.len());
+            *previous = values;
+            return;
         }
+        while self.remembered + values.len() > REMEMBERED_SCORES {
+            let oldest = self.order.pop_front().expect("nonempty score cache");
+            self.remembered -= self.known.remove(&oldest).expect("queued batch").len();
+        }
+        self.remembered += values.len();
+        self.known.insert(key, values);
+        self.order.push_back(key);
+    }
+
+    /// Consult only fully planned batches. Nothing is committed until every
+    /// missed batch succeeds, so a later model failure cannot leave partial
+    /// scores, cache entries or lifetime counters behind.
+    fn score(
+        &self,
+        planned: Vec<Batch>,
+        keys: &[PairKey],
+        characters: impl Fn(usize) -> usize,
+        mut forward: impl FnMut(Vec<Encoding>) -> Result<(Vec<f32>, u64)>,
+    ) -> Result<Attempt> {
+        let mut attempt = Attempt {
+            values: vec![f32::MIN; keys.len()],
+            ..Attempt::default()
+        };
+        for batch in planned {
+            let count = batch.positions.len();
+            let identities: Vec<_> = batch.positions.iter().map(|at| keys[*at]).collect();
+            let key = BatchKey::of(&identities, (count, batch.longest()), batch.shape);
+            if let Some(values) = self.get(key) {
+                attempt.hits += count as u64;
+                for (position, value) in batch.positions.iter().zip(values) {
+                    attempt.values[*position] = *value;
+                }
+                continue;
+            }
+            attempt.misses += count as u64;
+            attempt.work.pairs += count as u64;
+            attempt.work.tokens += batch.encodings.iter().map(|e| e.len() as u64).sum::<u64>();
+            attempt.work.padded_tokens += (batch.shape.0 * batch.shape.1) as u64;
+            attempt.work.batches += 1;
+            for position in &batch.positions {
+                let length = characters(*position);
+                attempt.lengths.total += length as u64;
+                attempt.lengths.longest = attempt.lengths.longest.max(length);
+            }
+            let (values, forward_us) = forward(batch.encodings)?;
+            attempt.work.forward_us += forward_us;
+            if values.len() != count {
+                return Err(IndexError::Engine(
+                    "reranker returned the wrong number of scores".into(),
+                ));
+            }
+            for (position, value) in batch.positions.iter().zip(&values) {
+                attempt.values[*position] = *value;
+            }
+            attempt.pending.push((key, values));
+        }
+        Ok(attempt)
+    }
+}
+
+#[derive(Default)]
+struct Attempt {
+    values: Vec<f32>,
+    pending: Vec<(BatchKey, Vec<f32>)>,
+    hits: u64,
+    misses: u64,
+    work: Work,
+    lengths: Lengths,
+}
+
+impl Attempt {
+    fn commit(
+        self,
+        scores: &mut Scores,
+        work: &mut Work,
+        lengths: &mut Lengths,
+        encode_us: u64,
+    ) -> Vec<f32> {
+        for (key, values) in self.pending {
+            scores.put(key, values);
+        }
+        scores.hits += self.hits;
+        scores.misses += self.misses;
+        work.add(self.work);
+        work.encode_us += encode_us;
+        lengths.total += self.lengths.total;
+        lengths.longest = lengths.longest.max(self.lengths.longest);
+        self.values
     }
 }
 
@@ -636,22 +716,13 @@ struct Work {
 }
 
 impl Work {
-    /// Account for a rerank attempt only once all of its scores are usable.
-    fn commit(
-        &mut self,
-        pairs: usize,
-        tokens: u64,
-        encode_us: u64,
-        result: Result<(Vec<f32>, Self)>,
-    ) -> Result<Vec<f32>> {
-        let (scores, completed) = result?;
-        self.pairs += pairs as u64;
-        self.tokens += tokens;
-        self.encode_us += encode_us;
+    fn add(&mut self, completed: Self) {
+        self.pairs += completed.pairs;
+        self.tokens += completed.tokens;
         self.padded_tokens += completed.padded_tokens;
         self.batches += completed.batches;
+        self.encode_us += completed.encode_us;
         self.forward_us += completed.forward_us;
-        Ok(scores)
     }
 }
 
@@ -684,7 +755,7 @@ pub struct Reranked {
     pub maximum_tokens: usize,
     /// Scores held in the cache.
     pub remembered: usize,
-    /// Candidates handed to [`Reranker::rank`], cached or not.
+    /// Candidates in successfully completed [`Reranker::rank`] calls, cached or not.
     pub offered: u64,
     /// Candidates whose uncached model score completed successfully.
     pub scored: u64,
@@ -698,7 +769,8 @@ pub struct Reranked {
     pub padded_tokens: u64,
     /// Model batches run for uncached pairs.
     pub batches: u64,
-    /// Time spent encoding uncached pairs, in microseconds.
+    /// Time spent encoding all offered pairs in successful calls, in microseconds.
+    /// Cached batches still need tokenization to establish their exact context.
     pub encode_us: u64,
     /// Time spent padding and running those batches, in microseconds.
     pub forward_us: u64,
@@ -827,61 +899,45 @@ impl Reranker {
             return Ok(Vec::new());
         }
 
-        let keys: Vec<u64> = documents
+        let keys: Vec<_> = documents
             .iter()
-            .map(|document| Scores::key(query, document))
+            .map(|document| pair_key(query, document))
             .collect();
-        let mut scores: Vec<Option<f32>> = keys
-            .iter()
-            .map(|key| self.scores.get(*key))
-            .collect::<Vec<_>>();
-
-        // Only what has not been scored before goes through the model,
-        // tokenized once here so that `score` can group the pairs by their
-        // real length in tokens. See `BATCH_TOKENS` for why that grouping is
-        // not score-neutral.
-        let unscored: Vec<usize> = (0..documents.len())
-            .filter(|position| scores[*position].is_none())
-            .collect();
-
-        if !unscored.is_empty() {
-            let mut characters = 0;
-            let mut longest = 0;
-            for position in &unscored {
-                let length = documents[*position].chars().count();
-                characters += length as u64;
-                longest = longest.max(length);
-            }
-            let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
-            let pairs: Vec<(&str, &str)> = unscored
-                .iter()
-                .map(|position| (query, documents[*position]))
-                .collect();
-            let encoding = Instant::now();
-            let encodings = self.model.encode(pairs).map_err(reranking)?;
-            let encode_us = encoding.elapsed().as_micros() as u64;
-            let tokens = encodings
-                .iter()
-                .map(|encoding| encoding.len() as u64)
-                .sum::<u64>();
-            let attempt = score(&mut self.model, encodings, batch_tokens(), batch());
-            let scored = self
-                .work
-                .commit(unscored.len(), tokens, encode_us, attempt)
-                .map_err(reranking)?;
-            self.lengths.total += characters;
-            self.lengths.longest = self.lengths.longest.max(longest);
-            for (position, score) in unscored.iter().zip(scored) {
-                scores[*position] = Some(score);
-                self.scores.put(keys[*position], score);
-            }
-        }
+        // Tokenize every offered pair before lookup. Filtering hits first
+        // changes the missed pairs' batch context and therefore their logits.
+        let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
+        let start = Instant::now();
+        let encodings = self
+            .model
+            .encode(
+                documents
+                    .iter()
+                    .map(|document| (query, *document))
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(reranking)?;
+        let encode_us = start.elapsed().as_micros() as u64;
+        let planned = model_batches(&self.model, encodings, batch_tokens(), batch());
+        let attempt = self
+            .scores
+            .score(
+                planned,
+                &keys,
+                |at| documents[at].chars().count(),
+                |batch| forward(&mut self.model, batch),
+            )
+            .map_err(reranking)?;
+        let scores = attempt.commit(
+            &mut self.scores,
+            &mut self.work,
+            &mut self.lengths,
+            encode_us,
+        );
 
         let mut ordered: Vec<usize> = (0..documents.len()).collect();
         ordered.sort_by(|left, right| {
             scores[*right]
-                .unwrap_or(f32::MIN)
-                .total_cmp(&scores[*left].unwrap_or(f32::MIN))
+                .total_cmp(&scores[*left])
                 // A stable order when two candidates score alike, so one
                 // shortlist ranks the same way twice.
                 .then_with(|| left.cmp(right))
@@ -890,12 +946,7 @@ impl Reranker {
             .into_iter()
             .map(|position| Ranked {
                 position,
-                // `None` is unreachable: every position is either a cache hit
-                // or went through the model above. Carried as the same
-                // sentinel the sort used rather than unwrapped, so a future
-                // early return cannot turn a missing score into a panic in a
-                // search.
-                score: scores[position].unwrap_or(f32::MIN),
+                score: scores[position],
             })
             .collect())
     }
@@ -922,7 +973,7 @@ impl Reranker {
         );
         Reranked {
             maximum_tokens: self.model.maximum_tokens(),
-            remembered: self.scores.known.len(),
+            remembered: self.scores.remembered,
             offered: self.scores.hits + self.scores.misses,
             scored: self.work.pairs,
             characters: self.lengths.total,
@@ -1000,6 +1051,7 @@ fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> 
 /// Shortest first, in the batches [`batches`] makes of their lengths, each
 /// batch one forward pass and a pair's score the first column of its row of
 /// `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
+#[cfg(target_os = "windows")]
 fn score(
     model: &mut Encoder,
     encodings: Vec<Encoding>,
@@ -1028,6 +1080,12 @@ struct Batch {
     positions: Vec<usize>,
     encodings: Vec<Encoding>,
     shape: (usize, usize),
+}
+
+impl Batch {
+    fn longest(&self) -> usize {
+        self.encodings.last().expect("nonempty batch").len()
+    }
 }
 
 fn model_batches(
@@ -1143,107 +1201,6 @@ mod tests {
     }
     use super::*;
 
-    #[test]
-    fn failed_score_attempt_does_not_commit_partial_work() {
-        let mut total = Work::default();
-        let failed = total.commit(2, 10, 5, Err(IndexError::Engine("missing logits".into())));
-        assert!(failed.is_err());
-        assert_eq!((total.pairs, total.tokens, total.padded_tokens), (0, 0, 0));
-
-        let completed = Work {
-            padded_tokens: 12,
-            batches: 1,
-            forward_us: 7,
-            ..Work::default()
-        };
-        assert_eq!(
-            total
-                .commit(2, 10, 5, Ok((vec![0.2, 0.8], completed)))
-                .unwrap(),
-            vec![0.2, 0.8]
-        );
-        assert_eq!(
-            (total.pairs, total.tokens, total.padded_tokens),
-            (2, 10, 12)
-        );
-        assert_eq!(
-            (total.batches, total.encode_us, total.forward_us),
-            (1, 5, 7)
-        );
-    }
-
-    #[test]
-    fn a_score_is_remembered_for_its_own_query_and_document() {
-        let mut scores = Scores::default();
-        let key = Scores::key("how does deployment work", "the pipeline signs artifacts");
-        scores.put(key, 0.75);
-
-        assert_eq!(scores.get(key), Some(0.75));
-        assert_eq!(
-            scores.get(Scores::key(
-                "how does rollback work",
-                "the pipeline signs artifacts"
-            )),
-            None,
-            "a different query reused another query's score"
-        );
-        assert_eq!(
-            scores.get(Scores::key(
-                "how does deployment work",
-                "backups run nightly"
-            )),
-            None,
-            "a different document reused another document's score"
-        );
-    }
-
-    /// The query and the document are hashed as two fields, not one string.
-    ///
-    /// Concatenated, "ab" + "c" and "a" + "bc" are the same bytes and would be
-    /// the same score. Both splits are plausible: a query is a phrase and a
-    /// memory begins with one.
-    #[test]
-    fn where_the_query_ends_and_the_document_begins_is_part_of_the_key() {
-        assert_ne!(Scores::key("ab", "c"), Scores::key("a", "bc"));
-    }
-
-    #[test]
-    fn the_oldest_score_is_forgotten_once_the_cache_is_full() {
-        let mut scores = Scores::default();
-        for n in 0..REMEMBERED_SCORES + 10 {
-            scores.put(Scores::key("query", &n.to_string()), n as f32);
-        }
-
-        assert_eq!(scores.known.len(), REMEMBERED_SCORES);
-        assert_eq!(
-            scores.get(Scores::key("query", "0")),
-            None,
-            "the first score written was still there after the cache filled"
-        );
-        assert_eq!(
-            scores.get(Scores::key("query", &(REMEMBERED_SCORES + 9).to_string())),
-            Some((REMEMBERED_SCORES + 9) as f32),
-            "the last score written was evicted"
-        );
-    }
-
-    /// Rewriting a score must not queue its key a second time.
-    ///
-    /// It would evict an entry per rewrite while leaving the rewritten one in
-    /// the map, so the cache would hold fewer and fewer live scores while
-    /// reporting itself full.
-    #[test]
-    fn rewriting_a_score_does_not_shorten_the_cache() {
-        let mut scores = Scores::default();
-        let key = Scores::key("query", "document");
-        for n in 0..100 {
-            scores.put(key, n as f32);
-        }
-
-        assert_eq!(scores.order.len(), 1);
-        assert_eq!(scores.get(key), Some(99.0));
-    }
-
     fn encoding(id: u32, tokens: usize) -> Encoding {
         Encoding::from_tokens(
             (0..tokens)
@@ -1265,6 +1222,301 @@ mod tests {
             |len| len,
             |rows, len| (rows, len),
         )
+    }
+
+    fn identities(rows: &[(u32, usize)]) -> Vec<PairKey> {
+        rows.iter()
+            .map(|(id, _)| pair_key("query", &id.to_string()))
+            .collect()
+    }
+
+    // Deliberately context-sensitive: neighbours, order and longest row
+    // affect every logit. A pair-only cache fails these history assertions.
+    fn context(rows: Vec<Encoding>) -> Result<(Vec<f32>, u64)> {
+        let offset: u32 = rows
+            .iter()
+            .enumerate()
+            .map(|(at, e)| e.get_ids()[0] * (at as u32 + 1))
+            .sum();
+        let width = rows.iter().map(Encoding::len).max().unwrap();
+        Ok((
+            rows.iter()
+                .map(|e| e.get_ids()[0] as f32 + offset as f32 * 10.0 + width as f32)
+                .collect(),
+            7,
+        ))
+    }
+
+    fn cached(
+        cache: &mut Scores,
+        work: &mut Work,
+        lengths: &mut Lengths,
+        rows: &[(u32, usize)],
+        budget: usize,
+        most: usize,
+    ) -> Vec<f32> {
+        let attempt = cache
+            .score(
+                planned(rows, budget, most),
+                &identities(rows),
+                |at| at + 3,
+                context,
+            )
+            .unwrap();
+        attempt.commit(cache, work, lengths, 7)
+    }
+
+    fn bits(scores: &[f32]) -> Vec<u32> {
+        scores.iter().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn changed_neighbours_match_the_same_fresh_list_in_both_cache_histories() {
+        let a = [(1, 3), (2, 3), (3, 3), (4, 3), (5, 12), (6, 12)];
+        let b = [(1, 3), (2, 3), (3, 3), (9, 3), (5, 12), (6, 12)];
+        let fresh = |rows: &[(u32, usize)]| {
+            cached(
+                &mut Scores::default(),
+                &mut Work::default(),
+                &mut Lengths::default(),
+                rows,
+                48,
+                4,
+            )
+        };
+        let fa = fresh(&a);
+        let fb = fresh(&b);
+        assert_ne!(
+            fa[0].to_bits(),
+            fb[0].to_bits(),
+            "fixture must expose neighbour-sensitive logits"
+        );
+        for (first, second, expected) in [(&a, &b, &fb), (&b, &a, &fa)] {
+            let mut cache = Scores::default();
+            let mut work = Work::default();
+            let mut lengths = Lengths::default();
+            cached(&mut cache, &mut work, &mut lengths, first, 48, 4);
+            let before = (work.pairs, work.tokens, work.padded_tokens, work.batches);
+            let observed = cached(&mut cache, &mut work, &mut lengths, second, 48, 4);
+            assert_eq!(bits(&observed), bits(expected));
+            assert_eq!(
+                work.pairs - before.0,
+                4,
+                "entire changed four-pair group must be rescored"
+            );
+            assert_eq!(cache.hits, 2, "unchanged two-pair group can hit");
+            assert_eq!(cache.misses, 10);
+            assert_eq!(
+                (
+                    work.tokens - before.1,
+                    work.padded_tokens - before.2,
+                    work.batches - before.3
+                ),
+                (12, 12, 1)
+            );
+        }
+    }
+
+    #[test]
+    fn identical_hot_lists_retokenize_without_any_new_forward_work() {
+        let rows = [(3, 6), (1, 2), (2, 2), (4, 6)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let cold = cached(&mut cache, &mut work, &mut lengths, &rows, 16, 2);
+        let before = (
+            work.pairs,
+            work.tokens,
+            work.padded_tokens,
+            work.batches,
+            work.forward_us,
+            lengths.total,
+            lengths.longest,
+        );
+        let hot = cache
+            .score(
+                planned(&rows, 16, 2),
+                &identities(&rows),
+                |_| panic!("hit counted as model character work"),
+                |_| panic!("hot batch went through the model"),
+            )
+            .unwrap()
+            .commit(&mut cache, &mut work, &mut lengths, 11);
+        assert_eq!(bits(&cold), bits(&hot));
+        assert_eq!(cache.hits, 4);
+        assert_eq!(cache.misses, 4);
+        assert_eq!(cache.remembered, 4);
+        assert_eq!(
+            (
+                work.pairs,
+                work.tokens,
+                work.padded_tokens,
+                work.batches,
+                work.forward_us,
+                lengths.total,
+                lengths.longest
+            ),
+            before
+        );
+        assert_eq!(
+            work.encode_us, 18,
+            "all-pair tokenization is recorded even on cache hits"
+        );
+    }
+
+    #[test]
+    fn query_fields_duplicates_order_and_both_shapes_are_cache_identity() {
+        assert_ne!(pair_key("ab", "c"), pair_key("a", "bc"));
+        assert_ne!(pair_key("", "a"), pair_key("a", ""));
+        assert_ne!(pair_key("", ""), pair_key("", "a"));
+        assert_eq!(pair_key("", ""), pair_key("", ""));
+        assert_ne!(pair_key("q", "a"), pair_key("r", "a"));
+        let a = pair_key("q", "a");
+        let b = pair_key("q", "b");
+        let key = BatchKey::of(&[a, b], (2, 5), (4, 64));
+        for other in [
+            BatchKey::of(&[b, a], (2, 5), (4, 64)),
+            BatchKey::of(&[a, a], (2, 5), (4, 64)),
+            BatchKey::of(&[a], (1, 5), (4, 64)),
+            BatchKey::of(&[a, b], (2, 6), (4, 64)),
+            BatchKey::of(&[a, b], (2, 5), (4, 128)),
+            BatchKey::of(&[a, b], (2, 5), (2, 64)),
+        ] {
+            assert_ne!(key, other);
+        }
+        let rows = [(1, 4), (1, 4), (2, 4)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let cold = cached(&mut cache, &mut work, &mut lengths, &rows, 64, 4);
+        let hot = cached(&mut cache, &mut work, &mut lengths, &rows, 64, 4);
+        assert_eq!(bits(&cold), bits(&hot));
+        assert_eq!(cache.remembered, 3);
+        assert_eq!(cache.hits, 3);
+        assert_eq!(work.pairs, 3);
+    }
+
+    #[test]
+    fn changed_order_and_caps_recompute_complete_groups_not_just_new_pairs() {
+        let a = [(1, 4), (2, 4), (3, 4), (4, 4)];
+        let b = [(2, 4), (1, 4), (3, 4), (4, 4)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 4);
+        let warmed = cached(&mut cache, &mut work, &mut lengths, &b, 64, 4);
+        let fresh = cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &b,
+            64,
+            4,
+        );
+        assert_eq!(bits(&warmed), bits(&fresh));
+        assert_eq!(work.pairs, 8);
+        assert_eq!(cache.hits, 0);
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 2);
+        assert_eq!(work.pairs, 12);
+        assert_eq!(work.batches, 4, "new cap creates two new complete batches");
+    }
+
+    #[test]
+    fn widening_reuses_only_complete_unchanged_groups() {
+        let a = [(1, 4), (2, 4), (3, 4)];
+        let b = [(1, 4), (2, 4), (3, 4), (4, 4)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 2);
+        let result = cached(&mut cache, &mut work, &mut lengths, &b, 64, 2);
+        let fresh = cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &b,
+            64,
+            2,
+        );
+        assert_eq!(bits(&result), bits(&fresh));
+        assert_eq!(cache.hits, 2);
+        assert_eq!(work.pairs, 5);
+    }
+
+    #[test]
+    fn a_late_failure_commits_no_partial_cache_or_counters() {
+        let a = [(1, 3), (2, 3)];
+        let b = [(1, 3), (2, 3), (3, 4), (4, 4), (5, 5), (6, 5)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 2);
+        let before = (
+            (
+                cache.hits,
+                cache.misses,
+                cache.remembered,
+                cache.order.clone(),
+                cache.known.clone(),
+            ),
+            (
+                work.pairs,
+                work.tokens,
+                work.padded_tokens,
+                work.batches,
+                work.encode_us,
+                work.forward_us,
+            ),
+            (lengths.total, lengths.longest),
+        );
+        let mut calls = 0;
+        let failed = cache.score(
+            planned(&b, 64, 2),
+            &identities(&b),
+            |_| 10,
+            |rows| {
+                calls += 1;
+                if calls == 2 {
+                    Err(IndexError::Engine("late batch failure".into()))
+                } else {
+                    context(rows)
+                }
+            },
+        );
+        assert!(failed.is_err());
+        assert_eq!(calls, 2, "must fail after a hit and one successful miss");
+        assert_eq!(
+            (
+                (
+                    cache.hits,
+                    cache.misses,
+                    cache.remembered,
+                    cache.order.clone(),
+                    cache.known.clone()
+                ),
+                (
+                    work.pairs,
+                    work.tokens,
+                    work.padded_tokens,
+                    work.batches,
+                    work.encode_us,
+                    work.forward_us
+                ),
+                (lengths.total, lengths.longest)
+            ),
+            before
+        );
+        let retry = cached(&mut cache, &mut work, &mut lengths, &b, 64, 2);
+        let fresh = cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &b,
+            64,
+            2,
+        );
+        assert_eq!(bits(&retry), bits(&fresh));
+        assert_eq!(work.pairs, 6, "failed partial misses must execute again");
     }
 
     #[test]
@@ -1319,6 +1571,59 @@ mod tests {
             "overbudget long pair remains a singleton"
         );
         assert!(planned(&[], 512, 4).is_empty());
+    }
+
+    #[test]
+    fn weighted_fifo_evicts_whole_batches_without_duplicate_queue_entries() {
+        let mut cache = Scores::default();
+        let key = |n: u32, size: usize| {
+            BatchKey::of(
+                &vec![pair_key("q", &n.to_string()); size],
+                (size, 4),
+                (size, 4),
+            )
+        };
+        let first = key(0, 2048);
+        let second = key(1, 2048);
+        let third = key(2, 3);
+        cache.put(first, vec![0.0; 2048]);
+        cache.put(second, vec![1.0; 2048]);
+        assert_eq!(cache.remembered, 4096);
+        for _ in 0..10 {
+            cache.put(first, vec![2.0; 2048]);
+        }
+        assert_eq!(cache.order.len(), 2);
+        cache.put(third, vec![3.0; 3]);
+        assert!(cache.get(first).is_none());
+        assert!(cache.get(second).is_some());
+        assert!(cache.get(third).is_some());
+        assert_eq!(cache.remembered, 2051);
+        assert_eq!(cache.order.len(), 2);
+        cache.put(
+            key(3, REMEMBERED_SCORES + 1),
+            vec![4.0; REMEMBERED_SCORES + 1],
+        );
+        assert_eq!(cache.remembered, 2051);
+        assert_eq!(
+            cache.order.len(),
+            2,
+            "oversized batch must not purge the cache"
+        );
+    }
+
+    #[test]
+    fn malformed_batch_output_does_not_enter_the_cache() {
+        let cache = Scores::default();
+        let rows = [(1, 3), (2, 3)];
+        let failed = cache.score(
+            planned(&rows, 64, 4),
+            &identities(&rows),
+            |_| 3,
+            |_| Ok((vec![1.0], 7)),
+        );
+        assert!(failed.is_err());
+        assert_eq!(cache.remembered, 0);
+        assert_eq!((cache.hits, cache.misses), (0, 0));
     }
 
     #[test]
