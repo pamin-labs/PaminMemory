@@ -51,6 +51,10 @@ path per corpus. XQuAD-R runs the ignored `crosslingual` test
 stdout next to its JSON. A run that does not write the expected complete raw
 rows must not be published as a sweep result.
 
+The archived stdout replaces local checkout and evaluation-home prefixes with
+`${REPO}` and `${EVAL_HOME}`. Model identities, scores and provider counts are
+unchanged by that path redaction.
+
 The committed JSON is whitespace-packed for review; parsed content was checked
 equal to the harness's corrected pretty-printed files. Their original SHA256s
 were `26fa6ce967ee90dc5757d52e187ed69c18736d6359f43a78b6dcac185f8974b1`

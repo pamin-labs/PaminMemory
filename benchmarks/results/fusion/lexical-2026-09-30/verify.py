@@ -30,7 +30,9 @@ for name, groups, count in [
     macro = statistics.mean(
         evidence["whole"][group]["ndcg"] / count for group in groups
     )
-    assert f"{macro:.4f}" in (root / f"{name}-stdout.log").read_text()
+    stdout = (root / f"{name}-stdout.log").read_text()
+    assert not any(path in stdout for path in ("/Users/", "/private/tmp/", "/home/"))
+    assert f"{macro:.4f}" in stdout
     print(f"{name}: {count} paired queries, 37 settings, shipped macro nDCG@10 {macro:.4f}")
 
 assert json.loads((root / "xquad-paired.json").read_text())["complete"]
