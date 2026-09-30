@@ -46,9 +46,18 @@ CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ON
 | gpu: sample same_language nDCG@10 | 0.8812674 | 0.8812674 | +0.0000000 | +0.00% |
 | gpu: sample cross_lingual nDCG@10 | 0.7580525 | 0.7620027 | +0.0039502 | +0.52% |
 
+## Process-round diagnostic statistics
+
+| Contrast | Process pairs | Descriptive time ratio | Two-sided block p | Family p |
+| --- | ---: | ---: | ---: | ---: |
+| accurate-gpu-vs-all | 3 | 4.4393 | 0.25 | 1.00 |
+| accurate-cpu-vs-all | 3 | 4.2682 | 0.25 | 1.00 |
+| fast-all-vs-cpu | 3 | 10.2557 | 0.25 | 1.00 |
+| fast-gpu-vs-cpu | 3 | 10.0592 | 0.25 | 1.00 |
+
 ## Scope and decision
 
-Four prespecified within-tier paired log-time contrasts used 19,999 sign flips (seed 0); Bonferroni family p=0.0002 for all four. This supports the existing per-tier choices on this workload. The 24-query nDCG columns are diagnostic, not acceptance metrics or full benchmark replacements.
+The prior query-level p=0.0002 claim is withdrawn: queries share a process-level backend assignment and host-load conditions. Four within-tier diagnostic contrasts now preserve three process-round pairs and enumerate all eight round-block sign flips. These three deterministic rotated rounds are not a randomized confirmatory trial; they cannot establish statistical significance. Reported latency differences are descriptive and do not change the existing per-tier policy. Sample nDCG remains diagnostic, not precision acceptance.
 
 All process costs include loading and warmups. Process CPU excludes CoreML services/GPU/ANE work; RSS excludes their allocations. Thus these are neither energy nor model resident memory measurements. Model/index persistent disk deltas and device memory: N/A, not measured. Backend runs did not attest source-weight/tokenizer hashes before and after every process. The compiled test program was frozen; experimental changes are removed after measurement.
 
@@ -70,4 +79,4 @@ Steady ORT profiling (eight warmups removed per node/bucket) places 0.17-0.27% o
 
 [ORT I/O binding](https://onnxruntime.ai/docs/performance/tune-performance/iobinding.html), [pinned CoreML wrapper](https://github.com/microsoft/onnxruntime/blob/v1.28.0/onnxruntime/core/providers/coreml/model/model.mm), [Apple compute plans](https://developer.apple.com/documentation/coreml/mlcomputeplan-85vdw).
 
-summary.json retains the aggregate values. python3 tables.py regenerates this text to stdout without modifying the evidence. Sanitized per-query rows, process resource files, provider attestations, exact experimental patch and run template are retained. python3 verify.py recomputes all backend aggregates and paired tests without modifying evidence. See manifest.json and REPRODUCE.md for identities, order, provenance limits and commands. Device traces are excluded.
+summary.json retains the aggregate values. python3 tables.py regenerates this text to stdout without modifying the evidence. Sanitized per-query rows, process resource files, provider attestations, exact experimental patch and run template are retained. python3 verify.py recomputes all backend aggregates and process-block diagnostics without modifying evidence. See manifest.json and REPRODUCE.md for identities, order, provenance limits and commands. Device traces are excluded.

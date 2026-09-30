@@ -1,8 +1,8 @@
-import gzip, json, math, random, re, statistics
+import gzip, json, math, itertools, re, statistics
 from pathlib import Path
 
 def compute(root):
-    arms = {}; medians = {}
+    arms = {}; round_totals = {}
     for tier in ("accurate", "fast"):
         for device in ("all", "gpu", "cpu"):
             runs = []; resources = []
@@ -20,7 +20,7 @@ def compute(root):
                 expected = "cpu" if device == "cpu" else "coreml"
                 assert f'device="{expected}"' in attestation and "24/24" in attestation
             median = [statistics.median(run[j]["seconds"] for run in runs) for j in range(24)]
-            medians[f"{tier}-{device}"] = median
+            round_totals[f"{tier}-{device}"] = [sum(r["seconds"] for r in run) for run in runs]
             ordered = sorted(median)
             arms[f"{tier}-{device}"] = {
                 "p50_seconds": ordered[11], "p95_seconds": ordered[22],
@@ -34,11 +34,21 @@ def compute(root):
     for tier, reference in [("accurate", "all"), ("fast", "cpu")]:
         for candidate in ("all", "gpu", "cpu"):
             if candidate == reference: continue
-            differences = [math.log(b / a) for a, b in zip(medians[f"{tier}-{reference}"], medians[f"{tier}-{candidate}"])]
-            observed = abs(statistics.mean(differences)); rng = random.Random(0)
-            count = sum(abs(sum(v * (1 if rng.getrandbits(1) else -1) for v in differences) / 24) >= observed for _ in range(19999))
-            p = (count + 1) / 20000
-            comparisons[f"{tier}-{candidate}-vs-{reference}"] = {"geometric_mean_time_ratio": math.exp(statistics.mean(differences)), "two_sided_signflip_p": p, "family_bonferroni_p": min(1, p * 4), "query_count": 24}
+            reference_times = round_totals[f"{tier}-{reference}"]
+            candidate_times = round_totals[f"{tier}-{candidate}"]
+            differences = [math.log(b / a) for a, b in zip(reference_times, candidate_times)]
+            observed = abs(statistics.mean(differences))
+            statistics_by_sign = [abs(sum(v * sign for v, sign in zip(differences, signs)) / 3) for signs in itertools.product((-1, 1), repeat=3)]
+            p = sum(value >= observed - 1e-12 for value in statistics_by_sign) / 8
+            comparisons[f"{tier}-{candidate}-vs-{reference}"] = {
+                "geometric_mean_time_ratio": math.exp(statistics.mean(differences)),
+                "two_sided_process_block_signflip_p": p,
+                "family_bonferroni_p": min(1, p * 4),
+                "process_round_blocks": 3,
+                "reference_round_search_seconds": reference_times,
+                "candidate_round_search_seconds": candidate_times,
+            }
+
     return {"arms": arms, "comparisons": comparisons}
 
 if __name__ == "__main__":

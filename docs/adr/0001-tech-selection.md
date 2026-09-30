@@ -3260,6 +3260,6 @@ Keep the small allocation simplification without claiming faster whole search.
 
 ### 2026-09-30: finish local backend and FP64 validation
 
-The [local validation record](../../benchmarks/results/inference/local-closeout-2026-09-30/README.md) reports repeated whole-search alternatives, process CPU/RSS and precision scopes. Keep Accurate on CoreML ALL and Fast on optimized CPU kernels for the measured Apple workload. This supports existing tier choices; it introduces no new backend policy. CPU computation must consider SIMD/optimized kernels beyond model inference.
+The [local validation record](../../benchmarks/results/inference/local-closeout-2026-09-30/README.md) reports repeated whole-search alternatives, process CPU/RSS and precision scopes. Keep Accurate on CoreML ALL and Fast on optimized CPU kernels for the measured Apple workload. This descriptive sample introduces no new backend policy. Its former query-independent significance is withdrawn; three deterministic process-round blocks cannot establish significance. CPU computation must consider SIMD/optimized kernels beyond model inference.
 
 Full XQuAD-R, MIRACL-Swahili and a shared 50k memory index found no accuracy or returned-list benefit from ORT CPU FP64 or native SIMD FP64 rescoring. Keep the current scorer. Synthetic near-tie precision probes cannot stand in for product acceptance. CoreML profiling includes wrapper handling and waits and cannot isolate physical transfer cost; partition changes remain future experiments.

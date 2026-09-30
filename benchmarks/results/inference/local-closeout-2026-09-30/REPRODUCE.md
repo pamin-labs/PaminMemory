@@ -7,7 +7,7 @@ python3 benchmarks/results/inference/local-closeout-2026-09-30/verify.py
 python3 benchmarks/results/inference/local-closeout-2026-09-30/summarize.py
 ```
 
-The verifier recomputes medians, nearest-rank p50/p95 of per-query three-round medians, process wall/CPU/RSS and four sign-flip tests from 432 rows and 18 resource records. It also checks provider/cache-miss attestations and file hashes. It writes no retained artifacts.
+The verifier recomputes medians, nearest-rank p50/p95 of per-query three-round medians, process wall/CPU/RSS and four process-round-block sign-flip diagnostics from 432 rows and 18 resource records. It also checks provider/cache-miss attestations and file hashes. It writes no retained artifacts.
 
 To rerun, use an isolated checkout at public commit `be329b00636987781689ec6ef0c4fc48611cdf1d` and apply `sources/experiment.patch`. This patch is an experimental appendix, never default code. Provision the complete pinned XQuAD-R accuracy index first; the harness asserts 13,014 indexed documents and completeness 1.0, and will not silently measure an empty index. Model cache identities, source exports, query IDs/text hashes/order, compiler, CPU configuration and requested device plans are in manifest.json. Cached revisions and OS were collected after execution; they are not historical pre/post attestations. Warmups are query positions 1..8, sample positions 0..1190 step 50. No model downloads or index rebuilds belong in measured search durations.
 
@@ -36,3 +36,7 @@ cargo test --release -p pamin-engine --test monolingual scratch_fp64_miracl -- -
 ```
 
 Set FP64_OUTPUT to a fresh per-test output file, FP64_50K_HOME to a fresh index directory, PAMIN_EVAL_HOME to the complete cached evaluation workspace, PAMIN_DEVICE=auto and PAMIN_VECTOR_INDEX=memory. MIRACL_DIR must hold the full Swahili corpus/topics/qrels; unset MIRACL_MAX_DOCS, HF_HOME, HF_ENDPOINT and PAMIN_RERANK_MAX_TOKENS. The real-corpus harnesses reject incomplete indices. The patch contains the exact test sources; the standalone 50k file retains the deterministic input generator.
+
+## Statistical correction
+
+The assignment unit is a complete process, not a query. Pair search-time totals within each of the three rotated rounds and enumerate all 2^3 sign patterns; keep the 24 queries within each process together. No query-independent significance claim is supported. Deterministic order/shared load also limits exchangeability, so these p-values are diagnostic, not a randomized confirmatory trial. Original p=0.0002 is withdrawn.

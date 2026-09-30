@@ -79,28 +79,68 @@
   },
   "comparisons": {
     "accurate-gpu-vs-all": {
-      "geometric_mean_time_ratio": 4.761685998864632,
-      "two_sided_signflip_p": 5e-05,
-      "family_bonferroni_p": 0.0002,
-      "query_count": 24
+      "geometric_mean_time_ratio": 4.439321227873979,
+      "two_sided_process_block_signflip_p": 0.25,
+      "family_bonferroni_p": 1,
+      "process_round_blocks": 3,
+      "reference_round_search_seconds": [
+        14.397438042,
+        16.908477166,
+        17.392223087
+      ],
+      "candidate_round_search_seconds": [
+        62.521773292,
+        78.540518583,
+        75.434405832
+      ]
     },
     "accurate-cpu-vs-all": {
-      "geometric_mean_time_ratio": 4.641798891359719,
-      "two_sided_signflip_p": 5e-05,
-      "family_bonferroni_p": 0.0002,
-      "query_count": 24
+      "geometric_mean_time_ratio": 4.268248182555174,
+      "two_sided_process_block_signflip_p": 0.25,
+      "family_bonferroni_p": 1,
+      "process_round_blocks": 3,
+      "reference_round_search_seconds": [
+        14.397438042,
+        16.908477166,
+        17.392223087
+      ],
+      "candidate_round_search_seconds": [
+        73.956482834,
+        43.499315167,
+        102.337578002
+      ]
     },
     "fast-all-vs-cpu": {
-      "geometric_mean_time_ratio": 10.260461852440903,
-      "two_sided_signflip_p": 5e-05,
-      "family_bonferroni_p": 0.0002,
-      "query_count": 24
+      "geometric_mean_time_ratio": 10.255686052534653,
+      "two_sided_process_block_signflip_p": 0.25,
+      "family_bonferroni_p": 1,
+      "process_round_blocks": 3,
+      "reference_round_search_seconds": [
+        8.848812373,
+        12.576964999,
+        13.490560377
+      ],
+      "candidate_round_search_seconds": [
+        86.283046251,
+        138.537237165,
+        135.485553581
+      ]
     },
     "fast-gpu-vs-cpu": {
-      "geometric_mean_time_ratio": 9.561472602042452,
-      "two_sided_signflip_p": 5e-05,
-      "family_bonferroni_p": 0.0002,
-      "query_count": 24
+      "geometric_mean_time_ratio": 10.059210328170478,
+      "two_sided_process_block_signflip_p": 0.25,
+      "family_bonferroni_p": 1,
+      "process_round_blocks": 3,
+      "reference_round_search_seconds": [
+        8.848812373,
+        12.576964999,
+        13.490560377
+      ],
+      "candidate_round_search_seconds": [
+        78.54671650099999,
+        141.992312374,
+        137.02178754
+      ]
     }
   },
   "fp64": {
@@ -164,6 +204,7 @@
     "Process CPU/RSS includes startup/warmup and excludes external device/service costs.",
     "Model resident memory and persistent disk deltas not measured.",
     "Backend repeat did not attest source-weight/tokenizer hashes before and after each process.",
-    "No new product backend selection or FP64 scorer shipped."
+    "No new product backend selection or FP64 scorer shipped.",
+    "Prior query-level significance withdrawn; only three nonrandomized process-round blocks, diagnostic p-values not confirmatory."
   ]
 }
