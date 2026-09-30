@@ -652,36 +652,31 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         Ok(model)
     };
     let mut expected: Option<Vec<Vec<f32>>> = None;
+    let mut expected_queries: Option<Vec<Vec<f32>>> = None;
     crate::inference::measured(
         &format!(
-            "complementary-v1:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
+            "complementary-query-v2:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
             repository.identity(cache)
         ),
         |device, target, _validated| load(device, target),
         |model, _device| {
+            // Maximum length is a conformance premise, not the query timing
+            // workload. Production queries run one text, including no prefix.
+            let vectors = [
+                "deployment rollback".to_string(),
+                "数据库迁移失败后如何回滚？".to_string(),
+                "migration ".repeat(600),
+            ]
+            .iter()
+            .map(|text| complementary_vector(model, text))
+            .collect::<Result<Vec<_>>>()?;
+            check_vectors(vectors, &mut expected, 1024)?;
             crate::inference::time_calls(|| {
-                let vectors = [
-                    "deployment rollback".to_string(),
-                    "数据库迁移失败后如何回滚？".to_string(),
-                    "migration ".repeat(600),
-                ]
-                .iter()
-                .map(|text| complementary_vector(model, text))
-                .collect::<Result<Vec<_>>>()?;
-                match &expected {
-                    None => expected = Some(vectors),
-                    Some(reference)
-                        if vectors
-                            .iter()
-                            .zip(reference)
-                            .all(|(a, b)| compatible_vectors(a, b, 1024)) => {}
-                    _ => {
-                        return Err(IndexError::Incompatible(
-                            "complementary embedding output incompatible".into(),
-                        ));
-                    }
-                }
-                Ok(())
+                let vectors = ["deployment rollback", "数据库迁移失败后如何回滚？"]
+                    .iter()
+                    .map(|query| complementary_vector(model, query))
+                    .collect::<Result<Vec<_>>>()?;
+                check_vectors(vectors, &mut expected_queries, 1024)
             })
         },
     )
