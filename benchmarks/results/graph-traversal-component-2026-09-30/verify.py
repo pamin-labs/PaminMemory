@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only checks of retained synthetic component evidence; no runtime loading."""
-import hashlib,json,math,re,sys
+import hashlib,json,math,re,sys,struct
 if sys.flags.optimize:
  raise SystemExit("FAIL: Python optimization disables assertions; run without -O/-OO")
 from pathlib import Path
@@ -70,6 +70,16 @@ ASSET_PINS = {'${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84
  '${ZVEC_LIB}/libzvec_c_api.so': '58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a'}
 arm_records={r['arm']:r for r in provenance['arms']}
 assert len(provenance['arms']) == 2 and set(arm_records) == {'baseline','scored'}
+SOURCE_PATHS = {'crates/pamin-engine/tests/graph_trace/mod.rs', 'crates/pamin-cli/Cargo.toml', 'crates/pamin-store/src/error.rs', 'crates/pamin-index/src/half.rs', 'crates/pamin-index/src/tokenizer.rs', 'crates/pamin-index/src/encoder.rs', 'crates/pamin-index/src/hub.rs', 'crates/pamin-index/src/inference.rs', 'crates/pamin-index/src/reshape.rs', 'crates/pamin-index/src/segmentation.rs', 'crates/pamin-core/src/version.rs', 'crates/pamin-core/src/graph.rs', 'benchmarks/results/inference/vector-rescore-device-2026-09-30/Cargo.toml', 'Cargo.lock', 'crates/pamin-store/src/lib.rs', 'crates/pamin-core/src/lib.rs', 'crates/pamin-index/src/onnx.rs', 'crates/pamin-index/src/reranking.rs', 'crates/pamin-core/Cargo.toml', 'crates/pamin-store/src/workspace.rs', 'crates/pamin-engine/Cargo.toml', 'crates/pamin-index/src/error.rs', 'crates/pamin-core/src/env.rs', 'crates/pamin-index/src/descriptors.rs', 'Cargo.toml', 'crates/pamin-core/src/id.rs', 'crates/pamin-store/src/sql.rs', 'crates/pamin-index/src/lib.rs', 'crates/pamin-core/src/channel.rs', 'crates/pamin-index/Cargo.toml', 'crates/pamin-index/src/prepared.rs', 'crates/pamin-store/src/repository.rs', 'crates/pamin-core/src/fusion.rs', 'crates/pamin-index/src/projection.rs', 'crates/pamin-engine/src/reshape.rs', 'crates/pamin-index/src/attention.rs', 'crates/pamin-store/src/database.rs', 'crates/pamin-engine/src/cascade.rs', 'benchmarks/results/inference/vector-rescore-accelerate-2026-09-30-Cargo.toml', 'crates/pamin-core/src/cascade.rs', 'crates/pamin-core/src/ledger.rs', 'crates/pamin-engine/tests/scratch_scored_fixture.rs', 'crates/pamin-store/src/migrate.rs', 'crates/pamin-index/src/native.rs', 'crates/pamin-store/Cargo.toml', 'crates/pamin-store/src/jobs.rs', 'crates/pamin-engine/src/engine.rs', 'crates/pamin-core/src/filter.rs', 'crates/pamin-engine/src/lib.rs', 'crates/pamin-store/src/graph.rs', 'crates/pamin-engine/tests/harness/mod.rs', 'crates/pamin-index/src/embedding.rs'}
+SOURCE_MAP_DIGESTS = {'baseline': 'a1559290a3d29640e927e2570191c90e3958caf75c224f7d70e61ac5f1107171', 'scored': '57410269c8ae2da52143afbb1c0b8e7a8644582785f2dc44a0e331bbce3eb0fa'}
+for arm, record in arm_records.items():
+ sources = record['source_hashes']
+ assert set(sources) == SOURCE_PATHS, 'compiled source inventory differs'
+ assert all(re.fullmatch('[0-9a-f]{64}',digest) for digest in sources.values()), 'malformed source digest'
+ assert hashlib.sha256(json.dumps(sources,sort_keys=True,separators=(',',':')).encode()).hexdigest() == SOURCE_MAP_DIGESTS[arm], 'recorded compiled source map differs'
+ assert sources['crates/pamin-engine/tests/scratch_scored_fixture.rs'] == sha(ROOT/'source/fixture.rs.in')
+ assert sources['crates/pamin-engine/tests/graph_trace/mod.rs'] == sha(ROOT/'source/graph_trace.rs.in')
+assert {name for name in SOURCE_PATHS if arm_records['baseline']['source_hashes'][name] != arm_records['scored']['source_hashes'][name]} == {'crates/pamin-engine/src/engine.rs'}, 'cross-arm source relationship differs'
 rows = {}
 
 for arm,weak_rank in [('baseline',23),('scored',22)]:
@@ -85,10 +95,24 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
  weak=next(r for r in row['non_graph'] if r['topic']==row['weak'])
  assert min(r['rank'] for r in weak['ranks'])==weak_rank
- assert all(1<=r['rank']<=50 for h in row['non_graph'] for r in h['ranks'])
+ channels = {'lexical_segmented','lexical_ngram','vector'}
+ assert {r['channel'] for h in row['non_graph'] for r in h['ranks']} == channels
+ assert len(row['non_graph']) == len({h['topic'] for h in row['non_graph']}) == len({h['id'] for h in row['non_graph']})
+ for channel in channels:
+  assert sorted(r['rank'] for h in row['non_graph'] for r in h['ranks'] if r['channel']==channel) == list(range(1,51)), 'incomplete/duplicate top50 rank inventory'
+ assert all(r['score'] is None or math.isfinite(r['score']) for h in row['non_graph'] for r in h['ranks'])
  visible={r['topic'] for r in row['non_graph']}
  assert not visible.intersection(row['target_labels']) and row['early_stop']['target'] not in visible
- assert len(row['known_edges'])==9 and all(close(a,b) for a,b in zip(sorted(e['confidence'] for e in row['known_edges']),sorted([1,.8,.1,.01,1,.8,.7,.1,1])))
+ # Fixture chooses the first 67 hidden topics in repository name order.
+ hidden = sorted(set(f'islandnode{n:04}' for n in range(240)) - visible)[:67]
+ assert len(hidden)==67 and row['strong']=='quartzanchor'
+ shared,longer,bridge,samehop,low,high = hidden[:6]
+ assert row['target_labels'] == [shared,longer,samehop]
+ assert row['early_stop']['via']==bridge and row['early_stop']['target']==hidden[6]
+ f32=lambda value:struct.unpack('f',struct.pack('f',value))[0]
+ topology = [(row['weak'],shared,1),(row['strong'],shared,.8),(row['strong'],longer,.1),(row['strong'],bridge,.01),(bridge,longer,1),(row['strong'],low,.8),(row['strong'],high,.7),(low,samehop,.1),(high,samehop,1)]
+ assert sorted((e['from'],e['to'],e['confidence']) for e in row['known_edges']) == sorted((a,b,f32(c)) for a,b,c in topology), 'controlled endpoint/confidence topology differs'
+
  log = (ROOT/f'{arm}.log').read_text()
  assert re.findall(r'^test scratch_scored_graph_finite_fixture \.\.\. ok$', log, re.M) == ['test scratch_scored_graph_finite_fixture ... ok']
  assert len(re.findall(r'^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9.]+s$', log, re.M)) == 1
@@ -119,10 +143,13 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  expected=[row['weak_relevance'],.1,.05] if arm=='baseline' else [.8,.5,.5]
  assert all(close(a,b) for a,b in zip(values,expected))
  first=path(hits[row['target_labels'][0]])
- assert first['hops']==1 and first['from']==(row['weak'] if arm=='baseline' else row['strong'])
+ assert first['hops']==1 and first['from']==first['via']==(row['weak'] if arm=='baseline' else row['strong'])
+ assert first['asserted_from']==first['via'] and first['asserted_to']==shared
  for i in [1,2]:
   trace=path(hits[row['target_labels'][i]]);assert trace['from']==row['strong']
   assert trace['hops']==(1 if arm=='baseline' and i==1 else 2)
+  via = row['strong'] if arm=='baseline' and i==1 else (bridge if i==1 else (low if arm=='baseline' else high))
+  assert trace['via']==trace['asserted_from']==via and trace['asserted_to']==row['target_labels'][i]
  early=row['early_stop'];assert early['decoys']==60 and close(early['expected_score'],.5)
  assert early['reached']==(arm=='scored')
  if arm=='scored':
