@@ -1,0 +1,112 @@
+//! Explicit int8 MatMulNBits arithmetic for the immutable PPLX export.
+//! Only node attributes change; external weights and output encoding remain.
+use crate::error::{IndexError, Result};
+use crate::onnx::*;
+use std::path::{Path, PathBuf};
+
+pub(crate) fn prepare(source: &Path) -> Result<PathBuf> {
+    let digest = crate::prepared::source_digest(source)?;
+    // Keep the graph beside its original external-data snapshot links. ONNX
+    // external-data locations stay relative, with no second weight copy.
+    let output = source.with_file_name(format!("pamin-pplx-int8-v1-{digest}.onnx"));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(output.with_extension("lock"))?;
+    lock.lock()?;
+    let bytes = std::fs::read(source)?;
+    let (rewritten, count) = rewrite(&bytes).map_err(IndexError::Engine)?;
+    if count != 196 {
+        return Err(IndexError::Engine(format!(
+            "pinned PPLX export has {count} MatMulNBits nodes, expected 196"
+        )));
+    }
+    if std::fs::read(&output).is_ok_and(|existing| existing == rewritten) {
+        return Ok(output);
+    }
+    let pending = output.with_extension("partial");
+    std::fs::write(&pending, rewritten)?;
+    std::fs::rename(&pending, &output)?;
+    Ok(output)
+}
+
+fn rewrite(bytes: &[u8]) -> std::result::Result<(Vec<u8>, usize), String> {
+    let mut result = Vec::new();
+    let mut count = 0;
+    for field in fields(bytes)? {
+        if field.number != MODEL_GRAPH {
+            result.extend_from_slice(field.raw);
+            continue;
+        }
+        let mut graph = Vec::new();
+        for item in fields(field.bytes()?)? {
+            if item.number != GRAPH_NODE {
+                graph.extend_from_slice(item.raw);
+                continue;
+            }
+            let node = Node::parse(&item)?;
+            if !node.is("MatMulNBits", true) {
+                graph.extend_from_slice(item.raw);
+                continue;
+            }
+            let mut rewritten = Vec::new();
+            for property in fields(item.bytes()?)? {
+                if property.number == NODE_ATTRIBUTE {
+                    let attribute = fields(property.bytes()?)?;
+                    if string(&attribute, ATTRIBUTE_NAME)? == Some("accuracy_level") {
+                        continue;
+                    }
+                }
+                rewritten.extend_from_slice(property.raw);
+            }
+            put_bytes(
+                &mut rewritten,
+                NODE_ATTRIBUTE,
+                &int_attribute("accuracy_level", 4),
+            );
+            put_bytes(&mut graph, GRAPH_NODE, &rewritten);
+            count += 1;
+        }
+        put_bytes(&mut result, MODEL_GRAPH, &graph);
+    }
+    Ok((result, count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn int8_mode_replaces_the_attribute_and_preserves_weights_and_other_nodes() {
+        let mut node = Vec::new();
+        put_bytes(&mut node, NODE_OP_TYPE, b"MatMulNBits");
+        put_bytes(&mut node, NODE_DOMAIN, MICROSOFT.as_bytes());
+        put_bytes(
+            &mut node,
+            NODE_ATTRIBUTE,
+            &int_attribute("accuracy_level", 0),
+        );
+        let mut other = Vec::new();
+        put_bytes(&mut other, NODE_OP_TYPE, b"Identity");
+        let mut graph = Vec::new();
+        put_bytes(&mut graph, GRAPH_NODE, &node);
+        put_bytes(&mut graph, GRAPH_NODE, &other);
+        put_bytes(&mut graph, GRAPH_INITIALIZER, b"original external weights");
+        let mut model = Vec::new();
+        put_bytes(&mut model, MODEL_GRAPH, &graph);
+        let (output, count) = rewrite(&model).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            rewrite(&output).unwrap().0,
+            output,
+            "rewrite must be idempotent"
+        );
+        let graph = fields(&output).unwrap();
+        let graph = fields(graph[0].bytes().unwrap()).unwrap();
+        let node = Node::parse(&graph[0]).unwrap();
+        assert_eq!(node.int("accuracy_level", 0), Some(4));
+        assert_eq!(graph[1].bytes().unwrap(), other);
+        assert_eq!(graph[2].bytes().unwrap(), b"original external weights");
+    }
+}
