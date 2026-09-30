@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Root-authorized actual Engine diagnostic, fresh clones, sequential model use."""
+import hashlib,json,os,re,shutil,subprocess
+from pathlib import Path
+
+ROOT=Path('/workspace/scratch/fusion-pool-prototype-tools')
+REFERENCE=Path('/workspace/scratch/restart-floor/results-memory-v2/0-main')
+OUTPUT=ROOT/'paired'
+MODELS=Path('/workspace/.pamin-model-cache')
+def digest(path):
+ h=hashlib.sha256()
+ with path.open('rb') as f:
+  for chunk in iter(lambda:f.read(4*1024*1024),b''):h.update(chunk)
+ return h.hexdigest()
+assert not (REFERENCE/'postgres/data/postmaster.pid').exists(), 'reference must be stopped'
+assert (REFERENCE/'models').is_symlink() and (REFERENCE/'models').resolve()==MODELS
+assert not OUTPUT.exists(), 'refuse to overwrite evidence or existing databases'
+OUTPUT.mkdir()
+binaries=json.loads((ROOT/'binaries.json').read_text())
+sources=json.loads((ROOT/'variants/manifest.json').read_text())
+models=[('embedding',MODELS/'models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx','16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb'),('reranker',MODELS/'models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx','912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d')]
+provenance={'scope':'synthetic paired product-path diagnostic; no general accuracy or timing claim','reference':str(REFERENCE),'source_revision':sources['revision'],'model_sources':[],'runtime_libraries':[],'arms':binaries}
+for role,path,expected in models:
+ actual=digest(path);assert actual==expected,(role,actual)
+ provenance['model_sources'].append({'role':role,'path':str(path),'sha256':actual})
+for library in [Path('/workspace/.cargo/lib/pamin/libzvec_c_api.so'),Path('/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0')]:
+ provenance['runtime_libraries'].append({'path':str(library),'sha256':digest(library)})
+for arm in binaries:
+ assert digest(Path(arm['binary']))==arm['sha256']
+ variant=sources['variants'][arm['arm']]
+ for relative,expected in variant['overlaid_sha256'].items():assert digest(Path(variant['path'])/relative)==expected
+ assert digest(Path(variant['helper_path'])/'src/main.rs')==variant['helper_source_sha256']
+ home=OUTPUT/(arm['arm']+'-home');shutil.copytree(REFERENCE,home,symlinks=True)
+ assert not (home/'postgres/data/postmaster.pid').exists()
+ assert (home/'models').resolve()==MODELS
+(OUTPUT/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
+env=dict(os.environ,LD_LIBRARY_PATH='/workspace/.cargo/lib/pamin:/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',PAMIN_DEVICE='cpu',IDENTIFIER_DOCUMENTS='18001',HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1',PAMIN_PROFILE='accuracy')
+for name in ['PAMIN_RERANK_DEPTH','PAMIN_FUSION','PAMIN_PROFILE']:
+ if name!='PAMIN_PROFILE':assert name not in env,(name,'unexpected override')
+all_rows={};providers={}
+for arm in binaries:
+ name=arm['arm']; home=OUTPUT/(name+'-home');env['PAMIN_EVAL_HOME']=str(home)
+ print('MODEL_ARM_START',name,flush=True)
+ try:
+  with (OUTPUT/(name+'.log')).open('w') as out:
+   completed=subprocess.run([arm['binary']],env=env,stdout=out,stderr=subprocess.STDOUT)
+  assert completed.returncode==0,(name,completed.returncode,'abort; preserve failed log')
+ finally:
+  if (home/'postgres/data/postmaster.pid').exists():
+   stop=home/'postgres/install/17.6.0/bin/pg_ctl'
+   subprocess.run([str(stop),'-D',str(home/'postgres/data'),'-m','immediate','-w','stop'],check=True)
+ assert not (home/'postgres/data/postmaster.pid').exists()
+ text=(OUTPUT/(name+'.log')).read_text();rows=[];assignments=[];decoder=json.JSONDecoder()
+ for line in text.splitlines():
+  if line.startswith('IDENTIFIER_JSON '):rows.append(json.loads(line[len('IDENTIFIER_JSON '):]))
+  if 'ONNX graph execution-provider assignment' in line:
+   graph,_=decoder.raw_decode(line.split('model_graph=',1)[1]);nodes,_=decoder.raw_decode(line.split('assigned_nodes=',1)[1])
+   assert set(nodes)=={'CPUExecutionProvider'} and nodes['CPUExecutionProvider']>0,nodes
+   path=Path(graph);assert path.resolve().is_relative_to(MODELS/'prepared')
+   assignments.append({'model_graph':str(path.resolve()),'assigned_nodes':nodes,'graph_sha256':digest(path.resolve())})
+ assert len(rows)==24 and len({r['query_document'] for r in rows})==24
+ assert len(assignments)==2,assignments
+ assert all(r['expected_documents']==18001 and r['reranker_depth']==30 and r['channel_depth']==50 and len(r['reranker_inputs'])==30 and r['channel_pool']==(name=='pooled') for r in rows)
+ if name=='baseline':assert sum(r['target_entered_reranker'] for r in rows)==21
+ else:assert all(r['target_entered_reranker'] for r in rows)
+ all_rows[name]=rows;providers[name]=assignments
+ with (OUTPUT/(name+'.jsonl')).open('w') as out:
+  for row in rows:out.write(json.dumps(row)+'\n')
+ print('MODEL_ARM_COMPLETE',name,'rows',len(rows),flush=True)
+assert providers['baseline']==providers['pooled'],'runtime graph/provider mismatch'
+paired=[]
+for before,after in zip(all_rows['baseline'],all_rows['pooled']):
+ assert before['query']==after['query']
+ assert before['fused']==after['fused'],'retrieval premise differs between arms'
+ b={r['topic'] for r in before['reranker_inputs']};a={r['topic'] for r in after['reranker_inputs']}
+ def target_why(row):return next(h['why'] for h in row['final_all'] if h['topic']==row['target'])
+ paired.append({'query_document':before['query_document'],'query':before['query'],'target':before['target'],'fused_rank':before['target_fused_rank'],'baseline_final_rank':before['target_final_rank'],'pooled_final_rank':after['target_final_rank'],'baseline_entered':before['target_entered_reranker'],'pooled_entered':after['target_entered_reranker'],'baseline_target_why':target_why(before),'pooled_target_why':target_why(after),'added_candidates':sorted(a-b),'removed_candidates':sorted(b-a),'baseline_top10':[h['topic'] for h in before['product_top10']],'pooled_top10':[h['topic'] for h in after['product_top10']]})
+summary={'scope':'24-query synthetic diagnostic only; no latency/general accuracy inference','queries':24,'pairs_per_query_each_arm':30,'baseline_targets_top10':sum(r['baseline_final_rank']<=10 for r in paired),'pooled_targets_top10':sum(r['pooled_final_rank']<=10 for r in paired),'lost_targets':[r['target'] for r in paired if r['baseline_final_rank']<=10<r['pooled_final_rank']],'recovered_targets':[r['target'] for r in paired if r['pooled_final_rank']<=10<r['baseline_final_rank']],'changed_candidate_queries':sum(bool(r['added_candidates']) for r in paired),'actual_provider_graphs':providers,'rows':paired}
+(OUTPUT/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+print('PAIRED_COMPLETE',json.dumps({k:v for k,v in summary.items() if k not in ['rows','actual_provider_graphs']}),flush=True)

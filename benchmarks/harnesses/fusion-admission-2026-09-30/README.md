@@ -1,0 +1,11 @@
+# Reproduce the shortlist diagnosis
+
+Sources are inert `.in` files, outside compiled repository targets. Use isolated scratch checkouts; do not run on the original stopped seed or a live database. Engine::open starts/migrates PostgreSQL even with a read-only index. The runner refuses an existing output and stops its owned PostgreSQL processes on failure.
+
+1. Reproduce the18000-document HNSW fixture and main trial's18001-document `restart-proof` snapshot using [the restart harness](../restart-floor-2026-09-30/README.md). Both arms must copy the same stopped main-reference snapshot.
+2. Create an isolated Git checkout at commit13ee710c9df865f1dac98dc77a8108e438ddc539 in `/workspace/scratch/fusion-pool-prototype` and decompress and apply `prototype.patch.gz` there. Copy `freeze.py.in` to the experiment directory and execute it to generate baseline/pooled source snapshots. It changes only the experimental boolean.
+3. Place each archived helper source at `helpers/{baseline,pooled}/src/main.rs`, its respective Cargo.toml at the package root, and copy the product Cargo.lock. The source manifest records hashes. The runner expects this manifest's helper_path/helper_source_sha256 to be added, as in the retained sources.json.
+4. Set RUSTUP_HOME=/workspace/.rustup, CARGO_HOME=/workspace/.cargo, ORT_LIB_LOCATION=/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib and ORT_PREFER_DYNAMIC_LINK=1. Sequentially run `cargo +1.98.1 build --release --offline --manifest-path helpers/ARM/Cargo.toml`. Copy each resulting identifier-diagnostic executable into `bin/ARM` immediately; record bytes/SHA256 in binaries.json. Model/runtime/native library hashes must match provenance or be recorded as a different experiment.
+5. Copy run-paired.py.in into scratch, preserve its stopped-reference path and refusal guards, and execute it with no other model experiments/builds running. It creates two disposable workspaces and writes complete logs, raw JSONL and summary. Dependencies/model caches must already be provisioned; CPU selection must be confirmed by actual node assignment.
+
+The default engine continues using its existing selection policy. This archive does not install or enable the prototype. Any adoption requires independent full-corpus validation and appropriate Apple backend evidence.
