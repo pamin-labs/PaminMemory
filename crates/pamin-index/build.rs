@@ -8,6 +8,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let (arch, dll_hash) = match std::env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
         "x86_64" => (
             "x64",
@@ -17,20 +18,33 @@ fn main() {
             "arm64",
             "457295ca2aec34db4aec7064cb401520bc85f29fd18f7e7bb9e25ddb849bedb1",
         ),
-        other => panic!("Windows ML has no catalog binary for {other}"),
+        other => {
+            unavailable(
+                &out,
+                &format!("Windows ML has no catalog binary for {other}"),
+            );
+            return;
+        }
     };
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let host = std::env::var("HOST").unwrap();
     let status = extractor(host.contains("windows"))
-        .env("WINML_BUILD_OUT", out)
+        .env("WINML_BUILD_OUT", &out)
         .env("WINML_BUILD_ARCH", arch)
         .env("WINML_BUILD_DLL_HASH", dll_hash)
-        .status()
-        .expect("run the Windows ML catalog extractor");
-    assert!(
-        status.success(),
-        "fetching the pinned Windows ML catalog failed"
-    );
+        .status();
+    if !status.is_ok_and(|status| status.success()) {
+        unavailable(
+            &out,
+            "optional Windows ML catalog could not be fetched; GPU/CPU remain available",
+        );
+    }
+}
+
+fn unavailable(out: &std::path::Path, reason: &str) {
+    println!("cargo:warning={reason}");
+    // Never embed partial/unverified bytes after a failed extraction.
+    std::fs::write(out.join("winml-catalog.dll"), []).expect("write optional catalog placeholder");
+    std::fs::write(out.join("winml-license.txt"), []).expect("write optional license placeholder");
 }
 
 fn extractor(windows: bool) -> Command {
@@ -70,7 +84,7 @@ if dll.exists() and license.exists() and hashlib.sha256(dll.read_bytes()).hexdig
 package=out/'winml.nupkg'
 try:
     if not package.exists():
-        subprocess.run(['curl','--fail','--location','--silent','--show-error','--proto','=https','--proto-redir','=https','--max-time','900','--output',str(package),os.environ['WINML_BUILD_URL']],check=True)
+        subprocess.run(['curl','--fail','--location','--silent','--show-error','--proto','=https','--proto-redir','=https','--max-time','30','--output',str(package),os.environ['WINML_BUILD_URL']],check=True)
     if hashlib.sha256(package.read_bytes()).hexdigest()!=os.environ['WINML_BUILD_PACKAGE_HASH']:
         raise RuntimeError('Windows ML package checksum mismatch')
     with zipfile.ZipFile(package) as archive:
@@ -96,7 +110,7 @@ if ((Test-Path $dll) -and (Test-Path $license) -and ((Digest $dll) -eq $env:WINM
 $package=Join-Path $env:WINML_BUILD_OUT 'winml.nupkg'
 try {
     if (!(Test-Path $package)) {
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 900 -Uri $env:WINML_BUILD_URL -OutFile $package
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri $env:WINML_BUILD_URL -OutFile $package
     }
     if ((Digest $package) -ne $env:WINML_BUILD_PACKAGE_HASH) { throw 'Windows ML package checksum mismatch' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -113,6 +127,23 @@ try {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_catalog_discards_partial_bytes() {
+        let out = tempfile::tempdir().unwrap();
+        std::fs::write(out.path().join("winml-catalog.dll"), b"unverified").unwrap();
+        unavailable(out.path(), "fixture unavailable");
+        assert!(
+            std::fs::read(out.path().join("winml-catalog.dll"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            std::fs::read(out.path().join("winml-license.txt"))
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn corrupted_catalog_package_is_rejected_before_extraction() {
