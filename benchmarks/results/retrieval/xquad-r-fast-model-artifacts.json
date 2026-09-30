@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "role": "reranker_fast",
+      "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "revision": "1427fd652930e4ba29e8149678df786c240d8825",
+      "source_onnx": {
+        "aarch64": "onnx/model_qint8_arm64.onnx",
+        "x86_vnni": "onnx/model_qint8_avx512_vnni.onnx",
+        "x86_avx2": "onnx/model_quint8_avx2.onnx",
+        "other": "onnx/model.onnx"
+      },
+      "source_onnx_sha256": {
+        "aarch64": "1825907d6c1a9001ff78124780bbde20a614a8c3df3b63409cf3c72c6fe5c8b4",
+        "x86_vnni": "1825907d6c1a9001ff78124780bbde20a614a8c3df3b63409cf3c72c6fe5c8b4",
+        "x86_avx2": "6c2513767fb63d008a4377bef7a7a3555433d9436342bb53e35a3a72ffc52d4b",
+        "other": "3e9a03ed1e966f7c5288dd4230e3d6a9bf5e3a170a06f1f4241c5bca12c6487c"
+      },
+      "files_sha256": {
+        "config.json": "cc2cfe51aa3fd759d21d21acf5dfd6994aa67a3c9210636d22e143699d336c77",
+        "tokenizer.json": "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626",
+        "tokenizer_config.json": "e7fbfbfa6347b4e414c1cee50d142e2c2f9a895dad68b068ae83a8b564c3837e",
+        "special_tokens_map.json": "378eb3bf733eb16e65792d7e3fda5b8a4631387ca04d2015199c4d4f22ae554d"
+      },
+      "source_provenance": "SHA256 of complete GET response at immutable revision; HTTP ETag was not the payload SHA256"
+    }
+  ]
+}

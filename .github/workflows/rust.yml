@@ -46,6 +46,19 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  windows-inference:
+    name: Windows inference compiles
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache dependency builds
+        uses: Swatinem/rust-cache@v2
+      # Compiles DirectML session flags and startup guards on their real target.
+      # A hosted runner is not GPU/NPU hardware performance certification.
+      - name: Check inference and its tests
+        run: cargo check -p pamin-index --all-targets --all-features
+
   licences:
     name: dependency licences
     # Its own job rather than a step in the one above, because it needs no

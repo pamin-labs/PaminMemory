@@ -1,0 +1,542 @@
+[
+  {
+    "round": 1,
+    "arm": "before",
+    "wall_seconds": 0.537452083081007,
+    "peak_process_rss_bytes": 1155088384,
+    "cpu_user_seconds": 0.405342,
+    "cpu_system_seconds": 0.12034099999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 1,
+    "arm": "after",
+    "wall_seconds": 0.5342834582552314,
+    "peak_process_rss_bytes": 18841600,
+    "cpu_user_seconds": 0.42019599999999996,
+    "cpu_system_seconds": 0.11115599999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 2,
+    "arm": "after",
+    "wall_seconds": 0.5428155423142016,
+    "peak_process_rss_bytes": 18841600,
+    "cpu_user_seconds": 0.430044,
+    "cpu_system_seconds": 0.110357,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 2,
+    "arm": "before",
+    "wall_seconds": 0.5633578752167523,
+    "peak_process_rss_bytes": 1155072000,
+    "cpu_user_seconds": 0.427625,
+    "cpu_system_seconds": 0.13300599999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 3,
+    "arm": "before",
+    "wall_seconds": 0.5400261250324547,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.414221,
+    "cpu_system_seconds": 0.12328199999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 3,
+    "arm": "after",
+    "wall_seconds": 0.5506198331713676,
+    "peak_process_rss_bytes": 18907136,
+    "cpu_user_seconds": 0.435457,
+    "cpu_system_seconds": 0.112701,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 4,
+    "arm": "after",
+    "wall_seconds": 0.5464442088268697,
+    "peak_process_rss_bytes": 18841600,
+    "cpu_user_seconds": 0.432112,
+    "cpu_system_seconds": 0.111956,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 4,
+    "arm": "before",
+    "wall_seconds": 0.5392866670154035,
+    "peak_process_rss_bytes": 1155088384,
+    "cpu_user_seconds": 0.41283899999999996,
+    "cpu_system_seconds": 0.124369,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 5,
+    "arm": "before",
+    "wall_seconds": 0.5510318749584258,
+    "peak_process_rss_bytes": 1155055616,
+    "cpu_user_seconds": 0.421875,
+    "cpu_system_seconds": 0.123529,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 5,
+    "arm": "after",
+    "wall_seconds": 0.5395709169097245,
+    "peak_process_rss_bytes": 18874368,
+    "cpu_user_seconds": 0.42427299999999996,
+    "cpu_system_seconds": 0.113102,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 6,
+    "arm": "after",
+    "wall_seconds": 0.5424854592420161,
+    "peak_process_rss_bytes": 18907136,
+    "cpu_user_seconds": 0.42747399999999997,
+    "cpu_system_seconds": 0.112925,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 6,
+    "arm": "before",
+    "wall_seconds": 0.5423260838724673,
+    "peak_process_rss_bytes": 1155104768,
+    "cpu_user_seconds": 0.41689699999999996,
+    "cpu_system_seconds": 0.122428,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 7,
+    "arm": "before",
+    "wall_seconds": 0.5522369998507202,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.421062,
+    "cpu_system_seconds": 0.12839499999999998,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 7,
+    "arm": "after",
+    "wall_seconds": 0.5454467921517789,
+    "peak_process_rss_bytes": 18907136,
+    "cpu_user_seconds": 0.433237,
+    "cpu_system_seconds": 0.11016799999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 8,
+    "arm": "after",
+    "wall_seconds": 0.5695059578865767,
+    "peak_process_rss_bytes": 18939904,
+    "cpu_user_seconds": 0.454715,
+    "cpu_system_seconds": 0.108591,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 8,
+    "arm": "before",
+    "wall_seconds": 0.5767853329889476,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.44160699999999997,
+    "cpu_system_seconds": 0.132316,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 9,
+    "arm": "before",
+    "wall_seconds": 0.5603536670096219,
+    "peak_process_rss_bytes": 1155022848,
+    "cpu_user_seconds": 0.43177099999999996,
+    "cpu_system_seconds": 0.126105,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 9,
+    "arm": "after",
+    "wall_seconds": 0.5533880828879774,
+    "peak_process_rss_bytes": 18890752,
+    "cpu_user_seconds": 0.437222,
+    "cpu_system_seconds": 0.113747,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 10,
+    "arm": "after",
+    "wall_seconds": 0.5558163747191429,
+    "peak_process_rss_bytes": 18890752,
+    "cpu_user_seconds": 0.444148,
+    "cpu_system_seconds": 0.109511,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 10,
+    "arm": "before",
+    "wall_seconds": 0.5529560837894678,
+    "peak_process_rss_bytes": 1155104768,
+    "cpu_user_seconds": 0.42682699999999996,
+    "cpu_system_seconds": 0.123483,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 11,
+    "arm": "before",
+    "wall_seconds": 0.556978375185281,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.43294,
+    "cpu_system_seconds": 0.12220299999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 11,
+    "arm": "after",
+    "wall_seconds": 0.5458288327790797,
+    "peak_process_rss_bytes": 18907136,
+    "cpu_user_seconds": 0.431011,
+    "cpu_system_seconds": 0.112758,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 12,
+    "arm": "after",
+    "wall_seconds": 0.544050166849047,
+    "peak_process_rss_bytes": 18923520,
+    "cpu_user_seconds": 0.43685199999999996,
+    "cpu_system_seconds": 0.10517699999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 12,
+    "arm": "before",
+    "wall_seconds": 0.5481961248442531,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.42222499999999996,
+    "cpu_system_seconds": 0.12278499999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 13,
+    "arm": "before",
+    "wall_seconds": 0.5555724166333675,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.43108199999999997,
+    "cpu_system_seconds": 0.121998,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 13,
+    "arm": "after",
+    "wall_seconds": 0.5444398326799273,
+    "peak_process_rss_bytes": 18808832,
+    "cpu_user_seconds": 0.43088699999999996,
+    "cpu_system_seconds": 0.11129199999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 14,
+    "arm": "after",
+    "wall_seconds": 0.5597945842891932,
+    "peak_process_rss_bytes": 18874368,
+    "cpu_user_seconds": 0.450356,
+    "cpu_system_seconds": 0.1065,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 14,
+    "arm": "before",
+    "wall_seconds": 0.5774871669709682,
+    "peak_process_rss_bytes": 1155022848,
+    "cpu_user_seconds": 0.443689,
+    "cpu_system_seconds": 0.128262,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 15,
+    "arm": "before",
+    "wall_seconds": 0.5711353328078985,
+    "peak_process_rss_bytes": 1155072000,
+    "cpu_user_seconds": 0.441779,
+    "cpu_system_seconds": 0.126326,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 15,
+    "arm": "after",
+    "wall_seconds": 0.5628838329575956,
+    "peak_process_rss_bytes": 18825216,
+    "cpu_user_seconds": 0.44948499999999997,
+    "cpu_system_seconds": 0.105144,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 16,
+    "arm": "after",
+    "wall_seconds": 0.5605193339288235,
+    "peak_process_rss_bytes": 18907136,
+    "cpu_user_seconds": 0.45177799999999996,
+    "cpu_system_seconds": 0.10546499999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 16,
+    "arm": "before",
+    "wall_seconds": 0.5808635000139475,
+    "peak_process_rss_bytes": 1155055616,
+    "cpu_user_seconds": 0.445731,
+    "cpu_system_seconds": 0.128968,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 17,
+    "arm": "before",
+    "wall_seconds": 0.5829366659745574,
+    "peak_process_rss_bytes": 1155055616,
+    "cpu_user_seconds": 0.444237,
+    "cpu_system_seconds": 0.132573,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 17,
+    "arm": "after",
+    "wall_seconds": 0.5649109999649227,
+    "peak_process_rss_bytes": 18874368,
+    "cpu_user_seconds": 0.45281099999999996,
+    "cpu_system_seconds": 0.107597,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 18,
+    "arm": "after",
+    "wall_seconds": 0.5540505000390112,
+    "peak_process_rss_bytes": 18956288,
+    "cpu_user_seconds": 0.446494,
+    "cpu_system_seconds": 0.104679,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 18,
+    "arm": "before",
+    "wall_seconds": 0.5930181671865284,
+    "peak_process_rss_bytes": 1155137536,
+    "cpu_user_seconds": 0.44767599999999996,
+    "cpu_system_seconds": 0.134495,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 19,
+    "arm": "before",
+    "wall_seconds": 0.570866874884814,
+    "peak_process_rss_bytes": 1155055616,
+    "cpu_user_seconds": 0.441789,
+    "cpu_system_seconds": 0.12570599999999998,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 19,
+    "arm": "after",
+    "wall_seconds": 0.5601701661944389,
+    "peak_process_rss_bytes": 18923520,
+    "cpu_user_seconds": 0.45188,
+    "cpu_system_seconds": 0.105722,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 20,
+    "arm": "after",
+    "wall_seconds": 0.5583505830727518,
+    "peak_process_rss_bytes": 18874368,
+    "cpu_user_seconds": 0.45146,
+    "cpu_system_seconds": 0.104378,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 20,
+    "arm": "before",
+    "wall_seconds": 0.589116542134434,
+    "peak_process_rss_bytes": 1155121152,
+    "cpu_user_seconds": 0.45230099999999995,
+    "cpu_system_seconds": 0.13175499999999998,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 21,
+    "arm": "before",
+    "wall_seconds": 0.5787486671470106,
+    "peak_process_rss_bytes": 1155006464,
+    "cpu_user_seconds": 0.443776,
+    "cpu_system_seconds": 0.12283699999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 21,
+    "arm": "after",
+    "wall_seconds": 0.5626398343592882,
+    "peak_process_rss_bytes": 18825216,
+    "cpu_user_seconds": 0.452521,
+    "cpu_system_seconds": 0.106914,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 22,
+    "arm": "after",
+    "wall_seconds": 0.5577494171448052,
+    "peak_process_rss_bytes": 18841600,
+    "cpu_user_seconds": 0.45033999999999996,
+    "cpu_system_seconds": 0.10507899999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 22,
+    "arm": "before",
+    "wall_seconds": 0.5714934589341283,
+    "peak_process_rss_bytes": 1155055616,
+    "cpu_user_seconds": 0.442123,
+    "cpu_system_seconds": 0.125949,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 23,
+    "arm": "before",
+    "wall_seconds": 0.5710716657340527,
+    "peak_process_rss_bytes": 1155055616,
+    "cpu_user_seconds": 0.44201399999999996,
+    "cpu_system_seconds": 0.12571,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 23,
+    "arm": "after",
+    "wall_seconds": 0.5557209588587284,
+    "peak_process_rss_bytes": 18857984,
+    "cpu_user_seconds": 0.449111,
+    "cpu_system_seconds": 0.10452199999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 24,
+    "arm": "after",
+    "wall_seconds": 0.5561483749188483,
+    "peak_process_rss_bytes": 18776064,
+    "cpu_user_seconds": 0.449106,
+    "cpu_system_seconds": 0.105072,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 24,
+    "arm": "before",
+    "wall_seconds": 0.5727815409190953,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.44196799999999997,
+    "cpu_system_seconds": 0.12786,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 25,
+    "arm": "before",
+    "wall_seconds": 0.5731087923049927,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.443544,
+    "cpu_system_seconds": 0.125654,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 25,
+    "arm": "after",
+    "wall_seconds": 0.5756978751160204,
+    "peak_process_rss_bytes": 18825216,
+    "cpu_user_seconds": 0.451383,
+    "cpu_system_seconds": 0.108163,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 26,
+    "arm": "after",
+    "wall_seconds": 0.5558472080156207,
+    "peak_process_rss_bytes": 18890752,
+    "cpu_user_seconds": 0.449945,
+    "cpu_system_seconds": 0.102891,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 26,
+    "arm": "before",
+    "wall_seconds": 0.5867747911252081,
+    "peak_process_rss_bytes": 1155121152,
+    "cpu_user_seconds": 0.44773599999999997,
+    "cpu_system_seconds": 0.128075,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 27,
+    "arm": "before",
+    "wall_seconds": 0.583205415867269,
+    "peak_process_rss_bytes": 1155137536,
+    "cpu_user_seconds": 0.444941,
+    "cpu_system_seconds": 0.13314499999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 27,
+    "arm": "after",
+    "wall_seconds": 0.564866750035435,
+    "peak_process_rss_bytes": 18825216,
+    "cpu_user_seconds": 0.45378599999999997,
+    "cpu_system_seconds": 0.107459,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 28,
+    "arm": "after",
+    "wall_seconds": 0.5555691672489047,
+    "peak_process_rss_bytes": 18923520,
+    "cpu_user_seconds": 0.44904,
+    "cpu_system_seconds": 0.103835,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 28,
+    "arm": "before",
+    "wall_seconds": 0.5699395411647856,
+    "peak_process_rss_bytes": 1155039232,
+    "cpu_user_seconds": 0.439752,
+    "cpu_system_seconds": 0.127283,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 29,
+    "arm": "before",
+    "wall_seconds": 0.5688115833327174,
+    "peak_process_rss_bytes": 1155121152,
+    "cpu_user_seconds": 0.440322,
+    "cpu_system_seconds": 0.125434,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 29,
+    "arm": "after",
+    "wall_seconds": 0.5817170841619372,
+    "peak_process_rss_bytes": 18923520,
+    "cpu_user_seconds": 0.460182,
+    "cpu_system_seconds": 0.11900899999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 30,
+    "arm": "after",
+    "wall_seconds": 0.5637969998642802,
+    "peak_process_rss_bytes": 18808832,
+    "cpu_user_seconds": 0.450879,
+    "cpu_system_seconds": 0.110437,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  },
+  {
+    "round": 30,
+    "arm": "before",
+    "wall_seconds": 0.567302375100553,
+    "peak_process_rss_bytes": 1155006464,
+    "cpu_user_seconds": 0.44078399999999995,
+    "cpu_system_seconds": 0.12414199999999999,
+    "cache_hit_premise": "both files/content/inodes/birth times unchanged"
+  }
+]

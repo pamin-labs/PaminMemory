@@ -16,7 +16,8 @@
 //! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
 //! because the model registry publishes no quantized variant for that family.
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{EmbeddingModel, OutputKey, Pooling, SingleBatchOutput, TextEmbedding};
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 use crate::encoder::Encoder;
@@ -136,28 +137,13 @@ impl Profile {
 
 /// Turns text into vectors.
 pub struct Embedder {
-    model: Model,
+    model: Box<Encoder>,
     profile: Profile,
     /// Query vectors already computed.
     ///
     /// Shared with every project on this profile, because the vector depends on
     /// the model and the text and on nothing else.
     remembered: Queries,
-}
-
-/// The loaded model, which is not the same type for every profile.
-///
-/// BGE-M3 ships as a joint export producing three representations at once,
-/// its int8 weights -- most of why the profile is usable at all -- only in
-/// that export, and its vocabulary shared with the `accurate` reranker's. So
-/// it runs through this crate's own [`Encoder`], which can share that
-/// vocabulary, where the E5 pair run through `fastembed`'s general text type.
-///
-/// Both boxed. Each is over a kilobyte of session and tokenizer state, and an
-/// unboxed enum is the size of its largest variant everywhere it appears.
-enum Model {
-    Text(Box<TextEmbedding>),
-    Joint(Box<Encoder>),
 }
 
 impl Embedder {
@@ -169,28 +155,13 @@ impl Embedder {
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
 
-        // See `crate::inference`: unset leaves fastembed on one thread per
-        // core, which is what this did before the setting existed.
-        let threads = crate::inference::threads();
-
         let model = match profile {
-            Profile::Accuracy => Model::Joint(Box::new(joint(cache_dir)?)),
-            _ => {
-                let mut options = TextInitOptions::new(profile.model())
-                    .with_cache_dir(cache_dir.to_path_buf())
-                    .with_show_download_progress(false)
-                    .with_execution_providers(vec![crate::inference::cpu()]);
-                if let Some(threads) = threads {
-                    options = options.with_intra_threads(threads);
-                }
-                Model::Text(Box::new(TextEmbedding::try_new(options).map_err(
-                    |error| IndexError::Engine(format!("loading embedding model: {error}")),
-                )?))
-            }
+            Profile::Accuracy => joint(cache_dir)?,
+            _ => e5(profile, cache_dir)?,
         };
 
         Ok(Self {
-            model,
+            model: Box::new(model),
             profile,
             remembered: Queries::default(),
         })
@@ -285,10 +256,12 @@ impl Embedder {
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        let failed = |error| IndexError::Engine(format!("embedding text: {error}"));
-        match &mut self.model {
-            Model::Text(model) => model.embed(texts, None).map_err(failed),
-            Model::Joint(model) => texts.iter().map(|text| dense(model, text)).collect(),
+        match self.profile {
+            Profile::Accuracy => texts
+                .iter()
+                .map(|text| dense(&mut self.model, text))
+                .collect(),
+            _ => e5_vectors(&mut self.model, &texts),
         }
     }
 }
@@ -304,6 +277,70 @@ const JOINT_FILE: &str = "model_quantized.onnx";
 /// embeds as its first 512 tokens; changing it would change the vectors of
 /// exactly those passages and nothing would say so, so it is kept.
 const JOINT_MAX_TOKENS: usize = 512;
+
+/// Load an E5 model through the same scoring-session owner as BGE-M3.
+/// FastEmbed still supplies its model registry and pooling implementation;
+/// its private session cannot report which execution provider ran the graph.
+fn e5(profile: Profile, cache_dir: &std::path::Path) -> Result<Encoder> {
+    let model = profile.model();
+    let info = TextEmbedding::get_model_info(&model)
+        .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
+    let repository = Repository::open(cache_dir, &info.model_code)?;
+    Encoder::load(
+        || repository.get(&info.model_file),
+        &repository,
+        JOINT_MAX_TOKENS,
+        vec![crate::inference::cpu()],
+    )
+    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))
+}
+
+/// E5's FastEmbed 6.1 contract: batches of 256, attention-masked mean pooling,
+/// then an f32 L2 normalization. Use its pooling owner rather than another
+/// implementation of the numerical reduction.
+fn e5_vectors(model: &mut Encoder, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    let mut vectors = Vec::with_capacity(texts.len());
+    let precedence: &[OutputKey] = &[
+        OutputKey::OnlyOne,
+        OutputKey::ByName("text_embeds"),
+        OutputKey::ByName("last_hidden_state"),
+        OutputKey::ByName("sentence_embedding"),
+    ];
+    for batch in texts.chunks(256) {
+        let encoded = model.encode(batch.iter().map(String::as_str).collect())?;
+        let (padded, outputs) = model.run_padded(encoded)?;
+        let tokens = padded[0].len();
+        let masks = padded
+            .iter()
+            .flat_map(|encoding| {
+                encoding
+                    .get_attention_mask()
+                    .iter()
+                    .map(|value| i64::from(*value))
+            })
+            .collect();
+        let attention_mask_array = Array2::from_shape_vec((padded.len(), tokens), masks)
+            .map_err(|error| IndexError::Engine(format!("embedding mask: {error}")))?;
+        let output = SingleBatchOutput {
+            outputs: outputs
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect(),
+            attention_mask_array,
+        };
+        let pooled = output
+            .select_and_pool_output(&precedence, Some(Pooling::Mean))
+            .map_err(|error| IndexError::Engine(format!("pooling embedding: {error}")))?;
+        for row in pooled.rows() {
+            let values = row
+                .as_slice()
+                .ok_or_else(|| IndexError::Engine("embedding row is not contiguous".into()))?;
+            let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+            vectors.push(values.iter().map(|value| value / (norm + 1e-12)).collect());
+        }
+    }
+    Ok(vectors)
+}
 
 /// Loads the joint BGE-M3 export on the CPU, from its prepared copy.
 ///
@@ -393,6 +430,74 @@ impl Queries {
 
 #[cfg(test)]
 mod tests {
+    /// Changing an indexed embedding space silently corrupts retrieval, so
+    /// both E5 profiles must retain FastEmbed's exact bytes on CPU.
+    fn matches_fastembed(profile: Profile) {
+        use fastembed::TextInitOptions;
+
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stdout)
+            .try_init();
+        let models =
+            std::path::PathBuf::from(std::env::var("PAMIN_EVAL_HOME").unwrap()).join("models");
+        let options = TextInitOptions::new(profile.model())
+            .with_cache_dir(models.clone())
+            .with_show_download_progress(false)
+            .with_execution_providers(vec![crate::inference::cpu()]);
+        let mut old = TextEmbedding::try_new(options).unwrap();
+        let mut current = Embedder::load(profile, &models).unwrap();
+        let long = "migration rollback ".repeat(300);
+        let texts = [
+            "the deployment pipeline runs on continuous integration",
+            "部署流水线运行在持续集成上",
+            "the office coffee machine needs descaling",
+            long.as_str(),
+        ];
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|text| format!("passage: {text}"))
+            .collect();
+        let together = current.embed_passages(&texts).unwrap();
+        let old_together = old.embed(prefixed.clone(), None).unwrap();
+        assert!(
+            together == old_together,
+            "{profile:?}: batched output changed"
+        );
+        for (index, text) in texts.iter().enumerate() {
+            let single = current.embed_passage(text).unwrap();
+            let old_single = old.embed(vec![prefixed[index].as_str()], None).unwrap();
+            assert!(
+                single == old_single[0],
+                "{profile:?}: single output changed at {index}"
+            );
+            if single != together[index] {
+                let maximum = single
+                    .iter()
+                    .zip(&together[index])
+                    .map(|(left, right)| (left - right).abs())
+                    .fold(0.0f32, f32::max);
+                println!("{profile:?} batch-versus-single at {index}: max {maximum}");
+            }
+        }
+        let query = "how does deployment work";
+        assert_eq!(
+            current.embed_query(query).unwrap(),
+            old.embed(vec![format!("query: {query}")], None).unwrap()[0],
+        );
+    }
+
+    #[test]
+    #[ignore = "loads the real multilingual E5 small model"]
+    fn speed_shared_session_matches_fastembed() {
+        matches_fastembed(Profile::Speed);
+    }
+
+    #[test]
+    #[ignore = "loads the real multilingual E5 base model"]
+    fn balanced_shared_session_matches_fastembed() {
+        matches_fastembed(Profile::Balanced);
+    }
+
     /// A remembered query is the same vector, and a different one is not.
     ///
     /// Keyed by the text, so the thing worth proving is that two queries never

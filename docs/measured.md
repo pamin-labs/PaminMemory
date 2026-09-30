@@ -1,17 +1,72 @@
 # What Påmin Memory measures about itself
 
-Every figure here comes from `pamin search` and `pamin write` themselves, not
-from the model or the index underneath them, because the gap between those two
-is where this project's numbers have been wrong before. The README carries the
-summary; this page carries the numbers and the conditions they were taken
-under.
+The headline search figures here run through the product's `search_reranked`
+entry point or the CLI; the write figures run through its write path. They are not
+model-only or index-only benchmarks, because the gap to a whole search is
+where this project's numbers have been wrong before. The README carries the
+summary; this page carries the numbers and their conditions.
 
 The comparison against other memory systems is a different question and lives
 in [benchmarks.md](benchmarks.md), along with what that comparison holds fixed
 and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
-**Retrieval quality**, at the `fast` reranking tier, which was the default when
+**Complete XQuAD-R product-path comparison (2026-09-30)**: all 1,190 queries
+through `search_reranked`, accuracy profile, accurate reranker, head 30, limit
+60, same complete revision-bound 13,014-sentence memory index.
+
+| group | Main CPU int8 nDCG@10 | Main default auto nDCG@10 | Optimized CoreML nDCG@10 | recall@50 (all) |
+| --- | ---: | ---: | ---: | ---: |
+| cross-language | 0.726808 | 0.727362 | 0.727194 | 0.903193 |
+| same-language | 0.868201 | 0.869148 | 0.869446 | 0.964706 |
+
+| Whole-search / process metric | Main default auto | Optimized CoreML | Absolute change | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| p50 | 5.085653 s | 0.483738 s | −4.601915 s | −90.49% |
+| p95 | 7.374466 s | 0.814224 s | −6.560242 s | −88.96% |
+| Search-call wall total | 6177.679 s | 723.069 s | −5454.610 s | −88.30% |
+| Sampled peak process RSS | 4436525056 B | 3068149760 B | −1368375296 B | −30.84% |
+| Whole accurate-plus-off harness CPU user + system | 26080.018 s | 402.627 s | −25677.390 s | −98.46% |
+| Added three-bucket compiled cache, logical bytes | No equivalent bucket cache | 6836411689 B | +6836411689 B | N/A; zero baseline |
+| Matched total persistent model/cache disk | Not measured | Not measured | N/A | N/A |
+
+Both default arms actually selected CoreML; main used legacy NeuralNetwork,
+while the optimized reranker used MLProgram + ALL with FP16 encoder / FP32
+classifier and static buckets. Embedding stayed CPU int8. ALL permits CPU/GPU/
+ANE cooperation; the run did not capture their internal operation placement.
+CPU time covers the whole accurate-plus-off harness, including startup; search-only
+CPU was not measured. It excludes external CoreML services and device work; RSS includes model
+startup/compilation, not isolated steady residency. Compared with the CPU
+control instead, optimized CoreML RSS increased 104.44%; baseline matters.
+
+The [default-main evidence](../benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md)
+and [CPU-control evidence](../benchmarks/results/inference/coreml-search-full-2026-09-30.md)
+archive pinned artifacts, complete rankings, judgments and paired tests. The
+[generating wrappers and controllers](../benchmarks/harnesses/product-search-2026-09-30/README.md)
+retain the reproduction source and commands.
+Recall is identical per query. Default-main nDCG deltas −0.000168 cross /
++0.000298 same have paragraph-cluster, four-metric adjusted p 0.1532 / 1.0.
+These are small nonsignificant differences, not proof of numerical equivalence.
+Timing is one sequential shared-host process per arm; repeated rotated timings
+and other corpora remain pending. The combined-stack result cannot establish
+any individual PR's speed contribution.
+
+The [older summary](../benchmarks/results/retrieval/summary-current-xquad.json)
+retains its original incomplete index provenance. The fresh revision-bound run
+above supersedes its pending-rerun status without retroactively validating it.
+
+**Recorded MIRACL Swahili dev full-head run**, through the
+`search_reranked` path on 131,924 passages and 482 judged queries: nDCG@10
+**0.8193**, recall@50 **0.9568**. The conditions and replay check are in
+[cli.md](cli.md). Its complete code/device provenance has not been archived,
+so it is not part of the verified current headline.
+
+The figures below preserve earlier runs for their design history. They were
+not rerun under every later change to passage encoding, the answer key or the
+full-head rerank. The older MIRACL rows below are not the current full-head
+result above.
+
+**Historical retrieval quality**, at the `fast` reranking tier, which was the default when
 these were taken:
 
 | corpus | group | nDCG@10 | recall@50 |
@@ -20,33 +75,40 @@ these were taken:
 | XQuAD-R — 13,014 sentences in eleven languages, 1,190 queries | query and answer in **different** languages | 0.6480 | 0.8960 |
 | XQuAD-R | query and answer in the same language | 0.7495 | 0.9580 |
 
-The default is now `accurate`, chosen on the paired comparison in
-[cli.md](cli.md). The runs behind this table measured it too: MIRACL 0.7654,
-XQuAD-R 0.6597 cross-lingual and 0.7835 same-language, recall unchanged because
-a reranker reorders a shortlist and never changes it. The XQuAD-R pair is from
-the later run under the fusion that ships, so it sits against 0.6114 with no
-reranking rather than against the rows above.
+The default later became `accurate`, chosen on the paired comparison in
+[cli.md](cli.md). Those historical runs measured MIRACL at 0.7654 and XQuAD-R
+at 0.6597 cross-lingual and 0.7835 same-language. A reranker reorders a
+shortlist and leaves its full-depth recall unchanged. The current XQuAD-R
+result is in the table above; its gain over these older rows cannot be assigned
+to reranking alone because the passage encoding and answer key also changed.
 
-Both corpora are fetched rather than vendored, and each has a harness in the
-repository: `cargo test -p pamin-engine --test crosslingual -- --ignored` for
-XQuAD-R and `--test monolingual` for MIRACL.
+Both corpora are fetched rather than vendored. For XQuAD-R, prepare a fresh
+persistent cache, then run only the search test:
 
-**The MIRACL row is older than the harness named beside it and older than the
-fusion the product now ships**, and both have to be said rather than tidied
-away. The fusion weight that produced 0.7359 was halved after a sweep on this
-very corpus (below), so that row is not the current default's score either; the
-default profile needs about ten hours of index building on four cores before it
-can be re-taken, and until it is, the XQuAD-R rows are the only two on this
-page taken at the fusion that ships. On the `speed` profile, which can be built
-in an hour, the same corpus moved from 0.6826 to 0.6882 fused when the weight
-was halved. The same applies to the LOCOMO and LongMemEval figures further down
-and to every latency figure on this page: all were taken at the quarter, and
-the weight reorders results without changing which ones are retrieved, so the
-latency rows are unaffected and the quality rows are not yet re-taken.
+```sh
+env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log
+```
 
-Each XQuAD-R row was reproduced identically to four decimals by a second run
-before being placed here, which is what this harness does: fixed corpus, fixed
-index, fixed model, a greedy pass.
+Preparation is needed once per fresh cache. Repeating preparation can fetch
+source weights the product has released after making mapped copies. The
+verifier reads the actual selected graph paths from this run's log; a prepared
+key from the archived machine cannot identify another host's active copy.
+Prepared graph hashes remain an exact archived-artifact check: a different
+runtime or CPU can require fresh evidence rather than matching those bytes.
+MIRACL uses `--test monolingual`.
+
+**The historical MIRACL row predates the current harness and fusion.** The
+fusion weight that produced 0.7359 was later halved; that row remains a record
+of its original path. The current full-head run is described above, but its
+complete code/device provenance has not yet been archived beside XQuAD-R.
+The LoCoMo and LongMemEval rows below also retain their original configurations
+rather than claiming that every later retrieval change was rerun on them.
+
+The older XQuAD-R tables reported a second run agreeing to four decimals.
+The complete CPU and automatic-provider rows above retain their separate
+model/runtime provenance; different exports are not interchangeable repeats.
 
 **But reproducible is not the same as significant, and until recently nothing
 here could tell the difference.** Every comparison on this page is between two
@@ -54,7 +116,7 @@ averages, and an average cannot distinguish every query moving slightly from
 one query moving a great deal. That matters at the sizes being reported: the
 fusion weight moved on +0.0056 and the reranker is priced at −0.0152, and both
 are small enough that a handful of queries decides them. The harnesses now
-report per-query wins, losses and a paired bootstrap p beside every mean — see
+report per-query wins, losses and a paired randomisation p beside every mean — see
 `crates/pamin-engine/tests/statistics/mod.rs` and the section in
 [ADR 0001](adr/0001-tech-selection.md). Until a figure below carries a win/loss
 count, read it as a difference of means and nothing stronger.
@@ -91,13 +153,9 @@ suggests. On XQuAD-R it reaches twenty-two same-language queries out of 1,190
 and makes nineteen of them worse; on MIRACL, where every query is
 same-language, it reaches ninety-four of 482 and loses on fifty-seven.
 
-As for the harness named beside the MIRACL row: this page previously named
-one harness for both corpora, which was true of the XQuAD-R rows and false of
-the MIRACL ones: they came from a program that was never committed, so nothing
-in the repository could produce them, break them, or be trusted to notice.
-`monolingual.rs` exists to close that, and every MIRACL figure below is a
-target for it to reproduce until it has — at which point this paragraph goes
-and the figures carry floors, which they also do not have today.
+The MIRACL table below preserves an earlier run from a program that was not
+committed. `monolingual.rs` later measured the current full-head path reported
+above; the figures in this table describe the older path.
 
 **What those MIRACL figures are worth, against published results on the same
 corpus, the same dev split and the same qrels:**
@@ -107,11 +165,11 @@ corpus, the same dev split and the same qrels:**
 | Pyserini BM25 baseline | 0.3826 | lexical only |
 | Påmin Memory, `--rerank off` | 0.7158 | four channels fused |
 | Påmin Memory, `fast` | 0.7359 | fused, then a cross-encoder |
-| Påmin Memory, `accurate` (default) | **0.7654** | fused, then a larger cross-encoder |
+| Påmin Memory, earlier `accurate` path | **0.7654** | fused, then a larger cross-encoder |
 | BGE-M3, published | 0.787 | dense retrieval alone |
 
-Read the last row carefully, because it is the honest reading: **a whole
-retrieval stack here scored below a single dense retriever** — the same model,
+Read that historical `accurate` row carefully: **a whole retrieval stack then
+scored below a single dense retriever** — the same model,
 as an int8 export. Two differences are known and neither is measured: the
 published figure is fp32, and MIRACL's training split is in BGE-M3's
 fine-tuning data where this runs zero-shot. Neither excuses the gap; they are
@@ -170,8 +228,9 @@ apart.
 
 Two other things the diagnostic settled. The two lexical channels agree at
 Kendall tau-b 0.2816, 0.3188 and 0.2973 on the three corpora, so **they are not
-the near-duplicate pair this project described them as** and the single weight
-they share has never been swept apart. And the graph channel contributes
+the near-duplicate pair this project described them as**. A later independent
+weight grid on XQuAD-R and MuSiQue found no transferable replacement for their
+equal eighths (ADR 0001). And the graph channel contributes
 **exactly 0.0000 in every group of all three corpora**, which is not a
 measurement of the channel: **none of the three corpora has any edges.** The two
 external ones name their topics deliberately unlike their own text, which their
@@ -1264,3 +1323,30 @@ already exceeds the 1,024 a Linux process is given by default.
 What was measured, how, and the conclusions that reversed on measurement are in
 [the ADR](adr/0001-tech-selection.md), which is the
 source of truth if it and this page ever disagree.
+
+The old `PASSAGES` content-only versus named diagnostic is disabled: its retained
+content-only project has no recorded embedding revision, so a newer model cache
+could silently compare different vector spaces. Historical rows stay historical;
+the named product index remains revision-bound. Reintroduce the diagnostic only
+with a newly built and verified revision-bound content-only project.
+
+For `TIERS=fast`, `TIERS=1`, or `ROUTES`, the pinned preparation command must
+be run with that environment variable set before the scoring command. The
+[Fast tier manifest](../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json)
+checks the actual CPU export selected by this architecture and its tokenizer.
+The default Accurate-only preparation still fetches only its two models.
+
+To check only the Fast reranker export and tokenizer before a full corpus run:
+
+```sh
+env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual pinned_fast_reranker_loads_and_scores -- --exact --ignored --nocapture
+```
+
+This validates one real CPU load and two scored pairs; it is not a Fast-tier
+corpus-accuracy or accelerator-speed result.
+
+On Apple Silicon, the optional `pinned_fast_coreml_model_loads_and_scores`
+ignored test uses `PAMIN_DEVICE=auto` and verifies the pinned FP32 export plus
+actual model output on two pairs. Its provider assignment must be read from
+the run log; this small control cannot certify Fast-tier corpus accuracy or
+whole-search latency.

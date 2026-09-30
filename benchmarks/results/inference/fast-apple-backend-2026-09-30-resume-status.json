@@ -1,0 +1,13 @@
+{
+  "state": "terminal",
+  "pid": 60013,
+  "exit_code": 0,
+  "guard_failure": null,
+  "wall_seconds": 632.5589791252278,
+  "peak_process_rss_bytes": 4309630976,
+  "cpu_user_seconds": 857.830908,
+  "cpu_system_seconds": 110.40327,
+  "code_head": "bd523771551874fb47f38c70c2cacb6b01bc7b06",
+  "binary_sha256": "f0edfbaa28a1cb537cbda6251313d669310193c06a294a58d88c03d62285791b",
+  "source_sha256": "01567b01fece03514d7d0a4e0f0103972fcbf1d5c12f2224f5e5ed38ab143712"
+}

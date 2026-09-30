@@ -162,6 +162,12 @@ results/
     summary-session-retrieval.json   recall@k, no reader and no judge
     summary-supersession.json        current, stale or neither, over 70 questions
     summary-supersession-power.json  the same 70, read five times each
+  retrieval/
+    xquad-r-input.sha256             hashes of the pinned question, answer and passage files
+    xquad-r-index-profile.txt        evaluated project's passage and storage marker
+    xquad-r-model-artifacts.json      pinned hub revisions and model file hashes
+    xquad-r-current-run.log          product-path XQuAD-R harness output
+    summary-current-xquad.json       its four group metrics and run conditions
 ```
 
 Regenerate them from a run's raw rows with:
@@ -181,3 +187,20 @@ measurement. The first LOCOMO and LongMemEval runs predate the field, so the
 summaries built from them say `"machine": null` and say why in the same object:
 an unverifiable row should not be dressed up as a verified one, and the run log
 is not the row.
+
+XQuAD-R uses the Rust `crosslingual` harness rather than `benchmarks/run.py`.
+It prints group aggregates, not per-question rows. On a clean cache, run
+`env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --ignored`
+before the recorded search command; this fetches the two archived model
+revisions and makes the product loader use them. Its committed log is the
+source for `python3 benchmarks/results/retrieval/derive_xquad.py`, which reads
+the code commit, named passage encoding, indexed document count and forced CPU
+reranker export printed at run time; the search command sets `PAMIN_DEVICE=cpu`.
+the input manifest covers all eleven upstream JSON files, including the
+question and answer keys, and the harness rejects stale cached copies. The
+archived index marker is checked as `named` by the extractor. The model
+manifest records both hub revisions, tokenizer files and prepared ONNX bytes;
+`python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log`
+checks the cache before treating a run as the same configuration. The
+concurrent rerun was used for accuracy only; its wall time is not a latency
+measurement.

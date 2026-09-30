@@ -1,0 +1,99 @@
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import time
+
+root = pathlib.Path('${FAST_EVIDENCE_HOME}')
+home = pathlib.Path('${PAMIN_EVAL_HOME}')
+repo = pathlib.Path('${EVIDENCE_REPO}')
+model = home / 'models/models--cross-encoder--mmarco-mMiniLMv2-L12-H384-v1/snapshots/1427fd652930e4ba29e8149678df786c240d8825/onnx/model.onnx'
+source = home / 'models/prepared/cross-encoder--mmarco-mMiniLMv2-L12-H384-v1--onnx--model_qint8_arm64.onnx.source'
+source_sha = '3e9a03ed1e966f7c5288dd4230e3d6a9bf5e3a170a06f1f4241c5bca12c6487c'
+cpu_sha = '1825907d6c1a9001ff78124780bbde20a614a8c3df3b63409cf3c72c6fe5c8b4'
+arms = [
+    ('cpu', root / 'fast-cpu-candidate-frozen', '7177cdfdc5730cb2cf184cdb2ad58128729ff434d25e0cc8a327bd2d8cda925d'),
+    ('coreml', root / 'fast-legacy-candidate-frozen', 'f776a6c9d0513dc66d733c122654ab0f49d99990123e38f1c44b6af7752ba7a9'),
+]
+
+def sha(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+def free_memory():
+    output = subprocess.check_output(['memory_pressure'], text=True)
+    return int(output.split('System-wide memory free percentage: ')[1].split('%')[0])
+
+def premise():
+    assert shutil.disk_usage(root).free >= 12 * 2**30, 'free disk <12 GiB before arm'
+    assert free_memory() >= 25, 'system memory free <25% before arm'
+    assert sha(model) == source_sha, 'Fast FP32 source changed'
+    assert source.read_text().splitlines()[0] == cpu_sha, 'Fast CPU source record changed'
+    assert subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip() == 'bd523771551874fb47f38c70c2cacb6b01bc7b06', 'code commit changed'
+    assert subprocess.run(['git', '-C', str(repo), 'diff', '--quiet', 'HEAD']).returncode == 0, 'tracked code changed'
+
+premise()
+environment = os.environ.copy()
+for name in ['HF_HOME', 'TIERS', 'CHANNELS', 'SWEEP', 'FEATURES_OUT', 'PAIRS', 'ROUTES', 'RERANK_RULES', 'PASSAGES', 'PAMIN_RERANK', 'PAMIN_RERANK_DEPTH', 'PAMIN_RERANK_MAX_TOKENS', 'PAMIN_RERANK_BATCH', 'PAMIN_RERANK_BATCH_TOKENS', 'PAMIN_SEARCH_EFFORT', 'PAMIN_PREPARED', 'PAMIN_FUSED_ATTENTION']:
+    environment.pop(name, None)
+environment.update(PAMIN_EVAL_HOME=str(home), PAMIN_PROFILE='accuracy', PAMIN_VECTOR_INDEX='memory', DYLD_LIBRARY_PATH=f"{repo / 'target/release'}:${ORT_RUNTIME_DIR}", GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='diff.ignoreSubmodules', GIT_CONFIG_VALUE_0='all')
+
+status = []
+for device, binary, expected_binary in arms:
+    premise()
+    assert sha(binary) == expected_binary, f'{device} binary changed'
+    prefix = root / f'current-{device}'
+    env = environment.copy()
+    env.update(PAMIN_DEVICE='auto' if device == 'coreml' else 'cpu', PAMIN_PRODUCT_ROWS=str(prefix))
+    started = time.monotonic()
+    peak = 0
+    failure = None
+    stdout = root / f'current-{device}.stdout'
+    stderr = root / f'current-{device}.stderr'
+    with stdout.open('w') as out, stderr.open('w') as err:
+        proc = subprocess.Popen([str(binary), '--exact', 'search_reaches_across_languages', '--ignored', '--nocapture'], env=env, stdout=out, stderr=err)
+        row = {'device': device, 'pid': proc.pid, 'state': 'running', 'code_head': 'bd52377', 'binary_sha256': expected_binary}
+        status.append(row)
+        (root / 'current-status.json').write_text(json.dumps(status, indent=2))
+        print('started', device, proc.pid, flush=True)
+        last_memory_check = started
+        while True:
+            done, wait_status, usage = os.wait4(proc.pid, os.WNOHANG)
+            if done:
+                proc.returncode = os.waitstatus_to_exitcode(wait_status)
+                break
+            sample = subprocess.run(['ps', '-o', 'rss=', '-p', str(proc.pid)], capture_output=True, text=True)
+            if sample.returncode == 0 and sample.stdout.strip():
+                peak = max(peak, int(sample.stdout.strip()) * 1024)
+            if peak > 8 * 2**30:
+                failure = 'process RSS >8 GiB'
+            if shutil.disk_usage(root).free < 10 * 2**30:
+                failure = 'free disk <10 GiB'
+            if time.monotonic() - last_memory_check > 10:
+                if free_memory() < 25:
+                    failure = 'system memory free <25%'
+                last_memory_check = time.monotonic()
+            if failure:
+                proc.terminate()
+                _, wait_status, usage = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(wait_status)
+                break
+            time.sleep(1)
+    row.update(state='terminal', exit_code=proc.returncode, guard_failure=failure, wall_seconds=time.monotonic() - started, peak_process_rss_bytes=peak, cpu_user_seconds=usage.ru_utime, cpu_system_seconds=usage.ru_stime)
+    (root / 'current-status.json').write_text(json.dumps(status, indent=2))
+    print('completed', json.dumps(row), flush=True)
+    assert proc.returncode == 0 and failure is None, f'{device} arm rejected'
+    log = stdout.read_text(errors='replace')
+    assert 'test result: ok. 1 passed' in log, f'{device} test did not pass'
+    assert f'reranker loaded tier="fast" device="{device}"' in log, f'{device} execution provider not selected'
+    for tier in ['fast', 'off']:
+        raw = root / f'current-{device}-{tier}.json'
+        data = json.loads(raw.read_text())
+        assert data['complete'] and data['completed_queries'] == data['expected_queries'] == 1190
+        summary = root / f'current-{device}-{tier}-summary.json'
+        subprocess.run(['${SCORER}', str(raw), '${JUDGMENTS}', str(summary)], check=True, stdout=subprocess.DEVNULL)
+    assert sha(binary) == expected_binary, f'{device} binary changed after arm'
+    assert sha(model) == source_sha and source.read_text().splitlines()[0] == cpu_sha, f'{device} model source changed after arm'
+print('Both complete product-path Fast arms passed their frozen premises', flush=True)

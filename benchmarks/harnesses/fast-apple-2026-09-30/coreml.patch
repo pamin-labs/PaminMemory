@@ -1,0 +1,562 @@
+--- lib.rs
++++ lib.rs
+@@ -175,0 +176 @@
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/channels/mod.rs"]
+@@ -176,0 +178 @@
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/features/mod.rs"]
+@@ -177,0 +180 @@
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/harness/mod.rs"]
+@@ -178,0 +182 @@
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/reranking/mod.rs"]
+@@ -179,0 +184 @@
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/scoring/mod.rs"]
+@@ -180,0 +186 @@
++#[path = "${EVIDENCE_REPO}/crates/pamin-engine/tests/statistics/mod.rs"]
+@@ -491 +497 @@
+-    let manifest = include_str!("../../../benchmarks/results/retrieval/xquad-r-input.sha256");
++    let manifest = include_str!("${EVIDENCE_REPO}/benchmarks/results/retrieval/xquad-r-input.sha256");
+@@ -541,62 +547,2 @@
+-    pinned_model_id(models, "embedder")
+-}
+-
+-fn fast_reranker_requested() -> bool {
+-    std::env::var_os("ROUTES").is_some()
+-        || std::env::var("TIERS")
+-            .is_ok_and(|tiers| tiers == "1" || tiers.split(',').any(|tier| tier.trim() == "fast"))
+-}
+-
+-fn pinned_source(model: &serde_json::Value) -> (&str, &str) {
+-    let source = &model["source_onnx"];
+-    let digest = &model["source_onnx_sha256"];
+-    let variant = if source.is_object() {
+-        #[cfg(target_arch = "aarch64")]
+-        let variant = "aarch64";
+-        #[cfg(target_arch = "x86_64")]
+-        let variant = if std::arch::is_x86_feature_detected!("avx512vnni") {
+-            "x86_vnni"
+-        } else {
+-            "x86_avx2"
+-        };
+-        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+-        let variant = "other";
+-        Some(variant)
+-    } else {
+-        None
+-    };
+-    let (source, digest) = match variant {
+-        Some(variant) => (&source[variant], &digest[variant]),
+-        None => (source, digest),
+-    };
+-    (
+-        source.as_str().expect("pinned ONNX path"),
+-        digest.as_str().expect("pinned ONNX SHA256"),
+-    )
+-}
+-
+-#[test]
+-#[should_panic(expected = "XQuAD-R reranker_fast revision differs")]
+-fn stale_fast_reranker_revision_is_rejected_before_scoring() {
+-    let models = tempfile::tempdir().unwrap();
+-    let refs = models
+-        .path()
+-        .join("models--cross-encoder--mmarco-mMiniLMv2-L12-H384-v1/refs");
+-    std::fs::create_dir_all(&refs).unwrap();
+-    std::fs::write(refs.join("main"), "stale").unwrap();
+-    pinned_model_id(models.path(), "reranker_fast");
+-}
+-
+-/// Validate every pinned role before opening or scoring a project.
+-fn pinned_model_id(models: &Path, role: &str) -> String {
+-    let manifest: serde_json::Value = if role == "reranker_fast" {
+-        serde_json::from_str(include_str!(
+-            "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+-        ))
+-        .unwrap()
+-    } else {
+-        serde_json::from_str(include_str!(
+-            "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+-        ))
+-        .unwrap()
+-    };
++    let manifest: serde_json::Value = serde_json::from_str(include_str!("${EVIDENCE_REPO}/benchmarks/results/retrieval/xquad-r-model-artifacts.json"))
++    .unwrap();
+@@ -607 +553 @@
+-        .find(|model| model["role"] == role)
++        .find(|model| model["role"] == "embedder")
+@@ -617,6 +563 @@
+-        "XQuAD-R {} revision differs from the pinned model",
+-        if role == "embedder" {
+-            "embedding"
+-        } else {
+-            role
+-        }
++        "XQuAD-R embedding revision differs from the pinned model"
+@@ -629 +570 @@
+-    let (weights, expected_source) = pinned_source(model);
++    let weights = model["source_onnx"].as_str().unwrap();
+@@ -646 +587 @@
+-        Err(error) => panic!("read pinned {role} weights: {error}"),
++        Err(error) => panic!("read pinned embedding weights: {error}"),
+@@ -648 +589 @@
+-    assert_eq!(source_hash, expected_source);
++    assert_eq!(source_hash, model["source_onnx_sha256"].as_str().unwrap());
+@@ -671,95 +611,0 @@
+-#[test]
+-#[should_panic(expected = "XQuAD-R reranker revision differs")]
+-fn stale_reranker_revision_is_rejected_before_indexing_or_scoring() {
+-    let models = tempfile::tempdir().unwrap();
+-    let refs = models
+-        .path()
+-        .join("models--onnx-community--bge-reranker-v2-m3-ONNX/refs");
+-    std::fs::create_dir_all(&refs).unwrap();
+-    std::fs::write(refs.join("main"), "stale").unwrap();
+-    pinned_model_id(models.path(), "reranker");
+-}
+-
+-fn xquad_project_name(named: &str, fingerprint: &str, embedding: &str) -> String {
+-    format!("xquad-{named}-{fingerprint}-{}", &embedding[..16])
+-}
+-
+-#[test]
+-fn xquad_project_is_revision_bound() {
+-    assert_eq!(
+-        xquad_project_name("accuracy", "corpus", "0123456789abcdefmore"),
+-        "xquad-accuracy-corpus-0123456789abcdef"
+-    );
+-}
+-
+-fn require_revision_bound_passages(content_only: bool) {
+-    assert!(
+-        !content_only,
+-        "PASSAGES cannot authenticate the retained content-only index's embedder revision; rebuild a revision-bound diagnostic before comparing passages"
+-    );
+-}
+-
+-#[test]
+-#[should_panic(expected = "PASSAGES cannot authenticate")]
+-fn old_content_only_passage_diagnostic_is_refused() {
+-    require_revision_bound_passages(true);
+-}
+-
+-fn requested_pinned_home(home: Option<String>, explicitly_selected: bool) -> Option<String> {
+-    assert!(
+-        home.is_some() || !explicitly_selected,
+-        "set PAMIN_EVAL_HOME when explicitly selecting a pinned XQuAD benchmark"
+-    );
+-    home
+-}
+-
+-fn selected_by_libtest(test: &str, args: impl Iterator<Item = String>) -> bool {
+-    args.filter(|argument| !argument.starts_with('-'))
+-        .any(|filter| test.contains(&filter))
+-}
+-
+-fn pinned_benchmark_home(test: &str) -> Option<String> {
+-    let selected = selected_by_libtest(test, std::env::args().skip(1));
+-    let home = requested_pinned_home(std::env::var("PAMIN_EVAL_HOME").ok(), selected);
+-    if home.is_none() {
+-        eprintln!("skipping {test}: set PAMIN_EVAL_HOME and use its documented filtered command");
+-    }
+-    home
+-}
+-
+-#[test]
+-fn substring_selected_benchmark_requires_setup() {
+-    let test = "search_reaches_across_languages";
+-    assert!(selected_by_libtest(
+-        test,
+-        ["search_reaches", "--ignored"]
+-            .into_iter()
+-            .map(str::to_string)
+-    ));
+-    assert!(selected_by_libtest(
+-        test,
+-        [test, "--exact", "--ignored"]
+-            .into_iter()
+-            .map(str::to_string)
+-    ));
+-    assert!(!selected_by_libtest(
+-        test,
+-        ["--ignored", "--nocapture"].into_iter().map(str::to_string)
+-    ));
+-}
+-
+-#[test]
+-fn unconfigured_workspace_gate_does_not_start_a_pinned_benchmark() {
+-    assert_eq!(requested_pinned_home(None, false), None);
+-    assert_eq!(
+-        requested_pinned_home(Some("evaluation".into()), false),
+-        Some("evaluation".into())
+-    );
+-}
+-
+-#[test]
+-#[should_panic(expected = "set PAMIN_EVAL_HOME")]
+-fn explicitly_selected_pinned_benchmark_requires_setup() {
+-    requested_pinned_home(None, true);
+-}
+-
+@@ -775,125 +620,0 @@
+-fn pinned_model_api(models: &Path) -> hf_hub::api::sync::Api {
+-    let mut builder = hf_hub::api::sync::ApiBuilder::new()
+-        .with_cache_dir(models.to_path_buf())
+-        .with_progress(false);
+-    if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
+-        builder = builder.with_endpoint(endpoint);
+-    }
+-    builder.build().expect("reach the model hub")
+-}
+-
+-fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &serde_json::Value) {
+-    let name = model["repository"].as_str().unwrap();
+-    let revision = model["revision"].as_str().unwrap();
+-    let repository = api.repo(hf_hub::Repo::with_revision(
+-        name.to_string(),
+-        hf_hub::RepoType::Model,
+-        revision.to_string(),
+-    ));
+-    for file in model["files_sha256"].as_object().unwrap().keys() {
+-        repository
+-            .get(file)
+-            .unwrap_or_else(|error| panic!("fetching {name}/{file}: {error}"));
+-    }
+-    let (weights, _) = pinned_source(model);
+-    repository
+-        .get(weights)
+-        .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
+-    let refs = models
+-        .join(format!("models--{}", name.replace('/', "--")))
+-        .join("refs");
+-    std::fs::create_dir_all(&refs).unwrap();
+-    std::fs::write(refs.join("main"), revision).unwrap();
+-    println!("  prepared {name} at {revision}");
+-}
+-
+-/// Load the architecture-selected Fast export and rank two unambiguous pairs.
+-/// This tests the manifest against the actual product loader, without a corpus.
+-#[test]
+-#[ignore = "downloads a pinned Fast reranker into PAMIN_EVAL_HOME"]
+-fn pinned_fast_reranker_loads_and_scores() {
+-    let Some(home) = pinned_benchmark_home("pinned_fast_reranker_loads_and_scores") else {
+-        return;
+-    };
+-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+-    assert!(std::env::var_os("HF_HOME").is_none());
+-    let models = Path::new(&home).join("models");
+-    let fast: serde_json::Value = serde_json::from_str(include_str!(
+-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+-    ))
+-    .unwrap();
+-    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
+-    let identity = pinned_model_id(&models, "reranker_fast");
+-    report_loaded_graphs();
+-    let mut reranker =
+-        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
+-    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
+-    let ranked = reranker
+-        .rank(
+-            "Where does the harbour pilot board ships?",
+-            &[
+-                "The harbour pilot boards ships at the outer buoy.",
+-                "Chocolate cake is baked with flour and cocoa.",
+-            ],
+-        )
+-        .expect("score the pinned Fast tier");
+-    assert_eq!(ranked.len(), 2);
+-    assert!(ranked.iter().all(|item| item.score.is_finite()));
+-    assert_eq!(ranked[0].position, 0);
+-    assert_eq!(
+-        pinned_model_id(&models, "reranker_fast"),
+-        identity,
+-        "release changed the pinned source identity"
+-    );
+-}
+-
+-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+-#[test]
+-#[ignore = "downloads a pinned Fast FP32 export and requires CoreML"]
+-fn pinned_fast_coreml_model_loads_and_scores() {
+-    let Some(home) = pinned_benchmark_home("pinned_fast_coreml_model_loads_and_scores") else {
+-        return;
+-    };
+-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("auto"));
+-    assert!(std::env::var_os("HF_HOME").is_none());
+-    let models = Path::new(&home).join("models");
+-    let fast: serde_json::Value = serde_json::from_str(include_str!(
+-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+-    ))
+-    .unwrap();
+-    let model = &fast["models"][0];
+-    let repository = model["repository"].as_str().unwrap();
+-    let revision = model["revision"].as_str().unwrap();
+-    let api = pinned_model_api(&models);
+-    prepare_pinned_model(&api, &models, model);
+-    let fp32 = api
+-        .repo(hf_hub::Repo::with_revision(
+-            repository.to_owned(),
+-            hf_hub::RepoType::Model,
+-            revision.to_owned(),
+-        ))
+-        .get("onnx/model.onnx")
+-        .expect("fetch pinned Fast FP32 export");
+-    let expected = model["source_onnx_sha256"]["other"].as_str().unwrap();
+-    assert_eq!(
+-        format!("{:x}", Sha256::digest(std::fs::read(fp32).unwrap())),
+-        expected
+-    );
+-    report_loaded_graphs();
+-    let mut reranker =
+-        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
+-    assert_eq!(reranker.device(), pamin_index::Device::CoreMl);
+-    let ranked = reranker
+-        .rank(
+-            "Where does the harbour pilot board ships?",
+-            &[
+-                "The harbour pilot boards ships at the outer buoy.",
+-                "Chocolate cake is baked with flour and cocoa.",
+-            ],
+-        )
+-        .expect("score on CoreML");
+-    assert_eq!(ranked.len(), 2);
+-    assert!(ranked.iter().all(|item| item.score.is_finite()));
+-    assert_eq!(ranked[0].position, 0);
+-}
+-
+@@ -905,3 +625,0 @@
+-    let Some(home) = pinned_benchmark_home("pinned_model_loads_report_actual_graph_paths") else {
+-        return;
+-    };
+@@ -909,0 +628 @@
++    let home = std::env::var("PAMIN_EVAL_HOME").expect("persistent model cache");
+@@ -912 +630,0 @@
+-    pinned_model_id(&models, "reranker");
+@@ -924,3 +642 @@
+-    let Some(home) = pinned_benchmark_home("prepare_pinned_xquad_models") else {
+-        return;
+-    };
++    let home = std::env::var("PAMIN_EVAL_HOME").expect("set PAMIN_EVAL_HOME for the model cache");
+@@ -932,4 +648,9 @@
+-    let api = pinned_model_api(&models);
+-    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+-        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+-    ))
++    let cache = models.clone();
++    let mut builder = hf_hub::api::sync::ApiBuilder::new()
++        .with_cache_dir(cache.clone())
++        .with_progress(false);
++    if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
++        builder = builder.with_endpoint(endpoint);
++    }
++    let api = builder.build().expect("reach the model hub");
++    let manifest: serde_json::Value = serde_json::from_str(include_str!("${EVIDENCE_REPO}/benchmarks/results/retrieval/xquad-r-model-artifacts.json"))
+@@ -937,16 +658,29 @@
+-    let fast: serde_json::Value = serde_json::from_str(include_str!(
+-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
+-    ))
+-    .unwrap();
+-    let selected_fast = fast["models"]
+-        .as_array()
+-        .unwrap()
+-        .iter()
+-        .filter(|_| fast_reranker_requested());
+-    for model in manifest["models"]
+-        .as_array()
+-        .unwrap()
+-        .iter()
+-        .chain(selected_fast)
+-    {
+-        prepare_pinned_model(&api, &models, model);
++    for model in manifest["models"].as_array().unwrap() {
++        let name = model["repository"].as_str().unwrap();
++        let revision = model["revision"].as_str().unwrap();
++        let repository = api.repo(hf_hub::Repo::with_revision(
++            name.to_string(),
++            hf_hub::RepoType::Model,
++            revision.to_string(),
++        ));
++        for file in model["files_sha256"].as_object().unwrap().keys() {
++            repository
++                .get(file)
++                .unwrap_or_else(|error| panic!("fetching {name}/{file}: {error}"));
++        }
++
++        // Fetch the pinned source instead of checking a prepared directory
++        // from the archived host. A scoring run records its actual selection.
++        // Preparation is needed once per fresh cache; repeating it may fetch
++        // a source that the product released after preparing a mapped copy.
++        let weights = model["source_onnx"].as_str().unwrap();
++        repository
++            .get(weights)
++            .unwrap_or_else(|error| panic!("fetching {name}/{weights}: {error}"));
++
++        let refs = cache
++            .join(format!("models--{}", name.replace('/', "--")))
++            .join("refs");
++        std::fs::create_dir_all(&refs).unwrap();
++        std::fs::write(refs.join("main"), revision).unwrap();
++        println!("  prepared {name} at {revision}");
+@@ -1513 +1247 @@
+-const RERANK_IS_WORTH: f64 = 0.040;
++
+@@ -1518,4 +1251,0 @@
+-    if pinned_benchmark_home("search_reaches_across_languages").is_none() {
+-        return;
+-    }
+-    require_revision_bound_passages(std::env::var_os("PASSAGES").is_some());
+@@ -1528,2 +1258,2 @@
+-        Ok("cpu"),
+-        "set PAMIN_DEVICE=cpu for the reproducible XQuAD-R baseline"
++        Ok("auto"),
++        "this separate candidate run requires the automatic accelerator policy"
+@@ -1533 +1263 @@
+-        .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
++        .args(["-C", "${EVIDENCE_REPO}/crates/pamin-engine", "rev-parse", "HEAD"])
+@@ -1539 +1269 @@
+-            .args(["-C", env!("CARGO_MANIFEST_DIR"), "diff", "--quiet", "HEAD"])
++            .args(["-C", "${EVIDENCE_REPO}/crates/pamin-engine", "diff", "--quiet", "HEAD"])
+@@ -1546 +1276 @@
+-    println!("  reranker device: cpu; export: onnx/model_int8.onnx");
++    println!("  requested reranker device: auto; actual device must be checked in loader logs");
+@@ -1548,0 +1279 @@
++    assert_eq!(queries.len(), 1190, "candidate must use the same canonical query rotation");
+@@ -1564,7 +1294,0 @@
+-    let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
+-    println!("  pinned reranker identity: {reranker_id}");
+-    if fast_reranker_requested() {
+-        let fast_id = pinned_model_id(&workspace.root().join("models"), "reranker_fast");
+-        println!("  pinned fast reranker identity: {fast_id}");
+-    }
+-
+@@ -1573,8 +1297,7 @@
+-    assert_eq!(
+-        profile,
+-        pamin_index::Profile::Accuracy,
+-        "the pinned XQuAD-R search benchmark uses the accuracy profile"
+-    );
+-    let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
+-    println!("  index embedding identity: {embedding_id}");
+-    let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
++    let mut project = format!("xquad-{named}-{}", corpus.fingerprint());
++    if profile == pamin_index::Profile::Accuracy {
++        let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
++        project.push('-');
++        project.push_str(&embedding_id[..16]);
++        println!("  index embedding identity: {embedding_id}");
++    }
+@@ -1592,6 +1315,8 @@
+-    assert_eq!(
+-        engine.passage(),
+-        pamin_index::Passage::Named,
+-        "XQuAD-R needs named passages; run pamin reindex for an older workspace"
+-    );
+-    println!("  index passage: named");
++    if std::env::var("PASSAGES").is_err() {
++        assert_eq!(
++            engine.passage(),
++            pamin_index::Passage::Named,
++            "XQuAD-R needs named passages; run pamin reindex for an older workspace"
++        );
++        println!("  index passage: named");
++    }
+@@ -1613,0 +1339,52 @@
++
++    // `PASSAGES`: the same memories in a second project whose vectors embed
++    // the topic's name, asked every question alongside this one. See
++    // `channels::Paired`.
++    if std::env::var("PASSAGES").is_ok() {
++        let other = Engine::open(
++            &workspace,
++            &format!("{project}-named"),
++            profile,
++            VectorIndex::default(),
++            Access::ReadWrite,
++        )
++        .await
++        .expect("open the named project");
++        write_corpus(&other, &corpus).await;
++        assert_eq!(
++            other.vector_index_completeness().expect("completeness"),
++            1.0,
++            "the paired named index must also be complete"
++        );
++        assert_eq!(
++            engine.passage(),
++            pamin_index::Passage::Content,
++            "the baseline project was built from content"
++        );
++        assert_eq!(
++            other.passage(),
++            pamin_index::Passage::Named,
++            "the new project embeds names"
++        );
++        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
++        let mut paired = channels::Paired::default();
++        for query in &queries {
++            let before = engine
++                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
++                .await
++                .expect("search");
++            let after = other
++                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
++                .await
++                .expect("search");
++            for group in GROUPS {
++                paired.observe(group, &before, &after, |into, ranking| {
++                    score_group(into, query, group, ranking)
++                });
++            }
++        }
++        paired.report(&format!(
++            "vectors embedding the topic name, XQuAD-R, {named}"
++        ));
++        return;
++    }
+@@ -1930 +1707 @@
+-    let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
++    let groups = run(&engine, &queries, Route::Shipped(Rerank::Fast)).await;
+@@ -1936,2 +1713,4 @@
+-    report_reranking(&engine, Rerank::default(), queries.len());
+-    assert_floors(&named, &groups, SEARCH_FLOORS);
++    report_reranking(&engine, Rerank::Fast, queries.len());
++    // This is a Fast-tier format comparison, not an Accurate-tier release
++    // gate. The paired scorer below judges any accuracy loss against Fast.
++    assert!(groups.values().all(|scores| scores.queries == queries.len()));
+@@ -1964,13 +1743 @@
+-        assert!(
+-            paired.is_significant(),
+-            "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
+-             difference of means with nothing under it. The tier is supposed to \
+-             be worth something, not to be indistinguishable from leaving it off"
+-        );
+-        assert!(
+-            with - without >= RERANK_IS_WORTH,
+-            "reranking moved cross-lingual nDCG@{NDCG_AT} by {:+.4}, under the \
+-             {RERANK_IS_WORTH:.4} it is supposed to be worth: {without:.4} without it, \
+-             {with:.4} with",
+-            with - without
+-        );
++        println!("  observed Fast minus off cross-language nDCG@{NDCG_AT}: {:+.4}", with - without);
+@@ -2973 +2740,3 @@
+-    for query in queries {
++    let mut measured_rows = Vec::new();
++    for (index, query) in queries.iter().enumerate() {
++        let timed = std::time::Instant::now();
+@@ -2996,0 +2766,2 @@
++        let seconds = timed.elapsed().as_secs_f64();
++        assert!(!hits.is_empty(), "product search returned no candidates");
+@@ -2998,0 +2770,15 @@
++        measured_rows.push(serde_json::json!({"index": index, "query_id": query.question.id, "language": query.language, "search_seconds": seconds, "ranking": ranked,
++            "cross_ndcg": *groups["cross_lingual"].per_query.last().unwrap(),
++            "same_ndcg": *groups["same_language"].per_query.last().unwrap()}));
++        if let Ok(prefix) = std::env::var("PAMIN_PRODUCT_ROWS") {
++            if (index + 1) % 11 == 0 || index + 1 == queries.len() {
++                let arm = match &route { Route::Shipped(tier) => tier.name(), _ => "diagnostic" };
++                let body = serde_json::json!({"expected_queries": queries.len(), "completed_queries": index + 1,
++                    "complete": index + 1 == queries.len(), "boundary": "Engine search call", "rows": measured_rows});
++                let output = std::path::PathBuf::from(format!("{prefix}-{arm}.json"));
++                let partial = output.with_extension("partial");
++                std::fs::write(&partial, serde_json::to_vec(&body).unwrap()).unwrap();
++                std::fs::rename(partial, output).unwrap();
++                println!("  product measured {}/{}", index + 1, queries.len());
++            }
++        }

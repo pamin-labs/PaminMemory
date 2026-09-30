@@ -1,0 +1,39 @@
+from policy import require_policy
+import os,json,subprocess,time,shutil,signal,re,hashlib
+from pathlib import Path
+root=Path('${RUN_ROOT}')
+repo=Path('${REPO}')
+binary=root/'benchmark'
+expected=hashlib.file_digest(binary.open('rb'),'sha256').hexdigest()
+native=repo/'target/release/build/zvec-rust-sys-3f0a228669f2b701/out/zvec-prebuilt/libzvec_c_api.dylib'
+configurations=[('accurate','all'),('accurate','gpu'),('accurate','cpu'),('fast','all'),('fast','gpu'),('fast','cpu')]
+# Prespecified rotations, one process at a time. Whole product boundary,
+# only the reranker plan changes; the BGE-M3 embedder stays on CPU.
+orders=[configurations,configurations[2:]+configurations[:2],configurations[4:]+configurations[:4]]
+def headroom():
+ free=int(re.search(r'System-wide memory free percentage: (\d+)%',subprocess.check_output(['memory_pressure'],text=True))[1])
+ return shutil.disk_usage(root).free>=10*1024**3 and free>=25
+for round_index,order in enumerate(orders):
+ for tier,device in order:
+  name=f'{tier}-{device}-{round_index}'
+  assert headroom(), 'resource guard before '+name
+  assert hashlib.file_digest(binary.open('rb'),'sha256').hexdigest()==expected
+  env={k:v for k,v in os.environ.items() if not k.startswith('PAMIN_') and k not in ('HF_HOME','HF_ENDPOINT')}
+  env.update(PAMIN_EVAL_HOME='${EVAL_HOME}',PAMIN_PROFILE='accuracy',PAMIN_VECTOR_INDEX='memory',PAMIN_DEVICE='cpu' if device=='cpu' else 'auto',PAMIN_MATRIX_TIER=tier,PAMIN_MATRIX_UNITS=device,PAMIN_MATRIX_OUTPUT=str(root/(name+'.json')))
+  if tier=='fast' and device!='cpu':env['PAMIN_MATRIX_FAST_ACCELERATOR']='1'
+  print('START',name,flush=True)
+  with (root/(name+'.log')).open('w') as log,(root/(name+'.resource')).open('w') as resource:
+   child=subprocess.Popen(['/usr/bin/time','-l','/usr/bin/env',f'DYLD_LIBRARY_PATH={native.parent}',str(binary),'scratch_backend_repeat','--exact','--ignored','--nocapture'],env=env,stdout=log,stderr=resource,start_new_session=True)
+   while child.poll() is None:
+    if not headroom():
+     os.killpg(child.pid,signal.SIGINT);child.wait();raise RuntimeError('stopped at resource guard: '+name)
+    time.sleep(5)
+   assert child.returncode==0,name+' failed; see retained log'
+  rows=json.loads((root/(name+'.json')).read_text());assert len(rows)==24
+  devices=re.findall(r'reranker loaded[^\n]*', (root/(name+'.log')).read_text())
+  assert devices, 'missing actual reranker device attestation'
+  expected_device='cpu' if device=='cpu' else 'coreml'
+  assert expected_device in devices[-1], 'actual device mismatch: '+str(devices)
+  require_policy((root/(name+'.log')).read_text(),device)
+  print('DONE',name,flush=True)
+print('ALL_ARMS_COMPLETE',flush=True)

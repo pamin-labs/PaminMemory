@@ -11,6 +11,9 @@ pub mod error;
 mod half;
 mod hub;
 mod inference;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native;
+mod onnx;
 mod prepared;
 pub mod projection;
 pub mod reranking;

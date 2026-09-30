@@ -19,13 +19,15 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 ## Where This Differs
 
-**LOCOMO accuracy matching mem0 and MemPalace — with zero model calls on the
-write path, zero cost to ingest, and a store that rebuilds itself byte for
-byte.**
+**LOCOMO accuracy matching mem0 and MemPalace in the historical matched run —
+with zero LLM calls on the write path, zero API charges to ingest, and a store
+that rebuilds itself byte for byte.**
 
 Measured head to head: every arm answering the same 199 questions, read and
 judged by the same model, embedding through the same endpoint. Reproducible
-from this repository with the commands in [benchmarks/](benchmarks).
+from this repository with the commands in [benchmarks/](benchmarks). This run
+predates the current full-head `accurate` reranker; it is a comparison of the
+recorded builds, not today's default accuracy or latency.
 
 | LOCOMO, thirty passages | accuracy | to ingest 10 conversations | retrieval |
 | --- | --- | --- | --- |
@@ -35,7 +37,7 @@ from this repository with the commands in [benchmarks/](benchmarks).
 
 No pair of those accuracies separates statistically. That is the claim, and it
 is deliberately a tie: **parity with the systems this category is named after,
-from a design that spends nothing to reach it.**
+from a design that spends no write-side LLM calls to reach it.**
 
 ### Why these numbers are lower than the ones on everyone's website
 
@@ -63,7 +65,7 @@ website. LongMemEval's retrieval stage has no reader and no judge — it asks
 whether the gold session is in the top k — so it is the one figure here that
 can sit beside a published one. MemPalace publishes **96.6% R@5** on it.
 
-| LongMemEval session retrieval, no model anywhere | BM25 | Påmin Memory |
+| LongMemEval session retrieval, no answerer or judge | BM25 | Påmin Memory |
 | --- | --- | --- |
 | R@5, as the field defines it — gold session in the top five | 96.6% | 98.3% |
 | R@10 | 98.3% | **100%** |
@@ -79,13 +81,13 @@ search there is not a product claim, and it is not made here.
 The row that means something is the last one. Thirty-five of these 59 questions
 have more than one gold session, and requiring all of them is the difference
 between finding the evidence and finding *some* of it: **79.7% against 89.8%,
-ten points over the lexical baseline, with no model called at any stage.**
+ten points over the lexical baseline, with no generative answerer or judge.**
 
 ### What the parity is bought with
 
 Everything that separates these systems follows from one choice: **no language
-model runs on the write path.** Of the seven memory systems surveyed in
-[docs/benchmarks.md](docs/benchmarks.md), six run one by default. MemPalace can
+model runs on the write path.** Of the eight memory systems surveyed in
+[docs/benchmarks.md](docs/benchmarks.md), seven run one by default. MemPalace can
 be told not to, with `init --no-llm`, and measured that way it reaches the same
 accuracy as Påmin Memory — so the property is not unique, and it does not buy
 accuracy. What it buys is everything in the table below, and here it is the
@@ -236,36 +238,66 @@ Edges are versioned the way memories are. Changing one closes the old version an
 
 ## Measured
 
-Every figure comes from `pamin search` and `pamin write` themselves rather than
-from the model or the index underneath them, on four cores. **The numbers and
-the conditions they were taken under are in
+The current retrieval accuracy below runs through `Engine::search_reranked`;
+the historical CLI latency and write figures came from `pamin search` and
+`pamin write` on a four-core machine. **The numbers and conditions are in
 [docs/measured.md](docs/measured.md)**; the comparison against other memory
 systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
 under [benchmarks/results/](benchmarks/results).
 
-These are published baseline measurements. The `accurate` tier now scores the
-whole fused head and blends model and fusion scores; its current accuracy and
-latency are being evaluated in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+A new or reindexed `accuracy` index embeds `name: content`, and the `accurate`
+tier reranks the whole fused head, blending model and fusion scores. Older
+indexes retain content-only vectors until `pamin reindex`. Through the product
+`search_reranked` path, the complete revision-bound XQuAD-R run records:
 
-| | | measured on |
+| retrieval group | CPU int8 control | Optimized CoreML ALL | recall@50 (both) |
+| --- | ---: | ---: | ---: |
+| query and answer in different languages | nDCG@10 **0.7268** | **0.7272** | **0.9032** |
+| query and answer in the same language | nDCG@10 **0.8682** | **0.8694** | **0.9647** |
+
+All 1,190 queries use the same complete 13,014-sentence index. The
+[default-main comparison](benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md)
+observed whole-search p50 **5.086 → 0.484 s**, p95 **7.374 → 0.814 s** and
+peak process RSS **−30.84%**. Main's default auto also selected CoreML, using
+its older graph format. This is one sequential run per arm on a shared Mac,
+not a repeated causal speed estimate; the small quality differences are not
+statistically significant. Embedding stayed CPU int8. See the
+[CPU control and raw query evidence](benchmarks/results/inference/coreml-search-full-2026-09-30.md)
+for pinned models, index completeness and measurement scope.
+
+The opt-in `fast` tier takes a different route on Apple Silicon: its
+[complete XQuAD-R backend comparison](benchmarks/results/inference/fast-apple-backend-2026-09-30.md)
+found no significant quality loss for ARM INT8 CPU versus CoreML FP32, and
+CPU was faster on all 1,190 paired searches. The CoreML latency distribution
+was completed across two processes after a disk-guard interruption; the
+`accurate` default above still uses its measured CoreML route.
+
+The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
+It is outside this headline table until its code, device and raw-run evidence
+are archived with the same provenance as XQuAD-R.
+
+The following measurements are historical baselines. Their latency and
+resident memory were measured under earlier paths or on another machine and
+cannot be carried over to the current retrieval rows.
+
+| historical measurement | result | condition |
 | --- | --- | --- |
-| retrieval, one language | nDCG@10 **0.7654** | MIRACL Swahili dev, 131,924 passages, `accurate` reranking |
-| retrieval, query and answer in different languages | nDCG@10 0.6597 | XQuAD-R, 13,014 sentences, `accurate` reranking |
-| one `pamin search` over a socket | **25.7 ms** | LOCOMO, `fast` reranking |
-| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, `accurate` reranking |
-| one `pamin write` | 30.1 ms | 2,400 memories, most of it the `fsync` |
-| resident, one project | 2,088 MB | model and index inside the server |
+| MIRACL Swahili dev, one language | nDCG@10 0.7654 | 131,924 passages, earlier `accurate` path |
+| one `pamin search` over a socket | 25.7 ms | LOCOMO, `fast` tier, earlier build |
+| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, earlier `accurate` path |
+| one `pamin write` | 30.1 ms | 2,400 memories, earlier build |
+| resident, one project | 2,088 MB | earlier model and index inside the server |
 
-Latency is a corpus and a tier before it is a number, which is why every row
-above names both and why the matrix is on the other page.
+Latency is a corpus, a tier and a machine before it is a number; the full
+matrix and the older conditions are on [the measurement page](docs/measured.md).
 
-Those rows were taken with the vector index that shipped until now, fp32
-vectors in an in-memory graph. A project is now built with half-precision
-vectors under `--vector-index memory` by default, an in-memory graph that on
-MIRACL's passages holds 320 MB resident where the fp32 graph held 575 MB, at
-the same recall. `--vector-index disk` keeps a DiskANN graph on disk and holds
-34 MB, but it takes more disk (618 MB against 328), makes a whole search about
+The historical rows used the vector index that shipped before the current
+half-precision field: fp32 vectors in an in-memory graph. A project now builds
+with half-precision vectors under `--vector-index memory` by default. On
+MIRACL's passages its in-memory graph holds 320 MB resident against 575 MB
+for fp32, at the same recall. `--vector-index disk` keeps a DiskANN graph on
+disk and holds 34 MB, but it takes more disk (618 MB against 328), makes a whole search about
 5% slower, builds far more slowly, and spends minutes on each `optimize` upkeep
 runs after writes where `memory` spends about a second -- which is why it is
 the choice for a project whose memory is scarce rather than the default. What each costs is
@@ -274,7 +306,8 @@ in [docs/measured.md](docs/measured.md) and [docs/cli.md](docs/cli.md).
 Five findings belong in the summary rather than only in the detail, because
 each of them cuts against this project:
 
-**Fusing four channels ranked below one of them on cross-lingual queries.** The
+**A historical fusion diagnostic found four channels below the vector channel
+on cross-lingual queries.** The
 vector channel alone scores 0.8268 on this project's own cross-lingual group and
 0.6335 on XQuAD-R's, against 0.7985 and 0.6114 for all four fused. On the
 same-language queries of the same corpus the lexical channels earn their place
@@ -287,6 +320,10 @@ same-language with recall unmoved, and it is the first change here that
 improves the same-language group rather than charging it.
 [measured.md](docs/measured.md) has both tables, including the version of this
 that looked better on nDCG and took cross-lingual recall from 0.8960 to 0.7765.
+The XQuAD-R 0.6114/0.7829 fusion baseline used a content-only index and an
+older same-language answer key; the current named-index fusion baseline is
+0.6372/0.8438. Those are different pipelines, so their difference is not a
+gain credited to fusion tuning.
 
 **It is a tie, and reporting it as a win would be wrong.** At thirty passages
 the three systems are 0.628, 0.623 and 0.583, and paired McNemar separates no

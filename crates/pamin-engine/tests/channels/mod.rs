@@ -65,6 +65,13 @@ use std::collections::BTreeMap;
 use pamin_core::{Channel, ChannelResults, Combine, Fusion, Scored, TopicId, Why};
 use pamin_engine::SearchHit;
 
+pub const CHANNELS: [Channel; 4] = [
+    Channel::LexicalSegmented,
+    Channel::LexicalNgram,
+    Channel::Vector,
+    Channel::Graph,
+];
+
 /// Every channel that returned anything, and the order it returned it in.
 ///
 /// Keyed by channel; each value is topic names in that channel's own rank
@@ -240,16 +247,17 @@ pub fn same_as_the_engine(hits: &[SearchHit], fusion: &Fusion) {
 ///
 /// Offline, so the whole grid costs one pass over the corpus rather than one
 /// pass per row. That changes what is affordable: a row on XQuAD-R used to be
-/// thirteen minutes, which is why every sweep this project ever ran moved both
-/// lexical channels together and left the rank constant to a coarse handful.
+/// thirteen minutes, so the earlier sweeps moved both lexical channels
+/// together and left the rank constant to a coarse handful.
 ///
 /// Several grids, because the open questions are separate.
 ///
 /// **The lexical weights, now separable.** Kendall tau-b between the two
 /// lexical channels is around 0.30 on all three corpora, so the premise that
-/// justified one shared constant is refuted, and no measurement anywhere
-/// distinguishes the two numbers. The grid crosses them, including an eighth
-/// against an eighth, which is what ships and must come back identical.
+/// justified one shared constant is refuted. The grid crosses them, including
+/// the equal eighths that ship. On XQuAD-R and MuSiQue, its five-fold macro
+/// mean selection chose different settings and no pair passed a cross-corpus
+/// accuracy trade; the numbers and decision are in ADR 0001.
 ///
 /// **The combiner, which is the choice nobody here recorded making.** This
 /// project argued about `k` and about the channel weights, both of them
@@ -296,12 +304,11 @@ pub fn variants() -> Vec<(String, Fusion)> {
         variants.push((format!("k {k:.0}"), Fusion::default().with_k(k)));
     }
 
-    // The graph channel's weight, which has never been swept. It is the least
-    // justified constant in the default: 1.0, equal to the vector channel's,
-    // arrived at by nothing, while the only comparable published system
-    // (arXiv:2609.01617) weights its graph channel at 0.15 against a dense
-    // 0.50. The channel is also the only one seeded from the other three, so
-    // it is the one whose candidates are least independent of theirs.
+    // The graph weight was settled separately on the relational group and
+    // MuSiQue; the current default is 0.30. In this replay, XQuAD-R has no
+    // edges, while 0.50 raises MuSiQue recall but does not improve nDCG. The
+    // channel is seeded from the other three, so its candidates are the least
+    // independent of theirs; see ADR 0001 for the choice.
     for graph in [0.0, 0.15, 0.3, 0.5, 1.0] {
         variants.push((
             format!("graph {graph:.2}"),
@@ -391,8 +398,9 @@ pub fn sweep_table<T>(
 /// go to the shipped setting, so a sweep that finds nothing changes nothing.
 /// `recall@50` is not in the rule; it is reported beside it.
 ///
-/// Five folds stratified by group. For each, the rule sees the other four
-/// folds' means and its choice is scored on the fifth. Three numbers come out,
+/// Five folds stratified by group, with linked answer keys of one physical
+/// query kept in one fold when `linked` is true. For each, the rule sees the
+/// other four folds' means and its choice is scored on the fifth. Three numbers come out,
 /// and the gap between the first two is the one this repository never had:
 ///
 /// - the best macro nDCG@10 of any row, scored on the queries that chose it --
@@ -407,6 +415,7 @@ pub fn cross_validated<T>(
     variants: &[(String, T)],
     ship: Option<usize>,
     offline: &[BTreeMap<String, crate::scoring::Scores>],
+    linked: bool,
 ) {
     use crate::statistics;
 
@@ -474,12 +483,25 @@ pub fn cross_validated<T>(
         .iter()
         .map(|row| macro_mean(&by_group(row)))
         .fold(f64::MIN, f64::max);
-    let selected =
-        statistics::cross_validate(&matrix, &labels, &statistics::folds(&labels, 5), rule);
+    let assigned = if linked {
+        statistics::linked_folds(
+            &groups
+                .iter()
+                .map(|group| shipped[*group].per_query.len())
+                .collect::<Vec<_>>(),
+            5,
+        )
+    } else {
+        statistics::folds(&labels, 5)
+    };
+    let selected = statistics::cross_validate(&matrix, &labels, &assigned, rule);
     let procedure = macro_mean(&by_group(&selected.held_out));
     let current = macro_mean(&by_group(&baseline));
 
     println!("\n  choosing from this sweep, cross-validated over five folds, {title}");
+    if linked {
+        println!("  both answer keys for each physical query share one fold");
+    }
     println!(
         "  rule: maximise the mean over {} groups of nDCG@10, ties to what ships",
         groups.len()
@@ -493,10 +515,15 @@ pub fn cross_validated<T>(
         "  optimism of choosing in-sample                  {:+.4}",
         in_sample - procedure
     );
-    println!(
-        "  the procedure against what ships: {}",
+    let paired = if linked {
+        statistics::compare(
+            &statistics::linked_mean(&baseline, groups.len()),
+            &statistics::linked_mean(&selected.held_out, groups.len()),
+        )
+    } else {
         statistics::compare(&baseline, &selected.held_out)
-    );
+    };
+    println!("  the procedure against what ships: {paired}");
     let chosen: Vec<&str> = selected
         .chosen
         .iter()
@@ -518,6 +545,34 @@ pub fn cross_validated<T>(
     if selected.chosen.iter().any(|at| *at != selected.chosen[0]) {
         println!("  the folds disagree, so no single setting is a stable choice at this size");
     }
+}
+
+/// Select only among the 25 independently swept lexical weight pairs.
+///
+/// The full diagnostic also varies `k`, the combiner and graph weight. Its
+/// choice cannot answer whether the *lexical weights* should change, even if
+/// its macro mean is higher. Clone the small score matrix so the existing
+/// selection and paired-statistics owner remains the only implementation.
+pub fn lexical_cross_validated(
+    title: &str,
+    groups: &[&str],
+    shipped: &BTreeMap<String, crate::scoring::Scores>,
+    variants: &[(String, Fusion)],
+    ship: Option<usize>,
+    offline: &[BTreeMap<String, crate::scoring::Scores>],
+    linked: bool,
+) {
+    let indices: Vec<usize> = variants
+        .iter()
+        .enumerate()
+        .filter_map(|(at, (name, _))| name.starts_with("lex seg ").then_some(at))
+        .collect();
+    assert_eq!(indices.len(), 25, "the independent lexical grid changed");
+    let lexical: Vec<_> = indices.iter().map(|at| variants[*at].clone()).collect();
+    let rows: Vec<_> = indices.iter().map(|at| offline[*at].clone()).collect();
+    let baseline = ship.and_then(|at| indices.iter().position(|index| *index == at));
+    assert!(baseline.is_some(), "the lexical grid lost the shipped row");
+    cross_validated(title, groups, shipped, &lexical, baseline, &rows, linked);
 }
 
 /// Kendall's tau-b between two channels' orderings.
@@ -627,6 +682,22 @@ impl Default for Diagnosis {
 }
 
 impl Diagnosis {
+    /// Raw paired grid rows; the existing statistics owner can replay fold
+    /// selection and family tests without rerunning models or retrieval.
+    fn evidence(&self, title: &str, edges: &[(String, i64)]) -> serde_json::Value {
+        serde_json::json!({
+            "title": title,
+            "edges": edges,
+            "whole": self.whole,
+            "alone": self.alone,
+            "without": self.without,
+            "variants": self.variants.iter().zip(&self.offline).map(|((label, fusion), scores)| {
+                serde_json::json!({"label": label, "fusion": format!("{fusion:?}"), "scores": scores})
+            }).collect::<Vec<_>>(),
+            "pairing": "per-query vectors retain each group's observation order",
+        })
+    }
+
     /// One query's trace, fused at the shipped settings with room to spare
     /// (see [`enough_room`]), and how to score a ranking of it.
     ///
@@ -647,15 +718,14 @@ impl Diagnosis {
             &mut self.whole,
             &hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>(),
         );
-        for (channel, ranking) in each_alone(hits) {
-            note(self.alone.entry(channel).or_default(), &ranking);
+        let each = each_alone(hits);
+        for channel in CHANNELS {
+            note(
+                self.alone.entry(channel).or_default(),
+                each.get(&channel).map(Vec::as_slice).unwrap_or(&[]),
+            );
         }
-        for channel in [
-            Channel::LexicalSegmented,
-            Channel::LexicalNgram,
-            Channel::Vector,
-            Channel::Graph,
-        ] {
+        for channel in CHANNELS {
             let ranking = as_if(hits, &Fusion::default().without(channel));
             note(self.without.entry(channel).or_default(), &ranking);
         }
@@ -668,6 +738,11 @@ impl Diagnosis {
     /// them. `edges` is the live-edge census, printed beside the graph rows so
     /// a zero there is read as "nothing to walk" rather than as a result.
     pub fn report(&self, title: &str, edges: &[(String, i64)]) {
+        if let Some(path) = std::env::var_os("CHANNELS_OUT") {
+            let bytes = serde_json::to_vec_pretty(&self.evidence(title, edges))
+                .expect("serialize paired channel evidence");
+            std::fs::write(path, bytes).expect("write requested channel evidence");
+        }
         use crate::scoring::{NDCG_AT, RECALL_AT};
         use crate::statistics;
 
@@ -722,6 +797,16 @@ impl Diagnosis {
             &self.variants,
             shipped_row(&self.variants),
             &self.offline,
+            false,
+        );
+        lexical_cross_validated(
+            &format!("{title}, lexical weights only"),
+            &self.whole.keys().map(String::as_str).collect::<Vec<_>>(),
+            &self.whole,
+            &self.variants,
+            shipped_row(&self.variants),
+            &self.offline,
+            false,
         );
         println!();
     }
@@ -900,6 +985,51 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn absent_channels_keep_zero_scores_in_paired_order() {
+        let mut diagnosis = super::Diagnosis::default();
+        diagnosis.observe("group", &[], |scores, ranking| {
+            scores.queries += 1;
+            scores.per_query.push(ranking.len() as f64);
+        });
+        for channel in super::CHANNELS {
+            assert_eq!(
+                diagnosis.alone[&channel]["group"].per_query,
+                vec![0.0],
+                "{channel:?} lost the empty query"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_evidence_retains_the_complete_paired_grid() {
+        let mut diagnosis = super::Diagnosis::default();
+        let scores = crate::scoring::Scores {
+            queries: 2,
+            per_query: vec![0.2, 0.8],
+            ..Default::default()
+        };
+        diagnosis.whole.insert("group".into(), scores.clone());
+        for variant in &mut diagnosis.offline {
+            variant.insert("group".into(), scores.clone());
+        }
+        let evidence = diagnosis.evidence("fixture", &[]);
+        assert_eq!(
+            evidence["whole"]["group"]["per_query"],
+            serde_json::json!([0.2, 0.8])
+        );
+        assert_eq!(
+            evidence["variants"].as_array().unwrap().len(),
+            diagnosis.variants.len()
+        );
+        for row in evidence["variants"].as_array().unwrap() {
+            assert_eq!(
+                row["scores"]["group"]["per_query"],
+                serde_json::json!([0.2, 0.8])
+            );
+        }
+    }
     use super::*;
 
     #[test]

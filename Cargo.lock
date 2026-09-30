@@ -1847,6 +1847,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "zvec-rust-sys",
 ]
 
 [[package]]
@@ -1863,6 +1864,7 @@ name = "pamin-engine"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "hf-hub",
  "pamin-core",
  "pamin-index",
  "pamin-store",
@@ -1874,6 +1876,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -1886,6 +1889,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "libc",
+ "ndarray",
  "ort",
  "pamin-core",
  "serde",
@@ -1895,6 +1899,7 @@ dependencies = [
  "thiserror",
  "tokenizers",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "whatlang",
  "zvec-rust",
@@ -2606,6 +2611,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+ "sha2-asm",
 ]
 
 [[package]]
@@ -2617,6 +2623,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
  "digest 0.11.3",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

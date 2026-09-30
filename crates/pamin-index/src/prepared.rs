@@ -306,7 +306,7 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
         }
         let record = root.join(record_name(download));
         let partial = record.with_extension("source.partial");
-        std::fs::write(&partial, identity.record())?;
+        std::fs::write(&partial, identity.record_with_digest(&source)?)?;
         std::fs::rename(&partial, &record)?;
         Ok(download.remove()?.then_some(identity.length))
     })();
@@ -700,9 +700,7 @@ fn same_on_a_probe(expected: &Path, candidate: &Path) -> std::result::Result<(),
 
     let outputs = |path: &Path| -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
         let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-        let mut session =
-            crate::inference::session(vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
-                .map_err(|error| failed(&error))?;
+        let mut session = crate::inference::probe(path).map_err(|error| failed(&error))?;
         let mut feed = Vec::new();
         for input in session.inputs() {
             let values = match input.name() {
@@ -866,6 +864,16 @@ impl Source {
         format!("{}\n{}\n{}\n", self.name, self.length, self.modified)
     }
 
+    /// Preserve byte provenance before release deletes the original file.
+    /// The first three metadata lines and cache key stay compatible with old records.
+    fn record_with_digest(&self, source: &Path) -> Result<String> {
+        Ok(format!(
+            "{}sha256 {}\n",
+            self.record(),
+            source_digest(source)?
+        ))
+    }
+
     fn parse(record: &str) -> Option<Self> {
         let mut lines = record.lines();
         let source = Self {
@@ -910,6 +918,13 @@ impl Source {
             );
         }
     }
+}
+
+/// Content identity without keeping the complete model on the heap.
+pub(crate) fn source_digest(source: &Path) -> Result<String> {
+    let mut digest = Sha256::new();
+    std::io::copy(&mut File::open(source)?, &mut digest)?;
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 /// The CPU features that decide how the matrix kernels pack a weight.
@@ -1236,6 +1251,46 @@ mod tests {
         assert_eq!(
             prepare(&source, &root).expect("find the copy"),
             root.join(key).join(MODEL)
+        );
+    }
+
+    #[test]
+    fn a_named_source_record_keeps_a_digest_before_the_download_goes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("model_int8.onnx");
+        std::fs::write(&path, b"abc").unwrap();
+        let source = Source::of(&path).unwrap();
+        let record = source.record_with_digest(&path).unwrap();
+        assert_eq!(record.lines().next(), Some("model_int8.onnx"));
+        assert_eq!(
+            record.lines().nth(3),
+            Some("sha256 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(Source::parse(&record), Some(source));
+    }
+
+    #[test]
+    fn digest_provenance_tracks_equal_length_timestamp_preserving_replacement() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("source.onnx");
+        std::fs::write(&path, b"abc").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let identity = Source::of(&path).unwrap();
+        let before = identity.record_with_digest(&path).unwrap();
+        std::fs::write(&path, b"def").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(Source::of(&path).unwrap(), identity);
+        let after = identity.record_with_digest(&path).unwrap();
+        assert_ne!(before.lines().nth(3), after.lines().nth(3));
+        assert_eq!(
+            after.lines().nth(3).unwrap(),
+            format!("sha256 {}", source_digest(&path).unwrap())
         );
     }
 

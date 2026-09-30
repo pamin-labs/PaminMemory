@@ -22,7 +22,11 @@ tokio = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+# Capture the actual selected model paths in reproduction logs. Already used
+# by the CLI; no new lockfile dependency.
+tracing-subscriber = { workspace = true }
 pamin-store = { workspace = true }
+hf-hub = { workspace = true }
 # For the scale tests only, which build a project's topics in bulk rather than
 # one round trip at a time. Already in the tree as `pamin-store`'s driver, so
 # this adds no lockfile entry.

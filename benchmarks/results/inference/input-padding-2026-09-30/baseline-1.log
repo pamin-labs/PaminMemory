@@ -1,0 +1,12 @@
+
+running 1 test
+2026-09-30T05:11:39.944386Z  INFO pamin_index::inference: loaded ONNX graph model_graph="${EVAL_HOME}/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx"
+2026-09-30T05:11:39.944488Z  INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx" assigned_nodes={"CPUExecutionProvider":5,"CoreMLExecutionProvider":765}
+2026-09-30T05:11:41.793158Z  INFO pamin_index::inference: loaded ONNX graph model_graph="${EVAL_HOME}/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx"
+2026-09-30T05:11:41.793224Z  INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx" assigned_nodes={"CPUExecutionProvider":5,"CoreMLExecutionProvider":765}
+2026-09-30T05:11:43.589089Z  INFO pamin_index::inference: loaded ONNX graph model_graph="${EVAL_HOME}/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx"
+2026-09-30T05:11:43.589335Z  INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/typed-reranker-v3/9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3/model.onnx" assigned_nodes={"CPUExecutionProvider":5,"CoreMLExecutionProvider":765}
+2026-09-30T05:11:44.263611Z  INFO pamin_index::reranking: reranker loaded tier="accurate" device="coreml" maximum_tokens=256
+test fixed_candidate_rank ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.77s

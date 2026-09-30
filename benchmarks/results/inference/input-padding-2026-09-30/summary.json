@@ -1,0 +1,63 @@
+{
+  "queries": 60,
+  "pairs_per_round": 1800,
+  "rounds": 3,
+  "same_scores_across_all_arms": true,
+  "candidate_over_baseline_geomean": 1.016012121458416,
+  "paired_sign_flip_p": 0.2275,
+  "faster_queries": 23,
+  "baseline": {
+    "rank_p50": 0.739786417,
+    "rank_p95": 0.9511085,
+    "median_rank_wall_total": 42.993843121,
+    "process_rounds": [
+      {
+        "real": 236.58,
+        "user": 61.88,
+        "system": 12.83,
+        "peak_process_rss": 3579232256
+      },
+      {
+        "real": 57.89,
+        "user": 5.75,
+        "system": 4.19,
+        "peak_process_rss": 2230321152
+      },
+      {
+        "real": 49.66,
+        "user": 5.53,
+        "system": 3.02,
+        "peak_process_rss": 2229469184
+      }
+    ],
+    "median_process_cpu_seconds": 9.940000000000001,
+    "median_peak_process_rss_bytes": 2230321152
+  },
+  "candidate": {
+    "rank_p50": 0.72995575,
+    "rank_p95": 0.968909709,
+    "median_rank_wall_total": 43.955873374,
+    "process_rounds": [
+      {
+        "real": 260.19,
+        "user": 67.3,
+        "system": 13.68,
+        "peak_process_rss": 3564126208
+      },
+      {
+        "real": 59.69,
+        "user": 6.19,
+        "system": 4.18,
+        "peak_process_rss": 2229665792
+      },
+      {
+        "real": 52.71,
+        "user": 5.54,
+        "system": 4.08,
+        "peak_process_rss": 2231648256
+      }
+    ],
+    "median_process_cpu_seconds": 10.370000000000001,
+    "median_peak_process_rss_bytes": 2231648256
+  }
+}

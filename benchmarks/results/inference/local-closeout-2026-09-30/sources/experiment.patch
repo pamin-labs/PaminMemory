@@ -1,0 +1,90 @@
+diff --git a/crates/pamin-engine/tests/crosslingual.rs b/crates/pamin-engine/tests/crosslingual.rs
+index 6dd59ce..9f67949 100644
+--- a/crates/pamin-engine/tests/crosslingual.rs
++++ b/crates/pamin-engine/tests/crosslingual.rs
+@@ -3129,3 +3129,44 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+         );
+     }
+ }
++
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "scratch shared-machine backend comparison at product entry point"]
++async fn scratch_backend_repeat() {
++    assert!(std::env::var_os("HF_HOME").is_none());
++    report_loaded_graphs();
++    let corpus = Corpus::load();
++    let queries = corpus.queries();
++    assert_eq!(queries.len(),1190);
++    let workspace=Workspace::at(std::env::var("PAMIN_EVAL_HOME").unwrap());
++    let identity=pinned_embedding_id(&workspace.root().join("models"));
++    let project=xquad_project_name("accuracy",&corpus.fingerprint(),&identity);
++    let engine=Engine::open(&workspace,&project,pamin_index::Profile::Accuracy,VectorIndex::Memory,Access::ReadWrite).await.unwrap();
++    assert_eq!(engine.indexed_documents().unwrap(),13014);
++    assert_eq!(engine.vector_index_completeness().unwrap(),1.0);
++    let tier=if std::env::var("PAMIN_MATRIX_TIER").as_deref()==Ok("fast") {Rerank::Fast} else {Rerank::Accurate};
++    // Fixed sample and disjoint warmups chosen before looking at timings.
++    for index in 1..9 {
++        let hits=engine.search_reranked(queries[index].text(),60,DEPTHS,tier).await.unwrap();
++        assert!(!hits.is_empty());
++    }
++    let mut rows=Vec::new();
++    for index in (0..1190).step_by(50) {
++        let before=engine.reranked(tier).unwrap();
++        let start=std::time::Instant::now();
++        let hits=engine.search_reranked(queries[index].text(),60,DEPTHS,tier).await.unwrap();
++        let seconds=start.elapsed().as_secs_f64();
++        let after=engine.reranked(tier).unwrap();
++        let offered=after.offered-before.offered;
++        let scored=after.scored-before.scored;
++        assert!(offered>0 && scored==offered,"reranking must be a cache miss");
++        assert_eq!(after.maximum_tokens,256);
++        let ranked:Vec<String>=hits.into_iter().map(|hit|hit.topic).collect();
++        assert!(!ranked.is_empty());
++        let mut scores=BTreeMap::new();score(&mut scores,&queries[index],&ranked);
++        rows.push(serde_json::json!({"query":index,"seconds":seconds,"ranked":ranked,"scores":scores,"offered":offered,"scored":scored,"encode_us":after.encode_us-before.encode_us,"forward_us":after.forward_us-before.forward_us}));
++        println!("backend sample {}/24",rows.len());
++        std::fs::write(std::env::var("PAMIN_MATRIX_OUTPUT").unwrap(),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
++    }
++    assert_eq!(rows.len(),24);
++}
+diff --git a/crates/pamin-index/src/inference.rs b/crates/pamin-index/src/inference.rs
+index cea3625..3f2b854 100644
+--- a/crates/pamin-index/src/inference.rs
++++ b/crates/pamin-index/src/inference.rs
+@@ -335,7 +335,7 @@ fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<P
+     let runtime = format!("{:x}", Sha256::digest(ort::info().as_bytes()));
+     // Bump this policy version when the compile options above change.
+     Ok(parent
+-        .join("coreml-all-v2")
++        .join(if std::env::var("PAMIN_MATRIX_UNITS").as_deref() == Ok("gpu") { "matrix-coreml-gpu-v2" } else { "coreml-all-v2" })
+         .join(runtime)
+         .join(format!("{graph}-{rows}-{tokens}")))
+ }
+@@ -431,7 +431,13 @@ pub(crate) fn preferred<T>(
+ fn coreml() -> ort::ep::CoreML {
++    let (units, policy) = if std::env::var("PAMIN_MATRIX_UNITS").as_deref() == Ok("gpu") {
++        (ort::ep::coreml::ComputeUnits::CPUAndGPU, "CPUAndGPU")
++    } else {
++        (ort::ep::coreml::ComputeUnits::All, "ALL")
++    };
++    tracing::info!(compute_units = policy, "measurement CoreML policy");
+     ort::ep::CoreML::default()
+         .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+-        .with_compute_units(ort::ep::coreml::ComputeUnits::All)
++        .with_compute_units(units)
+ }
+ 
+ /// The accelerators to try before the CPU, best first.
+diff --git a/crates/pamin-index/src/reranking.rs b/crates/pamin-index/src/reranking.rs
+index c1fb029..7623dea 100644
+--- a/crates/pamin-index/src/reranking.rs
++++ b/crates/pamin-index/src/reranking.rs
+@@ -766,7 +766,7 @@ impl Reranker {
+         // XQuAD-R quality and beat its CoreML FP32 export on every paired
+         // search. Accurate still uses the shared CoreML-first policy.
+         let (model, device) =
+-            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
++            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast && std::env::var_os("PAMIN_MATRIX_FAST_ACCELERATOR").is_none() {
+                 (
+                     session(Device::Cpu, vec![crate::inference::cpu()])?,
+                     Device::Cpu,

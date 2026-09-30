@@ -1,0 +1,35 @@
+   Compiling pamin-index v0.0.1 (${REPO}/crates/pamin-index)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.54s
+     Running tests/scratch_bucket_warmups.rs (target/debug/deps/scratch_bucket_warmups-e0c471ac0e05e07b)
+
+running 1 test
+CoreML scoring session 0: {"CPUExecutionProvider": 5, "CoreMLExecutionProvider": 765}
+CoreML scoring session 1: {"CPUExecutionProvider": 5, "CoreMLExecutionProvider": 765}
+CoreML scoring session 2: {"CPUExecutionProvider": 5, "CoreMLExecutionProvider": 765}
+short 0: logical=17 physical=256
+medium 0: logical=92 physical=512
+long 0: logical=256 physical=512
+short 1: logical=16 physical=256
+medium 1: logical=91 physical=512
+long 1: logical=256 physical=512
+short 2: logical=16 physical=256
+medium 2: logical=91 physical=512
+long 2: logical=256 physical=512
+short 3: logical=16 physical=256
+medium 3: logical=91 physical=512
+long 3: logical=256 physical=512
+short 4: logical=16 physical=256
+medium 4: logical=91 physical=512
+long 4: logical=256 physical=512
+short 5: logical=17 physical=256
+medium 5: logical=92 physical=512
+long 5: logical=256 physical=512
+short 6: logical=17 physical=256
+medium 6: logical=92 physical=512
+long 6: logical=256 physical=512
+short 7: logical=17 physical=256
+medium 7: logical=92 physical=512
+long 7: logical=256 physical=512
+test original_warmups_reach_each_bucket ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.52s

@@ -1,0 +1,203 @@
+{
+  "baseline_commit": "1d7c1ab341482b7bdbc8fc82226c7c50b418ca43",
+  "baseline_tree": "5f38a722d2b866be5fde3c8979ecd9027ec6432d",
+  "candidate_commit": "935715d73bb976fedd80ef4e6fda92f0916549e5",
+  "candidate_tree": "997557449290c62f1bd9acc07b694eb5aa58963b",
+  "binaries": {
+    "baseline": "227793100df5358a53b6413d272006df48116dd8d89afd82562f02942e2f42f3",
+    "candidate": "3d2567c6b8db21a866f3813abac82355a2fc95b125f30cc9f5c7c9c1dc4e184b"
+  },
+  "input_sha256": "cd17aba46410010832ce681008bd22a93e11d0a2b2cc1325f4b7a2e6328d7ac5",
+  "sample_indices": [
+    0,
+    20,
+    40,
+    60,
+    80,
+    100,
+    120,
+    140,
+    160,
+    180,
+    200,
+    220,
+    240,
+    260,
+    280,
+    300,
+    320,
+    340,
+    360,
+    380,
+    400,
+    420,
+    440,
+    460,
+    480,
+    500,
+    520,
+    540,
+    560,
+    580,
+    600,
+    620,
+    640,
+    660,
+    680,
+    700,
+    720,
+    740,
+    760,
+    780,
+    800,
+    820,
+    840,
+    860,
+    880,
+    900,
+    920,
+    940,
+    960,
+    980,
+    1000,
+    1020,
+    1040,
+    1060,
+    1080,
+    1100,
+    1120,
+    1140,
+    1160,
+    1180
+  ],
+  "order": [
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ],
+  "boundary": "Reranker::rank on 30 fixed candidates, after three-bucket warmup; not Engine::search_reranked",
+  "model_revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+  "fp16_source_sha256": "9b26f9185d2d26051f724c9fc3565e5d9614a9dd459b784c806c246232a70fe3",
+  "typed_graph_sha256": "3ece88f7a06766959c38ad0cca861902ccd4530c15df0971f267abb1092c4109",
+  "native_zvec_sha256": "06f183bf51ebd8b460fd0415f6b39c2556bdd6ef63a270efa35bdf76154512e2",
+  "tokenizer_attestation_limit": "The retained revision files were hashed before/after each run; the active hub ref was not recorded during these six processes. This is retained-cache provenance, not a per-load tokenizer identity log.",
+  "host": "shared Apple M4, Mac16,12, 10 logical CPUs, 32 GiB RAM",
+  "scope_limits": [
+    "first process round includes substantially colder startup",
+    "process CPU/RSS exclude CoreML services and device energy",
+    "Rust allocation requests are not peak live/model memory",
+    "no total isolated disk or whole-search timing claim"
+  ],
+  "artifacts": {
+    "summary.json": {
+      "original_sha256": "41713bcb210713da5f2c6b3ff5e1e4c8cd4be50aaab478ab9ec273ed830f8967",
+      "public_sha256": "ebd7ba297baafcc8f0e82fb91d2fbc98956696752e0981c32ae753d8fb40ea5f",
+      "derivation": "adds process aggregates derived from retained per-round values"
+    },
+    "allocations.json": {
+      "original_sha256": "dec62ddbf96d782101e35169e44bdbcc8bc94f40b80064cd42e42c3aa9830c58",
+      "public_sha256": "45ba56ec3e95ecbb8abc82d57d1317545e0269de379753bc1cd610095c742aeb"
+    },
+    "baseline-0.json": {
+      "original_sha256": "cc1a9a1eba5998e41690763859ed6b15e468899f72cc6dcce3296a8372db1644",
+      "public_sha256": "0d85d954c057d3f87b48f4de7bce0669d7eb8528cdd6eb13cc978a24b9185838"
+    },
+    "baseline-0.log": {
+      "original_sha256": "572791401b6a2f1e9f41e74e2f59bb3b1721d9d598e689f637f9a935019bb5cc",
+      "public_sha256": "397582d7f324f2e7c6cce76bf721a8c502f5e964dd9717467f425e231cf9e7f5"
+    },
+    "baseline-0.resource": {
+      "original_sha256": "bd69dd710379e1c3a35de3814757bf97e58fbe8939f84c4c814fec774d67cbe8",
+      "public_sha256": "db7a462f88c68690779c10da629be840a9167b8afcaa281b5aa0858510b9abf6"
+    },
+    "baseline-1.json": {
+      "original_sha256": "617c39b5c88f6ce397b84eb05e5530a2fc2f22aa33715afe7e008d4a2e654403",
+      "public_sha256": "d260ca2d5a212ff83b4c41025d13190d99416f79e3ce0d6a16fa0e0c079d95e4"
+    },
+    "baseline-1.log": {
+      "original_sha256": "152f73a7e28a334b82cd2bd7d83de7affd584f85376b921acfa10f110380dfeb",
+      "public_sha256": "1862a7ece63e90a27fdf9d25a8e352293e4c1c39846842dde1df21db21c852f6"
+    },
+    "baseline-1.resource": {
+      "original_sha256": "ec0a664448ece0c20a8003cef3ecf6daeb2895e1dc56da91b11140e2974f95ed",
+      "public_sha256": "d1c395aee55aafb069faa7dbe960e037386e35bd6f10a445fb2f7326ca84cea5"
+    },
+    "baseline-2.json": {
+      "original_sha256": "046fcd937ea0fbcf8f7f7ac6661825fcb8022ea1fa0bf2448755641f79a2e3d7",
+      "public_sha256": "a1586b52b6af23abd8bf52f98faa3783cc1021a5f57ab27fd0589904e777d5a9"
+    },
+    "baseline-2.log": {
+      "original_sha256": "6147a2c425643d88dd4f2c82dcc66f7a3988730fd5747311bc9b70eea073acb6",
+      "public_sha256": "07722ade516e088884ede26c4eb4a016dcd5ed993ad84ee4ab97f37f9dcb6040"
+    },
+    "baseline-2.resource": {
+      "original_sha256": "bcc5b16aa4737e1dfb5b9153b05326ff973c5967950025b81352056a098b3203",
+      "public_sha256": "431d65bcaeb98db3a5911ee482a4dc207ccf645827413e478a94fb69be4d008a"
+    },
+    "candidate-0.json": {
+      "original_sha256": "d3cf6c0d8a520a994bf5f6092f1b1e5ac27a767158824e46f91554d0c816147c",
+      "public_sha256": "1081386a5e36a567c21d27a5772cdbba541a26ea0dc5b4e01659214f1d1a9f4f"
+    },
+    "candidate-0.log": {
+      "original_sha256": "6cf2be4866dc38c13e6ef14e745eac226ed6e952887d900e4e2e4366e52d0247",
+      "public_sha256": "fcc7218674bd535591624a11fab61b36f9ecd1498731ba89f2808016cd2bc28f"
+    },
+    "candidate-0.resource": {
+      "original_sha256": "ee95bccf159df33cbfff2212320ccfbcca8d18ff888d22c28447f5401a17f4b5",
+      "public_sha256": "835bc3d44715c1f7b507e41d8e141f2149940d4f2399ec58a42a7e255c4dfa21"
+    },
+    "candidate-1.json": {
+      "original_sha256": "4f04cf4ef2068650adb7e79b070b78d79972f0e1d7ee508fe66a1417e1e5c475",
+      "public_sha256": "fda2506367cf90bf12e102405fa91ef0910a27e5b91715f59ed9bdd8395eafe4"
+    },
+    "candidate-1.log": {
+      "original_sha256": "f3700fa824f3571f3fd72b73032ce82c361631a318da1c7ccb850f4ad75b611d",
+      "public_sha256": "b68e9d3b0717122e70b96d9330c8d78c8ccadbb8228bde57f56e72b8029b5725"
+    },
+    "candidate-1.resource": {
+      "original_sha256": "b315c547eb14d816b65eaee3d817100babbbb91b441ecef520330dcc56e56e15",
+      "public_sha256": "ad1dfc4ad56143bab0c31465f6b9308a10228a8b99bc1e56fc7e6a2d5773af68"
+    },
+    "candidate-2.json": {
+      "original_sha256": "8f66741b02a398072df4320684ca4fa098e0d177e482a6f9d35c6ad27f7e7481",
+      "public_sha256": "a089096c6c53e19044d6d5db85eb75fbf2b575fd6135ac51cc67092bfd75f26c"
+    },
+    "candidate-2.log": {
+      "original_sha256": "0cbbad427d67616c630acf9d52585cf80059422a5e3d564ad86045721271d750",
+      "public_sha256": "c6070231edca56fa266423ad8ed257a2bf0d414955d5c7dc2c5a4f2975983161"
+    },
+    "candidate-2.resource": {
+      "original_sha256": "f033990cbee1676a455c56ab8d6eb97d7751a3fa110a7bda7c1d854a79c3aeff",
+      "public_sha256": "00c0e20eb77ddfbe9a429baddd1e033ff109e55fbefcc049428adc0179cf7c5a"
+    },
+    "sources/rank.rs": {
+      "original_sha256": "0cd2e47daf207f8390d6ebc024ea332fdbbec8c8c40103e5b73aff681e947eee",
+      "public_sha256": "0cd2e47daf207f8390d6ebc024ea332fdbbec8c8c40103e5b73aff681e947eee"
+    },
+    "sources/allocation-observer.rs": {
+      "original_sha256": "162cba4192c513fadc4fa9f0ab5d15acff9cc1d8ee7c575096623071ea59e0ed",
+      "public_sha256": "162cba4192c513fadc4fa9f0ab5d15acff9cc1d8ee7c575096623071ea59e0ed"
+    },
+    "sources/run.py.in": {
+      "original_sha256": "bb13da9c546a8ddb96e770a440b745aa51e2b14b52ee043f4dbb9f15b080d6a8",
+      "public_sha256": "d577d9a9896cf375d46c5537ea102102177dd69fc73985a02d3a8fa58c61fb5e"
+    },
+    "sources/summarize-original.py.in": {
+      "original_sha256": "a02d038d1967ac7001143b2ac3a9331b486223bdff1a641a23f9e293d9186eec",
+      "public_sha256": "6154cf7bc3eea19448168d0cad4fd1ddc8f0c016f6dfdc7b0c83298cc4c3e0c9"
+    },
+    "sources/summarize.py.in": {
+      "public_sha256": "da7134011bb40a92af01c891da1146cd1bbf033866b691186e77b11ff49f5767",
+      "derivation": "adds process aggregate fields to the retained original summarizer"
+    }
+  }
+}

@@ -26,7 +26,7 @@ One rule ran through all of it:
 | Vector index | Half-precision vectors under a DiskANN graph (`disk`) or an HNSW graph (`memory`, the default), candidates ranked again by an exact f32 cosine |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | ONNX Runtime through `ort` and `tokenizers`, BGE-M3 with int8 weights by default; the E5 profiles through `fastembed` |
+| Embeddings | ONNX Runtime through the shared session and `tokenizers`; BGE-M3 uses int8 weights by default, while the E5 profiles use FastEmbed's model registry and pooling with full-precision weights |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -167,7 +167,7 @@ The graph channel lives in PostgreSQL, where `zvec` cannot see it. Letting the e
 
 Recall engines return per-channel ranked lists. Reciprocal rank fusion runs in our layer. This is a correctness requirement, not a preference.
 
-`k = 10`, not the customary 60, and the two lexical channels carry an eighth weight each — a quarter each until a third corpus was measured; the paragraphs below record the quarter as it was argued, and the section after them is what replaced it. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights the two of them cast two votes against the vector and graph channels' one each. That much holds. The stronger claim this record used to make alongside it — that the two are near enough one channel to share a weight — does not: Kendall tau-b between their rankings is 0.2816 on this project's own corpus, 0.3188 on XQuAD-R and 0.2973 on MIRACL. They are two channels that agree about a third of the time, sharing a field rather than a ranking, and the single constant they share has never been swept apart.
+`k = 10`, not the customary 60, and the two lexical channels carry an eighth weight each — a quarter each until a third corpus was measured; the paragraphs below record the quarter as it was argued, and the section after them is what replaced it. Both are measured rather than taken from the literature: 60 came from fusing lists thousands of results deep, and each channel here proposes fifty, which the constant flattens to the point where rank barely counts. The lexical pair runs BM25 over the same text twice, so at equal weights the two of them cast two votes against the vector and graph channels' one each. That much holds. The stronger claim this record used to make alongside it — that the two are near enough one channel to share a weight — does not: Kendall tau-b between their rankings is 0.2816 on this project's own corpus, 0.3188 on XQuAD-R and 0.2973 on MIRACL. They are two channels that agree about a third of the time, sharing a field rather than a ranking, and their equal eighths have since been tested independently, below.
 
 The weight was swept across both evaluation corpora — the one written for Påmin Memory and XQuAD-R — at four values of `k`. Equal weighting is not a trade at any of them: it scores worse than half on every group of both corpora, cross-lingual and same-language alike. A quarter beats a half on seven of the eight measures the two corpora report, costing 0.033 of same-language ranking on the external corpus and buying 0.139 and 0.067 of cross-lingual nDCG@10 with the monolingual and lexical groups unmoved. Zero scores higher again cross-lingually and is refused: it takes the monolingual group off 0.9940 and the lexical group off its ceiling, which is the one thing the n-gram channel exists for, and it would leave both lexical channels contributing nothing.
 
@@ -330,6 +330,64 @@ costs MIRACL significantly at p = 0.0125. The channel is measurable there. What
 was not measurable was a one-dimensional slice through a two-dimensional
 question, and the sentence above read a null result off the wrong instrument.
 
+#### The two lexical weights were swept independently, 2026-09-27
+
+The blanket claim that these weights had never been separated was already
+outdated by the MIRACL grid below. This run extends that independent test to
+XQuAD-R and MuSiQue. Before seeing results, a 5-by-5 grid fixed each of
+segmented BM25 and 2-gram BM25 at
+0, 0.0625, 0.125, 0.25 or 0.5; the shipped pair is (0.125, 0.125). The current
+BGE-M3 indexes answered all 1,190 XQuAD-R questions and the first 1,000
+MuSiQue two-hop questions. `CHANNELS` asked for a wide, untruncated
+`search_fused` trace, then replayed the production `Fusion::fuse` with each
+weight pair. The MuSiQue arm used `MUSIQUE_QUESTIONS=1000` to reuse its
+10,785-memory project. Both projects asserted `Passage::Named` before writing
+and the expected document counts before collecting scores. These are fusion-only screens, not product
+`search_reranked` measurements.
+
+| Segmented / 2-gram | XQuAD-R cross nDCG@10 | XQuAD-R same nDCG@10 | MuSiQue two-hop nDCG@10 | MuSiQue recall@50 |
+| --- | ---: | ---: | ---: | ---: |
+| **0.125 / 0.125 (ships)** | **0.6372** | **0.8438** | **0.6814** | **0.8060** |
+| 0 / 0 | 0.6677 | 0.8138 | 0.6704 | 0.7995 |
+| 0 / 0.125 | 0.6542 | 0.8312 | 0.6732 | 0.8030 |
+| 0 / 0.25 | 0.6377 | 0.8445 | 0.6753 | 0.8025 |
+| 0.25 / 0 | 0.6358 | 0.8395 | 0.6802 | 0.8035 |
+| 0.25 / 0.125 | 0.6195 | 0.8510 | 0.6834 | 0.8050 |
+
+The 2026-09-27 rows remain historical: complete printed grids were retained,
+but their per-query matrices were not. A [current full XQuAD-R and MuSiQue
+rerun](../../benchmarks/results/fusion/lexical-2026-09-30/README.md) now
+retains every paired score vector, all 37 settings and the fold output. It is
+new evidence, not a retroactive claim that the old raw rows were saved;
+MuSiQue's reused index still lacks an exact embedding-source revision marker.
+
+The selection rule maximises macro-mean nDCG@10 over groups in five folds,
+breaking ties toward the shipped setting. **For the lexical-weight question it
+chooses only among the 25 lexical pairs.** On XQuAD-R it chose 0 / 0.125 in
+four folds and 0.0625 / 0.125 in one: held-out macro mean 0.7420 against the
+shipped 0.7405. Both answer keys for each physical query were assigned to the
+same fold, and the paired comparison averaged those keys into one observation
+per query (+0.0014, `p = 0.2206`). On MuSiQue it chose 0.25 / 0.125 in four
+folds and 0.25 / 0.0625 in one: held-out nDCG 0.6829 against 0.6814
+(+0.0014, `p = 0.3811`). Neither held-out gain is significant, and the settings
+favoured by the two corpora do not transfer. A separate mixed-parameter
+diagnostic chose `k = 0` in four XQuAD-R folds; that choice does not establish
+anything about which lexical pair should ship.
+
+Removing both lexical channels raises XQuAD-R cross-language nDCG by 0.0305
+but lowers same-language by 0.0300 and MuSiQue by 0.0111, all with family
+adjustment `p <= 0.0002`. Giving MuSiQue its highest grid nDCG, 0.25 / 0.125,
+buys only +0.0019 there (`p = 0.9880` after family adjustment) while losing
+0.0177 cross-lingual XQuAD-R (`p = 0.0001`). The near-neutral XQuAD-R arms
+0 / 0.25 and 0.25 / 0 both lose MuSiQue ranking and recall. The equal eighths
+stay because the lexical-only cross-validation finds no transferable gain and
+choice and the grid exposes a real cross-language versus same-language trade.
+MIRACL's earlier independent grid already favoured 0.25 / 0 by +0.0076
+(`p = 0.0580`), as recorded below; it is **not** an untouched held-out set for
+this sweep. MIRACL was not rerun, and no full reranked arm was spent on an
+unselected candidate. This justifies a compromise on these corpora, not a
+universal equality between the channels.
+
 **The adaptive rule is now visibly just a weaker constant.** Against the
 quarter on XQuAD-R, `adapt 0.00-1.00` scores +0.0618 cross-lingual and zero
 weight scores +0.0635; the four adaptive rows interpolate monotonically between
@@ -425,6 +483,14 @@ of what it scored it too. Three findings, on three corpora:
 | `graph` | premise absent | premise absent | premise absent |
 | all four fused | 0.7985 | 0.6114 | 0.7829 |
 
+This is a historical 2026-09-22 run (the fused row was recorded at
+`a3c2ec06`), before new indexes embedded `name: content` and before perf-58
+removed correct translations from XQuAD-R's same-language answer key. The
+current BGE-M3, named-index, corrected-key fusion-only baseline is 0.6372
+cross-lingual and 0.8438 same-language in the independent grid above. The
+old 0.6114/0.7829 and new 0.6372/0.8438 are not two measurements of an
+unchanged pipeline; their difference is not credited to the weight sweep.
+
 **Fusing four channels ranks below one of them on cross-lingual queries**, and
 on the same-language queries of the same corpus the lexical channels earn their
 place outright. Leave-one-out, paired against all four: taking
@@ -445,9 +511,9 @@ in both directions than it used to read.
 **The two lexical channels are not one channel.** Kendall tau-b between their
 rankings, over the candidates they share: 0.2816 on this project's own corpus,
 0.3188 on XQuAD-R, 0.2973 on MIRACL. They agree about a third of the time. The
-premise that justified one shared weight is refuted, and every sweep this
-project ever ran moved both together, so no measurement distinguishes the two
-numbers at all.
+premise that justified one shared weight is refuted. The earlier sweeps moved
+both together; the independent grid above has now tested them separately and
+found no transferable replacement for their current equal weights.
 
 **The graph channel contributes exactly 0.0000** — in every group of all three
 corpora, so removing it changes no ranking anywhere. **It is not a measurement
@@ -1279,6 +1345,30 @@ The pipeline reproduces the engine's own BGE-M3 figures within 0.0013 on three
 arms and 0.0062 on XQuAD-R same-language, where the int8 export itself moves by
 that much with the runtime's optimisation level (cosine 0.985 between builds).
 
+**Granite 97M multilingual R2, screened on the corrected XQuAD-R key on
+2026-09-27: rejected.** [IBM's Apache-2.0 model](https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2)
+has 384-dimensional output and an ONNX export, so its lower model and index
+cost merited a precision-first check. All 13,014 sentences were embedded with
+CLS pooling, and the same 1,190 questions rotated over eleven languages were
+compared against the full multilingual pool by exact cosine. The BGE-M3 arm
+reproduced the current `the_model_reaches_across_languages` baseline exactly:
+
+| Embedding space only | Cross nDCG@10 | Cross recall@50 | Same nDCG@10 | Same recall@50 |
+| --- | ---: | ---: | ---: | ---: |
+| BGE-M3 int8, shipped | **0.6420** | **0.8997** | **0.7925** | **0.9571** |
+| Granite 97M int8 | 0.2914 | 0.5369 | 0.6242 | 0.8622 |
+| Granite 97M fp32 | 0.3582 | 0.6508 | 0.6798 | 0.8975 |
+
+The fp32 Granite cross-lingual nDCG difference against BGE-M3 is −0.2838
+paired by question (95% bootstrap interval [−0.3006, −0.2666]); int8 costs a
+further 0.0668 against its own fp32 weights. The ONNX output is
+`last_hidden_state`, the model card's CLS pooling was used, and the same text
+embedded alone or in a batch of 32 had cosine 1.000000, so neither output
+selection nor batch instability explains the loss. These are model-only
+figures; no `search_reranked` product run or index migration was justified
+after a deficit this large. The model card's multilingual benchmark average
+does not predict ranking against this project's mixed-language candidate pool.
+
 **The two highest-ranked models collapse across languages**, and MTEB cannot
 see it: it scores each language pair against a corpus in one language, while a
 memory store holds all its languages in one pool. Harrier and mE5 rank a
@@ -1421,10 +1511,68 @@ stays at 512.
 
 ### pplx-embed-v1-0.6b on the shipped path: measured, not adopted
 
-**Status: rejected.** BGE-M3 remains the default. The accuracy gain held up
-with the export a product would ship, but the maintainer weighed it against a
-3.4× slower write path and chose BGE-M3; the decision and the figures it rests
-on close this section.
+**Status: rejected.** BGE-M3 remains the default. The earlier experiment
+reported an accuracy gain and rejected its 3.4× slower write path; those
+historical figures close this section. The current full-head rerank recheck
+below finds no significant aggregate gain and rejects the preselected Greek
+accuracy weakness. The historical cost decision is not the current accuracy
+verdict.
+
+**Rechecked against the current full-head `accurate` path, 2026-09-27:
+still rejected on accuracy.** An experimental profile loaded
+[Perplexity's official MIT int8 ONNX export](https://huggingface.co/perplexity-ai/pplx-embed-v1-0.6b)
+with the same 512-token input limit, 1024-dimensional fp16 HNSW index,
+`name: content` encoding, fused candidate depth, BGE cross-encoder and 0.2
+reranker-score blend as the current BGE-M3 path. All 13,014 XQuAD-R sentences
+were indexed and all 1,190 rotated questions searched through
+`search_reranked`. The BGE column is the earlier run on the same corpus
+fingerprint and corrected answer key; it was not alternated with pplx, so
+the aggregate differences below are descriptive, not a paired significance
+claim.
+
+| Current full-head XQuAD-R | BGE-M3 | pplx | Difference |
+| --- | ---: | ---: | ---: |
+| Cross-language nDCG@10 | 0.7268 | 0.7251 | −0.0017 |
+| Cross-language recall@50 | 0.9032 | 0.8950 | −0.0082 |
+| Same-language nDCG@10 | 0.8682 | 0.8689 | +0.0007 |
+| Same-language recall@50 | 0.9647 | 0.9630 | −0.0017 |
+
+The Greek weakness was specified for a separate paired check before this run,
+because the earlier pplx trial lost 0.0512 nDCG in that language. Reusing the
+two completed indexes, 108 Greek questions were asked of both models through
+the same `search_reranked` entry point. Cross-language nDCG@10 was 0.7218 →
+0.6999 (−0.0219, 25 wins / 38 losses, paired bootstrap 95% interval
+[−0.0486, +0.0024]); recall@50 was **0.9259 → 0.8685** (−0.0574, 9 wins /
+26 losses, interval [−0.1009, −0.0148], unadjusted paired sign-flip
+`p = 0.0093`). Same-language nDCG moved 0.8774 → 0.8941, without a
+detectable gain (`p = 0.1638`). The current reranker shrinks the old Greek
+nDCG loss but does not remove its recall loss. Under the accuracy-first rule,
+there is no general XQuAD-R gain to offset this preselected weakness, so the
+experimental profile was removed without spending another full rebuild on
+MuSiQue. Its older MuSiQue gain was measured under a different rerank path and
+is not claimed for this one.
+
+The 13,014-sentence cold project ran 39,043 cascade jobs. It was one run on
+a shared machine, so neither its indexing time nor its query time has the
+three-run median and spread required for a latency claim; neither is used to
+decide this model. The compacted pplx index was about 80 MiB, the same order
+as BGE's for the same vector width;
+the official ONNX external-weight file is 706 MB against about 570 MB for
+BGE's int8 model. Product-server peak RSS was not measured. A proposed
+eight-text inference batch was also dropped: on real XQuAD-R sentences its
+int8 output changed for one of 32 texts even though the pre-quantization
+pooled output stayed within cosine 0.99999970, so it cannot be used as a
+bit-identical acceleration of the current encoding.
+
+**Reproduction.** The [fixed, non-merge experimental commit](https://github.com/pamin-labs/PaminMemory/commit/8a72a16e39d5239b978db189764d9ff03063e8cf)
+pins the official pplx model revision, carries an optional profile solely for
+this trial, and includes `benchmarks/reproduce_pplx_current.sh`. It creates an
+ignored Greek test target, invokes the existing full XQuAD-R product harness,
+and writes raw logs and per-question scores. The committed summary and
+108-question JSON were regenerated from this branch; a second Greek run
+produced a byte-identical JSON file and the same paired statistics. This
+reproduction code is kept outside the merge stack so the rejected model does
+not become a product option.
 
 The survey above named one candidate and four reasons it was not yet a
 default, the first being that it had been measured on the vector channel
@@ -1667,7 +1815,27 @@ Resident is what opening the vector-only collection and answering the 482 querie
 
 **`memory` meets the bar at the width it already had.** Its recall is inside 0.002 of fp32's on the synthetic set and inside 0.001 on MIRACL, and it is faster to query, to build and smaller on disk and resident than the fp32 graph, all of it from half the bytes a vector. The query width was measured again for it, because a narrower one is where its remaining milliseconds are: at 200, 300 and 500 it saves about a millisecond a query and misses the bar at fifty on both sets (0.9458, 0.9769 and 0.9927 on the synthetic set; 0.9980, 0.9988 and 0.9993 on MIRACL), so it stays at 700.
 
-**`disk` meets it only by searching wide, and pays for that in query time and above all in build.** The on-disk graph is what limits its recall, not the arithmetic — the rescore adds at most 0.0015 at any width — and at DiskANN's own default width of 300 it recalls 0.981 of the synthetic top ten. It needs a width of 1,200 to be within 0.002 of fp32 at both depths, and the query then takes roughly ten times what the in-memory graph takes. On MIRACL's real embeddings the graph is easier to search -- 0.9996 at ten and 0.9986 at fifty from a width of 300, 0.9995 at fifty from 800 -- but the synthetic clusters are what set the width, as they set the in-memory graph's, and 1,200 is also what MIRACL was measured at. A build is the heaviest cost: over the synthetic 50,000, 922 to 1,024 s against 58 s for `memory`, with 946 MB more resident while it runs; a build list of 200 rather than 100 took 1,416 s and recalled no more, and 64 product-quantization chunks for navigation answered in a third of the time but recalled 0.9200 at ten and 0.8629 at fifty -- the rescore cannot find again what navigating by codes lost -- and took 1,859 s. What it buys is the resident set: the vectors and the graph stay on disk and are read per query, so opening the index and answering the queries added 34 MB to the process against 320 MB for `memory` and 575 MB for fp32; what it touches sits in the page cache, which the kernel can take back.
+**`disk` meets it only by searching wide, and pays for that in query time and above all in build.** The on-disk graph is what limits its recall, not the arithmetic — the rescore adds at most 0.0015 at any width — and at DiskANN's own default width of 300 it recalls 0.981 of the synthetic top ten. It needs a width of 1,200 to be within 0.002 of fp32 at both depths, and the query then takes roughly ten times what the in-memory graph takes. On MIRACL's real embeddings the graph is easier to search -- 0.9996 at ten and 0.9986 at fifty from a width of 300, 0.9995 at fifty from 800 -- but the synthetic clusters are what set the width, as they set the in-memory graph's, and 1,200 is also what MIRACL was measured at. A build is the heaviest cost: over the synthetic 50,000, 922 to 1,024 s against 58 s for `memory`, with 946 MB more resident while it runs; a historical run requesting build list 200 took 1,416 s and recalled no more, but its effective native parameter was not recorded (see the correction below), and 64 product-quantization chunks for navigation answered in a third of the time but recalled 0.9200 at ten and 0.8629 at fifty -- the rescore cannot find again what navigating by codes lost -- and took 1,859 s. What it buys is the resident set: the vectors and the graph stay on disk and are read per query, so opening the index and answering the queries added 34 MB to the process against 320 MB for `memory` and 575 MB for fp32; what it touches sits in the page cache, which the kernel can take back.
+
+**Effective-parameter correction (2026-09-30).** The `zvec-rust`/`zvec-rust-sys`
+0.7.2 prebuilt release references native commit
+[`1ab7975`](https://github.com/alibaba/zvec/tree/1ab7975dfc2d2160054bafff614831b7099cd930).
+The actual macOS library used by the current search benchmark matches the
+library contained in the published release archive byte-for-byte. The
+[retained comparison and reproduction procedure](../../benchmarks/results/index/zvec-native-0.7.2-2026-09-30.md)
+record both SHA256 identities and the audit limits. Its
+[`DiskAnnIndex::create_and_init_streamer`](https://github.com/alibaba/zvec/blob/1ab7975dfc2d2160054bafff614831b7099cd930/src/core/interface/indexes/diskann_index.cc#L96)
+clamps build `list_size` to at most 100 and `max_degree` to at most 100 before
+passing them to the builder. Therefore the historical requested-200 timing
+cannot establish that a wider effective build list caused a slower build;
+it remains an observation from an arm without an effective-value assertion.
+Its original native-library identity was not captured, so this audit also
+does not retroactively prove which clamp that historical run used. Keep the
+current requested 100 and require source/runtime parameter provenance before
+any new build-list sweep. A Rust wrapper version alone does not identify a
+native engine binary, and its source-build fallback clones the upstream
+default branch without an explicit ref.
+
 
 **What `disk` does to the write path is its largest cost, and it decided the default.** Measured through the product's own index on 25,000 synthetic vectors written the way a grown project holds them (segments of 10,000), with searches and writes running beside the `optimize` that upkeep issues: both indexes keep a freshly written memory searchable before any build -- every one of fifty found itself, by exhaustive scan of the unbuilt segment -- and neither holds a search up while it builds (`disk`: 15,423 searches during the build, median 13.5 ms, p95 26 ms; `memory`: median 20.5 ms). But `disk`'s first build took 567 s where `memory`'s took 81, and its index queries afterwards ran at a median of 166 ms and a p95 of 537 ms on a machine at load 12 to 15 against `memory`'s 6.8 and 11. And then five increments of 64 documents, each written, flushed and followed by an `optimize` -- what a working drain produces -- took **114, 114, 174, 196 and 310 s** of `optimize` each under `disk`, against 1.1 to 1.6 s under `memory`. Whatever the engine rebuilds when a few documents join an on-disk graph, it rebuilds a great deal of it, and the cost grew with each round. Upkeep runs `optimize` whenever the file budget, the unmerged blocks or the unindexed remainder asks for it, so how often a working project asks is what decides this cost: each time is minutes of two or more cores under `disk` and about a second under `memory`. That settled it: with that cost measured, the owner made `memory` the default, since this project ranks query time above resident memory and `memory` already holds half what the fp32 graph did.
 
@@ -1676,6 +1844,8 @@ Resident is what opening the vector-only collection and answering the 482 querie
 **The two end-to-end tests the write path depends on pass under both, and one of them is flaky before this change as well.** `a_deferred_write_is_found_without_anything_else_being_run` passed in every run: three under `disk`, three under `memory` and three on the fp32 build this branches from, a deferred write searchable after 5.2 to 32.1 s, 5.5 to 34.5 s and 5.5 to 34.7 s against a limit of 60. `catching_up_does_not_hold_a_search_up` passed 2 of 3 times under `disk`, 1 of 3 under `memory` and 0 of 3 on the fp32 build. Its failures are of the same two shapes on every build: the server caught up only once while the thirty searches ran, so the test refused to time them, or one search during catching up took 21.7 to 24.4 s against a settled slowest under 0.1 s. Both shapes appear on the fp32 build this branches from, so neither is this change's. In every run, on every build, two logged rounds of catching up were 28 to 35 s apart where the loop sleeps five seconds between them; what holds the loop, and whether it is what the long searches waited for, is not established and is not fixed here.
 
 **An index built before this is refused rather than searched.** Its marker's storage line says `fp32`, or nothing, which reads as `fp32`; it names neither index, so opening it fails with the message the profile check already gives — run `pamin reindex` — and the rebuild lends every vector it holds, reading them as fp32 and storing them as half precision would have stored the model's. Changing `--vector-index` on a built project goes the same way: refused, then rebuilt without embedding anything. Refusing is what the marker already did for a profile change, and it keeps one way of searching: an index is only ever searched as what it was built as. `each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself`, `an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild` and `each_vector_index_returns_the_nearest_documents` in `crates/pamin-index/tests/projection.rs` hold the three properties, and the last fails at 0.01 recall when the query is scrambled.
+
+**Deferring DiskANN compaction by file count was tested and rejected, 2026-09-27.** The [upstream compaction tracker](https://github.com/alibaba/zvec/issues/728) lists FLAT, HNSW and HNSW_RABITQ on its segment-reuse path, with Vamana/DiskANN among the full-rebuild fallbacks. `zvec-rust` 0.7.2 exposes one `Collection::optimize()` call and no incremental-Vamana switch; the exact work in its prebuilt native library was not instrumented here. An index-level scratch test built 25,000 clustered vectors in 10,000-document segments, then flushed 220 rounds of 64 new vectors without another build. Every round's new vector was searchable before `optimize`. At 513 files, 30 fixed queries had exact-neighbour recall@10 **1.0000 both before and after** compaction; index-only search was 134 versus 138 ms/query in one run and 104 versus 114 in another. Those non-alternated timings do not establish a search-speed gain. `optimize` took 26–38 seconds on this machine, against an earlier 114–310 seconds on a busy four-core build. The larger 512-file ceiling would defer that cost, but it is unsafe under a 512-descriptor hard limit because every counted index file stays open; multiple projects reduce the available headroom further. It also held **1,233 MiB before** versus **181 MiB after** compaction, about 1.05 GiB of additional allocated disk that persists if writes stop below the new threshold. **Decision: keep the 256-file ceiling for both index types.** A future change needs a descriptor-safe policy and a paired product-path latency win that justifies the steady-state disk cost.
 
 ### The graph is the memory floor, and it just doubled
 
@@ -2618,7 +2788,46 @@ gate is measured on CPU, and **every published figure stays a CPU figure** —
 otherwise the numbers on this page stop being product claims and become
 hardware claims.
 
+### Mixed accelerator policy (2026-09-29)
+
+This user-directed decision supersedes the preceding CPU-only default and
+permanent CPU fallback on numerical parity differences, and the historical
+GPU deferral below. It records the intended policy; cross-platform planner
+and hardware acceptance work remains in progress.
+
+- Apple Silicon starts with CoreML `ALL`, permitting ANE, GPU and optimized
+  CPU cooperation. CPUAndGPU remains a measured candidate, not the preferred
+  default merely because it excludes ANE.
+- Elsewhere, explore supported NPU+GPU+CPU, NPU+CPU SIMD, GPU+CPU SIMD and
+  CPU SIMD plans, plus viable single-accelerator plans. This is a candidate
+  exploration order, not a claim that NPU or a larger combination is faster.
+- Select by same-model, same-input-shape measurements at the caller boundary;
+  separate startup and warm cost. Reuse results in the shared compute policy
+  rather than loading every model/backend or probing every request.
+- Numerical drift is recorded and repaired incrementally while keeping valid
+  fast execution paths available. Small accepted drift alone does not
+  permanently disable an accelerator. Finite output is not sufficient: wrong
+  operators, omitted transposes or failed predefined retrieval/ordering gates
+  temporarily quarantine the affected model/runtime/shape plan. Select the
+  fastest remaining viable accelerator, mixed or optimized-CPU plan, and retry
+  the repaired plan after revalidation. Execution failures, invalid/non-finite
+  tensors and resource exhaustion still require a viable fallback; index
+  encoding changes retain their migration/reindex contract.
+- Every CPU compute path must consider SIMD, including preprocessing,
+  postprocessing, vector/numeric operations and scoring. Reuse existing
+  optimized kernels; preserve scalar execution when hardware/operations or
+  measured small-input cost require it, with material exceptions documented.
+- CPU SIMD comes from optimized runtime kernels. CoreML has no distinct
+  CPUAndGPUWithSIMD compute-unit flag. Provider registration is not proof of
+  hardware utilization or optimal scheduling.
+
+[ORT assigns supported subgraphs by provider capability and priority](https://onnxruntime.ai/docs/execution-providers/);
+[CoreML ALL permits all available compute units](https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html).
+Choose actual speed rather than assuming more registered engines are faster.
+
 ### Optional GPU: measured against, not deferred
+
+Historical decision; superseded by the mixed accelerator policy above.
 
 Accelerating the reranker on a GPU was considered and is not being built, and the reason is not the size budget alone.
 
@@ -2861,9 +3070,12 @@ machine was never quiet -- and the ambient column, at 1.033 and not
 significant, is the nearest thing to it. One pool shared by both models, through
 `ort`'s global thread pool, was the other candidate: it passes the same rule
 but gives up most of the gain under contention, so it does not ship. The
-`speed` and `balanced` profiles' embedders load through `fastembed`, whose
-options do not reach this setting, and still spin; both rerankers and the
-default profile's embedder do not.
+At the time of this sweep, `speed` and `balanced` profiles' embedders loaded
+through `fastembed`, whose options did not reach this setting and still spun;
+both rerankers and the default profile's embedder did not. The E5 profiles now
+load through the shared session owner, so its thread and provider-assignment
+settings apply to their scoring graphs too. No post-change concurrency or
+product-search latency claim follows from the historical sweep.
 
 **This says nothing about a machine with cores to spare.** On sixteen or
 thirty-two, one forward pass would not saturate the box, callers would not be
@@ -2899,3 +3111,155 @@ Exceeding a budget is a trade to record in the pull request, not drift to accept
 - Building `zvec` downloads a prebuilt native library, and ONNX Runtime does the same. Neither compiles C++ locally, but both require network access at build time and a measure of supply-chain trust.
 - Two full-text fields roughly double the lexical index. This is a measured trade, revisited when the evaluation harness exists.
 - Fusion in our own layer means more code than calling an engine helper. That code is the explainability contract, so it is the product rather than overhead.
+
+
+### CoreML 64-token bucket: controlled tradeoff (2026-09-29)
+
+Three alternating complete fixed-head XQuAD-R rounds now measure the added
+4×64 bucket against the otherwise identical 4×128 / 2×256 control. All six
+runs preserve every returned logit and ranking. Median round p50 is 616.875 →
+531.703 ms (-13.8%); p95 857.948 → 782.844 ms (-8.8%). The geometric mean
+paired-query ratio is 0.85745, with paragraph-cluster sign-flip p=0.0001.
+
+The gain costs memory and temporary disk: sampled peak process RSS median
+2.578 → 2.859 GiB (+10.9%), warm process RSS median 0.307 → 0.770 GiB
+(+150.7%), and PID-owned temporary-package logical bytes 4.558 → 6.836 GB
+(+50.0%). The shared model-cache folder remains 9.652 GB. These are distinct
+from global ANE caches, unique APFS physical extents and whole-system RAM.
+
+[Full rows, conditions and source](../../benchmarks/results/inference/coreml-short-bucket-2026-09-29.md)
+record the shared-machine/disk-pause limits and match the actual 256-token cap.
+This is a real reranker/fusion replay on fixed candidates, not `search_reranked`
+latency or proof on another corpus. It supports continuing the latency-first
+backend experiment with its accuracy parity; complete product and model/e2e
+acceptance stays open. Future optimization must reduce residency/compilation
+without silently changing the input or claiming this ~14% as whole-search gain.
+
+
+### 2026-09-29: stream content validation on a native preparation cache hit
+
+A prepared CoreML reranker cache hit still read the entire 1,136,209,678-byte
+source into a retained array just to compute its content key. Reuse the existing
+streaming SHA-256 helper instead. Preserve full-byte validation, cache identity,
+and inference arithmetic. On a miss, rewrite a private copied snapshot only
+after verifying that its digest matches the key; discard a failed partial copy.
+
+The original three independent-process rounds showed peak RSS
+1,155,006,464 → 18,825,216 bytes but their apparent −7.1% prepare-time
+change was too noisy to accept. Two later strict 30-round cache-hit replays
+reproduced about 1.136 GB less process memory and disagreed on latency; there
+is **no accepted speed percentage**. All prepared graph hashes and byte counts
+match. This reduces preparation
+peak allocation; it does not reduce the retained 64/128/256 sessions or claim
+search speed/accuracy gains. First-write/cache-reuse verification uses the full
+cached BGE graph. [Original rows](../../benchmarks/results/inference/coreml-stream-cache-2026-09-29.md)
+and [strict correction](../../benchmarks/results/inference/coreml-stream-cache-recheck-2026-09-30.md).
+
+
+### 2026-09-29: isolate and reuse static CoreML compilation caches
+
+ORT's default URL-based CoreML cache key omits static dimension overrides and
+changed content at the same path. Tiny native controls reproduce both failure
+modes: a 128-token invocation loads a cached 64-token description, and updated
+weights return stale output. Key the compiled cache by the prepared model's
+content-addressed parent, graph digest, runtime info, compile-policy version,
+rows and tokens. Hold a process-safe lock while ORT constructs the package.
+Native regressions exercise shape changes, repeated loading and weight updates.
+
+A direct ORT BGE 4×64 pilot, three rotated rounds, reduces median load time
+59.343 → 2.092 seconds (28.37×) and sampled process peak RSS
+2,101,821,440 → 1,591,590,912 bytes (-24.3%). All seven synthetic-input outputs
+are bit-identical and profiles confirm CoreML kernel execution. First cache
+population still takes 58.692 seconds. This is compile/reload cost, not complete
+product startup, retrieval accuracy or search speed; the pilot uses two CPU
+threads, while production keeps its existing configured count.
+
+The cost is 2,278,103,629 persistent logical bytes for one bucket. The other BGE
+shapes and complete product/corpus gates remain unmeasured. Do not delete the
+conversion package's duplicate weights without verifying runtime cache behavior.
+[Source, limits and all rounds](../../benchmarks/results/inference/coreml-compile-cache-2026-09-29.md).
+
+The current `coreml-all-v2` namespace does not reuse older `coreml-all-v1`
+packages. Old processes may use v1 after releasing their build lock, so there
+is no safe automatic concurrent collector. An [offline, exact-namespace
+retirement command](../cli.md) lists candidates by default and removes them
+only after every process using that model directory has stopped. This
+recovers abandoned v1 bytes without touching v2 or mapped CPU models; total
+APFS free-space recovery is not inferred from logical package sizes.
+
+### 2026-09-30: complete CoreML product-path control
+
+The [complete default-main comparison](../../benchmarks/results/inference/coreml-main-auto-search-2026-09-30.md)
+measures all 1,190 XQuAD-R queries on the same complete revision-bound index.
+Both default arms actually select CoreML: legacy NeuralNetwork on main versus
+MLProgram + ALL, fixed buckets and a repaired FP32 classifier on the candidate.
+Observed p50 5.085653 → 0.483738 s, p95 7.374466 → 0.814224 s, peak process
+RSS −30.84%, process CPU user+system −98.46%. CPU cost excludes external
+services/devices; this is not energy or a per-PR causal gain.
+Cross-language nDCG changes −0.000168, same-language +0.000298, adjusted
+p 0.1532/1.0; recall is identical per query. The
+[CPU control](../../benchmarks/results/inference/coreml-search-full-2026-09-30.md)
+provides a separate baseline and shows increased RSS versus CPU. Retain these
+separate scopes. One sequential shared-host run per arm establishes complete
+product-path evidence, while rotated timings, other corpora, full ignored/e2e
+and other platforms remain open. Do not label this pure ANE execution or
+attribute the whole improvement to any one commit.
+
+### 2026-09-30: route Apple Fast reranking to optimized CPU
+
+CoreML is not the fastest viable route for every model. On the same pinned
+Fast model and complete 1,190-query XQuAD-R index, Apple ARM INT8 CPU changed
+cross-language nDCG@10 by +0.001077 (four-metric adjusted p=0.1558),
+same-language by +0.000133 (p=0.9609), and recall@50 not at all versus
+CoreML NeuralNetwork FP32. CPU was faster on every paired query; whole-search
+p50 was 0.330 s versus 1.630 s, with the CoreML timing stitched from two
+processes after a disk-guard interruption. The source export was 118.6 MB
+versus 470.9 MB; total disk was not isolated. This chooses CPU SIMD for the
+opt-in **Fast** tier on Apple Silicon. Accurate remains the precision-first
+default and keeps its measured static CoreML MLProgram route. Other platforms
+need their own same-model backend checks. [Full conditions and rows](../../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).
+
+### Lexical sweep evidence retention correction (2026-09-30)
+
+The [historical complete terminal outputs](../../benchmarks/results/fusion/lexical-2026-09-27/README.md)
+retain all printed grid rows and fold choices behind the lexical verdict.
+They did not retain per-query score matrices or full artifact provenance;
+that limitation is not repaired retrospectively. New `CHANNELS_OUT` runs save
+the paired vectors and configurations through the shared diagnostic owner,
+with stdout retained beside them. No new weight is selected from old means.
+
+### 2026-09-30: observe E5 scoring sessions
+
+The `speed` and `balanced` embedders previously created private FastEmbed
+sessions, outside the shared ONNX Runtime provider-assignment report. They now
+use the shared session owner while retaining FastEmbed's model registry and
+masked-mean pooling. Real cached-model checks report 623 and 637 CPU-assigned
+nodes, respectively. For each profile, four passages (including a long input)
+and one query produce exactly the same f32 vectors as FastEmbed when compared
+at the same batch shape. A Chinese passage already differed between batch and
+single inference in both implementations by at most 5.22e-8 (`speed`) or
+7.83e-8 (`balanced`); the session change did not introduce that difference.
+These are model-path and vector-identity checks, not a full retrieval-quality,
+latency, memory, or disk comparison. No provider is selected by an unmeasured
+performance claim.
+
+### 2026-09-30: fill model inputs without copying token metadata
+
+Static input preparation now fills only IDs, masks and optional token types;
+it no longer clones complete Encodings to make native padding and dummy rows.
+The differential input test preserves the previous tensors. A release observer
+on four cached-tokenizer cases measured 303–1,064 allocation/reallocation
+requests per batch becoming two, with requested bytes reduced 85.2%–90.6%.
+These are temporary input allocations, not model residency or process RSS.
+
+Three alternating scoring rounds over 60 fixed queries and 30 candidates each
+produce identical scores and physical batches. Candidate/before paired timing
+ratio is 1.016012, p=0.2275; this supports no stable rank-speed improvement.
+Keep the small allocation simplification without claiming faster whole search.
+[All rows, sources, resource scope and reproduction](../../benchmarks/results/inference/input-padding-2026-09-30/README.md).
+
+### 2026-09-30: finish local backend and FP64 validation
+
+The [local validation record](../../benchmarks/results/inference/local-closeout-2026-09-30/README.md) reports repeated whole-search alternatives, process CPU/RSS and precision scopes. Keep Accurate on CoreML ALL and Fast on optimized CPU kernels for the measured Apple workload. This descriptive sample introduces no new backend policy. Its former query-independent significance is withdrawn; three deterministic process-round blocks cannot establish significance. CPU computation must consider SIMD/optimized kernels beyond model inference.
+
+Full XQuAD-R, MIRACL-Swahili and a shared 50k memory index found no accuracy or returned-list benefit from ORT CPU FP64 or native SIMD FP64 rescoring. Keep the current scorer. Synthetic near-tie precision probes cannot stand in for product acceptance. CoreML profiling includes wrapper handling and waits and cannot isolate physical transfer cost; partition changes remain future experiments.

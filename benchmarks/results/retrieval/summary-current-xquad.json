@@ -1,0 +1,63 @@
+{
+  "table": "Current BGE-M3 XQuAD-R product search",
+  "status": "measured product-path run; latency shared a busy machine and is not reported",
+  "corpus": {
+    "name": "XQuAD-R",
+    "sentences": 13014,
+    "queries": 1190,
+    "languages": 11,
+    "passage_fingerprint": "24ad7f1862182925",
+    "source_revision": "9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c",
+    "input_sha256_manifest": "xquad-r-input.sha256",
+    "input_manifest_sha256": "cf47b10b898adc62d2643380ec1e7914a604622dc642549c9db47fa48fa28755"
+  },
+  "path": {
+    "entry": "Engine::search_reranked",
+    "profile": "accuracy (BGE-M3 int8)",
+    "passage": "Named: name: content",
+    "vector_index": "memory (fp16 field with f32 rescore)",
+    "reranker": "accurate (BGE-reranker-v2-m3), full head of 30",
+    "fusion_model_blend": 0.2,
+    "reranker_device": "cpu",
+    "reranker_export": "onnx/model_int8.onnx"
+  },
+  "machine": {
+    "verified_from_source_log": false,
+    "provenance": "manual host observation; the archived harness did not emit machine metadata",
+    "reported_separately": {
+      "os": "Darwin 25.6.0 arm64",
+      "model": "Mac16,12",
+      "logical_cpus": 10,
+      "memory_bytes": 34359738368,
+      "load": "shared with a MuSiQue dual-vector evaluation and native build/tests; run duration is not a paired latency result"
+    }
+  },
+  "metrics": {
+    "cross_language": {
+      "ndcg_at_10": 0.7268,
+      "recall_at_50": 0.9032
+    },
+    "same_language": {
+      "ndcg_at_10": 0.8682,
+      "recall_at_50": 0.9647
+    }
+  },
+  "prepare_models": "env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored",
+  "reproduce": "env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1",
+  "verify_models": "python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log",
+  "resources": "Fresh execution downloads models and builds a 13,014-sentence index; inspect disk and memory headroom before running.",
+  "source_run": {
+    "log": "xquad-r-current-run.log",
+    "sha256": "98ddb78a84df416175e7d0738c1dbabce041636811fa4624a9a8795bdb26fd50",
+    "code_commit": "4d7c4f6a198bf687ba0e2128c8a8d1f05e3f4e3b",
+    "index_profile": "xquad-r-index-profile.txt",
+    "index_profile_sha256": "91c78fc151309c1cb86f99df1eb414090b4ca2ab3abda4921c8edfb66949d73f",
+    "index_project": "xquad-accuracy-24ad7f1862182925",
+    "index_embedding_revision_verified": false,
+    "index_completeness_asserted_in_run": false,
+    "index_provenance": "the retained index records the repository but not the embedding revision; a fresh revision-bound rerun is pending",
+    "model_artifacts": "xquad-r-model-artifacts.json",
+    "model_artifacts_sha256": "75ff42b82260ba95ea8e26bdbcd7f4f52da05d0819625e2cbab3602643c2d4ee",
+    "index_profile_original_mtime": "2026-09-26 16:53:10 +1000"
+  }
+}

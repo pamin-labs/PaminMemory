@@ -343,6 +343,9 @@ mod tests {
     const UNDOCUMENTED: &[&str] = &[
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
+        // Cached-export inputs used only by the native preparation regression.
+        "PAMIN_NATIVE_MODEL_SOURCE",
+        "PAMIN_NATIVE_TEST_CACHE",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
