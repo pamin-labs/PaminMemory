@@ -537,9 +537,68 @@
       "bytes": 2947
     },
     "verify.py": {
-      "sha256": "c010f6e3a38e0047d67ec34258455cbd3403a7c99919dd977fd7b5e62f90ef60",
-      "bytes": 803
+      "sha256": "91addfbeedd48018d4ac487da45cbe218ec455f837f7bc17152a17eb843e162c",
+      "bytes": 1210
+    },
+    "fp64/miracl-results.json.gz": {
+      "sha256": "2549e4f455a99baeb6ac7607336819a53d5ba9f1746b668e884b7e385cf4779e",
+      "bytes": 114322
+    },
+    "fp64/50k-results.json.gz": {
+      "sha256": "b0c334821c62c7f079efb9d66879ac6e76b36b2b4a88b846fb1674dbd7764613",
+      "bytes": 41613
+    },
+    "fp64/judgements.json.gz": {
+      "sha256": "9a40f899db8ce455b2c17c8bc32a0daa361e2cfc0d82f466ed945c70a683797e",
+      "bytes": 35650
+    },
+    "fp64/xquad-results.json.gz": {
+      "sha256": "359568852111658942b7a4468c90c2b1d91751756621c6ba7285b2fe5c6ed267",
+      "bytes": 251893
+    },
+    "fp64/sources/cosine-f64.onnx": {
+      "sha256": "a1654764a36dc62827085ae66c30fdb8e1bdd4e3d3d10047862f21e364b242f0",
+      "bytes": 693
+    },
+    "fp64/sources/experiment.patch": {
+      "sha256": "7e443db7afcfbc11c5ec1e20b6359067e3a239611134cd246d81420863052d14",
+      "bytes": 12712
+    },
+    "fp64/sources/50k.rs": {
+      "sha256": "88b04fdc4a34fc805e56e1b61213e7a90a67147da900013e82bf8dd94dd6b246",
+      "bytes": 9002
+    },
+    "fp64.py": {
+      "sha256": "25b429d8ef1b5e61fa8903be2b6c17926813e74a151fdc953f699a5c01a92ae2",
+      "bytes": 3575
     }
   },
-  "dataset_source": "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r"
+  "dataset_source": "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r",
+  "fp64": {
+    "source_commit": "be329b00636987781689ec6ef0c4fc48611cdf1d",
+    "modes": {
+      "0": "current FP32",
+      "1": "ORT CPU FP64",
+      "2": "native SIMD FP64"
+    },
+    "50k": {
+      "documents": 50000,
+      "dimensions": 1024,
+      "queries": 100,
+      "seed": "0x5eed",
+      "rounds": 3,
+      "vector_index": "memory"
+    },
+    "xquad": {
+      "queries": 1190,
+      "documents": 13014,
+      "profile": "accuracy"
+    },
+    "miracl": {
+      "queries": 482,
+      "documents": 131924,
+      "profile": "accuracy"
+    },
+    "scope": "same ANN pools asserted during execution; shared embeddings and reranker scores to isolate vector math; no comparative inference timing claim"
+  }
 }

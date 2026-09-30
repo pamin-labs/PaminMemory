@@ -22,3 +22,17 @@ Copy the printed executable to `$RUN_ROOT/benchmark`. Use a fresh output directo
 Models use CPU INT8 vs Accurate CoreML FP16 / Fast CoreML FP32. These are different complete exports, not an isolated hardware arithmetic comparison. All results were collected on a shared workstation. Do not use the sample nDCG columns for full-corpus precision acceptance.
 
 Result rows contain only public XQuAD topic IDs, scores, counters and timings. Local paths are replaced in source/attestation files. No private notes, credentials, model binaries or raw device traces are published.
+
+## FP64 appendices
+
+The same verifier also recomputes the full FP64 section: 900 generated-vector rows (recall from gold nearest IDs; unchanged candidates/lists), 3,570 XQuAD rows and 1,446 MIRACL rows (nDCG from retained public judgement keys and rankings). It compares every query score before aggregating; corpus sizes and mode coverage are asserted. The 50k generator uses seed 0x5eed and independent original-f32 and stored-FP16 cosine oracles.
+
+Use a separate checkout at the manifest source commit, apply `fp64/sources/experiment.patch` (not the backend patch), and copy `fp64/sources/50k.rs` to `crates/pamin-engine/tests/scratch_fp64_50k.rs`. Set PAMIN_FP64_MODEL to the retained cosine-f64.onnx. Run each separately in release mode:
+
+```sh
+cargo test --release -p pamin-engine --test scratch_fp64_50k scratch_fp64_50k -- --exact --ignored --nocapture
+cargo test --release -p pamin-engine --test crosslingual scratch_fp64_product -- --exact --ignored --nocapture
+cargo test --release -p pamin-engine --test monolingual scratch_fp64_miracl -- --exact --ignored --nocapture
+```
+
+Set FP64_OUTPUT to a fresh per-test output file, FP64_50K_HOME to a fresh index directory, PAMIN_EVAL_HOME to the complete cached evaluation workspace, PAMIN_DEVICE=auto and PAMIN_VECTOR_INDEX=memory. MIRACL_DIR must hold the full Swahili corpus/topics/qrels; unset MIRACL_MAX_DOCS, HF_HOME, HF_ENDPOINT and PAMIN_RERANK_MAX_TOKENS. The real-corpus harnesses reject incomplete indices. The patch contains the exact test sources; the standalone 50k file retains the deterministic input generator.

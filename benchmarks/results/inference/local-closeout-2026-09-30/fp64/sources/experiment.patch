@@ -1,0 +1,296 @@
+diff --git a/crates/pamin-engine/tests/crosslingual.rs b/crates/pamin-engine/tests/crosslingual.rs
+index 6dd59ce..76197e8 100644
+--- a/crates/pamin-engine/tests/crosslingual.rs
++++ b/crates/pamin-engine/tests/crosslingual.rs
+@@ -3129,3 +3129,66 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+         );
+     }
+ }
++
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "paired product-path FP64 validation on the complete cached XQuAD-R index"]
++async fn scratch_fp64_product() {
++    use pamin_index::projection::{experimental_candidates, experimental_math};
++    let home = std::env::var("PAMIN_EVAL_HOME").unwrap();
++    assert!(std::env::var_os("HF_HOME").is_none());
++    report_loaded_graphs();
++    let corpus = Corpus::load();
++    let queries = corpus.queries();
++    assert_eq!(queries.len(), 1190);
++    let workspace = Workspace::at(&home);
++    let identity = pinned_embedding_id(&workspace.root().join("models"));
++    let project = xquad_project_name("accuracy", &corpus.fingerprint(), &identity);
++    let engine = Engine::open(
++        &workspace,
++        &project,
++        pamin_index::Profile::Accuracy,
++        VectorIndex::Memory,
++        Access::ReadWrite,
++    )
++    .await
++    .unwrap();
++    assert_eq!(engine.indexed_documents().unwrap(), 13014);
++    assert_eq!(engine.vector_index_completeness().unwrap(), 1.0);
++    let mut result = Vec::new();
++    for (index, query) in queries.iter().enumerate() {
++        let mut expected = None;
++        for mode in 0..3 {
++            experimental_math(mode);
++            let before = engine.reranked(Rerank::Accurate).unwrap_or_default();
++            let hits = engine
++                .search_reranked(query.text(), 60, DEPTHS, Rerank::Accurate)
++                .await
++                .unwrap();
++            let after = engine.reranked(Rerank::Accurate).unwrap();
++            assert_eq!(after.maximum_tokens, 256);
++            let mut candidates = experimental_candidates();
++            candidates.sort_by_key(|topic| topic.to_string());
++            assert!(!candidates.is_empty());
++            if let Some(ref initial) = expected {
++                assert_eq!(&candidates, initial, "ANN pool changed");
++            } else {
++                expected = Some(candidates);
++            }
++            let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
++            let mut scored = BTreeMap::new();
++            score(&mut scored, query, &ranked);
++            result.push(serde_json::json!({"query":index,"mode":mode,"ranked":ranked,"scores":scored,"new_pairs":after.scored-before.scored,"offered":after.offered-before.offered}));
++        }
++        if (index + 1) % 25 == 0 {
++            println!("FP64 XQuAD paired {}/{}", index + 1, queries.len());
++        }
++        if (index + 1) % 25 == 0 || index + 1 == queries.len() {
++            std::fs::write(
++                std::env::var("FP64_OUTPUT").unwrap(),
++                serde_json::to_vec_pretty(&result).unwrap(),
++            )
++            .unwrap();
++        }
++    }
++    experimental_math(0);
++}
+diff --git a/crates/pamin-engine/tests/monolingual.rs b/crates/pamin-engine/tests/monolingual.rs
+index 050637e..a5a56b9 100644
+--- a/crates/pamin-engine/tests/monolingual.rs
++++ b/crates/pamin-engine/tests/monolingual.rs
+@@ -1529,3 +1529,82 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+         started.elapsed().as_secs_f64() / 60.0
+     );
+ }
++
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "paired product-path FP64 validation on the complete cached MIRACL index"]
++async fn scratch_fp64_miracl() {
++    use pamin_index::Profile;
++    use pamin_index::projection::{experimental_candidates, experimental_math};
++    assert!(std::env::var_os("HF_HOME").is_none());
++    let corpus = Corpus::load();
++    assert!(!corpus.capped);
++    assert_eq!(corpus.queries.len(), 482);
++    let workspace = Workspace::at(std::env::var("PAMIN_EVAL_HOME").unwrap());
++    let mut selected = None;
++    for (named, profile) in [("accuracy", Profile::Accuracy), ("speed", Profile::Speed)] {
++        let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
++        let opened = Engine::open(
++            &workspace,
++            &project,
++            profile,
++            VectorIndex::Memory,
++            Access::ReadWrite,
++        )
++        .await;
++        if let Ok(engine) = opened {
++            let count = engine.indexed_documents().unwrap();
++            if count == corpus.passages.len() as u64
++                && engine.vector_index_completeness().unwrap() == 1.0
++            {
++                selected = Some((named, project, engine));
++                break;
++            }
++        }
++    }
++    let (named, project, engine) = selected.expect(
++        "a complete cached MIRACL index is required; no reindex/download during validation",
++    );
++    println!(
++        "FP64 MIRACL reused {project}, profile {named}, {} documents",
++        corpus.passages.len()
++    );
++    let mut output = Vec::new();
++    for (index, query) in corpus.queries.iter().enumerate() {
++        let mut expected = None;
++        for mode in 0..3 {
++            experimental_math(mode);
++            let before = engine.reranked(Rerank::Accurate).unwrap_or_default();
++            let hits = engine
++                .search_reranked(&query.text, DEPTH as u32, DEPTHS, Rerank::Accurate)
++                .await
++                .unwrap();
++            let after = engine.reranked(Rerank::Accurate).unwrap();
++            assert_eq!(after.maximum_tokens, 256);
++            let mut candidates = experimental_candidates();
++            candidates.sort_by_key(|topic| topic.to_string());
++            assert!(!candidates.is_empty());
++            if let Some(ref initial) = expected {
++                assert_eq!(&candidates, initial, "ANN pool changed");
++            } else {
++                expected = Some(candidates);
++            }
++            let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
++            let mut scores = Scores::default();
++            scores.add(&ranked, query.relevant.len(), |topic| {
++                query.relevant.contains(topic)
++            });
++            output.push(serde_json::json!({"query":query.id,"mode":mode,"profile":named,"project":project,"ranked":ranked,"scores":scores,"new_pairs":after.scored-before.scored,"offered":after.offered-before.offered}));
++        }
++        if (index + 1) % 25 == 0 {
++            println!("FP64 MIRACL paired {}/{}", index + 1, corpus.queries.len());
++        }
++        if (index + 1) % 25 == 0 || index + 1 == corpus.queries.len() {
++            std::fs::write(
++                std::env::var("FP64_OUTPUT").unwrap(),
++                serde_json::to_vec_pretty(&output).unwrap(),
++            )
++            .unwrap();
++        }
++    }
++    experimental_math(0);
++}
+diff --git a/crates/pamin-index/src/projection.rs b/crates/pamin-index/src/projection.rs
+index 2f6d664..d2618f1 100644
+--- a/crates/pamin-index/src/projection.rs
++++ b/crates/pamin-index/src/projection.rs
+@@ -1625,6 +1625,46 @@ impl Projection for ProjectionIndex {
+         search.set_include_vector(true)?;
+         self.index.ask(&mut search, candidates)?;
+ 
++        let mode = EXPERIMENTAL_MATH.load(std::sync::atomic::Ordering::Relaxed);
++        if mode != 0 {
++            let mut topics = Vec::new();
++            let mut vectors = Vec::new();
++            for doc in self.collection.query(&search)? {
++                let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) else {
++                    continue;
++                };
++                let vector = crate::half::get(&doc, FIELD_VECTOR)?
++                    .ok_or_else(|| IndexError::Engine("missing candidate vector".into()))?;
++                topics.push(topic);
++                vectors.push(vector);
++            }
++            *EXPERIMENTAL_CANDIDATES.lock().unwrap() = topics.clone();
++            let values = if mode == 1 {
++                experimental_ort64(embedding, &vectors)?
++            } else {
++                let norm = experimental_dot64(embedding, embedding).sqrt();
++                vectors
++                    .iter()
++                    .map(|vector| {
++                        let denominator = norm * experimental_dot64(vector, vector).sqrt();
++                        if denominator > 0.0 {
++                            experimental_dot64(embedding, vector) / denominator
++                        } else {
++                            0.0
++                        }
++                    })
++                    .collect()
++            };
++            let mut scored: Vec<_> = topics
++                .into_iter()
++                .zip(values)
++                .map(|(topic, value)| (Scored::new(topic, value as f32), value))
++                .collect();
++            scored.sort_by(|left, right| right.1.total_cmp(&left.1));
++            scored.truncate(limit as usize);
++            return Ok(scored.into_iter().map(|(scored, _)| scored).collect());
++        }
++        let mut raw_candidates = Vec::new();
+         let length = dot(embedding, embedding).sqrt();
+         let mut scored = Vec::with_capacity(candidates as usize);
+         for doc in self.collection.query(&search)? {
+@@ -1636,6 +1676,7 @@ impl Projection for ProjectionIndex {
+                     "a candidate for topic {topic} came without its vector"
+                 ))
+             })?;
++            raw_candidates.push(topic);
+             let lengths = length * dot(&vector, &vector).sqrt();
+             let similarity = if lengths > 0.0 {
+                 dot(embedding, &vector) / lengths
+@@ -1644,6 +1685,7 @@ impl Projection for ProjectionIndex {
+             };
+             scored.push(Scored::new(topic, similarity));
+         }
++        *EXPERIMENTAL_CANDIDATES.lock().unwrap() = raw_candidates;
+         scored.sort_by(|left, right| {
+             right
+                 .score
+@@ -2208,3 +2250,70 @@ mod marker {
+         );
+     }
+ }
++
++// Temporary validation hooks; removed after the experiment.
++static EXPERIMENTAL_MATH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
++static EXPERIMENTAL_CANDIDATES: std::sync::Mutex<Vec<TopicId>> = std::sync::Mutex::new(Vec::new());
++pub fn experimental_math(mode: u8) {
++    EXPERIMENTAL_MATH.store(mode, std::sync::atomic::Ordering::Relaxed);
++    EXPERIMENTAL_CANDIDATES.lock().unwrap().clear();
++}
++pub fn experimental_candidates() -> Vec<TopicId> {
++    EXPERIMENTAL_CANDIDATES.lock().unwrap().clone()
++}
++#[cfg(target_os = "macos")]
++#[link(name = "Accelerate", kind = "framework")]
++unsafe extern "C" {
++    fn cblas_dsdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f64;
++}
++fn experimental_dot64(left: &[f32], right: &[f32]) -> f64 {
++    #[cfg(target_os = "macos")]
++    unsafe {
++        cblas_dsdot(
++            i32::try_from(left.len().min(right.len())).unwrap(),
++            left.as_ptr(),
++            1,
++            right.as_ptr(),
++            1,
++        )
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        left.iter()
++            .zip(right)
++            .map(|(a, b)| f64::from(*a) * f64::from(*b))
++            .sum()
++    }
++}
++fn experimental_ort64(query: &[f32], vectors: &[Vec<f32>]) -> Result<Vec<f64>> {
++    use ort::value::TensorRef;
++    if vectors.is_empty() {
++        return Ok(Vec::new());
++    }
++    static SESSION: std::sync::LazyLock<std::sync::Mutex<ort::session::Session>> =
++        std::sync::LazyLock::new(|| {
++            let path = std::path::PathBuf::from(
++                std::env::var("PAMIN_FP64_MODEL").expect("set the experimental graph path"),
++            );
++            std::sync::Mutex::new(
++                crate::inference::session(vec![crate::inference::cpu()], || Ok(path))
++                    .expect("load the experimental FP64 graph"),
++            )
++        });
++    let values: Vec<f64> = vectors.iter().flatten().copied().map(f64::from).collect();
++    let query_values: Vec<f64> = query.iter().copied().map(f64::from).collect();
++    let failed = |error| IndexError::Engine(format!("experimental FP64 rescore: {error}"));
++    let matrix = TensorRef::from_array_view(([vectors.len(), query.len()], values.as_slice()))
++        .map_err(failed)?;
++    let query =
++        TensorRef::from_array_view(([1, query.len()], query_values.as_slice())).map_err(failed)?;
++    let mut session = SESSION.lock().unwrap();
++    let outputs = session
++        .run(ort::inputs!["vectors"=>matrix,"query"=>query])
++        .map_err(failed)?;
++    Ok(outputs["cosines"]
++        .try_extract_tensor::<f64>()
++        .map_err(failed)?
++        .1
++        .to_vec())
++}
