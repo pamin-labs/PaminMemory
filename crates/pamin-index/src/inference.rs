@@ -468,8 +468,8 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
     ort::ep::CPU::default().with_arena_allocator(false).build()
 }
 
-/// One provider policy for every model. The loader owns model/export choice;
-/// this owns accelerator order, reporting and the final CPU attempt.
+/// Legacy discovery-order helper retained only for policy regression tests.
+#[cfg(test)]
 pub(crate) fn preferred<T>(
     mut load: impl FnMut(Device, Target) -> Result<T>,
 ) -> Result<(T, Device)> {
@@ -484,6 +484,148 @@ pub(crate) fn preferred<T>(
         }
     }
     load(Device::Cpu, vec![cpu()].into()).map(|model| (model, Device::Cpu))
+}
+
+/// Calibrate complete model-call fixtures, then reuse the validated target
+/// through idle reloads. This is a bounded workload choice, not a claim about
+/// every query shape or an accelerator's internal hardware placement.
+pub(crate) fn measured<T>(
+    identity: &str,
+    load: impl FnMut(Device, Target, bool) -> Result<T>,
+    evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
+) -> Result<(T, Device)> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static PLANS: OnceLock<Mutex<HashMap<String, (Device, Target)>>> = OnceLock::new();
+    let plans = accelerators();
+    let signature: Vec<_> = plans
+        .iter()
+        .map(|(device, target)| match target {
+            Target::Npu { provider, id } => format!("{provider}:{id}"),
+            _ => device.name().to_string(),
+        })
+        .collect();
+    let settings: Vec<_> = std::env::vars_os()
+        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
+        .collect();
+    let mut settings = settings;
+    settings.sort();
+    let key = format!(
+        "{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}",
+        threads(),
+        std::thread::available_parallelism()
+    );
+    calibrated(
+        &key,
+        plans,
+        PLANS.get_or_init(Default::default),
+        load,
+        evaluate,
+    )
+}
+
+fn calibrated<T>(
+    key: &str,
+    plans: Vec<(Device, Target)>,
+    cache: &std::sync::Mutex<std::collections::HashMap<String, (Device, Target)>>,
+    mut load: impl FnMut(Device, Target, bool) -> Result<T>,
+    mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
+) -> Result<(T, Device)> {
+    if plans.is_empty() {
+        return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
+    }
+    let remembered = cache
+        .lock()
+        .expect("compute-plan cache poisoned")
+        .get(key)
+        .cloned();
+    if let Some((device, target)) = remembered {
+        match load(device, target, true) {
+            Ok(model) => return Ok((model, device)),
+            Err(error) => {
+                tracing::warn!(%error, "cached compute plan failed; recalibrating");
+                cache
+                    .lock()
+                    .expect("compute-plan cache poisoned")
+                    .remove(key);
+            }
+        }
+    }
+    let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
+    let mut fastest = (Device::Cpu, vec![cpu()].into());
+    let mut best_ratio = 1.0;
+    // Keep at most the CPU reference and one candidate resident. Drop every
+    // candidate before loading the next; reload the winner after calibration.
+    for (device, target) in plans {
+        let mut candidate = match load(device, target.clone(), false) {
+            Ok(model) => model,
+            Err(error) => {
+                tracing::warn!(device = device.name(), %error, "compute candidate unavailable");
+                continue;
+            }
+        };
+        let before = evaluate(&mut reference, Device::Cpu)?;
+        let elapsed = match evaluate(&mut candidate, device) {
+            Ok(elapsed) => elapsed,
+            Err(error) => {
+                tracing::warn!(device = device.name(), %error, "compute candidate failed validation");
+                continue;
+            }
+        };
+        let after = evaluate(&mut reference, Device::Cpu)?;
+        let denominator = (before.as_secs_f64() + after.as_secs_f64()) / 2.0;
+        if denominator <= 0.0 {
+            return Err(IndexError::Engine(
+                "compute calibration produced no duration".into(),
+            ));
+        }
+        let ratio = elapsed.as_secs_f64() / denominator;
+        tracing::info!(
+            device = device.name(),
+            ratio_to_cpu = ratio,
+            "complete model-call calibration"
+        );
+        if ratio < best_ratio {
+            best_ratio = ratio;
+            fastest = (device, target);
+        }
+    }
+    let (device, target) = fastest;
+    if device == Device::Cpu {
+        cache
+            .lock()
+            .expect("compute-plan cache poisoned")
+            .insert(key.into(), (device, target));
+        return Ok((reference, device));
+    }
+    drop(reference);
+    match load(device, target.clone(), true) {
+        Ok(model) => {
+            cache
+                .lock()
+                .expect("compute-plan cache poisoned")
+                .insert(key.into(), (device, target));
+            Ok((model, device))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "calibrated winner failed to reload; using optimized CPU");
+            load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu))
+        }
+    }
+}
+
+/// Three uncached calls after a warm call. The callback includes tokenizer,
+/// inference and output processing; cached query/score lookups are excluded.
+pub(crate) fn time_calls(mut call: impl FnMut() -> Result<()>) -> Result<std::time::Duration> {
+    call()?;
+    let mut times = [std::time::Duration::ZERO; 3];
+    for elapsed in &mut times {
+        let start = std::time::Instant::now();
+        call()?;
+        *elapsed = start.elapsed();
+    }
+    times.sort();
+    Ok(times[1])
 }
 
 /// Use the same modern format for every CoreML model. The legacy NeuralNetwork
@@ -577,6 +719,71 @@ fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn calibrated_plan_chooses_time_not_discovery_and_reuses_validation() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let checks = Cell::new(0);
+        let run = |accelerator: u64| {
+            calibrated(
+                "fixture",
+                vec![(Device::Cuda, vec![cpu()].into())],
+                &cache,
+                |device, _, _validated| Ok(device),
+                |_model, device| {
+                    checks.set(checks.get() + 1);
+                    Ok(Duration::from_millis(if device == Device::Cpu {
+                        10
+                    } else {
+                        accelerator
+                    }))
+                },
+            )
+        };
+        assert_eq!(run(20).unwrap().1, Device::Cpu);
+        let validated = checks.get();
+        assert_eq!(
+            run(1).unwrap().1,
+            Device::Cpu,
+            "reuse previously measured plan"
+        );
+        assert_eq!(checks.get(), validated, "idle reload repeated calibration");
+        cache.lock().unwrap().clear();
+        assert_eq!(run(1).unwrap().1, Device::Cuda);
+    }
+
+    #[test]
+    fn a_failed_cached_plan_recalibrates_and_invalid_output_is_quarantined() {
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
+            "fixture".into(),
+            (Device::Cuda, vec![cpu()].into()),
+        )]));
+        let (_, device) = calibrated(
+            "fixture",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            |device, _, cached| {
+                if cached && device == Device::Cuda {
+                    Err(IndexError::Engine("stale fixture target".into()))
+                } else {
+                    Ok(device)
+                }
+            },
+            |_model, device| {
+                if device == Device::Cuda {
+                    Err(IndexError::Engine("invalid fixture output".into()))
+                } else {
+                    Ok(Duration::from_millis(10))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cpu);
+        assert_eq!(cache.lock().unwrap()["fixture"].0, Device::Cpu);
+    }
 
     #[test]
     fn absent_plugin_npu_fails_before_model_fetch() {

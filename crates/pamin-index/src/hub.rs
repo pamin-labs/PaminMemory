@@ -51,6 +51,25 @@ impl Repository {
         })
     }
 
+    /// Process-local validation keys track the cached snapshot, not just a
+    /// moving model name. Before a first download the requested revision is
+    /// used; a newly resolved snapshot causes one fresh calibration.
+    pub(crate) fn identity(&self, cache_dir: &Path) -> String {
+        let root = cache_root(cache_dir);
+        let resolved = std::fs::read_to_string(
+            root.join(format!("models--{}", self.name.replace('/', "--")))
+                .join("refs")
+                .join(&self.revision),
+        )
+        .unwrap_or_else(|_| self.revision.clone());
+        format!(
+            "{}@{}:{}",
+            self.name,
+            resolved.trim(),
+            root.canonicalize().unwrap_or(root).display()
+        )
+    }
+
     /// The local path of one of the repository's files, downloading it first
     /// if it is not cached yet.
     pub(crate) fn get(&self, file: &str) -> Result<PathBuf> {

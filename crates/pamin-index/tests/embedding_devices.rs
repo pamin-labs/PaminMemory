@@ -18,20 +18,22 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
         if std::env::var("PAMIN_DEVICE").as_deref() == Ok("cpu") {
             assert_eq!(model.device(), Device::Cpu);
         } else {
-            if std::env::var("PAMIN_EXPECT_DEVICE").as_deref() != Ok("cpu") {
-                assert_ne!(
-                    model.device(),
-                    Device::Cpu,
-                    "automatic accelerator arm used CPU fallback"
-                );
-            }
             if let Ok(expected) = std::env::var("PAMIN_EXPECT_DEVICE") {
-                assert_eq!(
-                    model.device().name(),
-                    expected,
-                    "unexpected provider fallback"
-                );
+                if expected == "accelerated" {
+                    assert_ne!(
+                        model.device(),
+                        Device::Cpu,
+                        "explicit accelerator premise failed"
+                    );
+                } else {
+                    assert_eq!(
+                        model.device().name(),
+                        expected,
+                        "unexpected provider fallback"
+                    );
+                }
             }
+            eprintln!("automatic embedding provider: {}", model.device().name());
         }
         let mut vectors = Vec::new();
         for text in texts() {
