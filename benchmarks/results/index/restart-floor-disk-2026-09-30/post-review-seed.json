@@ -1,0 +1,22 @@
+{
+  "started_utc": "2026-09-30T23:04:28.067991+00:00",
+  "finished_utc": "2026-09-30T23:04:29.085827+00:00",
+  "scope": "Late review-time endpoint capture of surviving stopped seed regular files; not historical per-copy attestation and cannot exclude intervening mutations or certify an unchanged corpus in every repetition.",
+  "file_count": 2952,
+  "total_bytes": 312706264,
+  "canonical_inventory_sha256": "2e67b618d0ded0f5a6571d3c0ae5e3f86a5fe87b0c6f65422e4863cb152b46f0",
+  "canonical_encoding": "UTF-8 JSON object path -> [bytes, sha256], sorted keys, separators comma/colon",
+  "matches_pretrial_inventory": true,
+  "seed_models_symlink_target": "<MODEL_CACHE>",
+  "seed_postgresql_stopped": true,
+  "metadata_stable_during_capture": true,
+  "exclusions": [
+    "all symlinks",
+    "server.json",
+    "postmaster.pid",
+    ".pgpass",
+    "pgpass"
+  ],
+  "initial_scope_check": "An initial check included eight PostgreSQL-library symlink targets and was rejected before hashing; the retained pretrial inventory covers regular files. This capture uses that exact scope.",
+  "historical_per_copy_attested": false
+}
