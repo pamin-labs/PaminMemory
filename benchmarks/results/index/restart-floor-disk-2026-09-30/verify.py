@@ -5,6 +5,7 @@ if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; run without -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
 from pathlib import Path
+from collections import Counter
 root=Path(__file__).resolve().parent
 repo=root.parents[3]
 manifest=json.loads((root/'manifest.json').read_text())
@@ -30,7 +31,7 @@ for arm,commit in expected_commits.items():
         assert rows and all(r['commit']==commit for r in rows)
         phases={phase:[r for r in rows if r['phase']==phase] for phase in {r['phase'] for r in rows}}
         for phase in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']:assert len(phases[phase])==1,(arm,rep,phase)
-        assert len(phases['search_warmup'])==2 and len(phases['search_warm'])==24
+        assert Counter(r['phase'] for r in rows)==Counter({**{p:1 for p in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']},'search_warmup':2,'search_warm':24}), (arm,rep,'unexpected phase multiset')
         assert [r['extra']['query_document'] for r in phases['search_warm']]==expected_queries, 'query workload differs from fixed order'
         assert phases['open'][0]['extra']['documents']==18000
         maintenance=phases['maintenance'][0]
@@ -64,15 +65,35 @@ for arm,commit in expected_commits.items():
         actual_providers=runner.cpu_provider_assignments(log)
         assert actual_providers==maintenance['actual_providers']
         logged=[json.loads(x.removeprefix('RESTART_JSON ')) for x in log.splitlines() if x.startswith('RESTART_JSON ')]
-        # Archived rows add labels/CPU deltas; raw product observations must match logs.
+        # Each native log observation binds exactly one archived product row.
+        product_rows=[r for r in rows if r['phase']!='process_total']
+        assert len(logged)==len(product_rows), (arm,rep,'raw/log cardinality differs')
+        unmatched=list(product_rows)
         for logrow in logged:
-            match=[r for r in rows if r['phase']==logrow['phase'] and r.get('extra')==logrow.get('extra')]
-            assert len(match)==1
-            for key,value in logrow.items():assert match[0][key]==value
+            matches=[i for i,r in enumerate(unmatched) if all(key in r and r[key]==value for key,value in logrow.items())]
+            assert len(matches)==1, (arm,rep,'native log observation has no unique raw row')
+            unmatched.pop(matches[0])
+        assert not unmatched, (arm,rep,'raw observations absent from native log')
 for reference in ['predecessor','main']:
     assert sum(warm[(reference,rep)]==warm[('candidate',rep)] for rep in range(3))==3
 provenance=json.loads((root/'provenance.json').read_text())
-assert provenance['index']=='disk' and provenance['saved_floor']==273 and provenance['all_files_including_floor_marker']==274
+assert manifest['files'][str((code/'harness.rs.in').relative_to(repo))]==provenance['harness']['sha256'], 'harness missing from manifest or recorded digest differs'
+assert hashlib.sha256((code/'harness.rs.in').read_bytes()).hexdigest()==provenance['harness']['sha256'], 'harness disagrees with recorded compiled source'
+assert len((code/'harness.rs.in').read_bytes())==provenance['harness']['bytes']
+seed_log=gzip.decompress((root/'logs/seed-disk.log.gz').read_bytes()).decode()
+seed_rows=[json.loads(line.removeprefix('RESTART_JSON ')) for line in seed_log.splitlines() if line.startswith('RESTART_JSON ')]
+assert Counter(row['phase'] for row in seed_rows)==Counter({'open':1,'seed_complete':1}), 'unexpected seed log phases'
+assert next(row for row in seed_rows if row['phase']=='seed_complete')==provenance['seed_complete_diagnostic'], 'seed diagnostic disagrees with native seed log'
+assert provenance['seed_complete_diagnostic']['extra']['completeness']==1
+assert provenance['seed_complete_diagnostic']['extra']['index_disk'][0]==provenance['all_files_including_floor_marker']
+seed_files=provenance['seed_files']
+assert len(seed_files)==len({entry['path'] for entry in seed_files}), 'duplicate seed inventory path'
+floor_markers=[entry for entry in seed_files if entry['path'].endswith('/.pamin-optimized-files')]
+assert len(floor_markers)==1
+floor_bytes=b'v1 273\n'
+assert floor_markers[0]['bytes']==len(floor_bytes) and floor_markers[0]['sha256']==hashlib.sha256(floor_bytes).hexdigest(), 'floor marker bytes differ'
+# Stopped seed inventory follows index close; file count can change after the diagnostic.
+assert provenance['index']=='disk'  and provenance['saved_floor']==273 and provenance['all_files_including_floor_marker']==274
 expected_profile=['gpahal/bge-m3-onnx-int8','topic','disk','named','reversed-keys']
 assert provenance['native_profile']==expected_profile
 profile_assets=[entry for entry in provenance['seed_files'] if entry['path'].endswith('/profile')]
@@ -148,6 +169,9 @@ for reference in ['predecessor','main']:
         else:
             value=summary['comparisons'][reference]['metric_differences'][key]
             before,after,delta,percent=[value[k] for k in ['before','after','absolute_delta','percent_delta']]
-        expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | {delta/divisor:+.6f}{unit} | {percent:+.3f}% |')
+        if key=='first_search_ms':
+            expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | Withheld: unstable three-process sample | Withheld: unstable three-process sample |')
+        else:
+            expected.append(f'| {label} | {before/divisor:.6f}{unit} | {after/divisor:.6f}{unit} | {delta/divisor:+.6f}{unit} | {percent:+.3f}% |')
 assert displayed==expected, 'published README tables disagree with recomputed summaries'
 print('verified DiskANN:9 processes,72/72 paired ordered top10 per reference,work counts,CPU providers,new-write visibility,native profile/schema/digest,external weight identities and recomputed metrics')
