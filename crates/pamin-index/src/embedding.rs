@@ -459,7 +459,7 @@ fn check_vectors(
                     .zip(reference.iter())
                     .all(|(a, b)| compatible_vectors(a, b, dimensions)) => {}
         _ => {
-            return Err(IndexError::Incompatible(
+            return Err(IndexError::Numerical(
                 "embedding plan failed same-export compatibility".into(),
             ));
         }
@@ -503,7 +503,7 @@ fn load_on(
         JOINT_MAX_TOKENS,
         target,
     )
-    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
+    .map_err(|error| error.context("loading embedding model"))?;
     encoder.require_accelerator(device)?;
     Ok(encoder)
 }
@@ -601,7 +601,7 @@ fn joint_session(
         JOINT_MAX_TOKENS,
         providers,
     )
-    .map_err(|error| IndexError::Engine(format!("loading embedding model: {error}")))?;
+    .map_err(|error| error.context("loading embedding model"))?;
     encoder.require_accelerator(device)?;
     Ok(encoder)
 }
