@@ -3,6 +3,7 @@
 import hashlib,importlib.machinery,importlib.util,json,sys
 if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; remove -O/-OO or PYTHONOPTIMIZE.")
+sys.dont_write_bytecode=True
 from pathlib import Path
 root=Path(__file__).resolve().parent
 repo=root.parents[3]
@@ -37,4 +38,9 @@ loader=importlib.machinery.SourceFileLoader('archived_restart_analysis',str(sour
 spec=importlib.util.spec_from_loader(loader.name,loader)
 module=importlib.util.module_from_spec(spec);loader.exec_module(module)
 assert module.summarize(raw)==json.loads((root/'summary.json').read_text())
+binding_source=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'
+binding_loader=importlib.machinery.SourceFileLoader('retrospective_restart_binding',str(binding_source))
+binding_spec=importlib.util.spec_from_loader(binding_loader.name,binding_loader)
+binding=importlib.util.module_from_spec(binding_spec);binding_loader.exec_module(binding)
+binding.verify(repo=repo)
 print('verified: 9 rotated processes; 72/72 paired ordered lists per reference; actual providers, maintenance work, new-write visibility and recomputed metrics')

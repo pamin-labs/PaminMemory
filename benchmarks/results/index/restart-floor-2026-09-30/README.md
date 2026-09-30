@@ -4,7 +4,7 @@ Persisting the successful optimize floor avoids a repeated optimize after reopen
 
 Accuracy has first priority: every one of the 24 fixed warm queries returned exactly the same ordered top ten across all three arms in each repetition (72/72 per reference). Known-topic recall was 21/24, not perfect, and MRR was 0.826389. All nine processes also retrieved the newly written `restart-proof` topic after upkeep. These near-duplicate synthetic identifier queries do not establish general multilingual retrieval accuracy.
 
-The candidate retains the new vector in the exact flat buffer: graph completeness is 18000/18001, rather than 1.0, but search includes that buffer. This costs 1,138,688 extra allocated index bytes after close (1.086 MiB) and 5,260,170 extra apparent bytes. Do not infer vector loss from graph completeness or RSS savings from a skipped allocation.
+Candidate graph completeness is 18000/18001, rather than 1.0. The product includes an exact flat-buffer path, but this experiment only confirms visibility in full hybrid search; lexical channels can retrieve the new memory. No vector-channel-specific attribution was retained, so these results do not rule out vector-channel loss. This costs 1,138,688 extra allocated index bytes after close (1.086 MiB) and 5,260,170 extra apparent bytes. Graph completeness alone does not establish vector loss or full vector recall; a skipped allocation does not establish RSS savings.
 
 ## Immediate predecessor comparison
 
@@ -16,14 +16,14 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000 | 0.000 | -1.000 | -100.000% |
 | Maintenance wall median | 500.255 ms | 0.479 ms | -499.776 ms | -99.904% |
-| First-search wall median (model load included) | 2618.299 ms | 2621.711 ms | +3.412 ms | +0.130% |
+| First-search wall median (model load included) | 2618.299 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50: median across processes | 2126.304 ms | 2139.206 ms | +12.902 ms | +0.607% |
 | Warm search p95: median across processes | 2289.523 ms | 2368.295 ms | +78.771 ms | +3.441% |
 | Peak process RSS | 1768.152 MiB | 1780.238 MiB | +12.086 MiB | +0.684% |
 | RSS after maintenance | 1304.809 MiB | 1230.020 MiB | -74.789 MiB | -5.732% |
 | Closed index allocated bytes | 127.336 MiB | 128.422 MiB | +1.086 MiB | +0.853% |
 | Closed index apparent bytes | 126.662 MiB | 131.678 MiB | +5.016 MiB | +3.961% |
-| Vector graph completeness (flat buffer still searched) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
+| Vector graph completeness (hybrid visibility checked) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
 ## Combined stack against current main
 
@@ -35,14 +35,14 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000 | 0.000 | -1.000 | -100.000% |
 | Maintenance wall median | 478.813 ms | 0.479 ms | -478.334 ms | -99.900% |
-| First-search wall median (model load included) | 2731.516 ms | 2621.711 ms | -109.805 ms | -4.020% |
+| First-search wall median (model load included) | 2731.516 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50: median across processes | 2134.241 ms | 2139.206 ms | +4.965 ms | +0.233% |
 | Warm search p95: median across processes | 2248.118 ms | 2368.295 ms | +120.176 ms | +5.346% |
 | Peak process RSS | 1769.750 MiB | 1780.238 MiB | +10.488 MiB | +0.593% |
 | RSS after maintenance | 1305.109 MiB | 1230.020 MiB | -75.090 MiB | -5.754% |
 | Closed index allocated bytes | 127.336 MiB | 128.422 MiB | +1.086 MiB | +0.853% |
 | Closed index apparent bytes | 126.662 MiB | 131.678 MiB | +5.016 MiB | +3.961% |
-| Vector graph completeness (flat buffer still searched) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
+| Vector graph completeness (hybrid visibility checked) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
 Warm p50/p95 and peak RSS are descriptive observations. The observed predecessor-to-candidate warm p95 increase is 3.441%; peak process RSS increases 0.684%. Three independent process repetitions are insufficient to assign these changes to the patch. Both the increases and individual process values are retained. No query-level significance test is reported.
 
@@ -63,3 +63,7 @@ Warm p50/p95 and peak RSS are descriptive observations. The observed predecessor
 Run `python3 benchmarks/results/index/restart-floor-2026-09-30/verify.py`. This verifies archive hashes, process counts, actual providers, work premise, paired outputs, new-write visibility and recomputes [summary.json](summary.json) from [raw.jsonl](raw.jsonl). Raw per-phase CPU and RSS observations are retained.
 
 Source and setup/build/runner instructions are in [the inert harness archive](../../../harnesses/restart-floor-2026-09-30/README.md). Corpus content and query IDs are defined in `harness.rs.in`; order is predecessor/candidate/main, candidate/main/predecessor, main/predecessor/candidate. [Process logs](logs/) retain provider assignment and all search rows. Public logs and metadata replace local path prefixes with placeholders and trim trailing blank lines; model hashes, metrics and result lists are unchanged. No database connection or credential files are published.
+
+A [retrospective rebuild audit](../restart-floor-disk-2026-09-30/rebuild/README.md) reproduces all three frozen executables byte for byte from their stated revisions and the retained harness. The read-only verifier checks this binding against local Git objects for all three revisions; shallow checkouts must obtain them first. Historical build-time source state and inherited inference-thread tuning remain unknown, so these are not certified shipped-default cost comparisons.
+
+First-search change comparisons are withheld because the three predecessor observations span 20.5% of their median and candidate observations span 25.6%. The observed arm medians and raw arithmetic remain inspectable; further controlled rounds are needed for a latency comparison.
