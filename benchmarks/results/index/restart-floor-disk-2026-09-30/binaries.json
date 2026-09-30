@@ -8,6 +8,12 @@
       "path": "<SCRATCH>/bin/main",
       "bytes": 15615632,
       "sha256": "450e0fa6fba7c028e402389d6466a4a043c01e7251a6e65e35e707c23860a1dc"
+    },
+    "posttrial_hash": {
+      "path": "<SCRATCH>/bin/main",
+      "bytes": 15615632,
+      "sha256": "450e0fa6fba7c028e402389d6466a4a043c01e7251a6e65e35e707c23860a1dc",
+      "recorded_utc": "2026-09-30T20:50:08.480188+00:00"
     }
   },
   {
@@ -19,6 +25,12 @@
       "path": "<SCRATCH>/bin/predecessor",
       "bytes": 15615696,
       "sha256": "1b7c6b406c4278551290f58248bbf22278b6c1d49698b8748e8ae608126d7275"
+    },
+    "posttrial_hash": {
+      "path": "<SCRATCH>/bin/predecessor",
+      "bytes": 15615696,
+      "sha256": "1b7c6b406c4278551290f58248bbf22278b6c1d49698b8748e8ae608126d7275",
+      "recorded_utc": "2026-09-30T20:50:08.480188+00:00"
     }
   },
   {
@@ -30,6 +42,12 @@
       "path": "<SCRATCH>/bin/candidate",
       "bytes": 15617104,
       "sha256": "14ab5805223a2fc7d79aa7197ab08c37ea5cab11b9a4581e68630277eeb31c79"
+    },
+    "posttrial_hash": {
+      "path": "<SCRATCH>/bin/candidate",
+      "bytes": 15617104,
+      "sha256": "14ab5805223a2fc7d79aa7197ab08c37ea5cab11b9a4581e68630277eeb31c79",
+      "recorded_utc": "2026-09-30T20:50:08.480188+00:00"
     }
   }
 ]

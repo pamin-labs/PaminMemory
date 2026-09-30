@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only verification of the finished DiskANN archive, including recomputation."""
-import gzip,hashlib,importlib.machinery,importlib.util,json,math,sys
+import gzip,hashlib,importlib.machinery,importlib.util,json,math,statistics,sys
 sys.dont_write_bytecode=True
 from pathlib import Path
 root=Path(__file__).resolve().parent
@@ -76,4 +76,15 @@ assert post['all_recorded_source_graphs_and_prepared_external_weights_unchanged'
 assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
 assert any(x['path'].endswith('.onnx.data') for x in post['assets'])
 assert calculator.summarize(raw)==json.loads((root/'summary.json').read_text())
+for binary in json.loads((root/'binaries.json').read_text()):
+    assert binary['sha256']==binary['current_pretrial_hash']['sha256']==binary['posttrial_hash']['sha256']
+    assert binary['current_pretrial_hash']['bytes']==binary['posttrial_hash']['bytes']
+    assert binary['posttrial_hash']['recorded_utc']
+episode=json.loads((root/'episode-elapsed.json').read_text())
+for arm in expected_commits:
+    values=[x['wall_seconds'] for x in raw if x['phase']=='process_total' and x['arm']==arm]
+    assert episode['arms'][arm]=={'process_seconds':values,'median_seconds':statistics.median(values)}
+for arm in ['predecessor','main']:
+    a=episode['arms'][arm]['median_seconds'];b=episode['arms']['candidate']['median_seconds']
+    assert episode['comparisons'][arm]=={'before':a,'after':b,'absolute_difference':b-a,'percentage_change':100*(b-a)/a}
 print('verified DiskANN:9 processes,72/72 paired ordered top10 per reference,work counts,CPU providers,new-write visibility,native profile/schema/digest,external weight identities and recomputed metrics')
