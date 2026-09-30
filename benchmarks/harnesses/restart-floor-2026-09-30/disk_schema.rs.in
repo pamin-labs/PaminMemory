@@ -93,7 +93,7 @@ fn disk_schema() {
     assert_eq!(lines[2],"memory");
     let _=zvec_rust::initialize(None);
     let before=read_only(&path); let before_schema=schema_evidence(&before);let before_digest=logical_digest(&before);
-    assert!(before_digest.0>0);assert_eq!(before_schema["fields"]["embedding"]["index_type"],json!(IndexType::Hnsw as u32));
+    assert_eq!(before_digest,(18000,"eb2483ff691e5e245079745e4745934620caf7ae692deea3766c84511c061d6b".to_string()),"input differs from the retained reference seed; refusing conversion");assert_eq!(before_schema["fields"]["embedding"]["index_type"],json!(IndexType::Hnsw as u32));
     println!("DISK_SETUP_JSON {}",json!({"phase":"before","schema":before_schema,"logical_digest":before_digest}));
     drop(before);
     let c=Collection::open(path.to_str().unwrap(),None).unwrap();
