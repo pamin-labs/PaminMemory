@@ -13,13 +13,13 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Optimize jobs per first upkeep tick | 1.000000 | 0.000000 | -1.000000 | -100.000% |
 | Full-process elapsed median, includes diagnostics | 88.680526 s | 80.926449 s | -7.754077 s | -8.744% |
 | Engine open wall median | 514.131634 ms | 477.707146 ms | -36.424488 ms | -7.085% |
-| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | -33.848672 ms | -2.381% |
-| Durability flush wall median | 71.154003 ms | 64.986683 ms | -6.167320 ms | -8.668% |
-| Maintenance wall median | 8463.866316 ms | 0.388897 ms | -8463.477419 ms | -99.995% |
+| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Durability flush wall median | 71.154003 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Maintenance wall median | 8463.866316 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Maintenance process CPU median, 10ms tick counters | 27.320000 s | 0.000000 s | -27.320000 s | -100.000% |
 | First-search wall median, model load included | 3286.225253 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2743.028312 ms | 2860.084011 ms | +117.055699 ms | +4.267% |
-| Warm search p95, median across processes | 2999.154590 ms | 3070.581105 ms | +71.426515 ms | +2.382% |
+| Warm search p95, median across processes | 2999.154590 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Peak process RSS | 1782.003906 MiB | 1778.898438 MiB | -3.105469 MiB | -0.174% |
 | RSS after maintenance | 1351.167969 MiB | 1272.832031 MiB | -78.335938 MiB | -5.798% |
 | Open index apparent bytes | 152.999107 MiB | 158.007785 MiB | +5.008677 MiB | +3.274% |
@@ -38,14 +38,14 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000000 | 0.000000 | -1.000000 | -100.000% |
 | Full-process elapsed median, includes diagnostics | 89.830001 s | 80.926449 s | -8.903552 s | -9.912% |
-| Engine open wall median | 510.071716 ms | 477.707146 ms | -32.364570 ms | -6.345% |
-| Write + urgent drain wall median | 1475.758326 ms | 1388.009180 ms | -87.749146 ms | -5.946% |
-| Durability flush wall median | 65.174956 ms | 64.986683 ms | -0.188273 ms | -0.289% |
-| Maintenance wall median | 8725.241690 ms | 0.388897 ms | -8724.852793 ms | -99.996% |
+| Engine open wall median | 510.071716 ms | 477.707146 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Write + urgent drain wall median | 1475.758326 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Durability flush wall median | 65.174956 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Maintenance wall median | 8725.241690 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Maintenance process CPU median, 10ms tick counters | 27.990000 s | 0.000000 s | -27.990000 s | -100.000% |
 | First-search wall median, model load included | 3088.230447 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Warm search p50, median across processes | 2746.017698 ms | 2860.084011 ms | +114.066313 ms | +4.154% |
-| Warm search p95, median across processes | 3000.415286 ms | 3070.581105 ms | +70.165818 ms | +2.339% |
+| Warm search p50, median across processes | 2746.017698 ms | 2860.084011 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Warm search p95, median across processes | 3000.415286 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Peak process RSS | 1781.714844 MiB | 1778.898438 MiB | -2.816406 MiB | -0.158% |
 | RSS after maintenance | 1351.890625 MiB | 1272.832031 MiB | -79.058594 MiB | -5.848% |
 | Open index apparent bytes | 152.999107 MiB | 158.007785 MiB | +5.008677 MiB | +3.274% |
@@ -79,3 +79,7 @@ Historical build provenance and tuning limit: the builder recorded nominal check
 First-search comparisons are withheld: the predecessor samples span about 18.2% of their median, and repetition-matched candidate differences reverse direction (approximately −15.2%, +8.6%, −17.1%). The table retains observed arm medians for inspection but makes no latency improvement claim. Three rotated processes do not satisfy the additional-round requirement for this spread. Raw arithmetic remains in the archive for audit; further controlled rounds must fix the historically unrecorded inference tuning before supporting a comparison.
 
 The main read-only verifier also checks retrospective source/binary binding. It requires local Git objects for all three recorded revisions; a shallow checkout must obtain those objects before verification. No build, model or database is run by this check.
+
+Timing comparison policy now scans every retained wall/CPU timing metric and full-process elapsed for both references. It withholds difference/percentage cells when either arm spans more than 10% of its process median or matched repetition deltas reverse sign. Before/after medians and raw arithmetic remain descriptive observations; this screen is not a significance test. [Timing review](timing-review.json) retains all process values and reasons, plus every actual timed phase/query row including warmups and new-memory search. The saved work counts still establish skipped optimize work, including when small candidate upkeep timings are unstable.
+
+[Provider bindings](provider-bindings.json) normalize each actual process-copy model path through the recorded models symlink to its exact embedding/reranker prepared graph and external-data inventory. Source metadata contents were captured in a new dated read-only observation and match the historical metadata digest; source size/SHA/revision are verified. This is not a retrospective preparation attestation. The verifier additionally binds the complete unique arm-keyed binary pretrial inventory and exact historical runner bytes, and requires successful seed/conversion final markers.
