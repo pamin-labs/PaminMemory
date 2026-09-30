@@ -1,0 +1,28 @@
+{
+  "revision": "13ee710c9df865f1dac98dc77a8108e438ddc539",
+  "scope": "source snapshots only, no models/builds",
+  "variants": {
+    "baseline": {
+      "path": "${EXPERIMENT}/variants/baseline",
+      "channel_pool": false,
+      "overlaid_sha256": {
+        "crates/pamin-engine/src/candidate_pool.rs": "32c3feecfc9a9f33e113c5b4f54f856371454870985a32178529e445991e14e1",
+        "crates/pamin-engine/src/engine.rs": "aac959ede9d68a7b550c9b6611758de3de6fe14ecee6f4c6446ebb2ae7ac40d2",
+        "crates/pamin-engine/src/lib.rs": "638794c1c969414dd96a6ee021f0f039995f1cb1bf3b0c39da9dc5b9d3ad727c"
+      },
+      "helper_path": "${EXPERIMENT}/helpers/baseline",
+      "helper_source_sha256": "51cd4d42c061be03baccbe7d3e74751ded5b94f888f831f6246c6079ae816045"
+    },
+    "pooled": {
+      "path": "${EXPERIMENT}/variants/pooled",
+      "channel_pool": true,
+      "overlaid_sha256": {
+        "crates/pamin-engine/src/candidate_pool.rs": "32c3feecfc9a9f33e113c5b4f54f856371454870985a32178529e445991e14e1",
+        "crates/pamin-engine/src/engine.rs": "c200cc1069f044fbf1a559e99a2b06c6972094b3c63b71bfd042944bacb9c016",
+        "crates/pamin-engine/src/lib.rs": "638794c1c969414dd96a6ee021f0f039995f1cb1bf3b0c39da9dc5b9d3ad727c"
+      },
+      "helper_path": "${EXPERIMENT}/helpers/pooled",
+      "helper_source_sha256": "50c4e591bb1255cc1d2b4c9964f623b0d37ad86c4b0890e61c471600ea1ee5cc"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Freeze two source snapshots; never edit tracked sources or run a build."""
+import hashlib
+import io
+import json
+from pathlib import Path
+import subprocess
+import tarfile
+
+REPO = Path('/workspace/scratch/fusion-pool-prototype')
+DEST = Path('/workspace/scratch/fusion-pool-prototype-tools/variants')
+FILES = ['crates/pamin-engine/src/candidate_pool.rs', 'crates/pamin-engine/src/engine.rs', 'crates/pamin-engine/src/lib.rs']
+LITERAL = 'const EXPERIMENTAL_CHANNEL_POOL: bool = false;'
+revision = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
+archive = subprocess.check_output(['git', '-C', str(REPO), 'archive', revision])
+manifest = {'revision': revision, 'scope': 'source snapshots only, no models/builds', 'variants': {}}
+for name, enabled in [('baseline', False), ('pooled', True)]:
+    destination = DEST / name
+    if destination.exists():
+        raise SystemExit(f'Refusing to overwrite frozen snapshot: {destination}')
+    destination.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+        source.extractall(destination, filter='data')
+    hashes = {}
+    for relative in FILES:
+        data = REPO.joinpath(relative).read_bytes()
+        if relative.endswith('/engine.rs'):
+            assert data.count(LITERAL.encode()) == 1
+            if enabled:
+                data = data.replace(LITERAL.encode(), LITERAL.replace('false', 'true').encode())
+        destination.joinpath(relative).write_bytes(data)
+        hashes[relative] = hashlib.sha256(data).hexdigest()
+    manifest['variants'][name] = {'path': str(destination), 'channel_pool': enabled, 'overlaid_sha256': hashes}
+DEST.joinpath('manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+print(json.dumps(manifest, indent=2))

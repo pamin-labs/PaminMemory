@@ -1,0 +1,47 @@
+{
+  "scope": "synthetic paired product-path diagnostic; no general accuracy or timing claim",
+  "reference": "${REFERENCE}",
+  "source_revision": "13ee710c9df865f1dac98dc77a8108e438ddc539",
+  "model_sources": [
+    {
+      "role": "embedding",
+      "path": "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx",
+      "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb"
+    },
+    {
+      "role": "reranker",
+      "path": "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx",
+      "sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d"
+    }
+  ],
+  "runtime_libraries": [
+    {
+      "path": "${NATIVE_DIST}/libzvec_c_api.so",
+      "sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a"
+    },
+    {
+      "path": "${ORT_DIST}/lib/libonnxruntime.so.1.28.0",
+      "sha256": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab"
+    }
+  ],
+  "arms": [
+    {
+      "arm": "baseline",
+      "binary": "${EXPERIMENT}/bin/baseline",
+      "sha256": "00fb2149198d091308d31fe24d57c1ca547a0ba7a114377099896da450b3f69e",
+      "bytes": 13541328,
+      "runtime": "ORT dynamic 1.28.0",
+      "source_manifest": "${EXPERIMENT}/variants/manifest.json",
+      "build_log": "${EXPERIMENT}/build-baseline.log"
+    },
+    {
+      "arm": "pooled",
+      "binary": "${EXPERIMENT}/bin/pooled",
+      "sha256": "f0c6eb2631571b6a8c5ddf652ffbb890e75eb1a7c3328e28206ebed6710d8f66",
+      "bytes": 13542864,
+      "runtime": "ORT dynamic 1.28.0",
+      "source_manifest": "${EXPERIMENT}/variants/manifest.json",
+      "build_log": "${EXPERIMENT}/build-pooled.log"
+    }
+  ]
+}
