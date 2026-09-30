@@ -3257,3 +3257,9 @@ produce identical scores and physical batches. Candidate/before paired timing
 ratio is 1.016012, p=0.2275; this supports no stable rank-speed improvement.
 Keep the small allocation simplification without claiming faster whole search.
 [All rows, sources, resource scope and reproduction](../../benchmarks/results/inference/input-padding-2026-09-30/README.md).
+
+### 2026-09-30: finish local backend and FP64 validation
+
+The [local validation record](../../benchmarks/results/inference/local-closeout-2026-09-30/README.md) reports repeated whole-search alternatives, process CPU/RSS and precision scopes. Keep Accurate on CoreML ALL and Fast on optimized CPU kernels for the measured Apple workload. This supports existing tier choices; it introduces no new backend policy. CPU computation must consider SIMD/optimized kernels beyond model inference.
+
+Full XQuAD-R, MIRACL-Swahili and a shared 50k memory index found no accuracy or returned-list benefit from ORT CPU FP64 or native SIMD FP64 rescoring. Keep the current scorer. Synthetic near-tie precision probes cannot stand in for product acceptance. CoreML profiling includes wrapper handling and waits and cannot isolate physical transfer cost; partition changes remain future experiments.
