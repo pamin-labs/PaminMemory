@@ -1,6 +1,6 @@
 # Local backend validation, 2026-09-30
 
-Completed product-entry timing probe: 24 fixed XQuAD queries, three rotated rounds, 432 searches on a shared Apple workstation. Eight disjoint warmup queries; measured reranker calls asserted newly scored == offered > 0. Complete 13,014-document accuracy memory index asserted. These are alternative reranker plans (embedding fixed on CPU), not a new optimization against main.
+Completed product-entry timing probe: 24 fixed XQuAD queries, three rotated rounds, 432 searches on a shared Apple workstation. Eight disjoint warmup queries; measured reranker calls asserted newly scored == offered > 0. Complete 13,014-document accuracy memory index asserted. These are intended reranker plans (embedding fixed on CPU), not a new optimization against main. Historical compute-unit policy was not independently logged/attested; ALL-versus-CPUAndGPU labels describe intended configurations, not verified hardware routing or proof of a hardware speed advantage.
 
 CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ONNX Runtime optimized kernels; its model export differs from CoreML. Accurate stays ALL, Fast stays CPU.
 
@@ -65,8 +65,8 @@ All process costs include loading and warmups. CoreML compilation-cache warmth w
 
 | Metric | Current FP32 | ORT CPU FP64 | Native SIMD FP64 | Absolute delta (both) | Relative delta |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 50k recall@10, original f32 oracle | 0.9960 | 0.9960 | 0.9960 | 0 | 0% |
-| 50k recall@10, stored FP16 oracle | 0.9980 | 0.9980 | 0.9980 | 0 | 0% |
+| 50k recall@10, original f32 oracle | 0.9960 | 0.9960 | 0.9960 | +0.0000 | +0.00% |
+| 50k recall@10, stored FP16 oracle | 0.9980 | 0.9980 | 0.9980 | +0.0000 | +0.00% |
 | Full XQuAD same_language nDCG@10 | 0.8694455 | 0.8694455 | 0.8694455 | 0 | 0% |
 | Full XQuAD cross_lingual nDCG@10 | 0.7271936 | 0.7271936 | 0.7271936 | 0 | 0% |
 | Full MIRACL-Swahili nDCG@10 | 0.8204219 | 0.8204219 | 0.8204219 | 0 | 0% |
