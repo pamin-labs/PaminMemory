@@ -984,14 +984,6 @@ async fn report_channels(
     /// Past four times the channel depth, so `take(limit)` cannot bite.
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
 
-    /// Every channel, so leaving one out is asked of all four.
-    const CHANNELS: &[Channel] = &[
-        Channel::LexicalSegmented,
-        Channel::LexicalNgram,
-        Channel::Vector,
-        Channel::Graph,
-    ];
-
     let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut whole: BTreeMap<String, Scores> = BTreeMap::new();
@@ -1018,12 +1010,13 @@ async fn report_channels(
         channels::same_as_the_engine(&hits, &Fusion::default());
 
         let each = channels::each_alone(&hits);
-        for (channel, ranking) in &each {
-            score(alone.entry(*channel).or_default(), query, ranking);
+        for channel in channels::CHANNELS {
+            let ranking = each.get(&channel).map(Vec::as_slice).unwrap_or(&[]);
+            score(alone.entry(channel).or_default(), query, ranking);
         }
-        for missing in CHANNELS {
-            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
-            score(without.entry(*missing).or_default(), query, &ranking);
+        for missing in channels::CHANNELS {
+            let ranking = channels::as_if(&hits, &Fusion::default().without(missing));
+            score(without.entry(missing).or_default(), query, &ranking);
         }
 
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -1082,6 +1075,15 @@ async fn report_channels(
     }
 
     if let Some(path) = std::env::var_os("CHANNELS_OUT") {
+        for channel in channels::CHANNELS {
+            for group in GROUPS {
+                assert_eq!(
+                    alone[&channel][group].queries,
+                    queries.len(),
+                    "{channel:?}/{group} lost a query before writing paired evidence"
+                );
+            }
+        }
         let evidence = serde_json::json!({
             "source_commit": commit.trim(),
             "embedding_identity": embedding_id,
