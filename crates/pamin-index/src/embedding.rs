@@ -199,11 +199,12 @@ impl Embedder {
             Repository::open(cache_dir, &info.model_code)?
         };
         let identity = format!(
-            "embedding-v2:{}:{}",
+            "embedding-query-v3:{}:{}",
             profile.model_id(),
             repository.identity(cache_dir)
         );
         let mut expected: Option<Vec<Vec<f32>>> = None;
+        let mut expected_queries: Option<Vec<Vec<f32>>> = None;
         let long = "migration ".repeat(600);
         let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
         {
@@ -229,26 +230,26 @@ impl Embedder {
             &identity,
             |device, target, _validated| load_on(profile, cache_dir, device, target),
             |model, device| {
+                // Gate the maximum production batch/length independently of
+                // timing. Select for search's uncached singleton queries,
+                // rather than mistaking bulk ingest throughput for query cost.
+                let vectors = profile_vectors(profile, model, device, fixtures.clone())?;
+                check_vectors(vectors, &mut expected, profile.dimensions() as usize)?;
                 crate::inference::time_calls(|| {
-                    let vectors = profile_vectors(profile, model, device, fixtures.clone())?;
-                    match &expected {
-                        None => expected = Some(vectors),
-                        Some(reference)
-                            if vectors.len() == reference.len()
-                                && vectors.iter().zip(reference).all(|(actual, expected)| {
-                                    compatible_vectors(
-                                        actual,
-                                        expected,
-                                        profile.dimensions() as usize,
-                                    )
-                                }) => {}
-                        _ => {
-                            return Err(IndexError::Engine(
-                                "embedding plan failed same-export compatibility".into(),
-                            ));
-                        }
+                    let mut vectors = Vec::new();
+                    for query in ["deployment rollback", "数据库迁移失败后如何回滚？"]
+                    {
+                        let input = match profile.prefixes() {
+                            Some((prefix, _)) => format!("{prefix}{query}"),
+                            None => query.to_string(),
+                        };
+                        vectors.extend(profile_vectors(profile, model, device, vec![input])?);
                     }
-                    Ok(())
+                    check_vectors(
+                        vectors,
+                        &mut expected_queries,
+                        profile.dimensions() as usize,
+                    )
                 })
             },
         )?;
@@ -443,6 +444,28 @@ const JOINT_FILE: &str = "model_quantized.onnx";
 /// embeds as its first 512 tokens; changing it would change the vectors of
 /// exactly those passages and nothing would say so, so it is kept.
 const JOINT_MAX_TOKENS: usize = 512;
+
+fn check_vectors(
+    vectors: Vec<Vec<f32>>,
+    expected: &mut Option<Vec<Vec<f32>>>,
+    dimensions: usize,
+) -> Result<()> {
+    match expected {
+        None => *expected = Some(vectors),
+        Some(reference)
+            if vectors.len() == reference.len()
+                && vectors
+                    .iter()
+                    .zip(reference.iter())
+                    .all(|(a, b)| compatible_vectors(a, b, dimensions)) => {}
+        _ => {
+            return Err(IndexError::Engine(
+                "embedding plan failed same-export compatibility".into(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Load an E5 model through the same scoring-session owner as BGE-M3.
 /// FastEmbed still supplies its model registry and pooling implementation;
