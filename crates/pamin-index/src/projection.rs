@@ -993,7 +993,7 @@ impl ProjectionIndex {
     /// rebuild can open.
     pub fn built_for(dir: &Path) -> Result<Option<(Profile, VectorIndex)>> {
         Ok(Marker::read(dir)?.and_then(|recorded| {
-            let profile = [Profile::Speed, Profile::Balanced, Profile::Accuracy]
+            let profile = Profile::ALL
                 .into_iter()
                 .find(|profile| profile.model_id() == recorded.model)?;
             Some((profile, VectorIndex::parse(&recorded.storage)?))
@@ -1049,8 +1049,14 @@ impl ProjectionIndex {
             }
         };
 
-        let mut opened =
-            Self::open_with_dimensions(dir, profile.dimensions(), None, index, access, segment)?;
+        let mut opened = Self::open_with_dimensions(
+            dir,
+            profile.dimensions(),
+            profile.secondary_dimensions(),
+            index,
+            access,
+            segment,
+        )?;
         opened.passage = passage;
         opened.keys = keys;
         Ok(opened)
@@ -1233,6 +1239,9 @@ impl ProjectionIndex {
     }
 
     fn recall_dense(&self, field: &str, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let candidates = limit.saturating_mul(RESCORE);
         let mut search =
             SearchQuery::new(field, &crate::half::query(embedding), candidates as i32)?;
@@ -1487,7 +1496,7 @@ impl Previous {
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
             profile.dimensions(),
-            None,
+            profile.secondary_dimensions(),
             VectorIndex::default(),
             Access::ReadOnly,
             segment_documents(0),
@@ -2215,6 +2224,79 @@ mod secondary_vectors {
     use super::*;
 
     #[test]
+    fn dual_marker_requires_reindex_and_lends_both_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = {
+            let mut values = vec![0.0; 1024];
+            values[0] = 1.0;
+            values
+        };
+        let secondary = {
+            let mut values = vec![0.0; 1024];
+            values[1] = 1.0;
+            values
+        };
+        let legacy_dir = dir.path().join("legacy");
+        let legacy = ProjectionIndex::open_sized(
+            &legacy_dir,
+            Profile::Accuracy,
+            VectorIndex::Memory,
+            Access::ReadWrite,
+            1000,
+        )
+        .unwrap();
+        drop(legacy);
+        assert!(
+            ProjectionIndex::open_sized(
+                &legacy_dir,
+                Profile::DualAccuracy,
+                VectorIndex::Memory,
+                Access::ReadWrite,
+                100
+            )
+            .is_err()
+        );
+        let current = dir.path().join("dual");
+        let index = ProjectionIndex::open_sized(
+            &current,
+            Profile::DualAccuracy,
+            VectorIndex::Memory,
+            Access::ReadWrite,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            ProjectionIndex::built_for(&current).unwrap(),
+            Some((Profile::DualAccuracy, VectorIndex::Memory))
+        );
+        let topic = TopicId::new();
+        index
+            .upsert_vectors(&[(topic, "same text", &primary, Some(&secondary))])
+            .unwrap();
+        index.flush().unwrap();
+        index.optimize().unwrap();
+        drop(index);
+        let previous = Previous::set_aside(&current, Profile::DualAccuracy)
+            .unwrap()
+            .unwrap();
+        let wanted = HashMap::from([(topic, "same text")]);
+        let mut seen = 0;
+        let lent = previous
+            .lend(&wanted, 10, |docs| {
+                for (actual, _, a, b) in docs {
+                    assert_eq!(*actual, topic);
+                    assert_eq!(*a, primary);
+                    assert_eq!(*b, Some(secondary.as_slice()));
+                    seen += 1;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, 1);
+        assert!(lent.contains(&topic));
+    }
+
+    #[test]
     fn two_vector_fields_share_the_document_and_survive_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let open = || {
@@ -2344,7 +2426,7 @@ mod marker {
     /// directory has to answer that there is nothing to open.
     #[test]
     fn an_index_reads_back_the_profile_it_was_built_with() {
-        for profile in [Profile::Speed, Profile::Balanced, Profile::Accuracy] {
+        for profile in Profile::ALL {
             for index in VectorIndex::ALL {
                 let dir = tempfile::tempdir().expect("a directory");
                 Marker::current(profile, index)

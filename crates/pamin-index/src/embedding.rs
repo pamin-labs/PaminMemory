@@ -34,6 +34,8 @@ use crate::hub::Repository;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
+    /// Opt-in complementary dense spaces; primary BGE-M3 plus pinned PPLX.
+    DualAccuracy,
     /// 384 dimensions. Bulk ingestion and low-spec machines.
     ///
     /// 384 dimensions is generally held to be enough only alongside a
@@ -76,7 +78,9 @@ impl Profile {
         match self {
             Self::Speed => EmbeddingModel::MultilingualE5Small,
             Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy => unreachable!("the accuracy profile runs the joint BGE-M3 export"),
+            Self::Accuracy | Self::DualAccuracy => {
+                unreachable!("the accuracy profile runs the joint BGE-M3 export")
+            }
         }
     }
 
@@ -90,7 +94,7 @@ impl Profile {
     fn prefixes(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
-            Self::Accuracy => None,
+            Self::Accuracy | Self::DualAccuracy => None,
         }
     }
 
@@ -102,7 +106,7 @@ impl Profile {
         match self {
             Self::Speed => 384,
             Self::Balanced => 768,
-            Self::Accuracy => 1024,
+            Self::Accuracy | Self::DualAccuracy => 1024,
         }
     }
 
@@ -121,8 +125,22 @@ impl Profile {
             // to them, and the recorded identity is what stops two encodings
             // sharing one index.
             Self::Accuracy => "gpahal/bge-m3-onnx-int8",
+            Self::DualAccuracy => {
+                "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v1"
+            }
         }
     }
+
+    pub fn secondary_dimensions(self) -> Option<u32> {
+        (self == Self::DualAccuracy).then_some(1024)
+    }
+
+    pub const ALL: [Self; 4] = [
+        Self::Speed,
+        Self::Balanced,
+        Self::Accuracy,
+        Self::DualAccuracy,
+    ];
 
     /// Parses a profile name.
     pub fn parse(name: &str) -> Option<Self> {
@@ -130,9 +148,17 @@ impl Profile {
             "speed" => Some(Self::Speed),
             "balanced" => Some(Self::Balanced),
             "accuracy" => Some(Self::Accuracy),
+            "dual_accuracy" => Some(Self::DualAccuracy),
             _ => None,
         }
     }
+}
+
+/// All dense fields for one document/query; schema decides which are required.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Encoded {
+    pub primary: Vec<f32>,
+    pub secondary: Option<Vec<f32>>,
 }
 
 /// Turns text into vectors.
@@ -140,6 +166,7 @@ pub struct Embedder {
     model: Box<Encoder>,
     profile: Profile,
     device: crate::inference::Device,
+    secondary: Option<(Box<Encoder>, crate::inference::Device)>,
     /// Query vectors already computed.
     ///
     /// Shared with every project on this profile, because the vector depends on
@@ -155,7 +182,6 @@ impl Embedder {
     /// not pay for it.
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
-
         let mut reference: Option<Self> = None;
         let (model, device) = crate::inference::preferred(|device, target| {
             if device == crate::inference::Device::Cpu {
@@ -169,6 +195,7 @@ impl Embedder {
                 model: Box::new(encoder),
                 profile,
                 device,
+                secondary: None,
                 remembered: Queries::default(),
             };
             if reference.is_none() {
@@ -181,6 +208,7 @@ impl Embedder {
                     )?),
                     profile,
                     device: crate::inference::Device::Cpu,
+                    secondary: None,
                     remembered: Queries::default(),
                 });
             }
@@ -218,6 +246,13 @@ impl Embedder {
             Ok(*candidate.model)
         })?;
 
+        drop(reference);
+        let secondary = if profile == Profile::DualAccuracy {
+            let (model, device) = complementary(cache_dir)?;
+            Some((Box::new(model), device))
+        } else {
+            None
+        };
         tracing::info!(
             model = profile.model_id(),
             device = device.name(),
@@ -227,6 +262,7 @@ impl Embedder {
             model: Box::new(model),
             profile,
             device,
+            secondary,
             remembered: Queries::default(),
         })
     }
@@ -261,16 +297,55 @@ impl Embedder {
     /// queries. A passage is embedded once in its life, so a cache of those
     /// would hold the corpus and never be read.
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
+        Ok(self.encode_query(text)?.primary)
+    }
+
+    pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
         if let Some(known) = self.remembered.get(text) {
             return Ok(known);
         }
-
-        let vector = match self.profile.prefixes() {
+        let primary = match self.profile.prefixes() {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }?;
-        self.remembered.put(text, &vector);
-        Ok(vector)
+        let secondary = self
+            .secondary
+            .as_mut()
+            .map(|(model, _)| complementary_vector(model, text))
+            .transpose()?;
+        let encoded = Encoded { primary, secondary };
+        self.remembered.put(text, &encoded);
+        Ok(encoded)
+    }
+
+    pub fn encode_passage(&mut self, text: &str) -> Result<Encoded> {
+        let primary = self.embed_passage(text)?;
+        let secondary = self
+            .secondary
+            .as_mut()
+            .map(|(model, _)| complementary_vector(model, text))
+            .transpose()?;
+        Ok(Encoded { primary, secondary })
+    }
+
+    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<Vec<Encoded>> {
+        let primary = self.embed_passages(texts)?;
+        primary
+            .into_iter()
+            .zip(texts)
+            .map(|(primary, text)| {
+                let secondary = self
+                    .secondary
+                    .as_mut()
+                    .map(|(model, _)| complementary_vector(model, text))
+                    .transpose()?;
+                Ok(Encoded { primary, secondary })
+            })
+            .collect()
+    }
+
+    pub fn secondary_device(&self) -> Option<crate::inference::Device> {
+        self.secondary.as_ref().map(|(_, device)| *device)
     }
 
     /// Embeds many passages in one forward pass.
@@ -326,7 +401,7 @@ impl Embedder {
     /// corpus written twice indexes to the same thing.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         match self.profile {
-            Profile::Accuracy => texts
+            Profile::Accuracy | Profile::DualAccuracy => texts
                 .iter()
                 .map(|text| dense(&mut self.model, text))
                 .collect(),
@@ -356,8 +431,16 @@ fn load_on(
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
-    if profile == Profile::Accuracy {
-        let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
+    if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+        let repository = if profile == Profile::DualAccuracy {
+            Repository::open_at(
+                cache_dir,
+                JOINT_REPOSITORY,
+                "2b34e84df040034d4b9eabb62383a87c18955822",
+            )?
+        } else {
+            Repository::open(cache_dir, JOINT_REPOSITORY)?
+        };
         let weights = repository.file(cache_dir, JOINT_FILE);
         let encoder = joint_session(&repository, &weights, cache_dir, device, target)?;
         crate::prepared::release(&weights, cache_dir);
@@ -497,6 +580,75 @@ fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
     }
 }
 
+fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
+    let repository = Repository::open_at(
+        cache,
+        "perplexity-ai/pplx-embed-v1-0.6b",
+        "2c4d510dd4a732063c31a0f70193e35067b51fd8",
+    )?;
+    let load = |device, target| -> Result<Encoder> {
+        let model = Encoder::load(
+            || {
+                repository.get("onnx/model_quantized.onnx_data")?;
+                repository.get("onnx/model_quantized.onnx")
+            },
+            &repository,
+            JOINT_MAX_TOKENS,
+            target,
+        )?;
+        model.require_accelerator(device)?;
+        Ok(model)
+    };
+    let mut reference = None;
+    crate::inference::preferred(|device, target| {
+        if device == crate::inference::Device::Cpu {
+            return reference.take().map_or_else(|| load(device, target), Ok);
+        }
+        let mut candidate = load(device, target)?;
+        if reference.is_none() {
+            reference = Some(load(
+                crate::inference::Device::Cpu,
+                vec![crate::inference::cpu()].into(),
+            )?);
+        }
+        for text in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
+            let actual = complementary_vector(&mut candidate, text)?;
+            let expected =
+                complementary_vector(reference.as_mut().expect("reference loaded"), text)?;
+            if !compatible_vectors(&actual, &expected, 1024) {
+                return Err(IndexError::Engine(
+                    "complementary embedding output incompatible".into(),
+                ));
+            }
+        }
+        Ok(candidate)
+    })
+}
+
+fn complementary_vector(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
+    let outputs = model.run(vec![text])?;
+    let output = outputs.get("pooler_output_int8").ok_or_else(|| {
+        IndexError::Engine("complementary export has no int8 pooled output".into())
+    })?;
+    let (shape, values) = output
+        .try_extract_tensor::<i8>()
+        .map_err(|e| IndexError::Engine(format!("complementary vector: {e}")))?;
+    if **shape != [1, 1024] {
+        return Err(IndexError::Engine(format!(
+            "complementary vector shape {shape:?}"
+        )));
+    }
+    let mut vector: Vec<f32> = values.iter().map(|v| f32::from(*v)).collect();
+    let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return Err(IndexError::Engine("zero complementary vector".into()));
+    }
+    for value in &mut vector {
+        *value /= norm;
+    }
+    Ok(vector)
+}
+
 /// Query vectors already computed, oldest first.
 ///
 /// Keyed by the query itself rather than by a hash of it. The reranker's cache
@@ -507,12 +659,12 @@ fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
 /// guards.
 #[derive(Default)]
 struct Queries {
-    known: std::collections::HashMap<String, Vec<f32>>,
+    known: std::collections::HashMap<String, Encoded>,
     order: std::collections::VecDeque<String>,
 }
 
 impl Queries {
-    fn get(&self, query: &str) -> Option<Vec<f32>> {
+    fn get(&self, query: &str) -> Option<Encoded> {
         self.known.get(query).cloned()
     }
 
@@ -521,10 +673,10 @@ impl Queries {
     /// Insertion order rather than use order, for the reason the reranker's is:
     /// keeping a true LRU means writing on every hit, and a query asked twice
     /// is asked twice close together.
-    fn put(&mut self, query: &str, vector: &[f32]) {
+    fn put(&mut self, query: &str, vector: &Encoded) {
         if self
             .known
-            .insert(query.to_string(), vector.to_vec())
+            .insert(query.to_string(), vector.clone())
             .is_some()
         {
             return;
@@ -638,6 +790,7 @@ mod tests {
                 model: Box::new(model),
                 profile: Profile::Accuracy,
                 device,
+                secondary: None,
                 remembered: Queries::default(),
             };
             inputs
@@ -660,6 +813,7 @@ mod tests {
             model: Box::new(model),
             profile: Profile::Accuracy,
             device: crate::inference::Device::Cpu,
+            secondary: None,
             remembered: Queries::default(),
         };
         for (index, text) in inputs.iter().enumerate() {
@@ -755,16 +909,34 @@ mod tests {
         let mut queries = super::Queries::default();
         assert!(queries.get("how does deployment work").is_none());
 
-        queries.put("how does deployment work", &[1.0, 2.0, 3.0]);
-        queries.put("how does deployment fail", &[4.0, 5.0, 6.0]);
+        queries.put(
+            "how does deployment work",
+            &Encoded {
+                primary: vec![1.0, 2.0, 3.0],
+                secondary: None,
+            },
+        );
+        queries.put(
+            "how does deployment fail",
+            &Encoded {
+                primary: vec![4.0, 5.0, 6.0],
+                secondary: None,
+            },
+        );
 
         assert_eq!(
             queries.get("how does deployment work"),
-            Some(vec![1.0, 2.0, 3.0])
+            Some(Encoded {
+                primary: vec![1.0, 2.0, 3.0],
+                secondary: None
+            })
         );
         assert_eq!(
             queries.get("how does deployment fail"),
-            Some(vec![4.0, 5.0, 6.0])
+            Some(Encoded {
+                primary: vec![4.0, 5.0, 6.0],
+                secondary: None
+            })
         );
         assert!(queries.get("how does deployment").is_none());
     }
@@ -775,13 +947,22 @@ mod tests {
         let mut queries = super::Queries::default();
         let cap = super::Embedder::REMEMBERED_QUERIES;
         for i in 0..cap + 10 {
-            queries.put(&format!("query {i}"), &[i as f32]);
+            queries.put(
+                &format!("query {i}"),
+                &Encoded {
+                    primary: vec![i as f32],
+                    secondary: None,
+                },
+            );
         }
         assert_eq!(queries.known.len(), cap);
         assert!(queries.get("query 0").is_none(), "the oldest survived");
         assert_eq!(
             queries.get(&format!("query {}", cap + 9)),
-            Some(vec![(cap + 9) as f32]),
+            Some(Encoded {
+                primary: vec![(cap + 9) as f32],
+                secondary: None
+            }),
             "the newest was lost"
         );
     }
@@ -791,10 +972,22 @@ mod tests {
     fn remembering_a_query_twice_does_not_shorten_the_cache() {
         let mut queries = super::Queries::default();
         for _ in 0..super::Embedder::REMEMBERED_QUERIES * 2 {
-            queries.put("the same question", &[1.0]);
+            queries.put(
+                "the same question",
+                &Encoded {
+                    primary: vec![1.0],
+                    secondary: None,
+                },
+            );
         }
         assert_eq!(queries.order.len(), 1);
-        assert_eq!(queries.get("the same question"), Some(vec![1.0]));
+        assert_eq!(
+            queries.get("the same question"),
+            Some(Encoded {
+                primary: vec![1.0],
+                secondary: None
+            })
+        );
     }
 
     use super::*;
@@ -805,6 +998,7 @@ mod tests {
             ("speed", Profile::Speed),
             ("balanced", Profile::Balanced),
             ("accuracy", Profile::Accuracy),
+            ("dual_accuracy", Profile::DualAccuracy),
         ] {
             assert_eq!(Profile::parse(name), Some(profile));
         }
@@ -812,14 +1006,13 @@ mod tests {
     }
 
     #[test]
-    fn each_profile_declares_a_distinct_width_and_identity() {
+    fn each_profile_declares_a_distinct_encoding_identity() {
         // The width is what the index is built for and the identity is what a
         // stored vector is tagged with, so two profiles sharing either would
         // let incompatible vectors sit in one space undetected.
-        let profiles = [Profile::Speed, Profile::Balanced, Profile::Accuracy];
+        let profiles = Profile::ALL;
         for (index, left) in profiles.iter().enumerate() {
             for right in &profiles[index + 1..] {
-                assert_ne!(left.dimensions(), right.dimensions());
                 assert_ne!(left.model_id(), right.model_id());
             }
         }
