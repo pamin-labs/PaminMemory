@@ -38,7 +38,7 @@
     8
   ],
   "rounds": 3,
-  "scope": "Engine::search_reranked; whole device plan changes embedding and reranking; CPU INT8 vs CoreML FP16/FP32 tier-specific exports; shared workstation",
+  "scope": "Whole product search boundary; BGE-M3 embedding fixed on CPU; only reranker provider/export varies (CPU INT8 vs CoreML FP16/FP32 by tier).",
   "hardware": {
     "chip": "Apple M4",
     "physical_cores": 10,
@@ -529,8 +529,8 @@
       "bytes": 2404
     },
     "sources/run.py.in": {
-      "sha256": "dc6f7e51bb22a656f9ee2e992c041efbc04d481d661f42f7d6d9189a6d7cab17",
-      "bytes": 2586
+      "sha256": "9307f96562714a0e2d37e3a0b8aa337845f4e24a2410ef5286bdb47cc90b2427",
+      "bytes": 2584
     },
     "summarize.py": {
       "sha256": "f00d240fb2b57df67bdb667bc04f988155c3e4310a564beb19ad51078baa592e",
@@ -600,5 +600,6 @@
       "profile": "accuracy"
     },
     "scope": "same ANN pools asserted during execution; shared embeddings and reranker scores to isolate vector math; no comparative inference timing claim"
-  }
+  },
+  "scope_correction": "Earlier both-embedding-and-reranking description was incorrect; embedding::joint() and retained provider attestations confirm CPU embedding for every arm."
 }
