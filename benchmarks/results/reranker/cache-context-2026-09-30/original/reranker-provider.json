@@ -1,0 +1,9 @@
+[
+  {
+    "model_graph": "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+    "assigned_nodes": {
+      "CPUExecutionProvider": 295
+    },
+    "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164"
+  }
+]

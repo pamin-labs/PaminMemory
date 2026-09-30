@@ -1,0 +1,80 @@
+{
+  "scope": "two-query numerical/cache component acceptance only",
+  "fresh_original_refactor_fixed_bits_and_ranks_identical": true,
+  "all_hot_new_forward_work_zero": true,
+  "cases": [
+    {
+      "variant": "refactor",
+      "query_id": 80,
+      "history": "baseline->pooled",
+      "cache_hits": 29,
+      "fresh_scored": 1,
+      "changed_same_list_score_bits": 4,
+      "changed_same_list_raw_ranks": 8
+    },
+    {
+      "variant": "refactor",
+      "query_id": 80,
+      "history": "pooled->baseline",
+      "cache_hits": 29,
+      "fresh_scored": 1,
+      "changed_same_list_score_bits": 4,
+      "changed_same_list_raw_ranks": 6
+    },
+    {
+      "variant": "refactor",
+      "query_id": 101,
+      "history": "baseline->pooled",
+      "cache_hits": 28,
+      "fresh_scored": 2,
+      "changed_same_list_score_bits": 16,
+      "changed_same_list_raw_ranks": 17
+    },
+    {
+      "variant": "refactor",
+      "query_id": 101,
+      "history": "pooled->baseline",
+      "cache_hits": 28,
+      "fresh_scored": 2,
+      "changed_same_list_score_bits": 16,
+      "changed_same_list_raw_ranks": 19
+    },
+    {
+      "variant": "fixed",
+      "query_id": 80,
+      "history": "baseline->pooled",
+      "cache_hits": 26,
+      "fresh_scored": 4,
+      "changed_same_list_score_bits": 0,
+      "changed_same_list_raw_ranks": 0
+    },
+    {
+      "variant": "fixed",
+      "query_id": 80,
+      "history": "pooled->baseline",
+      "cache_hits": 26,
+      "fresh_scored": 4,
+      "changed_same_list_score_bits": 0,
+      "changed_same_list_raw_ranks": 0
+    },
+    {
+      "variant": "fixed",
+      "query_id": 101,
+      "history": "baseline->pooled",
+      "cache_hits": 14,
+      "fresh_scored": 16,
+      "changed_same_list_score_bits": 0,
+      "changed_same_list_raw_ranks": 0
+    },
+    {
+      "variant": "fixed",
+      "query_id": 101,
+      "history": "pooled->baseline",
+      "cache_hits": 14,
+      "fresh_scored": 16,
+      "changed_same_list_score_bits": 0,
+      "changed_same_list_raw_ranks": 0
+    }
+  ],
+  "process_metrics_scope": "actual child process RSS/HWM and aggregate CPU ticks, CPU runtime threads included, no PG/accelerator/parent filecache attribution; one sequential diagnostic pass, no speed/memory gain claim"
+}

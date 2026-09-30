@@ -1,0 +1,128 @@
+{
+  "q80/baseline->pooled/changed_same_list_score_bits": {
+    "before": 4,
+    "after": 0,
+    "absolute_difference": -4,
+    "percentage_change": -100.0
+  },
+  "q80/baseline->pooled/changed_same_list_raw_ranks": {
+    "before": 8,
+    "after": 0,
+    "absolute_difference": -8,
+    "percentage_change": -100.0
+  },
+  "q80/baseline->pooled/fresh_scored": {
+    "before": 1,
+    "after": 4,
+    "absolute_difference": 3,
+    "percentage_change": 300.0
+  },
+  "q80/pooled->baseline/changed_same_list_score_bits": {
+    "before": 4,
+    "after": 0,
+    "absolute_difference": -4,
+    "percentage_change": -100.0
+  },
+  "q80/pooled->baseline/changed_same_list_raw_ranks": {
+    "before": 6,
+    "after": 0,
+    "absolute_difference": -6,
+    "percentage_change": -100.0
+  },
+  "q80/pooled->baseline/fresh_scored": {
+    "before": 1,
+    "after": 4,
+    "absolute_difference": 3,
+    "percentage_change": 300.0
+  },
+  "q101/baseline->pooled/changed_same_list_score_bits": {
+    "before": 16,
+    "after": 0,
+    "absolute_difference": -16,
+    "percentage_change": -100.0
+  },
+  "q101/baseline->pooled/changed_same_list_raw_ranks": {
+    "before": 17,
+    "after": 0,
+    "absolute_difference": -17,
+    "percentage_change": -100.0
+  },
+  "q101/baseline->pooled/fresh_scored": {
+    "before": 2,
+    "after": 16,
+    "absolute_difference": 14,
+    "percentage_change": 700.0
+  },
+  "q101/pooled->baseline/changed_same_list_score_bits": {
+    "before": 16,
+    "after": 0,
+    "absolute_difference": -16,
+    "percentage_change": -100.0
+  },
+  "q101/pooled->baseline/changed_same_list_raw_ranks": {
+    "before": 19,
+    "after": 0,
+    "absolute_difference": -19,
+    "percentage_change": -100.0
+  },
+  "q101/pooled->baseline/fresh_scored": {
+    "before": 2,
+    "after": 16,
+    "absolute_difference": 14,
+    "percentage_change": 700.0
+  },
+  "All16hot/new_forward_pairs": {
+    "before": 0,
+    "after": 0,
+    "absolute_difference": 0,
+    "percentage_change": "N/A"
+  },
+  "Hot component median wall us (8 calls)": {
+    "before": 11.0,
+    "after": 1630.5,
+    "absolute_difference": 1619.5,
+    "percentage_change": 14722.727272727272
+  },
+  "Component rank-call wall sum us (24 calls)": {
+    "before": 13288817,
+    "after": 15435146,
+    "absolute_difference": 2146329,
+    "percentage_change": 16.151392558118605
+  },
+  "Child component final HWM KiB": {
+    "before": 696172,
+    "after": 696048,
+    "absolute_difference": -124,
+    "percentage_change": -0.017811690214487225
+  },
+  "Child aggregate CPU seconds (unequal fresh work)": {
+    "before": 42.54,
+    "after": 47.98,
+    "absolute_difference": 5.439999999999998,
+    "percentage_change": 12.78796426892336
+  },
+  "Engine p50/p95 latency": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  },
+  "Broad nDCG/recall": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  },
+  "Whole Engine-service-device memory": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  },
+  "Model-index-cache-temp disk": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "command": [
+    "${ORIGINAL_EXPERIMENT}/batch-composition/pamin-index-frozen",
+    "--ignored",
+    "--exact",
+    "reranking::scratch_batch_composition::same_session",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "HOME": "${RUN_HOME}",
+    "USER": "agent",
+    "PATH": "${RUN_HOME}/.local/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/bin/override:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/python/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/node/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/bin:${RUNTIME_TOOLS}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${RUN_HOME}/.local/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/bin/fallback",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "RUSTUP_HOME": "${RUSTUP_HOME}",
+    "CARGO_HOME": "${CARGO_HOME}",
+    "ORT_LIB_LOCATION": "${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib",
+    "ORT_PREFER_DYNAMIC_LINK": "1",
+    "CARGO_TARGET_DIR": "${REPOSITORY}/target",
+    "PAMIN_DEVICE": "cpu",
+    "LD_LIBRARY_PATH": "${CARGO_HOME}/lib/pamin:${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib",
+    "HF_HUB_OFFLINE": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "BATCH_COMPOSITION_INPUT": "${ORIGINAL_EXPERIMENT}/batch-composition/results-v3/exact-texts.json",
+    "BATCH_COMPOSITION_CACHE": "${MODEL_CACHE}"
+  },
+  "headroom": {
+    "disk_free": 14233128960,
+    "memory": {
+      "MemFree": "1373016 kB",
+      "MemAvailable": "17189080 kB",
+      "Cached": "15243348 kB"
+    },
+    "time": 1790803583.7898927
+  },
+  "binary_sha256": "35988d40451c4fee862fc0245de779e5d8bb3e1d1ac176d30431ebb86c2b01d3"
+}
