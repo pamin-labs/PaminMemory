@@ -943,7 +943,8 @@ fn lent(
     let mut lent = HashMap::new();
     let topics = previous
         .lend(wanted, 256, |documents| {
-            for (topic, content, vector) in documents {
+            for (topic, content, vector, secondary) in documents {
+                assert!(secondary.is_none());
                 lent.insert(*topic, (content.to_string(), vector.to_vec()));
             }
             Ok(())
@@ -1108,10 +1109,12 @@ fn a_document_reads_back_as_it_was_written() {
             Some(Stored {
                 content: "the release train leaves on fridays".to_string(),
                 embedding: pamin_index::as_stored(&separated(3)),
+                secondary: None,
             }),
             Some(Stored {
                 content: "the oncall rota rotates weekly".to_string(),
                 embedding: pamin_index::as_stored(&separated(2)),
+                secondary: None,
             }),
             None,
         ],
@@ -1264,7 +1267,7 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     )
     .expect("rebuild");
     let lent = previous
-        .lend(&wanted, 256, |documents| rebuilt.upsert_batch(documents))
+        .lend(&wanted, 256, |documents| rebuilt.upsert_vectors(documents))
         .expect("lend");
     assert_eq!(lent.len(), 2);
     rebuilt.flush().expect("flush");
@@ -1784,7 +1787,7 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
     )
     .expect("rebuild");
     previous
-        .lend(&wanted, 256, |documents| rebuilt.upsert_batch(documents))
+        .lend(&wanted, 256, |documents| rebuilt.upsert_vectors(documents))
         .expect("lend");
     rebuilt.flush().expect("flush");
     previous.discard().expect("discard");
