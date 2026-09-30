@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Read-only checks of retained synthetic component evidence; no runtime loading."""
-import hashlib,json,math,re
+import hashlib,json,math,re,sys
+if sys.flags.optimize:
+ raise SystemExit("FAIL: Python optimization disables assertions; run without -O/-OO")
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 
@@ -16,10 +18,70 @@ assert provenance['scope'].startswith('native search_fused component')
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 for name,record in provenance['redactions'].items():
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
+EXPECTED_FILES = {'baseline.log', 'baseline.trace.jsonl', 'test_verify.py', 'README.md', 'baseline.usage.json', 'source/graph_trace.rs.in', 'source/experimental-traversal.patch', 'comparison.json', 'scored.usage.json', 'baseline.jsonl', 'scored.jsonl', 'scored.trace.jsonl', 'provenance.json', 'scored.log', 'source/fixture.rs.in', 'source/prepare.py', 'verify.py'}
+assert {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()} == EXPECTED_FILES, 'required file inventory differs'
+assert set(provenance['archive_files']) == EXPECTED_FILES - {'provenance.json'}, 'hash inventory differs'
+for name, digest in provenance['archive_files'].items():
+ assert sha(ROOT/name) == digest, f'archive hash differs: {name}'
+assert set(provenance['source_files']) == {'fixture.rs.in','graph_trace.rs.in','experimental-traversal.patch','prepare.py'}
+assert set(provenance['redactions']) == {f'{a}.{e}' for a in ['baseline','scored'] for e in ['jsonl','log','trace.jsonl','usage.json']}
+ASSET_PINS = {'${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json': '68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a',
+ '${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx': {'expected_transition': 'present '
+                                                                                                                                                    'to '
+                                                                                                                                                    'absent '
+                                                                                                                                                    'after '
+                                                                                                                                                    'successful '
+                                                                                                                                                    'native '
+                                                                                                                                                    'CPU '
+                                                                                                                                                    'preparation; '
+                                                                                                                                                    'prepared '
+                                                                                                                                                    'assets '
+                                                                                                                                                    'pinned',
+                                                                                                                             'present': True,
+                                                                                                                             'sha256': '16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb',
+                                                                                                                             'source_identity_sha256': '16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb'},
+ '${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json': '8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835',
+ '${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json': '249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4',
+ '${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json': 'b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80',
+ '${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json': '122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd',
+ '${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx': {'expected_transition': 'present '
+                                                                                                                                                                   'to '
+                                                                                                                                                                   'absent '
+                                                                                                                                                                   'after '
+                                                                                                                                                                   'successful '
+                                                                                                                                                                   'native '
+                                                                                                                                                                   'CPU '
+                                                                                                                                                                   'preparation; '
+                                                                                                                                                                   'prepared '
+                                                                                                                                                                   'assets '
+                                                                                                                                                                   'pinned',
+                                                                                                                                            'present': False,
+                                                                                                                                            'sha256': None,
+                                                                                                                                            'source_identity_sha256': '912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d'},
+ '${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json': '8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835',
+ '${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json': '8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3',
+ '${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json': 'b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80',
+ '${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx': '51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4',
+ '${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data': '2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b',
+ '${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx': '24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164',
+ '${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx': '7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8',
+ '${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data': '06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c',
+ '${ORT_LIB}/libonnxruntime.so.1.28.0': '1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab',
+ '${ZVEC_LIB}/libzvec_c_api.so': '58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a'}
 arm_records={r['arm']:r for r in provenance['arms']}
+assert len(provenance['arms']) == 2 and set(arm_records) == {'baseline','scored'}
+rows = {}
+
 for arm,weak_rank in [('baseline',23),('scored',22)]:
- row=load(f'{arm}.jsonl');record=arm_records[arm]
+ row=load(f'{arm}.jsonl');record=arm_records[arm];rows[arm]=row
+ launch = record['launch_binding']
+ assert re.fullmatch('[0-9a-f]{64}', launch['original_launch_sha256'])
+ assert launch['command'] == ['${FROZEN_BINARY}','scratch_scored_graph_finite_fixture','--exact','--ignored','--nocapture','--test-threads=1']
+ assert launch['GRAPH_OUT'] == '${RESULTS}/'+arm+'.jsonl' and launch['GRAPH_TRACE'] == '${RESULTS}/'+arm+'.trace.jsonl'
+ assert launch['effective_product_settings'] == {'PAMIN_PROFILE':'accuracy','PAMIN_DEVICE':'cpu','GRAPH_ARM':arm,'GRAPH_CLK_TCK':'100'}
+
  assert row['record']=='fixture' and row['arm']==arm and row['documents']==241
+ assert row['expected_scores'] == [.8,.5,.5]
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
  weak=next(r for r in row['non_graph'] if r['topic']==row['weak'])
  assert min(r['rank'] for r in weak['ranks'])==weak_rank
@@ -27,7 +89,31 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  visible={r['topic'] for r in row['non_graph']}
  assert not visible.intersection(row['target_labels']) and row['early_stop']['target'] not in visible
  assert len(row['known_edges'])==9 and all(close(a,b) for a,b in zip(sorted(e['confidence'] for e in row['known_edges']),sorted([1,.8,.1,.01,1,.8,.7,.1,1])))
- assert 'test scratch_scored_graph_finite_fixture ... ok' in (ROOT/f'{arm}.log').read_text()
+ log = (ROOT/f'{arm}.log').read_text()
+ assert re.findall(r'^test scratch_scored_graph_finite_fixture \.\.\. ok$', log, re.M) == ['test scratch_scored_graph_finite_fixture ... ok']
+ assert len(re.findall(r'^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9.]+s$', log, re.M)) == 1
+ # Historical fixture writes GRAPH_OUT directly, so no stdout JSON linkage exists.
+ assert provenance['fixture_log_linkage'] == 'not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only'
+ assert 'std::env::var("GRAPH_OUT").expect("output path")' in (ROOT/'source/fixture.rs.in').read_text()
+ events = [json.loads(line) for line in (ROOT/f'{arm}.trace.jsonl').read_text().splitlines()]
+ assert len(events) == 3
+ runtime, loaded, assigned = events
+ assert [e['fields']['message'] for e in events] == ['graph fixture runtime','loaded ONNX graph','ONNX graph execution-provider assignment']
+ assert [e['target'] for e in events] == ['scratch_scored_fixture::graph_trace','pamin_index::inference','pamin_index::inference']
+ info = record['inference']
+ assert info['runtime_info'] == [runtime['fields']['runtime_info']] == ['ORT Build Info: git-branch=HEAD, git-commit-id=da9b5e364c, fp8-kv-cache=1, build type=Release']
+ assert set(info['selected_graphs']) == {loaded['fields']['model_graph']} == {assigned['fields']['model_graph']}
+ model = loaded['fields']['model_graph']
+ assert info['selected_graphs'][model]['assigned_nodes'] == assigned['fields']['assigned_nodes'] == {'CPUExecutionProvider':1023}
+ assert info['selected_graphs'][model]['sha256'] == ASSET_PINS[model]
+ assert info['selected_graphs'][model]['companion_assets_sha256'] == {k:ASSET_PINS[k] for k in [model,model+'.data']}
+ mapped = info['mapped_native_libraries_sha256']
+ assert all(e['runtime_maps'] == list(mapped) for e in events)
+ assert mapped == {k:ASSET_PINS[k] for k in mapped}
+ assert set(mapped) == {'${ORT_LIB}/libonnxruntime.so.1.28.0'}
+ assert record['asset_hashes_before'] == record['asset_hashes_after'] == ASSET_PINS
+ assert record['process_usage'] == load(f'{arm}.usage.json')
+
  hits={h['topic']:h for h in row['targets']};assert len(hits)==3
  values=[score(hits[name]) for name in row['target_labels']]
  expected=[row['weak_relevance'],.1,.05] if arm=='baseline' else [.8,.5,.5]
@@ -55,10 +141,32 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert graph['companion_assets_sha256']['${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data']=='2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b'
  assert record['inference']['mapped_native_libraries_sha256']['${ORT_LIB}/libonnxruntime.so.1.28.0']=='1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab'
 assert arm_records['baseline']['inference']==arm_records['scored']['inference']
-assert comparison['cross_arm_non_graph_identical'] is False and comparison['early_stop_recovered'] is True
-assert [r['expected'] for r in comparison['invariants']]==[.8,.5,.5]
+computed = []
+for i, case in enumerate(['cross_origin','later_hop','same_hop']):
+ values = []
+ for arm in ['baseline','scored']:
+  row = rows[arm]
+  values.append(score(next(h for h in row['targets'] if h['topic'] == row['target_labels'][i])))
+ before, after = values
+ computed.append({'case':case,'baseline':before,'scored':after,'expected':rows['scored']['expected_scores'][i], 'absolute_delta':after-before,'percent_change':100*(after-before)/before})
+early = {'case':'early_stop','baseline':None,'scored':score({'why':rows['scored']['early_stop']['why']}),'expected':rows['scored']['early_stop']['expected_score'],'absolute_delta':None,'percent_change':None}
+assert comparison['invariants'] == computed
+assert comparison['early_stop'] == early
+assert comparison['cross_arm_non_graph_identical'] == (rows['baseline']['non_graph'] == rows['scored']['non_graph']) is False
+assert comparison['early_stop_recovered'] == (not rows['baseline']['early_stop']['reached'] and rows['scored']['early_stop']['reached']) is True
+labels = ['Two origins reach one target','A later, stronger arrival from one origin','A stronger route at the same hop','Two-hop answer after 60 one-hop decoys']
+lines = []
+for label, values in zip(labels, computed+[early]):
+ before = 'Absent' if values['baseline'] is None else f"{values['baseline']:.8f}"
+ delta = 'N/A' if values['absolute_delta'] is None else f"+{values['absolute_delta']:.8f}"
+ percent = 'N/A' if values['percent_change'] is None else f"+{values['percent_change']:.6f}%"
+ lines.append(f"| {label} | {before} | {values['scored']:.8f} | {values['expected']:g} | {delta} | {percent} |")
+readme = (ROOT/'README.md').read_text()
+start = readme.index('| Controlled case |')
+stop = readme.index('\n\n', start)
+assert readme[start:stop].splitlines() == ['| Controlled case | Disabled arm | Scored arm | Explicit oracle | Absolute score change | Score change |','| --- | ---: | ---: | ---: | ---: | ---: |'] + lines, 'displayed score table differs from raw evidence'
 for p in ROOT.rglob('*'):
- if not p.is_file() or p.name=='verify.py':continue
+ if not p.is_file() or p.name in {'verify.py','test_verify.py'}:continue
  data=p.read_text()
  assert not re.search(r'(?:/workspace/(?:scratch|\.pamin|\.cargo|\.onnxruntime|PaminMemory)|/home/|postgres(?:ql)?://|Bearer\s+[A-Za-z0-9]|claude\.ai/|app://)',data),f'private path/credential/session marker: {p.name}'
  assert p.suffix not in {'.onnx','.bin','.data','.so'},'binary/model material must not be published'
