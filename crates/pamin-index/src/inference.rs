@@ -551,6 +551,10 @@ fn calibrated<T>(
             }
         }
     }
+    // Cold warm-up may load different models concurrently. Keep their
+    // calibration sections independent instead of timing competing plans.
+    static CALIBRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _calibration = CALIBRATION.lock().expect("compute calibration poisoned");
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut fastest = (Device::Cpu, vec![cpu()].into());
     let mut fastest_elapsed = std::time::Duration::MAX;
@@ -863,6 +867,62 @@ mod tests {
         );
         recovered.set(true);
         assert_eq!(run().unwrap().1, Device::Cuda);
+    }
+
+    #[test]
+    fn cold_calibrations_do_not_load_competing_reference_sessions() {
+        use std::cell::Cell;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (loaded_tx, loaded_rx) = mpsc::channel();
+        let cache = &cache;
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                let announced = Cell::new(false);
+                calibrated(
+                    "first",
+                    vec![(Device::Cuda, vec![cpu()].into())],
+                    &cache,
+                    |device, _, _| Ok(device),
+                    |_, _| {
+                        if !announced.replace(true) {
+                            started_tx.send(()).unwrap();
+                            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        }
+                        Ok(Duration::from_millis(10))
+                    },
+                )
+                .unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let second = scope.spawn(|| {
+                ready_tx.send(()).unwrap();
+                calibrated(
+                    "second",
+                    vec![(Device::Cuda, vec![cpu()].into())],
+                    &cache,
+                    |device, _, _| {
+                        loaded_tx.send(()).unwrap();
+                        Ok(device)
+                    },
+                    |_, _| Ok(Duration::from_millis(10)),
+                )
+                .unwrap();
+            });
+            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let competed = loaded_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+            release_tx.send(()).unwrap();
+            first.join().unwrap();
+            second.join().unwrap();
+            assert!(
+                !competed,
+                "a second calibration loaded a reference while the first was timed"
+            );
+        });
     }
 
     #[test]
