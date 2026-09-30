@@ -206,5 +206,196 @@
     "Backend repeat did not attest source-weight/tokenizer hashes before and after each process.",
     "No new product backend selection or FP64 scorer shipped.",
     "Prior query-level significance withdrawn; only three nonrandomized process-round blocks, diagnostic p-values not confirmatory."
-  ]
+  ],
+  "profiling": {
+    "4x128": {
+      "nodes": [
+        {
+          "node": "/roberta/embeddings/Equal_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 15485,
+          "steady_median_us": 32.0
+        },
+        {
+          "node": "/roberta/embeddings/Not_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 4166,
+          "steady_median_us": 13.0
+        },
+        {
+          "node": "CoreMLExecutionProvider_6175562152482906696_CoreML_6175562152482906696_0_0_kernel_time",
+          "provider": "CoreMLExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 929864,
+          "steady_median_us": 2157.0
+        },
+        {
+          "node": "/roberta/Expand_1_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 19109,
+          "steady_median_us": 44.0
+        },
+        {
+          "node": "/roberta/embeddings/CumSum_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 5185,
+          "steady_median_us": 16.0
+        },
+        {
+          "node": "/roberta/embeddings/Mul_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 5627,
+          "steady_median_us": 15.0
+        },
+        {
+          "node": "CoreMLExecutionProvider_6175562152482906696_CoreML_6175562152482906696_1_1_kernel_time",
+          "provider": "CoreMLExecutionProvider",
+          "calls": 308,
+          "warmups_removed": 8,
+          "steady_total_us": 26256199,
+          "steady_median_us": 79351.5
+        }
+      ],
+      "steady_kernel_us": 27235635,
+      "cpu_kernel_us": 49572,
+      "cpu_fraction": 0.001820115448015073
+    },
+    "4x64": {
+      "nodes": [
+        {
+          "node": "/roberta/embeddings/Equal_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 5527,
+          "steady_median_us": 34
+        },
+        {
+          "node": "/roberta/embeddings/Not_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 2244,
+          "steady_median_us": 13
+        },
+        {
+          "node": "CoreMLExecutionProvider_6175562152482906696_CoreML_6175562152482906696_0_0_kernel_time",
+          "provider": "CoreMLExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 449336,
+          "steady_median_us": 1951
+        },
+        {
+          "node": "/roberta/Expand_1_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 4059,
+          "steady_median_us": 26
+        },
+        {
+          "node": "/roberta/embeddings/CumSum_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 2282,
+          "steady_median_us": 16
+        },
+        {
+          "node": "/roberta/embeddings/Mul_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 2173,
+          "steady_median_us": 14
+        },
+        {
+          "node": "CoreMLExecutionProvider_6175562152482906696_CoreML_6175562152482906696_1_1_kernel_time",
+          "provider": "CoreMLExecutionProvider",
+          "calls": 147,
+          "warmups_removed": 8,
+          "steady_total_us": 5577633,
+          "steady_median_us": 38571
+        }
+      ],
+      "steady_kernel_us": 6043254,
+      "cpu_kernel_us": 16285,
+      "cpu_fraction": 0.002694740283959602
+    },
+    "2x256": {
+      "nodes": [
+        {
+          "node": "/roberta/embeddings/Equal_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 2148,
+          "steady_median_us": 33.0
+        },
+        {
+          "node": "/roberta/embeddings/Not_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 1040,
+          "steady_median_us": 13.0
+        },
+        {
+          "node": "CoreMLExecutionProvider_6175562152482906696_CoreML_6175562152482906696_0_0_kernel_time",
+          "provider": "CoreMLExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 436084,
+          "steady_median_us": 2630.0
+        },
+        {
+          "node": "/roberta/Expand_1_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 4807,
+          "steady_median_us": 70.0
+        },
+        {
+          "node": "/roberta/embeddings/CumSum_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 1005,
+          "steady_median_us": 16.0
+        },
+        {
+          "node": "/roberta/embeddings/Mul_kernel_time",
+          "provider": "CPUExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 1157,
+          "steady_median_us": 15.0
+        },
+        {
+          "node": "CoreMLExecutionProvider_6175562152482906696_CoreML_6175562152482906696_1_1_kernel_time",
+          "provider": "CoreMLExecutionProvider",
+          "calls": 66,
+          "warmups_removed": 8,
+          "steady_total_us": 5517761,
+          "steady_median_us": 94626.0
+        }
+      ],
+      "steady_kernel_us": 5964002,
+      "cpu_kernel_us": 10157,
+      "cpu_fraction": 0.0017030510720821355
+    }
+  }
 }
