@@ -159,9 +159,19 @@ impl Encoder {
 
     /// One forward pass over `batch`, from [`encode`](Self::encode), padded to
     /// its longest member.
-    pub(crate) fn run_encoded(&mut self, mut batch: Vec<Encoding>) -> Result<SessionOutputs<'_>> {
+    pub(crate) fn run_encoded(&mut self, batch: Vec<Encoding>) -> Result<SessionOutputs<'_>> {
+        self.run_padded(batch).map(|(_, outputs)| outputs)
+    }
+
+    /// The exact padded encodings sent to the session, for a model that pools
+    /// token vectors using its attention mask.
+    pub(crate) fn run_padded(
+        &mut self,
+        mut batch: Vec<Encoding>,
+    ) -> Result<(Vec<Encoding>, SessionOutputs<'_>)> {
         pad(&self.tokenizer, &mut batch)?;
-        self.forward(&batch)
+        let outputs = self.forward(&batch)?;
+        Ok((batch, outputs))
     }
 
     fn forward(&mut self, encodings: &[Encoding]) -> Result<SessionOutputs<'_>> {
