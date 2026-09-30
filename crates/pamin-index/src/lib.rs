@@ -20,6 +20,8 @@ pub mod reranking;
 mod reshape;
 pub mod segmentation;
 mod tokenizer;
+#[cfg(target_os = "windows")]
+mod winml;
 
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Profile};
