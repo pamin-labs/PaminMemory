@@ -175,7 +175,9 @@ accelerator plans using the same export, tokenizer, prefixes and indexed model
 identity. Compatibility checks compare vectors with the CPU export; a rejected
 plan falls back. The finite startup fixtures are a smoke check, not full-corpus
 retrieval certification. With automatic dispatch, a bounded complete model-call
-fixture compares viable plans against interleaved optimized-CPU controls. Its
+query fixture compares viable plans against interleaved optimized-CPU controls.
+Maximum batch/length conformance is checked separately from singleton query
+timing, so bulk ingest throughput does not decide the search plan. Its
 validated winner is cached for process-local idle reloads using the model
 snapshot, device inventory and runtime settings. This estimates the fastest
 plan for that fixture; it is not universal per-query autotuning. E5 accelerator
