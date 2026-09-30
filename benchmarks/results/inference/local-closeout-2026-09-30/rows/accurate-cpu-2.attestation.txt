@@ -1,0 +1,28 @@
+ INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx" assigned_nodes={"CPUExecutionProvider":1023}
+ INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/prepared/7e36c555c4bdadb69cc0d95ccfe6f7bf/attention.onnx" assigned_nodes={"CPUExecutionProvider":295}
+ INFO pamin_index::reranking: reranker loaded tier="accurate" device="cpu" maximum_tokens=256
+backend sample 1/24
+backend sample 2/24
+backend sample 3/24
+backend sample 4/24
+backend sample 5/24
+backend sample 6/24
+backend sample 7/24
+backend sample 8/24
+backend sample 9/24
+backend sample 10/24
+backend sample 11/24
+backend sample 12/24
+backend sample 13/24
+backend sample 14/24
+backend sample 15/24
+backend sample 16/24
+backend sample 17/24
+backend sample 18/24
+backend sample 19/24
+backend sample 20/24
+backend sample 21/24
+backend sample 22/24
+backend sample 23/24
+backend sample 24/24
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 132.91s
