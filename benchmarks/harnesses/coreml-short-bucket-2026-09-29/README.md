@@ -24,10 +24,15 @@ one newly scored pair per call, logical intervals 1–64 / 65–128 / 129–256,
 and physical padded totals 256 / 512 / 512. The [new real-model run](warmup-shape-probe.txt)
 found 765 CoreML and 5 CPU assigned nodes in each session; all 24 warmup
 counts passed on the same Apple M4. Node assignment does not reveal CoreML's
-internal CPU/GPU/ANE placement. To repeat it, copy the source to
-`crates/pamin-index/tests/scratch_bucket_warmups.rs`, set `PAMIN_EVAL_HOME`
-to the cached pinned model home and `PAMIN_DEVICE=auto`, then run
-`cargo test -p pamin-index --test scratch_bucket_warmups -- --ignored --nocapture`.
+internal CPU/GPU/ANE placement. To repeat it from the repository root:
+
+```sh
+cp benchmarks/harnesses/coreml-short-bucket-2026-09-29/warmup-shape-probe.rs crates/pamin-index/tests/scratch_bucket_warmups.rs
+env -u HF_HOME -u HF_ENDPOINT PAMIN_EVAL_HOME=/path/to/cached-eval-home PAMIN_DEVICE=auto cargo test -p pamin-index --test scratch_bucket_warmups -- --ignored --nocapture
+rm crates/pamin-index/tests/scratch_bucket_warmups.rs
+```
+
+The model cache in `/path/to/cached-eval-home/models` must contain the pinned revision.
 The scratch test is deliberately ignored by the repository; it is a
 diagnostic, not a CI-time model download. This later observation proves the
 retained tokenizer routes these strings as intended, while the original six
