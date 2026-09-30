@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
     let digest = crate::prepared::source_digest(source)?;
-    // Derived files belong to the writable workspace. The hub snapshot may
-    // be shared/read-only; link external data on Unix, copy on Windows where
-    // creating symlinks normally needs privileges.
+    // Derived files belong to the writable workspace. ONNX rejects external
+    // data symlinks that escape its graph directory and multiply-linked files;
+    // keep one independently owned copy, leaving a shared/read-only hub alone.
     let directory = cache.join("pplx-int8-v1").join(&digest);
     std::fs::create_dir_all(&directory)?;
     let output = directory.join("model.onnx");
@@ -32,18 +32,13 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
         .join("model_quantized.onnx_data");
     let data = std::fs::canonicalize(data)?;
     let linked = directory.join("model_quantized.onnx_data");
-    if !linked.is_file() {
+    if !linked.is_file() || std::fs::symlink_metadata(&linked)?.file_type().is_symlink() {
         if std::fs::symlink_metadata(&linked).is_ok() {
             std::fs::remove_file(&linked)?;
         }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&data, &linked)?;
-        #[cfg(not(unix))]
-        {
-            let pending = linked.with_extension("partial");
-            std::fs::copy(&data, &pending)?;
-            std::fs::rename(pending, &linked)?;
-        }
+        let pending = linked.with_extension("partial");
+        std::fs::copy(&data, &pending)?;
+        std::fs::rename(pending, &linked)?;
     }
     if std::fs::read(&output).is_ok_and(|existing| existing == rewritten) {
         return Ok(output);
@@ -126,6 +121,19 @@ mod tests {
         let cache = root.path().join("workspace");
         let output = prepare(&source, &cache).unwrap();
         assert!(output.starts_with(&cache));
+        let owned = output.parent().unwrap().join("model_quantized.onnx_data");
+        assert!(
+            !std::fs::symlink_metadata(&owned)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            owned
+                .canonicalize()
+                .unwrap()
+                .starts_with(output.parent().unwrap().canonicalize().unwrap())
+        );
         assert_eq!(
             std::fs::read(output.parent().unwrap().join("model_quantized.onnx_data")).unwrap(),
             b"immutable weights"
