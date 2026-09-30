@@ -20,6 +20,7 @@ runner=load('archived_disk_runner',code/'run.py.in')
 calculator=load('archived_disk_calculator',code/'analyze.py.in')
 review=load('restart_evidence_review',root/'evidence_review.py')
 provenance=json.loads((root/'provenance.json').read_text())
+review.seed_endpoint(provenance,json.loads((root/'post-review-seed.json').read_text()))
 provider_bindings=json.loads((root/'provider-bindings.json').read_text())
 review.runner_binding(code/'run.py.in',provenance)
 raw=[json.loads(x) for x in (root/'raw.jsonl').read_text().splitlines()]
