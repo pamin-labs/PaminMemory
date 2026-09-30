@@ -1,7 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
-    "benchmarks/results/fusion/admission-2026-09-30/README.md": "261cca1f194f71cf032a36ecabdba8fb167ef6b633cd9c9cce19db1a4ca37e09",
+    "benchmarks/results/fusion/admission-2026-09-30/README.md": "0d78d744a6dc9599b7afd5156ff03687b324883a165cfc23fa912fb9a69a5f2a",
     "benchmarks/results/fusion/admission-2026-09-30/baseline.jsonl.gz": "1518dddb533e7044d9b22464d041355f0dc927ee48313b922e6d639d85df7bd6",
     "benchmarks/results/fusion/admission-2026-09-30/baseline.log.gz": "ec5350e8d2639778b94cd8698a0c20d3e253b132ae4c4057131b210e0e9becb8",
     "benchmarks/results/fusion/admission-2026-09-30/binaries.json": "46b59e58741c8a061c5e375d382d7200989d24c324c37835dd2ddeb2f96723f0",
@@ -12,14 +12,20 @@
     "benchmarks/results/fusion/admission-2026-09-30/pretrial-assets.json": "daa0f035398ad93db5ac4f5f9aa6f30a966703fbbb4da66963f185305c2fcb05",
     "benchmarks/results/fusion/admission-2026-09-30/provenance.json": "78f0c32358bd2e048c4f4acb7dacd0e8e6401620fca0751b5e4aaea5cf41111f",
     "benchmarks/results/fusion/admission-2026-09-30/sources.json": "00f59f87325e273006c3fc2205c4f548110633a7c7c83a938a7f567b7c1b9a23",
-    "benchmarks/results/fusion/admission-2026-09-30/verify.py": "bd5a3c2f1d347916ac388eba9547a6d8726aab8dd2d9bcd5e2291c5b8181a160",
-    "benchmarks/harnesses/fusion-admission-2026-09-30/README.md": "544cb9d18aa3b653b40840ded07d2298054b973c329ae09cfefcf5262a992a1d",
+    "benchmarks/results/fusion/admission-2026-09-30/verify.py": "09c7706ec1c239d506975337103c79069fa44d0461433bbe9ae03764543c7419",
+    "benchmarks/harnesses/fusion-admission-2026-09-30/README.md": "fc908df85ec2acf7277497f913cea78a09132aa23467199aeb7d437af9a508c8",
     "benchmarks/harnesses/fusion-admission-2026-09-30/baseline-Cargo.toml.in": "3f7786085162b116bc4d82437da2549add79c456c3d13955597d96858b8bd687",
     "benchmarks/harnesses/fusion-admission-2026-09-30/baseline.rs.in": "51cd4d42c061be03baccbe7d3e74751ded5b94f888f831f6246c6079ae816045",
-    "benchmarks/harnesses/fusion-admission-2026-09-30/freeze.py.in": "670a4bbd776cdba425b5f0b3611845ab0042e5f1c6ce736fa734618cea61d2b5",
+    "benchmarks/harnesses/fusion-admission-2026-09-30/freeze.py.in": "4907f244f507bcc7a0fa16945780af23fa2e07c6befae23bc3a12fa707360d9c",
     "benchmarks/harnesses/fusion-admission-2026-09-30/pooled-Cargo.toml.in": "817c645217b4eac80fac6564e0eab0da62924e0340a1c18316833f0fe1f75b82",
     "benchmarks/harnesses/fusion-admission-2026-09-30/pooled.rs.in": "50c4e591bb1255cc1d2b4c9964f623b0d37ad86c4b0890e61c471600ea1ee5cc",
     "benchmarks/harnesses/fusion-admission-2026-09-30/prototype.patch.gz": "3e8cfb7d24b521025f5566e4581b5aaa93173cd5ebc51aca418c0ce521219c69",
-    "benchmarks/harnesses/fusion-admission-2026-09-30/run-paired.py.in": "00a37e5b2020ae954726dbb4de02aa9c9f77ae82de15ee0eb1679b9f76e6ca8a"
+    "benchmarks/harnesses/fusion-admission-2026-09-30/run-paired.py.in": "73ef81a2ab4b367749bfe455620be5ab54c1863d12cb1e375a0153542bfedfd7",
+    "benchmarks/results/fusion/admission-2026-09-30/build-audit.json": "8268d1c2d02ea4cbe9670e0879953516aa90e3290cb0ec6dbbf0e87ae12cf501",
+    "benchmarks/results/fusion/admission-2026-09-30/build-baseline.log.gz": "7be0265ed841329a390e6d73ff7717f78207ffdb6ca48418109f03d90990f80f",
+    "benchmarks/results/fusion/admission-2026-09-30/build-pooled.log.gz": "413a5249777dfde7fd40f4aa8e4554ea7567f94d823e33f4a95f55f96f538b1a",
+    "benchmarks/results/fusion/admission-2026-09-30/baseline-Cargo.lock.gz": "e6869d00a6795b49265409930bf7e8bb5e8da444cbcc052810f9e86de6877015",
+    "benchmarks/results/fusion/admission-2026-09-30/pooled-Cargo.lock.gz": "e6869d00a6795b49265409930bf7e8bb5e8da444cbcc052810f9e86de6877015",
+    "benchmarks/harnesses/fusion-admission-2026-09-30/build-attested.py.in": "097ab181eaffd85fd31b89de261b9fd2b6a49c14440eae55d3f14780e7110604"
   }
 }

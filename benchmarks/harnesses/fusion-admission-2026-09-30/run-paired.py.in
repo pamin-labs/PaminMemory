@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
 """Root-authorized actual Engine diagnostic, fresh clones, sequential model use."""
+import sys
+if sys.flags.optimize:
+    raise SystemExit("Guarded harness requires Python assertions; remove -O/PYTHONOPTIMIZE")
 import hashlib,json,os,re,shutil,subprocess
 from pathlib import Path
 
+CONTROLLED={'PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_EVAL_HOME'}
+TUNABLES=['PAMIN_SEARCH_EFFORT','PAMIN_UNINDEXED_BUDGET','PAMIN_RERANK_DEPTH',
+          'PAMIN_RERANK_BATCH','PAMIN_RERANK_BATCH_TOKENS','PAMIN_RERANK_MAX_TOKENS',
+          'PAMIN_INFERENCE_THREADS','PAMIN_MODEL_IDLE','PAMIN_PREPARED','PAMIN_FUSED_ATTENTION']
+def reject_tuning(environ):
+ inherited=sorted(k for k in environ if k.startswith('PAMIN_') and k not in CONTROLLED)
+ if inherited:raise SystemExit('Refusing inherited tuning: '+', '.join(inherited))
+ return {key:None for key in TUNABLES}
+# Check before reading/copying a workspace or writing any output.
+effective_tuning=reject_tuning(os.environ)
 ROOT=Path('/workspace/scratch/fusion-pool-prototype-tools')
 REFERENCE=Path('/workspace/scratch/restart-floor/results-memory-v2/0-main')
 OUTPUT=ROOT/'paired'
@@ -15,19 +28,43 @@ def digest(path):
 assert not (REFERENCE/'postgres/data/postmaster.pid').exists(), 'reference must be stopped'
 assert (REFERENCE/'models').is_symlink() and (REFERENCE/'models').resolve()==MODELS
 assert not OUTPUT.exists(), 'refuse to overwrite evidence or existing databases'
-OUTPUT.mkdir()
 binaries=json.loads((ROOT/'binaries.json').read_text())
+attestation=json.loads((ROOT/'build-attestation.json').read_text())
+assert attestation['status']=='prospective_build_inputs_and_outputs'
 sources=json.loads((ROOT/'variants/manifest.json').read_text())
+def source_defaults(variant):
+ values={}
+ for relative,names in [('crates/pamin-index/src/projection.rs',['SEARCH_EFFORT','UNINDEXED_BUDGET']),
+                        ('crates/pamin-index/src/reranking.rs',['DEPTH','BATCH','BATCH_TOKENS','MAX_TOKENS'])]:
+  text=(Path(variant['path'])/relative).read_text()
+  for name in names:
+   matches=re.findall(r'const '+name+r': [^=;]+ = ([0-9_]+);',text)
+   assert len(matches)==1,(name,'cannot identify source default')
+   values[name]=int(matches[0].replace('_',''))
+ values['INFERENCE_THREADS']='unset; runtime available_parallelism()'
+ return values
+source_settings={name:source_defaults(variant) for name,variant in sources['variants'].items()}
+assert source_settings['baseline']==source_settings['pooled']
 models=[('embedding',MODELS/'models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx','16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb'),('reranker',MODELS/'models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx','912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d')]
-provenance={'scope':'synthetic paired product-path diagnostic; no general accuracy or timing claim','reference':str(REFERENCE),'source_revision':sources['revision'],'model_sources':[],'runtime_libraries':[],'arms':binaries}
+provenance={'scope':'synthetic paired product-path diagnostic; no general accuracy or timing claim','reference':str(REFERENCE),'source_revision':sources['revision'],'model_sources':[],'runtime_libraries':[],'arms':binaries,'effective_tuning_overrides':effective_tuning,'source_defaults':source_settings,'controlled_environment':{'PAMIN_DEVICE':'cpu','PAMIN_PROFILE':'accuracy'},'build_binding':'prospective source/binary attestation required'}
 for role,path,expected in models:
  actual=digest(path);assert actual==expected,(role,actual)
  provenance['model_sources'].append({'role':role,'path':str(path),'sha256':actual})
 for library in [Path('/workspace/.cargo/lib/pamin/libzvec_c_api.so'),Path('/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0')]:
  provenance['runtime_libraries'].append({'path':str(library),'sha256':digest(library)})
+OUTPUT.mkdir()
 for arm in binaries:
  assert digest(Path(arm['binary']))==arm['sha256']
  variant=sources['variants'][arm['arm']]
+ built=attestation['arms'][arm['arm']]
+ assert built['binary_sha256']==arm['sha256'] and built['binary_bytes']==Path(arm['binary']).stat().st_size
+ # Recompute every attested source/manifest/lock input before either arm runs.
+ for path,expected in built['inputs'].items():assert digest(Path(path))==expected
+ assert built['source_revision']==sources['revision']
+ assert built['variant_path']==variant['path']
+ assert built['helper_path']==variant['helper_path']
+ assert digest(ROOT/f'attested-build-{arm["arm"]}.jsonl')==built['build_stdout_sha256']
+ assert digest(ROOT/f'attested-build-{arm["arm"]}.log')==built['build_stderr_sha256']
  for relative,expected in variant['overlaid_sha256'].items():assert digest(Path(variant['path'])/relative)==expected
  assert digest(Path(variant['helper_path'])/'src/main.rs')==variant['helper_source_sha256']
  home=OUTPUT/(arm['arm']+'-home');shutil.copytree(REFERENCE,home,symlinks=True)
