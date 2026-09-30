@@ -161,7 +161,11 @@ impl Embedder {
             _ => e5(profile, cache_dir)?,
         };
 
-        tracing::info!(model = profile.model_id(), device = "cpu", "embedder loaded");
+        tracing::info!(
+            model = profile.model_id(),
+            device = "cpu",
+            "embedder loaded"
+        );
         Ok(Self {
             model: Box::new(model),
             profile,
