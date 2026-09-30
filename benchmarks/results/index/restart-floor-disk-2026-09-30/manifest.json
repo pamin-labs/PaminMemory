@@ -1,0 +1,28 @@
+{
+  "files": {
+    "benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
+    "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema.rs.in": "d21c7cc2b5f0825f93388eac3a2732409c4a5a75d065a35926e3eba32a1e39ce",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "06a4ee8f610af428d7f90e4daf14494010b650b1e1a7b24fce13bb1322de2af2",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/binaries.json": "a8463b274fda22bc978a8bcb050b187a3cbb24baafa99ef650d66e39f076c459",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-candidate.log.gz": "c972869e6178ef9f1fea84b859bca994af626cf701816ff123669cc53a13c1d1",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-main.log.gz": "88207bb853f77f8c72a865341cc47a1e37c33ad175190d71942c12a9cd692b4f",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-predecessor.log.gz": "69d0ff1a702b5c26ddc54191cc9bf76a08bedde4be351f868a1006139fb18d77",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/1-candidate.log.gz": "cc7f4b71384e9658a53724c4c294235ecbeef3b75e41592a61e66c3e189eb374",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/1-main.log.gz": "512a0b011bcc7f636c6b046c60c3f9e0fa05b225f07b7b856d3cb969012efb6b",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/1-predecessor.log.gz": "73832695747e55df8c0fb06c7046e00a38a92721148c08a55d22e193af05ebae",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/2-candidate.log.gz": "a0374976b4097869adc3b884cd232cebe8d646779c7fc01a490211c57f7288e6",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/2-main.log.gz": "9b996896bf43f903338746913763bf7b1a77602c3a36f11cd9eea8f193205f8c",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/2-predecessor.log.gz": "ac743f8c29ce64d6975d926023126fc90ccc758958dcd37829446d37bbb47e9c",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/disk-conversion.log.gz": "03fef099ed2c02f51220075ef7b9daa9da1b36a292d0af119c56970129ad0596",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/seed-disk.log.gz": "4ccc19988f79b04006085dc6c1d295b14c7520fb45229c10183908873a286720",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/post-trial-assets.json": "97f7cf64249935a842735bc7aa8551690052006b6d8c64e0dd79f71a3ac98e68",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/post-trial-resources.json": "22743e17c13f8dcb71eb72d05ee65511fba777c38e2629789ac7d934790367f4",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/provenance.json": "31ddf3e7963978d767e57683d38ca9a331b256b0e69c15afb5cc086d9a5a14af",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/raw.jsonl": "817b907934688c585f7c88347649f46ebebbff38390d85313bd7e96b1391621d",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/summary.json": "4e7d0a4b4967479bfe7550eb8b9b69c5fb79550053d0cc15e94a20e8c70962e5",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "6bb38d367052d84da38fe779bc3327ab31981ef1d95b04c4349b8497a637c474",
+    "benchmarks/harnesses/restart-floor-2026-09-30/disk-README.md": "4bbafebaf1fa821ffc4691b9927d133243b968d5f9fc5aed43268a2fd1eb2ae0"
+  },
+  "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
+}
