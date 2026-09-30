@@ -1,28 +1,39 @@
 #!/usr/bin/env python3
 """Prospective builds only; preserve archived build.py.in and historical outputs."""
-import argparse,hashlib,json,os,shutil,subprocess,sys
+import argparse,hashlib,json,os,runpy,shutil,subprocess,sys
 from datetime import datetime,timezone
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Build guards require assertions; remove -O/PYTHONOPTIMIZE')
 
 TARGET='crates/pamin-engine/tests/scratch_restart_floor.rs'
 PRODUCTS={'pamin-core','pamin-store','pamin-index','pamin-engine'}
+NATIVE=runpy.run_path(str(Path(__file__).with_name('native-guards.py.in')))
+MIN_DISK=12*1024**3
+MIN_MEMORY=4*1024**3
+def resource_preflight(directory):
+    free=shutil.disk_usage(directory).free
+    available=int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')))*1024
+    limit=Path('/sys/fs/cgroup/memory.max');current=Path('/sys/fs/cgroup/memory.current')
+    if limit.exists() and current.exists() and limit.read_text().strip()!='max':available=min(available,int(limit.read_text())-int(current.read_text()))
+    assert free>=MIN_DISK and available>=MIN_MEMORY, 'fresh targets require >=12 GiB disk and >=4 GiB available memory/headroom'
+    return {'disk_free_bytes':free,'memory_headroom_bytes':available,'required_disk_bytes':MIN_DISK,'required_memory_bytes':MIN_MEMORY,'scope':'policy preflight, not a measured peak resource guarantee'}
 TOOLCHAIN=Path('/workspace/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin')
 CONTROLLED_CARGO={'CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS'}
 def reject_overrides(parent):
     unexpected=sorted(key for key in parent if
         (key.startswith('CARGO_') and key not in CONTROLLED_CARGO) or
-        key.startswith(('RUSTC','RUSTDOC')) or key in {'RUSTFLAGS','RUSTUP_TOOLCHAIN'})
+        key.startswith(('RUSTC','RUSTDOC','ORT_','ZVEC_')) or key in {'RUSTFLAGS','RUSTUP_TOOLCHAIN'})
     assert not unexpected, 'refuse inherited compiler/Cargo overrides: '+', '.join(unexpected)
 def build_environment(parent):
     reject_overrides(parent)
     tools={name:TOOLCHAIN.joinpath(name).resolve(strict=True) for name in ['cargo','rustc','rustdoc']}
     env=dict(parent,RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo',
-             CARGO_TARGET_DIR='/workspace/PaminMemory/target',CARGO_BUILD_JOBS='4',
+             CARGO_BUILD_JOBS='4',ZVEC_LIB_DIR='/workspace/.cargo/lib/pamin',ZVEC_AUTO_BUILD='0',
              ORT_LIB_LOCATION='/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',ORT_PREFER_DYNAMIC_LINK='1',
              RUSTC=str(tools['rustc']),RUSTDOC=str(tools['rustdoc']),
              RUSTC_WRAPPER='',RUSTC_WORKSPACE_WRAPPER='',
              CARGO_ENCODED_RUSTFLAGS='',CARGO_ENCODED_RUSTDOCFLAGS='')
+    env.pop('CARGO_TARGET_DIR',None)
     env['PATH']=str(TOOLCHAIN)+os.pathsep+env.get('PATH','')
     return env,tools
 def tool_identities(tools):
@@ -75,7 +86,14 @@ def inputs(checkout,commit,allowed):
         if name in tracked:assert result[name]==expected[name], 'tracked regular file differs from HEAD git blob'
     assert 'Cargo.lock' in result and 'Cargo.toml' in result
     return result
-def fresh_artifacts(records,checkout):
+def fresh_artifacts(records,checkout,target):
+    all_artifacts=[x for x in records if x.get('reason')=='compiler-artifact']
+    assert all_artifacts
+    for artifact in all_artifacts:
+        assert artifact['fresh'] is False, 'dependency/product/helper reused'
+        filenames=artifact['filenames']+([artifact['executable']] if artifact.get('executable') else [])
+        for filename in filenames:
+            assert Path(filename).resolve().is_relative_to(target.resolve()), 'artifact outside new private target'
     selected=[x for x in records if x.get('reason')=='compiler-artifact' and x.get('target',{}).get('name','').replace('_','-') in PRODUCTS|{'scratch-restart-floor'}]
     assert {x['target']['name'].replace('_','-') for x in selected}==PRODUCTS|{'scratch-restart-floor'}
     for x in selected:
@@ -83,7 +101,7 @@ def fresh_artifacts(records,checkout):
         assert Path(x['manifest_path']).resolve().is_relative_to(checkout.resolve()), 'product compiled from another checkout'
     tests=[x for x in selected if x['target']['name']=='scratch_restart_floor' and x.get('executable')]
     assert len(tests)==1 and any(x.get('reason')=='build-finished' and x['success'] is True for x in records)
-    return selected,Path(tests[0]['executable'])
+    return all_artifacts,Path(tests[0]['executable'])
 def main():
     env,tools=build_environment(os.environ) # refuse overrides before copying/writing
     parser=argparse.ArgumentParser(description='New source-attested restart builds; never historical certification')
@@ -98,35 +116,50 @@ def main():
     for arm in plan['arms'].values():
         assert arm['allowed_untracked']=={TARGET:plan['harness_sha256']}
         inputs(Path(arm['checkout']),arm['commit'],arm['allowed_untracked'])
+    assert args.output.parent.is_dir()
+    assert all(not args.output.resolve().is_relative_to(Path(arm['checkout']).resolve()) for arm in plan['arms'].values()), 'target/output must be outside source checkouts'
+    resource_before=resource_preflight(args.output.parent)
+    native=NATIVE['snapshot']()
+    assert 'libzvec_c_api.so' in native['directories'][env['ZVEC_LIB_DIR']]['entries']
+    assert 'libonnxruntime.so' in native['directories'][env['ORT_LIB_LOCATION']]['entries']
+    env=NATIVE['environment'](env,native)
     tool_before=tool_identities(tools)
     rustc_version=subprocess.check_output([env['RUSTC'],'-Vv'],env=env,text=True)
     rustdoc_version=subprocess.check_output([env['RUSTDOC'],'-V'],env=env,text=True)
     cargo_version=subprocess.check_output([str(tools['cargo']),'-V'],env=env,text=True)
     assert rustc_version.startswith('rustc 1.98.1 ') and rustdoc_version.startswith('rustdoc 1.98.1 ') and cargo_version.startswith('cargo 1.98.1 ')
-    args.output.mkdir()
+    args.output.mkdir(mode=0o700)
+    target_root=args.output/'targets';target_root.mkdir(mode=0o700)
     audit={'recorded_utc':datetime.now(timezone.utc).isoformat(),
            'scope':'prospective build-time inputs/outputs only; no historical binary binding',
            'plan_sha256':digest(args.plan),'harness_sha256':digest(harness),
            'toolchain':rustc_version,'rustdoc':rustdoc_version,'cargo':cargo_version,'tools_before':tool_before,
-           'inherited_compiler_cargo_overrides':{},
-           'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','RUSTC','RUSTDOC','RUSTFLAGS','RUSTDOCFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_ENCODED_RUSTDOCFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
+           'inherited_compiler_cargo_overrides':{},'native_loader_inputs':native,'resource_preflight':resource_before,
+           'target_scope':'new empty per-arm target; all emitted compiler artifacts fresh:false; prebuilt declared native libraries remain pinned external inputs; Cargo registry/system build tools are not fully content-attested',
+           'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','LD_LIBRARY_PATH','RUSTC','RUSTDOC','RUSTFLAGS','RUSTDOCFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_ENCODED_RUSTDOCFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
     for name in ['main','predecessor','candidate']:
         arm=plan['arms'][name];checkout=Path(arm['checkout'])
+        resources=resource_preflight(args.output)
+        target=target_root/name;target.mkdir(mode=0o700)
+        assert not list(target.iterdir()), 'target must start empty'
+        env['CARGO_TARGET_DIR']=str(target.resolve())
+        NATIVE['verify'](native)
         shutil.copyfile(harness,checkout/TARGET)
         before=inputs(checkout,arm['commit'],arm['allowed_untracked'])
         assert tool_identities(tools)==tool_before
         command=[str(tools['cargo']),'test','-p','pamin-engine','--test','scratch_restart_floor','--no-run','--release','--offline','--locked','--message-format=json']
         outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
         with outpath.open('w') as out,errpath.open('w') as err:
-            subprocess.run([str(tools['cargo']),'clean','--release',*[item for product in sorted(PRODUCTS) for item in ['-p',product]]],cwd=checkout,env=env,stdout=err,stderr=err,check=True)
             subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
         after=inputs(checkout,arm['commit'],arm['allowed_untracked']);assert before==after
         tool_after=tool_identities(tools);assert tool_after==tool_before
-        selected,executable=fresh_artifacts([json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')],checkout)
+        NATIVE['verify'](native)
+        records=[json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')]
+        selected,executable=fresh_artifacts(records,checkout,target)
         frozen=args.output/name;shutil.copy2(executable,frozen)
         assert digest(frozen)==digest(executable)
         audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'inputs_before':before,'inputs_after':after,
-                            'command':command,'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
+                            'command':command,'target_directory':str(target.resolve()),'target_initially_empty':True,'resource_preflight':resources,'build_script_records':[x for x in records if x.get('reason')=='build-script-executed'],'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
                             'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size,'tools_after':tool_after}
         (args.output/'build-attestation.json').write_text(json.dumps(audit,indent=2)+'\n')
 if __name__=='__main__':main()
