@@ -66,8 +66,18 @@ for reference in ['predecessor','main']:
     assert sum(warm[(reference,rep)]==warm[('candidate',rep)] for rep in range(3))==3
 provenance=json.loads((root/'provenance.json').read_text())
 assert provenance['index']=='disk' and provenance['saved_floor']==273 and provenance['all_files_including_floor_marker']==274
-assert len(provenance['native_profile'])==5 and provenance['native_profile'][2]=='disk'
+expected_profile=['gpahal/bge-m3-onnx-int8','topic','disk','named','reversed-keys']
+assert provenance['native_profile']==expected_profile
+profile_assets=[entry for entry in provenance['seed_files'] if entry['path'].endswith('/profile')]
+assert len(profile_assets)==1
+profile_bytes='\n'.join(expected_profile).encode()
+assert profile_assets[0]['bytes']==len(profile_bytes) and profile_assets[0]['sha256']==hashlib.sha256(profile_bytes).hexdigest()
 conversion=provenance['conversion_schema_and_logical_digest']
+conversion_log=gzip.decompress((root/'logs/disk-conversion.log.gz').read_bytes()).decode()
+observed=[json.loads(line.split('DISK_SETUP_JSON ',1)[1]) for line in conversion_log.splitlines() if 'DISK_SETUP_JSON ' in line]
+assert observed==conversion, 'conversion provenance disagrees with retained setup log'
+assert [row['phase'] for row in observed]==['before','after']
+assert hashlib.sha256((code/'disk_schema.rs.in').read_bytes()).hexdigest()==provenance['conversion_helper_artifact']['scratch_source_sha256']
 assert conversion[0]['logical_digest']==conversion[1]['logical_digest']==[18000,'eb2483ff691e5e245079745e4745934620caf7ae692deea3766c84511c061d6b']
 assert conversion[1]['same_all_stored_document_bits'] and not conversion[1]['floor_written']
 schema=conversion[1]['schema'];assert schema['segment_documents']==2000
