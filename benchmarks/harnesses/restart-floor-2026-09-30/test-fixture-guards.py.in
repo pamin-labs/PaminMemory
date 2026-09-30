@@ -13,7 +13,10 @@ def refuse(operation):
     raise AssertionError('negative case passed')
 def case(kind='normal',copies=9):
     with tempfile.TemporaryDirectory() as temporary:
-        root=Path(temporary);seed=root/'seed';models=root/'models';models.mkdir()
+        root=Path(temporary);seed=root/'seed';models=root/'models';models.mkdir();(models/'prepared').mkdir();(models/'snapshot').mkdir()
+        for name in ['source','snapshot/tokenizer','prepared/model.onnx','prepared/model.onnx.data','prepared/attention.unfused']:(models/name).write_bytes(b'fake model asset')
+        model_plan={'version':1,'selection_provenance':'fake executable selection only','models':[{'name':'fake','asset_directories':['snapshot','prepared'],'load_graph':'prepared/model.onnx','assets':{'source':['source'],'tokenizer':['snapshot/tokenizer'],'prepared_graph':['prepared/model.onnx'],'external_weights':['prepared/model.onnx.data'],'metadata':['prepared/attention.unfused']},'graph_external_weights':{'prepared/model.onnx':['prepared/model.onnx.data']}}]}
+        model_manifest=root/'models.json';model_manifest.write_text(json.dumps(guard.MODEL['prepare'](models,model_plan)));model_manifest.chmod(0o600)
         (seed/'postgres/data/nested').mkdir(parents=True);(seed/'index').mkdir()
         (seed/'postgres/data/nested/data').write_bytes(b'fake stopped data')
         (seed/'index/data').write_bytes(b'fake index');(seed/'server.json').write_bytes(b'fake private configuration')
@@ -38,6 +41,7 @@ def case(kind='normal',copies=9):
             elif kind=='external_link':
                 (clone/'index/data').unlink();(clone/'index/data').symlink_to(seed/'index/data')
             elif kind=='binary_change':executable.write_bytes(b'changed binary')
+            elif kind=='model_prearm_change':(models/'prepared/model.onnx').write_bytes(b'changed before launch')
             return result
         def fake_main():
             output.mkdir();sequence=[(rep,arm.split(',',2)) for rep in range(3) for arm in arms[rep:]+arms[:rep]]
@@ -45,6 +49,8 @@ def case(kind='normal',copies=9):
             for index,(rep,(name,_,_)) in enumerate(sequence[:copies]):
                 shutil.copytree(seed,output/f'{rep}-{name}',symlinks=True)
                 if kind=='native_change':library.write_bytes(b'changed native bytes')
+                if kind=='model_graph_change':(models/'prepared/model.onnx').write_bytes(b'changed during arm')
+                if kind=='model_weight_change':(models/'prepared/model.onnx.data').write_bytes(b'changed during arm')
                 runner.cpu_provider_assignments('fake retained log')
                 if kind=='late_failure' and index==1:raise RuntimeError('fake late failure')
             if kind=='post_source_change':(seed/'index/data').write_bytes(b'changed after copies')
@@ -53,11 +59,11 @@ def case(kind='normal',copies=9):
         try:
             shutil.copytree=altered_copy;guard.load_runner=lambda path:runner
             os.environ.clear();os.environ.update({key:value for key,value in original_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})
-            sys.argv=['run-guarded.py.in','--attestation',str(attestation),'--record',str(record),'--documents','18000','--index','disk','trials','--seed',str(seed),'--output',str(output),'--fixture-manifest',str(manifest)]
+            sys.argv=['run-guarded.py.in','--attestation',str(attestation),'--model-manifest',str(model_manifest),'--record',str(record),'--documents','18000','--index','disk','trials','--seed',str(seed),'--output',str(output),'--fixture-manifest',str(manifest)]
             for arm in arms:sys.argv+=['--arm',arm]
             before_env=dict(os.environ);before_argv=sys.argv
             if kind=='normal' and copies==9:
-                guard.main();data=json.loads(record.read_text());assert data['status']=='finished' and len(data['copies'])==9 and len(data['native_after_arms'])==9
+                guard.main();data=json.loads(record.read_text());assert data['status']=='finished' and len(data['copies'])==9 and len(data['native_after_arms'])==9 and len(data['models_after_arms'])==9
                 assert all(row['clone']==row['source'] and row['independent_regular_files'] for row in data['copies'])
                 assert len(data['copies'])==9, 'recursive subtree copies must not generate duplicate attestations'
                 assert isinstance(data['fixture_before_trials']['entries'],int), 'credential/path content map must stay out of safe aggregate record'
@@ -72,7 +78,7 @@ def case(kind='normal',copies=9):
         finally:
             shutil.copytree=original_copy;guard.load_runner=original_load;sys.argv=original_argv
             os.environ.clear();os.environ.update(original_env)
-for kind in ['normal','clone_change','source_change','shared_inode','external_link','binary_change','late_failure','post_source_change','native_change']:
+for kind in ['normal','clone_change','source_change','shared_inode','external_link','binary_change','late_failure','post_source_change','native_change','model_prearm_change','model_graph_change','model_weight_change']:
     case(kind);print('passed',kind)
 case(copies=8);case(copies=10);print('passed exact nine-copy count')
 for key in ['HF_HOME','HF_HUB_CACHE']:refuse(lambda:guard.controlled_environment({key:'unexpected'}))
