@@ -16,7 +16,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Durability flush wall median | 71.154003 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Maintenance wall median | 8463.866316 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Maintenance process CPU median, 10ms tick counters | 27.320000 s | 0.000000 s | -27.320000 s | -100.000% |
+| Maintenance process CPU median, 10ms tick counters | 27.320000 s | <0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation |
 | First-search wall median, model load included | 3286.225253 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2743.028312 ms | 2860.084011 ms | +117.055699 ms | +4.267% |
 | Warm search p95, median across processes | 2999.154590 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
@@ -42,7 +42,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Write + urgent drain wall median | 1475.758326 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Durability flush wall median | 65.174956 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Maintenance wall median | 8725.241690 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Maintenance process CPU median, 10ms tick counters | 27.990000 s | 0.000000 s | -27.990000 s | -100.000% |
+| Maintenance process CPU median, 10ms tick counters | 27.990000 s | <0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation |
 | First-search wall median, model load included | 3088.230447 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2746.017698 ms | 2860.084011 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p95, median across processes | 3000.415286 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
@@ -85,3 +85,5 @@ Timing comparison policy now scans every retained wall/CPU timing metric and ful
 [Provider bindings](provider-bindings.json) normalize each actual process-copy model path through the recorded models symlink to its exact embedding/reranker prepared graph and external-data inventory. Source metadata contents were captured in a new dated read-only observation and match the historical metadata digest; source size/SHA/revision are verified. This is not a retrospective preparation attestation. The verifier additionally binds the complete unique arm-keyed binary pretrial inventory and exact historical runner bytes, and requires successful seed/conversion final markers.
 
 A [dated review-time seed endpoint](post-review-seed.json) rehashes all 2,952 retained regular-file inputs (312,706,264 bytes) from the surviving stopped seed and matches the complete pretrial inventory. The model symlink target is also unchanged. This is a late endpoint check after all nine historical copies; it cannot exclude intervening source changes or replace missing per-copy attestations. Regular-file scope excludes symlinks and credential/control records as listed in the record. Cross-repetition identical-corpus attribution remains unknown. The initial endpoint scope check included eight PostgreSQL-library symlinks and failed before hashing; the successful capture uses the retained regular-file scope.
+
+Maintenance CPU is censored: all candidate observations have zero user and system ticks. At the stated 100 Hz accounting resolution, each component is below one 10 ms tick, with a nominal combined bound below 20 ms; this is not zero CPU cost. Exact CPU differences and percentages are withheld. Raw tick arithmetic remains retained for recomputation, without treating zero ticks as a measured zero. PostgreSQL/service/device CPU is excluded.
