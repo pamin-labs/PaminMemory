@@ -5,6 +5,12 @@ from datetime import datetime,timezone
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Run guards require assertions; remove -O/PYTHONOPTIMIZE')
 NATIVE=runpy.run_path(str(Path(__file__).with_name('native-guards.py.in')))
+MODEL=runpy.run_path(str(Path(__file__).with_name('model-guards.py.in')))
+def verify_models(record):
+    path=Path(record['model_manifest_path'])
+    assert stat.S_IMODE(path.stat().st_mode)==0o600 and not path.is_symlink(), 'model manifest permissions changed'
+    assert digest(path)==record['model_manifest_sha256'], 'prepared model manifest changed'
+    return MODEL['verify'](record['_expected_models'])
 def controlled_environment(parent):
     inherited=sorted(key for key in parent if key.startswith('PAMIN_'))
     assert not inherited, 'refuse inherited PAMIN tuning: '+', '.join(inherited)
@@ -64,14 +70,15 @@ def independent_files(source,clone,expected):
         clone_inodes.add(inode)
 def write_record(path,record):
     assert stat.S_IMODE(path.stat().st_mode)==0o600, 'private record permissions changed'
-    path.write_text(json.dumps(record,indent=2)+'\n')
+    path.write_text(json.dumps({key:value for key,value in record.items() if key!='_expected_models'},indent=2)+'\n')
 def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record):
     """Wrap only root copies, outside the unchanged runner's operation clock."""
     old_argv=sys.argv;old_env=dict(os.environ);original=runner.shutil.copytree
     original_provider=runner.cpu_provider_assignments
-    native=record['native_loader_inputs'];record['native_after_arms']=[]
+    native=record['native_loader_inputs'];record['native_after_arms']=[];record['models_after_arms']=[]
     seed=seed.resolve();output=output.resolve()
     sequence=[(rep,arm.split(',',2)) for rep in range(3) for arm in arms[rep:]+arms[:rep]]
+    assert expected['models_target']==record['_expected_models']['root'], 'fixture and model manifests pin different caches'
     record['fixture_before_trials']=verify_fixture(seed,expected)
     record['copies']=[];write_record(record_path,record)
     def copytree(source,destination,*args,**kwargs):
@@ -82,6 +89,7 @@ def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record)
         assert clone==output/f'{rep}-{name}' and kwargs.get('symlinks') is True, 'unexpected fixture copy destination/options'
         NATIVE['verify'](native) # before original operation clock
         assert len(record['native_after_arms'])==len(record['copies']), 'previous arm has no native endpoint check'
+        assert len(record['models_after_arms'])==len(record['copies']), 'previous arm has no model endpoint check'
         source_identity=verify_fixture(seed,expected)
         result=original(source,destination,*args,**kwargs)
         clone_identity=verify_fixture(clone,expected)
@@ -91,7 +99,8 @@ def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record)
         actual_binary=digest(Path(executable))
         assert expected_binary['commit']==commit and expected_binary['sha256']==actual_binary and expected_binary['bytes']==Path(executable).stat().st_size, 'arm binary changed before launch'
         NATIVE['verify'](native) # copy/hash preparation may itself take time
-        record['copies'].append({'recorded_utc':datetime.now(timezone.utc).isoformat(),'repetition':rep,'arm':name,'commit':commit,
+        model_identity=verify_models(record) # immediately before original trial clock
+        record['copies'].append({'models':model_identity,'recorded_utc':datetime.now(timezone.utc).isoformat(),'repetition':rep,'arm':name,'commit':commit,
                                  'binary_sha256':actual_binary,'binary_bytes':expected_binary['bytes'],'source':source_identity,'clone':clone_identity,
                                  'independent_regular_files':True,'scope':'hash/copy checks complete before original trial clock'})
         write_record(record_path,record)
@@ -100,6 +109,7 @@ def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record)
         result=original_provider(log_text)
         assert len(record['copies'])==len(record['native_after_arms'])+1
         identity=NATIVE['verify'](native) # original runner already stopped its elapsed clock
+        record['models_after_arms'].append(dict(verify_models(record),arm=record['copies'][-1]['arm'],repetition=record['copies'][-1]['repetition']))
         record['native_after_arms'].append(dict(identity,arm=record['copies'][-1]['arm'],repetition=record['copies'][-1]['repetition'],recorded_utc=datetime.now(timezone.utc).isoformat()))
         write_record(record_path,record)
         return result
@@ -109,6 +119,8 @@ def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record)
         runner.main()
         assert len(record['native_after_arms'])==9, 'expected nine native endpoint checks'
         assert len(record['copies'])==9, 'expected exactly nine root fixture copies'
+        assert len(record['models_after_arms'])==9, 'expected nine model endpoint checks'
+        record['models_after_trials']=verify_models(record)
         record['fixture_after_trials']=verify_fixture(seed,expected)
         write_record(record_path,record)
     finally:
@@ -132,6 +144,7 @@ def main():
     env=controlled_environment(os.environ) # before any output/setup/trial
     p=argparse.ArgumentParser()
     p.add_argument('--attestation',type=Path,required=True)
+    p.add_argument('--model-manifest',type=Path,required=True,help='separately prepared private external-model manifest for setup and trials')
     p.add_argument('--record',type=Path,required=True,help='new private safe-config record outside timing')
     p.add_argument('--documents',type=int,required=True)
     p.add_argument('--index',choices=['memory','disk'],required=True)
@@ -142,18 +155,23 @@ def main():
     trial.add_argument('--fixture-manifest',type=Path,required=True,help='private complete expected manifest prepared separately before this run')
     trial.add_argument('--output',type=Path,required=True);trial.add_argument('--arm',action='append',required=True)
     a=p.parse_args();assert not a.record.exists(), 'preserve previous configuration evidence'
+    expected_models,model_bytes,model_prepared=MODEL['load'](a.model_manifest)
+    assert not a.record.resolve().is_relative_to(Path(expected_models['root'])), 'record must be outside model cache'
     attestation=json.loads(a.attestation.read_text())
     assert attestation['scope']=='prospective build-time inputs/outputs only; no historical binary binding'
     native=attestation['native_loader_inputs']
     env=NATIVE['environment'](env,native)
     if a.mode=='setup':
         executable=binary(a.arm,attestation)
+        assert (a.home/'models').is_symlink() and (a.home/'models').resolve(strict=True)==Path(expected_models['root']), 'setup must use the attested model cache'
+        assert not a.model_manifest.resolve().is_relative_to(a.home.resolve()), 'model manifest must be external to setup home'
         env.update(PAMIN_EVAL_HOME=str(a.home.resolve()),FLOOR_MODE=a.stage,FLOOR_DOCUMENTS=str(a.documents),FLOOR_VECTOR_INDEX=a.index)
         command=[str(executable),'--ignored','--exact','restart_floor','--nocapture']
     else:
         assert len(a.arm)==3 and {x.split(',',1)[0] for x in a.arm}=={'main','predecessor','candidate'}
         for arm in a.arm:binary(arm,attestation)
         assert not a.output.exists()
+        assert not a.model_manifest.resolve().is_relative_to(a.seed.resolve()) and not a.model_manifest.resolve().is_relative_to(a.output.resolve()), 'model manifest must be external to source/copies'
         assert not a.fixture_manifest.resolve().is_relative_to(a.seed.resolve()) and not a.fixture_manifest.resolve().is_relative_to(a.output.resolve()), 'expected manifest must be external to source/copies'
         assert not a.record.resolve().is_relative_to(a.seed.resolve()) and not a.record.resolve().is_relative_to(a.output.resolve()), 'private record must be outside fixture/copies'
         assert stat.S_IMODE(a.fixture_manifest.stat().st_mode)==0o600, 'complete fixture manifest must remain private'
@@ -165,14 +183,19 @@ def main():
     record={'recorded_utc':datetime.now(timezone.utc).isoformat(),
             'scope':'prospective setup/trial configuration only; historical inherited tuning remains unknown',
             'build_attestation_sha256':digest(a.attestation),'command':command,
+            'model_manifest_path':str(a.model_manifest.resolve()),'model_manifest_sha256':hashlib.sha256(model_bytes).hexdigest(),'model_prepared_utc':model_prepared,
             'controlled_environment':{key:env[key] for key in ['PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_INFERENCE_THREADS','PAMIN_EVAL_HOME','FLOOR_MODE','FLOOR_DOCUMENTS','FLOOR_VECTOR_INDEX','HF_HUB_OFFLINE','HF_HUB_DISABLE_TELEMETRY'] if key in env},
             'inherited_pamin_overrides':{},'native_loader_inputs':native,'loader_environment':{'LD_LIBRARY_PATH':env['LD_LIBRARY_PATH'],'removed_inherited_loader_variable_names':sorted(key for key in os.environ if key.startswith('LD_') or key=='GLIBC_TUNABLES')},'status':'prepared'}
     descriptor=os.open(a.record,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     with os.fdopen(descriptor,'w') as stream:json.dump(record,stream,indent=2);stream.write('\n')
     try:
+        record['_expected_models']=expected_models
+        record['models_before_launch']=verify_models(record);write_record(a.record,record)
         if a.mode=='setup':
+            NATIVE['verify'](native)
             result=subprocess.run(command,env=env);record['returncode']=result.returncode
             record['native_after_setup']=NATIVE['verify'](native)
+            record['models_after_setup']=verify_models(record)
             assert result.returncode==0
         else:
             record.update(fixture_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),fixture_prepared_utc=fixture_manifest['recorded_utc'])
@@ -181,6 +204,8 @@ def main():
             guarded_trials(runner,command[1:],env,a.seed,a.output,a.arm,fixture_manifest['fixture'],a.record,record)
         record.update(status='finished',finished_utc=datetime.now(timezone.utc).isoformat());write_record(a.record,record)
     except BaseException as error:
+        try:record['models_failure_endpoint']=verify_models(record)
+        except BaseException as model_error:record['models_failure_endpoint']={'failure_class':type(model_error).__name__}
         try:record['native_failure_endpoint']=NATIVE['verify'](native)
         except BaseException as native_error:record['native_failure_endpoint']={'failure_class':type(native_error).__name__}
         record.update(status='failed',failed_utc=datetime.now(timezone.utc).isoformat(),failure_class=type(error).__name__)
