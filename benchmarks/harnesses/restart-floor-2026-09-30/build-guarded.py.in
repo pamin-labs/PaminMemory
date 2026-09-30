@@ -24,12 +24,20 @@ def inputs(checkout,commit,allowed):
     for options in [[],['--ignored']]:
         extra.update(git(checkout,'ls-files','--others',*options,'--exclude-standard','-z').decode().split('\0')[:-1])
     assert extra<=set(allowed), 'unexpected untracked/ignored source or dependency'
-    for name in extra:assert digest(checkout/name)==allowed[name], 'scratch content differs from explicit manifest'
+    for name in extra:
+        assert (checkout/name).is_file() and not (checkout/name).is_symlink(), 'scratch input must be a regular file'
+        assert digest(checkout/name)==allowed[name], 'scratch content differs from explicit manifest'
     result={}
     for name in sorted(set(tracked)|extra):
         if name in tracked and tracked[name][0]=='160000':
             result[name]={'kind':'gitlink','commit':tracked[name][1]};continue
         path=checkout/name
+        if name in tracked and tracked[name][0]=='120000':
+            assert path.is_symlink(), 'tracked symlink replaced'
+            target=os.fsencode(os.readlink(path))
+            assert target==git(checkout,'cat-file','blob',tracked[name][1]), 'tracked link target differs from git blob'
+            result[name]={'kind':'symlink','bytes':len(target),'sha256':hashlib.sha256(target).hexdigest(),'target':os.fsdecode(target)}
+            continue
         assert path.is_file() and not path.is_symlink(), 'non-file/symlink source requires separate explicit audit'
         result[name]={'bytes':path.stat().st_size,'sha256':digest(path)}
     assert 'Cargo.lock' in result and 'Cargo.toml' in result
