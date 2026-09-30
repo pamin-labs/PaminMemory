@@ -1,5 +1,5 @@
 {
-  "scope": "Engine::search_reranked; 24 fixed queries; 3 rotated rounds; shared Apple workstation; warm models, uncached measured reranker pairs; CPU and CoreML exports differ; process metrics exclude device/service work",
+  "scope": "Engine::search_reranked; 24 fixed queries; 3 rotated rounds; shared Apple workstation; warm models, uncached measured reranker pairs; embedding fixed on CPU, reranker provider/export varies; process metrics exclude device/service work",
   "queries": 24,
   "rounds": 3,
   "product_code_reference": "be329b00636987781689ec6ef0c4fc48611cdf1d",

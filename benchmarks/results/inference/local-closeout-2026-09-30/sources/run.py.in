@@ -7,7 +7,7 @@ expected=hashlib.file_digest(binary.open('rb'),'sha256').hexdigest()
 native=repo/'target/release/build/zvec-rust-sys-3f0a228669f2b701/out/zvec-prebuilt/libzvec_c_api.dylib'
 configurations=[('accurate','all'),('accurate','gpu'),('accurate','cpu'),('fast','all'),('fast','gpu'),('fast','cpu')]
 # Prespecified rotations, one process at a time. Whole product boundary,
-# selected complete device plan changes both embedding and reranking.
+# only the reranker plan changes; the BGE-M3 embedder stays on CPU.
 orders=[configurations,configurations[2:]+configurations[:2],configurations[4:]+configurations[:4]]
 def headroom():
  free=int(re.search(r'System-wide memory free percentage: (\d+)%',subprocess.check_output(['memory_pressure'],text=True))[1])

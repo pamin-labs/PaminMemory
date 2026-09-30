@@ -1,6 +1,6 @@
 # Local backend validation, 2026-09-30
 
-Completed product-entry timing probe: 24 fixed XQuAD queries, three rotated rounds, 432 searches on a shared Apple workstation. Eight disjoint warmup queries; measured reranker calls asserted newly scored == offered > 0. Complete 13,014-document accuracy memory index asserted. These are alternative complete device plans, not a new optimization against main.
+Completed product-entry timing probe: 24 fixed XQuAD queries, three rotated rounds, 432 searches on a shared Apple workstation. Eight disjoint warmup queries; measured reranker calls asserted newly scored == offered > 0. Complete 13,014-document accuracy memory index asserted. These are alternative reranker plans (embedding fixed on CPU), not a new optimization against main.
 
 CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ONNX Runtime optimized kernels; its model export differs from CoreML. Accurate stays ALL, Fast stays CPU.
 
