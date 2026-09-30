@@ -107,7 +107,7 @@ impl Encoder {
         };
         let assigned = crate::inference::assigned_providers(&self.session)?;
         if assigned.get(provider).copied().unwrap_or(0) == 0 {
-            return Err(crate::error::IndexError::Engine(format!(
+            return Err(crate::error::IndexError::Incompatible(format!(
                 "{provider} registered but was assigned no model nodes"
             )));
         }
