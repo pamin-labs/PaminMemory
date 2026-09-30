@@ -1,5 +1,6 @@
 import gzip, json, math, itertools, re, statistics
 from pathlib import Path
+from policy import require_policy
 
 def compute(root, fresh=False):
     arms = {}; round_totals = {}
@@ -17,6 +18,7 @@ def compute(root, fresh=False):
                 assert m
                 resources.append((float(m[1]), float(m[2]) + float(m[3]), int(re.search(r"(\d+)\s+maximum resident set size", text)[1])))
                 attestation = ((root / (name + ".log")) if fresh else (root / "rows" / (name + ".attestation.txt"))).read_text()
+                if fresh: require_policy(attestation, device)
                 expected = "cpu" if device == "cpu" else "coreml"
                 assert f'device="{expected}"' in attestation and "24/24" in attestation
             median = [statistics.median(run[j]["seconds"] for run in runs) for j in range(24)]

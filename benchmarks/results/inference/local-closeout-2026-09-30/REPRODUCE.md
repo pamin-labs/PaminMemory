@@ -68,3 +68,9 @@ This reads runner-produced JSON, log and resource files, enforces the same row/c
 CoreML compile-cache warmth was neither recorded nor controlled in the historical runs. Whole-process wall/CPU/RSS values are observed magnitudes only; paired resource deltas are N/A/incomparable. The rerun template currently has the same limitation. Do not infer cold-start savings from these process totals.
 
 The guarded MIRACL rerun patch opens only the accuracy-profile project. Missing or incomplete accuracy data fails the premise even if a complete speed index is available. The separately retained measured patch preserves the historical source; the verifier confirms every measured row used accuracy.
+
+## Requested versus attested compute units
+
+Historical backend runs did not emit or assert compute-unit policy. Their ALL/CPUAndGPU labels identify intended configurations from retained source/environment, not independently attested actual policy. Do not treat their timing ratio as a verified ALL-versus-GPU hardware advantage. Historical provider logs and frozen binary do not close that gap.
+
+`sources/measured-experiment.patch` retains historical source. The guarded `sources/experiment.patch` now logs policy from the same units variable passed into the CoreML builder. Copy policy.py beside the rendered runner (or set PYTHONPATH to the archive directory). Runner and fresh-output summarizer require ALL for all and CPUAndGPU for gpu, rejecting both missing/stale markers and the wrong policy. The archived path retains historical uncertainty instead of inventing policy attestations.

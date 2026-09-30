@@ -1,3 +1,4 @@
+from policy import require_policy
 import os,json,subprocess,time,shutil,signal,re,hashlib
 from pathlib import Path
 root=Path('${RUN_ROOT}')
@@ -33,5 +34,6 @@ for round_index,order in enumerate(orders):
   assert devices, 'missing actual reranker device attestation'
   expected_device='cpu' if device=='cpu' else 'coreml'
   assert expected_device in devices[-1], 'actual device mismatch: '+str(devices)
+  require_policy((root/(name+'.log')).read_text(),device)
   print('DONE',name,flush=True)
 print('ALL_ARMS_COMPLETE',flush=True)
