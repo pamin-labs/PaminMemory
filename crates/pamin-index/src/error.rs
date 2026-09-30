@@ -3,6 +3,8 @@
 /// Anything that can go wrong talking to the projection index.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
+    #[error("incompatible compute plan: {0}")]
+    Incompatible(String),
     #[error("projection index: {0}")]
     Engine(String),
 
