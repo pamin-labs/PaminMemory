@@ -213,6 +213,26 @@
         "oom_after": 0,
         "oom_kill_before": 0,
         "oom_kill_after": 0
+      },
+      "launch_binding": {
+        "original_launch_sha256": "72038565da7e2273384ee28a369df2a8eaf84f8eb4402eeb92b8b84f23af1f3d",
+        "scope": "projection of retained original launch; local path prefixes replaced by placeholders",
+        "command": [
+          "${FROZEN_BINARY}",
+          "scratch_scored_graph_finite_fixture",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "effective_product_settings": {
+          "PAMIN_PROFILE": "accuracy",
+          "PAMIN_DEVICE": "cpu",
+          "GRAPH_ARM": "baseline",
+          "GRAPH_CLK_TCK": "100"
+        },
+        "GRAPH_OUT": "${RESULTS}/baseline.jsonl",
+        "GRAPH_TRACE": "${RESULTS}/baseline.trace.jsonl"
       }
     },
     {
@@ -398,6 +418,26 @@
         "oom_after": 0,
         "oom_kill_before": 0,
         "oom_kill_after": 0
+      },
+      "launch_binding": {
+        "original_launch_sha256": "33243aa7e35538e086352863f693250a535b5f0e6b66a62effe84af33c87ca65",
+        "scope": "projection of retained original launch; local path prefixes replaced by placeholders",
+        "command": [
+          "${FROZEN_BINARY}",
+          "scratch_scored_graph_finite_fixture",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "effective_product_settings": {
+          "PAMIN_PROFILE": "accuracy",
+          "PAMIN_DEVICE": "cpu",
+          "GRAPH_ARM": "scored",
+          "GRAPH_CLK_TCK": "100"
+        },
+        "GRAPH_OUT": "${RESULTS}/scored.jsonl",
+        "GRAPH_TRACE": "${RESULTS}/scored.trace.jsonl"
       }
     }
   ],
@@ -450,5 +490,25 @@
     "experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
     "graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
     "prepare.py": "238535bb4769c3f7790ab09ca5ac9a5bcf767af24082e4b2f82cfd760a5ade06"
+  },
+  "fixture_log_linkage": "not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only",
+  "mapped_library_identity_scope": "mapped paths and pinned file digests; no inode identity captured",
+  "archive_files": {
+    "README.md": "42f86af7ad693a88c3d8884b4a22804e7606c857b96734e9c6e1d71141d665f9",
+    "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
+    "baseline.log": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
+    "baseline.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
+    "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
+    "comparison.json": "b14f2c9ab62fc85abc25f87cf295e1b49e37ca3b723c1943ba498e6e964b24eb",
+    "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
+    "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
+    "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
+    "scored.usage.json": "d7cd754e6bf2829853daeed461ef4fddc7de0320e0be0d4a6b9f83a145e88c89",
+    "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
+    "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+    "source/graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
+    "source/prepare.py": "238535bb4769c3f7790ab09ca5ac9a5bcf767af24082e4b2f82cfd760a5ade06",
+    "test_verify.py": "07991bc54b5653f9d90d2e84943dc72a3985c12f2ccc885786a1383fbe91407c",
+    "verify.py": "22c7fe283b2519b1ddb7d0d52ad457f75b80f720bfafaca616bbcae3169b5ed7"
   }
 }
