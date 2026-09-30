@@ -1,8 +1,278 @@
-    Finished `release` profile [optimized] target(s) in 0.54s
-     Running tests/crosslingual.rs (target/release/deps/crosslingual-3a8c39552e997ab2)
+    Blocking waiting for file lock on package cache
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.189
+   Compiling smallvec v1.16.0
+   Compiling once_cell v1.21.4
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling pin-project-lite v0.2.17
+   Compiling zerofrom v0.1.8
+   Compiling bytes v1.12.1
+   Compiling stable_deref_trait v1.2.1
+   Compiling bitflags v2.13.1
+   Compiling futures-core v0.3.34
+   Compiling scopeguard v1.2.0
+   Compiling itoa v1.0.18
+   Compiling rand_core v0.10.1
+   Compiling log v0.4.34
+   Compiling errno v0.3.14
+   Compiling yoke v0.8.3
+   Compiling parking_lot_core v0.9.12
+   Compiling writeable v0.6.4
+   Compiling serde v1.0.229
+   Compiling lock_api v0.4.14
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling core-foundation-sys v0.8.7
+   Compiling zerovec v0.11.8
+   Compiling signal-hook-registry v1.4.8
+   Compiling futures-sink v0.3.34
+   Compiling getrandom v0.4.3
+   Compiling litemap v0.8.3
+   Compiling zerotrie v0.2.5
+   Compiling parking_lot v0.12.5
+   Compiling slab v0.4.12
+   Compiling rustix v1.1.4
+   Compiling tracing-core v0.1.36
+   Compiling equivalent v1.0.2
+   Compiling futures-channel v0.3.34
+   Compiling utf8_iter v1.0.4
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling tokio v1.53.1
+   Compiling percent-encoding v2.3.2
+   Compiling futures-task v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling tracing v0.1.44
+   Compiling http v1.5.0
+   Compiling fastrand v2.5.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling typenum v1.20.1
+   Compiling icu_normalizer_data v2.3.0
+   Compiling futures-util v0.3.34
+   Compiling icu_properties_data v2.3.0
+   Compiling core-foundation v0.10.1
+   Compiling tempfile v3.27.0
+   Compiling security-framework-sys v2.17.0
+   Compiling hashbrown v0.17.1
+   Compiling icu_provider v2.3.1
+   Compiling zmij v1.0.23
+   Compiling zeroize v1.9.0
+   Compiling form_urlencoded v1.2.2
+   Compiling httparse v1.10.1
+   Compiling http-body v1.1.0
+   Compiling security-framework v3.7.0
+   Compiling serde_json v1.0.151
+   Compiling icu_normalizer v2.3.0
+   Compiling indexmap v2.14.2
+   Compiling icu_properties v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling base64 v0.22.1
+   Compiling tokio-util v0.7.19
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling tower-service v0.3.3
+   Compiling try-lock v0.2.5
+   Compiling native-tls v0.2.18
+   Compiling crossbeam-utils v0.8.23
+   Compiling system-configuration-sys v0.6.0
+   Compiling core-foundation v0.9.4
+   Compiling ryu v1.0.23
+   Compiling thiserror v2.0.20
+   Compiling h2 v0.4.19
+   Compiling idna_adapter v1.2.2
+   Compiling want v0.3.1
+   Compiling sync_wrapper v1.0.2
+   Compiling tower-layer v0.3.3
+   Compiling ipnet v2.12.2
+   Compiling tokio-native-tls v0.3.1
+   Compiling http-body-util v0.1.5
+   Compiling allocator-api2 v0.2.21
+   Compiling system-configuration v0.7.0
+   Compiling idna v1.1.0
+   Compiling generic-array v0.14.7
+   Compiling num-traits v0.2.19
+   Compiling tower v0.5.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling hybrid-array v0.4.14
+   Compiling either v1.18.0
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.56
+   Compiling url v2.5.8
+   Compiling foldhash v0.2.0
+   Compiling cmov v0.5.4
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling simd-adler32 v0.3.10
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling hyper v1.11.1
+   Compiling tower-http v0.6.11
+   Compiling hashbrown v0.16.1
+   Compiling byteorder v1.5.0
+   Compiling ctutils v0.4.2
+   Compiling adler2 v2.0.1
+   Compiling digest v0.10.7
+   Compiling crc32fast v1.5.1
+   Compiling sha2-asm v0.6.4
+   Compiling chacha20 v0.10.2
+   Compiling deranged v0.5.8
+   Compiling digest v0.11.3
+   Compiling miniz_oxide v0.9.1
+   Compiling hyper-util v0.1.20
+   Compiling cpufeatures v0.2.17
+   Compiling num-conv v0.2.2
+   Compiling powerfmt v0.2.0
+   Compiling time-core v0.1.9
+   Compiling crossbeam-epoch v0.9.21
+   Compiling rand v0.10.2
+   Compiling uuid v1.26.0
+   Compiling sha2 v0.10.9
+   Compiling flate2 v1.1.10
+   Compiling getrandom v0.2.17
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling time v0.3.55
+   Compiling hyper-tls v0.6.0
+   Compiling untrusted v0.9.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling crossbeam-deque v0.8.8
+   Compiling anyhow v1.0.104
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_core v0.9.5
+   Compiling base64ct v1.8.3
+   Compiling reqwest v0.13.4
+   Compiling ring v0.17.14
+   Compiling tinyvec v1.13.2
+   Compiling crc-catalog v2.5.0
+   Compiling regex-automata v0.4.18
+   Compiling parking v2.2.1
+   Compiling rand_chacha v0.9.0
+   Compiling rayon-core v1.13.0
+   Compiling ahash v0.8.12
+   Compiling pem-rfc7468 v1.0.0
+   Compiling unicode-normalization v0.1.25
+   Compiling crc v3.4.0
+   Compiling event-listener v5.4.2
+   Compiling reqwest-middleware v0.5.2
+   Compiling hmac v0.13.0
+   Compiling rustls-webpki v0.103.15
+   Compiling hashlink v0.11.1
+   Compiling crossbeam-queue v0.3.14
+   Compiling futures-executor v0.3.34
+   Compiling tokio-stream v0.1.19
+   Compiling futures-intrusive v0.5.0
+   Compiling cpufeatures v0.3.1
+   Compiling option-ext v0.2.0
+   Compiling minimal-lexical v0.2.1
+   Compiling subtle v2.6.1
+   Compiling simdutf8 v0.1.5
+   Compiling unicode-width v0.2.2
+   Compiling unicode-properties v0.1.4
+   Compiling base64 v0.23.1
+   Compiling hex v0.4.3
+   Compiling unicode-bidi v0.3.18
+   Compiling rawpointer v0.2.1
+   Compiling zvec-rust-sys v0.7.2
+   Compiling sqlx-core v0.9.0
+   Compiling encoding_rs v0.8.40
+   Compiling nom v7.1.3
+   Compiling rustls v0.23.44
+   Compiling sha2 v0.11.0
+   Compiling console v0.16.4
+   Compiling ureq-proto v0.6.2
+   Compiling stringprep v0.1.5
+   Compiling matrixmultiply v0.3.11
+   Compiling dirs-sys v0.5.0
+   Compiling futures v0.3.34
+   Compiling hkdf v0.13.0
+   Compiling der v0.8.2
+   Compiling rayon v1.12.0
+   Compiling onig_sys v69.9.3
+   Compiling rand v0.9.5
+   Compiling portable-atomic v1.15.0
+   Compiling retry-policies v0.5.2
+   Compiling md-5 v0.11.0
+   Compiling socks v0.3.4
+   Compiling atoi v2.0.0
+   Compiling num-complex v0.4.6
+   Compiling num-integer v0.1.47
+   Compiling itertools v0.14.0
+   Compiling castaway v0.2.4
+   Compiling webpki-root-certs v1.0.9
+   Compiling webpki-roots v1.0.9
+   Compiling xattr v1.6.1
+   Compiling filetime v0.2.29
+   Compiling base64 v0.13.1
+   Compiling whoami v2.1.3
+   Compiling mime v0.3.17
+   Compiling utf8-zero v0.8.1
+   Compiling dotenvy v0.15.7
+   Compiling unit-prefix v0.5.2
+   Compiling static_assertions v1.1.0
+   Compiling matchit v0.8.6
+   Compiling unicode-segmentation v1.13.3
+   Compiling tar v0.4.46
+   Compiling macro_rules_attribute v0.2.3
+   Compiling rayon-cond v0.4.0
+   Compiling reqwest v0.12.28
+   Compiling ureq v3.4.1
+   Compiling sqlx-postgres v0.9.0
+   Compiling indicatif v0.18.6
+   Compiling reqwest-tracing v0.7.1
+   Compiling compact_str v0.9.1
+   Compiling ndarray v0.17.2
+   Compiling monostate v0.1.18
+   Compiling reqwest-retry v0.9.1
+   Compiling spm_precompiled v0.1.4
+   Compiling target-triple v1.0.1
+   Compiling onig v6.5.3
+   Compiling ort-sys v2.0.0-rc.13
+   Compiling dirs v6.0.0
+   Compiling derive_builder v0.20.2
+   Compiling libm v0.2.16
+   Compiling icu_locale_fallback_data v2.3.0
+   Compiling esaxx-rs v0.1.10
+   Compiling regex v1.13.1
+   Compiling dary_heap v0.3.9
+   Compiling unicode-normalization-alignments v0.1.12
+   Compiling semver v1.0.28
+   Compiling daachorse v3.0.3
+   Compiling unicode_categories v0.1.1
+   Compiling regex-lite v0.1.9
+   Compiling icu_locale_fallback v2.3.0
+   Compiling core_maths v0.1.1
+   Compiling zvec-rust v0.7.2
+   Compiling hf-hub v0.5.0
+   Compiling sqlx v0.9.0
+   Compiling icu_segmenter_data v2.3.0
+   Compiling tokenizers v0.23.2
+   Compiling postgresql_archive v0.21.0
+   Compiling hashbrown v0.14.5
+   Compiling pamin-core v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-core)
+   Compiling safetensors v0.8.0
+   Compiling postgresql_commands v0.21.0
+   Compiling lazy_static v1.5.0
+   Compiling matchers v0.2.0
+   Compiling whatlang v0.16.4
+   Compiling icu_segmenter v2.3.0
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling sharded-slab v0.1.7
+   Compiling postgresql_embedded v0.21.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling pamin-store v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-store)
+   Compiling ort v2.0.0-rc.13
+   Compiling fastembed v6.1.0
+   Compiling pamin-index v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-index)
+   Compiling pamin-engine v0.0.1 (/Users/jason/.codex/worktrees/retrieval-profile/PaminMemory/crates/pamin-engine)
+    Finished `release` profile [optimized] target(s) in 1m 31s
+     Running tests/crosslingual.rs (target/release/deps/crosslingual-9fa45a71fdc2ad6d)
 
 running 1 test
-  benchmark code commit: 0ecfb43852071011aa32e5314a5fbe809485b45f
+  benchmark code commit: f97635099e08aa8696aa3b0237424d486a255ecd
   reranker device: cpu; export: onnx/model_int8.onnx
   pinned reranker identity: 05ae63cb281733af0571073cbcebd2f50e0bc8472e077bb97afde27b5044d93e
   index embedding identity: 705ffaf38623fb5c71a2ced99d8674e45fb19e8ad05f263bfa09474e4d9b153f
@@ -10,15 +280,16 @@ running 1 test
   index passage: named
   indexed documents: 13014
   vector index completeness: 1.0000
- INFO pamin_index::inference: loaded ONNX graph model_graph="${EVAL_HOME}/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx"
- INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="${EVAL_HOME}/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx" assigned_nodes={"CPUExecutionProvider":1023}
+ INFO pamin_index::inference: loaded ONNX graph model_graph="/private/tmp/pamin-perf58/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx"
+ INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph="/private/tmp/pamin-perf58/models/prepared/f66c4d1e2630b0410daa08c955cbd96f/model.onnx" assigned_nodes={"CPUExecutionProvider":1023}
 
   each channel on its own, cross_lingual, accuracy
   channel               queries   nDCG@10   recall@50
   ---------------------------------------------------------------
-  LexicalSegmented          1189    0.0267      0.0558
+  LexicalSegmented          1190    0.0266      0.0558
   LexicalNgram              1190    0.0120      0.0234
   Vector                    1190    0.6677      0.9033
+  Graph                     1190    0.0000      0.0000
   all four fused            1190    0.6372      0.9032
 
   with one channel taken away, cross_lingual:
@@ -30,9 +301,10 @@ running 1 test
   each channel on its own, same_language, accuracy
   channel               queries   nDCG@10   recall@50
   ---------------------------------------------------------------
-  LexicalSegmented          1189    0.7409      0.9024
+  LexicalSegmented          1190    0.7403      0.9017
   LexicalNgram              1190    0.7343      0.9017
   Vector                    1190    0.8138      0.9580
+  Graph                     1190    0.0000      0.0000
   all four fused            1190    0.8438      0.9647
 
   with one channel taken away, same_language:
@@ -81,6 +353,7 @@ running 1 test
   graph 0.30                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
   graph 0.50                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
   graph 1.00                      0.6372      0.9032   +0.0000    0.0000     1.0000   +0.0000  0W/0L/1190T  p=1.0000  (not significant)
+test search_reaches_across_languages has been running for over 60 seconds
 
   every setting against the one that ships, same_language, accuracy
   setting                        nDCG@10   recall@50     diff   can see   family p   own comparison
@@ -183,4 +456,4 @@ running 1 test
 
 test search_reaches_across_languages ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 54.71s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 61.16s
