@@ -1960,7 +1960,7 @@ impl Engine {
             // whatever it could not supply.
             let lent = match &previous {
                 Some(previous) => previous.lend(&wanted, REINDEX_BATCH, |documents| {
-                    index.upsert_batch(documents)
+                    index.upsert_vectors(documents)
                 })?,
                 None => std::collections::HashSet::new(),
             };

@@ -35,7 +35,9 @@ use pamin_core::{Scored, TopicId};
 
 use crate::embedding::Profile;
 use crate::error::{IndexError, Result};
-use crate::projection::{Passage, Projection, ProjectionIndex, Segmentation, Stored, VectorIndex};
+use crate::projection::{
+    Passage, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument, VectorIndex,
+};
 use crate::segmentation::Segmenter;
 
 /// A served projection: one handle, behind the lock its owner serializes every
@@ -328,7 +330,7 @@ impl Reshape {
     ///
     /// Returns how many it wrote.
     fn apply(&self, topics: &[TopicId], stored: &[Option<Stored>]) -> Result<u64> {
-        let mut present: Vec<(TopicId, &str, &[f32])> = Vec::with_capacity(topics.len());
+        let mut present: Vec<VectorDocument<'_>> = Vec::with_capacity(topics.len());
         let mut absent: Vec<TopicId> = Vec::new();
         for (topic, document) in topics.iter().zip(stored) {
             match document {
@@ -336,13 +338,14 @@ impl Reshape {
                     *topic,
                     document.content.as_str(),
                     document.embedding.as_slice(),
+                    document.secondary.as_deref(),
                 )),
                 None => absent.push(*topic),
             }
         }
 
         let next = self.next();
-        next.upsert_batch(&present)?;
+        next.upsert_vectors(&present)?;
         if !absent.is_empty() {
             next.delete(&absent)?;
         }
@@ -437,14 +440,9 @@ impl Projection for Recording {
         self.inner.segmenter()
     }
 
-    fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()> {
-        self.touch([topic]);
-        self.inner.upsert(topic, content, embedding)
-    }
-
-    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()> {
-        self.touch(documents.iter().map(|(topic, _, _)| *topic));
-        self.inner.upsert_batch(documents)
+    fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+        self.touch(documents.iter().map(|(topic, ..)| *topic));
+        self.inner.upsert_vectors(documents)
     }
 
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>> {
@@ -461,6 +459,10 @@ impl Projection for Recording {
 
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
         self.inner.recall_vector(embedding, limit)
+    }
+
+    fn recall_secondary(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+        self.inner.recall_secondary(embedding, limit)
     }
 
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
@@ -543,11 +545,7 @@ impl Projection for Closed {
         Arc::clone(&self.segmenter)
     }
 
-    fn upsert(&self, _: TopicId, _: &str, _: &[f32]) -> Result<()> {
-        self.refuse()
-    }
-
-    fn upsert_batch(&self, _: &[(TopicId, &str, &[f32])]) -> Result<()> {
+    fn upsert_vectors(&self, _: &[VectorDocument<'_>]) -> Result<()> {
         self.refuse()
     }
 
@@ -564,6 +562,10 @@ impl Projection for Closed {
     }
 
     fn recall_vector(&self, _: &[f32], _: u32) -> Result<Vec<Scored>> {
+        self.refuse()
+    }
+
+    fn recall_secondary(&self, _: &[f32], _: u32) -> Result<Vec<Scored>> {
         self.refuse()
     }
 
@@ -781,6 +783,7 @@ mod tests {
                     Some(Stored {
                         content: content(n),
                         embedding: crate::as_stored(&vector(n)),
+                        secondary: None,
                     }),
                 )
             })
@@ -788,6 +791,7 @@ mod tests {
         expected[4].1 = Some(Stored {
             content: "memory number 5 was edited".to_string(),
             embedding: crate::as_stored(&vector(1005)),
+            secondary: None,
         });
         expected[6].1 = None;
         let topics: Vec<TopicId> = expected.iter().map(|(topic, _)| *topic).collect();
