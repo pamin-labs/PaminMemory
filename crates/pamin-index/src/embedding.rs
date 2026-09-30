@@ -126,7 +126,7 @@ impl Profile {
             // sharing one index.
             Self::Accuracy => "gpahal/bge-m3-onnx-int8",
             Self::DualAccuracy => {
-                "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v1"
+                "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
             }
         }
     }
@@ -617,7 +617,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         let model = Encoder::load(
             || {
                 repository.get("onnx/model_quantized.onnx_data")?;
-                repository.get("onnx/model_quantized.onnx")
+                crate::pplx::prepare(&repository.get("onnx/model_quantized.onnx")?)
             },
             &repository,
             JOINT_MAX_TOKENS,
