@@ -533,8 +533,8 @@
       "bytes": 2584
     },
     "summarize.py": {
-      "sha256": "f00d240fb2b57df67bdb667bc04f988155c3e4310a564beb19ad51078baa592e",
-      "bytes": 2947
+      "sha256": "2d775d5fdc985da6c4349ce02b7fa4480717eef4f4326071548f9fb7b0e9474f",
+      "bytes": 3377
     },
     "verify.py": {
       "sha256": "91addfbeedd48018d4ac487da45cbe218ec455f837f7bc17152a17eb843e162c",
@@ -601,5 +601,12 @@
     },
     "scope": "same ANN pools asserted during execution; shared embeddings and reranker scores to isolate vector math; no comparative inference timing claim"
   },
-  "scope_correction": "Earlier both-embedding-and-reranking description was incorrect; embedding::joint() and retained provider attestations confirm CPU embedding for every arm."
+  "scope_correction": "Earlier both-embedding-and-reranking description was incorrect; embedding::joint() and retained provider attestations confirm CPU embedding for every arm.",
+  "statistics": {
+    "assignment_unit": "whole process",
+    "blocks": 3,
+    "design": "three deterministic rotations, not randomized",
+    "test": "all 8 paired process-round log-time sign flips, four contrasts",
+    "interpretation": "descriptive/diagnostic; old query-level p=0.0002 withdrawn"
+  }
 }
