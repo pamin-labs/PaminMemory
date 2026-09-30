@@ -26,6 +26,20 @@ use ort::session::{Session, builder::SessionBuilder};
 
 use crate::error::{IndexError, Result};
 
+/// Legacy providers or an explicitly discovered plugin device. Model code
+/// owns exports; this module owns physical device selection and fallback.
+#[derive(Clone)]
+pub(crate) enum Target {
+    Providers(Vec<ExecutionProviderDispatch>),
+    Npu { provider: String, id: u32 },
+}
+
+impl From<Vec<ExecutionProviderDispatch>> for Target {
+    fn from(providers: Vec<ExecutionProviderDispatch>) -> Self {
+        Self::Providers(providers)
+    }
+}
+
 /// An ONNX Runtime session over `model`, built the way `fastembed` 6.1 builds
 /// one.
 ///
@@ -44,12 +58,25 @@ use crate::error::{IndexError, Result};
 /// CUDA would not register -- which it does in about a millisecond -- and
 /// then kept the file, never loading it, beside the int8 export it runs.
 pub(crate) fn session(
-    providers: Vec<ExecutionProviderDispatch>,
+    target: impl Into<Target>,
     model: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<Session> {
-    let mut builder = options(providers)?;
+    let target = target.into();
+    let expected = match &target {
+        Target::Npu { provider, .. } => Some(provider.clone()),
+        _ => None,
+    };
+    let mut builder = options(target)?;
     let model = model()?;
     let session = commit(&mut builder, &model)?;
+    if let Some(provider) = expected {
+        let assigned = assigned_providers(&session)?;
+        if assigned.get(&provider).copied().unwrap_or(0) == 0 {
+            return Err(IndexError::Engine(format!(
+                "NPU {provider} was assigned no model nodes"
+            )));
+        }
+    }
     report_model(&session, &model);
     Ok(session)
 }
@@ -83,7 +110,9 @@ fn report_model(session: &Session, model: &Path) {
 
 /// Counts assigned nodes after basic optimizations, not executed kernel time.
 /// CoreML dispatch does not reveal its internal CPU/GPU/ANE placement.
-fn assigned_providers(session: &Session) -> Result<std::collections::BTreeMap<String, usize>> {
+pub(crate) fn assigned_providers(
+    session: &Session,
+) -> Result<std::collections::BTreeMap<String, usize>> {
     use ort::AsPointer;
     let checked = |status| {
         // SAFETY: each status comes directly from ORT; this consumes it once
@@ -156,7 +185,16 @@ fn assigned_providers(session: &Session) -> Result<std::collections::BTreeMap<St
 /// callers getting 1.17 times the throughput. Rankings, query and passage
 /// embeddings and `accurate` scores were bit-identical. The rule, written
 /// before the run, is in `docs/adr/0001-tech-selection.md`.
-fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> {
+pub(crate) fn options(target: impl Into<Target>) -> Result<SessionBuilder> {
+    let target = target.into();
+    let providers = match &target {
+        Target::Providers(providers) => providers.clone(),
+        Target::Npu { .. } => gpu_providers()
+            .into_iter()
+            .map(|(_, ep)| ep.fail_silently())
+            .chain([cpu()])
+            .collect(),
+    };
     let unready =
         |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
     let threads = match threads() {
@@ -191,6 +229,28 @@ fn options(providers: Vec<ExecutionProviderDispatch>) -> Result<SessionBuilder> 
             .map_err(|error| unready(&error))?
     } else {
         builder
+    };
+    let builder = match target {
+        Target::Providers(_) => builder,
+        Target::Npu { provider, id } => {
+            let environment = ort::environment::Environment::current().map_err(|e| unready(&e))?;
+            let devices: Vec<_> = environment
+                .devices()
+                .filter(|device| {
+                    device.hardware_device().ty() == ort::memory::DeviceType::NPU
+                        && device.hardware_device().id() == id
+                        && device.ep().is_ok_and(|name| name == provider)
+                })
+                .collect();
+            if devices.is_empty() {
+                return Err(IndexError::Engine(format!(
+                    "NPU {provider}/{id} unavailable"
+                )));
+            }
+            builder
+                .with_devices(devices, None)
+                .map_err(|e| unready(&e))?
+        }
     };
     builder
         .with_execution_providers(providers)
@@ -369,6 +429,7 @@ pub enum Device {
     Cuda,
     CoreMl,
     DirectMl,
+    Npu,
 }
 
 impl Device {
@@ -378,6 +439,7 @@ impl Device {
             Self::Cuda => "cuda",
             Self::CoreMl => "coreml",
             Self::DirectMl => "directml",
+            Self::Npu => "npu",
         }
     }
 }
@@ -409,10 +471,10 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
 /// One provider policy for every model. The loader owns model/export choice;
 /// this owns accelerator order, reporting and the final CPU attempt.
 pub(crate) fn preferred<T>(
-    mut load: impl FnMut(Device, Vec<ExecutionProviderDispatch>) -> Result<T>,
+    mut load: impl FnMut(Device, Target) -> Result<T>,
 ) -> Result<(T, Device)> {
     for (device, provider) in accelerators() {
-        match load(device, vec![provider]) {
+        match load(device, provider) {
             Ok(model) => return Ok((model, device)),
             Err(error) => tracing::warn!(
                 device = device.name(),
@@ -421,7 +483,7 @@ pub(crate) fn preferred<T>(
             ),
         }
     }
-    load(Device::Cpu, vec![cpu()]).map(|model| (model, Device::Cpu))
+    load(Device::Cpu, vec![cpu()].into()).map(|model| (model, Device::Cpu))
 }
 
 /// Use the same modern format for every CoreML model. The legacy NeuralNetwork
@@ -450,28 +512,86 @@ fn coreml() -> ort::ep::CoreML {
 /// the GPU's fp16 export onto the CPU -- slower than the int8 one it was
 /// chosen over -- and report nothing; failing here lets the caller load the
 /// CPU's own export instead and record that it did.
-pub(crate) fn accelerators() -> Vec<(Device, ExecutionProviderDispatch)> {
+pub(crate) fn accelerators() -> Vec<(Device, Target)> {
     if pamin_core::env::is("PAMIN_DEVICE", "cpu") {
         return Vec::new();
     }
+    let mut result = Vec::new();
+    if let Ok(environment) = ort::environment::Environment::current() {
+        register_plugins(&environment);
+        for device in environment.devices() {
+            let hardware = device.hardware_device();
+            if hardware.ty() == ort::memory::DeviceType::NPU
+                && let Ok(provider) = device.ep()
+                && provider != "CoreMLExecutionProvider"
+            {
+                let target = Target::Npu {
+                    provider: provider.into(),
+                    id: hardware.id(),
+                };
+                result.push((Device::Npu, target));
+            }
+        }
+    }
+    result.extend(
+        gpu_providers()
+            .into_iter()
+            .map(|(device, ep)| (device, vec![ep.error_on_failure()].into())),
+    );
+    result
+}
+
+/// Retain registered libraries for the environment/session lifetime. Paths
+/// are explicit because vendor plugin installation differs by platform.
+fn register_plugins(environment: &std::sync::Arc<ort::environment::Environment>) {
+    static LIBRARIES: std::sync::OnceLock<Vec<ort::ep::ExecutionProviderLibrary>> =
+        std::sync::OnceLock::new();
+    LIBRARIES.get_or_init(|| {
+        std::env::var_os("PAMIN_EP_LIBRARIES").into_iter()
+            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .enumerate().filter_map(|(index, path)| {
+                if !path.is_absolute() {
+                    tracing::warn!(path = %path.display(), "execution-provider library must be absolute");
+                    return None;
+                }
+                match environment.register_ep_library(format!("pamin-plugin-{index}"), &path) {
+                    Ok(library) => Some(library),
+                    Err(error) => { tracing::warn!(path = %path.display(), %error, "execution-provider library unavailable"); None }
+                }
+            }).collect()
+    });
+}
+
+fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
     vec![
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        (
-            Device::Cuda,
-            ort::ep::CUDA::default().build().error_on_failure(),
-        ),
+        (Device::Cuda, ort::ep::CUDA::default().build()),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        (Device::CoreMl, coreml().build().error_on_failure()),
+        (Device::CoreMl, coreml().build()),
         #[cfg(target_os = "windows")]
-        (
-            Device::DirectMl,
-            ort::ep::DirectML::default().build().error_on_failure(),
-        ),
+        (Device::DirectMl, ort::ep::DirectML::default().build()),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn absent_plugin_npu_fails_before_model_fetch() {
+        let fetched = std::cell::Cell::new(false);
+        let result = session(
+            Target::Npu {
+                provider: "absent-test-provider".into(),
+                id: u32::MAX,
+            },
+            || {
+                fetched.set(true);
+                Ok("unused.onnx".into())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!fetched.get());
+    }
 
     #[test]
     fn failed_cache_retry_preserves_the_published_cache() {
@@ -715,12 +835,12 @@ mod tests {
     #[test]
     fn a_device_that_will_not_register_is_never_asked_for_its_model() {
         for (device, provider) in accelerators() {
-            let registers = options(vec![provider.clone()]).is_ok();
+            let registers = options(provider.clone()).is_ok();
             if registers {
                 continue;
             }
             let asked = std::cell::Cell::new(false);
-            let loaded = session(vec![provider], || {
+            let loaded = session(provider, || {
                 asked.set(true);
                 Err(IndexError::Engine("no model here".into()))
             });
