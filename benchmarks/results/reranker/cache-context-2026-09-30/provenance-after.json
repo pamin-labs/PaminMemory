@@ -1,0 +1,53 @@
+{
+  "assets": {
+    "${CARGO_HOME}/lib/pamin/libzvec_c_api.so": {
+      "sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+      "bytes": 38067280
+    },
+    "${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0": {
+      "sha256": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+      "bytes": 24268848
+    },
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json": {
+      "sha256": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+      "bytes": 848
+    },
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json": {
+      "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "bytes": 964
+    },
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json": {
+      "sha256": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+      "bytes": 17082900
+    },
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json": {
+      "sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "bytes": 1203
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": {
+      "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+      "bytes": 347238
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": {
+      "sha256": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+      "bytes": 484362
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": {
+      "sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "bytes": 874217472
+    },
+    "${MODEL_CACHE}/prepared/onnx-community--bge-reranker-v2-m3-ONNX--onnx--model_int8.onnx.source": {
+      "sha256": "4d43f6a0ab9060262c835a88fa6f6810ca124f5ab1d1eece767beeead17b15a7",
+      "bytes": 118
+    }
+  },
+  "executed_assets_unchanged": true,
+  "source_export_still_absent": true,
+  "headroom": {
+    "disk_free": 12850274304,
+    "mem_available": "MemAvailable:   17326748 kB",
+    "utc": 1790806138.990947
+  },
+  "source_binary_unchanged": true,
+  "pg_opened": false
+}
