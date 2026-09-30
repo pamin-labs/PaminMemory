@@ -756,6 +756,7 @@ impl Reranker {
                     )
                 })?;
             }
+            encoder.require_accelerator(device)?;
             if device == Device::Cpu {
                 crate::prepared::release(&weights, cache_dir);
             }
@@ -768,7 +769,7 @@ impl Reranker {
         let (model, device) =
             if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
                 (
-                    session(Device::Cpu, vec![crate::inference::cpu()])?,
+                    session(Device::Cpu, vec![crate::inference::cpu()].into())?,
                     Device::Cpu,
                 )
             } else {
