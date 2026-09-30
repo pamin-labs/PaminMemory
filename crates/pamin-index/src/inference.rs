@@ -573,7 +573,9 @@ fn calibrated<T>(
             }
         };
         let after = evaluate(&mut reference, Device::Cpu)?;
-        let denominator = (before.as_secs_f64() + after.as_secs_f64()) / 2.0;
+        // Require the candidate to beat both CPU controls, so a slower
+        // control under transient shared-host load cannot decide the winner.
+        let denominator = before.min(after).as_secs_f64();
         if denominator <= 0.0 {
             return Err(IndexError::Engine(
                 "compute calibration produced no duration".into(),
