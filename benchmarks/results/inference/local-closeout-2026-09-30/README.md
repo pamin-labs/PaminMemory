@@ -11,14 +11,16 @@ CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ON
 | gpu: p50 search ms | 619.722 | 3067.060 | +2447.338 | +394.91% |
 | gpu: p95 search ms | 880.858 | 3722.879 | +2842.020 | +322.64% |
 | gpu: 24-search wall total s | 16.908 | 75.434 | +58.526 | +346.13% |
-| gpu: process CPU s | 13.650 | 23.650 | +10.000 | +73.26% |
+| gpu: whole-process wall s (load + warmup + searches) | 32.440 | 120.230 | +87.790 | +270.62% |
+| gpu: process CPU s (same process scope) | 13.650 | 23.650 | +10.000 | +73.26% |
 | gpu: peak process RSS MiB | 2498.469 | 4771.656 | +2273.188 | +90.98% |
 | gpu: sample same_language nDCG@10 | 0.9097186 | 0.9097186 | +0.0000000 | +0.00% |
 | gpu: sample cross_lingual nDCG@10 | 0.8613851 | 0.8613851 | +0.0000000 | +0.00% |
 | cpu: p50 search ms | 619.722 | 2917.843 | +2298.121 | +370.83% |
 | cpu: p95 search ms | 880.858 | 4262.603 | +3381.745 | +383.91% |
 | cpu: 24-search wall total s | 16.908 | 73.956 | +57.048 | +337.39% |
-| cpu: process CPU s | 13.650 | 328.070 | +314.420 | +2303.44% |
+| cpu: whole-process wall s (load + warmup + searches) | 32.440 | 99.390 | +66.950 | +206.38% |
+| cpu: process CPU s (same process scope) | 13.650 | 328.070 | +314.420 | +2303.44% |
 | cpu: peak process RSS MiB | 2498.469 | 1503.391 | -995.078 | -39.83% |
 | cpu: sample same_language nDCG@10 | 0.9097186 | 0.9001513 | -0.0095673 | -1.05% |
 | cpu: sample cross_lingual nDCG@10 | 0.8613851 | 0.8624608 | +0.0010757 | +0.12% |
@@ -30,14 +32,16 @@ CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ON
 | all: p50 search ms | 448.874 | 4533.056 | +4084.182 | +909.87% |
 | all: p95 search ms | 657.363 | 6790.455 | +6133.092 | +932.98% |
 | all: 24-search wall total s | 12.577 | 135.486 | +122.909 | +977.25% |
-| all: process CPU s | 46.430 | 144.470 | +98.040 | +211.16% |
+| all: whole-process wall s (load + warmup + searches) | 17.970 | 171.570 | +153.600 | +854.76% |
+| all: process CPU s (same process scope) | 46.430 | 144.470 | +98.040 | +211.16% |
 | all: peak process RSS MiB | 1159.422 | 2728.922 | +1569.500 | +135.37% |
 | all: sample same_language nDCG@10 | 0.8812674 | 0.8812674 | +0.0000000 | +0.00% |
 | all: sample cross_lingual nDCG@10 | 0.7580525 | 0.7620027 | +0.0039502 | +0.52% |
 | gpu: p50 search ms | 448.874 | 4409.418 | +3960.545 | +882.33% |
 | gpu: p95 search ms | 657.363 | 6326.876 | +5669.513 | +862.46% |
 | gpu: 24-search wall total s | 12.577 | 137.022 | +124.445 | +989.47% |
-| gpu: process CPU s | 46.430 | 144.910 | +98.480 | +212.10% |
+| gpu: whole-process wall s (load + warmup + searches) | 17.970 | 175.050 | +157.080 | +874.12% |
+| gpu: process CPU s (same process scope) | 46.430 | 144.910 | +98.480 | +212.10% |
 | gpu: peak process RSS MiB | 1159.422 | 2833.750 | +1674.328 | +144.41% |
 | gpu: sample same_language nDCG@10 | 0.8812674 | 0.8812674 | +0.0000000 | +0.00% |
 | gpu: sample cross_lingual nDCG@10 | 0.7580525 | 0.7620027 | +0.0039502 | +0.52% |
@@ -66,4 +70,4 @@ Steady ORT profiling (eight warmups removed per node/bucket) places 0.17-0.27% o
 
 [ORT I/O binding](https://onnxruntime.ai/docs/performance/tune-performance/iobinding.html), [pinned CoreML wrapper](https://github.com/microsoft/onnxruntime/blob/v1.28.0/onnxruntime/core/providers/coreml/model/model.mm), [Apple compute plans](https://developer.apple.com/documentation/coreml/mlcomputeplan-85vdw).
 
-summary.json retains the aggregate values. python3 tables.py regenerates this text to stdout without modifying the evidence. Raw logs and traces are not included in this public archive.
+summary.json retains the aggregate values. python3 tables.py regenerates this text to stdout without modifying the evidence. Sanitized per-query rows, process resource files, provider attestations, exact experimental patch and run template are retained. python3 verify.py recomputes all backend aggregates and paired tests without modifying evidence. See manifest.json and REPRODUCE.md for identities, order, provenance limits and commands. Device traces are excluded.
