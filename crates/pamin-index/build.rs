@@ -42,6 +42,12 @@ fn main() {
 
 fn unavailable(out: &std::path::Path, reason: &str) {
     println!("cargo:warning={reason}");
+    // A missing dependency is always changed in Cargo's fingerprint. Retry
+    // optional extraction on the next build without requiring cargo clean.
+    println!(
+        "cargo:rerun-if-changed={}",
+        out.join("winml-catalog-unavailable.retry").display()
+    );
     // Never embed partial/unverified bytes after a failed extraction.
     std::fs::write(out.join("winml-catalog.dll"), []).expect("write optional catalog placeholder");
     std::fs::write(out.join("winml-license.txt"), []).expect("write optional license placeholder");
@@ -127,6 +133,56 @@ try {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_catalog_is_retried_by_the_next_cargo_build() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name="catalog-retry-fixture"
+version="0.0.0"
+edition="2024"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project.join("src/lib.rs"), "").unwrap();
+        let mut script = include_str!("build.rs").replace("fn main()", "fn catalog_main()");
+        script.push_str(
+            r#"
+fn main() {
+    let out=std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    unavailable(&out,"fixture optional catalog unavailable");
+    let mut counter=std::fs::OpenOptions::new().create(true).append(true)
+        .open(std::env::var_os("WINML_TEST_BUILD_COUNT").unwrap()).unwrap();
+    std::io::Write::write_all(&mut counter,b"run\n").unwrap();
+}
+"#,
+        );
+        std::fs::write(project.join("build.rs"), script).unwrap();
+        let counter = root.path().join("runs");
+        for _ in 0..2 {
+            let output = Command::new("cargo")
+                .args(["build", "--offline", "--quiet"])
+                .current_dir(&project)
+                .env("CARGO_TARGET_DIR", root.path().join("target"))
+                .env("WINML_TEST_BUILD_COUNT", &counter)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(counter).unwrap().lines().count(),
+            2,
+            "Cargo reused an unavailable catalog without retrying the extractor"
+        );
+    }
 
     #[test]
     fn unavailable_catalog_discards_partial_bytes() {
