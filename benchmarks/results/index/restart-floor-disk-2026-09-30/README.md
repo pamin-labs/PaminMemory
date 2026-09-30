@@ -11,6 +11,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Known-topic recall@10 (synthetic) | 0.875000 | 0.875000 | +0.000000 | +0.000% |
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000000 | 0.000000 | -1.000000 | -100.000% |
+| Full-process elapsed median, includes diagnostics | 88.680526 s | 80.926449 s | -7.754077 s | -8.744% |
 | Engine open wall median | 514.131634 ms | 477.707146 ms | -36.424488 ms | -7.085% |
 | Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | -33.848672 ms | -2.381% |
 | Durability flush wall median | 71.154003 ms | 64.986683 ms | -6.167320 ms | -8.668% |
@@ -36,6 +37,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Known-topic recall@10 (synthetic) | 0.875000 | 0.875000 | +0.000000 | +0.000% |
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000000 | 0.000000 | -1.000000 | -100.000% |
+| Full-process elapsed median, includes diagnostics | 89.830001 s | 80.926449 s | -8.903552 s | -9.912% |
 | Engine open wall median | 510.071716 ms | 477.707146 ms | -32.364570 ms | -6.345% |
 | Write + urgent drain wall median | 1475.758326 ms | 1388.009180 ms | -87.749146 ms | -5.946% |
 | Durability flush wall median | 65.174956 ms | 64.986683 ms | -0.188273 ms | -0.289% |
@@ -52,6 +54,8 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Closed index allocated bytes | 153.703125 MiB | 154.781250 MiB | +1.078125 MiB | +0.701% |
 | Vector graph completeness, flat buffer still searched | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
+[Full-process elapsed](episode-elapsed.json) wraps spawn, open, write, flush, upkeep,28 search calls, shutdown, log output and in-process diagnostics. It excludes snapshot copying and parent log parsing/provider checks. This is a measured restart episode, not pure-search latency or proof of a stable general speedup.
+
 ## Evidence and limits
 
 - All 72 warm ordered top-ten lists match the candidate per reference; known-topic recall/MRR are reported from actual ranks, including misses. All 9 processes retrieve the new restart-proof memory. Near-duplicate synthetic identifier queries do not establish general multilingual accuracy.
@@ -61,7 +65,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 - Native Linux DiskANN uses synchronous pread because io_uring is unavailable and libaio cannot load. No async-I/O performance claim is supported. One workload ran at a time; the host remains shared. Kernel file-cache reclaim pressure occurred. Cgroup memory.events includes intervening fusion diagnostics plus this matrix, so its post-run values are not an isolated DiskANN delta; OOM and oom_kill observations are retained without attributing max events to this experiment. Warm model/OS caches do not guarantee unpressured residency. [Post-run resource snapshot](post-trial-resources.json) retains exact counters and available disk. Hardware/runtime/model identities, exact commits and actual CPU provider assignments are retained in provenance and logs.
 - Product order is Engine::open → remember → WhatAMemoryNeeds → flush_what_is_applied → one maintain → search_reranked(Accurate). Only Optimize may remain at the maintenance boundary; predecessor/main complete 1 and candidate 0. Maintenance counters stop before diagnostic SQL/disk reads. First search includes model load; two distinct warmups precede 24 distinct queries with uncached reranker-score assertions.
 - Process CPU includes all Engine threads but excludes PostgreSQL, child/services and devices. RSS is Engine VmRSS/VmHWM, including mapped pages. CPU tick resolution is 10 ms; zero observed candidate ticks are not zero cost. Total service CPU/RSS and accelerator cost are N/A. Index apparent/allocated bytes exclude shared model cache, PostgreSQL, runner copies and build/setup artifacts.
-- Every source ONNX/tokenizer/config and prepared graph/external weight file was hashed before and after timing. Frozen binaries are unchanged. Private credential records are excluded; public paths are placeholders and raw values/list ordering remain unchanged.
+- Every source ONNX/tokenizer/config and prepared graph/external weight file was hashed before and after timing. Frozen binary identities were checked after timing; dated hashes are retained in binaries.json. Private credential records are excluded; public paths are placeholders and raw values/list ordering remain unchanged.
 - p95 is linear interpolation at (n−1)×0.95 within 24 samples, then the median of three process p95s. All other table values are process medians. Three repetitions do not establish patch causality for small search/RSS movements; all tradeoffs remain visible.
 
 Run `python3 benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py` to check hashes, all 9 processes, 72 paired lists per reference, actual providers, job counts, new-write visibility, native schema/profile and recomputed summary. Raw rows are in [raw.jsonl](raw.jsonl); full process/setup logs are gzip files in [logs](logs/); [DiskANN reproduction instructions](../../../harnesses/restart-floor-2026-09-30/disk-README.md) describe setup and the exact runner; the conversion source is retained as [an inert helper](../../../harnesses/restart-floor-2026-09-30/disk_schema.rs.in).
