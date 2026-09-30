@@ -26,7 +26,7 @@ One rule ran through all of it:
 | Vector index | Half-precision vectors under a DiskANN graph (`disk`) or an HNSW graph (`memory`, the default), candidates ranked again by an exact f32 cosine |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | ONNX Runtime through `ort` and `tokenizers`, BGE-M3 with int8 weights by default; the E5 profiles through `fastembed` |
+| Embeddings | ONNX Runtime through the shared session and `tokenizers`; BGE-M3 uses int8 weights by default, while the E5 profiles use FastEmbed's model registry and pooling with full-precision weights |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -3070,9 +3070,12 @@ machine was never quiet -- and the ambient column, at 1.033 and not
 significant, is the nearest thing to it. One pool shared by both models, through
 `ort`'s global thread pool, was the other candidate: it passes the same rule
 but gives up most of the gain under contention, so it does not ship. The
-`speed` and `balanced` profiles' embedders load through `fastembed`, whose
-options do not reach this setting, and still spin; both rerankers and the
-default profile's embedder do not.
+At the time of this sweep, `speed` and `balanced` profiles' embedders loaded
+through `fastembed`, whose options did not reach this setting and still spun;
+both rerankers and the default profile's embedder did not. The E5 profiles now
+load through the shared session owner, so its thread and provider-assignment
+settings apply to their scoring graphs too. No post-change concurrency or
+product-search latency claim follows from the historical sweep.
 
 **This says nothing about a machine with cores to spare.** On sixteen or
 thirty-two, one forward pass would not saturate the box, callers would not be
@@ -3224,3 +3227,18 @@ They did not retain per-query score matrices or full artifact provenance;
 that limitation is not repaired retrospectively. New `CHANNELS_OUT` runs save
 the paired vectors and configurations through the shared diagnostic owner,
 with stdout retained beside them. No new weight is selected from old means.
+
+### 2026-09-30: observe E5 scoring sessions
+
+The `speed` and `balanced` embedders previously created private FastEmbed
+sessions, outside the shared ONNX Runtime provider-assignment report. They now
+use the shared session owner while retaining FastEmbed's model registry and
+masked-mean pooling. Real cached-model checks report 623 and 637 CPU-assigned
+nodes, respectively. For each profile, four passages (including a long input)
+and one query produce exactly the same f32 vectors as FastEmbed when compared
+at the same batch shape. A Chinese passage already differed between batch and
+single inference in both implementations by at most 5.22e-8 (`speed`) or
+7.83e-8 (`balanced`); the session change did not introduce that difference.
+These are model-path and vector-identity checks, not a full retrieval-quality,
+latency, memory, or disk comparison. No provider is selected by an unmeasured
+performance claim.
