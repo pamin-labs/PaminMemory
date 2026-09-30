@@ -15,11 +15,16 @@ harness with logical-token intervals for new runs. Existing timing observations
 retain that limitation; a newly validated rerun is separate evidence.
 
 The [later real-model probe](warmup-shape-probe.rs) uses the original three
-warmup texts and all eight distinct queries per text. It asserts the retained
-tokenizer's SHA256, actual CoreML device, one newly scored pair per call,
-logical intervals 1–64 / 65–128 / 129–256, and physical padded totals
-256 / 512 / 512. [All 24 observed counts](warmup-shape-probe.txt) passed on
-the same Apple M4. To repeat it, copy the source to
+warmup texts and all eight distinct queries per text. It rejects an alternate
+Hugging Face cache or endpoint, checks that the loader's `refs/main` selects
+the pinned revision before and after loading, and hashes that revision's
+tokenizer. It also asserts the loaded 256-token limit, actual CoreML device,
+nonzero CoreML graph assignment in each of the three static scoring sessions,
+one newly scored pair per call, logical intervals 1–64 / 65–128 / 129–256,
+and physical padded totals 256 / 512 / 512. The [new real-model run](warmup-shape-probe.txt)
+found 765 CoreML and 5 CPU assigned nodes in each session; all 24 warmup
+counts passed on the same Apple M4. Node assignment does not reveal CoreML's
+internal CPU/GPU/ANE placement. To repeat it, copy the source to
 `crates/pamin-index/tests/scratch_bucket_warmups.rs`, set `PAMIN_EVAL_HOME`
 to the cached pinned model home and `PAMIN_DEVICE=auto`, then run
 `cargo test -p pamin-index --test scratch_bucket_warmups -- --ignored --nocapture`.
