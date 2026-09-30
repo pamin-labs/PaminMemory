@@ -1,0 +1,246 @@
+{
+  "captured_at_utc": "2026-09-30T23:02:04.562271+00:00",
+  "scope": "Retrospective read-only inspection of preserved original binaries and frozen SQL sources; no historical rebuild or runtime execution. This is not a build-time source attestation.",
+  "original_build_sql_attestation": "N/A: SQL omitted from the original 52-entry pre/post-build inventory",
+  "source_base": "13ee710c9df865f1dac98dc77a8108e438ddc539",
+  "migration_sources": {
+    "crates/pamin-store/migrations/V10__settled_jobs_leave.sql": {
+      "published_file": "source/migrations/V10__settled_jobs_leave.sql",
+      "sha256": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+      "bytes": 2292,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V11__retrieval_signals_leave.sql": {
+      "published_file": "source/migrations/V11__retrieval_signals_leave.sql",
+      "sha256": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+      "bytes": 1576,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V12__job_subject_once.sql": {
+      "published_file": "source/migrations/V12__job_subject_once.sql",
+      "sha256": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+      "bytes": 1878,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V13__edge_endpoints_on_versions.sql": {
+      "published_file": "source/migrations/V13__edge_endpoints_on_versions.sql",
+      "sha256": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+      "bytes": 1990,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V14__source_versions_index_once.sql": {
+      "published_file": "source/migrations/V14__source_versions_index_once.sql",
+      "sha256": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+      "bytes": 980,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V1__initial.sql": {
+      "published_file": "source/migrations/V1__initial.sql",
+      "sha256": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+      "bytes": 5806,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V2__relationships.sql": {
+      "published_file": "source/migrations/V2__relationships.sql",
+      "sha256": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+      "bytes": 4617,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V3__shard_key_and_indexes.sql": {
+      "published_file": "source/migrations/V3__shard_key_and_indexes.sql",
+      "sha256": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+      "bytes": 2787,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V4__current_state_pointer.sql": {
+      "published_file": "source/migrations/V4__current_state_pointer.sql",
+      "sha256": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+      "bytes": 2075,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V5__cascade_outbox.sql": {
+      "published_file": "source/migrations/V5__cascade_outbox.sql",
+      "sha256": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+      "bytes": 2505,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V6__topic_name_index.sql": {
+      "published_file": "source/migrations/V6__topic_name_index.sql",
+      "sha256": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+      "bytes": 1607,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V7__one_document_per_topic.sql": {
+      "published_file": "source/migrations/V7__one_document_per_topic.sql",
+      "sha256": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+      "bytes": 714,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V8__topics_by_recency.sql": {
+      "published_file": "source/migrations/V8__topics_by_recency.sql",
+      "sha256": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+      "bytes": 488,
+      "matches_recorded_git_base": true
+    },
+    "crates/pamin-store/migrations/V9__state_content_from_span.sql": {
+      "published_file": "source/migrations/V9__state_content_from_span.sql",
+      "sha256": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+      "bytes": 2691,
+      "matches_recorded_git_base": true
+    }
+  },
+  "arms": {
+    "baseline": {
+      "binary_sha256": "485cbd023d9e5c8b1b4cdd3f94419199fe634a1a66a9d67d44dd90b7a1facdd1",
+      "binary_bytes": 15330992,
+      "migration_payloads": {
+        "crates/pamin-store/migrations/V10__settled_jobs_leave.sql": {
+          "sha256": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+          "bytes": 2292,
+          "first_binary_offset": 3615912
+        },
+        "crates/pamin-store/migrations/V11__retrieval_signals_leave.sql": {
+          "sha256": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+          "bytes": 1576,
+          "first_binary_offset": 3618227
+        },
+        "crates/pamin-store/migrations/V12__job_subject_once.sql": {
+          "sha256": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+          "bytes": 1878,
+          "first_binary_offset": 3619803
+        },
+        "crates/pamin-store/migrations/V13__edge_endpoints_on_versions.sql": {
+          "sha256": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+          "bytes": 1990,
+          "first_binary_offset": 3621707
+        },
+        "crates/pamin-store/migrations/V14__source_versions_index_once.sql": {
+          "sha256": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+          "bytes": 980,
+          "first_binary_offset": 3623723
+        },
+        "crates/pamin-store/migrations/V1__initial.sql": {
+          "sha256": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+          "bytes": 5806,
+          "first_binary_offset": 3592473
+        },
+        "crates/pamin-store/migrations/V2__relationships.sql": {
+          "sha256": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+          "bytes": 4617,
+          "first_binary_offset": 3598292
+        },
+        "crates/pamin-store/migrations/V3__shard_key_and_indexes.sql": {
+          "sha256": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+          "bytes": 2787,
+          "first_binary_offset": 3602930
+        },
+        "crates/pamin-store/migrations/V4__current_state_pointer.sql": {
+          "sha256": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+          "bytes": 2075,
+          "first_binary_offset": 3605738
+        },
+        "crates/pamin-store/migrations/V5__cascade_outbox.sql": {
+          "sha256": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+          "bytes": 2505,
+          "first_binary_offset": 3607827
+        },
+        "crates/pamin-store/migrations/V6__topic_name_index.sql": {
+          "sha256": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+          "bytes": 1607,
+          "first_binary_offset": 3610332
+        },
+        "crates/pamin-store/migrations/V7__one_document_per_topic.sql": {
+          "sha256": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+          "bytes": 714,
+          "first_binary_offset": 3611961
+        },
+        "crates/pamin-store/migrations/V8__topics_by_recency.sql": {
+          "sha256": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+          "bytes": 488,
+          "first_binary_offset": 3612692
+        },
+        "crates/pamin-store/migrations/V9__state_content_from_span.sql": {
+          "sha256": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+          "bytes": 2691,
+          "first_binary_offset": 3613203
+        }
+      }
+    },
+    "scored": {
+      "binary_sha256": "ac308a0b9438eb897d1601d185583026d2f07b1a268b47b7b1082e56daf72bd0",
+      "binary_bytes": 15331248,
+      "migration_payloads": {
+        "crates/pamin-store/migrations/V10__settled_jobs_leave.sql": {
+          "sha256": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+          "bytes": 2292,
+          "first_binary_offset": 3615912
+        },
+        "crates/pamin-store/migrations/V11__retrieval_signals_leave.sql": {
+          "sha256": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+          "bytes": 1576,
+          "first_binary_offset": 3618227
+        },
+        "crates/pamin-store/migrations/V12__job_subject_once.sql": {
+          "sha256": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+          "bytes": 1878,
+          "first_binary_offset": 3619803
+        },
+        "crates/pamin-store/migrations/V13__edge_endpoints_on_versions.sql": {
+          "sha256": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+          "bytes": 1990,
+          "first_binary_offset": 3621707
+        },
+        "crates/pamin-store/migrations/V14__source_versions_index_once.sql": {
+          "sha256": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+          "bytes": 980,
+          "first_binary_offset": 3623723
+        },
+        "crates/pamin-store/migrations/V1__initial.sql": {
+          "sha256": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+          "bytes": 5806,
+          "first_binary_offset": 3592473
+        },
+        "crates/pamin-store/migrations/V2__relationships.sql": {
+          "sha256": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+          "bytes": 4617,
+          "first_binary_offset": 3598292
+        },
+        "crates/pamin-store/migrations/V3__shard_key_and_indexes.sql": {
+          "sha256": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+          "bytes": 2787,
+          "first_binary_offset": 3602930
+        },
+        "crates/pamin-store/migrations/V4__current_state_pointer.sql": {
+          "sha256": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+          "bytes": 2075,
+          "first_binary_offset": 3605738
+        },
+        "crates/pamin-store/migrations/V5__cascade_outbox.sql": {
+          "sha256": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+          "bytes": 2505,
+          "first_binary_offset": 3607827
+        },
+        "crates/pamin-store/migrations/V6__topic_name_index.sql": {
+          "sha256": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+          "bytes": 1607,
+          "first_binary_offset": 3610332
+        },
+        "crates/pamin-store/migrations/V7__one_document_per_topic.sql": {
+          "sha256": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+          "bytes": 714,
+          "first_binary_offset": 3611961
+        },
+        "crates/pamin-store/migrations/V8__topics_by_recency.sql": {
+          "sha256": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+          "bytes": 488,
+          "first_binary_offset": 3612692
+        },
+        "crates/pamin-store/migrations/V9__state_content_from_span.sql": {
+          "sha256": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+          "bytes": 2691,
+          "first_binary_offset": 3613203
+        }
+      }
+    }
+  }
+}

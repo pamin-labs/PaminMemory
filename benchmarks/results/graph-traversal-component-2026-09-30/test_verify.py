@@ -2,6 +2,7 @@
 """Mutate temporary archive copies, refresh digests, and require semantic rejection."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ def refresh(root):
     p = json.loads(manifest.read_text())
     for name in p['archive_files']:
         p['archive_files'][name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+    for name in p['source_files']:
+        p['source_files'][name] = hashlib.sha256((root / 'source' / name).read_bytes()).hexdigest()
     for name, record in p['redactions'].items():
         record['published_sha256'] = hashlib.sha256((root / name).read_bytes()).hexdigest()
     manifest.write_text(json.dumps(p, indent=2) + '\n')
@@ -46,11 +49,39 @@ def run_case(label, mutate=None, flags=(), refresh_hashes=True):
         print(f'PASS: rejected {label}')
 
 
+def reject_optimized_prepare(label, flags=(), optimize_env=None):
+    with tempfile.TemporaryDirectory(prefix='graph-prepare-negative-') as temp:
+        output = Path(temp)/'never-created'
+        env = os.environ.copy()
+        env.pop('PYTHONOPTIMIZE', None)
+        if optimize_env is not None:
+            env['PYTHONOPTIMIZE'] = optimize_env
+        result = subprocess.run([sys.executable, *flags, str(ROOT/'source/prepare.py'), '--source', str(Path(temp)/'absent-input'), '--out', str(output)], env=env, capture_output=True, text=True)
+        if result.returncode == 0 or output.exists() or 'Python optimization disables assertions' not in result.stderr:
+            raise SystemExit(f'FAIL: prepare {label} did not reject before input/output access')
+        print(f'PASS: rejected prepare {label} before writes')
+
+
 if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
     run_case('Python -O', flags=('-O',))
+    run_case('Python -OO', flags=('-OO',))
+    reject_optimized_prepare('-O', flags=('-O',))
+    reject_optimized_prepare('-OO', flags=('-OO',))
+    reject_optimized_prepare('PYTHONOPTIMIZE=1', optimize_env='1')
+    reject_optimized_prepare('PYTHONOPTIMIZE=2', optimize_env='2')
+    run_case('raw query mutation with refreshed hashes', lambda r: mutate_json(r/'baseline.jsonl', lambda row: row.update(query='different query')))
+    run_case('binary SHA mutation with refreshed hashes', lambda r: mutate_json(r/'provenance.json', lambda p: p['arms'][0].update(binary_sha256='0'*64)))
+    run_case('retrospective binary SHA mutation with refreshed hashes', lambda r: mutate_json(r/'retrospective-sql-audit.json', lambda a: a['arms']['baseline'].update(binary_sha256='0'*64)))
+    run_case('retrospective SQL digest mutation with refreshed hashes', lambda r: mutate_json(r/'retrospective-sql-audit.json', lambda a: next(iter(a['migration_sources'].values())).update(sha256='0'*64)))
+    run_case('retrospective SQL payload offset mutation with refreshed hashes', lambda r: mutate_json(r/'retrospective-sql-audit.json', lambda a: next(iter(a['arms']['baseline']['migration_payloads'].values())).update(first_binary_offset=-1)))
+    run_case('current CPU model mutation with refreshed hashes', lambda r: mutate_json(r/'platform-observation.json', lambda a: a['current'].update(cpu_model='different CPU')))
+    run_case('historical SQL inventory overclaim with refreshed hashes', lambda r: mutate_json(r/'provenance.json', lambda p: p['source_inventory_scope'].update(original_status='complete')))
+    run_case('current hardware substituted as historical with refreshed hashes', lambda r: mutate_json(r/'platform-observation.json', lambda a: a['historical'].update(cpu_quota=a['current']['cpu_quota'])))
+    run_case('published migration bytes mutation with refreshed hashes', lambda r: (r/'source/migrations/V1__initial.sql').write_text('SELECT 1;\n'))
+    run_case('measured fixture query mutation with refreshed hashes', lambda r: (r/'source/fixture.rs.in').write_text((r/'source/fixture.rs.in').read_text().replace('let query = \"quartzanchor orbital navigation calibration beacon\";', 'let query = \"different query\";')))
     run_case('raw provider mutation with refreshed hashes', lambda r: mutate_json(r/'baseline.trace.jsonl', lambda rows: rows[2]['fields'].update(assigned_nodes={'CUDAExecutionProvider':1023}), True))
     run_case('raw runtime mutation with refreshed hashes', lambda r: mutate_json(r/'baseline.trace.jsonl', lambda rows: rows[0]['fields'].update(runtime_info='ORT Build Info: changed'), True))
     run_case('raw mapped-path mutation with refreshed hashes', lambda r: mutate_json(r/'baseline.trace.jsonl', lambda rows: rows[0].update(runtime_maps=['${ORT_LIB}/other.so']), True))

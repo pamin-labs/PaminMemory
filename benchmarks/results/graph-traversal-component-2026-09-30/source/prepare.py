@@ -3,6 +3,9 @@
 Input is a scratch checkout of the recorded base with experimental-traversal.patch
 applied. No tracked input file is changed, and nothing is built or run here.
 """
+import sys
+if sys.flags.optimize:
+ raise SystemExit("FAIL: Python optimization disables assertions; run without -O/-OO/PYTHONOPTIMIZE")
 import argparse, hashlib, json, shutil
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--source',required=True,type=Path);p.add_argument('--out',required=True,type=Path);a=p.parse_args()
