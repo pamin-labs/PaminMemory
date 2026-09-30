@@ -750,10 +750,9 @@ fn rewriting_the_same_memories_leaves_a_bounded_number_of_files() {
 
 /// What `optimize` left is what the file trigger measures growth from.
 ///
-/// Zero until it has run, so a freshly opened index is held to the budget
-/// alone, and then the count the directory held when it finished. Unrecorded,
-/// the trigger is the budget alone again -- which asked an index that stays
-/// above the budget for another `optimize` after every drain that did work.
+/// Zero until it has run, then the count the directory held when it finished.
+/// The floor survives reopening so an index whose optimized state remains
+/// above the budget does not repeat maintenance after a small write.
 #[test]
 fn optimize_records_how_many_files_it_left() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -774,9 +773,14 @@ fn optimize_records_how_many_files_it_left() {
             .expect("upsert");
         index.flush().expect("flush");
     }
+    // Model an index with files optimize cannot merge (such as sealed segment
+    // metadata), so the saved floor exceeds the global 256-file budget.
+    for n in 0..257 {
+        std::fs::write(dir.path().join(format!("sealed-{n}")), []).expect("sealed file");
+    }
     index.optimize().expect("optimize");
     let left = index.file_count().expect("count files");
-    assert!(left > 0, "an optimized index is still some files");
+    assert!(left > 256, "the optimized index remains above the budget");
     assert_eq!(index.files_after_optimize(), left);
 
     index
@@ -788,6 +792,52 @@ fn optimize_records_how_many_files_it_left() {
         left,
         "a flush grows the directory, not the floor"
     );
+
+    drop(index);
+    let reopened = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        VectorIndex::default(),
+        Access::ReadWrite,
+        0,
+    )
+    .expect("reopen index");
+    assert_eq!(
+        reopened.files_after_optimize(),
+        left,
+        "reopening must retain the last successful optimize floor"
+    );
+    let current = reopened.file_count().expect("count after reopen");
+    assert!(
+        !pamin_index::is_fragmented(current, reopened.files_after_optimize()),
+        "a small write must not repeat optimize merely because the floor exceeds 256"
+    );
+    assert!(
+        pamin_index::is_fragmented(left + 65, reopened.files_after_optimize()),
+        "growth beyond a quarter of the budget still schedules maintenance"
+    );
+
+    drop(reopened);
+    std::fs::write(
+        dir.path().join("memories/.pamin-optimized-files"),
+        "v1 invalid\n",
+    )
+    .expect("corrupt marker");
+    let invalid = ProjectionIndex::open(
+        dir.path(),
+        &dir.path().join("legacy"),
+        PROFILE,
+        VectorIndex::default(),
+        Access::ReadWrite,
+        0,
+    )
+    .expect("reopen with invalid marker");
+    assert_eq!(invalid.files_after_optimize(), 0);
+    assert!(pamin_index::is_fragmented(
+        invalid.file_count().expect("count with invalid marker"),
+        invalid.files_after_optimize()
+    ));
 }
 
 /// Splitting text does not wait for whoever is using the index.
