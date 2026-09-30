@@ -254,6 +254,11 @@ impl Embedder {
             },
         )?;
 
+        if device == crate::inference::Device::Cpu
+            && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
+        {
+            crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
+        }
         let secondary = if profile == Profile::DualAccuracy {
             let (model, device) = complementary(cache_dir)?;
             Some((Box::new(model), device))
@@ -488,9 +493,6 @@ fn load_on(
         };
         let weights = repository.file(cache_dir, JOINT_FILE);
         let encoder = joint_session(&repository, &weights, cache_dir, device, target)?;
-        if device == crate::inference::Device::Cpu && crate::inference::accelerators().is_empty() {
-            crate::prepared::release(&weights, cache_dir);
-        }
         return Ok(encoder);
     }
     let model = profile.model();
