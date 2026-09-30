@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Root-authorized actual Engine diagnostic, fresh clones, sequential model use."""
 import sys
+sys.dont_write_bytecode=True
 if sys.flags.optimize:
     raise SystemExit("Guarded harness requires Python assertions; remove -O/PYTHONOPTIMIZE")
-import hashlib,json,os,re,shutil,subprocess
+import hashlib,importlib.machinery,importlib.util,json,os,re,shutil,subprocess
 from pathlib import Path
 
 CONTROLLED={'PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_EVAL_HOME'}
@@ -20,6 +21,19 @@ ROOT=Path('/workspace/scratch/fusion-pool-prototype-tools')
 REFERENCE=Path('/workspace/scratch/restart-floor/results-memory-v2/0-main')
 OUTPUT=ROOT/'paired'
 MODELS=Path('/workspace/.pamin-model-cache')
+# Copy this inert companion beside the prospective runner.
+loader=importlib.machinery.SourceFileLoader('fusion_premises',str(Path(__file__).resolve().with_name('premises.py.in')))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+premises=importlib.util.module_from_spec(spec);loader.exec_module(premises)
+EXPECTED_REFERENCE=ROOT/'reference-manifest.json'
+# Explicit expected identity must be retained at fixture preparation, outside
+# the runner. Do not derive an expected manifest from arbitrary inputs here.
+expected_reference_bytes=EXPECTED_REFERENCE.read_bytes()
+expected_reference=json.loads(expected_reference_bytes)
+reference_identity=premises.verify_snapshot(REFERENCE,MODELS,expected_reference['snapshot'])
+reference_identity.update(expected_manifest_sha256=hashlib.sha256(expected_reference_bytes).hexdigest(),
+                          expected_recorded_utc=expected_reference['recorded_utc'],
+                          scope='prospective explicit fixture identity; historical fixture manifest was not retained')
 def digest(path):
  h=hashlib.sha256()
  with path.open('rb') as f:
@@ -46,10 +60,13 @@ def source_defaults(variant):
 source_settings={name:source_defaults(variant) for name,variant in sources['variants'].items()}
 assert source_settings['baseline']==source_settings['pooled']
 models=[('embedding',MODELS/'models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx','16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb'),('reranker',MODELS/'models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx','912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d')]
-provenance={'scope':'synthetic paired product-path diagnostic; no general accuracy or timing claim','reference':str(REFERENCE),'source_revision':sources['revision'],'model_sources':[],'runtime_libraries':[],'arms':binaries,'effective_tuning_overrides':effective_tuning,'source_defaults':source_settings,'controlled_environment':{'PAMIN_DEVICE':'cpu','PAMIN_PROFILE':'accuracy'},'build_binding':'prospective source/binary attestation required'}
+tokenizer_expected={'embedding': {'config.json': '68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a', 'special_tokens_map.json': '8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835', 'tokenizer.json': '249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4', 'tokenizer_config.json': 'b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80'}, 'reranker': {'config.json': '122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd', 'special_tokens_map.json': '8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835', 'tokenizer.json': '8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3', 'tokenizer_config.json': 'b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80'}}
+tokenizer_records=premises.tokenizer_assets(models,tokenizer_expected)
+provenance={'scope':'synthetic paired product-path diagnostic; no general accuracy or timing claim','reference':str(REFERENCE),'source_revision':sources['revision'],'model_sources':[],'runtime_libraries':[],'arms':binaries,'effective_tuning_overrides':effective_tuning,'source_defaults':source_settings,'controlled_environment':{'PAMIN_DEVICE':'cpu','PAMIN_PROFILE':'accuracy'},'build_binding':'prospective source/binary attestation required','hardware':premises.hardware(),'reference_fixture':reference_identity}
 for role,path,expected in models:
  actual=digest(path);assert actual==expected,(role,actual)
  provenance['model_sources'].append({'role':role,'path':str(path),'sha256':actual})
+provenance['model_sources'].extend(tokenizer_records)
 for library in [Path('/workspace/.cargo/lib/pamin/libzvec_c_api.so'),Path('/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0')]:
  provenance['runtime_libraries'].append({'path':str(library),'sha256':digest(library)})
 OUTPUT.mkdir()
@@ -70,13 +87,17 @@ for arm in binaries:
  home=OUTPUT/(arm['arm']+'-home');shutil.copytree(REFERENCE,home,symlinks=True)
  assert not (home/'postgres/data/postmaster.pid').exists()
  assert (home/'models').resolve()==MODELS
+ premises.verify_snapshot(home,MODELS,expected_reference['snapshot'])
+premises.verify_snapshot(REFERENCE,MODELS,expected_reference['snapshot'])
 (OUTPUT/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 env=dict(os.environ,LD_LIBRARY_PATH='/workspace/.cargo/lib/pamin:/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',PAMIN_DEVICE='cpu',IDENTIFIER_DOCUMENTS='18001',HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1',PAMIN_PROFILE='accuracy')
 for name in ['PAMIN_RERANK_DEPTH','PAMIN_FUSION','PAMIN_PROFILE']:
  if name!='PAMIN_PROFILE':assert name not in env,(name,'unexpected override')
 all_rows={};providers={}
+provenance['tokenizer_assets_after_arms']={}
 for arm in binaries:
  name=arm['arm']; home=OUTPUT/(name+'-home');env['PAMIN_EVAL_HOME']=str(home)
+ assert premises.tokenizer_assets(models,tokenizer_expected)==tokenizer_records
  print('MODEL_ARM_START',name,flush=True)
  try:
   with (OUTPUT/(name+'.log')).open('w') as out:
@@ -103,6 +124,9 @@ for arm in binaries:
  all_rows[name]=rows;providers[name]=assignments
  with (OUTPUT/(name+'.jsonl')).open('w') as out:
   for row in rows:out.write(json.dumps(row)+'\n')
+ provenance['tokenizer_assets_after_arms'][name]=premises.tokenizer_assets(models,tokenizer_expected)
+ assert provenance['tokenizer_assets_after_arms'][name]==tokenizer_records
+ (OUTPUT/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
  print('MODEL_ARM_COMPLETE',name,'rows',len(rows),flush=True)
 assert providers['baseline']==providers['pooled'],'runtime graph/provider mismatch'
 paired=[]
