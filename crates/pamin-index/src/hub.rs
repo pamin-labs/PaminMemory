@@ -113,7 +113,8 @@ impl crate::prepared::Download for File<'_> {
     ///
     /// Declines -- `Ok(false)`, nothing touched -- for a file this model
     /// directory does not own: under `HF_HOME`, which is a cache other tools
-    /// read too; in a model directory that is itself a link, which is how
+    /// read too; a blob still referenced by another snapshot; in a model
+    /// directory that is itself a link, which is how
     /// several workspaces share one cache; or a blob that resolves outside the
     /// model directory because its repository was linked in from another cache.
     fn remove(&self) -> Result<bool> {
@@ -129,6 +130,19 @@ impl crate::prepared::Download for File<'_> {
         if !blob.starts_with(std::fs::canonicalize(self.cache_dir)?) {
             return Ok(false);
         }
+        // Pinned and moving revisions can share a content-addressed blob.
+        // Removing it would strand the other snapshot's symlink, and the hub
+        // client cannot repair a dangling entry by creating it again.
+        let snapshots = blob
+            .parent()
+            .and_then(Path::parent)
+            .expect("a hub blob has a repository parent")
+            .join("snapshots");
+        let own = std::fs::canonicalize(entry.parent().expect("snapshot entry parent"))?
+            .join(entry.file_name().expect("snapshot file name"));
+        if referenced_elsewhere(&snapshots, &own, &blob)? {
+            return Ok(false);
+        }
         std::fs::remove_file(&entry)?;
         match std::fs::remove_file(&blob) {
             // Where the platform could not link, the entry was the file.
@@ -137,6 +151,21 @@ impl crate::prepared::Download for File<'_> {
         }
         Ok(true)
     }
+}
+
+fn referenced_elsewhere(directory: &Path, own: &Path, blob: &Path) -> std::io::Result<bool> {
+    for item in std::fs::read_dir(directory)? {
+        let item = item?;
+        let path = item.path();
+        if item.file_type()?.is_dir() {
+            if referenced_elsewhere(&path, own, blob)? {
+                return Ok(true);
+            }
+        } else if path != own && std::fs::canonicalize(&path).is_ok_and(|target| target == blob) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Where the hub's files are cached: `HF_HOME` when it is set, as
@@ -201,6 +230,43 @@ mod tests {
             "the entry is left"
         );
         assert!(!blob.exists(), "the blob is left");
+    }
+
+    #[test]
+    fn pinned_revision_does_not_follow_main_or_reuse_its_prepared_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let (entry, _) = downloaded(dir.path());
+        let root = dir.path().join("models--someone--model");
+        std::fs::write(root.join("refs/fixed"), "c0ffee").unwrap();
+        std::fs::write(root.join("refs/main"), "decaf").unwrap();
+        let moving = root.join("snapshots/decaf").join(FILE);
+        std::fs::create_dir_all(moving.parent().unwrap()).unwrap();
+        std::fs::write(&moving, b"different weights").unwrap();
+        let pinned = Repository::open_at(dir.path(), NAME, "fixed").unwrap();
+        let main = Repository::open(dir.path(), NAME).unwrap();
+        assert_eq!(pinned.file(dir.path(), FILE).on_disk(), Some(entry));
+        assert_eq!(main.file(dir.path(), FILE).on_disk(), Some(moving));
+        assert_ne!(
+            pinned.file(dir.path(), FILE).label(),
+            main.file(dir.path(), FILE).label()
+        );
+    }
+
+    #[test]
+    fn removing_a_download_preserves_other_revision_references() {
+        let dir = tempfile::tempdir().unwrap();
+        let (entry, blob) = downloaded(dir.path());
+        let other = dir
+            .path()
+            .join("models--someone--model/snapshots/decaf")
+            .join(FILE);
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("../../../blobs/0123abcd", &other).unwrap();
+        let repository = Repository::open(dir.path(), NAME).unwrap();
+        assert!(!repository.file(dir.path(), FILE).remove().unwrap());
+        assert_eq!(std::fs::read(&other).unwrap(), b"weights");
+        assert!(entry.exists());
+        assert!(blob.exists());
     }
 
     /// A repository linked in from another cache is that cache's, and is
