@@ -1,0 +1,20 @@
+[
+  {
+    "arm": "main",
+    "commit": "315c10242ddf7a1cec3bccbf550a942320e09557",
+    "binary": "${SCRATCH}/bin/main",
+    "sha256": "450e0fa6fba7c028e402389d6466a4a043c01e7251a6e65e35e707c23860a1dc"
+  },
+  {
+    "arm": "predecessor",
+    "commit": "f57f9c218d03d88666b3cc89fae9ae7e9eed2e50",
+    "binary": "${SCRATCH}/bin/predecessor",
+    "sha256": "1b7c6b406c4278551290f58248bbf22278b6c1d49698b8748e8ae608126d7275"
+  },
+  {
+    "arm": "candidate",
+    "commit": "11493c1388f74b087db23136a94e4b8feed1efe3",
+    "binary": "${SCRATCH}/bin/candidate",
+    "sha256": "14ab5805223a2fc7d79aa7197ab08c37ea5cab11b9a4581e68630277eeb31c79"
+  }
+]

@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Run after setup and outside timed workloads. No workspace credentials read."""
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+
+root = pathlib.Path('/workspace/scratch/restart-floor')
+models = pathlib.Path('/workspace/.pamin-model-cache')
+ort = pathlib.Path('/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0')
+
+def hashed(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
+    return {'path': str(path), 'bytes': path.stat().st_size, 'sha256': digest.hexdigest()}
+
+model_sources = [models / 'models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx',
+                 models / 'models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx']
+assets = []
+for source in model_sources:
+    assert source.is_file(), source
+    assets.append(hashed(source))
+    tokenizer = (source.parent.parent if source.parent.name == 'onnx' else source.parent) / 'tokenizer.json'
+    assert tokenizer.is_file(), tokenizer
+    assets.append(hashed(tokenizer))
+for path in models.glob('prepared/*/*.onnx'):
+    assets.append(hashed(path))
+records = {
+    'recorded_utc': subprocess.check_output(['date', '-u', '+%Y-%m-%dT%H:%M:%SZ'], text=True).strip(),
+    'kernel': subprocess.check_output(['uname', '-srmo'], text=True).strip(),
+    'cpu_model': next(x.split(':', 1)[1].strip() for x in pathlib.Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),
+    'cgroup_cpu_max': pathlib.Path('/sys/fs/cgroup/cpu.max').read_text().strip(),
+    'cgroup_memory_max': pathlib.Path('/sys/fs/cgroup/memory.max').read_text().strip(),
+    'clock_ticks_per_second': os.sysconf('SC_CLK_TCK'),
+    'runtime_version': (ort / 'VERSION_NUMBER').read_text().strip(),
+    'runtime_commit': (ort / 'GIT_COMMIT_ID').read_text().strip(),
+    'runtime_library': hashed(ort / 'lib/libonnxruntime.so.1.28.0'),
+    'native_zvec_library': hashed(root / 'bin/libzvec_c_api.so'),
+    'cargo_lock': hashed(root / 'checkouts/candidate/Cargo.lock'),
+    'legacy_schema_helper': hashed(root / 'legacy_schema.rs'),
+    'seed_setup_binary': hashed(root / 'bin/setup'),
+    'seed_schema_helper_binary': hashed(root / 'bin/legacy-schema'),
+    'harness': hashed(root / 'harness.rs'),
+    'runner': hashed(root / 'run.py'),
+    'model_assets': assets,
+    'cache_state': 'OS files/model download/prepared graph caches warm; each trial is a fresh Engine process; first reranker load recorded separately',
+    'provider_policy': 'requested CPU; per-process ORT actual CPUExecutionProvider node assignment asserted',
+    'prepared_key_note': 'historical key runtime 1.24 denotes ort MINOR_VERSION/API compatibility target; loaded distribution is 1.28.0, confirmed by library hash and build commit',
+}
+toolenv=os.environ.copy()
+toolenv.update(RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo')
+records['rustc']=subprocess.check_output(['/workspace/.cargo/bin/rustc','-Vv'],env=toolenv,text=True).strip()
+records['cargo']=subprocess.check_output(['/workspace/.cargo/bin/cargo','-V'],env=toolenv,text=True).strip()
+seed=root/'seed-memory'
+index=seed/'index'
+records['stopped_seed_index_files']=[hashed(path) for path in sorted(index.rglob('*')) if path.is_file()]
+records['seed_documents']=18000
+records['seed_setup_sequence']=[8000,12000,16000,18000]
+records['seed_setup_scope']='real Engine writes with batch drain every256; each setup process explicitly optimizes and stops PostgreSQL; supported legacy2000 schema'
+assert not list(seed.glob('postgres/data/postmaster.pid'))
+(root / 'provenance.json').write_text(json.dumps(records, indent=2) + '\n')
+print('PROVENANCE_WRITTEN', flush=True)

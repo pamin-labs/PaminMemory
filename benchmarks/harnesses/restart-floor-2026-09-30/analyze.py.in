@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Recompute descriptive matched process summaries from retained raw rows."""
+import argparse
+import json
+import math
+import statistics
+from pathlib import Path
+
+
+def percentile(values, p):
+    values = sorted(values)
+    at = (len(values) - 1) * p
+    lo = math.floor(at)
+    hi = math.ceil(at)
+    return values[lo] + (values[hi] - values[lo]) * (at - lo)
+
+
+def rss(row, field):
+    return next(int(x.split()[1]) * 1024 for x in row['process_after']['rss_status'] if x.startswith(field + ':'))
+
+
+def summarize(rows):
+    result = {}
+    for arm in sorted({r['arm'] for r in rows}):
+        processes = []
+        for rep in sorted({r['repetition'] for r in rows if r['arm'] == arm}):
+            selected = [r for r in rows if r['arm'] == arm and r['repetition'] == rep]
+            phases = {phase: [r for r in selected if r['phase'] == phase] for phase in {r['phase'] for r in selected}}
+            warm = phases['search_warm']
+            assert len(warm) == 24
+            maintenance = phases['maintenance'][0]
+            processes.append({
+                'repetition': rep,
+                'open_ms': phases['open'][0]['wall_ms'],
+                'write_ms': phases['write_and_memory_drain'][0]['wall_ms'],
+                'durability_flush_ms': phases['durability_flush'][0]['wall_ms'],
+                'maintenance_ms': maintenance['wall_ms'],
+                'maintenance_cpu_s': maintenance['cpu_user_seconds'] + maintenance['cpu_system_seconds'],
+                'optimize_jobs': maintenance['extra']['optimize_completed_delta'],
+                'first_search_ms': phases['search_cold'][0]['wall_ms'],
+                'warm_p50_ms': statistics.median(r['wall_ms'] for r in warm),
+                'warm_p95_ms': percentile([r['wall_ms'] for r in warm], .95),
+                'known_topic_recall_at_10': sum(r['extra']['rank'] is not None for r in warm) / len(warm),
+                'known_topic_mrr_at_10': sum(1/r['extra']['rank'] if r['extra']['rank'] else 0 for r in warm) / len(warm),
+                'peak_process_rss_bytes': max(rss(r, 'VmHWM') for r in selected if r.get('process_after')),
+                'maintenance_rss_bytes': rss(maintenance, 'VmRSS'),
+                'index_apparent_bytes': maintenance['extra']['index_disk'][1],
+                'index_allocated_bytes': maintenance['extra']['index_disk'][2],
+                'closed_index_apparent_bytes': phases['closed_index'][0]['extra']['index_disk'][1],
+                'closed_index_allocated_bytes': phases['closed_index'][0]['extra']['index_disk'][2],
+                'vector_completeness': maintenance['extra']['completeness'],
+            })
+        result[arm] = {'processes': processes, 'median_of_process_metrics': {
+            key: statistics.median(r[key] for r in processes)
+            for key in processes[0] if key != 'repetition'
+        }}
+    matched = {}
+    for reference in ['predecessor', 'main']:
+        pairs = []
+        for rep in range(3):
+            left = {r['extra']['query_document']: r['extra']['topics'] for r in rows if r['arm'] == reference and r['repetition'] == rep and r['phase'] == 'search_warm'}
+            right = {r['extra']['query_document']: r['extra']['topics'] for r in rows if r['arm'] == 'candidate' and r['repetition'] == rep and r['phase'] == 'search_warm'}
+            assert left.keys() == right.keys() and len(left) == 24
+            pairs.append({'repetition': rep, 'identical_ordered_top_10': sum(left[q] == right[q] for q in left), 'queries': len(left)})
+        before = result[reference]['median_of_process_metrics']
+        after = result['candidate']['median_of_process_metrics']
+        matched[reference] = {'paired_search_lists': pairs, 'metric_differences': {
+            key: {'before': value, 'after': after[key], 'absolute_delta': after[key] - value,
+                  'percent_delta': (after[key] - value) / value * 100 if value else None}
+            for key, value in before.items()
+        }}
+    return {'statistical_scope': 'descriptive medians of 3 rotated independent processes per arm; no query-level backend significance claim',
+            'p95_method': 'linear interpolation at (n-1)*0.95 within each process; then median across processes',
+            'arms': result, 'comparisons': matched}
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('raw', type=Path)
+    args = parser.parse_args()
+    print(json.dumps(summarize([json.loads(line) for line in args.raw.read_text().splitlines()]), indent=2))
