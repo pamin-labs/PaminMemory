@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Tiny model-role/identity and fake setup guards; no genuine model loads."""
+import copy,json,os,runpy,stat,subprocess,sys,tempfile,types
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Negative guard checks require assertions; remove -O/PYTHONOPTIMIZE')
+sys.dont_write_bytecode=True
+here=Path(__file__).parent;guard=runpy.run_path(str(here/'run-guarded.py.in'));model=guard['MODEL']
+def refuse(operation):
+    try:operation()
+    except (AssertionError,OSError):return
+    raise AssertionError('negative case passed')
+with tempfile.TemporaryDirectory() as directory:
+    root=Path(directory);models=root/'models';(models/'revision').mkdir(parents=True);(models/'prepared/key').mkdir(parents=True)
+    files=['revision/source.onnx','revision/tokenizer.json','revision/config.json','prepared/key/model.onnx','prepared/key/attention.onnx','prepared/key/model.onnx.data','prepared/native.source']
+    for name in files:(models/name).write_bytes(b'tiny fake asset')
+    plan={'version':1,'selection_provenance':'fake role map from fake executable, no real inference','models':[{'name':'embedding','asset_directories':['revision','prepared/key'],'load_graph':'prepared/key/attention.onnx','assets':{'source':['revision/source.onnx'],'tokenizer':['revision/tokenizer.json'],'metadata':['revision/config.json','prepared/native.source'],'prepared_graph':['prepared/key/model.onnx','prepared/key/attention.onnx'],'external_weights':['prepared/key/model.onnx.data']},'graph_external_weights':{name:['prepared/key/model.onnx.data'] for name in ['prepared/key/model.onnx','prepared/key/attention.onnx']}}]}
+    expected=model['prepare'](models,plan);manifest=root/'manifest.json';manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+    assert model['verify'](expected['model'])['assets']==len(files)
+    for name in files:
+        path=models/name;prior=path.read_bytes();path.write_bytes(b'changed');refuse(lambda:model['verify'](expected['model']));path.write_bytes(prior)
+    for name in ['revision/new-config.json','prepared/key/attention.unfused']:
+        path=models/name;path.write_bytes(b'new selection');refuse(lambda:model['verify'](expected['model']));path.unlink()
+    (models/'prepared/key/used').write_bytes(b'');model['verify'](expected['model'])
+    (models/'prepared/key/used').write_bytes(b'not empty');refuse(lambda:model['verify'](expected['model']));(models/'prepared/key/used').unlink()
+    path=models/'revision/tokenizer.json';prior=path.read_bytes();path.unlink();path.symlink_to(models/'revision/config.json');refuse(lambda:model['verify'](expected['model']));path.unlink();path.write_bytes(prior)
+    outside=root/'outside';outside.write_bytes(b'outside');path.unlink();path.symlink_to(outside);refuse(lambda:model['prepare'](models,plan));path.unlink();path.write_bytes(prior)
+    # Safe hub leaf links are content-bound, including the target bytes.
+    blob=models/'blob';blob.write_bytes(prior);path.unlink();path.symlink_to('../blob');linked=model['prepare'](models,plan)
+    blob.write_bytes(b'mutated blob');refuse(lambda:model['verify'](linked['model']));blob.write_bytes(prior)
+    path.unlink();path.write_bytes(prior)
+    # Only expressly permitted source release, backed by an unchanged native digest record.
+    released=copy.deepcopy(plan);selected=released['models'][0];selected.update(allow_source_release=True,source_release_provenance='fake native owned-cache release policy',source_records={'revision/source.onnx':'prepared/native.source'})
+    source=models/'revision/source.onnx';source_bytes=source.read_bytes();record=models/'prepared/native.source'
+    record.write_text(f'source.onnx\n{len(source_bytes)}\n123\nsha256 {model["digest"](source)}\n')
+    release_expected=model['prepare'](models,released);source.unlink();assert model['verify'](release_expected['model'])['permitted_released_sources']==1
+    already_released=model['prepare'](models,released);model['verify'](already_released['model'])
+    graph=models/'prepared/key/attention.onnx';graph.unlink();refuse(lambda:model['verify'](release_expected['model']));graph.write_bytes(b'tiny fake asset')
+    source.write_bytes(b'wrong resurrected source');refuse(lambda:model['verify'](release_expected['model']));source.write_bytes(source_bytes)
+    record.write_bytes(b'tiny fake asset');refuse(lambda:model['prepare'](models,released))
+    # Native release of both a hub leaf link and its owned source blob is explicit.
+    source.unlink();blob.write_bytes(source_bytes);source.symlink_to('../blob')
+    selected['assets']['source'].append('blob');selected['source_records']['blob']='prepared/native.source'
+    record.write_text(f'blob\n{len(source_bytes)}\n123\nsha256 {model["digest"](blob)}\n')
+    pair_expected=model['prepare'](models,released);source.unlink();blob.unlink();assert model['verify'](pair_expected['model'])['permitted_released_sources']==2
+    source.write_bytes(source_bytes);record.write_bytes(b'tiny fake asset')
+    for edit in ['missing_role','wrong_graph','missing_weight_relation','no_provenance']:
+        bad=copy.deepcopy(plan)
+        if edit=='missing_role':bad['models'][0]['assets']['tokenizer']=[]
+        elif edit=='wrong_graph':bad['models'][0]['load_graph']='revision/source.onnx'
+        elif edit=='missing_weight_relation':bad['models'][0]['graph_external_weights']={}
+        else:bad['selection_provenance']=''
+        refuse(lambda:model['prepare'](models,bad))
+    model['load'](manifest);manifest.chmod(0o644);refuse(lambda:model['load'](manifest));manifest.chmod(0o600)
+    # Distinct setup contract: mock the subprocess only; verify pre/post checks.
+    executable=root/'binary';executable.write_bytes(b'never executed');home=root/'home';home.mkdir();(home/'models').symlink_to(models)
+    libs=root/'libs';libs.mkdir();(libs/'libfake.so').write_bytes(b'fake native')
+    native=guard['NATIVE']['snapshot']([str(libs)],[str(libs)])
+    attestation=root/'attestation';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'arms':{'fake':{'commit':'fake','binary':str(executable),'binary_sha256':guard['digest'](executable),'binary_bytes':executable.stat().st_size}}}))
+    previous_run=subprocess.run;previous_env=dict(os.environ);previous_argv=sys.argv
+    try:
+        os.environ.clear();os.environ.update({key:value for key,value in previous_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})
+        for kind in ['normal','changed_during_setup','manifest_changed','manifest_mode_changed']:
+            private=root/(kind+'.json');calls=[]
+            def fake_run(command,env):
+                calls.append(command)
+                if kind=='changed_during_setup':(models/'prepared/key/model.onnx.data').write_bytes(b'changed during setup')
+                if kind=='manifest_changed':manifest.write_text(manifest.read_text()+' ')
+                if kind=='manifest_mode_changed':manifest.chmod(0o644)
+                return types.SimpleNamespace(returncode=0)
+            subprocess.run=fake_run
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+            if kind=='normal':guard['main']()
+            else:refuse(guard['main'])
+            data=json.loads(private.read_text());assert data['status']==('finished' if kind=='normal' else 'failed') and len(calls)==1
+            assert '_expected_models' not in data and 'entries' not in data['models_before_launch'] and stat.S_IMODE(private.stat().st_mode)==0o600
+            (models/'prepared/key/model.onnx.data').write_bytes(b'tiny fake asset');manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+        source.write_bytes(b'changed before setup');private=root/'prelaunch.json';sys.argv[sys.argv.index('--record')+1]=str(private);calls.clear();refuse(guard['main']);assert not calls and not private.exists()
+    finally:subprocess.run=previous_run;sys.argv=previous_argv;os.environ.clear();os.environ.update(previous_env)
+for name in ['model-guards.py.in','run-guarded.py.in','test-model-guards.py.in','test-fixture-guards.py.in','test-native-build-guards.py.in']:
+    result=subprocess.run([sys.executable,'-O',str(here/name)],capture_output=True,text=True);assert result.returncode!=0 and 'remove -O' in result.stderr
+print('passed every asset role mutation, graph selection/inventory, safe/unsafe links, explicit source release/provenance, private immutable manifest, setup pre/post/failure and -O rejection; no real model/trial executed')
