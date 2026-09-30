@@ -209,7 +209,8 @@ fn profile_name(profile: Profile) -> &'static str {
     match profile {
         Profile::Speed => "speed",
         Profile::Balanced => "balanced",
-        Profile::Accuracy | Profile::DualAccuracy => "accuracy",
+        Profile::Accuracy => "accuracy",
+        Profile::DualAccuracy => "dual_accuracy",
     }
 }
 

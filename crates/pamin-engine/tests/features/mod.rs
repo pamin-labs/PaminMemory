@@ -53,10 +53,11 @@ use pamin_engine::SearchHit;
 use crate::channels;
 
 /// The channels, in the order their columns are written.
-const CHANNELS: [Channel; 4] = [
+const CHANNELS: [Channel; 5] = [
     Channel::LexicalSegmented,
     Channel::LexicalNgram,
     Channel::Vector,
+    Channel::VectorSecondary,
     Channel::Graph,
 ];
 
