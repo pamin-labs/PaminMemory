@@ -740,10 +740,8 @@ impl Reranker {
             let loaded = Encoder::load(model, &repository, max_tokens(), providers);
             let encoder = loaded
                 .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
-            #[cfg(target_os = "windows")]
             let mut encoder = encoder;
-            #[cfg(target_os = "windows")]
-            if device == Device::DirectMl {
+            if matches!(device, Device::DirectMl | Device::Npu) {
                 // Compare the same accelerator export, not CPU int8 versus
                 // accelerator FP16: quantization is a separate source of drift.
                 let path = repository.get(tier.onnx(device))?;
@@ -940,7 +938,6 @@ impl Reranker {
 /// A startup ordering guard for the actual model/export. A failed attempt
 /// returns to `preferred`, which tries the next viable provider. No persistent
 /// CPU-only setting is written; a later load can retry a repaired accelerator.
-#[cfg(target_os = "windows")]
 fn check_accelerator(
     accelerator: &mut Encoder,
     reference: impl FnOnce() -> Result<Encoder>,
@@ -968,7 +965,6 @@ fn check_accelerator(
     check_accelerator_ordering(&expected, &observed)
 }
 
-#[cfg(any(target_os = "windows", test))]
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
     let failed =
         || IndexError::Engine("accelerator failed the startup reranker ordering fixture".into());
