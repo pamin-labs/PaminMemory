@@ -93,7 +93,7 @@ index 050637e..a5a56b9 100644
 +    assert_eq!(corpus.queries.len(), 482);
 +    let workspace = Workspace::at(std::env::var("PAMIN_EVAL_HOME").unwrap());
 +    let mut selected = None;
-+    for (named, profile) in [("accuracy", Profile::Accuracy), ("speed", Profile::Speed)] {
++    for (named, profile) in [("accuracy", Profile::Accuracy)] {
 +        let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
 +        let opened = Engine::open(
 +            &workspace,

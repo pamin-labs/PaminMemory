@@ -1,22 +1,22 @@
 import gzip, json, math, itertools, re, statistics
 from pathlib import Path
 
-def compute(root):
+def compute(root, fresh=False):
     arms = {}; round_totals = {}
     for tier in ("accurate", "fast"):
         for device in ("all", "gpu", "cpu"):
             runs = []; resources = []
             for i in range(3):
                 name = f"{tier}-{device}-{i}"
-                run = json.loads(gzip.decompress((root / "rows" / (name + ".json.gz")).read_bytes()))
+                run = json.loads((root / (name + ".json")).read_text()) if fresh else json.loads(gzip.decompress((root / "rows" / (name + ".json.gz")).read_bytes()))
                 assert [r["query"] for r in run] == list(range(0, 1190, 50))
                 assert all(r["scored"] == r["offered"] > 0 and r["seconds"] > 0 for r in run)
                 runs.append(run)
-                text = (root / "rows" / (name + ".resource")).read_text()
+                text = ((root if fresh else root / "rows") / (name + ".resource")).read_text()
                 m = re.search(r"([\d.]+) real\s+([\d.]+) user\s+([\d.]+) sys", text)
                 assert m
                 resources.append((float(m[1]), float(m[2]) + float(m[3]), int(re.search(r"(\d+)\s+maximum resident set size", text)[1])))
-                attestation = (root / "rows" / (name + ".attestation.txt")).read_text()
+                attestation = ((root / (name + ".log")) if fresh else (root / "rows" / (name + ".attestation.txt"))).read_text()
                 expected = "cpu" if device == "cpu" else "coreml"
                 assert f'device="{expected}"' in attestation and "24/24" in attestation
             median = [statistics.median(run[j]["seconds"] for run in runs) for j in range(24)]
@@ -52,4 +52,8 @@ def compute(root):
     return {"arms": arms, "comparisons": comparisons}
 
 if __name__ == "__main__":
-    print(json.dumps(compute(Path(__file__).parent), indent=2))
+    import argparse
+    parser = argparse.ArgumentParser(description="Summarize retained archive or fresh runner outputs without modifying either.")
+    parser.add_argument("--run-root", type=Path, help="Directory containing raw <arm>.json/.log/.resource from run.py.in")
+    args = parser.parse_args()
+    print(json.dumps(compute(args.run_root or Path(__file__).parent, fresh=args.run_root is not None), indent=2))

@@ -11,17 +11,17 @@ CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ON
 | gpu: p50 search ms | 619.722 | 3067.060 | +2447.338 | +394.91% |
 | gpu: p95 search ms | 880.858 | 3722.879 | +2842.020 | +322.64% |
 | gpu: 24-search wall total s | 16.908 | 75.434 | +58.526 | +346.13% |
-| gpu: whole-process wall s (load + warmup + searches) | 32.440 | 120.230 | +87.790 | +270.62% |
-| gpu: process CPU s (same process scope) | 13.650 | 23.650 | +10.000 | +73.26% |
-| gpu: peak process RSS MiB | 2498.469 | 4771.656 | +2273.188 | +90.98% |
+| gpu: whole-process wall s (load + warmup + searches) (uncontrolled cache warmth) | 32.440 | 120.230 | N/A: not comparable | N/A |
+| gpu: process CPU s (same process scope) (uncontrolled cache warmth) | 13.650 | 23.650 | N/A: not comparable | N/A |
+| gpu: peak process RSS MiB (uncontrolled cache warmth) | 2498.469 | 4771.656 | N/A: not comparable | N/A |
 | gpu: sample same_language nDCG@10 | 0.9097186 | 0.9097186 | +0.0000000 | +0.00% |
 | gpu: sample cross_lingual nDCG@10 | 0.8613851 | 0.8613851 | +0.0000000 | +0.00% |
 | cpu: p50 search ms | 619.722 | 2917.843 | +2298.121 | +370.83% |
 | cpu: p95 search ms | 880.858 | 4262.603 | +3381.745 | +383.91% |
 | cpu: 24-search wall total s | 16.908 | 73.956 | +57.048 | +337.39% |
-| cpu: whole-process wall s (load + warmup + searches) | 32.440 | 99.390 | +66.950 | +206.38% |
-| cpu: process CPU s (same process scope) | 13.650 | 328.070 | +314.420 | +2303.44% |
-| cpu: peak process RSS MiB | 2498.469 | 1503.391 | -995.078 | -39.83% |
+| cpu: whole-process wall s (load + warmup + searches) (uncontrolled cache warmth) | 32.440 | 99.390 | N/A: not comparable | N/A |
+| cpu: process CPU s (same process scope) (uncontrolled cache warmth) | 13.650 | 328.070 | N/A: not comparable | N/A |
+| cpu: peak process RSS MiB (uncontrolled cache warmth) | 2498.469 | 1503.391 | N/A: not comparable | N/A |
 | cpu: sample same_language nDCG@10 | 0.9097186 | 0.9001513 | -0.0095673 | -1.05% |
 | cpu: sample cross_lingual nDCG@10 | 0.8613851 | 0.8624608 | +0.0010757 | +0.12% |
 
@@ -32,17 +32,17 @@ CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ON
 | all: p50 search ms | 448.874 | 4533.056 | +4084.182 | +909.87% |
 | all: p95 search ms | 657.363 | 6790.455 | +6133.092 | +932.98% |
 | all: 24-search wall total s | 12.577 | 135.486 | +122.909 | +977.25% |
-| all: whole-process wall s (load + warmup + searches) | 17.970 | 171.570 | +153.600 | +854.76% |
-| all: process CPU s (same process scope) | 46.430 | 144.470 | +98.040 | +211.16% |
-| all: peak process RSS MiB | 1159.422 | 2728.922 | +1569.500 | +135.37% |
+| all: whole-process wall s (load + warmup + searches) (uncontrolled cache warmth) | 17.970 | 171.570 | N/A: not comparable | N/A |
+| all: process CPU s (same process scope) (uncontrolled cache warmth) | 46.430 | 144.470 | N/A: not comparable | N/A |
+| all: peak process RSS MiB (uncontrolled cache warmth) | 1159.422 | 2728.922 | N/A: not comparable | N/A |
 | all: sample same_language nDCG@10 | 0.8812674 | 0.8812674 | +0.0000000 | +0.00% |
 | all: sample cross_lingual nDCG@10 | 0.7580525 | 0.7620027 | +0.0039502 | +0.52% |
 | gpu: p50 search ms | 448.874 | 4409.418 | +3960.545 | +882.33% |
 | gpu: p95 search ms | 657.363 | 6326.876 | +5669.513 | +862.46% |
 | gpu: 24-search wall total s | 12.577 | 137.022 | +124.445 | +989.47% |
-| gpu: whole-process wall s (load + warmup + searches) | 17.970 | 175.050 | +157.080 | +874.12% |
-| gpu: process CPU s (same process scope) | 46.430 | 144.910 | +98.480 | +212.10% |
-| gpu: peak process RSS MiB | 1159.422 | 2833.750 | +1674.328 | +144.41% |
+| gpu: whole-process wall s (load + warmup + searches) (uncontrolled cache warmth) | 17.970 | 175.050 | N/A: not comparable | N/A |
+| gpu: process CPU s (same process scope) (uncontrolled cache warmth) | 46.430 | 144.910 | N/A: not comparable | N/A |
+| gpu: peak process RSS MiB (uncontrolled cache warmth) | 1159.422 | 2833.750 | N/A: not comparable | N/A |
 | gpu: sample same_language nDCG@10 | 0.8812674 | 0.8812674 | +0.0000000 | +0.00% |
 | gpu: sample cross_lingual nDCG@10 | 0.7580525 | 0.7620027 | +0.0039502 | +0.52% |
 
@@ -59,7 +59,7 @@ CoreML ALL allows CPU, GPU and ANE. The GPU arm is CoreML CPUAndGPU. CPU uses ON
 
 The prior query-level p=0.0002 claim is withdrawn: queries share a process-level backend assignment and host-load conditions. Four within-tier diagnostic contrasts now preserve three process-round pairs and enumerate all eight round-block sign flips. These three deterministic rotated rounds are not a randomized confirmatory trial; they cannot establish statistical significance. Reported latency differences are descriptive and do not change the existing per-tier policy. Sample nDCG remains diagnostic, not precision acceptance.
 
-All process costs include loading and warmups. Process CPU excludes CoreML services/GPU/ANE work; RSS excludes their allocations. Thus these are neither energy nor model resident memory measurements. Model/index persistent disk deltas and device memory: N/A, not measured. Backend runs did not attest source-weight/tokenizer hashes before and after every process. The compiled test program was frozen; experimental changes are removed after measurement.
+All process costs include loading and warmups. CoreML compilation-cache warmth was not recorded or controlled in any process. These whole-process wall/CPU/RSS magnitudes are observational only, not like-for-like backend cost comparisons; their deltas are N/A. Search-only durations begin after explicit model warmups and remain a separate scope. Process CPU excludes CoreML services/GPU/ANE work; RSS excludes their allocations. Thus these are neither energy nor model resident memory measurements. Model/index persistent disk deltas and device memory: N/A, not measured. Backend runs did not attest source-weight/tokenizer hashes before and after every process. The compiled test program was frozen; experimental changes are removed after measurement.
 
 ## FP64 scorer validation
 
