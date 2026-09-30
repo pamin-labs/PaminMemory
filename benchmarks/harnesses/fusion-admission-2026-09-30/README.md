@@ -9,3 +9,5 @@ Sources are inert `.in` files, outside compiled repository targets. Use isolated
 5. Copy run-paired.py.in into scratch, preserve its stopped-reference path and refusal guards, and execute it with no other model experiments/builds running. It creates two disposable workspaces and writes complete logs, raw JSONL and summary. Dependencies/model caches must already be provisioned; CPU selection must be confirmed by actual node assignment.
 
 The default engine continues using its existing selection policy. This archive does not install or enable the prototype. Any adoption requires independent full-corpus validation and appropriate Apple backend evidence.
+
+The selected candidate IDs and Why scores verify admission and available scoring results. The second search at limit200 may reuse cached scores; these artifacts do not count fresh model computations or padded batch execution.

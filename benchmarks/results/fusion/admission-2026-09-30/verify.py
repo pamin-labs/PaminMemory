@@ -64,4 +64,4 @@ for name,reciprocal in [('Known-target recall@10',False),('Known-target MRR@10',
  assert metrics[name]=={'before':a,'after':b,'absolute_difference':b-a,'percentage_change':100*(b-a)/a}
 assert sum(r['target_entered_reranker'] for r in arms['baseline'])==21
 assert all(r['target_entered_reranker'] for r in arms['pooled'])
-print('Verified 48 actual Engine traces, same fused candidates, 30 pairs/query, providers and independently recomputed diagnostic metrics.')
+print('Verified 48 actual Engine traces, same fused candidates, 30 offered candidates/search, providers and independently recomputed diagnostic metrics.')

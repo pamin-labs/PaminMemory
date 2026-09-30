@@ -2332,5 +2332,6 @@
         "incident-13279"
       ]
     }
-  ]
+  ],
+  "pair_count_meaning": "pairs_per_query_each_arm counts selected/offered candidates per search; it is not a counter of fresh model computations, and the limit200 diagnostic may reuse score-cache entries"
 }
