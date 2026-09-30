@@ -1666,11 +1666,7 @@ impl Engine {
             }
             Ok::<_, pamin_index::IndexError>(lists)
         })?;
-        let fusion = if self.profile == Profile::DualAccuracy {
-            fusion.with_secondary_vector()
-        } else {
-            fusion
-        };
+        let fusion = dense_fusion(self.profile, depths.channel, fusion);
 
         // Only the ledger knows what a topic stands for now, what it is worth,
         // and whether it still stands for anything -- so what the index
@@ -2498,6 +2494,14 @@ pub fn score_blend_order(fused: &[f64], model: &[f64], fusion: f64) -> Vec<usize
     positions
 }
 
+fn dense_fusion(profile: Profile, depth: u32, fusion: Fusion) -> Fusion {
+    if profile == Profile::DualAccuracy && depth >= 2 {
+        fusion.with_secondary_vector()
+    } else {
+        fusion
+    }
+}
+
 /// Puts the candidates the reranker scored back into the list, best first.
 ///
 /// `shown` is what [`rerankable`] chose, ascending, and `best_first` indexes
@@ -2600,6 +2604,22 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dual_depth_one_preserves_the_single_stream_vote() {
+        let primary = pamin_core::ChannelResults::new(
+            pamin_core::Channel::Vector,
+            vec![pamin_core::Scored::new(pamin_core::TopicId::new(), 1.0)],
+        );
+        let expected = pamin_core::Fusion::default().fuse(std::slice::from_ref(&primary));
+        let actual = super::dense_fusion(
+            pamin_index::Profile::DualAccuracy,
+            1,
+            pamin_core::Fusion::default(),
+        )
+        .fuse(&[primary]);
+        assert_eq!(actual[0].score, expected[0].score);
+    }
+
     use std::time::{Duration, Instant};
 
     use super::{
