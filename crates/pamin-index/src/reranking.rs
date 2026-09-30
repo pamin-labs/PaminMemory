@@ -1007,51 +1007,100 @@ fn score(
     most: usize,
 ) -> Result<(Vec<f32>, Work)> {
     let count = encodings.len();
-    // By length and then by position, so one shortlist is grouped the same way
-    // every time it is asked.
-    let mut sorted: Vec<(usize, Encoding)> = encodings.into_iter().enumerate().collect();
-    sorted.sort_by_key(|(position, encoding)| (encoding.len(), *position));
-    let lengths: Vec<usize> = sorted.iter().map(|(_, encoding)| encoding.len()).collect();
-
-    let mut scores = vec![f32::MIN; count];
-    let mut pending = sorted.into_iter();
+    let planned = model_batches(model, encodings, budget, most);
+    let mut values = vec![f32::MIN; count];
     let mut work = Work::default();
-    let mut start = 0;
-    let batching_lengths: Vec<_> = lengths
-        .iter()
-        .map(|&length| model.batching_length(length))
-        .collect();
-    let (budget, most) = model.batch_limits(budget, most);
-    for size in batches(&batching_lengths, budget, most) {
+    for batch in planned {
         work.batches += 1;
-        let (physical_rows, physical_tokens) =
-            model.execution_shape(size, lengths[start + size - 1]);
-        work.padded_tokens += (physical_rows * physical_tokens) as u64;
-        start += size;
-        let (positions, batch): (Vec<usize>, Vec<Encoding>) = pending.by_ref().take(size).unzip();
-        let forward = Instant::now();
-        let outputs = model.run_encoded(batch)?;
-        work.forward_us += forward.elapsed().as_micros() as u64;
-        let logits = outputs
-            .get("logits")
-            .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
-        let (shape, values) = logits
-            .try_extract_tensor::<f32>()
-            .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
-        let labels = match **shape {
-            [rows, labels] if rows as usize == positions.len() && labels > 0 => labels as usize,
-            _ => {
-                return Err(IndexError::Engine(format!(
-                    "logits of shape {shape:?} for {} pairs",
-                    positions.len()
-                )));
-            }
-        };
-        for (position, row) in positions.iter().zip(values.chunks(labels)) {
-            scores[*position] = row[0];
+        work.padded_tokens += (batch.shape.0 * batch.shape.1) as u64;
+        let (scores, forward_us) = forward(model, batch.encodings)?;
+        work.forward_us += forward_us;
+        for (position, score) in batch.positions.iter().zip(scores) {
+            values[*position] = score;
         }
     }
-    Ok((scores, work))
+    Ok((values, work))
+}
+
+/// Ephemeral plan: encodings are moved into batches and dropped after this
+/// call. Cache entries retain only complete identities and logits.
+struct Batch {
+    positions: Vec<usize>,
+    encodings: Vec<Encoding>,
+    shape: (usize, usize),
+}
+
+fn model_batches(
+    model: &Encoder,
+    encodings: Vec<Encoding>,
+    budget: usize,
+    most: usize,
+) -> Vec<Batch> {
+    let (budget, most) = model.batch_limits(budget, most);
+    plan_batches(
+        encodings,
+        budget,
+        most,
+        |length| model.batching_length(length),
+        |rows, length| model.execution_shape(rows, length),
+    )
+}
+
+/// The shared fresh/cached planner. Sort by real length then original
+/// position; group under effective padded-token and pair caps before lookup.
+fn plan_batches(
+    encodings: Vec<Encoding>,
+    budget: usize,
+    most: usize,
+    batching_length: impl Fn(usize) -> usize,
+    execution_shape: impl Fn(usize, usize) -> (usize, usize),
+) -> Vec<Batch> {
+    let mut sorted: Vec<_> = encodings.into_iter().enumerate().collect();
+    sorted.sort_by_key(|(position, encoding)| (encoding.len(), *position));
+    let lengths: Vec<_> = sorted
+        .iter()
+        .map(|(_, encoding)| batching_length(encoding.len()))
+        .collect();
+    let mut pending = sorted.into_iter();
+    batches(&lengths, budget, most)
+        .into_iter()
+        .map(|size| {
+            let (positions, encodings): (Vec<_>, Vec<_>) = pending.by_ref().take(size).unzip();
+            let shape = execution_shape(size, encodings.last().expect("nonempty batch").len());
+            Batch {
+                positions,
+                encodings,
+                shape,
+            }
+        })
+        .collect()
+}
+
+/// Actual Encoder kernel and unchanged first-column logit extraction,
+/// shared by fresh startup checks and production cached inference.
+fn forward(model: &mut Encoder, batch: Vec<Encoding>) -> Result<(Vec<f32>, u64)> {
+    let count = batch.len();
+    let start = Instant::now();
+    let outputs = model.run_encoded(batch)?;
+    let forward_us = start.elapsed().as_micros() as u64;
+    let logits = outputs
+        .get("logits")
+        .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
+    let (shape, values) = logits
+        .try_extract_tensor::<f32>()
+        .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
+    let labels = match **shape {
+        [rows, labels] if rows as usize == count && labels > 0 => labels as usize,
+        _ => {
+            return Err(IndexError::Engine(format!(
+                "logits of shape {shape:?} for {count} pairs"
+            )));
+        }
+    };
+    Ok((
+        values.chunks(labels).map(|row| row[0]).collect(),
+        forward_us,
+    ))
 }
 
 /// How many pairs go in each batch, in order, for pairs of these `lengths`
@@ -1193,6 +1242,102 @@ mod tests {
 
         assert_eq!(scores.order.len(), 1);
         assert_eq!(scores.get(key), Some(99.0));
+    }
+
+    fn encoding(id: u32, tokens: usize) -> Encoding {
+        Encoding::from_tokens(
+            (0..tokens)
+                .map(|_| tokenizers::Token {
+                    id,
+                    value: id.to_string(),
+                    offsets: (0, 1),
+                })
+                .collect(),
+            0,
+        )
+    }
+
+    fn planned(rows: &[(u32, usize)], budget: usize, most: usize) -> Vec<Batch> {
+        plan_batches(
+            rows.iter().map(|(id, len)| encoding(*id, *len)).collect(),
+            budget,
+            most,
+            |len| len,
+            |rows, len| (rows, len),
+        )
+    }
+
+    #[test]
+    fn planner_keeps_ties_caps_and_native_physical_padding() {
+        let rows = vec![
+            encoding(1, 65),
+            encoding(2, 4),
+            encoding(3, 4),
+            encoding(4, 256),
+        ];
+        let plans = plan_batches(
+            rows,
+            512,
+            4,
+            |len| {
+                if len <= 64 {
+                    64
+                } else if len <= 128 {
+                    128
+                } else {
+                    256
+                }
+            },
+            |_, len| {
+                if len <= 64 {
+                    (4, 64)
+                } else if len <= 128 {
+                    (4, 128)
+                } else {
+                    (2, 256)
+                }
+            },
+        );
+        assert_eq!(
+            plans
+                .iter()
+                .map(|b| b.positions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![1, 2, 0], vec![3]]
+        );
+        assert_eq!(
+            plans.iter().map(|b| b.shape).collect::<Vec<_>>(),
+            vec![(4, 128), (2, 256)]
+        );
+        let ordinary = planned(&[(1, 9), (2, 9), (3, 600)], 512, 4);
+        assert_eq!(
+            ordinary
+                .iter()
+                .map(|b| b.positions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![0, 1], vec![2]],
+            "overbudget long pair remains a singleton"
+        );
+        assert!(planned(&[], 512, 4).is_empty());
+    }
+
+    #[test]
+    fn the_shared_planner_preserves_sorted_rows_and_original_positions() {
+        let groups = planned(&[(3, 20), (1, 4), (4, 6), (2, 4), (5, 512)], 16, 2);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|b| b.positions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![1, 3], vec![2], vec![0], vec![4]]
+        );
+        let mut restored = vec![0; 5];
+        for batch in groups {
+            for (at, e) in batch.positions.iter().zip(batch.encodings) {
+                restored[*at] = e.get_ids()[0];
+            }
+        }
+        assert_eq!(restored, vec![3, 1, 4, 2, 5]);
     }
 
     /// Whatever a tier parses from, it round-trips through its own name.
