@@ -17,7 +17,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Durability flush wall median | 71.154003 ms | 64.986683 ms | -6.167320 ms | -8.668% |
 | Maintenance wall median | 8463.866316 ms | 0.388897 ms | -8463.477419 ms | -99.995% |
 | Maintenance process CPU median, 10ms tick counters | 27.320000 s | 0.000000 s | -27.320000 s | -100.000% |
-| First-search wall median, model load included | 3286.225253 ms | 2846.251162 ms | -439.974091 ms | -13.388% |
+| First-search wall median, model load included | 3286.225253 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2743.028312 ms | 2860.084011 ms | +117.055699 ms | +4.267% |
 | Warm search p95, median across processes | 2999.154590 ms | 3070.581105 ms | +71.426515 ms | +2.382% |
 | Peak process RSS | 1782.003906 MiB | 1778.898438 MiB | -3.105469 MiB | -0.174% |
@@ -43,7 +43,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Durability flush wall median | 65.174956 ms | 64.986683 ms | -0.188273 ms | -0.289% |
 | Maintenance wall median | 8725.241690 ms | 0.388897 ms | -8724.852793 ms | -99.996% |
 | Maintenance process CPU median, 10ms tick counters | 27.990000 s | 0.000000 s | -27.990000 s | -100.000% |
-| First-search wall median, model load included | 3088.230447 ms | 2846.251162 ms | -241.979285 ms | -7.836% |
+| First-search wall median, model load included | 3088.230447 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2746.017698 ms | 2860.084011 ms | +114.066313 ms | +4.154% |
 | Warm search p95, median across processes | 3000.415286 ms | 3070.581105 ms | +70.165818 ms | +2.339% |
 | Peak process RSS | 1781.714844 MiB | 1778.898438 MiB | -2.816406 MiB | -0.158% |
@@ -75,3 +75,5 @@ A dated review-time post-trial rehash in `post-trial-libraries.json` matches the
 Historical conversion source and the future guarded reproducer are retained separately. The verifier parses both actual `DISK_SETUP_JSON` observations from the setup log and compares them exactly with provenance; it also verifies all five profile values against the retained profile-file hash.
 
 Historical build provenance and tuning limit: the builder recorded nominal checkout commits and frozen executable hashes but did not reject dirty tracked inputs or capture build-time source contents. These records alone do not certify that the measured executables came from pristine revisions. Inherited `PAMIN_*` values, including inference-thread tuning, were not recorded; shipped-default configuration is not established. No retrospective byte-identical rebuild binding is claimed in this archive. Separate [prospective guarded wrappers](../../../harnesses/restart-floor-2026-09-30/README.md#prospective-sourceconfiguration-guards) reject changed/extra source inputs, attest fresh builds and explicitly use four inference threads for both setup and trials; they add no historical configuration claim.
+
+First-search comparisons are withheld: the predecessor samples span about 18.2% of their median, and repetition-matched candidate differences reverse direction (approximately −15.2%, +8.6%, −17.1%). The table retains observed arm medians for inspection but makes no latency improvement claim. Three rotated processes do not satisfy the additional-round requirement for this spread. Raw arithmetic remains in the archive for audit; further controlled rounds must fix the historically unrecorded inference tuning before supporting a comparison.
