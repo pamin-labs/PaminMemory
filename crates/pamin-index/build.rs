@@ -85,15 +85,20 @@ finally:
 
 const POWERSHELL: &str = r#"
 $ErrorActionPreference='Stop'
+function Digest([string]$path) {
+    $sha=[System.Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash([System.IO.File]::ReadAllBytes($path))).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
 $dll=Join-Path $env:PAMIN_WINML_OUT 'winml-catalog.dll'
 $license=Join-Path $env:PAMIN_WINML_OUT 'winml-license.txt'
-if ((Test-Path $dll) -and (Test-Path $license) -and ((Get-FileHash $dll -Algorithm SHA256).Hash -eq $env:PAMIN_WINML_DLL_HASH)) { exit 0 }
+if ((Test-Path $dll) -and (Test-Path $license) -and ((Digest $dll) -eq $env:PAMIN_WINML_DLL_HASH)) { exit 0 }
 $package=Join-Path $env:PAMIN_WINML_OUT 'winml.nupkg'
 try {
     if (!(Test-Path $package)) {
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 900 -Uri $env:PAMIN_WINML_URL -OutFile $package
     }
-    if ((Get-FileHash $package -Algorithm SHA256).Hash -ne $env:PAMIN_WINML_PACKAGE_HASH) { throw 'Windows ML package checksum mismatch' }
+    if ((Digest $package) -ne $env:PAMIN_WINML_PACKAGE_HASH) { throw 'Windows ML package checksum mismatch' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive=[System.IO.Compression.ZipFile]::OpenRead($package)
     try {
@@ -101,7 +106,7 @@ try {
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$dll,$true)
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($archive.GetEntry('license.txt'),$license,$true)
     } finally { $archive.Dispose() }
-    if ((Get-FileHash $dll -Algorithm SHA256).Hash -ne $env:PAMIN_WINML_DLL_HASH) { throw 'Windows ML DLL checksum mismatch' }
+    if ((Digest $dll) -ne $env:PAMIN_WINML_DLL_HASH) { throw 'Windows ML DLL checksum mismatch' }
 } finally { if (Test-Path $package) { Remove-Item $package } }
 "#;
 
