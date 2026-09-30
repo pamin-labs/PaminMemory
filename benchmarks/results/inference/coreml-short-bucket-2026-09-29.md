@@ -77,6 +77,17 @@ The original source remains unchanged in JSON; a revised source adds logical
 token intervals (short 1–64, medium 65–128, long 129–256) for new runs. Existing
 timing is conditional on the inferred warmup shape, not a recorded shape trace.
 
+A later [real-model warmup probe](../../harnesses/coreml-short-bucket-2026-09-29/README.md)
+checked the retained tokenizer bytes at SHA256
+`8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3`
+and ran the original short/medium/long strings with all eight warmup queries.
+Every call scored a new pair on CoreML: short had 16–17 logical tokens and
+256 padded tokens (4×64), medium 91–92 and 512 (4×128), long 256 and 512
+(2×256). This distinguishes medium from long despite equal physical-token
+totals, and a changed tokenizer snapshot fails the probe's hash assertion.
+It is a later same-host observation, **not** a contemporaneous shape trace
+from the six timed arms; the historical timing keeps that provenance limit.
+
 The [review supplement](coreml-short-bucket-2026-09-29-review.json) records inspection of the retained model/tokenizer snapshot and
 the same host (Apple M4, Mac16,12, 10 cores, 32 GiB; OS 26.6.2 inspected on
 2026-09-30). These inspections are explicitly distinguished from missing
