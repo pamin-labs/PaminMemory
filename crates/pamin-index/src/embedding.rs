@@ -640,7 +640,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         let model = Encoder::load(
             || {
                 repository.get("onnx/model_quantized.onnx_data")?;
-                crate::pplx::prepare(&repository.get("onnx/model_quantized.onnx")?)
+                crate::pplx::prepare(&repository.get("onnx/model_quantized.onnx")?, cache)
             },
             &repository,
             JOINT_MAX_TOKENS,

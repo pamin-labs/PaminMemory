@@ -4,11 +4,14 @@ use crate::error::{IndexError, Result};
 use crate::onnx::*;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn prepare(source: &Path) -> Result<PathBuf> {
+pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
     let digest = crate::prepared::source_digest(source)?;
-    // Keep the graph beside its original external-data snapshot links. ONNX
-    // external-data locations stay relative, with no second weight copy.
-    let output = source.with_file_name(format!("pamin-pplx-int8-v1-{digest}.onnx"));
+    // Derived files belong to the writable workspace. The hub snapshot may
+    // be shared/read-only; link external data on Unix, copy on Windows where
+    // creating symlinks normally needs privileges.
+    let directory = cache.join("pplx-int8-v1").join(&digest);
+    std::fs::create_dir_all(&directory)?;
+    let output = directory.join("model.onnx");
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -22,6 +25,25 @@ pub(crate) fn prepare(source: &Path) -> Result<PathBuf> {
         return Err(IndexError::Engine(format!(
             "pinned PPLX export has {count} MatMulNBits nodes, expected 196"
         )));
+    }
+    let data = source
+        .parent()
+        .expect("snapshot graph parent")
+        .join("model_quantized.onnx_data");
+    let data = std::fs::canonicalize(data)?;
+    let linked = directory.join("model_quantized.onnx_data");
+    if !linked.is_file() {
+        if std::fs::symlink_metadata(&linked).is_ok() {
+            std::fs::remove_file(&linked)?;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&data, &linked)?;
+        #[cfg(not(unix))]
+        {
+            let pending = linked.with_extension("partial");
+            std::fs::copy(&data, &pending)?;
+            std::fs::rename(pending, &linked)?;
+        }
     }
     if std::fs::read(&output).is_ok_and(|existing| existing == rewritten) {
         return Ok(output);
@@ -77,6 +99,42 @@ fn rewrite(bytes: &[u8]) -> std::result::Result<(Vec<u8>, usize), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn preparation_keeps_a_read_only_hub_snapshot_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let snapshot = root.path().join("snapshot");
+        std::fs::create_dir(&snapshot).unwrap();
+        let mut node = Vec::new();
+        put_bytes(&mut node, NODE_OP_TYPE, b"MatMulNBits");
+        put_bytes(&mut node, NODE_DOMAIN, MICROSOFT.as_bytes());
+        let mut graph = Vec::new();
+        for _ in 0..196 {
+            put_bytes(&mut graph, GRAPH_NODE, &node);
+        }
+        let mut model = Vec::new();
+        put_bytes(&mut model, MODEL_GRAPH, &graph);
+        let source = snapshot.join("model_quantized.onnx");
+        std::fs::write(&source, &model).unwrap();
+        std::fs::write(
+            snapshot.join("model_quantized.onnx_data"),
+            b"immutable weights",
+        )
+        .unwrap();
+        std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let cache = root.path().join("workspace");
+        let output = prepare(&source, &cache).unwrap();
+        assert!(output.starts_with(&cache));
+        assert_eq!(
+            std::fs::read(output.parent().unwrap().join("model_quantized.onnx_data")).unwrap(),
+            b"immutable weights"
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), model);
+        assert_eq!(std::fs::read_dir(&snapshot).unwrap().count(), 2);
+        std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[test]
     fn int8_mode_replaces_the_attribute_and_preserves_weights_and_other_nodes() {
         let mut node = Vec::new();
