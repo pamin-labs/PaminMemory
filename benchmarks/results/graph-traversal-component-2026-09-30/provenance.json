@@ -489,17 +489,19 @@
     "fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
     "graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
-    "prepare.py": "c666fc72016f2cd76fd3f0d6b397c3332d955021bfa3459342719659881478f4"
+    "prepare.py": "1b7b223fe8b32f0fa780b3846e94f54c0e8bf2a9698fc6870995103de4e9e2ca"
   },
   "fixture_log_linkage": "not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only",
   "mapped_library_identity_scope": "mapped paths and pinned file digests; no inode identity captured",
   "archive_files": {
-    "README.md": "42f86af7ad693a88c3d8884b4a22804e7606c857b96734e9c6e1d71141d665f9",
+    "README.md": "053355f63d92820f96b690daa1d4a74d2e166bf4aacada922a5726aea741e986",
     "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
     "baseline.log": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
     "baseline.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
     "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
     "comparison.json": "b14f2c9ab62fc85abc25f87cf295e1b49e37ca3b723c1943ba498e6e964b24eb",
+    "platform-observation.json": "c9cd36af33d603da177bdc4becdb03cf656bad2faf2d7ba0a37c935b56fb3d3d",
+    "retrospective-sql-audit.json": "30291af211a3563615742b855b465642a138fe606c0157ca07b15341dc02c6d0",
     "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
     "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
     "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
@@ -507,8 +509,30 @@
     "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
     "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "source/graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
-    "source/prepare.py": "c666fc72016f2cd76fd3f0d6b397c3332d955021bfa3459342719659881478f4",
-    "test_verify.py": "43752ee0609e1adb47c464ebf6bc19689da51168692ab2e6427e9defd0cd6d8d",
-    "verify.py": "7ad04c8cef88b29cd1119c43a3e16056c90efd8ad6d07dcd62591850250734ef"
-  }
+    "source/migrations/V10__settled_jobs_leave.sql": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+    "source/migrations/V11__retrieval_signals_leave.sql": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+    "source/migrations/V12__job_subject_once.sql": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+    "source/migrations/V13__edge_endpoints_on_versions.sql": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+    "source/migrations/V14__source_versions_index_once.sql": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+    "source/migrations/V1__initial.sql": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+    "source/migrations/V2__relationships.sql": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+    "source/migrations/V3__shard_key_and_indexes.sql": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+    "source/migrations/V4__current_state_pointer.sql": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+    "source/migrations/V5__cascade_outbox.sql": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+    "source/migrations/V6__topic_name_index.sql": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+    "source/migrations/V7__one_document_per_topic.sql": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+    "source/migrations/V8__topics_by_recency.sql": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+    "source/migrations/V9__state_content_from_span.sql": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+    "source/prepare.py": "1b7b223fe8b32f0fa780b3846e94f54c0e8bf2a9698fc6870995103de4e9e2ca",
+    "test_verify.py": "63b3c9f756d2ac1f4edfd23bdaca74000cdceffd593ccbf35365b769b43d8cc5",
+    "verify.py": "b875e50d056c9165344e99b6947702ba45f99d62e4c48d722884bc13d0289df2"
+  },
+  "source_inventory_scope": {
+    "original_captured_entries_per_arm": 52,
+    "original_status": "partial: migration SQL omitted",
+    "original_sql_build_attestation": "N/A: not captured",
+    "retrospective_sql_audit": "retrospective-sql-audit.json",
+    "future_requirement": "Capture all compiler inputs, including include_str! migration SQL, before and after any future compilation; prepared-source-hashes.json already inventories copied SQL sources."
+  },
+  "hardware_observation": "platform-observation.json"
 }

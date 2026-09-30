@@ -66,9 +66,21 @@ dependencies, no custom Rust flags/wrappers and an explicit dynamic runtime.
 After a scoped release clean, Cargo reported `fresh: false` for **all four**
 product path crates and both integration targets in each arm. Source hashes
 were captured before compilation and checked afterward; each binary was
-copied out of the build target before the next clean/build. The complete
-relevant source hashes, binary digests, filtered compiler-artifact records,
+copied out of the build target before the next clean/build. The original **partial 52-entry**
+source hashes, binary digests, filtered compiler-artifact records,
 runtime/provider evidence and asset hashes are in [provenance.json](provenance.json).
+
+The original source inventory omitted the 14 embedded migration SQL files; their
+build-time pre/post-byte attestation is **N/A**. A dated, read-only
+[retrospective SQL audit](retrospective-sql-audit.json) now confirms that every
+preserved frozen SQL file matches Git at the recorded base and occurs verbatim
+in both preserved binaries whose SHA256 matches the original run records.
+The [SQL text](source/migrations) is retained with hashes, sizes and binary
+offsets. This later payload inspection does not retroactively make the original
+source inventory complete. The public verifier checks the retained audit and
+SQL pins; the original binaries are not published, so it cannot independently
+replay the binary payload-membership inspection. Future builds must capture all embedded SQL before
+and after compilation.
 
 ## Resources and limits
 
@@ -78,6 +90,13 @@ runtime/provider evidence and asset hashes are in [provenance.json](provenance.j
 | Product search latency p50/p95 | N/A | N/A | N/A | N/A |
 | Graph-attributed memory | N/A | N/A | N/A | N/A |
 | Graph-attributed disk | N/A | N/A | N/A | N/A |
+
+Historical CPU model, kernel, CPU quota and affinity are **N/A: not captured**.
+A dated [current platform observation](platform-observation.json) records those
+fields separately. Both original cgroups recorded a 16 GiB memory limit, which
+matches the current observation; equality of the other historical fields is
+unknown. The current four-CPU quota does not establish historical execution
+capacity.
 
 No general corpus or repeated timing run was performed. The raw process usage
 includes model loading, 241 writes, setup and query work. It excludes
@@ -150,4 +169,4 @@ loading a model or opening a database.
 
 The score changes above are arithmetic differences between controlled component outcomes, not product accuracy improvements. Percentages use the retained f32 channel values before rounding. An absent result has no numeric baseline or percentage.
 
-The recorded launch projection binds the selected native test, arm, `GRAPH_OUT` and `GRAPH_TRACE` filenames; its original launch digest is retained. The historical fixture persisted its JSON directly to `GRAPH_OUT`; stdout contains test success but no same-log JSON marker. The verifier cannot establish a missing stdout linkage. Trace events record mapped library paths, not inode identities; inode equality was not captured. It independently parses the retained trace and checks exact provider, runtime and mapped-path correspondence with provenance. All published files except the provenance manifest itself have current digests in its explicit inventory; provenance is checked semantically rather than given a circular self-hash. `python3 -O verify.py` is rejected. Run `python3 test_verify.py` for mutation checks.
+The recorded launch projection binds the selected native test, arm, `GRAPH_OUT` and `GRAPH_TRACE` filenames; its original launch digest is retained. The historical fixture persisted its JSON directly to `GRAPH_OUT`; stdout contains test success but no same-log JSON marker. The verifier cannot establish a missing stdout linkage. Trace events record mapped library paths, not inode identities; inode equality was not captured. It independently parses the retained trace and checks exact provider, runtime and mapped-path correspondence with provenance. All published files except the provenance manifest itself have current digests in its explicit inventory; provenance is checked semantically rather than given a circular self-hash. `verify.py` and `source/prepare.py` reject `-O`, `-OO` and `PYTHONOPTIMIZE`; preparation rejects them before reading inputs or writing output. Run `python3 test_verify.py` for mutation checks.
