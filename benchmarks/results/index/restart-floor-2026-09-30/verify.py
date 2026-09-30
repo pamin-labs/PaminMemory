@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Read-only verifier and independent invocation of the archived calculator."""
-import hashlib,importlib.machinery,importlib.util,json
+import hashlib,importlib.machinery,importlib.util,json,sys
+if sys.flags.optimize:
+    raise SystemExit("Verification requires Python assertions; remove -O/-OO or PYTHONOPTIMIZE.")
 from pathlib import Path
 root=Path(__file__).resolve().parent
 repo=root.parents[3]
