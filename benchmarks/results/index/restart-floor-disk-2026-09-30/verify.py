@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Read-only verification of the finished DiskANN archive, including recomputation."""
 import gzip,hashlib,importlib.machinery,importlib.util,json,math,statistics,sys
+if sys.flags.optimize:
+    raise SystemExit("Verification requires Python assertions; run without -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
 from pathlib import Path
 root=Path(__file__).resolve().parent

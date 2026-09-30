@@ -26,7 +26,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Open index allocated bytes | 154.695312 MiB | 155.773438 MiB | +1.078125 MiB | +0.697% |
 | Closed index apparent bytes | 152.999107 MiB | 158.007785 MiB | +5.008677 MiB | +3.274% |
 | Closed index allocated bytes | 153.703125 MiB | 154.781250 MiB | +1.078125 MiB | +0.701% |
-| Vector graph completeness, flat buffer still searched | 1.000000 | 0.999944 | -0.000056 | -0.006% |
+| Vector graph completeness, hybrid visibility checked | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
 ## Combined stack against main
 
@@ -52,14 +52,14 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Open index allocated bytes | 154.695312 MiB | 155.773438 MiB | +1.078125 MiB | +0.697% |
 | Closed index apparent bytes | 152.999107 MiB | 158.007785 MiB | +5.008677 MiB | +3.274% |
 | Closed index allocated bytes | 153.703125 MiB | 154.781250 MiB | +1.078125 MiB | +0.701% |
-| Vector graph completeness, flat buffer still searched | 1.000000 | 0.999944 | -0.000056 | -0.006% |
+| Vector graph completeness, hybrid visibility checked | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
 [Full-process elapsed](episode-elapsed.json) wraps spawn, open, write, flush, upkeep,28 search calls, shutdown, log output and in-process diagnostics. It excludes snapshot copying and parent log parsing/provider checks. This is a measured restart episode, not pure-search latency or proof of a stable general speedup.
 
 ## Evidence and limits
 
 - All 72 warm ordered top-ten lists match the candidate per reference; known-topic recall/MRR are reported from actual ranks, including misses. All 9 processes retrieve the new restart-proof memory. Near-duplicate synthetic identifier queries do not establish general multilingual accuracy.
-- Candidate graph completeness remains 18000/18001 while the newly written vector is served from the exact flat buffer. This is retained in raw rows and tables; it must not be rounded to 1 or described as vector loss. Both RSS and disk increases or decreases are included.
+- Candidate graph completeness remains 18000/18001. The implementation includes an exact flat-buffer path, but this experiment asserts only that the new memory is visible in full hybrid search. Lexical channels can also retrieve it; no vector-channel-specific result or attribution was retained. These rows therefore cannot prove that this new vector was returned by the vector channel, or rule out vector-channel loss. Coverage is retained in raw rows and tables and must not be rounded to1. Both RSS and disk increases or decreases are included.
 - Legacy 2,000-document segments preserve the original schema and stored 1024-dimensional fp16 vectors. Source BGE-M3 and Accurate reranker are int8 models; this does not mean the vector field is int8. Native DiskANN/Cosine uses degree 64, build list 100, PQ chunks 0, quantize 0 and no rotation. Conversion preserved all 18,000 IDs/text/vector bit patterns, logical digest eb2483ff691e5e245079745e4745934620caf7ae692deea3766c84511c061d6b. The helper 125.91 s is total conversion plus before/after digest validation, not isolated graph-build time. Setup is excluded from timing.
 - Persisted native-file floor is 273. Total diagnostic files are 274 because the marker itself is included by disk inspection but excluded from the product budget. Product Optimize generated the floor; no inert files or handwritten floors establish the premise.
 - Native Linux DiskANN uses synchronous pread because io_uring is unavailable and libaio cannot load. No async-I/O performance claim is supported. One workload ran at a time; the host remains shared. Kernel file-cache reclaim pressure occurred. Cgroup memory.events includes intervening fusion diagnostics plus this matrix, so its post-run values are not an isolated DiskANN delta; OOM and oom_kill observations are retained without attributing max events to this experiment. Warm model/OS caches do not guarantee unpressured residency. [Post-run resource snapshot](post-trial-resources.json) retains exact counters and available disk. Hardware/runtime/model identities, exact commits and actual CPU provider assignments are retained in provenance and logs.
