@@ -100,7 +100,8 @@
   "artifacts": {
     "summary.json": {
       "original_sha256": "41713bcb210713da5f2c6b3ff5e1e4c8cd4be50aaab478ab9ec273ed830f8967",
-      "public_sha256": "41713bcb210713da5f2c6b3ff5e1e4c8cd4be50aaab478ab9ec273ed830f8967"
+      "public_sha256": "ebd7ba297baafcc8f0e82fb91d2fbc98956696752e0981c32ae753d8fb40ea5f",
+      "derivation": "adds process aggregates derived from retained per-round values"
     },
     "allocations.json": {
       "original_sha256": "dec62ddbf96d782101e35169e44bdbcc8bc94f40b80064cd42e42c3aa9830c58",
@@ -190,9 +191,13 @@
       "original_sha256": "bb13da9c546a8ddb96e770a440b745aa51e2b14b52ee043f4dbb9f15b080d6a8",
       "public_sha256": "d577d9a9896cf375d46c5537ea102102177dd69fc73985a02d3a8fa58c61fb5e"
     },
-    "sources/summarize.py.in": {
+    "sources/summarize-original.py.in": {
       "original_sha256": "a02d038d1967ac7001143b2ac3a9331b486223bdff1a641a23f9e293d9186eec",
       "public_sha256": "6154cf7bc3eea19448168d0cad4fd1ddc8f0c016f6dfdc7b0c83298cc4c3e0c9"
+    },
+    "sources/summarize.py.in": {
+      "public_sha256": "da7134011bb40a92af01c891da1146cd1bbf033866b691186e77b11ff49f5767",
+      "derivation": "adds process aggregate fields to the retained original summarizer"
     }
   }
 }

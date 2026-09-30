@@ -29,7 +29,9 @@
         "system": 3.02,
         "peak_process_rss": 2229469184
       }
-    ]
+    ],
+    "median_process_cpu_seconds": 9.940000000000001,
+    "median_peak_process_rss_bytes": 2230321152
   },
   "candidate": {
     "rank_p50": 0.72995575,
@@ -54,6 +56,8 @@
         "system": 4.08,
         "peak_process_rss": 2231648256
       }
-    ]
+    ],
+    "median_process_cpu_seconds": 10.370000000000001,
+    "median_peak_process_rss_bytes": 2231648256
   }
 }
