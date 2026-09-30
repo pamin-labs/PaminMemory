@@ -13,7 +13,6 @@
 
 use std::path::PathBuf;
 
-use ort::ep::ExecutionProviderDispatch;
 use ort::session::{Session, SessionOutputs};
 use ort::value::Tensor;
 use tokenizers::{EncodeInput, Encoding};
@@ -44,9 +43,17 @@ impl Encoder {
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
-        providers: Vec<ExecutionProviderDispatch>,
+        providers: impl Into<crate::inference::Target>,
     ) -> Result<Self> {
         let session = crate::inference::session(providers, model)?;
+        Self::from_session(session, repository, max_length)
+    }
+
+    pub(crate) fn from_session(
+        session: Session,
+        repository: &Repository,
+        max_length: usize,
+    ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         let token_type_ids = session
             .inputs()
@@ -86,6 +93,25 @@ impl Encoder {
             fixed: Some((short, long)),
             token_type_ids: false,
         })
+    }
+
+    /// Registration without assigned nodes is a CPU fallback, not acceleration.
+    pub(crate) fn require_accelerator(&self, device: crate::inference::Device) -> Result<()> {
+        use crate::inference::Device;
+        let provider = match device {
+            // The explicit NPU target is checked by inference::session.
+            Device::Cpu | Device::Npu => return Ok(()),
+            Device::Cuda => "CUDAExecutionProvider",
+            Device::CoreMl => "CoreMLExecutionProvider",
+            Device::DirectMl => "DmlExecutionProvider",
+        };
+        let assigned = crate::inference::assigned_providers(&self.session)?;
+        if assigned.get(provider).copied().unwrap_or(0) == 0 {
+            return Err(crate::error::IndexError::Engine(format!(
+                "{provider} registered but was assigned no model nodes"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
