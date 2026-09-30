@@ -72,7 +72,7 @@ pub(crate) fn session(
     if let Some(provider) = expected {
         let assigned = assigned_providers(&session)?;
         if assigned.get(&provider).copied().unwrap_or(0) == 0 {
-            return Err(IndexError::Incompatible(format!(
+            return Err(IndexError::Engine(format!(
                 "NPU {provider} was assigned no model nodes"
             )));
         }
