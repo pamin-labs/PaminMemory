@@ -15,7 +15,7 @@ class Retirement(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             models = root / "models"
-            keyed = models / "prepared" / ("a" * 32)
+            keyed = models / "typed-reranker-v3" / ("a" * 64)
             v1 = keyed / "coreml-all-v1"
             v2 = keyed / "coreml-all-v2"
             v1.mkdir(parents=True)
@@ -25,7 +25,10 @@ class Retirement(unittest.TestCase):
             outside = root / "outside"
             outside.mkdir()
             (outside / "keep").write_bytes(b"untouched")
-            (models / "prepared" / ("b" * 32)).symlink_to(outside)
+            (models / "typed-reranker-v3" / ("b" * 64)).symlink_to(outside)
+            misleading = models / "prepared" / ("c" * 32) / "coreml-all-v1"
+            misleading.mkdir(parents=True)
+            (misleading / "keep").write_bytes(b"not native")
 
             def run(*args):
                 return subprocess.run(
@@ -44,6 +47,7 @@ class Retirement(unittest.TestCase):
             self.assertFalse(v1.exists())
             self.assertEqual((v2 / "compiled").read_bytes(), b"live")
             self.assertEqual((outside / "keep").read_bytes(), b"untouched")
+            self.assertEqual((misleading / "keep").read_bytes(), b"not native")
 
 
 if __name__ == "__main__":

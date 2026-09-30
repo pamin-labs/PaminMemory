@@ -12,15 +12,15 @@ def obsolete(models: Path) -> list[Path]:
     if models.name != "models":
         raise ValueError("pass the Påmin models directory, not a parent directory")
     root = models.resolve(strict=True)
-    prepared = root / "prepared"
-    if not prepared.exists():
+    typed = root / "typed-reranker-v3"
+    if not typed.exists():
         return []
-    if prepared.is_symlink() or not prepared.is_dir():
-        raise ValueError("models/prepared must be a real directory")
+    if typed.is_symlink() or not typed.is_dir():
+        raise ValueError("models/typed-reranker-v3 must be a real directory")
     return sorted(
         old
-        for entry in prepared.iterdir()
-        if re.fullmatch(r"[0-9a-f]{32}", entry.name)
+        for entry in typed.iterdir()
+        if re.fullmatch(r"[0-9a-f]{64}", entry.name)
         and entry.is_dir()
         and not entry.is_symlink()
         if (old := entry / "coreml-all-v1").is_dir() and not old.is_symlink()

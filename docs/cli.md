@@ -136,7 +136,8 @@ kept only if it scores a probe bit-for-bit as the first does, and otherwise
 `attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
 graph, for measuring one against the other.
 
-CoreML packages written by older versions under `models/prepared/*/coreml-all-v1`
+CoreML packages written by older versions under
+`models/typed-reranker-v3/<SHA-256>/coreml-all-v1`
 are not reused by the current `coreml-all-v2` policy. Old processes can still
 use a compiled package after its build lock is released, so the application
 does not delete v1 automatically. During an **offline** maintenance window,
