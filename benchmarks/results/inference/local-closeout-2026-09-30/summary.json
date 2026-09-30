@@ -1,0 +1,169 @@
+{
+  "scope": "Engine::search_reranked; 24 fixed queries; 3 rotated rounds; shared Apple workstation; warm models, uncached measured reranker pairs; CPU and CoreML exports differ; process metrics exclude device/service work",
+  "queries": 24,
+  "rounds": 3,
+  "product_code_reference": "be329b00636987781689ec6ef0c4fc48611cdf1d",
+  "arms": {
+    "accurate-all": {
+      "p50_seconds": 0.619722083,
+      "p95_seconds": 0.8808585,
+      "median_24_search_seconds": 16.908477166,
+      "median_process_cpu_seconds": 13.649999999999999,
+      "median_peak_process_rss_bytes": 2619834368,
+      "median_process_wall_seconds": 32.44,
+      "ndcg": {
+        "same_language": 0.9097186432329887,
+        "cross_lingual": 0.8613850512795284
+      }
+    },
+    "accurate-gpu": {
+      "p50_seconds": 3.067060417,
+      "p95_seconds": 3.722878833,
+      "median_24_search_seconds": 75.434405832,
+      "median_process_cpu_seconds": 23.65,
+      "median_peak_process_rss_bytes": 5003444224,
+      "median_process_wall_seconds": 120.23,
+      "ndcg": {
+        "same_language": 0.9097186432329887,
+        "cross_lingual": 0.8613850512795284
+      }
+    },
+    "accurate-cpu": {
+      "p50_seconds": 2.917842875,
+      "p95_seconds": 4.262603084,
+      "median_24_search_seconds": 73.956482834,
+      "median_process_cpu_seconds": 328.07,
+      "median_peak_process_rss_bytes": 1576419328,
+      "median_process_wall_seconds": 99.39,
+      "ndcg": {
+        "same_language": 0.9001513255470496,
+        "cross_lingual": 0.8624607510817877
+      }
+    },
+    "fast-all": {
+      "p50_seconds": 4.533055792,
+      "p95_seconds": 6.790454791,
+      "median_24_search_seconds": 135.485553581,
+      "median_process_cpu_seconds": 144.47,
+      "median_peak_process_rss_bytes": 2861481984,
+      "median_process_wall_seconds": 171.57,
+      "ndcg": {
+        "same_language": 0.8812674142693614,
+        "cross_lingual": 0.7620026876686526
+      }
+    },
+    "fast-gpu": {
+      "p50_seconds": 4.409418375,
+      "p95_seconds": 6.326875834,
+      "median_24_search_seconds": 137.02178754,
+      "median_process_cpu_seconds": 144.91,
+      "median_peak_process_rss_bytes": 2971402240,
+      "median_process_wall_seconds": 175.05,
+      "ndcg": {
+        "same_language": 0.8812674142693614,
+        "cross_lingual": 0.7620026876686526
+      }
+    },
+    "fast-cpu": {
+      "p50_seconds": 0.448873583,
+      "p95_seconds": 0.657363083,
+      "median_24_search_seconds": 12.576964999,
+      "median_process_cpu_seconds": 46.42999999999999,
+      "median_peak_process_rss_bytes": 1215741952,
+      "median_process_wall_seconds": 17.97,
+      "ndcg": {
+        "same_language": 0.8812674142693614,
+        "cross_lingual": 0.7580524516180355
+      }
+    }
+  },
+  "comparisons": {
+    "accurate-gpu-vs-all": {
+      "geometric_mean_time_ratio": 4.761685998864632,
+      "two_sided_signflip_p": 5e-05,
+      "family_bonferroni_p": 0.0002,
+      "query_count": 24
+    },
+    "accurate-cpu-vs-all": {
+      "geometric_mean_time_ratio": 4.641798891359719,
+      "two_sided_signflip_p": 5e-05,
+      "family_bonferroni_p": 0.0002,
+      "query_count": 24
+    },
+    "fast-all-vs-cpu": {
+      "geometric_mean_time_ratio": 10.260461852440903,
+      "two_sided_signflip_p": 5e-05,
+      "family_bonferroni_p": 0.0002,
+      "query_count": 24
+    },
+    "fast-gpu-vs-cpu": {
+      "geometric_mean_time_ratio": 9.561472602042452,
+      "two_sided_signflip_p": 5e-05,
+      "family_bonferroni_p": 0.0002,
+      "query_count": 24
+    }
+  },
+  "fp64": {
+    "xquad": {
+      "queries": 1190,
+      "changed_returned_lists": {
+        "1": 0,
+        "2": 0
+      },
+      "ndcg": {
+        "0": {
+          "same_language": 0.8694455214052256,
+          "cross_lingual": 0.7271935801807224
+        },
+        "1": {
+          "same_language": 0.8694455214052256,
+          "cross_lingual": 0.7271935801807224
+        },
+        "2": {
+          "same_language": 0.8694455214052256,
+          "cross_lingual": 0.7271935801807224
+        }
+      }
+    },
+    "miracl": {
+      "queries": 482,
+      "changed_returned_lists": {
+        "1": 0,
+        "2": 0
+      },
+      "ndcg": {
+        "0": 0.8204219092788396,
+        "1": 0.8204219092788396,
+        "2": 0.8204219092788396
+      }
+    },
+    "50k": {
+      "0": {
+        "recall_original": 0.996,
+        "recall_stored": 0.998,
+        "p50_seconds": 0.008136834,
+        "p95_seconds": 0.011847542
+      },
+      "1": {
+        "recall_original": 0.996,
+        "recall_stored": 0.998,
+        "p50_seconds": 0.008307,
+        "p95_seconds": 0.012264416
+      },
+      "2": {
+        "recall_original": 0.996,
+        "recall_stored": 0.998,
+        "p50_seconds": 0.007979459,
+        "p95_seconds": 0.011274541
+      }
+    }
+  },
+  "limitations": [
+    "Fixed-query timing sample, not full-corpus precision acceptance.",
+    "CPU and CoreML model exports differ.",
+    "Process CPU/RSS includes startup/warmup and excludes external device/service costs.",
+    "Model resident memory and persistent disk deltas not measured.",
+    "Backend repeat did not attest source-weight/tokenizer hashes before and after each process.",
+    "No new product backend selection or FP64 scorer shipped."
+  ]
+}
