@@ -27,7 +27,7 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/post-trial-libraries.json": "d3b88079ce8822ffbda7f019f4d5341d040e9575090d2ae68a7c690ee1b121bf",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema_guarded.rs.in": "61083ba54700c5c809a226d29ed292e21bda69092357a1a727e644269b164fee",
     "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "eaa2f6c1f38703528aef61931ee8ded8e12318e10f396d55e16c7a10a8242392",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "1803fe82bd27436b4100326061161b05da4a3623f27488e264946af812658b11",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "d2b3aa07bc668f972df22fc3a0bfcedac7310322e83e35553ad2fbe5cc760ee8",
     "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/main-build.log.gz": "be03df91e6f8b31e9afae655d95bd2565ccb3f303c3250422c6a4896d1296de2",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/candidate-clean.log.gz": "fae72774688673c12bf2474f8f0be67c3d5fe2318e439f36ba0e82701c1c4c77",
@@ -52,7 +52,10 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/timing-review.json": "dba51b478850d95a440878903f4fcab3ca4cdb4f16ec2baf9625286b1ce14671",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/provider-bindings.json": "653b8187cefdcd8c88524c6fb5be59b6a6a7b7baccd997b11d1eaf64129ebe09",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_evidence_review.py": "b7811377d4ec8975af0b111f213164d826a12797ddcbca42270db2c9462b5746",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/post-review-seed.json": "b174ca378307a5e8882de3eee0e7a51a317e6eb2adc80364d8ca3b669855ccde"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/post-review-seed.json": "b174ca378307a5e8882de3eee0e7a51a317e6eb2adc80364d8ca3b669855ccde",
+    "benchmarks/harnesses/restart-floor-2026-09-30/README.md": "581dac3436dee9f34c698541fd60aca6e1cf12a9bf8e9577b815fc091436b820",
+    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "6c8f1ea42318f0a2547d8771ff2718acb83d065901f3b22201edac3fa82deece",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "c35870000e86fb98a3b94d6cdc85cf2d2f422d1570e81d9406a32c837776f08a"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }
