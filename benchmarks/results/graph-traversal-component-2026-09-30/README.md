@@ -11,12 +11,12 @@ own UUID projects, and some non-graph tie orders differed between them. The
 within-arm candidate, rank and raw-score premises remained unchanged across
 setup and graph-query phases.
 
-| Controlled case | Disabled arm | Scored arm | Explicit oracle |
-| --- | ---: | ---: | ---: |
-| Two origins reach one target | 0.33333334 | 0.80000001 | 0.8 |
-| A later, stronger arrival from one origin | 0.10000000 | 0.50000000 | 0.5 |
-| A stronger route at the same hop | 0.05000000 | 0.50000000 | 0.5 |
-| Two-hop answer after 60 one-hop decoys | Absent | 0.50000000 | 0.5 |
+| Controlled case | Disabled arm | Scored arm | Explicit oracle | Absolute score change | Score change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Two origins reach one target | 0.33333334 | 0.80000001 | 0.8 | +0.46666667 | +139.999996% |
+| A later, stronger arrival from one origin | 0.10000000 | 0.50000000 | 0.5 | +0.40000000 | +399.999993% |
+| A stronger route at the same hop | 0.05000000 | 0.50000000 | 0.5 | +0.45000000 | +899.999985% |
+| Two-hop answer after 60 one-hop decoys | Absent | 0.50000000 | 0.5 | N/A | N/A |
 
 ## Premises and score arithmetic
 
@@ -147,3 +147,7 @@ all four path-crate freshness records, actual provider assignment and model
 asset stability before accepting the result. The read-only
 [verifier](verify.py) checks the retained published evidence without compiling,
 loading a model or opening a database.
+
+The score changes above are arithmetic differences between controlled component outcomes, not product accuracy improvements. Percentages use the retained f32 channel values before rounding. An absent result has no numeric baseline or percentage.
+
+The recorded launch projection binds the selected native test, arm, `GRAPH_OUT` and `GRAPH_TRACE` filenames; its original launch digest is retained. The historical fixture persisted its JSON directly to `GRAPH_OUT`; stdout contains test success but no same-log JSON marker. The verifier cannot establish a missing stdout linkage. Trace events record mapped library paths, not inode identities; inode equality was not captured. It independently parses the retained trace and checks exact provider, runtime and mapped-path correspondence with provenance. All published files except the provenance manifest itself have current digests in its explicit inventory; provenance is checked semantically rather than given a circular self-hash. `python3 -O verify.py` is rejected. Run `python3 test_verify.py` for mutation checks.
