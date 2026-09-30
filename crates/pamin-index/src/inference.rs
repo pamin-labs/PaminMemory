@@ -72,7 +72,7 @@ pub(crate) fn session(
     if let Some(provider) = expected {
         let assigned = assigned_providers(&session)?;
         if assigned.get(&provider).copied().unwrap_or(0) == 0 {
-            return Err(IndexError::Engine(format!(
+            return Err(IndexError::Incompatible(format!(
                 "NPU {provider} was assigned no model nodes"
             )));
         }
@@ -554,12 +554,14 @@ fn calibrated<T>(
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut fastest = (Device::Cpu, vec![cpu()].into());
     let mut fastest_elapsed = std::time::Duration::MAX;
+    let mut transient_failure = false;
     // Keep at most the CPU reference and one candidate resident. Drop every
     // candidate before loading the next; reload the winner after calibration.
     for (device, target) in plans {
         let mut candidate = match load(device, target.clone(), false) {
             Ok(model) => model,
             Err(error) => {
+                transient_failure |= !matches!(error, IndexError::Incompatible(_));
                 tracing::warn!(device = device.name(), %error, "compute candidate unavailable");
                 continue;
             }
@@ -568,6 +570,7 @@ fn calibrated<T>(
         let elapsed = match evaluate(&mut candidate, device) {
             Ok(elapsed) => elapsed,
             Err(error) => {
+                transient_failure |= !matches!(error, IndexError::Incompatible(_));
                 tracing::warn!(device = device.name(), %error, "compute candidate failed validation");
                 continue;
             }
@@ -594,19 +597,23 @@ fn calibrated<T>(
     }
     let (device, target) = fastest;
     if device == Device::Cpu {
-        cache
-            .lock()
-            .expect("compute-plan cache poisoned")
-            .insert(key.into(), (device, target));
+        if !transient_failure {
+            cache
+                .lock()
+                .expect("compute-plan cache poisoned")
+                .insert(key.into(), (device, target));
+        }
         return Ok((reference, device));
     }
     drop(reference);
     match load(device, target.clone(), true) {
         Ok(model) => {
-            cache
-                .lock()
-                .expect("compute-plan cache poisoned")
-                .insert(key.into(), (device, target));
+            if !transient_failure {
+                cache
+                    .lock()
+                    .expect("compute-plan cache poisoned")
+                    .insert(key.into(), (device, target));
+            }
             Ok((model, device))
         }
         Err(error) => {
@@ -776,7 +783,7 @@ mod tests {
             },
             |_model, device| {
                 if device == Device::Cuda {
-                    Err(IndexError::Engine("invalid fixture output".into()))
+                    Err(IndexError::Incompatible("invalid fixture output".into()))
                 } else {
                     Ok(Duration::from_millis(10))
                 }
@@ -820,6 +827,42 @@ mod tests {
             Device::Cuda,
             "ratio must not choose slower DirectML"
         );
+    }
+
+    #[test]
+    fn transient_fallback_is_retried_on_idle_reload() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let recovered = Cell::new(false);
+        let run = || {
+            calibrated(
+                "fixture",
+                vec![(Device::Cuda, vec![cpu()].into())],
+                &cache,
+                |device, _, _| {
+                    if device == Device::Cuda && !recovered.get() {
+                        Err(IndexError::Engine("temporary pressure".into()))
+                    } else {
+                        Ok(device)
+                    }
+                },
+                |_, device| {
+                    Ok(Duration::from_millis(if device == Device::Cpu {
+                        10
+                    } else {
+                        1
+                    }))
+                },
+            )
+        };
+        assert_eq!(run().unwrap().1, Device::Cpu);
+        assert!(
+            cache.lock().unwrap().is_empty(),
+            "temporary CPU fallback was cached"
+        );
+        recovered.set(true);
+        assert_eq!(run().unwrap().1, Device::Cuda);
     }
 
     #[test]

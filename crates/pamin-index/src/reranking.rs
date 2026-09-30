@@ -788,7 +788,7 @@ impl Reranker {
                             let encoded = model.encode(pairs)?;
                             let values = score(model, encoded, batch_tokens(), batch())?.0;
                             if values.len() != 32 || !values.iter().all(|v| v.is_finite()) {
-                                return Err(IndexError::Engine(
+                                return Err(IndexError::Incompatible(
                                     "reranker calibration returned invalid scores".into(),
                                 ));
                             }
@@ -997,8 +997,9 @@ fn check_accelerator(
 }
 
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
-    let failed =
-        || IndexError::Engine("accelerator failed the startup reranker ordering fixture".into());
+    let failed = || {
+        IndexError::Incompatible("accelerator failed the startup reranker ordering fixture".into())
+    };
     if expected.len() != 4
         || observed.len() != 4
         || expected
