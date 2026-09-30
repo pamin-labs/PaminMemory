@@ -489,7 +489,7 @@
     "fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
     "graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
-    "prepare.py": "238535bb4769c3f7790ab09ca5ac9a5bcf767af24082e4b2f82cfd760a5ade06"
+    "prepare.py": "c666fc72016f2cd76fd3f0d6b397c3332d955021bfa3459342719659881478f4"
   },
   "fixture_log_linkage": "not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only",
   "mapped_library_identity_scope": "mapped paths and pinned file digests; no inode identity captured",
@@ -507,8 +507,8 @@
     "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
     "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "source/graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
-    "source/prepare.py": "238535bb4769c3f7790ab09ca5ac9a5bcf767af24082e4b2f82cfd760a5ade06",
-    "test_verify.py": "07991bc54b5653f9d90d2e84943dc72a3985c12f2ccc885786a1383fbe91407c",
-    "verify.py": "22c7fe283b2519b1ddb7d0d52ad457f75b80f720bfafaca616bbcae3169b5ed7"
+    "source/prepare.py": "c666fc72016f2cd76fd3f0d6b397c3332d955021bfa3459342719659881478f4",
+    "test_verify.py": "43752ee0609e1adb47c464ebf6bc19689da51168692ab2e6427e9defd0cd6d8d",
+    "verify.py": "7ad04c8cef88b29cd1119c43a3e16056c90efd8ad6d07dcd62591850250734ef"
   }
 }

@@ -15,9 +15,9 @@ for arm in ['baseline','scored']:
  target=out/arm
  shutil.copytree(source,target,ignore=shutil.ignore_patterns('.git','target','internal-docs','.agents','.claude','.codex','.aws','scratch_*.rs','__pycache__'))
  if arm=='scored':(target/'crates/pamin-engine/src/engine.rs').write_text(engine.replace(switch,switch.replace('false','true')))
- manifest=target/'crates/pamin-engine/Cargo.toml';manifest.write_text(manifest.read_text()+'\n# Scratch-only runtime evidence.\nort = { workspace = true }\n')
+ manifest=target/'crates/pamin-engine/Cargo.toml';manifest.write_text(manifest.read_text()+'\n# Scratch-only runtime evidence binding.\nort = { workspace = true }\n')
  lock=target/'Cargo.lock';text=lock.read_text();start=text.index('name = "pamin-engine"');end=text.index('\n[[package]]',start);block=text[start:end]
- if '\n "ort",' not in block:lock.write_text(text[:start]+block.replace('dependencies = [\n','dependencies = [\n "ort",\n',1)+text[end:])
+ if '\n "ort",' not in block:lock.write_text(text[:start]+block.replace(' "pamin-core",',' "ort",\n "pamin-core",',1)+text[end:])
  tests=target/'crates/pamin-engine/tests';shutil.copyfile(artifact/'fixture.rs.in',tests/'scratch_scored_fixture.rs');(tests/'graph_trace').mkdir();shutil.copyfile(artifact/'graph_trace.rs.in',tests/'graph_trace/mod.rs')
  files={str(f.relative_to(out)):hashlib.sha256(f.read_bytes()).hexdigest() for f in out.rglob('*') if f.is_file()}
 (out/'prepared-source-hashes.json').write_text(json.dumps(files,indent=2)+'\n')
