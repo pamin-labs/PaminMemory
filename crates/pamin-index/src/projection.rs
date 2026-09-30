@@ -833,13 +833,16 @@ const DISKANN_DEGREE: i32 = 64;
 /// timings cannot establish the effect of widening it. See ADR 0001.
 const DISKANN_BUILD_LIST: i32 = 100;
 
-/// Product-quantization chunks for in-memory navigation of the on-disk graph;
-/// zero keeps none, and every step reads full vectors from disk.
+/// Requested product-quantization chunks for on-disk graph navigation.
 ///
-/// None. Sixty-four chunks answered in about a third of the time at the same
-/// width and recalled 0.9200 at ten and 0.8629 at fifty where none recalls
-/// 0.9985 and 0.9975 -- navigating by codes loses neighbours the rescore
-/// cannot find again -- and took 1,859 s to build rather than 922 to 1,024.
+/// Zero is the measured requested setting, not proof of disabled PQ. The
+/// 0.7.2 release's referenced native builder treats zero as an automatic
+/// dimension/2 count; historical runs did not record the effective count.
+/// The requested-64 arm answered in about a third of the time at the same
+/// width and recalled 0.9200 at ten and 0.8629 at fifty, against 0.9985 and
+/// 0.9975 for requested zero, and built in 1,859 s against 922 to 1,024.
+/// These observations do not establish a no-PQ versus PQ comparison. See
+/// ADR 0001 and the native-source audit for provenance and its limits.
 const DISKANN_PQ_CHUNKS: i32 = 0;
 
 /// How wide a query searches the on-disk graph, at the least: one asking for
