@@ -443,7 +443,9 @@ fn load_on(
         };
         let weights = repository.file(cache_dir, JOINT_FILE);
         let encoder = joint_session(&repository, &weights, cache_dir, device, target)?;
-        crate::prepared::release(&weights, cache_dir);
+        if device == crate::inference::Device::Cpu && crate::inference::accelerators().is_empty() {
+            crate::prepared::release(&weights, cache_dir);
+        }
         return Ok(encoder);
     }
     let model = profile.model();
@@ -546,7 +548,10 @@ fn joint_session(
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
     let encoder = Encoder::load(
-        || crate::prepared::load_path(weights, cache_dir),
+        || match device {
+            crate::inference::Device::Cpu => crate::prepared::load_path(weights, cache_dir),
+            _ => repository.get(JOINT_FILE),
+        },
         repository,
         JOINT_MAX_TOKENS,
         providers,
