@@ -171,7 +171,8 @@ For each
 scratch arm:
 
 ```sh
-env -u ORT_LIB_PATH \
+env -u ORT_LIB_PATH -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
+-u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER \
 ORT_LIB_LOCATION="$ORT_LIB" ORT_PREFER_DYNAMIC_LINK=1 \
 ZVEC_LIB_DIR="$ZVEC_LIB" ZVEC_AUTO_BUILD=0 \
 LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB" \
@@ -197,9 +198,14 @@ PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu \
 GRAPH_ARM="$ARM" GRAPH_OUT="$RESULTS/$ARM.jsonl" \
 GRAPH_TRACE="$RESULTS/$ARM.trace.jsonl" GRAPH_CLK_TCK="$(getconf CLK_TCK)" \
 GRAPH_SHARED_MACHINE="$INTERFERENCE" \
+python3 -c 'import os, sys; retained = {key: os.environ[key] for key in ("PAMIN_EVAL_HOME", "PAMIN_PROFILE", "PAMIN_DEVICE")}; clean = {key: value for key, value in os.environ.items() if not key.startswith("PAMIN_")}; clean.update(retained); os.execvpe(sys.argv[1], sys.argv[1:], clean)' \
 "$BINARY" scratch_scored_graph_finite_fixture \
   --exact --ignored --nocapture --test-threads=1
 ```
+
+The Python launch shim retains only the three explicitly assigned `PAMIN_*`
+values and removes every other inherited product knob before executing the
+fixture binary. It does not run a model itself.
 
 Set `WORKSPACE` to that arm's prepared pinned workspace and `ARM` to `baseline` or
 `scored`; retain the actual interference declaration in `INTERFERENCE`. The
@@ -228,3 +234,10 @@ literal SHA256 values, including their final newline. Retaining an earlier
 correct setting cannot hide a later overriding ORT, zvec or loader assignment.
 These pins protect the documented recipe; they do not execute it or establish
 historical effective settings beyond the retained receipts.
+
+The unchanged preparation script has an independent verifier digest. Every
+retained non-graph result must name one of the 241 fixture topics and carry
+allowed channel evidence; controlled paths require `related_to` edges with
+`deterministic` derivation. Launch scope and redaction-change flags are checked
+against the retained projection and digest differences. Run the bounded new
+counterexamples with `python3 test_verify.py --round8-only`.
