@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Prospective source-bound disk conversion only; never certify old binaries."""
+import argparse,json,os,runpy,subprocess,sys
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Conversion guards require assertions; remove -O/PYTHONOPTIMIZE')
+BUILD=runpy.run_path(str(Path(__file__).with_name('build-guarded.py.in')))
+def verified_binary(attestation):
+    assert attestation['build_kind']=='disk-schema-conversion'
+    assert set(attestation['arms'])=={'candidate'}
+    arm=attestation['arms']['candidate'];source=BUILD['CONVERSION_TARGET']
+    expected=BUILD['digest'](Path(__file__).with_name('disk_schema_guarded.rs.in'))
+    assert attestation['scratch_target']==source and arm['scratch_source']==source
+    assert arm['scratch_sha256']==attestation['harness_sha256']==expected
+    assert arm['inputs_before']==arm['inputs_after'] and arm['inputs_before'][source]['sha256']==expected, 'conversion source binding differs'
+    binary=Path(arm['binary']);assert binary.is_absolute() and binary.is_file() and not binary.is_symlink()
+    assert BUILD['digest'](binary)==arm['binary_sha256'] and binary.stat().st_size==arm['binary_bytes'], 'conversion executable changed'
+    return binary
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--attestation',type=Path,required=True)
+    parser.add_argument('--log',type=Path,required=True)
+    args=parser.parse_args();attestation=json.loads(args.attestation.read_text())
+    binary=verified_binary(attestation);native=attestation['native_loader_inputs']
+    BUILD['NATIVE']['verify'](native)
+    env={key:value for key,value in os.environ.items() if not key.startswith('FLOOR_')}
+    env=BUILD['NATIVE']['environment'](env,native)
+    env['FLOOR_DISK_HOME']='/workspace/scratch/restart-floor/seed-disk'
+    with args.log.open('x') as log:
+        try:subprocess.run([str(binary),'--ignored','--exact','disk_schema','--nocapture'],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+        finally:
+            BUILD['NATIVE']['verify'](native)
+            verified_binary(attestation)
+if __name__=='__main__':main()
