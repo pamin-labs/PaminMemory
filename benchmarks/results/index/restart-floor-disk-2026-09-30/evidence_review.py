@@ -216,7 +216,7 @@ def seed_endpoint(provenance, record):
     assert record.get('exclusions')==['all symlinks','server.json','postmaster.pid','.pgpass','pgpass'] and provenance.get('credential_exclusions')==['server.json','pgpass'], 'seed inventory exclusion policy differs'
     seed=PurePosixPath('<SCRATCH>/seed-disk')
     for entry in entries:
-        assert type(entry['bytes']) is int and entry['bytes']>=0 and type(entry['sha256']) is str and re.fullmatch('[0-9a-f]{64}',entry['sha256']), 'seed file identity must have actual nonnegative integer bytes and canonical SHA256'
+        seed_file_identity(entry)
         path=PurePosixPath(entry['path'])
         assert str(path)==entry['path'] and '..' not in path.parts and path.is_relative_to(seed) and path!=seed and path.name not in {'server.json','postmaster.pid','.pgpass','pgpass'}, 'seed inventory path outside recorded stopped-seed scope'
     inventory={entry['path']:[entry['bytes'],entry['sha256']] for entry in entries}
@@ -269,3 +269,7 @@ def new_write_visibility(extra):
     assert type(topics) is list and all(type(topic) is str for topic in topics), 'new-write topics must be an actual list of strings'
     assert extra['known_new_topic_retrieved'] is True, 'new-write retrieved flag must be exactly true'
     assert 'restart-proof' in topics, 'new-write topic visibility differs'
+
+
+def seed_file_identity(entry):
+    assert type(entry['bytes']) is int and entry['bytes']>=0 and type(entry['sha256']) is str and re.fullmatch('[0-9a-f]{64}',entry['sha256']), 'seed file identity must have actual nonnegative integer bytes and canonical SHA256'
