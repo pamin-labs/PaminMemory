@@ -119,12 +119,16 @@ def oracle_checks(results):
         initial=job['sequence'][0];final='B' if initial=='A' else 'A'
         fresh_key=(job['round'],job['source'],job['limit'],job['query_id'],'accurate',final)
         fresh=results[fresh_key]['rows'][0];history=observations[6]
+        initial_inputs=[(p['query_utf8_hex'],p['document_utf8_hex']) for p in selected_pairs(observations[0])]
+        changed_inputs=[(p['query_utf8_hex'],p['document_utf8_hex']) for p in selected_pairs(history)]
+        changed_actual_inputs=initial_inputs!=changed_inputs
+        assert changed_actual_inputs,'changed-history did not change ordered actual reranker input bytes'
         same_input=selected_pairs(history)==selected_pairs(fresh) and typed_hits(history['fused'])==typed_hits(fresh['fused'])
         exact=same_input and typed_hits(history['complete'])==typed_hits(fresh['complete']) and typed_hits(history['limited'])==typed_hits(fresh['limited'])
         if job['source']=='stack':assert exact,'stack changed-history differs from fresh same-final config oracle'
         all_hot_exact=all(selected_pairs(row)==selected_pairs(fresh) and typed_hits(row['fused'])==typed_hits(fresh['fused']) and typed_hits(row['complete'])==typed_hits(fresh['complete']) and typed_hits(row['limited'])==typed_hits(fresh['limited']) for row in observations[6:12])
         if job['source']=='stack':assert all_hot_exact,'stack changed-hot group differs from fresh same-final config oracle'
-        classifications.append({'job':job,'same_final_actual_inputs':same_input,'same_final_raw_bits/order':exact,'legacy_main_context_failure':job['source']=='main' and same_input and not exact,'retrieval_or_input_context_mismatch':not same_input,'changed_and_hot_steps':list(range(6,12)),'all_changed_and_hot_exact':all_hot_exact,'paired_speed_claim_eligible':exact and all_hot_exact,'changed_selected_ids':selected_pairs(observations[0])!=selected_pairs(history),'measured_changed_scored':delta(history)['scored']})
+        classifications.append({'job':job,'same_final_actual_inputs':same_input,'same_final_raw_bits/order':exact,'legacy_main_context_failure':job['source']=='main' and same_input and not exact,'retrieval_or_input_context_mismatch':not same_input,'changed_and_hot_steps':list(range(6,12)),'all_changed_and_hot_exact':all_hot_exact,'paired_speed_claim_eligible':exact and all_hot_exact,'changed_actual_reranker_inputs':changed_actual_inputs,'changed_selected_ids':selected_pairs(observations[0])!=selected_pairs(history),'measured_changed_scored':delta(history)['scored']})
         other='stack' if job['source']=='main' else 'main';paired=results[(job['round'],other,job['limit'],job['query_id'],'accurate',initial)]['rows']
         for step in [0,12]:
             assert selected_pairs(observations[step])==selected_pairs(paired[step]) and typed_hits(observations[step]['fused'])==typed_hits(paired[step]['fused']) and typed_hits(observations[step]['complete'])==typed_hits(paired[step]['complete']) and typed_hits(observations[step]['limited'])==typed_hits(paired[step]['limited']),'first fresh/new cross-source bits/input parity failed'
