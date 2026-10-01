@@ -101,4 +101,10 @@ with tempfile.TemporaryDirectory() as directory:
     binary.write_bytes(b'changed executable');refuse(lambda:conversion_runner['verified_binary'](attestation))
 for key in ['ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','ORT_LIB_LOCATION','RUSTC','CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS']:
     refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
+for name in sorted(build['CC_INPUTS']):
+    for key in [name,name+'_x86_64-unknown-linux-gnu',name+'_x86_64_unknown_linux_gnu','HOST_'+name,'TARGET_'+name]:
+        refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
+for key in ['CC_KNOWN_WRAPPER_CUSTOM','CC_SHELL_ESCAPED_FLAGS','CC_FORCE_DISABLE','CRATE_CC_NO_DEFAULTS','RING_PREGENERATE_ASM','PERL_EXECUTABLE','VCPKG_ROOT','RUSTONIG_SYSTEM_LIBONIG','RUSTONIG_DYNAMIC_LIBONIG','RUSTONIG_STATIC_LIBONIG','OPENSSL_DIR','OPENSSL_NO_VENDOR','OPENSSL_STATIC','X86_64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR','PKG_CONFIG_PATH','PKG_CONFIG_PATH_x86_64_unknown_linux_gnu','HOST_PKG_CONFIG_PATH']:
+    refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
+build['reject_overrides']({'PATH':'unchanged','HOME':'unchanged','TERM':'dumb'})
 print('passed Cargo config absence, conversion template/source/executable binding, every dependency/product/helper fresh check, private target containment, loader file/link/inventory/absence mutations, loader scrub, native/compiler overrides; no build or native execution')
