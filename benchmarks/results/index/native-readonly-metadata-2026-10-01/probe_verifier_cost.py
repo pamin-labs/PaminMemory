@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """Read-only metadata-component probe; prints new observations, never product work.
 
-Requires the before commit object already available locally. No fetch/download,
+Uses the hash-bound before source retained in this directory. No fetch/download,
 file edits, SDK, database, model, native helper or Cargo invocation is provided.
 """
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
-import shutil
-import subprocess
 import time
 import sys
 
@@ -26,30 +23,25 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def load_before(cost):
+    source = (ROOT/'before-verify.py.in').read_bytes()
+    require(hashlib.sha256(source).hexdigest() == cost['before_verify_sha256'], 'before source identity differs')
+    before = {'__file__': str(ROOT/'verify.py'), '__name__': 'before_metadata_component'}
+    exec(compile(source, str(ROOT/'before-verify.py.in'), 'exec'), before)
+    return before
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true', help='opt in to three metadata-only observations')
-    parser.add_argument('--repository', type=Path, default=ROOT.parents[3])
     args = parser.parse_args()
     if not args.execute:
-        print('Plan: local before CRC source, cold current verifier, then warm current verifier; no product execution.')
+        print('Plan: retained before CRC source, cold current verifier, then warm current verifier; no product execution.')
         return
     cost = json.loads((ROOT/'verifier-cost.json').read_text())
-    for name, expected in cost['after_inputs_sha256'].items():
+    for name, expected in cost['probe_inputs_sha256'].items():
         require(hashlib.sha256((ROOT/name).read_bytes()).hexdigest() == expected, 'recorded input/source identity differs: ' + name)
-    git = shutil.which('git')
-    require(git is not None, 'Git required only to read locally available before source')
-    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    env.update(GIT_NO_LAZY_FETCH='1', GIT_NO_REPLACE_OBJECTS='1', GIT_CONFIG_NOSYSTEM='1',
-               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_COUNT='0')
-    path = 'benchmarks/results/index/native-readonly-metadata-2026-10-01/verify.py'
-    result = subprocess.run([git, '--no-replace-objects', '-c', 'core.fsmonitor=false',
-                             '-C', str(args.repository), 'show', cost['before_crc_revision'] + ':' + path],
-                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    require(result.returncode == 0, 'before source unavailable locally; no fetch attempted')
-    require(hashlib.sha256(result.stdout).hexdigest() == cost['before_verify_sha256'], 'before source identity differs')
-    before = {'__file__': str(ROOT/'verify.py'), '__name__': 'before_metadata_component'}
-    exec(compile(result.stdout, str(ROOT/'verify.py'), 'exec'), before)
+    before = load_before(cost)
     evidence = verify.source_binding.load_json(ROOT/'evidence.json')
     tables = set()
     excerpts = 0
