@@ -17,7 +17,7 @@
           "warm_p95_ms": 2913.3084228999996,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1863380992,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1334661120,
           "index_apparent_bytes": 165683171,
           "index_allocated_bytes": 163340288,
@@ -38,7 +38,7 @@
           "warm_p95_ms": 3070.5811047499997,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1866035200,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1332080640,
           "index_apparent_bytes": 165683171,
           "index_allocated_bytes": 163340288,
@@ -59,7 +59,7 @@
           "warm_p95_ms": 3074.781901,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1865310208,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1334710272,
           "index_apparent_bytes": 165683171,
           "index_allocated_bytes": 163340288,
@@ -80,7 +80,7 @@
         "warm_p95_ms": 3070.5811047499997,
         "known_topic_recall_at_10": 0.875,
         "known_topic_mrr_at_10": 0.8263888888888888,
-        "peak_process_rss_bytes": 1865310208,
+        "peak_process_rss_bytes": null,
         "maintenance_rss_bytes": 1334661120,
         "index_apparent_bytes": 165683171,
         "index_allocated_bytes": 163340288,
@@ -104,7 +104,7 @@
           "warm_p95_ms": 3000.4152864,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1868263424,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1421189120,
           "index_apparent_bytes": 160431192,
           "index_allocated_bytes": 162209792,
@@ -125,7 +125,7 @@
           "warm_p95_ms": 2920.7380328,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1881612288,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1417560064,
           "index_apparent_bytes": 160431192,
           "index_allocated_bytes": 162209792,
@@ -146,7 +146,7 @@
           "warm_p95_ms": 3161.07094745,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1866022912,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1416458240,
           "index_apparent_bytes": 160431192,
           "index_allocated_bytes": 162209792,
@@ -167,7 +167,7 @@
         "warm_p95_ms": 3000.4152864,
         "known_topic_recall_at_10": 0.875,
         "known_topic_mrr_at_10": 0.8263888888888888,
-        "peak_process_rss_bytes": 1868263424,
+        "peak_process_rss_bytes": null,
         "maintenance_rss_bytes": 1417560064,
         "index_apparent_bytes": 160431192,
         "index_allocated_bytes": 162209792,
@@ -191,7 +191,7 @@
           "warm_p95_ms": 2999.1545896,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1864482816,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1413222400,
           "index_apparent_bytes": 160431192,
           "index_allocated_bytes": 162209792,
@@ -212,7 +212,7 @@
           "warm_p95_ms": 3046.7361294499997,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1871929344,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1416802304,
           "index_apparent_bytes": 160431192,
           "index_allocated_bytes": 162209792,
@@ -233,7 +233,7 @@
           "warm_p95_ms": 2976.6128367499996,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1868566528,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1417027584,
           "index_apparent_bytes": 160431192,
           "index_allocated_bytes": 162209792,
@@ -254,7 +254,7 @@
         "warm_p95_ms": 2999.1545896,
         "known_topic_recall_at_10": 0.875,
         "known_topic_mrr_at_10": 0.8263888888888888,
-        "peak_process_rss_bytes": 1868566528,
+        "peak_process_rss_bytes": null,
         "maintenance_rss_bytes": 1416802304,
         "index_apparent_bytes": 160431192,
         "index_allocated_bytes": 162209792,
@@ -351,10 +351,10 @@
           "percent_delta": 0.0
         },
         "peak_process_rss_bytes": {
-          "before": 1868566528,
-          "after": 1865310208,
-          "absolute_delta": -3256320,
-          "percent_delta": -0.1742683469496463
+          "before": null,
+          "after": null,
+          "absolute_delta": null,
+          "percent_delta": null
         },
         "maintenance_rss_bytes": {
           "before": 1416802304,
@@ -480,10 +480,10 @@
           "percent_delta": 0.0
         },
         "peak_process_rss_bytes": {
-          "before": 1868263424,
-          "after": 1865310208,
-          "absolute_delta": -2953216,
-          "percent_delta": -0.15807278363760335
+          "before": null,
+          "after": null,
+          "absolute_delta": null,
+          "percent_delta": null
         },
         "maintenance_rss_bytes": {
           "before": 1417560064,
@@ -523,5 +523,19 @@
         }
       }
     }
+  },
+  "metric_certification": {
+    "peak_process_rss_bytes": {
+      "certified": false,
+      "status": "N/A",
+      "reason": "historical VmHWM chronology uncertified"
+    }
+  },
+  "summary_derivation": {
+    "schema": 1,
+    "method": "archived calculator recomputation followed by explicit HWM qualification; supersedes numeric summary only",
+    "raw_sha256": "817b907934688c585f7c88347649f46ebebbff38390d85313bd7e96b1391621d",
+    "archived_calculator_sha256": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
+    "superseded_numeric_summary_sha256": "4e7d0a4b4967479bfe7550eb8b9b69c5fb79550053d0cc15e94a20e8c70962e5"
   }
 }

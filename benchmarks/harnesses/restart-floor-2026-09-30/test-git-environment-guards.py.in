@@ -23,6 +23,7 @@ with tempfile.TemporaryDirectory() as directory:
  names=build['OBJECTS']['local_environment_names']();hostile={name:'uncontrolled' for name in names}
  hostile.update(GIT_WORK_TREE=str(clean),GIT_DIR=str(clean/'.git'),GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='core.worktree',GIT_CONFIG_VALUE_0=str(clean))
  with patch.dict(os.environ,dict(env,**hostile),clear=True):
+  build['OBJECTS']['local_environment_names'].cache_clear()
   safe=build['git_environment']();assert all(name not in safe for name in names-{'GIT_NO_REPLACE_OBJECTS'})
   assert 'GIT_CONFIG_KEY_0' not in safe and 'GIT_CONFIG_VALUE_0' not in safe and safe['GIT_NO_REPLACE_OBJECTS']=='1'
   actual=build['inputs'](checkout,commit,{});assert set(actual)=={'Cargo.toml','Cargo.lock','crates/pamin-engine/src/lib.rs'}

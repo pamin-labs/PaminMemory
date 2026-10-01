@@ -82,6 +82,26 @@ def historical_hwm_review(raw,index,raw_sha256):
             'sampled_rss_observations':sampled}
 
 
+def qualified_summary(calculated,hwm_review,calculator_sha256):
+    """Supersede derived numeric HWM peaks; never mutate retained raw/calculator."""
+    assert hwm_review['hwm_peak_certified'] is False and hwm_review['published_hwm_peak']=='N/A', 'historical peak cannot be certified'
+    assert hwm_review['exact_historical_anomalies']==HWM_ANOMALIES[hwm_review['index']], 'historical anomaly binding differs'
+    assert all(re.fullmatch(r'[0-9a-f]{64}',value) for value in [hwm_review['raw_sha256'],calculator_sha256]), 'invalid derivation source hash'
+    legacy=(json.dumps(calculated,indent=2)+'\n').encode()
+    result=json.loads(legacy)
+    key='peak_process_rss_bytes'
+    for arm in result['arms'].values():
+        for process in arm['processes']:process[key]=None
+        arm['median_of_process_metrics'][key]=None
+    for comparison in result['comparisons'].values():
+        comparison['metric_differences'][key]={field:None for field in ['before','after','absolute_delta','percent_delta']}
+    result['metric_certification']={key:{'certified':False,'status':'N/A','reason':'historical VmHWM chronology uncertified'}}
+    result['summary_derivation']={'schema':1,'method':'archived calculator recomputation followed by explicit HWM qualification; supersedes numeric summary only',
+        'raw_sha256':hwm_review['raw_sha256'],'archived_calculator_sha256':calculator_sha256,
+        'superseded_numeric_summary_sha256':hashlib.sha256(legacy).hexdigest()}
+    return result
+
+
 def binary_binding(binaries,provenance,expected_commits):
     assert len(binaries)==len(expected_commits), 'incomplete binary arm inventory'
     assert len({b['arm'] for b in binaries})==len(binaries), 'duplicate binary arm'

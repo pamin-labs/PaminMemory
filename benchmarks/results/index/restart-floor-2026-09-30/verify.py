@@ -99,8 +99,9 @@ loader=importlib.machinery.SourceFileLoader('archived_restart_analysis',str(sour
 spec=importlib.util.spec_from_loader(loader.name,loader)
 module=importlib.util.module_from_spec(spec);loader.exec_module(module)
 assert review.historical_hwm_review(raw,'memory',hashlib.sha256((root/'raw.jsonl').read_bytes()).hexdigest())==json.loads((root/'hwm-review.json').read_text()), 'historical HWM qualification receipt differs'
-summary=module.summarize(raw)
-assert summary==json.loads((root/'summary.json').read_text())
+calculated=module.summarize(raw)
+summary=review.qualified_summary(calculated,json.loads((root/'hwm-review.json').read_text()),hashlib.sha256(source.read_bytes()).hexdigest())
+assert summary==json.loads((root/'summary.json').read_text()), 'qualified summary differs from immutable calculator recomputation'
 review.runner_binding(repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in',json.loads((root/'provenance.json').read_text()))
 memory_binaries=json.loads((root/'binaries.json').read_text())
 disk_binaries=json.loads((root.with_name('restart-floor-disk-2026-09-30')/'binaries.json').read_text())
