@@ -34,6 +34,8 @@ warm={}
 for arm,commit in expected_commits.items():
     for rep in range(3):
         rows=[r for r in raw if r['arm']==arm and r['repetition']==rep]
+        expected_order=['open','write_and_memory_drain','durability_flush','maintenance','search_cold','search_warmup','search_warmup']+['search_warm']*24+['new_write_search','closed_index','process_total']
+        assert [r['phase'] for r in rows]==expected_order, 'Disk product phase chronology differs'
         assert rows and all(r['commit']==commit for r in rows)
         phases={phase:[r for r in rows if r['phase']==phase] for phase in {r['phase'] for r in rows}}
         for phase in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']:assert len(phases[phase])==1,(arm,rep,phase)
@@ -85,6 +87,7 @@ for arm,commit in expected_commits.items():
         # Each native log observation binds exactly one archived product row.
         product_rows=[r for r in rows if r['phase']!='process_total']
         assert len(logged)==len(product_rows), (arm,rep,'raw/log cardinality differs')
+        assert all(all(key in r and r[key]==value for key,value in observation.items()) for observation,r in zip(logged,product_rows)), 'Disk native/raw chronology differs'
         unmatched=list(product_rows)
         for logrow in logged:
             matches=[i for i,r in enumerate(unmatched) if all(key in r and r[key]==value for key,value in logrow.items())]
