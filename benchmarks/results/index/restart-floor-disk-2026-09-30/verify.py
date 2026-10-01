@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only verification of the finished DiskANN archive, including recomputation."""
-import gzip,hashlib,importlib.machinery,importlib.util,json,math,statistics,sys
+import gzip,hashlib,importlib.machinery,importlib.util,json,math,statistics,struct,sys
 if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; run without -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
@@ -46,15 +46,22 @@ for arm,commit in expected_commits.items():
         assert maintenance['extra']['documents']==18001
         assert maintenance['extra']['optimize_completed_delta']==(0 if arm=='candidate' else 1)
         complete=maintenance['extra']['completeness']
-        if arm=='candidate':assert complete<1 and math.isclose(complete,18000/18001,abs_tol=1e-6)
-        else:assert complete==1
+        assert complete==(struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0), 'Disk arm maintenance completeness differs'
+        assert phases['write_and_memory_drain'][0]['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'Disk single-write drain premise differs'
         assert phases['durability_flush'][0]['extra']['flushed']==1
         closed=phases['closed_index'][0]
         assert closed['wall_ms'] is None and closed['measurement_kind']=='diagnostic'
         new=phases['new_write_search'][0]
         assert new['extra']['known_new_topic_retrieved'] and 'restart-proof' in new['extra']['topics']
         for row in rows:
+            if row['phase']=='process_total':
+                assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'Disk invalid process elapsed'
             if row['phase']!='process_total':
+                assert row['wall_ms'] is None if row['phase']=='closed_index' else math.isfinite(row['wall_ms']) and row['wall_ms']>=0, 'Disk invalid phase clock'
+                for snapshot in [row['process_before'],row['process_after']]:
+                    if snapshot is not None:assert all(isinstance(snapshot[k],int) and snapshot[k]>=0 for k in ['user_ticks','system_ticks']), 'Disk negative process counters'
+                for k in ['cpu_user_seconds','cpu_system_seconds']:
+                    assert row[k] is None or math.isfinite(row[k]) and row[k]>=0, 'Disk negative CPU delta'
                 assert row['index']=='disk'
                 assert row['clock_ticks_per_second']==100
                 for kind in ['user','system']:

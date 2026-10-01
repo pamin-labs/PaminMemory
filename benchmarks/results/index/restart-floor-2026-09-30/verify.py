@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only verifier and independent invocation of the archived calculator."""
-import hashlib,importlib.machinery,importlib.util,json,sys
+import hashlib,importlib.machinery,importlib.util,json,math,struct,sys
 if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; remove -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
@@ -27,7 +27,14 @@ for arm in ['main','predecessor','candidate']:
         assert 'test result: ok. 1 passed;' in log, 'HNSW unsuccessful retained process log'
         observed_providers=runner.cpu_provider_assignments(log)
         for row in rows:
-            if row['phase']=='process_total':continue
+            if row['phase']=='process_total':
+                assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'HNSW invalid process elapsed'
+                continue
+            assert row['wall_ms'] is None if row['phase']=='closed_index' else math.isfinite(row['wall_ms']) and row['wall_ms']>=0, 'HNSW invalid phase clock'
+            for snapshot in [row['process_before'],row['process_after']]:
+                if snapshot is not None:assert all(isinstance(snapshot[k],int) and snapshot[k]>=0 for k in ['user_ticks','system_ticks']), 'HNSW negative process counters'
+            for k in ['cpu_user_seconds','cpu_system_seconds']:
+                assert row[k] is None or math.isfinite(row[k]) and row[k]>=0, 'HNSW negative CPU delta'
             assert row['index']=='memory' and row['clock_ticks_per_second']==100, 'HNSW measurement configuration differs'
             assert row['actual_providers']==observed_providers, 'HNSW provider assignment differs from process log'
             for kind in ['user','system']:
@@ -43,15 +50,27 @@ for arm in ['main','predecessor','candidate']:
         assert not unmatched, 'HNSW raw observations absent from native log'
         upkeep=[r for r in rows if r['phase']=='maintenance']
         assert len(upkeep)==1 and upkeep[0]['extra']['optimize_completed_delta']==(arm!='candidate')
+        assert next(r for r in rows if r['phase']=='open')['extra']['documents']==18000, 'HNSW open document count differs'
+        assert upkeep[0]['extra']['documents']==18001, 'HNSW post-write document count differs'
+        complete=struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0
+        assert upkeep[0]['extra']['completeness']==complete, 'HNSW arm maintenance completeness differs'
+        assert next(r for r in rows if r['phase']=='write_and_memory_drain')['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'HNSW single-write drain premise differs'
+        assert next(r for r in rows if r['phase']=='durability_flush')['extra']['flushed']==1, 'HNSW durability flush premise differs'
+        closed=next(r for r in rows if r['phase']=='closed_index')
+        assert closed['wall_ms'] is None and closed['measurement_kind']=='diagnostic', 'HNSW close diagnostic included in product clock'
         warm=[r for r in rows if r['phase']=='search_warm']
         # Bind the exact ordered synthetic query schedule, not merely uniqueness.
         # The archived harness uses the stopped seed's 18,000 documents.
         n=18000
         initial=[r['extra']['query_document'] for r in rows if r['phase'] in ['search_cold','search_warmup']]
-        assert initial==[0,n//2,n-1], 'HNSW exact ordered cold/warmup query schedule differs'
+        assert [r['phase'] for r in rows if r['phase'] in ['search_cold','search_warmup']]==['search_cold','search_warmup','search_warmup'] and initial==[0,n//2,n-1], 'HNSW exact ordered cold/warmup query schedule differs'
         assert [r['extra']['query_document'] for r in warm]==[j*(n-2)//25+1 for j in range(1,25)], 'HNSW exact ordered warm query schedule differs'
         assert len([r for r in rows if r['phase']=='search_cold'])==1
         assert len([r for r in rows if r['phase']=='search_warmup'])==2
+        for r in rows:
+            if 'query_document' in r.get('extra',{}):
+                topics=r['extra']['topics'];rank=next((i+1 for i,t in enumerate(topics) if t==f"incident-{r['extra']['query_document']}"),None)
+                assert len(topics)==len(set(topics))==10 and r['extra']['rank']==rank, 'HNSW query hit/rank premise differs'
         new=next(r for r in rows if r['phase']=='new_write_search')
         assert new['extra']['known_new_topic_retrieved'] and 'restart-proof' in new['extra']['topics']
         for r in rows:
