@@ -47,7 +47,7 @@ class HostTimingEligibility(unittest.TestCase):
     def test_matching_positive_candidate_retains_timing_eligibility(self):
         wall = next(r for r in self.rows() if r['metric'] == 'wall_us')
         self.assertTrue(wall['stable_claim_eligible'])
-        self.assertTrue(wall['timing_environment_eligible'])
+        self.assertTrue(wall['cost_environment_eligible'])
         self.assertTrue(wall['accuracy_eligible'])
 
     def test_contradictory_fixed_endpoints_or_paired_blocks_withhold_timing_only(self):
@@ -63,7 +63,7 @@ class HostTimingEligibility(unittest.TestCase):
                         (endpoint[nested] if nested else endpoint)[key] = value
                     wall = next(r for r in self.rows(conditions) if r['metric'] == 'wall_us')
                     self.assertFalse(wall['stable_claim_eligible'])
-                    self.assertFalse(wall['timing_environment_eligible'])
+                    self.assertFalse(wall['cost_environment_eligible'])
                     self.assertTrue(wall['accuracy_eligible'])
         for field, value in [('memory_max_bytes', 4 * 1024**3), ('cpu_max', '400000 200000')]:
             conditions = copy.deepcopy(self.conditions)
@@ -92,3 +92,43 @@ class HostTimingEligibility(unittest.TestCase):
         rows = self.metrics.metric_tables(self.observations, {})
         self.assertFalse(next(r for r in rows if r['metric'] == 'wall_us')['stable_claim_eligible'])
         self.assertTrue(next(r for r in rows if r['metric'] == 'quality_ndcg')['accuracy_eligible'])
+
+    def test_rss_hwm_fixed_host_gate_withholds_memory_without_excluding_accuracy(self):
+        for mode in ['matched', 'changed-memory-limit', 'missing']:
+            with self.subTest(mode=mode):
+                conditions = copy.deepcopy(self.conditions)
+                if mode == 'changed-memory-limit':
+                    conditions['2-stack']['after']['cgroup_ancestors'][0]['memory_max_bytes'] = 4 * 1024**3
+                elif mode == 'missing':
+                    conditions.pop('2-stack')
+                memory = [row for row in self.rows(conditions) if row['metric'] in ['rss_kib', 'hwm_kib']]
+                self.assertEqual(len(memory), 2)
+                for row in memory:
+                    self.assertEqual(row['stable_claim_eligible'], mode == 'matched')
+                    self.assertEqual(row['cost_environment_eligible'], mode == 'matched')
+                    self.assertTrue(row['accuracy_eligible'])
+                    self.assertIn('RSS/HWM cost', row['cost_environment_scope'])
+
+    def test_existing_table_renderer_reports_withheld_memory_eligibility(self):
+        import sys
+        import tempfile
+        import types
+        from unittest.mock import patch
+        conditions = copy.deepcopy(self.conditions)
+        conditions['2-stack']['after']['host']['cpu_model'] = 'different CPU'
+        memory = [r for r in self.rows(conditions) if r['metric'] in ['rss_kib', 'hwm_kib']]
+        loader = importlib.machinery.SourceFileLoader('memory_renderer_fixture', str(ROOT / 'analyze.py.in'))
+        spec = importlib.util.spec_from_loader('memory_renderer_fixture', loader)
+        analyzer = importlib.util.module_from_spec(spec)
+        # Renderer-only import shims: report/checkpoint/native paths are not invoked.
+        with patch.dict(sys.modules, {'common': types.ModuleType('common'),
+                                     'rows': types.ModuleType('rows'), 'metrics': self.metrics}):
+            loader.exec_module(analyzer)
+        result = {'scope': 'fixture only', 'host_conditions': [{}], 'metrics': memory,
+                  'correctness': [], 'control_diagnostics': [], 'process_metrics': [], 'disk': []}
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'table.md'
+            analyzer.write_tables(target, result)
+            text = target.read_text()
+        self.assertEqual(text.count('descriptive; stable withheld'), 2)
+        self.assertNotIn('descriptive four-block eligible', text)
