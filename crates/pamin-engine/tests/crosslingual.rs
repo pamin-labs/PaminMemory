@@ -1015,7 +1015,10 @@ async fn report_channels(
             score(alone.entry(channel).or_default(), query, ranking);
         }
         for missing in channels::CHANNELS {
-            let ranking = channels::as_if(&hits, &Fusion::default().without(missing));
+            let ranking = channels::as_if_effective(
+                &hits,
+                &channels::effective_fusion(&hits, &Fusion::default()).without(missing),
+            );
             score(without.entry(missing).or_default(), query, &ranking);
         }
 
