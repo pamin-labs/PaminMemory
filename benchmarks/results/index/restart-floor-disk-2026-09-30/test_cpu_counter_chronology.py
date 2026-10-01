@@ -15,7 +15,8 @@ for rel in [archive.DISK,archive.HNSW]:
    for name in names:
     dst=repo/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(archive.REPO/name,dst)
    if before:
-    source=str(archive.DISK/'evidence_review.py');(repo/source).write_bytes(subprocess.check_output(['git','-C',str(archive.REPO),'show',BASE+':'+source]))
+    for source in [str(archive.DISK/'evidence_review.py'),str(rel/'verify.py')]:
+     (repo/source).write_bytes(subprocess.check_output(['git','-C',str(archive.REPO),'show',BASE+':'+source]))
    raw=repo/rel/'raw.jsonl';rows=[json.loads(line) for line in raw.read_text().splitlines()]
    process=[r for r in rows if r['arm']=='main' and r['repetition']==0 and r['phase']!='process_total']
    selected=next(r for r in process if r['phase']=='search_cold');prior=process[process.index(selected)-1]['process_after'][key];assert prior>0

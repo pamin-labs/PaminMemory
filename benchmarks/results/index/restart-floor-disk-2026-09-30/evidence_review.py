@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 
 def measurement_annotations(row):
     """Bind runner-added scopes and native disk observations before arithmetic."""
+    assert row.get('conditions')=='new Engine process; warm OS/model file cache; isolated copied stopped DB/index', 'cache/isolation conditions differ from historical runner'
     assert row.get('cpu_scope')=='process threads only; PostgreSQL excluded', 'CPU measurement scope differs from historical runner'
     assert row.get('rss_scope')=='process only', 'RSS measurement scope differs from historical runner'
     if row['phase'] in {'maintenance','closed_index'}:
@@ -197,9 +198,24 @@ def timing_review(summary,raw):
     return result
 
 
+def historical_rank(value,expected):
+    assert value is None or (type(value) is int and value>0), 'rank must be None or an actual positive integer (booleans refused)'
+    assert value==expected, 'query rank differs from actual returned position'
+
+def historical_hardware(provenance,readme):
+    expected={'kernel':'Linux 6.18.44 x86_64 GNU/Linux','cpu_model':'AMD EPYC 9V74 80-Core Processor','cgroup_cpu_max':'400000 100000','cgroup_memory_max':'17179869184'}
+    assert all(provenance.get(key)==value for key,value in expected.items()), 'retained hardware annotation differs'
+    lines=[line for line in readme.splitlines() if line.startswith('- Linux ')]
+    assert lines==['- Linux 6.18.44, AMD EPYC 9V74, cgroup 4 CPU cores and 16 GiB RAM. One workload process at a time; no builds or other model experiments during timing. The host is shared, so external interference is not controlled.'], 'retained hardware README annotation differs'
+
 def seed_endpoint(provenance, record):
     """Late surviving-file endpoint identity; never historical per-copy proof."""
     entries=provenance['seed_files']
+    assert record.get('exclusions')==['all symlinks','server.json','postmaster.pid','.pgpass','pgpass'] and provenance.get('credential_exclusions')==['server.json','pgpass'], 'seed inventory exclusion policy differs'
+    seed=PurePosixPath('<SCRATCH>/seed-disk')
+    for entry in entries:
+        path=PurePosixPath(entry['path'])
+        assert str(path)==entry['path'] and '..' not in path.parts and path.is_relative_to(seed) and path!=seed and path.name not in {'server.json','postmaster.pid','.pgpass','pgpass'}, 'seed inventory path outside recorded stopped-seed scope'
     inventory={entry['path']:[entry['bytes'],entry['sha256']] for entry in entries}
     assert len(inventory)==len(entries)
     encoded=json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()

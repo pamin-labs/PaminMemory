@@ -82,7 +82,8 @@ for arm in ['main','predecessor','candidate']:
         for r in rows:
             if 'query_document' in r.get('extra',{}):
                 topics=r['extra']['topics'];rank=next((i+1 for i,t in enumerate(topics) if t==f"incident-{r['extra']['query_document']}"),None)
-                assert len(topics)==len(set(topics))==10 and r['extra']['rank']==rank, 'HNSW query hit/rank premise differs'
+                assert len(topics)==len(set(topics))==10, 'HNSW query hit/rank premise differs'
+                review.historical_rank(r['extra']['rank'],rank)
         new=next(r for r in rows if r['phase']=='new_write_search')
         assert new['extra']['known_new_topic_retrieved'] and 'restart-proof' in new['extra']['topics']
         for r in rows:
@@ -114,6 +115,7 @@ disk_root=root.with_name('restart-floor-disk-2026-09-30')
 disk_provenance=json.loads((disk_root/'provenance.json').read_text())
 provider_bindings=json.loads((disk_root/'provider-bindings.json').read_text())
 memory_provenance=json.loads((root/'provenance.json').read_text())
+review.historical_hardware(memory_provenance,(root/'README.md').read_text())
 assert memory_provenance['seed_documents']==18000, 'HNSW seed corpus premise differs'
 seed_entries=memory_provenance['stopped_seed_index_files']
 assert len(seed_entries)==len({e['path'] for e in seed_entries})==271, 'HNSW stopped seed inventory differs'
