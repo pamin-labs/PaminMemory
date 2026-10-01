@@ -53,9 +53,13 @@ ancestor's memory limit against that ancestor's own usage; effective CPU quota
 is the minimum quota/period across the same hierarchy, with affinity retained
 separately. Admission and monitoring append actual host hardware, kernel,
 affinity, quota, memory scope/headroom and disk reserve observations to
-`host-conditions.jsonl`. New `metrics.json` retains this journal and each
-process's before/after conditions; `tables.md` identifies the retained record.
-These are new-run conditions, not reconstructed historical hardware.
+`host-conditions.jsonl`. This mutable startup/monitoring journal remains ancillary
+and is not imported into reports. New `metrics.json` and `tables.md` report only
+each process's before/after observations from completion-bound packets, revalidated
+before reporting. Missing endpoint fields remain `N/A` and withhold cost eligibility;
+no current-host reconstruction supplies missing measured conditions. These are
+new-run endpoint observations, not reconstructed historical hardware or proof of
+continuous hardware equality.
 
 Before deleting a successful stopped clone, the packet captures owned
 PostgreSQL data-directory regular-file logical and allocated bytes, including
