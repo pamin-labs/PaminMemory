@@ -238,9 +238,8 @@ impl Embedder {
     }
 
     pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
-        if !self.revalidation_due()
-            && let Some(known) = self.remembered.get(text)
-        {
+        self.revalidate();
+        if let Some(known) = self.remembered.get(text) {
             return Ok(known);
         }
         let primary = match self.profile.prefixes() {
@@ -327,15 +326,19 @@ impl Embedder {
     /// vector does not depend on which other documents happened to be in
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
-    fn revalidation_due(&self) -> bool {
-        crate::inference::runtime_due(&self.model)
+    fn revalidate(&mut self) {
+        if crate::inference::needs_revalidation(&self.model)
             || self
                 .secondary
                 .as_ref()
-                .is_some_and(|(model, _)| crate::inference::runtime_due(model))
+                .is_some_and(|(model, _)| crate::inference::needs_revalidation(model))
+        {
+            self.remembered = Queries::default();
+        }
     }
 
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        self.revalidate();
         let profile = self.profile;
         let cache = &self.cache_dir;
         let (vectors, replaced) = crate::inference::retry_model(
@@ -421,11 +424,6 @@ fn primary_model(
         &identity,
         cache_dir,
         &references,
-        crate::inference::ReferenceShape {
-            vectors: Some((fixtures.len(), profile.dimensions() as usize)),
-            queries: Some((2, profile.dimensions() as usize)),
-            scores: None,
-        },
         |device, target, _validated| load_on(profile, cache_dir, device, target),
         |model, device| {
             let mut reference = references.borrow_mut();
@@ -748,10 +746,6 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         ),
         cache,
         &references,
-        crate::inference::ReferenceShape {
-            vectors: Some((6, 1024)),
-            ..Default::default()
-        },
         |device, target, _validated| load(device, target),
         |model, _device| {
             let mut reference = references.borrow_mut();

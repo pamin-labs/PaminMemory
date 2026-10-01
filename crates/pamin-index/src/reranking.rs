@@ -554,7 +554,7 @@ struct Scores {
 }
 
 impl Scores {
-    fn clear(&mut self) {
+    fn invalidate(&mut self) {
         self.known.clear();
         self.order.clear();
     }
@@ -766,22 +766,18 @@ impl Reranker {
             return Ok(Vec::new());
         }
 
+        if crate::inference::needs_revalidation(&self.model) {
+            self.scores.invalidate();
+        }
+
         let keys: Vec<u64> = documents
             .iter()
             .map(|document| Scores::key(query, document))
             .collect();
         loop {
-            let revalidating = crate::inference::runtime_due(&self.model);
             let mut scores: Vec<Option<f32>> = keys
                 .iter()
-                .map(|key| {
-                    if revalidating {
-                        self.scores.misses += 1;
-                        None
-                    } else {
-                        self.scores.get(*key)
-                    }
-                })
+                .map(|key| self.scores.get(*key))
                 .collect::<Vec<_>>();
 
             // Only what has not been scored before goes through the model,
@@ -829,10 +825,8 @@ impl Reranker {
                 if replaced {
                     // CPU and accelerator exports may have different logit scales.
                     // Rescore the whole request; never mix old cached logits with new.
-                    self.scores.clear();
-                    if unscored.len() != documents.len() {
-                        continue;
-                    }
+                    self.scores.invalidate();
+                    continue;
                 }
                 let scored = self
                     .work
@@ -969,10 +963,6 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
                 ),
                 cache_dir,
                 &references,
-                crate::inference::ReferenceShape {
-                    scores: Some(calibration_pairs(tier, "").len()),
-                    ..Default::default()
-                },
                 session,
                 |model, _device| {
                     let mut reference = references.borrow_mut();
@@ -1161,6 +1151,20 @@ fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn invalidating_backend_scores_preserves_lifetime_counts() {
+        let mut scores = Scores::default();
+        let key = Scores::key("query", "document");
+        assert!(scores.get(key).is_none());
+        scores.put(key, 1.0);
+        assert_eq!(scores.get(key), Some(1.0));
+        scores.invalidate();
+        assert!(scores.known.is_empty() && scores.order.is_empty());
+        assert_eq!((scores.hits, scores.misses), (1, 1));
+        assert!(scores.get(key).is_none());
+        assert_eq!(scores.hits + scores.misses, 3);
+    }
+
+    #[test]
     fn calibration_uses_short_fast_and_mixed_accurate_workloads() {
         let long = "long document ".repeat(512);
         let fast = super::calibration_pairs(super::Rerank::Fast, &long);
@@ -1217,20 +1221,6 @@ mod tests {
             (total.batches, total.encode_us, total.forward_us),
             (1, 5, 7)
         );
-    }
-
-    #[test]
-    fn replacing_a_target_clears_scores_without_resetting_lifetime_counts() {
-        let mut scores = Scores::default();
-        scores.put(7, 0.75);
-        assert_eq!(scores.get(7), Some(0.75));
-        assert_eq!(scores.get(8), None);
-        let offered = scores.hits + scores.misses;
-        scores.clear();
-        assert_eq!(scores.hits + scores.misses, offered);
-        assert!(scores.known.is_empty() && scores.order.is_empty());
-        assert_eq!(scores.get(7), None);
-        assert_eq!(scores.hits + scores.misses, offered + 1);
     }
 
     #[test]
