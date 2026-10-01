@@ -65,6 +65,28 @@ def reject_optimized_prepare(label, flags=(), optimize_env=None):
         print(f'PASS: rejected prepare {label} before writes')
 
 
+def complete_non_graph_cases():
+    for arm in ['baseline','scored']:
+        for field,value,error in [('rank',True,'non-graph rank must be a positive integer'),('score',True,'non-graph score must be real non-boolean or null')]:
+            run_case('boolean non-graph '+arm+'/'+field,lambda root,arm=arm,field=field,value=value:mutate_json(root/(arm+'.jsonl'),lambda row:row['non_graph'][0]['ranks'][0].update({field:value})),expected_error=error)
+        def missing(root,arm=arm):
+            def change(row):
+                visible={h['topic'] for h in row['non_graph']}
+                unused=next(f'islandnode{n:04}' for n in reversed(range(240)) if f'islandnode{n:04}' not in visible)
+                next(h for h in row['non_graph'] if h['topic']=='quartzanchor')['topic']=unused
+            mutate_json(root/(arm+'.jsonl'),change)
+        run_case('missing strong seed '+arm,missing,expected_error='strong origin must occur exactly once in retained inventory')
+        def duplicate(root,arm=arm):
+            mutate_json(root/(arm+'.jsonl'),lambda row:row['non_graph'].append(copy.deepcopy(row['non_graph'][0])))
+        run_case('duplicate strong seed '+arm,duplicate,expected_error='strong origin must occur exactly once in retained inventory')
+        def outside(root,arm=arm):
+            def change(row):
+                strong=next(h for h in row['non_graph'] if h['topic']=='quartzanchor')
+                row['non_graph'].remove(strong);row['non_graph'].append(strong)
+            mutate_json(root/(arm+'.jsonl'),change)
+        run_case('strong outside seed window '+arm,outside,expected_error='strong origin must occur exactly once in fixture seed window')
+
+
 def complete_graph_record_cases():
     for arm in ['baseline','scored']:
         for index in range(4 if arm=='scored' else 3):
@@ -332,6 +354,7 @@ if __name__ == '__main__':
                                 why.append(duplicate)
                         mutate_json(r/(arm+'.jsonl'),change)
                     run_case(mutation+' '+evidence_kind+' Why '+arm+' target '+str(index),contradictory_why,expected_error='exactly one '+('graph-channel' if evidence_kind=='graph' else 'path')+' record')
+    complete_non_graph_cases()
     complete_graph_record_cases()
     for name in retained['redactions']:
         run_case('original redaction digest '+name, lambda r,name=name: mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(original_sha256='0'*64)))
