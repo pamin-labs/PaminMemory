@@ -8,8 +8,14 @@ ROOT=Path(__file__).resolve().parent
 
 def close(a,b):return math.isclose(a,b,rel_tol=0,abs_tol=1e-6)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-def score(hit):return next(w['score'] for w in hit['why'] if w.get('kind')=='channel' and w['channel']=='graph')
-def path(hit):return next(w for w in hit['why'] if w.get('kind')=='path')
+def score(hit):
+ evidence=[w for w in hit['why'] if w.get('kind')=='channel' and w['channel']=='graph']
+ assert len(evidence)==1, 'reached target must have exactly one graph-channel record'
+ return evidence[0]['score']
+def path(hit):
+ evidence=[w for w in hit['why'] if w.get('kind')=='path']
+ assert len(evidence)==1, 'reached target must have exactly one path record'
+ return evidence[0]
 def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
