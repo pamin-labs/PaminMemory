@@ -17,6 +17,7 @@ def controlled_environment(parent):
     assert not {'HF_HOME','HF_HUB_CACHE'} & parent.keys(), 'refuse inherited hub-cache location overrides'
     assert 'TOKIO_WORKER_THREADS' not in parent, 'refuse inherited Tokio worker concurrency'
     assert not {'TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS'} & parent.keys(), 'refuse inherited tokenizer/Rayon concurrency'
+    assert not any(key.startswith('MALLOC_') or key=='GLIBC_TUNABLES' for key in parent), 'refuse inherited glibc allocator tuning'
     # Clear setup controls too; every relevant field is explicit below.
     env={key:value for key,value in parent.items() if not key.startswith('FLOOR_')}
     env.update(PAMIN_DEVICE='cpu',PAMIN_PROFILE='accuracy',PAMIN_INFERENCE_THREADS='4',
