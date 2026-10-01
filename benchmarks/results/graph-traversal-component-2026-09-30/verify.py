@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parent
 # Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
 BUILD_RECIPE_SHA256='409cd8d19be10414edb71c37e2e8f8076dace8ef4a08182957c933718705d2cf'
-RUNTIME_RECIPE_SHA256='40db70b8249b0fb69701db54800a0268c268fa2aea1b4fc78d650261587bf960'
+RUNTIME_RECIPE_SHA256='b2be04af460d5222f662e6c59145bf4f37d41a502dbbe8729e80f8a2debac45d'
 
 # Complete retained raw inventories, including native UUIDs/scores; capture-only pins.
 NON_GRAPH_PINS = {'baseline': '2798681a63379fc62f5abe0c79593d97b6533a38a9762224aa429c344d42199a', 'scored': '2fa0b1056f508318241aa00d6e0923e42653859621138fd454cfa3ebd822373b'}
