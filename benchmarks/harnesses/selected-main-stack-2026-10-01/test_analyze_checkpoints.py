@@ -44,11 +44,18 @@ class AnalysisCheckpoints(unittest.TestCase):
         self.common.save(out/'run-identity.json',plan)
         for job in jobs:
             actual=[{'step':step,'job':job['name']} for step in range(len(job['sequence'].split(',')))]
-            packet={'job':job,'rows':actual,'validated':[{} for row in actual],'opened':{},'usage':{'native_wall_seconds':1,'postgres_build_identity':build},'postgres_build_identity':build}
+            packet={'job':job,'rows':actual,'validated':[{} for row in actual],'opened':{},'usage':{'native_wall_seconds':1,'samples':[],'postgres_build_identity':build},'postgres_build_identity':build,
+                    'host_conditions':{'before':{'affinity':[0,1]},'after':{'affinity':[0,1]}},
+                    'postgres_disk':{'before':{'logical_bytes':1,'allocated_bytes':4096,'files':1},
+                                     'after':{'logical_bytes':1,'allocated_bytes':4096,'files':1}}}
             log=out/(job['name']+'-attempt0.log');log.write_text(job['name'])
             packet['checkpoint']={'attempt':0,'identity_sha256':identity,'packet_sha256':hashlib.sha256(self.run.canonical(packet).encode()).hexdigest(),'log_sha256':self.common.digest(log)}
             self.common.save(out/(job['name']+'.json'),packet)
-        self.common.save(out/'complete.json',{'complete':True,'processes':80,'calls':880,'classifications':[],'regenerated_fixture':True,'historical_numeric_identity_claimed':False,'run_identity_sha256':identity})
+        complete={'complete':True,'processes':80,'calls':880,'classifications':[],'regenerated_fixture':True,'historical_numeric_identity_claimed':False,'run_identity_sha256':identity}
+        if not BEFORE:
+            complete.update(packet_file_sha256=self.run.packet_file_digests(out,jobs),
+                            packet_binding_scope=self.run.COMPLETE_PACKET_SCOPE)
+        self.common.save(out/'complete.json',complete)
         return out,jobs
 
     def analyze(self):
@@ -86,8 +93,44 @@ class AnalysisCheckpoints(unittest.TestCase):
             if case=='packet':
                 value=json.loads(path.read_text());value['usage']['native_wall_seconds']=9999;path.write_text(json.dumps(value))
             else:log.write_text('changed retained native log')
-            with self.assertRaisesRegex(ValueError,'checkpoint '+('packet hash' if case=='packet' else 'log')+' differs'):self.analyze()
+            with self.assertRaisesRegex(ValueError,'complete packet file digest differs' if case=='packet' else 'checkpoint log differs'):self.analyze()
             self.assertFalse((self.work/'metrics.json').exists())
+
+    def test_controller_fields_with_refreshed_selfhash_are_bound_by_completion(self):
+        out,jobs=self.retained();path=out/(jobs[0]['name']+'.json');original=path.read_text()
+        changes=[('native-wall',lambda packet:packet['usage'].update(native_wall_seconds=9999)),
+                 ('samples',lambda packet:packet['usage'].update(samples=[{'native':{'VmRSS':999,'VmHWM':999},'pg_main':{'VmRSS':999,'VmHWM':999}}])),
+                 ('host',lambda packet:packet.update(host_conditions={'before':{'affinity':[99]},'after':{'affinity':[99]}})),
+                 ('postgres-disk',lambda packet:packet.update(postgres_disk={'before':{'logical_bytes':999},'after':{'logical_bytes':999}}))]
+        for name,change in changes:
+            with self.subTest(name=name):
+                packet=json.loads(original);change(packet)
+                packet['checkpoint']['packet_sha256']=hashlib.sha256(self.run.canonical({k:v for k,v in packet.items() if k!='checkpoint'}).encode()).hexdigest()
+                path.write_text(json.dumps(packet))
+                with self.assertRaisesRegex(ValueError,'complete packet file digest differs'):self.analyze()
+                self.assertFalse((self.work/'metrics.json').exists())
+        path.write_text(original)
+
+    def test_legacy_missing_incomplete_or_invalid_completion_bindings_fail_closed(self):
+        out,jobs=self.retained();path=out/'complete.json';original=path.read_text()
+        for mode in ['missing','incomplete','invalid-type','missing-scope']:
+            with self.subTest(mode=mode):
+                complete=json.loads(original)
+                if mode=='missing':complete.pop('packet_file_sha256')
+                elif mode=='incomplete':complete['packet_file_sha256'].pop(jobs[0]['name'])
+                elif mode=='invalid-type':complete['packet_file_sha256'][jobs[0]['name']]=True
+                else:complete.pop('packet_binding_scope')
+                path.write_text(json.dumps(complete))
+                with self.assertRaises(ValueError):self.analyze()
+                self.assertFalse((self.work/'metrics.json').exists())
+        path.write_text(original)
+
+    def test_publication_digests_require_packet_to_match_validated_memory(self):
+        out,jobs=self.retained();packets={self.run.key(job):self.run.read_json(out/(job['name']+'.json')) for job in jobs}
+        self.assertEqual(self.run.packet_file_digests(out,jobs,packets),self.run.read_json(out/'complete.json')['packet_file_sha256'])
+        packets[self.run.key(jobs[0])]['usage']['native_wall_seconds']=9999
+        with self.assertRaisesRegex(ValueError,'validated in-memory checkpoint'):
+            self.run.packet_file_digests(out,jobs,packets)
 
     def test_report_implementation_mutation(self):
         self.retained()
@@ -130,7 +173,7 @@ class AnalysisCheckpoints(unittest.TestCase):
         path=out/(jobs[0]['name']+'.json');packet=json.loads(path.read_text())
         packet['usage']['postgres_build_identity']=copy.deepcopy(packet['postgres_build_identity']);packet['usage']['postgres_build_identity']['installation_sha256']='d'*64
         packet['checkpoint']['packet_sha256']=hashlib.sha256(self.run.canonical({k:v for k,v in packet.items() if k!='checkpoint'}).encode()).hexdigest();path.write_text(json.dumps(packet))
-        with self.assertRaisesRegex(ValueError,'checkpoint PostgreSQL identity differs'):self.analyze()
+        with self.assertRaisesRegex(ValueError,'complete packet file digest differs'):self.analyze()
         self.assertFalse((self.work/'metrics.json').exists())
 
 

@@ -183,23 +183,27 @@ def main():
     c.require(canonical(bound) == canonical(plan['assets']), 'retained asset plan differs')
     identity = hashlib.sha256(canonical(plan).encode()).hexdigest()
     c.require(set(complete) == {'complete', 'processes', 'calls', 'classifications', 'regenerated_fixture',
-                              'historical_numeric_identity_claimed', 'run_identity_sha256'}
+                              'historical_numeric_identity_claimed', 'run_identity_sha256',
+                              'packet_file_sha256', 'packet_binding_scope'}
               and complete['complete'] is True and type(complete['processes']) is int and complete['processes'] == 80
               and type(complete['calls']) is int and complete['calls'] == 880
               and complete['regenerated_fixture'] is True and complete['historical_numeric_identity_claimed'] is False
               and complete['run_identity_sha256'] == identity,
               'complete receipt plan/cardinality differs')
+    controller['validate_complete_packets'](out, jobs, complete)
     gold = read(c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json')
     results = controller['load_checkpoints'](out, jobs, identity, bound, gold, plan['postgres_installation'])
     c.require(len(results) == 80 and sum(len(packet['rows']) for packet in results.values()) == 880,
               'incomplete checkpoint matrix cannot produce a report')
     classifications = rows.oracle_checks(results)
     c.require(canonical(classifications) == canonical(complete['classifications']), 'complete oracle classifications differ')
+    controller['validate_complete_packets'](out, jobs, complete, results)
     packets = [results[controller['key'](job)] for job in jobs]
     # Supplied only after every actual log's CPU node/graph/runtime gate passed.
     provider_binding = {'device': 'cpu', 'execution_provider': 'CPUExecutionProvider',
         'scope': 'retained actual per-process log assignment/graph/runtime bindings revalidated by run.checkpoint'}
     result = report(packets, provider_binding=provider_binding)
+    result['completion_packet_binding_scope'] = controller['COMPLETE_PACKET_SCOPE']
     c.require(not (c.ROOT / 'tables.md').exists(), 'preserve prior report')
     c.save(c.ROOT / 'metrics.json', result)
     write_tables(c.ROOT / 'tables.md', result)

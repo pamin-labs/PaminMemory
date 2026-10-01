@@ -117,14 +117,18 @@ def canonical(value):
 
 
 
-def read_json(path):
+def decode_json(text):
     def unique(pairs):
         value = {}
         for name, item in pairs:
             c.require(name not in value, 'duplicate checkpoint JSON field')
             value[name] = item
         return value
-    return json.loads(path.read_text(), object_pairs_hook=unique)
+    return json.loads(text, object_pairs_hook=unique)
+
+
+def read_json(path):
+    return decode_json(path.read_text())
 
 
 def bind_postgres(actual, expected):
@@ -219,17 +223,52 @@ def checkpoint(packet, job, identity, bound, gold, out, postgres_installation):
     return packet
 
 
+COMPLETE_PACKET_SCOPE=('completion-time exact packet file digests, rechecked before reporting; '
+                       'mutable local endpoint receipt, not independent authenticity or continuous immutability proof')
+
+
+def packet_file_digests(out, jobs, packets=None):
+    expected = {job['name'] for job in jobs}
+    c.require(len(expected) == len(jobs), 'duplicate completion packet jobs')
+    result = {}
+    for job in jobs:
+        path = out / (job['name'] + '.json')
+        c.require(path.is_file() and not path.is_symlink(), 'completion packet regular file required')
+        data = path.read_bytes()
+        if packets is not None:
+            c.require(canonical(decode_json(data)) == canonical(packets[key(job)]),
+                      'completion packet differs from validated in-memory checkpoint')
+        result[job['name']] = hashlib.sha256(data).hexdigest()
+    return result
+
+
+def validate_complete_packets(out, jobs, complete, packets=None):
+    c.require(type(complete) is dict, 'complete packet binding object required')
+    hashes = complete.get('packet_file_sha256')
+    c.require(type(hashes) is dict and set(hashes) == {job['name'] for job in jobs}
+              and all(type(value) is str and re.fullmatch('[0-9a-f]{64}', value) is not None
+                      for value in hashes.values())
+              and complete.get('packet_binding_scope') == COMPLETE_PACKET_SCOPE,
+              'complete packet binding missing or invalid; legacy completion cannot be upgraded')
+    c.require(packet_file_digests(out, jobs, packets) == hashes, 'complete packet file digest differs')
+
+
 def load_checkpoints(out, jobs, identity, bound, gold, postgres_installation):
     expected = {job['name'] + '.json': job for job in jobs}
     c.require(not out.is_symlink(), 'results symlink forbidden')
     for path in out.glob('*.json'):
         c.require(path.name in expected or path.name in {'run-identity.json', 'complete.json'}, 'unknown checkpoint file')
         c.require(not path.is_symlink(), 'checkpoint symlink forbidden')
+    complete_path = out / 'complete.json'
+    if complete_path.exists():
+        validate_complete_packets(out, jobs, read_json(complete_path))
     results = {}
     for name, job in expected.items():
         path = out / name
         if path.exists():
             results[key(job)] = checkpoint(read_json(path), job, identity, bound, gold, out, postgres_installation)
+    if complete_path.exists():
+        validate_complete_packets(out, jobs, read_json(complete_path), results)
     common_postgres_runtime(results.values())
     for round_ in range(4):
         block = {k:v for k,v in results.items() if k[0] == round_}
@@ -328,7 +367,9 @@ def main():
         classifications = rows.oracle_checks(results)
         complete = {'complete': True, 'processes': 80, 'calls': 880,
                'classifications': classifications, 'regenerated_fixture': True,
-               'historical_numeric_identity_claimed': False, 'run_identity_sha256': identity}
+               'historical_numeric_identity_claimed': False, 'run_identity_sha256': identity,
+               'packet_file_sha256': packet_file_digests(out, jobs, results),
+               'packet_binding_scope': COMPLETE_PACKET_SCOPE}
         complete_path = out / 'complete.json'
         if complete_path.exists():
             c.require(canonical(read_json(complete_path)) == canonical(complete), 'completion receipt differs')
