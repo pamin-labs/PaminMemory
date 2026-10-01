@@ -35,6 +35,7 @@ for arm in ['main','predecessor','candidate']:
         observed_providers=runner.cpu_provider_assignments(log)
         for row in rows:
             if row['phase']=='process_total':
+                review.full_process_scope(row)
                 assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'HNSW invalid process elapsed'
                 continue
             review.measurement_annotations(row)

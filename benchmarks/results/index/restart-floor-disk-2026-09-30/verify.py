@@ -62,6 +62,7 @@ for arm,commit in expected_commits.items():
         review.new_write_visibility(new['extra'])
         for row in rows:
             if row['phase']=='process_total':
+                review.full_process_scope(row)
                 assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'Disk invalid process elapsed'
             if row['phase']!='process_total':
                 review.measurement_annotations(row)
