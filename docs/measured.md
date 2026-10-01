@@ -771,14 +771,15 @@ would be near one by construction.
 Ingest ran at a median 112 s a question for about 480 turns, 29,170 turns in
 all; search over one loaded haystack had a median of 0.24 s and a p95 of 0.47 s.
 
-**An abstention verdict from the reranker was measured, and does not ship.**
-The `accurate` tier's logit for the top hit, mapped through an isotonic fit on
-484 MuSiQue questions (held-out ECE 0.0590), with `weak` below a probability
-of one half, was scored through `pamin search` on all 1,986 LoCoMo questions
-against a rule written before the run: abstain more on the adversarial column,
-lose nothing significant elsewhere. It abstained on 140 of 446 adversarial
-questions and withdrew retrieved answers from every other column, each fall
-significant:
+**Historical abstention experiment: invalid for product calibration.** No
+abstention verdict ships. The historical isotonic map was fitted on batched
+MuSiQue top-hit scores (484 questions, reported held-out ECE 0.0590), but the
+LoCoMo/LongMemEval evaluation reused individual pair logits or generated
+singleton scores; 1,789 of 1,986 LoCoMo top hits used the singleton path. INT8
+neighbours and padding affect the score, so these are incomparable model inputs.
+The ECE, AUROC, `weak` rates, paired outcomes and decision claims are withdrawn
+as product-calibration evidence. The following table preserves historical
+numbers only and must not be used to accept or reject an abstention strategy:
 
 | LoCoMo, evidence in the top ten and not `weak` | n | never abstains | with the verdict | p |
 | --- | --- | --- | --- | --- |
@@ -788,10 +789,12 @@ significant:
 | single-hop | 841 | 0.810 | 0.718 | 1e-23 |
 | adversarial, `weak` | 446 | 0 | 0.314 | 1e-42 |
 
-LongMemEval-S recall_any@10 fell from 0.983 to 0.627 (p = 1e-6). The
-score separates adversarial from answerable questions at AUROC 0.606, and its
-calibration does not transfer: ECE 0.3100 on LoCoMo's top hits. The conditions
-and the reasons are in [the ADR](adr/0001-tech-selection.md).
+Other retained historical observations were LongMemEval-S recall_any@10 0.983
+versus 0.627 (p = 1e-6), LoCoMo AUROC 0.606, and LoCoMo ECE 0.3100. They do
+not establish calibration transfer failure or valid product effects. Current
+product calibration metrics are N/A. The [ADR validity correction](adr/0001-tech-selection.md#the-transfer-test-taken-as-an-abstention-decision-invalid-for-product-calibration)
+records the incomparable scoring procedure, retained observations and complete
+product-batch requirements. No corrected experiment was run; valid product-calibration metrics remain N/A.
 
 **Latency**, what one `pamin search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,

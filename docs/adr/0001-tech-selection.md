@@ -983,9 +983,9 @@ ablations, so nothing in it separates a retrieval gain from an abstention gain,
 and the per-column decomposition says most of it is the second. This project
 has no abstention at all: `pamin search` returns its best candidates whatever
 the evidence looks like. That is a gap worth naming, and it is a different gap
-from retrieval quality. Closing it with the calibrated reranker score was
-measured and does not ship; see "The transfer test, taken as an abstention
-decision" below.
+from retrieval quality. The historical calibrated-reranker experiment is invalid for product
+calibration because it compared different INT8 batch contexts; no abstention
+verdict ships. See [the withdrawn transfer test](#the-transfer-test-taken-as-an-abstention-decision-invalid-for-product-calibration) below.
 
 **Why their weighted sum works where this project's did not.** They combine
 five terms as a plain normalised weighted sum: embedding similarity, query
@@ -2430,12 +2430,12 @@ as the reason an off-the-shelf reranker loses. So it is a thing to watch for,
 not a thing to adopt, and it goes into the sweep the day one appears
 permissively licensed.
 
-### What a calibrated score would restructure, and why the cheap version comes first
+### What a calibrated score could restructure: product validation pending
 
 Everything above about a calibrated relevance probability is scattered through
 three sections as a thing that would be nice to have. It is worth stating once
-what it would actually change, because the answer is larger than a better
-reranker and the route to it turns out not to need a new model at all.
+what it would actually change, as a hypothesis whose product validation remains open. The historical
+abstention transfer experiment below cannot choose a model or a strategy.
 
 **One constraint holds up the whole fusion design.** The four channels' scores
 are not commensurable — a BM25 score, a cosine similarity and a hop-decayed
@@ -2447,9 +2447,9 @@ is narrow enough that a channel's *weight* decides against another channel's
 cross-lingual recall through the floor when it broke the property. One
 constraint, one design.
 
-A calibrated `P(relevant | query, document)` removes the constraint rather than
-working around it, because such a number is comparable across channels, across
-queries and across corpora:
+A relevance probability validated on the intended query, candidate-batch and
+corpus distribution could support the following designs. Calibration on one
+distribution does not establish comparability across channels or corpora:
 
 | | today | with a calibrated score |
 | --- | --- | --- |
@@ -2467,30 +2467,21 @@ detail to settle later; it is the same question as whether the reranker's score
 should *join* the channels' evidence or *replace* it, and it is therefore the
 necessary shape of any partial-scoring architecture, calibrated or not.
 
-**And the cheap version comes first, because a cross-encoder can be calibrated
-too.** A temperature, Platt or isotonic fit on the tier already running —
-against held-out judgements — yields a calibrated probability from the model
-this project already pays 260 ms for. No new model, no new dependency, no
-647 MB download, and none of the per-question-shape temperature maintenance the
-alternative's own card describes.
+**Calibrating the existing cross-encoder is a candidate, not a validated
+ordering decision.** A temperature, Platt or isotonic fit can be evaluated
+against held-out judgements without introducing a new model. The historical
+trace contained 18,353 `(score, relevant?)` pairs over 1,190 queries, but their
+availability alone does not establish suitable product calibration inputs.
+Complete ordered candidate batches, tokenizer padding and physical batch shapes
+must be retained and matched to the product's scoring semantics.
 
-It is measurable offline from data already on disk, which it was not before
-`Why::Reranked` existed: **18,353 `(score, relevant?)` pairs over 1,190
-queries** come straight out of the trace, and Platt is a two-parameter fit. So
-the thing blocking every row of the table above was never the model. It was
-that the score was computed and thrown away.
+A valid evaluation would fit on one held-out split and separately assess
+transfer on another corpus with logits captured from its complete product
+batches. The experiment below did not meet that premise. It cannot show that a
+purpose-trained judge would succeed or fail, prioritize one calibration
+strategy, or establish cross-corpus score comparability.
 
-That ordering also improves the model question either way. If calibrating the
-shipped tier opens those doors, a purpose-trained calibrated judge becomes a
-candidate for a *better* one, measured against a calibrated baseline rather
-than against nothing. If it does not open them, a purpose-trained one very
-likely will not either — calibration is notoriously corpus-specific, and
-cross-corpus comparability is the exact property being bought. So the fit is
-made on one corpus and **the calibration error is reported on another**. A fit
-that does not transfer is a negative result worth publishing, and it would
-predict the same failure for anything calibrated per question shape.
-
-**Measured, and the shape of the fit is the finding.** `CALIBRATE=1` on
+**Historical within-corpus fit observations, not product transfer validation.** `CALIBRATE=1` on
 XQuAD-R, 9,147 pairs fitted against 9,175 held out, split so no query is on both
 sides, 43.8% of the cross-lingual pairs relevant. Expected calibration error on
 the held-out half:
@@ -2501,11 +2492,12 @@ the held-out half:
 | Platt, with label smoothing | 0.2146 (**+0.1241**) |
 | isotonic regression | **0.0172** (−0.0733) |
 
-So a calibrated cross-query-comparable probability *is* available from the tier
-already running, at zero new download and zero new runtime cost — but only from
-the monotone fit. The reliability table under isotonic is diagonal across ten
-bins: 0.045 predicted against 0.042 observed on 1,669 candidates, 0.237 against
-0.258, 0.633 against 0.643, 0.943 against 0.918.
+These are observations of the historical trace's fit, not evidence that a
+calibrated product probability transfers across batch contexts or corpora. The
+historical reliability bins were 0.045 predicted against 0.042 observed on
+1,669 candidates, 0.237 against 0.258, 0.633 against 0.643, and 0.943 against
+0.918. Product calibration, runtime overhead and any implementation choice
+remain unvalidated.
 
 **Platt fails here, and not for want of regularisation.** The first attempt was
 read as a missing-regulariser bug in this repository and it was not: with
@@ -2526,42 +2518,52 @@ is quoted.
 
 And the caveat the harness prints itself still stands: this fit is made and
 tested on one corpus, so it bounds the within-corpus case and says nothing about
-another. The transfer test is the one that decides whether the fusion rows of
-the table above can be believed, and it belongs on a corpus this was not fitted
-on.
+another. A valid transfer test would also need comparable complete product batch
+contexts; the historical abstention experiment below does not provide one.
 
-### The transfer test, taken as an abstention decision: measured, not shipped
+### The transfer test, taken as an abstention decision: invalid for product calibration
 
-The decision that would use a calibrated score first is abstention, and it has
-a column to be scored on: LoCoMo's adversarial questions, where upstream's own
-evaluation counts only "not mentioned" as correct. So the transfer test was
-run as that decision, through `pamin search` itself, with the rule written
-down before any LoCoMo or LongMemEval search ran.
+**Validity correction (2026-10-01): this historical experiment is invalid for
+product calibration and strategy selection.** The INT8 reranker logit depends
+on neighbouring pairs, order, padding and physical batch shape. MuSiQue fitting
+used batched scores, while transfer reused an individual pair logit from an
+existing context or scored the final top hit alone. Of 1,986 LoCoMo top hits,
+1,789 used that singleton path. Those inputs are not comparable to the fit's
+complete product batches. The ECE, AUROC, `weak` rates, paired outcome tables
+and decision claims below are withdrawn as product-calibration evidence.
+Numerical observations are retained for historical audit only; they neither
+validate nor refute the abstention strategy or cross-corpus calibration. No corrected experiment was run; valid product-calibration metrics remain
+N/A.
 
-**The signal.** The `accurate` tier's logit for the top hit `pamin search`
-returns -- reused when the reranker already scored it, scored as one more pair
+**Historical signal, with invalid batch comparability.** The `accurate` tier's
+logit for the top hit `pamin search` returns -- reused when the reranker already scored it, scored as one more pair
 after the ranking is final when it did not, so the order returned is
 unchanged -- mapped through an isotonic fit, with the verdict `weak` below a
-probability of 0.5. The half is the equal-cost decision on a calibrated
-probability, not a fitted cut. The results were still returned; the verdict
+probability of 0.5. The historical rule treated the half as an equal-cost
+decision; comparable calibrated probabilities were not established by this
+experiment. The results were still returned; the verdict
 was advice beside them.
 
-**The fit, on a third corpus.** 484 MuSiQue answerable dev questions, every
-fifth, their 5,964 paragraphs pooled into one project, labelled by whether the
+**Historical within-MuSiQue fit observations; transfer validity unestablished.**
+484 MuSiQue answerable dev questions, every fifth, their 5,964 paragraphs pooled into one project, labelled by whether the
 top hit is a supporting paragraph (74.4% were). Held-out expected calibration
 error, fitted on one half by question and scored on the other: **0.0590**
-isotonic against 0.1804 for the raw sigmoid. Within a corpus the fit works
-again, as it did on XQuAD-R.
+isotonic against 0.1804 for the raw sigmoid. Those values describe the historical
+within-MuSiQue split; its own batch-input validity is not re-evaluated here. Even
+a valid within-corpus fit cannot validate applying the map to singleton or
+reused-pair transfer logits.
 
-**The rule.** Ship the verdict as a field only if, paired per question with an
-exact two-sided McNemar test: adversarial improves at p < 0.05, none of the
+**Historical acceptance rule; no valid decision from this run.** Ship the
+verdict as a field only if, paired per question with an exact two-sided McNemar test: adversarial improves at p < 0.05, none of the
 four answerable columns falls at p < 0.05, and LongMemEval-S does not either.
 An answerable question counts as served when an evidence turn is in the top ten
 *and* the verdict is `sufficient`; an adversarial one when the verdict is
 `weak`.
 
-**Measured on all 1,986 LoCoMo questions**, one project per conversation, the
-turns written as the benchmark harness writes them:
+**Historical observations on all 1,986 LoCoMo questions — invalid for product
+calibration**, one project per conversation, the turns written as the benchmark
+harness writes them. Every table entry, including p values and `weak` rates,
+describes this incomparable scoring procedure, not validated product outcomes:
 
 | column | n | never abstains | with the verdict | wins | losses | p | `weak` rate |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -2572,46 +2574,45 @@ turns written as the benchmark harness writes them:
 | adversarial | 446 | 0 | **0.314** | 140 | 0 | 1e-42 | 0.314 |
 | all five | 1,986 | 0.614 | 0.581 | 140 | 205 | 0.0006 | |
 
-On LongMemEval-S, the 59-question sample the published figures use,
-recall_any@10 falls from 0.983 to 0.627 (no wins, 21 losses, p = 1e-6), the
-verdict calling a third of the top hits `weak`. On its 30 false-premise `_abs`
+Historical LongMemEval-S observations, on the 59-question sample used by the
+published figures, were recall_any@10 0.983 versus 0.627 (no wins, 21 losses,
+p = 1e-6), the verdict calling a third of the top hits `weak`. On its 30 false-premise `_abs`
 questions, where abstaining is the benchmark's answer, it is `weak` on 22
 (p = 5e-7), but the same threshold withdrew 21 of the 58 answers the sample had
-retrieved: the two sets separate at AUROC 0.716.
+retrieved; the historical AUROC was 0.716. These are not valid product
+calibration or transfer comparisons.
 
-**The rule fails, on every guard at once.** The verdict abstains on a third
-of the adversarial questions, and to do it withdraws between 11% (single-hop)
-and 44% (open-domain) of the answers every other column had retrieved; pooled
-over all five, LoCoMo gets significantly worse. It does not ship.
+**Interpretation withdrawn.** The historical ECE/AUROC values were: LoCoMo
+AUROC 0.606 (0.640 on retrieved answerable evidence), median probabilities
+0.762 versus 0.600; ECE 0.3100 against MuSiQue's historical 0.0590, with bins
+0.372 predicted versus 11.4% relevant (297 hits) and 0.977 versus 80.6%
+(391 hits); LongMemEval ECE 0.2951. Historical relevant-top-hit proportions
+were 42.1% on LoCoMo's answerable questions and 74.4% on MuSiQue. These values
+are retained as observations of incompatible batch inputs. The historical
+narrative also recorded a pre-run AUROC prediction of 0.55–0.65 and noted that
+74% of adversarial questions matched a turn spoken by the other speaker. This
+run cannot confirm that explanation or isolate attribution sensitivity, corpus
+shift or calibration transfer. The previous
+claims that the rule failed, the fit did not travel, or a per-corpus fit or
+purpose-trained attribution-aware judge was required are withdrawn.
 
-**Why: the signal barely separates the two, and the fit does not travel.**
-The probability ranks an answerable question above an adversarial one with
-AUROC **0.606** (0.640 counting only answerable questions whose evidence was
-retrieved) -- median 0.762 against 0.600. That was predicted before the run
-(0.55 -- 0.65), for the reason given then, which the run is consistent with
-but does not isolate: 74% of its
-questions have a turn that matches exactly and was only said by the other
-speaker, and a relevance model is not trained to care who said something. The
-calibration did not transfer either. On LoCoMo's answerable top hits the
-MuSiQue map scores an ECE of **0.3100**, against 0.0590 on its own held-out
-half: it says 0.372 where 11.4% are relevant (297 hits) and 0.977 where 80.6%
-are (391). A conversational turn is short and indirect beside a Wikipedia
-paragraph, and 42.1% of LoCoMo's answerable top hits are an evidence turn against 74.4%
-of MuSiQue's, so the same logit means something different. LongMemEval says
-the same: ECE 0.2951 on its top hits.
-
-So the caveat above resolves the way it was feared: the isotonic fit is a
-within-corpus result. What the cross-query-comparable score still offers --
-the rows of the table in the section above -- needs a fit per corpus, or a
-judge trained to be calibrated across them, and an abstention decision needs a
-signal that sees attribution, which a relevance score does not.
+No abstention verdict ships, and the implementation was historically reverted;
+that source state does not establish a validated accept/reject decision for the
+strategy. A future evaluation must retain logits from each complete ordered
+product candidate batch with identical model/export/revision/provider settings,
+tokenizer IDs/masks, padding and logical/physical shapes. Fit/evaluation query
+splits, labels and acceptance rules must be fixed beforehand, and score-context
+provenance checked before ECE, AUROC, `weak` rates or decisions are published.
+Singleton/reused-pair scores cannot substitute for those product logits. Current
+valid product-calibration metrics and their differences are N/A; no opposite
+strategy or measured calibration gain is claimed.
 
 Conditions: a release build of the verdict (`2a72188`, `5d7adf0`) with an
 empty table, so each row recorded the raw sigmoid of the logit; the table was
-fitted afterwards and applied to those logits offline, which is the same
-lookup the build with the table performs. `pamin search --limit 10 --json` at
+fitted afterwards and applied to those logits offline. An identical lookup
+does not repair incompatible inference inputs. `pamin search --limit 10 --json` at
 the shipped tier, four cores at a load average near 18. The latency of the
-extra pair was not measured, because the rule failed on accuracy first; the
+extra pair was not measured; the historical rule interpretation is withdrawn. The
 top hit arrived without a reranker score on 1,789 of the 1,986 LoCoMo
 searches. Reverted in `8dcfd14`.
 
