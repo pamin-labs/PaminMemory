@@ -238,10 +238,10 @@ impl Embedder {
     }
 
     pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
-        if !self.revalidation_due() {
-            if let Some(known) = self.remembered.get(text) {
-                return Ok(known);
-            }
+        if !self.revalidation_due()
+            && let Some(known) = self.remembered.get(text)
+        {
+            return Ok(known);
         }
         let primary = match self.profile.prefixes() {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
