@@ -646,7 +646,8 @@ pub(crate) fn measured<T>(
     ]
     .map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v3|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        "persistent-plan-v4|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        env!("PAMIN_INFERENCE_BUILD"),
         threads(),
         std::thread::available_parallelism(),
         ort::info(),

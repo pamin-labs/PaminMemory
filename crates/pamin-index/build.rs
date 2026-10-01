@@ -5,6 +5,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    build_identity();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -38,6 +39,62 @@ fn main() {
             "optional Windows ML catalog could not be fetched; GPU/CPU remain available",
         );
     }
+}
+
+fn build_identity() {
+    use sha2::{Digest, Sha256};
+    fn sources(directory: &std::path::Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("read inference sources") {
+            let path = entry.expect("source entry").path();
+            if path.is_dir() {
+                sources(&path, files);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = vec![PathBuf::from("build.rs"), PathBuf::from("Cargo.toml")];
+    sources(std::path::Path::new("src"), &mut files);
+    // Registry installs need not carry the workspace files.
+    for name in ["../../Cargo.toml", "../../Cargo.lock"] {
+        if std::path::Path::new(name).is_file() {
+            files.push(PathBuf::from(name));
+        }
+    }
+    files.sort();
+    let mut hash = Sha256::new();
+    for path in files {
+        println!("cargo:rerun-if-changed={}", path.display());
+        hash.update(path.to_string_lossy().as_bytes());
+        hash.update(std::fs::read(path).expect("read build identity input"));
+    }
+    for key in [
+        "TARGET",
+        "PROFILE",
+        "OPT_LEVEL",
+        "DEBUG",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_CFG_TARGET_FEATURE",
+    ] {
+        println!("cargo:rerun-if-env-changed={key}");
+        hash.update(key.as_bytes());
+        hash.update(
+            std::env::var_os(key)
+                .unwrap_or_default()
+                .to_string_lossy()
+                .as_bytes(),
+        );
+    }
+    if let Ok(output) = Command::new(std::env::var_os("RUSTC").expect("rustc path"))
+        .arg("--version")
+        .output()
+    {
+        hash.update(output.stdout);
+    }
+    println!(
+        "cargo:rustc-env=PAMIN_INFERENCE_BUILD={:x}",
+        hash.finalize()
+    );
 }
 
 fn unavailable(out: &std::path::Path, reason: &str) {
