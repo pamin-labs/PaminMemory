@@ -59,3 +59,14 @@ python3 benchmarks/verify_compute_evidence.py
 This independently recomputes paired nDCG/recall, 240-paragraph shared sign flips/cluster bootstrap and all 21 cost blocks from raw rows, asserts paired IDs/corpus sizes and checks each reported percentile/RSS value. Timing program sources remain scratch-only; source/binary hashes and execution identities are retained. Frozen candidate commits are reachable as `bench/prototype-cost-2026-10-01` (503bd9e) and `bench/persisted-cost-2026-10-01` (0f023be); fetch these tags when inspecting those revisions. Re-running the live workload requires a provisioned unprivileged PostgreSQL workspace and the fingerprinted models/data, 66 fixed query indices `18*i` (i=0..65), warm query 1189, and the product settings above. Freeze executables before launch and keep builds out of timing runs. Historical total ingest time was measured on a shared host with intervening builds and is not a causal speed comparison.
 
 The original query-level statistical summary is retained as historical, not the inference unit for acceptance. `cluster-inference.json` records 100,000 shared flips and cluster-bootstrap draws (PCG64 seed 20261001): cross Holm p≈0.000040; same-language p≈0.153978, lower 95% delta bound -0.001348, still above -0.005. Point metrics and raw rankings are unchanged.
+
+## Fetch measured source refs in a shallow review checkout
+
+A pull-request checkout does not automatically include unrelated benchmark tags.
+The remote refs are verified at [prototype source](https://github.com/pamin-labs/PaminMemory/tree/bench/prototype-cost-2026-10-01) and [persisted source](https://github.com/pamin-labs/PaminMemory/tree/bench/persisted-cost-2026-10-01).
+
+```sh
+git fetch origin refs/tags/bench/prototype-cost-2026-10-01:refs/tags/bench/prototype-cost-2026-10-01 refs/tags/bench/persisted-cost-2026-10-01:refs/tags/bench/persisted-cost-2026-10-01
+git cat-file -t 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27
+git cat-file -t 0f023be6a8d8d070a971f7e590ccccff2c3292bb
+```
