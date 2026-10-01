@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "baseline_commit": "2f5bd087ceb4b65a25dc94932e416d8ac5c29740",
+  "candidate_commit": "d0b6a14a4f317fea3c1e117f627289aad1b1c964",
+  "native_probe_sha256": "7a16f16acd939b68a65d8ae4c9a8fcff53e44d76508d4812ef0b8438b5299d2f",
+  "helper_sha256": "1473c07b397282d3a5bc833b2e8d3a94e824703a4219012251d2cd80af027b50",
+  "baseline_files": 124,
+  "candidate_files": 124,
+  "baseline_archive_bytes": 647464,
+  "shared_origin": "552d30f65143a963417a0ebc69ae0be07f65e3a6",
+  "raw_evidence_modified": false,
+  "historical_binaries_or_indexes_recreated": false,
+  "historical_controllers_byte_exact": false,
+  "prospective_shared_sanitized_controller_dependency": true,
+  "shared_origin_scope": "local integration source identity; exact supplied file hashes are authoritative, not commit fetchability"
+}
