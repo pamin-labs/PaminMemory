@@ -719,6 +719,9 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
         match operation(active, selected) {
             Ok(result) => {
                 let replaced = replacement.is_some();
+                if revalidating && !replaced {
+                    model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
+                }
                 if let Some((active, selected)) = replacement {
                     *model = active;
                     *device = selected;
@@ -1168,7 +1171,7 @@ fn host_calibration_directory() -> Option<PathBuf> {
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
-    let directory = cache.join("pamin-inference");
+    let directory = cache.join("pamin-memory");
     std::fs::create_dir_all(&directory).ok()?;
     Some(directory)
 }
@@ -1208,6 +1211,13 @@ fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<Cache
         || saved.expires <= now
         || saved.expires > now + 86400
         || !valid_references(&saved.references)
+    {
+        return None;
+    }
+    if saved.target != Device::Cpu.name()
+        && saved.references.vectors.is_none()
+        && saved.references.queries.is_none()
+        && saved.references.scores.is_none()
     {
         return None;
     }
@@ -2446,6 +2456,52 @@ mod tests {
     }
 
     #[test]
+    fn failed_reload_rearms_after_a_long_resident_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = std::time::Instant::now();
+        let later = entry + RUNTIME_RETRY * 2;
+        let clock = std::cell::Cell::new(entry);
+        let mut model = RuntimeFixture::new(42, "cpu");
+        model.plan.retry_at = Some(entry);
+        let mut device = Device::Cpu;
+        let (_, replaced) = retry_model_with_clock(
+            &mut model,
+            &mut device,
+            root.path(),
+            || clock.get(),
+            |_, _| {
+                clock.set(later);
+                Ok(42)
+            },
+            || Err(IndexError::Engine("reload unavailable".into())),
+        )
+        .unwrap();
+        assert!(!replaced);
+        assert_eq!(model.plan.retry_at, Some(later + RUNTIME_RETRY));
+    }
+
+    #[test]
+    fn persisted_accelerator_without_cpu_proof_is_a_cache_miss() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("plan.json");
+        let key = "missing-proof";
+        let plan = CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false);
+        write_plan(&path, key, &plan).unwrap();
+        assert!(read_plan(&path, key, &[(Device::Cuda, vec![cpu()].into())]).is_none());
+        let proven = plan.with_references(References {
+            scores: Some(vec![1.0; 4]),
+            ..Default::default()
+        });
+        write_plan(&path, key, &proven).unwrap();
+        assert!(read_plan(&path, key, &[(Device::Cuda, vec![cpu()].into())]).is_some());
+        assert_eq!(
+            host_calibration_directory().unwrap().file_name().unwrap(),
+            "pamin-memory",
+            "legacy user-wide lock namespace must survive upgrades"
+        );
+    }
+
+    #[test]
     fn one_accelerator_must_win_multiple_interleaved_rounds() {
         use std::cell::Cell;
         use std::time::Duration;
@@ -2926,14 +2982,18 @@ mod tests {
         let path = plan_file(root.path(), "publication").unwrap();
         let cache = std::sync::Mutex::default();
         let plans = vec![(Device::Cuda, vec![cpu()].into())];
+        let proof = std::cell::RefCell::<References>::default();
         let (_, device, _) = calibrated_with_references(
             "publication",
             plans.clone(),
             &cache,
-            &std::cell::RefCell::default(),
+            &proof,
             PlanFiles::for_record(&path),
             |device, _, _| Ok(device),
             |_, device| {
+                if device == Device::Cpu {
+                    proof.borrow_mut().scores = Some(vec![1.0; 4]);
+                }
                 Ok(Duration::from_millis(if device == Device::Cpu {
                     10
                 } else {
@@ -2994,7 +3054,12 @@ mod tests {
             write_plan(
                 &path,
                 "published",
-                &CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false),
+                &CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false).with_references(
+                    References {
+                        scores: Some(vec![1.0; 4]),
+                        ..Default::default()
+                    },
+                ),
             )
             .unwrap();
         }
