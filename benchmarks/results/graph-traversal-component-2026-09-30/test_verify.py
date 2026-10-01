@@ -429,6 +429,20 @@ if __name__ == '__main__':
                 mutate_json(root/source,change)
             run_case('capture timestamp '+source+'/'+repr(value),timestamp,expected_error='retained '+label+' capture timestamp differs')
     run_case('missing generated arm manifest flag',lambda root:(root/'README.md').write_text((root/'README.md').read_text().replace('  --manifest-path "$ARMS/$ARM/Cargo.toml" \\\n','')),expected_error='complete approved recipe differs')
+    for arm in ['baseline','scored']:
+        run_case('finite raw score replacement '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row['non_graph'][0]['ranks'][0].update(score=999.0)),expected_error='retained non-graph raw inventory differs')
+        for index in range(4 if arm=='scored' else 3):
+            for value in [True,1.0,'1']:
+                def hop_type(root,arm=arm,index=index,value=value):
+                    def change(row):
+                        why=row['targets'][index]['why'] if index<3 else row['early_stop']['why']
+                        next(w for w in why if w['kind']=='path')['hops']=value
+                    mutate_json(root/(arm+'.jsonl'),change)
+                run_case('non-native hop type '+arm+'/'+str(index)+'/'+repr(value),hop_type,expected_error='path hop count must be a positive integer')
+        for suffix in ['jsonl','trace.jsonl','usage.json']:
+            for value in ['changed scores/timings/providers','',True,None]:
+                run_case('JSON scope '+arm+'.'+suffix+'/'+repr(value),lambda root,arm=arm,suffix=suffix,value=value:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.'+suffix].update(scope=value)),expected_error='JSON redaction scope differs')
+            run_case('missing JSON scope '+arm+'.'+suffix,lambda root,arm=arm,suffix=suffix:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.'+suffix].pop('scope')),expected_error='JSON redaction scope differs')
     round12_interval_channel_cases()
     round10_native_type_cases()
     complete_non_graph_cases()

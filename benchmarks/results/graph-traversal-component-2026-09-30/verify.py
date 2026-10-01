@@ -10,6 +10,8 @@ ROOT=Path(__file__).resolve().parent
 BUILD_RECIPE_SHA256='2d0af388526f26336d1b414f5d46d765f93f905ec50f9770eea07e4b8e324077'
 RUNTIME_RECIPE_SHA256='8c9404312e9a8f20fb8fade6c2380597aa4155a606c7ba7b94528980156c85d4'
 
+# Complete retained raw inventories, including native UUIDs/scores; capture-only pins.
+NON_GRAPH_PINS = {'baseline': '2798681a63379fc62f5abe0c79593d97b6533a38a9762224aa429c344d42199a', 'scored': '2fa0b1056f508318241aa00d6e0923e42653859621138fd454cfa3ebd822373b'}
 def close(a,b):return math.isclose(a,b,rel_tol=0,abs_tol=1e-6)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def graph_only_evidence(hit):
@@ -19,6 +21,7 @@ def graph_only_evidence(hit):
  paths=[w for w in why if w.get('kind')=='path']
  assert len(paths)==1, 'reached target must have exactly one path record'
  assert paths[0].get('edge')=='related_to' and paths[0].get('derivation')=='deterministic', 'controlled path edge/derivation differs'
+ assert type(paths[0].get('hops')) is int and paths[0]['hops']>0, 'path hop count must be a positive integer'
  assert len(why)==2, 'graph-only target complete Why must contain only graph and path records'
  return graph[0],paths[0]
 # Frozen native Why values from the reviewed 2026-09-30 capture, not values
@@ -75,6 +78,9 @@ ORIGINAL_LAUNCH_PINS = {'baseline': '72038565da7e2273384ee28a369df2a8eaf84f8eb44
 for name,record in provenance['redactions'].items():
  if name.endswith('.log'):
   assert type(record.get('scope')) is str and record['scope']=='trim empty trailing log line; no test result content change', 'original log formatting-only redaction scope differs'
+ else:
+  expected_scope='canonical JSON formatting only; no metric or exit-status changes' if name.endswith('.usage.json') else 'canonical JSON formatting and local path-prefix replacement only; no score, timing, provider or result changes'
+  assert type(record.get('scope')) is str and record['scope']==expected_scope, 'JSON redaction scope differs'
  assert type(record.get('changed')) is bool and record['changed'] == (record['original_sha256'] != record['published_sha256']), 'redaction changed flag differs'
  assert record['original_sha256'] == ORIGINAL_REDACTION_PINS[name], 'original redaction binding differs'
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
@@ -267,6 +273,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   assert sorted(r['rank'] for h in row['non_graph'] for r in h['ranks'] if r['channel']==channel) == list(range(1,51)), 'incomplete/duplicate top50 rank inventory'
  assert all(r['score'] is None or math.isfinite(r['score']) for h in row['non_graph'] for r in h['ranks'])
  visible={r['topic'] for r in row['non_graph']}
+ assert hashlib.sha256(json.dumps(row['non_graph'],sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()==NON_GRAPH_PINS[arm], 'retained non-graph raw inventory differs'
  assert not visible.intersection(row['target_labels']) and row['early_stop']['target'] not in visible
  # Fixture chooses the first 67 hidden topics in repository name order.
  hidden = sorted(set(f'islandnode{n:04}' for n in range(240)) - visible)[:67]
