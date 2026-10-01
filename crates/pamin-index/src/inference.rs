@@ -911,71 +911,128 @@ fn persistence_supported(plans: &[(Device, Target)], cuda_identified: bool) -> b
 }
 
 fn cuda_identity() -> Option<String> {
-    let bytes = optional_output(
-        std::process::Command::new("nvidia-smi").args([
+    #[cfg(unix)]
+    {
+        let mut command = std::process::Command::new("nvidia-smi");
+        command.args([
             "--query-gpu=index,uuid,pci.bus_id,name,driver_version",
             "--format=csv,noheader",
-        ]),
-        std::time::Duration::from_secs(2),
-    )?;
-    cuda_inventory(&bytes)
+        ]);
+        cuda_inventory(&bounded_inventory(
+            command,
+            std::time::Duration::from_secs(2),
+        )?)
+    }
+    #[cfg(not(unix))]
+    None
 }
 
-/// Optional hardware inventory must never hold inference behind a wedged
-/// driver. A regular output file avoids waiting on inherited pipe handles.
-fn optional_output(
-    command: &mut std::process::Command,
+/// At most one inventory child and cleanup worker may exist in this process.
+/// A wedged driver keeps the permit until the killed child is actually reaped;
+/// further probes return no identity without adding children or threads.
+#[cfg(unix)]
+struct InventoryPermit(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(unix)]
+impl InventoryPermit {
+    fn acquire(busy: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<Self> {
+        busy.compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .ok()?;
+        Some(Self(busy))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for InventoryPermit {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(unix)]
+fn bounded_inventory(
+    command: std::process::Command,
     timeout: std::time::Duration,
 ) -> Option<Vec<u8>> {
-    use std::io::{Read, Seek};
-    let path = std::env::temp_dir().join(format!("pamin-inventory-{}", uuid::Uuid::now_v7()));
-    let mut file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(&path)
+    static BUSY: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+        std::sync::OnceLock::new();
+    let permit = InventoryPermit::acquire(BUSY.get_or_init(Default::default).clone())?;
+    inventory_with_permit(command, timeout, permit)
+}
+
+#[cfg(unix)]
+fn inventory_with_permit(
+    mut command: std::process::Command,
+    timeout: std::time::Duration,
+    permit: InventoryPermit,
+) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::process::Stdio;
+    // The standard library owns nonblocking configuration and descriptor
+    // transfer. A socket pair avoids handwritten fcntl FFI.
+    let (mut output, writer) = UnixStream::pair().ok()?;
+    output.set_nonblocking(true).ok()?;
+    command
+        .stdout(Stdio::from(OwnedFd::from(writer)))
+        .stderr(Stdio::null());
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("cuda-inventory".into())
+        .spawn(move || {
+            let Some(mut child) = command.spawn().ok() else {
+                return;
+            };
+            let deadline = std::time::Instant::now() + timeout;
+            let result = (|| {
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let exited = child.try_wait().ok()?;
+                    loop {
+                        match output.read(&mut buffer) {
+                            Ok(0) => break,
+                            Ok(read) => {
+                                if bytes.len() + read > 65536 {
+                                    return None;
+                                }
+                                bytes.extend_from_slice(&buffer[..read]);
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(_) => return None,
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return None;
+                        }
+                    }
+                    if let Some(status) = exited {
+                        return status.success().then_some(bytes);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            })();
+            if result.is_none() {
+                let _ = child.kill();
+                // This wait can outlast the caller's deadline but retains the sole
+                // permit. No subsequent inventory can create another reaper.
+                let _ = child.wait();
+            }
+            drop(permit);
+            let _ = send.send(result);
+        })
         .ok()?;
-    let result = (|| {
-        let mut child = command
-            .stdout(file.try_clone().ok()?)
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
-        let deadline = std::time::Instant::now() + timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Err(_) => break None,
-                Ok(None) => {}
-            }
-            if std::time::Instant::now() >= deadline
-                || file.metadata().map_or(true, |meta| meta.len() > 65536)
-            {
-                break None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
-        if status.is_none() {
-            let _ = child.kill();
-            // Reap asynchronously: kill/wait cannot synchronously unblock a
-            // process stuck inside an uninterruptible driver syscall.
-            let _ = std::thread::Builder::new()
-                .name("inventory-reap".into())
-                .spawn(move || {
-                    let _ = child.wait();
-                });
-            return None;
-        }
-        if !status?.success() || file.metadata().ok()?.len() > 65536 {
-            return None;
-        }
-        file.rewind().ok()?;
-        let mut bytes = Vec::new();
-        file.take(65536).read_to_end(&mut bytes).ok()?;
-        Some(bytes)
-    })();
-    let _ = std::fs::remove_file(path);
-    result
+    receive
+        .recv_timeout(timeout + std::time::Duration::from_millis(100))
+        .ok()?
 }
 
 fn cuda_inventory(bytes: &[u8]) -> Option<String> {
@@ -2126,24 +2183,79 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn optional_inventory_times_out_without_blocking_model_loading() {
+    fn inventory_probe_bounds_stalls_and_output_and_reaps_children() {
+        use std::time::Duration;
+        let mut success = std::process::Command::new("sh");
+        success.args(["-c", "printf '0, GPU-test, pci, name, driver\\n'"]);
+        let bytes = bounded_inventory(success, Duration::from_secs(1)).unwrap();
+        assert!(cuda_inventory(&bytes).is_some());
+        let mut failure = std::process::Command::new("sh");
+        failure.args(["-c", "exit 1"]);
+        assert!(bounded_inventory(failure, Duration::from_secs(1)).is_none());
+        let mut stalled = std::process::Command::new("sh");
+        stalled.args(["-c", "exec sleep 30"]);
         let start = std::time::Instant::now();
+        assert!(bounded_inventory(stalled, Duration::from_millis(50)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let mut noisy = std::process::Command::new("sh");
+        noisy.args(["-c", "while :; do printf 'too much inventory'; done"]);
+        assert!(bounded_inventory(noisy, Duration::from_secs(1)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_admission_remains_held_until_cleanup_releases_it() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        let busy = Arc::new(AtomicBool::new(false));
+        let permit = InventoryPermit::acquire(busy.clone()).unwrap();
+        let (ready, started) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _permit = permit;
+            ready.send(()).unwrap();
+            wait.recv().unwrap();
+        });
+        started.recv().unwrap();
+        for _ in 0..100 {
+            assert!(InventoryPermit::acquire(busy.clone()).is_none());
+        }
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(InventoryPermit::acquire(busy).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stalled_inventory_child_has_exited_before_admission_is_released() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("child.pid");
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "echo $$ > \"$1\"; exec sleep 30", "inventory"]);
+        command.arg(&pid_file);
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let permit = InventoryPermit::acquire(busy.clone()).unwrap();
+        assert!(inventory_with_permit(command, Duration::from_millis(100), permit).is_none());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let _released = loop {
+            if let Some(permit) = InventoryPermit::acquire(busy.clone()) {
+                break permit;
+            }
+            assert!(std::time::Instant::now() < deadline, "cleanup did not release admission");
+            std::thread::yield_now();
+        };
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        // kill -0 distinguishes an exited/reaped process from a still-live or
+        // zombie child; it neither signals nor changes the child.
         assert!(
-            optional_output(
-                std::process::Command::new("sh").args(["-c", "exec sleep 10"]),
-                std::time::Duration::from_millis(50)
-            )
-            .is_none()
+            !std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
         );
-        assert!(start.elapsed() < std::time::Duration::from_secs(1));
-        assert_eq!(
-            optional_output(
-                std::process::Command::new("sh").args(["-c", "printf ready"]),
-                std::time::Duration::from_secs(1)
-            )
-            .unwrap(),
-            b"ready"
-        );
+        assert!(InventoryPermit::acquire(busy).is_none());
     }
 
     #[test]
