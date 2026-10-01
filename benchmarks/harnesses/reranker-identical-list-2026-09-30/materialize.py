@@ -66,8 +66,11 @@ def materialize(shared, work, paths):
     shared, work = shared.resolve(strict=True), work.resolve()
     dependency(shared)
     require(not work.exists(), 'preserve existing output')
-    require(not work.is_relative_to(ROOT.parents[2]) and not work.is_relative_to(shared),
-            'scratch output must be outside source/dependency repositories')
+    standard_package = ('benchmarks', 'harnesses', 'selected-main-stack-2026-10-01')
+    dependency_boundary = shared.parents[2] if shared.parts[-3:] == standard_package else shared
+    require(not work.is_relative_to(ROOT.parents[2])
+            and not work.is_relative_to(dependency_boundary),
+            'scratch output must be outside source repository and dependency boundary')
     config = {name: str(Path(path).resolve(strict=True)) for name, path in paths.items()}
     manifest = json.loads((shared / 'sources.json').read_text())
     reconstruction = json.loads((ROOT / 'source-reconstruction.json').read_text())

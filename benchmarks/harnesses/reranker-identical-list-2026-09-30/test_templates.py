@@ -87,6 +87,17 @@ class Templates(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'dependency differs'):
                 materialize.dependency(Path(temporary))
 
+    def test_shared_repository_sibling_output_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / 'dependency-checkout'
+            shared = repository / 'benchmarks/harnesses/selected-main-stack-2026-10-01'
+            shared.mkdir(parents=True)
+            output = repository / 'unrelated-scratch-output'
+            with patch.object(materialize, 'dependency', return_value={}):
+                with self.assertRaisesRegex(ValueError, 'dependency boundary'):
+                    materialize.materialize(shared, output, {})
+            self.assertFalse(output.exists())
+
     def test_run_default_never_claims_80_880_or_launches(self):
         common = types.ModuleType('common')
         common.schedule = self.common()['schedule']
