@@ -106,3 +106,8 @@ with tempfile.TemporaryDirectory() as temporary:
     (seed/'index/data').write_bytes(b'changed before first copy');refuse(lambda:guard.verify_fixture(seed,expected))
     (seed/'postgres/data/postmaster.pid').write_text('fake');refuse(lambda:guard.fixture_snapshot(seed,models))
 print('passed inherited cache override, pre-copy mutation, running source guards; no real trial executed')
+
+for key in ['MALLOC_ARENA_MAX','MALLOC_TRIM_THRESHOLD_','MALLOC_MMAP_THRESHOLD_','MALLOC_CHECK_','MALLOC_FUTURE_CONTROL','GLIBC_TUNABLES']:
+    for value in ['','0','32']:refuse(lambda:guard.controlled_environment({key:value}))
+assert not any(key.startswith('MALLOC_') or key=='GLIBC_TUNABLES' for key in guard.controlled_environment({}))
+print('passed inherited allocator controls including empty values; default allocator environment unchanged')

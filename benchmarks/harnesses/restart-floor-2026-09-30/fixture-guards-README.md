@@ -31,3 +31,9 @@ The mode0600 private configuration record retains nine ordered timestamped sourc
 Run the inert `test-fixture-guards.py.in` with ordinary Python for tiny fake fixtures only. It covers nested recursion, source/clone mutation, shared inodes, external links, changed executables, eight/ten-copy rejection, post-source mutation, late failure, permissions and process-state restoration. It launches no PostgreSQL, model, compiler or genuine trial. Endpoint hashes and pre-launch checks do not certify every intervening instant; retain that limit when interpreting evidence.
 
 Guarded setup/trials also reject inherited `TOKENIZERS_PARALLELISM` and `RAYON_NUM_THREADS`, including empty values, then explicitly set and record `TOKENIZERS_PARALLELISM=false` and `RAYON_NUM_THREADS=4`. The serial tokenizer setting and fixed Rayon pool are prospective controls; historical tokenizer/Rayon concurrency remains unknown.
+
+The prospective runner rejects every inherited `MALLOC_*` variable and
+`GLIBC_TUNABLES` (which can also configure glibc allocation), including empty
+values, before setup or trial work. It uses the default allocator environment.
+Historical allocator tuning was not retained and remains unknown; this guard
+does not certify the historical memory or timing conditions.
