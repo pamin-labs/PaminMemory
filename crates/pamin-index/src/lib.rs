@@ -4,6 +4,8 @@
 //! which is what makes a pre-1.0 index engine an acceptable dependency.
 
 mod attention;
+#[cfg(test)]
+mod build_profile;
 mod descriptors;
 pub mod embedding;
 mod encoder;
