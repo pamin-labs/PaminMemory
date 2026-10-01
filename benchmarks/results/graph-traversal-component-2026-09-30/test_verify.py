@@ -583,6 +583,7 @@ if __name__ == '__main__':
             run_case('coherent fabricated usage '+arm+'/'+metric,fabricated_usage,expected_error='retained complete process usage differs')
     for arm in ['baseline','scored']:
         run_case('nearby captured weak relevance '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(weak_relevance=row['weak_relevance']+5e-7)),expected_error='retained weak relevance differs exactly')
+    run_case('displayed wrong source base',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('The source base is `13ee710c9df865f1dac98dc77a8108e438ddc539`.','The source base is `'+('0'*40)+'`.')),expected_error='README source base differs from pinned provenance')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
