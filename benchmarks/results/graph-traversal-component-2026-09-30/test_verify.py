@@ -374,6 +374,14 @@ if __name__ == '__main__':
         for value in ['removed FAILED test and rewrote summary','',None,True]:
             run_case('original log scope '+arm+'/'+repr(value),lambda root,arm=arm,value=value:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.log'].update(scope=value)),expected_error='original log formatting-only redaction scope differs')
         run_case('missing original log scope '+arm,lambda root,arm=arm:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.log'].pop('scope')),expected_error='original log formatting-only redaction scope differs')
+    for value in ['future builds need not capture SQL; original build fully attested','',None,True]:
+        run_case('future compiler capture '+repr(value),lambda root,value=value:mutate_json(root/'provenance.json',lambda p:p['source_inventory_scope'].update(future_requirement=value)),expected_error='future source-capture requirement differs')
+    run_case('missing future compiler capture',lambda root:mutate_json(root/'provenance.json',lambda p:p['source_inventory_scope'].pop('future_requirement')),expected_error='future source-capture requirement differs')
+    for metric in ['General retrieval accuracy','Product search latency p50/p95','Graph-attributed memory','Graph-attributed disk']:
+        def overclaim(root,metric=metric):
+            path=root/'README.md'
+            path.write_text(path.read_text().replace('| '+metric+' | N/A | N/A | N/A | N/A |','| '+metric+' | 100 ms | 50 ms | -50 ms | -50% |'))
+        run_case('unmeasured table '+metric,overclaim,expected_error='unmeasured resource table must remain N/A')
     round10_native_type_cases()
     complete_non_graph_cases()
     complete_graph_record_cases()
