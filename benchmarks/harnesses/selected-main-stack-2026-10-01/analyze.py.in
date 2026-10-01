@@ -1,5 +1,7 @@
 """Recompute every metric category from a complete new 80/880 run; never execute product code."""
 import json
+import os
+import tempfile
 import hashlib
 import re
 import runpy
@@ -147,6 +149,43 @@ def write_tables(path, result):
     path.write_text('\n'.join(lines) + '\n')
 
 
+def publish_reports(result):
+    """Resume exact matching partial outputs; two filenames are not atomic together.
+
+    Stage both payloads before publishing either. Individual complete files are
+    linked without replacing existing paths. Conflicting output is retained.
+    """
+    with tempfile.TemporaryDirectory(dir=c.ROOT, prefix='.analysis-report-') as directory:
+        staged = Path(directory)
+        c.save(staged / 'metrics.json', result)
+        write_tables(staged / 'tables.md', result)
+        expected = {name: (staged / name).read_bytes() for name in ['metrics.json', 'tables.md']}
+        def matches(path, data):
+            c.require(not path.is_symlink() and path.is_file() and path.read_bytes() == data,
+                      'conflicting existing report; preserve retained output: ' + path.name)
+        # Check both before writing any missing final path.
+        for name, data in expected.items():
+            target = c.ROOT / name
+            if os.path.lexists(target):
+                matches(target, data)
+        for name, data in expected.items():
+            source, target = staged / name, c.ROOT / name
+            if os.path.lexists(target):
+                matches(target, data)
+                continue
+            with source.open('rb') as stream:
+                os.fsync(stream.fileno())
+            try:
+                os.link(source, target) # Exclusive publication; never overwrite a raced-in file.
+            except FileExistsError:
+                matches(target, data)
+        descriptor = os.open(c.ROOT, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def main():
     """Validate retained checkpoints in-process; never launch pg_config or product code."""
     out = c.ROOT / 'results'
@@ -204,9 +243,7 @@ def main():
         'scope': 'retained actual per-process log assignment/graph/runtime bindings revalidated by run.checkpoint'}
     result = report(packets, provider_binding=provider_binding)
     result['completion_packet_binding_scope'] = controller['COMPLETE_PACKET_SCOPE']
-    c.require(not (c.ROOT / 'tables.md').exists(), 'preserve prior report')
-    c.save(c.ROOT / 'metrics.json', result)
-    write_tables(c.ROOT / 'tables.md', result)
+    publish_reports(result)
 
 
 if __name__ == '__main__':
