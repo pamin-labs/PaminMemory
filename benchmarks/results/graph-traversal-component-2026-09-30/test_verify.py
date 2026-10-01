@@ -354,6 +354,13 @@ if __name__ == '__main__':
                                 why.append(duplicate)
                         mutate_json(r/(arm+'.jsonl'),change)
                     run_case(mutation+' '+evidence_kind+' Why '+arm+' target '+str(index),contradictory_why,expected_error='exactly one '+('graph-channel' if evidence_kind=='graph' else 'path')+' record')
+    for value in ['2099-01-01',True,None,20260930]:
+        run_case('experiment date '+repr(value),lambda root,value=value:mutate_json(root/'provenance.json',lambda p:p.update(date=value)),expected_error='recorded experiment date differs')
+    run_case('missing experiment date',lambda root:mutate_json(root/'provenance.json',lambda p:p.pop('date')),expected_error='recorded experiment date differs')
+    for arm in ['baseline','scored']:
+        for value in ['removed FAILED test and rewrote summary','',None,True]:
+            run_case('original log scope '+arm+'/'+repr(value),lambda root,arm=arm,value=value:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.log'].update(scope=value)),expected_error='original log formatting-only redaction scope differs')
+        run_case('missing original log scope '+arm,lambda root,arm=arm:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.log'].pop('scope')),expected_error='original log formatting-only redaction scope differs')
     complete_non_graph_cases()
     complete_graph_record_cases()
     for name in retained['redactions']:
