@@ -195,10 +195,10 @@
 //! storage is the smaller of the two obstacles -- see the module notes above
 //! for the sizes and for the licence wall that is the larger one.
 //!
-//! [`Reranker::counted`] is what would decide the first of them. The score
-//! cache's hit rate says whether the hot set is small enough for precomputing
-//! part of each document to pay for itself, and until it was exposed nothing
-//! in this project could read it.
+//! [`Reranker::counted`] measures reuse of complete batch contexts. It does
+//! not measure document recurrence: changing neighbours can make a repeated
+//! document a cache miss. Evaluating precomputed document layers requires a
+//! separate document-recurrence measurement and a storage/cost comparison.
 //!
 //! What is kept is a complete ordered batch's logits, within one loaded model
 //! and tokenizer. With this INT8 export, a pair's score can depend on its batch
@@ -955,15 +955,12 @@ impl Reranker {
 
     /// What this reranker has been asked to do, and what it did.
     ///
-    /// Exposed because three of the decisions this project has deferred turn
-    /// on these five numbers and none of them had a value. The cache's hit
-    /// rate is what says whether precomputing part of each document's
-    /// representation at index time would pay for its storage. `scored`
-    /// against `offered` is the size of the only lever proportional to the
-    /// whole of the reranker's cost -- how many pairs reach the model at all,
-    /// which is not the same as `DEPTH` and was never counted. And the lengths
-    /// say whether `MAX_TOKENS` binds, which decides whether truncation is a
-    /// lever or a rounding error on a given corpus.
+    /// `offered - scored` counts logical pairs reused in complete cached
+    /// batch contexts. It does not measure a document hot set: changing batch
+    /// neighbours can require scoring recurring documents again. Document
+    /// precomputation needs a separate recurrence metric and storage/cost
+    /// measurements. `scored` records actual model work, while token lengths
+    /// show whether `MAX_TOKENS` binds on the offered corpus.
     ///
     /// An accessor reporting occupancy alone came before this and answered
     /// none of them: it says how much has been stored and nothing about how
