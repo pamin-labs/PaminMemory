@@ -211,7 +211,7 @@ def tables(data, audit=None):
             values={s:[p['cost'][key] for p in processes if p['arm']==s and (p['tier'],p['limit'],p['scenario'],p['initial_context'])==group] for s in ('main','stack')}
             means={s:statistics.mean(v) if all(x is not None for x in v) else None for s,v in values.items()}
             costs.append({'configuration':list(group),'metric':key,**delta(means['main'],means['stack'])})
-    return {'input_audit_present':audit is not None,'correctness':correctness,'control_diagnostics':control_diagnostics,'metrics':rows,'process_metrics':costs,'disk':[{'configuration':[d['scope'],d['measure']],'metric':d['measure'],**delta(d['before'],d['after'])} for d in data['disk']]}
+    return {'input_audit_present':audit is not None,'correctness':correctness,'control_diagnostics':control_diagnostics,'metrics':rows,'process_metrics':costs,'disk':[{'configuration':['integration_test_helper_executable' if d['scope']=='app_executable' else d['scope'],d['measure']],'metric':d['measure'],**delta(d['before'],d['after'])} for d in data['disk']] + [{'configuration':['shipped_product_executable','logical_bytes'],'metric':'logical_bytes',**delta(None,None)}]}
 
 
 def markdown(result):
@@ -221,6 +221,7 @@ def markdown(result):
            'Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.',
            'Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.',
            'Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.',
+           'Legacy app_executable evidence fields measure integration-test helpers including scaffold/source-root strings; shipped product executable disk is N/A.',
            '', '| Configuration | Metric | Before | After | Absolute difference | % change | Samples per arm | Eligibility |', '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
     metrics=sorted(result['metrics'],key=lambda r:(0 if r['metric'].startswith('quality') else 1 if r['metric'] in ('wall_us','cpu_user_seconds','cpu_system_seconds') else 2 if r['metric'] in ('rss_kib','hwm_kib') else 3,str(r['configuration']),r['metric']))
     for r in result['correctness']+result['control_diagnostics']+metrics+result['process_metrics']+result['disk']:

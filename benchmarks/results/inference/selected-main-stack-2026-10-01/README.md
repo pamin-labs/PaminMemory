@@ -15,7 +15,8 @@ Before is selected main `315c10242ddf7a1cec3bccbf550a942320e09557`; after is mea
 | Native sampled peak RSS, four-process cell mean, KiB | 1,135,029 | 1,136,469 | +1,440 | +0.126869% descriptive |
 | Index logical bytes | 22,028,682 | 22,028,682 | 0 | 0% |
 | Shared bound model/runtime logical bytes | 2,415,072,587 | 2,415,072,587 | 0 | 0% |
-| Executable logical bytes | 16,289,008 | 16,300,208 | +11,200 | +0.068758% |
+| Integration-test helper executable logical bytes | 16,289,008 | 16,300,208 | +11,200 | +0.068758% |
+| Shipped product executable logical bytes | N/A | N/A | N/A | N/A |
 | Total service/device memory; lifetime CPU; temporary peak allocation | N/A | N/A | N/A | N/A |
 
 Actual boundary: CPU ReadOnly `Engine::search_reranked`, 230-document Flat index, accuracy profile, Accurate limits5/10 with two primary synthetic scenarios and two context histories, plus Off controls. Four independent rotated process blocks per cell. Accurate hot quantiles pool five dependent calls per process (20 per arm); Off hot quantiles pool one call per process (four per arm). Each detailed metric row prints its sample count. Do not treat 20 hot calls as 20 independent backend repetitions. All 46 p50 and 46 descriptive p95 wall groups withhold stable eligibility because of per-arm variability, paired sign changes or paired-percentage spread; incorrect-output/different-work comparisons are additionally ineligible.
@@ -46,3 +47,10 @@ query/document byte metadata re-derived from raw rows. It contains no private
 IDs/text or raw signatures and is not independent public input proof. The
 verifier pins this audit separately, checks its exact evidence binding, and
 labels control diagnostics separately from genuinely changed-input correctness.
+
+The immutable evidence retains the historical `app_executable` field name, but
+those bytes belong to the frozen `scratch_cache_product_limits` test helpers.
+They include the measurement scaffold and different source-root strings. The
+verifier relabels them as helper artifacts and adds a product executable N/A row;
+no product binary was built or measured to correct this scope. Original raw
+observations and their arithmetic remain unchanged.

@@ -3,6 +3,7 @@ Input-scope audit is private-attested: 16 paired history cells changed model byt
 Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.
 Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.
 Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.
+Legacy app_executable evidence fields measure integration-test helpers including scaffold/source-root strings; shipped product executable disk is N/A.
 
 | Configuration | Metric | Before | After | Absolute difference | % change | Samples per arm | Eligibility |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -874,11 +875,12 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | off/10/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
 | index/logical_bytes | logical_bytes  | 22028682 | 22028682 | 0 | 0 | N/A | private-attested/descriptive |
 | index/allocated_bytes | allocated_bytes  | 22106112 | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| app_executable/logical_bytes | logical_bytes  | 16289008 | 16300208 | 11200 | 0.068758023815814931 | N/A | private-attested/descriptive |
-| app_executable/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| integration_test_helper_executable/logical_bytes | logical_bytes  | 16289008 | 16300208 | 11200 | 0.068758023815814931 | N/A | private-attested/descriptive |
+| integration_test_helper_executable/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
 | shared_model_runtime_assets/logical_bytes | logical_bytes  | 2415072587 | 2415072587 | 0 | 0 | N/A | private-attested/descriptive |
 | shared_model_runtime_assets/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
 | temporary_clones/peak_allocated_bytes | peak_allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| shipped_product_executable/logical_bytes | logical_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
 
 | Configuration / metric | Four paired block statistics (before, after, delta, %) | Four main medians | Four stack medians | Arm span/median | Sign reversal |
 | --- | --- | --- | --- | --- | --- |
