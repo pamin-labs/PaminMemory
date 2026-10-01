@@ -162,10 +162,45 @@ def round7_native_environment_cases():
              expected_error='pinned native-library runtime loader environment missing or changed')
 
 
+def round8_cases():
+    run_case('replacement preparation script', lambda r: (r/'source/prepare.py').write_text('not Python\n'), expected_error='recorded preparation script differs')
+    for arm in ['baseline', 'scored']:
+        for index in range(4 if arm == 'scored' else 3):
+            for key, value in [('edge', 'contradicts'), ('derivation', 'explicit')]:
+                def change_path(root, arm=arm, index=index, key=key, value=value):
+                    def change(row):
+                        why = row['targets'][index]['why'] if index < 3 else row['early_stop']['why']
+                        next(record for record in why if record['kind']=='path')[key] = value
+                    mutate_json(root/(arm+'.jsonl'), change)
+                run_case('controlled path '+arm+'/'+str(index)+'/'+key, change_path, expected_error='controlled path edge/derivation differs')
+        for topic, ranks, error in [
+            ('fabricatedtopic', [], 'non-graph topic outside fixture inventory'),
+            ('islandnode0240', [], 'non-graph topic outside fixture inventory'),
+            ('islandnode0239', [], 'non-graph row needs allowed channel evidence'),
+            ('islandnode0239', [{'channel':'unsupported','rank':1,'score':1}], 'non-graph row needs allowed channel evidence')]:
+            def unsupported(root, arm=arm, topic=topic, ranks=ranks):
+                def change(row):
+                    existing = next((hit for hit in row['non_graph'] if hit['topic']==topic), None)
+                    if existing is not None:
+                        existing['ranks'] = ranks
+                    else:
+                        row['non_graph'].append({'topic':topic,'id':'00000000-0000-0000-0000-000000000000','ranks':ranks})
+                mutate_json(root/(arm+'.jsonl'), change)
+            run_case('unsupported non-graph '+arm+'/'+topic+'/'+str(ranks), unsupported, expected_error=error)
+        run_case('overstated launch scope '+arm, lambda r,arm=arm: mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['launch_binding'].update(scope='exact unredacted historical launch')),expected_error='launch projection scope differs')
+    retained=json.loads((ROOT/'provenance.json').read_text())
+    for name, record in retained['redactions'].items():
+        run_case('incorrect redaction flag '+name, lambda r,name=name,record=record:mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(changed=not record['changed'])),expected_error='redaction changed flag differs')
+
+
 if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    if '--round8-only' in sys.argv:
+        round8_cases()
+        raise SystemExit(0)
+    round8_cases()
     if '--round7-native-env-only' in sys.argv:
         round7_native_environment_cases()
         raise SystemExit(0)

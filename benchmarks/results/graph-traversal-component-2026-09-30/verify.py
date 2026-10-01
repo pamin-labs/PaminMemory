@@ -5,7 +5,7 @@ if sys.flags.optimize:
  raise SystemExit("FAIL: Python optimization disables assertions; run without -O/-OO")
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
-# Complete approved shell blocks from 4ab0027 README, including final newline.
+# Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
 BUILD_RECIPE_SHA256='1e1ded9e162d1e6752a62fa18415df1e4e5400574931071948cc0b9024685449'
 RUNTIME_RECIPE_SHA256='65d314ced2ef896ea9b9e19d7977071a9781cf76787a12e9badcb9fd336c35a8'
@@ -18,6 +18,7 @@ def graph_only_evidence(hit):
  assert len(graph)==1, 'reached target must have exactly one graph-channel record'
  paths=[w for w in why if w.get('kind')=='path']
  assert len(paths)==1, 'reached target must have exactly one path record'
+ assert paths[0].get('edge')=='related_to' and paths[0].get('derivation')=='deterministic', 'controlled path edge/derivation differs'
  assert len(why)==2, 'graph-only target complete Why must contain only graph and path records'
  return graph[0],paths[0]
 def score(hit):return graph_only_evidence(hit)[0]['score']
@@ -39,6 +40,8 @@ assert provenance['scope']=='native search_fused component reproduction; indepen
 # Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
 # at reviewed commit a7eccf37096bbc1f9c6bdf670ba718459d05ff22.
 assert sha(ROOT/'source/experimental-traversal.patch') == '9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba', 'recorded traversal patch differs'
+# Independent digest of the unchanged preparation script at published 271a875.
+assert sha(ROOT/'source/prepare.py') == 'f3812344fb1fa5c81a56f174bf884858968b81a2fea5624e5cf6b450a9621c6b', 'recorded preparation script differs'
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 ORIGINAL_REDACTION_PINS = {'baseline.jsonl': '302e70b2463379af148eaf8c3ced4f4d3606c1fc865af1b1bc38d1d69597929e',
  'baseline.log': '6f5b1350ed22fcf72dbc0a38dddd65ea99dace15f875298b0ae15becb077e025',
@@ -53,6 +56,7 @@ SHARED_MACHINE = 'exclusive model/build slot; shared file cache and reclaim pres
 LAUNCH_SETTINGS_PINS = {'baseline': '56ff2d0db433b43726412700f2b1758f380c6cae31dd8767950edc2aa9405f4f', 'scored': '2cbe0450735170c4d2b0ba49f227b89378f95ad301b4c1ec6474053d2aa3cd37'}
 ORIGINAL_LAUNCH_PINS = {'baseline': '72038565da7e2273384ee28a369df2a8eaf84f8eb4402eeb92b8b84f23af1f3d', 'scored': '33243aa7e35538e086352863f693250a535b5f0e6b66a62effe84af33c87ca65'}
 for name,record in provenance['redactions'].items():
+ assert type(record.get('changed')) is bool and record['changed'] == (record['original_sha256'] != record['published_sha256']), 'redaction changed flag differs'
  assert record['original_sha256'] == ORIGINAL_REDACTION_PINS[name], 'original redaction binding differs'
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
 EXPECTED_FILES = {'source/multihop.rs.in', 'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
@@ -195,6 +199,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert resources==RESOURCE_PINS[arm], 'retained resource-pressure record differs'
  assert type(resources['reclaim_pressure']) is bool and all(type(resources[key]) is int for key in resources if key.endswith('_bytes') or key.startswith('oom_')), 'resource-pressure record types differ'
  launch = record['launch_binding']
+ assert launch.get('scope') == 'projection of retained original launch; local path prefixes replaced by placeholders', 'launch projection scope differs'
  assert launch['original_launch_sha256'] == ORIGINAL_LAUNCH_PINS[arm]
  assert launch['command'] == ['${FROZEN_BINARY}','scratch_scored_graph_finite_fixture','--exact','--ignored','--nocapture','--test-threads=1']
  assert launch['GRAPH_OUT'] == '${RESULTS}/'+arm+'.jsonl' and launch['GRAPH_TRACE'] == '${RESULTS}/'+arm+'.trace.jsonl'
@@ -214,6 +219,11 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row.get('setup') == 'native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved', 'recorded native fixture setup differs'
  assert row['expected_scores'] == [.8,.5,.5]
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
+ channels = {'lexical_segmented','lexical_ngram','vector'}
+ fixture_topics = {'quartzanchor'} | {f'islandnode{n:04d}' for n in range(240)}
+ for hit in row['non_graph']:
+  assert hit['topic'] in fixture_topics, 'non-graph topic outside fixture inventory'
+  assert hit['ranks'] and all(rank.get('channel') in channels for rank in hit['ranks']), 'non-graph row needs allowed channel evidence'
  seed_window=row['non_graph'][:63]
  assert any(hit['topic']==row['weak'] for hit in seed_window), 'weak origin must occur in first 63 retained fused results'
  chosen=next(hit for hit in seed_window if hit['topic']!=row['strong'] and min(rank['rank'] for rank in hit['ranks'])>=22)
