@@ -728,14 +728,14 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
             Err(error) => {
                 if selected == Device::Cpu {
                     if revalidating && replacement.is_some() {
-                        return operation(model, *device).map(|result| (result, false));
+                        return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error);
                 }
                 let target = active.runtime_plan().target.clone();
                 if failed_devices.contains(&target) {
                     if revalidating {
-                        return operation(model, *device).map(|result| (result, false));
+                        return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error);
                 }
@@ -752,13 +752,13 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                     Ok(plan) => plan,
                     Err(_) if revalidating => {
                         model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
-                        return operation(model, *device).map(|result| (result, false));
+                        return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     Err(error) => return Err(error),
                 };
                 if failed_devices.contains(&active.runtime_plan().target) {
                     if revalidating {
-                        return operation(model, *device).map(|result| (result, false));
+                        return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error.context("recovery selected the failing provider"));
                 }
@@ -772,6 +772,17 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
             }
         }
     }
+}
+
+fn retain_fallback<T: RuntimeModel, R>(
+    model: &mut T,
+    device: Device,
+    clock: &mut impl FnMut() -> std::time::Instant,
+    operation: &mut impl FnMut(&mut T, Device) -> Result<R>,
+) -> Result<(R, bool)> {
+    let result = operation(model, device);
+    model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
+    result.map(|value| (value, false))
 }
 
 // Cargo profile options can arrive through ancestor/global config or --config
@@ -2400,6 +2411,38 @@ mod tests {
         assert!(mach_uuid(&commands[..20]).is_none());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert!(mapped_image_identity().is_some());
+    }
+
+    #[test]
+    fn slow_cpu_replacement_failure_rearms_retained_fallback_after_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = std::time::Instant::now();
+        let later = entry + RUNTIME_RETRY * 2;
+        let clock = std::cell::Cell::new(entry);
+        let mut model = RuntimeFixture::new(42, "cpu");
+        model.plan.retry_at = Some(entry);
+        let mut device = Device::Cpu;
+        let (answer, replaced) = retry_model_with_clock(
+            &mut model,
+            &mut device,
+            root.path(),
+            || clock.get(),
+            |candidate, _| {
+                if candidate.value == 42 {
+                    Ok(42)
+                } else {
+                    Err(IndexError::Engine("CPU trial failed".into()))
+                }
+            },
+            || {
+                clock.set(later);
+                Ok((RuntimeFixture::new(0, "cpu"), Device::Cpu))
+            },
+        )
+        .unwrap();
+        assert_eq!(answer, 42);
+        assert!(!replaced);
+        assert_eq!(model.plan.retry_at, Some(later + RUNTIME_RETRY));
     }
 
     #[test]
