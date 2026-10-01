@@ -166,6 +166,64 @@ class Templates(unittest.TestCase):
             execute.assert_not_called()
         self.assertTrue((data / 'postmaster.pid').exists())
 
+    def test_changed_history_requires_actual_input_bytes_to_change(self):
+        import copy
+        results = {}
+        for source in ['main', 'stack']:
+            for initial in ['A', 'B']:
+                final = 'B' if initial == 'A' else 'A'
+                job = {'round': 0, 'source': source, 'limit': 5, 'query_id': 80,
+                       'tier': 'accurate', 'sequence': initial + ',' + final}
+                def row(arm):
+                    return {'query': 'query', 'fused': [{'topic_id': arm, 'topic': 'topic',
+                            'state': {'content': arm}, 'seed': None}],
+                            'selected_fused_positions': [0], 'complete': [arm], 'limited': [arm]}
+                actual = [row(initial) for _ in range(6)] + [row(final) for _ in range(6)] + [row('N')]
+                results[(0, source, 5, 80, 'accurate', initial)] = {'job': job, 'rows': actual}
+        with patch.object(self.rows, 'typed_hits', side_effect=lambda value: json.dumps(value)), \
+             patch.object(self.rows, 'delta', return_value={'scored': 1}):
+            classifications = self.rows.oracle_checks(results)
+            unchanged = copy.deepcopy(results)
+            # IDs and oracle contexts differ, but the actual ordered model bytes do not.
+            for record in unchanged.values():
+                for row in record['rows']:
+                    row['fused'][0]['state']['content'] = 'identical document'
+            with self.assertRaisesRegex(AssertionError, 'changed-history.*input'):
+                self.rows.oracle_checks(unchanged)
+            self.assertTrue(all(c['changed_actual_reranker_inputs'] for c in classifications))
+
+    def test_native_zombie_memory_race_skips_sample_and_stops_owned_pg(self):
+        owned = {'pid': 42}
+        process = Mock(pid=1234)
+        def proc_status(path, *args, **kwargs):
+            return 'Name:\thelper\nState:\tZ (zombie)\n'
+        with patch.object(self.pg, 'start', return_value={'identity': owned}), \
+             patch.object(self.pg, 'check'), patch.object(self.pg, 'stop') as stop, \
+             patch.object(self.common, 'guard'), patch.object(self.common, 'stop_group'), \
+             patch.object(self.common, 'exit_status', side_effect=[None, 0]), \
+             patch.object(self.run.subprocess, 'Popen', return_value=process), \
+             patch.object(self.run.time, 'sleep'), patch.object(Path, 'read_text', proc_status):
+            usage = self.run.native(self.work, {}, 'unused', self.work / 'zombie')
+        self.assertEqual(usage['samples'], [])
+        stop.assert_called_once_with(self.work, {}, owned)
+        with patch.object(Path, 'read_text', return_value='VmRSS:\t12 kB\nVmHWM:\t34 kB\n'):
+            self.assertEqual(self.run.status(1234), {'VmRSS': 12, 'VmHWM': 34})
+
+    def test_pinned_toolchain_requires_exact_version_token(self):
+        module = load('reproduction_build', self.work / 'build.py')
+        for tool in ['cargo', 'rustc', 'rustdoc']:
+            self.common.CONFIG[tool] = 'mock-' + tool
+        def versions(command, **kwargs):
+            return command[0].removeprefix('mock-') + ' 1.98.1 (fixture 2026-10-01)\n'
+        with patch.object(module.subprocess, 'check_output', side_effect=versions):
+            receipt = module.toolchain_versions()
+        self.assertEqual(receipt['rustc']['version'], '1.98.1')
+        self.assertIn('fixture', receipt['rustc']['reported'])
+        for invalid in ['1.98.10', '1.98.1-nightly', '1.98.0', 'prefix 1.98.1']:
+            with patch.object(module.subprocess, 'check_output', return_value='rustc ' + invalid + '\n'):
+                with self.assertRaisesRegex(ValueError, 'pinned toolchain'):
+                    module.toolchain_versions()
+
     def test_native_start_failure_does_not_guess_stop_identity(self):
         with patch.object(self.pg, 'start', side_effect=RuntimeError('start refused')), \
              patch.object(self.pg, 'stop') as stop, \

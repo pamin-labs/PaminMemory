@@ -24,6 +24,17 @@ def build_environment():
     return env
 
 
+def toolchain_versions():
+    versions = {}
+    for tool in ['cargo', 'rustc', 'rustdoc']:
+        reported = subprocess.check_output([c.CONFIG[tool], '--version'], text=True)
+        fields = reported.split()
+        c.require(len(fields) >= 2 and fields[0] == tool
+                  and fields[1] == c.MANIFEST['toolchain'], 'pinned toolchain required')
+        versions[tool] = {'version': fields[1], 'reported': reported}
+    return versions
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--execute', action='store_true')
@@ -36,11 +47,10 @@ def main():
     with c.exclusive():
         c.source_inputs()
         c.assets()
-        for tool in ['cargo', 'rustc', 'rustdoc']:
-            version = subprocess.check_output([c.CONFIG[tool], '--version'], text=True)
-            c.require('1.98.1' in version, 'pinned toolchain required')
+        versions = toolchain_versions()
         out = c.ROOT / 'build'
         out.mkdir()
+        c.save(out / 'toolchain.json', versions)
         env = build_environment()
         binaries = {}
         for arm, target in [('main', 'scratch_cache_product_limits'),

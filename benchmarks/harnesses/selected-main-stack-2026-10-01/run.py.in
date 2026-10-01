@@ -48,8 +48,11 @@ def parse(text, job, bound):
 
 def status(pid):
     text = (Path('/proc') / str(pid) / 'status').read_text()
-    return {key: int(next(line for line in text.splitlines() if line.startswith(key + ':')).split()[1])
-            for key in ['VmRSS', 'VmHWM']}
+    fields = {line.split(':', 1)[0]: line.split(':', 1)[1] for line in text.splitlines() if ':' in line}
+    if not all(key in fields for key in ['VmRSS', 'VmHWM']):
+        # An unreaped exited process retains status but loses these memory fields.
+        raise FileNotFoundError('process memory fields unavailable after exit')
+    return {key: int(fields[key].split()[0]) for key in ['VmRSS', 'VmHWM']}
 
 
 def native(home, env, binary, prefix):

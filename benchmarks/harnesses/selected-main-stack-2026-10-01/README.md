@@ -75,3 +75,10 @@ validation; no native reproduction or current-host admission was run.
 The PostgreSQL before endpoint is the fresh seed clone before server startup;
 the after endpoint is measured after the native process and owned PG stop,
 before deletion.
+
+Each Accurate history arm must change the ordered actual query/document bytes
+passed to the reranker; changed topic identifiers alone are insufficient. An
+unchanged-input arm fails before a complete correctness report can be emitted.
+Memory sampling skips unavailable `/proc` fields during process exit, without
+substituting zero RSS/HWM. Builds require an exact tool version token and retain
+the complete reported cargo/rustc/rustdoc versions in `build/toolchain.json`.
