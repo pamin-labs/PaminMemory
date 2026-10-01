@@ -38,6 +38,34 @@ class MetadataInvariants(unittest.TestCase):
     def test_rehashed_wrong_format(self):
         self.reject(lambda e:self.rewrite(e, 'header_hex', {2:3}))
 
+    def test_crc_refreshed_wrong_magic_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                    values[4] = 0; values[0] = 0
+                    values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                    excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+        with self.assertRaisesRegex(ValueError, 'wrong format/revision'):
+            verify.verify(changed, check_logs=False)
+
+    def test_wrong_linear_header_meta_extent_all_excerpts(self):
+        # Both phases agree and the 64-vector counts remain unchanged.
+        for extent in [1, 63, 65]:
+            with self.subTest(extent=extent):
+                changed = copy.deepcopy(self.evidence)
+                for run in changed['runs']:
+                    for file in run['files']:
+                        for excerpt in file['excerpts'].values():
+                            data = bytearray.fromhex(excerpt['streamer_and_linear_header_hex'])
+                            values = list(verify.LINEAR.unpack_from(data, 64))
+                            values[7] = values[0] - extent
+                            verify.LINEAR.pack_into(data, 64, *values)
+                            excerpt['streamer_and_linear_header_hex'] = data.hex()
+                with self.assertRaisesRegex(ValueError, 'linear header bounds'):
+                    verify.verify(changed, check_logs=False)
+
     def test_rehashed_table_bounds(self):
         self.reject(lambda e:self.rewrite(e, 'footer_hex', {4:2**30}))
 

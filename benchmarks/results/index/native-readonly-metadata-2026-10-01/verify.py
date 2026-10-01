@@ -47,7 +47,7 @@ def decode(excerpt, file_size):
     linear = bytes.fromhex(excerpt['streamer_and_linear_header_hex'])
     require(len(header) == 64 and len(footer) == 128 and len(linear) == 128, 'metadata extent')
     h, f = HEADER.unpack(header), FOOTER.unpack(footer)
-    require(h[2] == 2 and h[3] == 0 and h[5:7] == (64, 128), 'wrong format/revision')
+    require(h[2] == 2 and h[3] == 0 and h[4] == 625105687 and h[5:7] == (64, 128), 'wrong format/revision')
     require(crc32c(b'\0'*4 + header[4:]) == h[0], 'header CRC')
     require(crc32c(b'\0'*4 + footer[4:]) == f[0], 'footer CRC')
     require(f[3] == 5 and f[4] == excerpt['table_size'] and f[4] <= 2**21, 'table bounds')
@@ -79,7 +79,8 @@ def decode(excerpt, file_size):
     start, size = segments['flat.linear_meta']
     streamer = struct.unpack_from('<QQQII32s', linear)
     lh = LINEAR.unpack_from(linear, 64)
-    require(size >= 128 and lh[0] + 64 == size and lh[7] < lh[0], 'linear header bounds')
+    # header_size = sizeof(LinearIndexHeader) + serialized IndexMeta size.
+    require(size >= 128 and lh[0] + 64 == size and lh[0] - lh[7] == LINEAR.size, 'linear header bounds')
     require(lh[1] in {38, 64} and streamer[3] == 1, 'linear count/type')
     require(streamer[1] == f[9], 'timestamp disagreement')
     return {'h': h, 'f': f, 'count': lh[1], 'timestamp': f[9], 'regions': [(0, header), (64, bytes(table)), (h[7], footer), (start, linear)], 'allowed': [[h[7], h[7]+4], [h[7]+48, h[7]+56], [start+8, start+16]]}
