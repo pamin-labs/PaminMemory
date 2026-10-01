@@ -65,6 +65,26 @@ def reject_optimized_prepare(label, flags=(), optimize_env=None):
         print(f'PASS: rejected prepare {label} before writes')
 
 
+def round12_interval_channel_cases():
+    for arm in ['baseline','scored']:
+        for metric in ['elapsed_ms','early_elapsed_ms','user','system']:
+            def excessive(root,arm=arm,metric=metric):
+                def change(row):
+                    if metric=='elapsed_ms':row['elapsed_ms']=1_000_000_000
+                    elif metric=='early_elapsed_ms':row['early_stop']['elapsed_ms']=1_000_000_000
+                    else:row['graph_process_cpu_user_system_seconds'][0 if metric=='user' else 1]=1000
+                mutate_json(root/(arm+'.jsonl'),change)
+            run_case('excessive interval '+arm+'/'+metric,excessive,expected_error='graph interval '+('CPU' if metric in ['user','system'] else 'wall')+' time exceeds whole-process total')
+        def duplicate_channel(root,arm=arm):
+            def change(row):
+                donor=next(h for h in row['non_graph'] if len(h['ranks'])>1 and any(rank['channel']=='lexical_ngram' for rank in h['ranks']))
+                receiver=next(h for h in row['non_graph'] if h is not donor and any(rank['channel']=='lexical_ngram' for rank in h['ranks']))
+                rank=next(rank for rank in donor['ranks'] if rank['channel']=='lexical_ngram')
+                donor['ranks'].remove(rank);receiver['ranks'].append(rank)
+            mutate_json(root/(arm+'.jsonl'),change)
+        run_case('coherently moved duplicate channel '+arm,duplicate_channel,expected_error='non-graph hit must have one rank per channel')
+
+
 def round10_native_type_cases():
     for arm in ['baseline','scored']:
         for value in [True,False,'1',None,float('inf')]:
@@ -390,6 +410,7 @@ if __name__ == '__main__':
                 path=root/script;path.write_text(path.read_text()+'\n# '+marker+'\n')
             run_case('published script private marker '+script+'/'+marker.split(':')[0],leaked_script,expected_error='private path/credential/session marker: '+script)
     run_case('modified privacy pattern',lambda root:(root/'verify.py').write_text((root/'verify.py').read_text().replace('Bearer\\s+','Bearer\\s*')),expected_error='approved private-marker pattern differs')
+    round12_interval_channel_cases()
     round10_native_type_cases()
     complete_non_graph_cases()
     complete_graph_record_cases()

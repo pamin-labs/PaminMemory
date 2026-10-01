@@ -248,6 +248,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   assert str(parsed_id)==hit['id'], 'non-graph identifier must be a canonical UUID'
   assert hit['topic'] in fixture_topics, 'non-graph topic outside fixture inventory'
   assert hit['ranks'] and all(rank.get('channel') in channels for rank in hit['ranks']), 'non-graph row needs allowed channel evidence'
+  assert len(hit['ranks'])==len({rank['channel'] for rank in hit['ranks']}), 'non-graph hit must have one rank per channel'
   for rank in hit['ranks']:
    assert type(rank.get('rank')) is int and rank['rank']>0, 'non-graph rank must be a positive integer'
    assert rank.get('score') is None or (type(rank['score']) in {int,float} and math.isfinite(rank['score'])), 'non-graph score must be real non-boolean or null'
@@ -313,6 +314,8 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid duration/RSS: '+metric
  assert type(usage['exit_status']) is int and usage['exit_status']==0, 'process exit status must be integer zero'
  assert usage['maximum_process_rss_kib']==row['process_lifetime_high_water_kib'], 'raw and process usage RSS differ'
+ assert all(row[key]/1000 <= usage['wall_seconds'] for key in ['elapsed_ms']) and row['early_stop']['elapsed_ms']/1000 <= usage['wall_seconds'], 'graph interval wall time exceeds whole-process total'
+ assert all(interval<=usage[key] for interval,key in zip(row['graph_process_cpu_user_system_seconds'],['user_seconds','system_seconds'])), 'graph interval CPU time exceeds whole-process total'
  assert usage['scope']=='Linux wait4 of native test process; setup included, independent services excluded'
 
  assert len(row['targets'])==3 and len({h['topic'] for h in row['targets']})==3, 'exactly three unique target records required'
