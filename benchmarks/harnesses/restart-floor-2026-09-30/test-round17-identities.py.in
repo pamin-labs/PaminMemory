@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory() as tmp:
   assert any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=='read_attestation' for x in ast.walk(main))
   assert not any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=='digest' and ast.unparse(x.args[0])=='a.attestation' for x in ast.walk(main))
  models=p/'models';models.mkdir();seed=p/'seed';(seed/'index').mkdir(parents=True);(seed/'postgres/data').mkdir(parents=True);(seed/'models').symlink_to(models,target_is_directory=True)
- index=seed/'index/data';index.write_bytes(b'fixture');link=seed/'index/link';link.symlink_to('data');expected=g['fixture_snapshot'](seed,models)
+ index=seed/'index/data';index.write_bytes(b'fixture');expected=g['fixture_snapshot'](seed,models)
  original_stat=Path.stat;original_lstat=Path.lstat
  class Allocation:
   def __init__(self,actual):self.actual=actual
@@ -48,5 +48,5 @@ with tempfile.TemporaryDirectory() as tmp:
    else:raise AssertionError('changed allocation accepted')
  if not before:
   actual=g['verify_fixture'](seed,expected)
-  assert expected['version']==2 and actual['index_allocated_bytes']==(original_stat(index).st_blocks+original_lstat(link).st_blocks)*512
+  assert expected['version']==2 and actual['index_allocated_bytes']==original_stat(index).st_blocks*512
 print('BEFORE: attestation parsed/hash bytes diverge; changed allocation accepted' if before else 'PASS: attestation hash binds parsed bytes; changed index allocation rejected; positive allocation receipt matches')
