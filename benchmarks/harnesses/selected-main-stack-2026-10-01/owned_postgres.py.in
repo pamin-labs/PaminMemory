@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import socket
@@ -127,7 +128,8 @@ def build_identity(item,base,expected,before):
     for line in (proc/'maps').read_text().splitlines():
         parts=line.split(maxsplit=5)
         if len(parts)!=6 or not parts[5].startswith('/'):continue
-        mapped=parts[5]
+        # procfs encodes spaces, tabs, newlines and backslashes as octal.
+        mapped=re.sub(r'\\([0-7]{3})',lambda match:chr(int(match[1],8)),parts[5])
         require(not mapped.endswith(' (deleted)'),'mapped PostgreSQL file deleted during identity capture')
         path=Path(mapped)
         if '.so' not in path.name or path in seen:continue
