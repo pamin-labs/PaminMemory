@@ -1,0 +1,202 @@
+[
+  {
+    "return_limit": 5,
+    "query_id": 80,
+    "metric": "rss_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l5-q80-accurate-A": 1127948,
+        "r0-baseline-l5-q80-accurate-B": 1127928,
+        "r1-baseline-l5-q80-accurate-A": 1124580,
+        "r1-baseline-l5-q80-accurate-B": 1119692
+      },
+      "memo": {
+        "r0-memo-l5-q80-accurate-A": 1127300,
+        "r0-memo-l5-q80-accurate-B": 1119068,
+        "r1-memo-l5-q80-accurate-A": 1125564,
+        "r1-memo-l5-q80-accurate-B": 1127924
+      }
+    },
+    "baseline": 1126254.0,
+    "memo": 1126432.0,
+    "difference": 178.0,
+    "percent_change": 0.015804605355452677
+  },
+  {
+    "return_limit": 5,
+    "query_id": 80,
+    "metric": "hwm_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l5-q80-accurate-A": 1127948,
+        "r0-baseline-l5-q80-accurate-B": 1127928,
+        "r1-baseline-l5-q80-accurate-A": 1124580,
+        "r1-baseline-l5-q80-accurate-B": 1119692
+      },
+      "memo": {
+        "r0-memo-l5-q80-accurate-A": 1127300,
+        "r0-memo-l5-q80-accurate-B": 1119068,
+        "r1-memo-l5-q80-accurate-A": 1125564,
+        "r1-memo-l5-q80-accurate-B": 1127924
+      }
+    },
+    "baseline": 1126254.0,
+    "memo": 1126432.0,
+    "difference": 178.0,
+    "percent_change": 0.015804605355452677
+  },
+  {
+    "return_limit": 5,
+    "query_id": 101,
+    "metric": "rss_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l5-q101-accurate-A": 1125876,
+        "r0-baseline-l5-q101-accurate-B": 1126268,
+        "r1-baseline-l5-q101-accurate-A": 1126488,
+        "r1-baseline-l5-q101-accurate-B": 1117836
+      },
+      "memo": {
+        "r0-memo-l5-q101-accurate-A": 1124388,
+        "r0-memo-l5-q101-accurate-B": 1127160,
+        "r1-memo-l5-q101-accurate-A": 1120644,
+        "r1-memo-l5-q101-accurate-B": 1128060
+      }
+    },
+    "baseline": 1126072.0,
+    "memo": 1125774.0,
+    "difference": -298.0,
+    "percent_change": -0.026463671949928602
+  },
+  {
+    "return_limit": 5,
+    "query_id": 101,
+    "metric": "hwm_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l5-q101-accurate-A": 1125876,
+        "r0-baseline-l5-q101-accurate-B": 1126268,
+        "r1-baseline-l5-q101-accurate-A": 1126488,
+        "r1-baseline-l5-q101-accurate-B": 1117836
+      },
+      "memo": {
+        "r0-memo-l5-q101-accurate-A": 1124388,
+        "r0-memo-l5-q101-accurate-B": 1127160,
+        "r1-memo-l5-q101-accurate-A": 1120644,
+        "r1-memo-l5-q101-accurate-B": 1128060
+      }
+    },
+    "baseline": 1126072.0,
+    "memo": 1125774.0,
+    "difference": -298.0,
+    "percent_change": -0.026463671949928602
+  },
+  {
+    "return_limit": 10,
+    "query_id": 80,
+    "metric": "rss_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l10-q80-accurate-A": 1121920,
+        "r0-baseline-l10-q80-accurate-B": 1127716,
+        "r1-baseline-l10-q80-accurate-A": 1127856,
+        "r1-baseline-l10-q80-accurate-B": 1127400
+      },
+      "memo": {
+        "r0-memo-l10-q80-accurate-A": 1127312,
+        "r0-memo-l10-q80-accurate-B": 1126876,
+        "r1-memo-l10-q80-accurate-A": 1128384,
+        "r1-memo-l10-q80-accurate-B": 1127396
+      }
+    },
+    "baseline": 1127558.0,
+    "memo": 1127354.0,
+    "difference": -204.0,
+    "percent_change": -0.018092195700797654
+  },
+  {
+    "return_limit": 10,
+    "query_id": 80,
+    "metric": "hwm_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l10-q80-accurate-A": 1121920,
+        "r0-baseline-l10-q80-accurate-B": 1127716,
+        "r1-baseline-l10-q80-accurate-A": 1127856,
+        "r1-baseline-l10-q80-accurate-B": 1127400
+      },
+      "memo": {
+        "r0-memo-l10-q80-accurate-A": 1127312,
+        "r0-memo-l10-q80-accurate-B": 1126876,
+        "r1-memo-l10-q80-accurate-A": 1128384,
+        "r1-memo-l10-q80-accurate-B": 1127396
+      }
+    },
+    "baseline": 1127558.0,
+    "memo": 1127354.0,
+    "difference": -204.0,
+    "percent_change": -0.018092195700797654
+  },
+  {
+    "return_limit": 10,
+    "query_id": 101,
+    "metric": "rss_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l10-q101-accurate-A": 1125492,
+        "r0-baseline-l10-q101-accurate-B": 1117600,
+        "r1-baseline-l10-q101-accurate-A": 1126744,
+        "r1-baseline-l10-q101-accurate-B": 1127216
+      },
+      "memo": {
+        "r0-memo-l10-q101-accurate-A": 1126624,
+        "r0-memo-l10-q101-accurate-B": 1125904,
+        "r1-memo-l10-q101-accurate-A": 1126412,
+        "r1-memo-l10-q101-accurate-B": 1127072
+      }
+    },
+    "baseline": 1126118.0,
+    "memo": 1126518.0,
+    "difference": 400.0,
+    "percent_change": 0.035520256314169565
+  },
+  {
+    "return_limit": 10,
+    "query_id": 101,
+    "metric": "hwm_kib",
+    "units": "KiB",
+    "scope": "median of4processblock medians from20dependentdefaultAhotcalls; lifetimediagnosticsincluded/excludesPG, descriptive notmemoheapgain",
+    "process_blocks": {
+      "baseline": {
+        "r0-baseline-l10-q101-accurate-A": 1125492,
+        "r0-baseline-l10-q101-accurate-B": 1117600,
+        "r1-baseline-l10-q101-accurate-A": 1126744,
+        "r1-baseline-l10-q101-accurate-B": 1127216
+      },
+      "memo": {
+        "r0-memo-l10-q101-accurate-A": 1126624,
+        "r0-memo-l10-q101-accurate-B": 1125904,
+        "r1-memo-l10-q101-accurate-A": 1126412,
+        "r1-memo-l10-q101-accurate-B": 1127072
+      }
+    },
+    "baseline": 1126118.0,
+    "memo": 1126518.0,
+    "difference": 400.0,
+    "percent_change": 0.035520256314169565
+  }
+]
