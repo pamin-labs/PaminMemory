@@ -15,7 +15,7 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, `accuracy`, or experimental `dual_accuracy` |
 | `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |

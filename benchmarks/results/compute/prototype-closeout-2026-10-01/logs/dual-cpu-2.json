@@ -1,6 +1,6 @@
 {
   "source_sha256": "3a1866c03378f4e2157801c5fc436317ae6891956356c4a5a26ab8819b73969b",
-  "redaction": "Every source line mapped to a fixed event enum; no paths, free text, model strings, credentials or user content retained.",
+  "redaction": "Every source line mapped to a fixed event enum and whitelisted public model/tier/token/device metadata; no paths, arbitrary free text, credentials or user content retained.",
   "events": [
     {
       "line": 0,
