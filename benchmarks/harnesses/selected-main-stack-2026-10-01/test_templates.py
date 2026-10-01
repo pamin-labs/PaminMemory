@@ -112,6 +112,20 @@ class Templates(unittest.TestCase):
         self.assertEqual(value['files'], 2)
         self.assertEqual(value['allocated_bytes'], sum(p.stat().st_blocks * 512 for p in [data/'base-file', wal/'wal-file']))
 
+    def test_public_hot_samples_are_four_off_and_twenty_accurate(self):
+        root = ROOT.parents[1] / 'results/inference/selected-main-stack-2026-10-01'
+        verifier = load('public_sample_verifier', root / 'verify.py')
+        data = json.loads((root / 'evidence.json').read_text())
+        result = verifier.tables(data)
+        off = [r for r in result['metrics'] if r['configuration'][4] == 'off-hot']
+        accurate = [r for r in result['metrics'] if r['configuration'][4] in ['initial-hot', 'changed-hot']]
+        self.assertTrue(off and accurate)
+        self.assertTrue(all(r['samples_per_arm'] == 4 for r in off))
+        self.assertTrue(all(r['samples_per_arm'] == 20 for r in accurate))
+        markdown = verifier.markdown(result)
+        self.assertIn('Samples per arm', markdown)
+        self.assertIn('Off hot quantiles pool four calls', markdown)
+
     def test_post_start_faults_always_attempt_verified_cleanup(self):
         import subprocess
         item = {'home': self.work, 'data': self.work / 'data',

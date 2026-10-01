@@ -4,15 +4,15 @@
     "sha256": "b724a041f55de1485a9eb1d85bc549fa0327d51b0d3a64723a6204fccaa73bc1"
   },
   "verify.py": {
-    "bytes": 18904,
-    "sha256": "9d73afc0589bc835bf40eb091550c4fe2171607f171aad0b97c9445c6bbc1696"
+    "bytes": 19075,
+    "sha256": "9bab100b09a7f269e91326c2ec2afcbca1d1f7ba57c5a2f955997646545ce9da"
   },
   "tables.md": {
-    "bytes": 333267,
-    "sha256": "55a1d5fe2de6314e1d792d6005bdc94c57aeb8dec932bac8d9c30e4acaeb41af"
+    "bytes": 337423,
+    "sha256": "06caed824a78ce6dbe90cf450e3f7f4f19e757e23b0d98f2f8f0c0ffc8743c00"
   },
   "README.md": {
-    "bytes": 6442,
-    "sha256": "ebe41d19bd68751a9b1bd767784708252e9d0f40ab304e6747c1f4d01f3c6ad4"
+    "bytes": 6568,
+    "sha256": "8a6c1007e7cdb924a52f09d25553e54b298c424f1d32a276af65338529e6e2b5"
   }
 }
