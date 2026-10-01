@@ -307,6 +307,19 @@ def round8_cases():
             args=captured['__argv__'];position=args.index('--manifest-path')
             assert args[position+1]==str(manifest) and captured['__cwd__']==str(manifest.parent), 'relative ARMS must canonicalize before child cd'
             print('PASS: inert build canonicalizes relative ARMS for '+arm+' manifest/CWD')
+        import re
+        other_os=re.sub(r'^os: .*$', 'os: synthetic alternate distribution [64-bit]',toolchain['cargo'],flags=re.M)
+        alternate=dict(env,STUB_VERSION_cargo=other_os)
+        result=subprocess.run(['sh','-c',build],cwd=ROOT,env=alternate,capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        assert json.loads(result.stdout)['__cwd__']==str(absolute_arms/env['ARM']), 'alternate distro must retain generated working directory'
+        print('PASS: Cargo stable identity accepts alternate distribution verbose metadata')
+        for field in ['release','commit-hash','host']:
+            changed=re.sub('^'+field+r': .*$',field+': wrong stable identity',toolchain['cargo'],flags=re.M)
+            wrong=dict(env,STUB_VERSION_cargo=changed)
+            result=subprocess.run(['sh','-c',build],cwd=ROOT,env=wrong,capture_output=True,text=True)
+            assert result.returncode!=0 and not result.stdout, 'wrong Cargo '+field+' reached mocked build'
+            print('PASS: incorrect Cargo '+field+' rejects before mocked build')
         for name in ['rustc','cargo']:
             wrong=dict(env,**{'STUB_VERSION_'+name:'wrong recorded version'})
             result=subprocess.run(['sh','-c',build],cwd=ROOT,env=wrong,capture_output=True,text=True)

@@ -177,7 +177,8 @@ set -eu
 unset RUSTUP_TOOLCHAIN RUSTC RUSTDOC
 TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu
 test "$(rustc +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["rustc"], end="")')"
-test "$(cargo +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["cargo"], end="")')"
+CARGO_VERSION=$(cargo +"$TOOLCHAIN" -Vv)
+printf '%s\n' "$CARGO_VERSION" | python3 -c 'import json, sys; keys = ("release", "commit-hash", "host"); fields = lambda text: {key: [line[len(key)+2:] for line in text.splitlines() if line.startswith(key+": ")] for key in keys}; actual = fields(sys.stdin.read()); expected = fields(json.load(open("provenance.json"))["toolchain"]["cargo"]); sys.exit(0 if all(len(values) == 1 for values in actual.values()) and actual == expected else "Cargo release/commit/host differs")'
 ARMS=$(cd "$ARMS" && pwd -P)
 cd "$ARMS/$ARM"
 env -u ORT_LIB_PATH -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
@@ -196,8 +197,10 @@ The build and launch both use the pinned dynamic-library directories. These
 variables reproduce the selected native link/runtime path; they are not a
 complete transitive source-to-build certificate. Run this complete subshell from the evidence directory. It clears inherited
 Rust toolchain/compiler selectors, explicitly selects `1.98.1-x86_64-unknown-linux-gnu`,
-and checks both complete verbose versions against the pinned provenance before
-canonicalizing `$ARMS` and changing to the generated arm workspace. Relative
+and checks Rust verbose identity plus Cargo release/full commit/host against
+the pinned provenance before
+canonicalizing `$ARMS` and changing to the generated arm workspace. Cargo distribution and linked-library verbose lines are host metadata and are
+not compared as compiler identity. Relative
 `ARMS` values are resolved from the initial evidence directory. The explicit manifest and child working
 directory both select `$ARMS/$ARM`. Set `ARM` to `baseline` or `scored`
 before each build. The command selects the same two-target compilation scope. It does not select or run the multihop stress test. Copy the fixture executable before any later
