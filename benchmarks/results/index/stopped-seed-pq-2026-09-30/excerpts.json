@@ -2,7 +2,7 @@
   "scope": "Current stopped Linux seed only; metadata excerpts omit graph, vector, codes and centroid values",
   "vendor_source_commit": "1ab7975dfc2d2160054bafff614831b7099cd930",
   "native_library_sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
-  "provenance_sha256": "31ddf3e7963978d767e57683d38ca9a331b256b0e69c15afb5cc086d9a5a14af",
+  "provenance_sha256": "5e356b2c2647d03257c341fc72934e61b626280b4663cc4efa0999ecfca97c0a",
   "requested_pq_chunks": 0,
   "file_count": 10,
   "documents": 18000,
