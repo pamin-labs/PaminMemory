@@ -18,6 +18,7 @@ def resource_preflight(directory):
     assert free>=MIN_DISK and available>=MIN_MEMORY, 'fresh targets require >=12 GiB disk and >=4 GiB available memory/headroom'
     return {'disk_free_bytes':free,'memory_headroom_bytes':available,'required_disk_bytes':MIN_DISK,'required_memory_bytes':MIN_MEMORY,'scope':'policy preflight, not a measured peak resource guarantee'}
 TOOLCHAIN=Path('/workspace/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin')
+CARGO_HOME=Path('/workspace/.cargo')
 CONTROLLED_CARGO={'CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS'}
 def reject_overrides(parent):
     unexpected=sorted(key for key in parent if
@@ -36,6 +37,19 @@ def build_environment(parent):
     env.pop('CARGO_TARGET_DIR',None)
     env['PATH']=str(TOOLCHAIN)+os.pathsep+env.get('PATH','')
     return env,tools
+def cargo_config_snapshot(checkouts,cargo_home):
+    # Cargo discovers both spellings in the working directory, every ancestor,
+    # and CARGO_HOME. Even force=true [env] entries can defeat environment pins.
+    locations={cargo_home/'config',cargo_home/'config.toml'}
+    for checkout in checkouts:
+        assert checkout.is_absolute() and checkout==checkout.resolve(strict=True), 'checkout must be canonical and absolute'
+        for ancestor in [checkout,*checkout.parents]:
+            locations.update(ancestor/'.cargo'/name for name in ['config','config.toml'])
+    result={str(path):{'absent':not os.path.lexists(path)} for path in sorted(locations)}
+    assert all(row['absent'] for row in result.values()), 'Cargo configuration refused: '+', '.join(path for path,row in result.items() if not row['absent'])
+    return result
+def verify_cargo_configs(expected,checkouts,cargo_home):
+    assert cargo_config_snapshot(checkouts,cargo_home)==expected, 'Cargo configuration search paths changed'
 def tool_identities(tools):
     return {name:{'path':str(path),'bytes':path.stat().st_size,'sha256':digest(path)} for name,path in tools.items()}
 def digest(path):
@@ -116,6 +130,8 @@ def main():
     for arm in plan['arms'].values():
         assert arm['allowed_untracked']=={TARGET:plan['harness_sha256']}
         inputs(Path(arm['checkout']),arm['commit'],arm['allowed_untracked'])
+    checkouts=[Path(arm['checkout']) for arm in plan['arms'].values()]
+    configs=cargo_config_snapshot(checkouts,CARGO_HOME)
     assert args.output.parent.is_dir()
     assert all(not args.output.resolve().is_relative_to(Path(arm['checkout']).resolve()) for arm in plan['arms'].values()), 'target/output must be outside source checkouts'
     resource_before=resource_preflight(args.output.parent)
@@ -134,6 +150,7 @@ def main():
            'scope':'prospective build-time inputs/outputs only; no historical binary binding',
            'plan_sha256':digest(args.plan),'harness_sha256':digest(harness),
            'toolchain':rustc_version,'rustdoc':rustdoc_version,'cargo':cargo_version,'tools_before':tool_before,
+           'cargo_config_search':configs,'cargo_config_policy':'both config spellings absent at canonical checkout and all ancestors and fixed CARGO_HOME; endpoint checks only; offline registry/cache unchanged and not content-attested',
            'inherited_compiler_cargo_overrides':{},'native_loader_inputs':native,'resource_preflight':resource_before,
            'target_scope':'new empty per-arm target; all emitted compiler artifacts fresh:false; prebuilt declared native libraries remain pinned external inputs; Cargo registry/system build tools are not fully content-attested',
            'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','LD_LIBRARY_PATH','RUSTC','RUSTDOC','RUSTFLAGS','RUSTDOCFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_ENCODED_RUSTDOCFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
@@ -144,6 +161,7 @@ def main():
         assert not list(target.iterdir()), 'target must start empty'
         env['CARGO_TARGET_DIR']=str(target.resolve())
         NATIVE['verify'](native)
+        verify_cargo_configs(configs,checkouts,CARGO_HOME)
         shutil.copyfile(harness,checkout/TARGET)
         before=inputs(checkout,arm['commit'],arm['allowed_untracked'])
         assert tool_identities(tools)==tool_before
@@ -151,6 +169,7 @@ def main():
         outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
         with outpath.open('w') as out,errpath.open('w') as err:
             subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
+        verify_cargo_configs(configs,checkouts,CARGO_HOME)
         after=inputs(checkout,arm['commit'],arm['allowed_untracked']);assert before==after
         tool_after=tool_identities(tools);assert tool_after==tool_before
         NATIVE['verify'](native)
