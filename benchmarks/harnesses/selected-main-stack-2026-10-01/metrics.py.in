@@ -39,7 +39,67 @@ def stability(changes, eligible, same_work, arm_block_medians):
             'interpretation':'descriptive four-block comparison only; no population p95 or platform-wide speed claim'}
 
 
-def metric_tables(observations,eligibility):
+TIMING_METRICS={'wall_us','cpu_user_seconds','cpu_system_seconds','encode_us','forward_us'}
+HOST_COMPARISON_SCOPE=('selected fixed endpoint observations and revalidated provider binding only; '
+                       'not continuous hardware/quota/provider equality, physical-host identity or absence of interference')
+
+
+def fixed_host_projection(conditions):
+    require(type(conditions) is dict, 'host conditions missing')
+    hardware=conditions.get('host')
+    require(type(hardware) is dict and all(type(hardware.get(k)) is str and hardware[k]
+            for k in ['architecture','kernel','cpu_model']), 'host hardware fields missing')
+    affinity=conditions.get('affinity')
+    require(type(affinity) is list and affinity and all(type(v) is int and v>=0 for v in affinity)
+            and len(set(affinity))==len(affinity), 'host affinity missing or invalid')
+    require('effective_cpu_quota_cores' in conditions, 'effective CPU quota missing')
+    quota=conditions['effective_cpu_quota_cores']
+    require(quota is None or (type(quota) in (int,float) and math.isfinite(quota) and quota>0), 'invalid effective CPU quota')
+    ancestors=conditions.get('cgroup_ancestors')
+    require(type(ancestors) is list and ancestors, 'visible memory/CPU limits missing')
+    limits=[]
+    for ancestor in ancestors:
+        require(type(ancestor) is dict and type(ancestor.get('path')) is str and ancestor['path']
+                and 'memory_max_bytes' in ancestor, 'visible memory limit missing')
+        maximum=ancestor['memory_max_bytes']
+        require(maximum is None or (type(maximum) is int and maximum>=0), 'invalid memory limit')
+        raw=ancestor.get('cpu_max')
+        require(type(raw) is str and len(raw.split())==2, 'visible CPU limit missing')
+        amount,period=raw.split()
+        require(period.isdigit() and int(period)>0 and (amount=='max' or (amount.isdigit() and int(amount)>0)), 'invalid CPU limit')
+        limits.append((ancestor['path'],maximum,amount,int(period)))
+    require(len({value[0] for value in limits})==len(limits), 'duplicate visible cgroup path')
+    return (tuple(hardware[k] for k in ['architecture','kernel','cpu_model']),tuple(sorted(affinity)),quota,tuple(sorted(limits)))
+
+
+def timing_environment(items,host_conditions=None,provider_binding=None):
+    result={'timing_environment_eligible':False,'timing_environment_scope':HOST_COMPARISON_SCOPE}
+    expected={'device','execution_provider','scope'}
+    if not (type(provider_binding) is dict and set(provider_binding)==expected
+            and all(type(v) is str and v for v in provider_binding.values())
+            and provider_binding['device']=='cpu' and provider_binding['execution_provider']=='CPUExecutionProvider'):
+        return {**result,'timing_environment_reason':'revalidated actual device/provider binding missing'}
+    if type(host_conditions) is not dict:
+        return {**result,'timing_environment_reason':'job host conditions missing'}
+    projections=[]
+    try:
+        for name in sorted({o['job']['name'] for o in items}):
+            conditions=host_conditions.get(name)
+            require(type(conditions) is dict, 'job host conditions missing')
+            before=fixed_host_projection(conditions.get('before'))
+            after=fixed_host_projection(conditions.get('after'))
+            require(before==after, 'fixed host conditions changed within job')
+            projections.append(before)
+        require(projections and all(value==projections[0] for value in projections),
+                'fixed host conditions differ across paired arms or blocks')
+    except ValueError as failure:
+        return {**result,'timing_environment_reason':str(failure)}
+    return {**result,'timing_environment_eligible':True,
+            'timing_environment_reason':'fixed recorded endpoints match across jobs, paired arms and blocks',
+            'timing_provider_binding':dict(provider_binding)}
+
+
+def metric_tables(observations,eligibility,host_conditions=None,provider_binding=None):
     groups={}
     for o in observations:
         j=o['job'];config=o['row']['arm']
@@ -47,6 +107,7 @@ def metric_tables(observations,eligibility):
         groups.setdefault(group,[]).append(o)
     result=[]
     for group,items in sorted(groups.items()):
+        environment=timing_environment(items,host_conditions,provider_binding)
         eligible=all(eligibility.get(o['job']['name'],True) for o in items) if group[4] in ['changed-context','changed-hot'] else True
         works={s:[{k:o['validated']['actual_delta'][k] for k in ['offered','scored','characters','tokens','padded_tokens','batches']} for o in items if o['job']['source']==s] for s in ['main','stack']}
         same_work=works['main']==works['stack']
@@ -66,8 +127,10 @@ def metric_tables(observations,eligibility):
                     change=difference(block['main'],block['stack'])['percentage_change']
                     changes.append(change)
                 evidence=stability(changes,eligible,same_work,arm_medians) if all(c is not None for c in changes) else {'stable_claim_eligible':False,'four_block_percentage_changes':changes,'arm_four_block_medians':arm_medians,'reason':'zero baseline percentage undefined'}
+                if metric in TIMING_METRICS:
+                    evidence['stable_claim_eligible']=evidence['stable_claim_eligible'] and environment['timing_environment_eligible']
                 result.append({'configuration':list(group),'metric':metric,'statistic':statistic,'samples_per_arm':len(items)//2,
-                               'accuracy_eligible':eligible,'same_successful_work':same_work,**difference(arm_values['main'],arm_values['stack']),**evidence})
+                               'accuracy_eligible':eligible,'same_successful_work':same_work,**difference(arm_values['main'],arm_values['stack']),**evidence,**environment})
     return result
 
 
