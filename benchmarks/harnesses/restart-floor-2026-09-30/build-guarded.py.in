@@ -21,10 +21,18 @@ def resource_preflight(directory):
 TOOLCHAIN=Path('/workspace/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin')
 CARGO_HOME=Path('/workspace/.cargo')
 CONTROLLED_CARGO={'CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS'}
+# cc crate documented compiler/archiver/flag inputs, including target suffixes
+# and HOST_/TARGET_ prefixes; OpenSSL uses an uppercase target prefix.
+CC_INPUTS={'CC','CXX','AR','ARFLAGS','CFLAGS','CXXFLAGS','CPPFLAGS','RANLIB','RANLIBFLAGS','CXXSTDLIB','CROSS_COMPILE'}
+NATIVE_EXACT={'CRATE_CC_NO_DEFAULTS','RING_PREGENERATE_ASM','PERL_EXECUTABLE'}
+def native_override(key):
+    return (key in NATIVE_EXACT or key.startswith(('CC_','RUSTONIG_','OPENSSL_','PKG_CONFIG','VCPKG_')) or
+            '_OPENSSL_' in key or '_PKG_CONFIG' in key or
+            any(key==name or key.startswith(name+'_') or key in {'HOST_'+name,'TARGET_'+name} for name in CC_INPUTS))
 def reject_overrides(parent):
     unexpected=sorted(key for key in parent if
         (key.startswith('CARGO_') and key not in CONTROLLED_CARGO) or
-        key.startswith(('RUSTC','RUSTDOC','ORT_','ZVEC_')) or key in {'RUSTFLAGS','RUSTUP_TOOLCHAIN'})
+        native_override(key) or key.startswith(('RUSTC','RUSTDOC','ORT_','ZVEC_')) or key in {'RUSTFLAGS','RUSTUP_TOOLCHAIN'})
     assert not unexpected, 'refuse inherited compiler/Cargo overrides: '+', '.join(unexpected)
 def build_environment(parent):
     reject_overrides(parent)
