@@ -602,6 +602,14 @@ if __name__ == '__main__':
     run_case('removed Cargo configuration guard',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('if not key.startswith("CARGO_") or key == "CARGO_HOME"','if True')),expected_error='pinned native-library build environment missing or changed')
     for key in ['ORT_LIB','ZVEC_LIB']:
         run_case('removed native path canonicalization '+key,lambda r,key=key:(r/'README.md').write_text((r/'README.md').read_text().replace(key+'=$(cd "$'+key+'" && pwd -P)',key+'="$'+key+'"')),expected_error='pinned native-library build environment missing or changed')
+    for arm in ['baseline','scored']:
+        for metric in ['elapsed_ms','early_stop_elapsed_ms','graph_process_cpu_user_system_seconds']:
+            def zero_interval(root,arm=arm,metric=metric):
+                def alter(row):
+                    if metric=='early_stop_elapsed_ms':row['early_stop']['elapsed_ms']=0
+                    else:row[metric]=[.01,.01] if metric=='graph_process_cpu_user_system_seconds' else 0
+                mutate_json(root/(arm+'.jsonl'),alter)
+            run_case('fabricated altered interval '+arm+'/'+metric,zero_interval,expected_error='retained graph intervals differ exactly')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
