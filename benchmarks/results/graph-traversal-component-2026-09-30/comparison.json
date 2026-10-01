@@ -1,0 +1,39 @@
+{
+  "invariants": [
+    {
+      "case": "cross_origin",
+      "baseline": 0.3333333432674408,
+      "scored": 0.800000011920929,
+      "expected": 0.8,
+      "absolute_delta": 0.46666666865348816,
+      "percent_change": 139.99999642372143
+    },
+    {
+      "case": "later_hop",
+      "baseline": 0.10000000149011612,
+      "scored": 0.5,
+      "expected": 0.5,
+      "absolute_delta": 0.3999999985098839,
+      "percent_change": 399.9999925494195
+    },
+    {
+      "case": "same_hop",
+      "baseline": 0.05000000074505806,
+      "scored": 0.5,
+      "expected": 0.5,
+      "absolute_delta": 0.44999999925494194,
+      "percent_change": 899.999985098839
+    }
+  ],
+  "early_stop_recovered": true,
+  "cross_arm_non_graph_identical": false,
+  "scope": "native Engine component fixture; fresh UUID projects may change tie orders; no timing claim",
+  "early_stop": {
+    "case": "early_stop",
+    "baseline": null,
+    "scored": 0.5,
+    "expected": 0.5,
+    "absolute_delta": null,
+    "percent_change": null
+  }
+}

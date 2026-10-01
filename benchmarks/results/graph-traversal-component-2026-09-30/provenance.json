@@ -1,0 +1,593 @@
+{
+  "scope": "native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion",
+  "date": "2026-09-30",
+  "source_base": "13ee710c9df865f1dac98dc77a8108e438ddc539",
+  "compared_main_ref_not_run": "315c10242ddf7a1cec3bccbf550a942320e09557",
+  "toolchain": {
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)\nrelease: 1.98.1\ncommit-hash: 797e8a9bca276c1c9f9f738d2a20f484fa4eea9d\ncommit-date: 2026-08-05\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.4 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)\nssl: OpenSSL 3.6.3 9 Jun 2026\nos: Debian 13.0.0 (trixie) [64-bit]\n",
+    "build_flags": {
+      "profile": "release",
+      "jobs": 2,
+      "offline": true,
+      "locked": true,
+      "incremental": false,
+      "rustflags": null,
+      "encoded_rustflags": null,
+      "wrappers": null,
+      "native_link": "explicit dynamic ORT1.28.0",
+      "inherited_product_knobs": "cleared"
+    },
+    "runtime_product_settings": {
+      "profile": "accuracy",
+      "device": "cpu",
+      "channel_depth": 50,
+      "graph_depth": 2,
+      "reranker": "not called; component scope",
+      "rayon_omp_environment_threads": 4,
+      "pamin_inference_threads": null,
+      "ort_threads": "product available_parallelism default; not directly recorded"
+    }
+  },
+  "arms": [
+    {
+      "arm": "baseline",
+      "fresh_compiler_artifacts": [
+        {
+          "target": "pamin_core",
+          "fresh": false,
+          "source": "crates/pamin-core/src/lib.rs"
+        },
+        {
+          "target": "pamin_store",
+          "fresh": false,
+          "source": "crates/pamin-store/src/lib.rs"
+        },
+        {
+          "target": "pamin_engine",
+          "fresh": false,
+          "source": "crates/pamin-engine/src/lib.rs"
+        },
+        {
+          "target": "pamin_index",
+          "fresh": false,
+          "source": "crates/pamin-index/src/lib.rs"
+        },
+        {
+          "target": "scratch_scored_fixture",
+          "fresh": false,
+          "source": "crates/pamin-engine/tests/scratch_scored_fixture.rs"
+        },
+        {
+          "target": "scratch_scored_multihop",
+          "fresh": false,
+          "source": "crates/pamin-engine/tests/scratch_scored_multihop.rs"
+        }
+      ],
+      "source_hashes": {
+        "Cargo.lock": "7d4f12751afc4495f383c9e3df7d20ee0d5d45ffd0bc47700af3f00d96f58dab",
+        "Cargo.toml": "986e728a929f2294b48df88da4b7ba92dc44b785534f5f6f7022109d4e92d769",
+        "benchmarks/results/inference/vector-rescore-accelerate-2026-09-30-Cargo.toml": "67d0a2dd18ed3a9cbb7cf9eaff7139eecdcaeaf72bbf6fa9c3bc79b0404a9f90",
+        "benchmarks/results/inference/vector-rescore-device-2026-09-30/Cargo.toml": "6e8ed5960d02ed4b40eeefa50992941364aa596b4c848daf14cee658c4a7d7b2",
+        "crates/pamin-cli/Cargo.toml": "327baead6dc7c8ac8b73da4cd1062021edb94d974e9fdf8715205dedd2ceee63",
+        "crates/pamin-core/Cargo.toml": "b0bf263868ae18b4f680f4ad61782e91cb59915f55ee1f0342cd5318d56ed851",
+        "crates/pamin-core/src/cascade.rs": "bfcfd7745e84c64c7220d62b00ad7da794e0f0ccd86706824631cbd9cb58a92d",
+        "crates/pamin-core/src/channel.rs": "17ed5d2bbd0119002a0beb421316f852e99d1e9dde3bfdbfa811cfaf5737345c",
+        "crates/pamin-core/src/env.rs": "48dc84c0f65481312bf0120fe8f422275a22a38912e157d9ae0463efc78356e7",
+        "crates/pamin-core/src/filter.rs": "0dae0f26de508e94325b24745d7303d85ec819b2c7dfccbc146b8f2718dccc80",
+        "crates/pamin-core/src/fusion.rs": "fa0a810d174ef4d87f3fbcf413dc9a739a2ed0cccc896fa763048397cfe9085a",
+        "crates/pamin-core/src/graph.rs": "98a55efa6f9d45084c683a22ad2cc3927e1aafab3e07ab2f0d341aec8720ceb5",
+        "crates/pamin-core/src/id.rs": "5040618538f744f1e09b505d173b7bb7c0aec8a79319888cb23eb85aeee52904",
+        "crates/pamin-core/src/ledger.rs": "d372263bf89b564b67702dac7555baa7caeb0b2ef3f03c99fd5e8c1c4a81188a",
+        "crates/pamin-core/src/lib.rs": "9ed8b6589970d617e75cab8d1f0b660379a6aa0864f077bdea9ccf4c36351f88",
+        "crates/pamin-core/src/version.rs": "741dae19af31858360cf5ab05745090b40336cc1c3f9889d1dc773a7dbca2f8e",
+        "crates/pamin-engine/Cargo.toml": "4e6e10ac869749b8bfdb45ad94f544fc708bc4c47150d17849258b9c2916b474",
+        "crates/pamin-engine/src/cascade.rs": "a5ba901daf2d9402e25b2f64c10ad170d6745b0160e21e2c6d49e96daf718828",
+        "crates/pamin-engine/src/engine.rs": "75e3b7bd12d05b409958bdedf9aa91042faf431ff6bae51eaa7e538240bde3d4",
+        "crates/pamin-engine/src/lib.rs": "19ab9ed7610bb38b84db716e126010e23b7494b4056eb5c70fcea63ad2ac43d4",
+        "crates/pamin-engine/src/reshape.rs": "425cc1e6b6787677ef0f1e1dbd6740348a793a59e7b9e477dde7e8ee48fa5005",
+        "crates/pamin-engine/tests/graph_trace/mod.rs": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
+        "crates/pamin-engine/tests/harness/mod.rs": "923246f094436890e52232b00a8f2d10f74bf0a7e9bf1ca9cb86f0ea41dbbaab",
+        "crates/pamin-engine/tests/scratch_scored_fixture.rs": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+        "crates/pamin-index/Cargo.toml": "a30da5feba2e964e3176bc825e11e0c13b3872b398a44a71e6345210a1e09334",
+        "crates/pamin-index/src/attention.rs": "8c5ac9c253c549792b0d27221a7cfc73d854a617269e7df7e7162abd11d9cc94",
+        "crates/pamin-index/src/descriptors.rs": "81cd23cdb2f1e2848b597a9e313a345bec2bc5b3febc04a99879c3027a10651e",
+        "crates/pamin-index/src/embedding.rs": "788cf9fe2a1608c66c315e513d495cdfc742e4b1806182d5707a21a7d2a5eb9b",
+        "crates/pamin-index/src/encoder.rs": "bbd5f95fd8a5a0ec00fe795778d815b75efb724059d1f215d7aaeef8a8c0503b",
+        "crates/pamin-index/src/error.rs": "b8aedaef9998baf6bf659c3d654866ec3e862bafa64a3ebff44699c7598c0b92",
+        "crates/pamin-index/src/half.rs": "b25ed578dd4d9e2ba5113411b6f4e9a316233185ca3f2785982322f916898964",
+        "crates/pamin-index/src/hub.rs": "2eed22ebb43cd7753fa6f1ec6cf5e098bc3915c937fa27f7e0123e29a51fe697",
+        "crates/pamin-index/src/inference.rs": "78ec6898ec65209fcde3ff860911d83302616f143f6a68cdb22cde4fad010000",
+        "crates/pamin-index/src/lib.rs": "d9229a506adfdd3c599f1f9d010bd7882856e9860867cee5c22b26dea72b7d1e",
+        "crates/pamin-index/src/native.rs": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27",
+        "crates/pamin-index/src/onnx.rs": "3fe1b5a703c2ff2f1f53085f72d262e17f5eb5f8420de7477d99510238948894",
+        "crates/pamin-index/src/prepared.rs": "1170263cf2ec4570bb1fc32606fe2865facc2d5a6df0c9359b614650d9ddbb03",
+        "crates/pamin-index/src/projection.rs": "0fee9f7161eb6b339cd5f6b7eb8ef934ed4082dc3ddcb925c2645cdd001a9273",
+        "crates/pamin-index/src/reranking.rs": "c846efdafca2f8dfe7667b48725139caf67545813b52bdc395c93cd238936249",
+        "crates/pamin-index/src/reshape.rs": "f025bf6e1e170e4ccad5bb152ccaf6b9cd25c950c5bfda5de49e20c3fd15c8bd",
+        "crates/pamin-index/src/segmentation.rs": "1b5afa16352c4f13b8bfe6292c4f5d321054d461bc0c5392adf2b1e114215815",
+        "crates/pamin-index/src/tokenizer.rs": "4b205de6c491c4c6705a8a88f15ae19e02bc82d9b70cddff52c505382d6daebf",
+        "crates/pamin-store/Cargo.toml": "551e9c88b325710e5d3775e99bd67128e061b48c19050b635a2f3c59cb87a8b4",
+        "crates/pamin-store/src/database.rs": "e93860054f9f1fc9c4c07c734cef47e92c69c6e1b5cf3b1f5e654ed6285492b2",
+        "crates/pamin-store/src/error.rs": "abbf76705dc76564e9f033fb8b4bf9427441f0b8e00762fb6c5a73736c5e0667",
+        "crates/pamin-store/src/graph.rs": "8beccf016346adccfa9f68dfa5236ab33d210e0e6f7a3876b5d5d8c5cec743c9",
+        "crates/pamin-store/src/jobs.rs": "f2273c2665bbb3ba413d06a27fe7d4e9367fa4ba8b15f0e408aaf0d9a30bfb1d",
+        "crates/pamin-store/src/lib.rs": "adade3b56a5192ba70438ab2e48bb16feddebe7b7fa576ec36cb2b0405e55040",
+        "crates/pamin-store/src/migrate.rs": "0521db229a4474daa6b1bb29317abf864acd3ea46f5a379eef504bdf9f733210",
+        "crates/pamin-store/src/repository.rs": "35ab99e25dd97426eb4247ff6be51335aad5b2633fe28292af607a899405004a",
+        "crates/pamin-store/src/sql.rs": "7260e4dada33b5a8b43b0f074c7ae2a9588800646e8e8a26ea5e144e1c39c155",
+        "crates/pamin-store/src/workspace.rs": "20ea73fa37dd1e7ef1dfd832fb6af66c4c04e3e292abd1194b60bf476c29f5a7"
+      },
+      "binary_sha256": "485cbd023d9e5c8b1b4cdd3f94419199fe634a1a66a9d67d44dd90b7a1facdd1",
+      "inference": {
+        "runtime_info": [
+          "ORT Build Info: git-branch=HEAD, git-commit-id=da9b5e364c, fp8-kv-cache=1, build type=Release"
+        ],
+        "selected_graphs": {
+          "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": {
+            "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+            "assigned_nodes": {
+              "CPUExecutionProvider": 1023
+            },
+            "companion_assets_sha256": {
+              "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+              "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b"
+            }
+          }
+        },
+        "mapped_native_libraries_sha256": {
+          "${ORT_LIB}/libonnxruntime.so.1.28.0": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab"
+        }
+      },
+      "asset_hashes_before": {
+        "${ORT_LIB}/libonnxruntime.so.1.28.0": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+        "${ZVEC_LIB}/libzvec_c_api.so": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx": {
+          "present": true,
+          "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "source_identity_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        },
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx": {
+          "present": false,
+          "sha256": null,
+          "source_identity_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        }
+      },
+      "asset_hashes_after": {
+        "${ORT_LIB}/libonnxruntime.so.1.28.0": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+        "${ZVEC_LIB}/libzvec_c_api.so": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx": {
+          "present": true,
+          "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "source_identity_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        },
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx": {
+          "present": false,
+          "sha256": null,
+          "source_identity_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        }
+      },
+      "process_usage": {
+        "wall_seconds": 11.006847980999737,
+        "user_seconds": 22.679407,
+        "system_seconds": 1.954844,
+        "maximum_process_rss_kib": 825568,
+        "exit_status": 0,
+        "scope": "Linux wait4 of native test process; setup included, independent services excluded"
+      },
+      "resources": {
+        "reclaim_pressure": true,
+        "estimated_headroom_bytes": 8437116928,
+        "scope": "max-current+inactive_file; reclaim not guaranteed; no cache drop",
+        "oom_before": 0,
+        "oom_after": 0,
+        "oom_kill_before": 0,
+        "oom_kill_after": 0
+      },
+      "launch_binding": {
+        "original_launch_sha256": "72038565da7e2273384ee28a369df2a8eaf84f8eb4402eeb92b8b84f23af1f3d",
+        "scope": "projection of retained original launch; local path prefixes replaced by placeholders",
+        "command": [
+          "${FROZEN_BINARY}",
+          "scratch_scored_graph_finite_fixture",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "effective_product_settings": {
+          "PAMIN_PROFILE": "accuracy",
+          "PAMIN_DEVICE": "cpu",
+          "PAMIN_EVAL_HOME": "${WORKSPACES}/baseline",
+          "GRAPH_ARM": "baseline",
+          "GRAPH_OUT": "${RESULTS}/baseline.jsonl",
+          "GRAPH_TRACE": "${RESULTS}/baseline.trace.jsonl",
+          "GRAPH_SHARED_MACHINE": "exclusive model/build slot; shared file cache and reclaim pressure; non-timing component reproduction",
+          "GRAPH_EXECUTION_PROVENANCE": "{\"expected_providers\": [\"CPUExecutionProvider\"], \"known_cpu_release_transitions\": {\"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx\": {\"protected_prepared_assets\": [\"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx\", \"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data\"], \"source_sha256\": \"16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb\"}, \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx\": {\"protected_prepared_assets\": [\"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data\"], \"source_sha256\": \"912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d\"}}, \"model_assets_sha256\": {\"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json\": \"68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a\", \"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json\": \"8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835\", \"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json\": \"249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4\", \"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json\": \"b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json\": \"122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json\": \"8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json\": \"8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json\": \"b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80\", \"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx\": \"51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4\", \"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data\": \"2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx\": \"24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx\": \"7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data\": \"06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c\"}, \"native_libraries_sha256\": {\"${ZVEC_LIB}/libzvec_c_api.so\": \"58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a\", \"${ORT_LIB}/libonnxruntime.so.1.28.0\": \"1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab\"}, \"runtime_info_contains\": \"ORT Build Info:\", \"source_prior_provenance\": \"${PRIOR_PROVENANCE}\"}",
+          "GRAPH_PROVENANCE": "${SOURCE_PROVENANCE}",
+          "GRAPH_CLK_TCK": "100"
+        },
+        "GRAPH_OUT": "${RESULTS}/baseline.jsonl",
+        "GRAPH_TRACE": "${RESULTS}/baseline.trace.jsonl"
+      }
+    },
+    {
+      "arm": "scored",
+      "fresh_compiler_artifacts": [
+        {
+          "target": "pamin_core",
+          "fresh": false,
+          "source": "crates/pamin-core/src/lib.rs"
+        },
+        {
+          "target": "pamin_store",
+          "fresh": false,
+          "source": "crates/pamin-store/src/lib.rs"
+        },
+        {
+          "target": "pamin_engine",
+          "fresh": false,
+          "source": "crates/pamin-engine/src/lib.rs"
+        },
+        {
+          "target": "pamin_index",
+          "fresh": false,
+          "source": "crates/pamin-index/src/lib.rs"
+        },
+        {
+          "target": "scratch_scored_fixture",
+          "fresh": false,
+          "source": "crates/pamin-engine/tests/scratch_scored_fixture.rs"
+        },
+        {
+          "target": "scratch_scored_multihop",
+          "fresh": false,
+          "source": "crates/pamin-engine/tests/scratch_scored_multihop.rs"
+        }
+      ],
+      "source_hashes": {
+        "Cargo.lock": "7d4f12751afc4495f383c9e3df7d20ee0d5d45ffd0bc47700af3f00d96f58dab",
+        "Cargo.toml": "986e728a929f2294b48df88da4b7ba92dc44b785534f5f6f7022109d4e92d769",
+        "benchmarks/results/inference/vector-rescore-accelerate-2026-09-30-Cargo.toml": "67d0a2dd18ed3a9cbb7cf9eaff7139eecdcaeaf72bbf6fa9c3bc79b0404a9f90",
+        "benchmarks/results/inference/vector-rescore-device-2026-09-30/Cargo.toml": "6e8ed5960d02ed4b40eeefa50992941364aa596b4c848daf14cee658c4a7d7b2",
+        "crates/pamin-cli/Cargo.toml": "327baead6dc7c8ac8b73da4cd1062021edb94d974e9fdf8715205dedd2ceee63",
+        "crates/pamin-core/Cargo.toml": "b0bf263868ae18b4f680f4ad61782e91cb59915f55ee1f0342cd5318d56ed851",
+        "crates/pamin-core/src/cascade.rs": "bfcfd7745e84c64c7220d62b00ad7da794e0f0ccd86706824631cbd9cb58a92d",
+        "crates/pamin-core/src/channel.rs": "17ed5d2bbd0119002a0beb421316f852e99d1e9dde3bfdbfa811cfaf5737345c",
+        "crates/pamin-core/src/env.rs": "48dc84c0f65481312bf0120fe8f422275a22a38912e157d9ae0463efc78356e7",
+        "crates/pamin-core/src/filter.rs": "0dae0f26de508e94325b24745d7303d85ec819b2c7dfccbc146b8f2718dccc80",
+        "crates/pamin-core/src/fusion.rs": "fa0a810d174ef4d87f3fbcf413dc9a739a2ed0cccc896fa763048397cfe9085a",
+        "crates/pamin-core/src/graph.rs": "98a55efa6f9d45084c683a22ad2cc3927e1aafab3e07ab2f0d341aec8720ceb5",
+        "crates/pamin-core/src/id.rs": "5040618538f744f1e09b505d173b7bb7c0aec8a79319888cb23eb85aeee52904",
+        "crates/pamin-core/src/ledger.rs": "d372263bf89b564b67702dac7555baa7caeb0b2ef3f03c99fd5e8c1c4a81188a",
+        "crates/pamin-core/src/lib.rs": "9ed8b6589970d617e75cab8d1f0b660379a6aa0864f077bdea9ccf4c36351f88",
+        "crates/pamin-core/src/version.rs": "741dae19af31858360cf5ab05745090b40336cc1c3f9889d1dc773a7dbca2f8e",
+        "crates/pamin-engine/Cargo.toml": "4e6e10ac869749b8bfdb45ad94f544fc708bc4c47150d17849258b9c2916b474",
+        "crates/pamin-engine/src/cascade.rs": "a5ba901daf2d9402e25b2f64c10ad170d6745b0160e21e2c6d49e96daf718828",
+        "crates/pamin-engine/src/engine.rs": "beee4334fa1ef9660e0a21c0a14723cdcfa3124eb4b2cbb06fe438cace3fb0df",
+        "crates/pamin-engine/src/lib.rs": "19ab9ed7610bb38b84db716e126010e23b7494b4056eb5c70fcea63ad2ac43d4",
+        "crates/pamin-engine/src/reshape.rs": "425cc1e6b6787677ef0f1e1dbd6740348a793a59e7b9e477dde7e8ee48fa5005",
+        "crates/pamin-engine/tests/graph_trace/mod.rs": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
+        "crates/pamin-engine/tests/harness/mod.rs": "923246f094436890e52232b00a8f2d10f74bf0a7e9bf1ca9cb86f0ea41dbbaab",
+        "crates/pamin-engine/tests/scratch_scored_fixture.rs": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+        "crates/pamin-index/Cargo.toml": "a30da5feba2e964e3176bc825e11e0c13b3872b398a44a71e6345210a1e09334",
+        "crates/pamin-index/src/attention.rs": "8c5ac9c253c549792b0d27221a7cfc73d854a617269e7df7e7162abd11d9cc94",
+        "crates/pamin-index/src/descriptors.rs": "81cd23cdb2f1e2848b597a9e313a345bec2bc5b3febc04a99879c3027a10651e",
+        "crates/pamin-index/src/embedding.rs": "788cf9fe2a1608c66c315e513d495cdfc742e4b1806182d5707a21a7d2a5eb9b",
+        "crates/pamin-index/src/encoder.rs": "bbd5f95fd8a5a0ec00fe795778d815b75efb724059d1f215d7aaeef8a8c0503b",
+        "crates/pamin-index/src/error.rs": "b8aedaef9998baf6bf659c3d654866ec3e862bafa64a3ebff44699c7598c0b92",
+        "crates/pamin-index/src/half.rs": "b25ed578dd4d9e2ba5113411b6f4e9a316233185ca3f2785982322f916898964",
+        "crates/pamin-index/src/hub.rs": "2eed22ebb43cd7753fa6f1ec6cf5e098bc3915c937fa27f7e0123e29a51fe697",
+        "crates/pamin-index/src/inference.rs": "78ec6898ec65209fcde3ff860911d83302616f143f6a68cdb22cde4fad010000",
+        "crates/pamin-index/src/lib.rs": "d9229a506adfdd3c599f1f9d010bd7882856e9860867cee5c22b26dea72b7d1e",
+        "crates/pamin-index/src/native.rs": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27",
+        "crates/pamin-index/src/onnx.rs": "3fe1b5a703c2ff2f1f53085f72d262e17f5eb5f8420de7477d99510238948894",
+        "crates/pamin-index/src/prepared.rs": "1170263cf2ec4570bb1fc32606fe2865facc2d5a6df0c9359b614650d9ddbb03",
+        "crates/pamin-index/src/projection.rs": "0fee9f7161eb6b339cd5f6b7eb8ef934ed4082dc3ddcb925c2645cdd001a9273",
+        "crates/pamin-index/src/reranking.rs": "c846efdafca2f8dfe7667b48725139caf67545813b52bdc395c93cd238936249",
+        "crates/pamin-index/src/reshape.rs": "f025bf6e1e170e4ccad5bb152ccaf6b9cd25c950c5bfda5de49e20c3fd15c8bd",
+        "crates/pamin-index/src/segmentation.rs": "1b5afa16352c4f13b8bfe6292c4f5d321054d461bc0c5392adf2b1e114215815",
+        "crates/pamin-index/src/tokenizer.rs": "4b205de6c491c4c6705a8a88f15ae19e02bc82d9b70cddff52c505382d6daebf",
+        "crates/pamin-store/Cargo.toml": "551e9c88b325710e5d3775e99bd67128e061b48c19050b635a2f3c59cb87a8b4",
+        "crates/pamin-store/src/database.rs": "e93860054f9f1fc9c4c07c734cef47e92c69c6e1b5cf3b1f5e654ed6285492b2",
+        "crates/pamin-store/src/error.rs": "abbf76705dc76564e9f033fb8b4bf9427441f0b8e00762fb6c5a73736c5e0667",
+        "crates/pamin-store/src/graph.rs": "8beccf016346adccfa9f68dfa5236ab33d210e0e6f7a3876b5d5d8c5cec743c9",
+        "crates/pamin-store/src/jobs.rs": "f2273c2665bbb3ba413d06a27fe7d4e9367fa4ba8b15f0e408aaf0d9a30bfb1d",
+        "crates/pamin-store/src/lib.rs": "adade3b56a5192ba70438ab2e48bb16feddebe7b7fa576ec36cb2b0405e55040",
+        "crates/pamin-store/src/migrate.rs": "0521db229a4474daa6b1bb29317abf864acd3ea46f5a379eef504bdf9f733210",
+        "crates/pamin-store/src/repository.rs": "35ab99e25dd97426eb4247ff6be51335aad5b2633fe28292af607a899405004a",
+        "crates/pamin-store/src/sql.rs": "7260e4dada33b5a8b43b0f074c7ae2a9588800646e8e8a26ea5e144e1c39c155",
+        "crates/pamin-store/src/workspace.rs": "20ea73fa37dd1e7ef1dfd832fb6af66c4c04e3e292abd1194b60bf476c29f5a7"
+      },
+      "binary_sha256": "ac308a0b9438eb897d1601d185583026d2f07b1a268b47b7b1082e56daf72bd0",
+      "inference": {
+        "runtime_info": [
+          "ORT Build Info: git-branch=HEAD, git-commit-id=da9b5e364c, fp8-kv-cache=1, build type=Release"
+        ],
+        "selected_graphs": {
+          "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": {
+            "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+            "assigned_nodes": {
+              "CPUExecutionProvider": 1023
+            },
+            "companion_assets_sha256": {
+              "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+              "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b"
+            }
+          }
+        },
+        "mapped_native_libraries_sha256": {
+          "${ORT_LIB}/libonnxruntime.so.1.28.0": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab"
+        }
+      },
+      "asset_hashes_before": {
+        "${ORT_LIB}/libonnxruntime.so.1.28.0": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+        "${ZVEC_LIB}/libzvec_c_api.so": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx": {
+          "present": true,
+          "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "source_identity_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        },
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx": {
+          "present": false,
+          "sha256": null,
+          "source_identity_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        }
+      },
+      "asset_hashes_after": {
+        "${ORT_LIB}/libonnxruntime.so.1.28.0": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+        "${ZVEC_LIB}/libzvec_c_api.so": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+        "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+        "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+        "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx": {
+          "present": true,
+          "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "source_identity_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        },
+        "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx": {
+          "present": false,
+          "sha256": null,
+          "source_identity_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+          "expected_transition": "present to absent after successful native CPU preparation; prepared assets pinned"
+        }
+      },
+      "process_usage": {
+        "wall_seconds": 12.008825205999528,
+        "user_seconds": 22.846165,
+        "system_seconds": 1.828223,
+        "maximum_process_rss_kib": 824976,
+        "exit_status": 0,
+        "scope": "Linux wait4 of native test process; setup included, independent services excluded"
+      },
+      "resources": {
+        "reclaim_pressure": true,
+        "estimated_headroom_bytes": 8410218496,
+        "scope": "max-current+inactive_file; reclaim not guaranteed; no cache drop",
+        "oom_before": 0,
+        "oom_after": 0,
+        "oom_kill_before": 0,
+        "oom_kill_after": 0
+      },
+      "launch_binding": {
+        "original_launch_sha256": "33243aa7e35538e086352863f693250a535b5f0e6b66a62effe84af33c87ca65",
+        "scope": "projection of retained original launch; local path prefixes replaced by placeholders",
+        "command": [
+          "${FROZEN_BINARY}",
+          "scratch_scored_graph_finite_fixture",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "effective_product_settings": {
+          "PAMIN_PROFILE": "accuracy",
+          "PAMIN_DEVICE": "cpu",
+          "PAMIN_EVAL_HOME": "${WORKSPACES}/scored",
+          "GRAPH_ARM": "scored",
+          "GRAPH_OUT": "${RESULTS}/scored.jsonl",
+          "GRAPH_TRACE": "${RESULTS}/scored.trace.jsonl",
+          "GRAPH_SHARED_MACHINE": "exclusive model/build slot; shared file cache and reclaim pressure; non-timing component reproduction",
+          "GRAPH_EXECUTION_PROVENANCE": "{\"expected_providers\": [\"CPUExecutionProvider\"], \"known_cpu_release_transitions\": {\"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx\": {\"protected_prepared_assets\": [\"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx\", \"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data\"], \"source_sha256\": \"16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb\"}, \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx\": {\"protected_prepared_assets\": [\"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data\"], \"source_sha256\": \"912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d\"}}, \"model_assets_sha256\": {\"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json\": \"68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a\", \"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json\": \"8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835\", \"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json\": \"249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4\", \"${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json\": \"b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json\": \"122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json\": \"8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json\": \"8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3\", \"${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json\": \"b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80\", \"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx\": \"51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4\", \"${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data\": \"2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx\": \"24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx\": \"7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8\", \"${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data\": \"06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c\"}, \"native_libraries_sha256\": {\"${ZVEC_LIB}/libzvec_c_api.so\": \"58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a\", \"${ORT_LIB}/libonnxruntime.so.1.28.0\": \"1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab\"}, \"runtime_info_contains\": \"ORT Build Info:\", \"source_prior_provenance\": \"${PRIOR_PROVENANCE}\"}",
+          "GRAPH_PROVENANCE": "${SOURCE_PROVENANCE}",
+          "GRAPH_CLK_TCK": "100"
+        },
+        "GRAPH_OUT": "${RESULTS}/scored.jsonl",
+        "GRAPH_TRACE": "${RESULTS}/scored.trace.jsonl"
+      }
+    }
+  ],
+  "redactions": {
+    "baseline.jsonl": {
+      "original_sha256": "302e70b2463379af148eaf8c3ced4f4d3606c1fc865af1b1bc38d1d69597929e",
+      "published_sha256": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
+      "changed": true,
+      "scope": "canonical JSON formatting only; no score, timing, provider or result changes"
+    },
+    "baseline.trace.jsonl": {
+      "original_sha256": "5936b7d0cea61761299147254a2af812cadfc74d3fa126abf33b95ab3a5d6236",
+      "published_sha256": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
+      "changed": true,
+      "scope": "canonical JSON formatting and local path-prefix replacement only; no score, timing, provider or result changes"
+    },
+    "baseline.usage.json": {
+      "original_sha256": "7f675ce48907b49028a49dc8d3b531ec54a89b2fde695e024700bf70a0b3ac37",
+      "published_sha256": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
+      "changed": true,
+      "scope": "canonical JSON formatting only; no metric or exit-status changes"
+    },
+    "scored.jsonl": {
+      "original_sha256": "149ca7521684db7a8a621c5b8283841456ad9c08b1d9a5283a55d1ee6928a0fa",
+      "published_sha256": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
+      "changed": true,
+      "scope": "canonical JSON formatting only; no score, timing, provider or result changes"
+    },
+    "scored.trace.jsonl": {
+      "original_sha256": "6efe6ec43b56afafd8fe5db7cf158eab5c5808c4bae28b6282ac1ee59f16287c",
+      "published_sha256": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
+      "changed": true,
+      "scope": "canonical JSON formatting and local path-prefix replacement only; no score, timing, provider or result changes"
+    },
+    "scored.usage.json": {
+      "original_sha256": "e273d12d107522410ea3af260c4092e55b8c152a772576c7d0438d6bd5ee3d15",
+      "published_sha256": "d7cd754e6bf2829853daeed461ef4fddc7de0320e0be0d4a6b9f83a145e88c89",
+      "changed": true,
+      "scope": "canonical JSON formatting only; no metric or exit-status changes"
+    },
+    "baseline.log": {
+      "original_sha256": "6f5b1350ed22fcf72dbc0a38dddd65ea99dace15f875298b0ae15becb077e025",
+      "published_sha256": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
+      "changed": true,
+      "scope": "trim empty trailing log line; no test result content change"
+    },
+    "scored.log": {
+      "original_sha256": "59b0ae1975940198f03ec6ce7a8cb0ae9efc11c3752c2a097bf1e7046a7385be",
+      "published_sha256": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
+      "changed": true,
+      "scope": "trim empty trailing log line; no test result content change"
+    }
+  },
+  "source_files": {
+    "fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+    "experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
+    "graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
+    "prepare.py": "f3812344fb1fa5c81a56f174bf884858968b81a2fea5624e5cf6b450a9621c6b",
+    "multihop.rs.in": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00"
+  },
+  "fixture_log_linkage": "not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only",
+  "mapped_library_identity_scope": "mapped paths and pinned file digests; no inode identity captured",
+  "archive_files": {
+    "scored.usage.json": "d7cd754e6bf2829853daeed461ef4fddc7de0320e0be0d4a6b9f83a145e88c89",
+    "retrospective-sql-audit.json": "30291af211a3563615742b855b465642a138fe606c0157ca07b15341dc02c6d0",
+    "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
+    "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
+    "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
+    "verify.py": "49ce9404d7c4e2837c4fdee73c9769b8dd95546adc5cddfc3a54dc1237489ea9",
+    "platform-observation.json": "c9cd36af33d603da177bdc4becdb03cf656bad2faf2d7ba0a37c935b56fb3d3d",
+    "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
+    "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
+    "comparison.json": "b14f2c9ab62fc85abc25f87cf295e1b49e37ca3b723c1943ba498e6e964b24eb",
+    "test_verify.py": "02000ea9468ebe7cb15001ae4c1f8eb665dc9df07c84bfc2891a54d18861c28f",
+    "baseline.log": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
+    "baseline.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
+    "README.md": "6922b9f40416583a0f3b974dd00cc2eacfdb6c0c08be691564c192a1e3bab8cf",
+    "source/multihop.rs.in": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00",
+    "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+    "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
+    "source/graph_trace.rs.in": "ff0ec6560286a6e7d39232b376994f073dfe934a916bbb162566e7926c34d200",
+    "source/prepare.py": "f3812344fb1fa5c81a56f174bf884858968b81a2fea5624e5cf6b450a9621c6b",
+    "source/migrations/V1__initial.sql": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+    "source/migrations/V6__topic_name_index.sql": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+    "source/migrations/V7__one_document_per_topic.sql": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+    "source/migrations/V2__relationships.sql": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+    "source/migrations/V11__retrieval_signals_leave.sql": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+    "source/migrations/V14__source_versions_index_once.sql": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+    "source/migrations/V8__topics_by_recency.sql": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+    "source/migrations/V12__job_subject_once.sql": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+    "source/migrations/V5__cascade_outbox.sql": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+    "source/migrations/V13__edge_endpoints_on_versions.sql": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+    "source/migrations/V9__state_content_from_span.sql": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+    "source/migrations/V3__shard_key_and_indexes.sql": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+    "source/migrations/V4__current_state_pointer.sql": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+    "source/migrations/V10__settled_jobs_leave.sql": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+    "source/future-accounting.py.in": "d42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027",
+    "test_future_accounting.py": "73242bbe736474dd182aada58c2cc999cb0532a24e962f004c131c2da1970787",
+    "source/fixture-future.rs.in": "ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373",
+    "source/prepare-future.py": "ce84a958284d2aa2f234cfd45d61123973258d67eb22f9b98359eba8f2306a37"
+  },
+  "source_inventory_scope": {
+    "original_captured_entries_per_arm": 52,
+    "original_status": "partial: migration SQL omitted",
+    "original_sql_build_attestation": "N/A: not captured",
+    "retrospective_sql_audit": "retrospective-sql-audit.json",
+    "future_requirement": "Capture all compiler inputs, including include_str! migration SQL, before and after any future compilation; prepared-source-hashes.json already inventories copied SQL sources."
+  },
+  "hardware_observation": "platform-observation.json",
+  "retrospective_multihop_source": {
+    "captured_at_utc": "2026-10-01T01:40:22.945699+00:00",
+    "scope": "retrospective equality of preserved baseline/scored scratch source copies; original build-time source byte attestation N/A: omitted from the 52-entry source maps",
+    "source": "crates/pamin-engine/tests/scratch_scored_multihop.rs",
+    "published_file": "source/multihop.rs.in",
+    "sha256": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00",
+    "bytes": 46047,
+    "arm_source_sha256": {
+      "baseline": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00",
+      "scored": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00"
+    }
+  },
+  "historical_loaded_zvec_identity": "N/A: runtime-map collector captured only ONNX Runtime; provisioned zvec file digest does not establish loaded identity",
+  "future_reproduction": {
+    "scope": "prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement",
+    "files": {
+      "source/future-accounting.py.in": "d42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027",
+      "test_future_accounting.py": "73242bbe736474dd182aada58c2cc999cb0532a24e962f004c131c2da1970787",
+      "source/fixture-future.rs.in": "ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373",
+      "source/prepare-future.py": "ce84a958284d2aa2f234cfd45d61123973258d67eb22f9b98359eba8f2306a37"
+    },
+    "fixture_policy": {
+      "scope": "prospective disabled-arm defect assertions; historical fixture and preparation bytes unchanged",
+      "historical_fixture": "source/fixture.rs.in",
+      "historical_fixture_sha256": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+      "fixture": "source/fixture-future.rs.in",
+      "prepare": "source/prepare-future.py",
+      "native_execution": "N/A: prospective baseline assertions not compiled or run; benchmarks deferred"
+    }
+  },
+  "redaction_validation_scope": "declared allowed transforms; local read-only audit matched original digests and semantic JSON equivalence modulo declared path prefixes; private originals not distributed and public verifier cannot independently replay that audit"
+}
