@@ -315,10 +315,15 @@ def round8_cases():
     launch=next(block for block in blocks if '"$BINARY" scratch_scored_graph_finite_fixture' in block)
     code=shlex.split(launch[launch.index('python3 -c '):].replace('\\\n',' '))[2]
     env=os.environ.copy();env.update(PAMIN_EVAL_HOME='/retained-workspace',PAMIN_PROFILE='accuracy',PAMIN_DEVICE='cpu',PAMIN_PREPARED='off',PAMIN_FUSED_ATTENTION='off',PAMIN_INFERENCE_THREADS='999',PAMIN_FUTURE_KNOB='unexpected')
-    result=subprocess.run([sys.executable,'-c',code,sys.executable,'-c','import json,os;print(json.dumps({k:v for k,v in os.environ.items() if k.startswith("PAMIN_")}))'],env=env,capture_output=True,text=True)
-    assert result.returncode==0,result.stderr
-    assert json.loads(result.stdout)=={'PAMIN_EVAL_HOME':'/retained-workspace','PAMIN_PROFILE':'accuracy','PAMIN_DEVICE':'cpu'}, 'launch inherited product knobs'
-    print('PASS: inert launch shim retains only the three assigned product values')
+    for threads in [{},{'RAYON_NUM_THREADS':'99','OMP_NUM_THREADS':'97'},{'RAYON_NUM_THREADS':'','OMP_NUM_THREADS':''}]:
+        environment={key:value for key,value in env.items() if key not in {'RAYON_NUM_THREADS','OMP_NUM_THREADS'}};environment.update(threads)
+        result=subprocess.run([sys.executable,'-c',code,sys.executable,'-c','import json,os;print(json.dumps({k:v for k,v in os.environ.items() if k.startswith("PAMIN_") or k in {"RAYON_NUM_THREADS","OMP_NUM_THREADS"}}))'],env=environment,capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        assert json.loads(result.stdout)=={'PAMIN_EVAL_HOME':'/retained-workspace','PAMIN_PROFILE':'accuracy','PAMIN_DEVICE':'cpu','RAYON_NUM_THREADS':'4','OMP_NUM_THREADS':'4'}, 'launch inherited product knobs or conflicting thread counts'
+        print('PASS: inert launch shim clears product knobs and assigns both recorded4 thread counts '+repr(threads))
+    for key in ['RAYON_NUM_THREADS','OMP_NUM_THREADS']:
+        run_case('runtime thread recipe '+key,lambda root,key=key:(root/'README.md').write_text((root/'README.md').read_text().replace(key+'="4"',key+'="9"')),expected_error='pinned native-library runtime loader environment missing or changed')
+
 
 
 if __name__ == '__main__':

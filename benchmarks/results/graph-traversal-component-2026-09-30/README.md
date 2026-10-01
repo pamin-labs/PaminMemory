@@ -214,7 +214,7 @@ PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu \
 GRAPH_ARM="$ARM" GRAPH_OUT="$RESULTS/$ARM.jsonl" \
 GRAPH_TRACE="$RESULTS/$ARM.trace.jsonl" GRAPH_CLK_TCK="$(getconf CLK_TCK)" \
 GRAPH_SHARED_MACHINE="$INTERFERENCE" \
-python3 -c 'import os, sys; retained = {key: os.environ[key] for key in ("PAMIN_EVAL_HOME", "PAMIN_PROFILE", "PAMIN_DEVICE")}; clean = {key: value for key, value in os.environ.items() if not key.startswith("PAMIN_")}; clean.update(retained); os.execvpe(sys.argv[1], sys.argv[1:], clean)' \
+python3 -c 'import os, sys; retained = {key: os.environ[key] for key in ("PAMIN_EVAL_HOME", "PAMIN_PROFILE", "PAMIN_DEVICE")}; clean = {key: value for key, value in os.environ.items() if not key.startswith("PAMIN_")}; clean.update(retained, RAYON_NUM_THREADS="4", OMP_NUM_THREADS="4"); os.execvpe(sys.argv[1], sys.argv[1:], clean)' \
 python3 source/future-accounting.py.in \
   --log "$RESULTS/$ARM.log" --usage "$RESULTS/$ARM.usage.json" \
   --mapped "$RESULTS/$ARM.mapped-libraries.json" \
@@ -229,7 +229,9 @@ It also samples actual ONNX Runtime and Zvec mapped paths in that same native pr
 
 The Python launch shim retains only the three explicitly assigned `PAMIN_*`
 values and removes every other inherited product knob before executing the
-fixture binary. It does not run a model itself.
+fixture binary. It assigns both `RAYON_NUM_THREADS=4` and `OMP_NUM_THREADS=4`,
+overwriting unset, empty or conflicting inherited values to match the recorded
+CPU concurrency. It does not run a model itself.
 
 Set `WORKSPACE` to that arm's prepared pinned workspace and `ARM` to `baseline` or
 `scored`; retain the actual interference declaration in `INTERFERENCE`. The
