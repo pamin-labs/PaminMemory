@@ -110,7 +110,7 @@ def main():
         rows.shown_source_identity(c.ROOT / 'main', c.ROOT / 'stack')
         for job in jobs:
             c.source_inputs()
-            c.guard()
+            conditions_before = c.guard(job['name'] + ':before')
             binary = Path(binaries[job['source']]['path'])
             c.require(c.digest(binary) == binaries[job['source']]['sha256'], 'frozen binary changed')
             home = out / (job['name'] + '-home')
@@ -119,6 +119,8 @@ def main():
             record['installation_dir'] = str(home / 'postgres/install/17.6.0')
             (home / 'server.json').write_text(json.dumps(record))
             before = c.logical(home / 'index')
+            # Fresh clone endpoint before any owned PostgreSQL startup.
+            postgres_before = c.disk_sizes(home / 'postgres/data')
             env = c.environment(home)
             env.update(CACHE_RETURN_LIMIT=str(job['limit']), CACHE_QUERY_ID=str(job['query_id']),
                        CACHE_TIER=job['tier'], CACHE_SEQUENCE=job['sequence'])
@@ -127,9 +129,13 @@ def main():
             validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
             for old, new in zip(actual, actual[1:]):
                 rows.hot_guard(old, new, job['source'])
+            # native() has already stopped the owned PostgreSQL server.
             packet = {'job': job, 'rows': actual, 'validated': validated, 'opened': opened, 'usage': usage,
                       'index_before_bytes': before, 'index_after_bytes': c.logical(home / 'index'),
-                      'full_payload_immutability_attestation': None}
+                      'full_payload_immutability_attestation': None,
+                      'host_conditions': {'before': conditions_before, 'after': c.guard(job['name'] + ':after')},
+                      'postgres_disk': {'before': postgres_before, 'after': c.disk_sizes(home / 'postgres/data'),
+                                        'scope': 'owned stopped data-directory regular files including local WAL; external symlinks and directory metadata excluded'}}
             c.save(out / (job['name'] + '.json'), packet)
             key = (job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])
             results[key] = packet

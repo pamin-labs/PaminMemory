@@ -1,4 +1,8 @@
 """Local-only bindings and resource guards for materialized scratch controllers."""
+from datetime import datetime, timezone
+from fractions import Fraction
+import platform
+import stat
 import fcntl
 import hashlib
 import json
@@ -61,24 +65,84 @@ def logical(root):
                if p.is_file() and not p.is_symlink())
 
 
-def guard():
-    require(shutil.disk_usage(ROOT).free >= RESERVE, 'keep 8 GiB disk reserve')
-    cg = Path('/sys/fs/cgroup')
-    require((cg / 'memory.max').exists(), 'Linux cgroup v2 scope required')
-    maximum = (cg / 'memory.max').read_text().strip()
-    current = int((cg / 'memory.current').read_text())
-    if maximum != 'max':
-        require(int(maximum) - current >= 2 * 1024**3, 'keep 2 GiB cgroup memory headroom')
-    return {'disk_free': shutil.disk_usage(ROOT).free, 'cgroup_memory_bytes': current,
-            'cpu_quota': (cg / 'cpu.max').read_text().strip(),
-            'affinity': sorted(os.sched_getaffinity(0)), 'shared_machine': True}
+def disk_sizes(root):
+    root = Path(root)
+    require(root.is_dir() and not root.is_symlink(), 'owned disk directory required')
+    logical_bytes = allocated_bytes = files = 0
+    for directory, children, names in os.walk(root, followlinks=False):
+        children[:] = [name for name in children if not (Path(directory) / name).is_symlink()]
+        for name in names:
+            path = Path(directory) / name
+            metadata = path.lstat()
+            if stat.S_ISREG(metadata.st_mode):
+                logical_bytes += metadata.st_size
+                allocated_bytes += metadata.st_blocks * 512
+                files += 1
+    return {'logical_bytes': logical_bytes, 'allocated_bytes': allocated_bytes, 'files': files}
+
+
+def cgroup_conditions(root=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup')):
+    lines = [line.split(':', 2)[2] for line in membership.read_text().splitlines() if line.startswith('0::')]
+    require(len(lines) == 1, 'one cgroup v2 membership required')
+    relative = lines[0]
+    require(relative.startswith('/') and not any(part in {'.', '..'} for part in relative.split('/')),
+            'cgroup membership path escape')
+    root = root.resolve()
+    leaf = root / relative.lstrip('/')
+    require(leaf.resolve().is_relative_to(root), 'cgroup membership path escape')
+    require(leaf.is_dir(), 'effective cgroup missing')
+    levels = []
+    node = leaf
+    while True:
+        require(not node.is_symlink(), 'cgroup membership symlink forbidden')
+        memory_max = (node / 'memory.max').read_text().strip() if (node / 'memory.max').exists() else 'max'
+        current = int((node / 'memory.current').read_text()) if (node / 'memory.current').exists() else None
+        maximum = None if memory_max == 'max' else int(memory_max)
+        require((maximum is None or maximum >= 0) and (current is None or current >= 0), 'invalid cgroup memory values')
+        require(maximum is None or current is not None, 'limited ancestor memory.current missing')
+        quota = (node / 'cpu.max').read_text().strip() if (node / 'cpu.max').exists() else 'max 100000'
+        amount, period = quota.split()
+        require(int(period) > 0 and (amount == 'max' or int(amount) > 0), 'invalid cgroup CPU quota')
+        levels.append({'path': str(node), 'memory_max_bytes': maximum, 'memory_current_bytes': current,
+                       'memory_headroom_bytes': None if maximum is None else maximum - current,
+                       'cpu_max': quota})
+        if node == root:
+            break
+        node = node.parent
+    require(levels[0]['memory_current_bytes'] is not None, 'effective cgroup memory.current required')
+    headrooms = [level['memory_headroom_bytes'] for level in levels if level['memory_headroom_bytes'] is not None]
+    ratios = [Fraction(int(level['cpu_max'].split()[0]), int(level['cpu_max'].split()[1]))
+              for level in levels if not level['cpu_max'].startswith('max ')]
+    return {'cgroup_path': str(leaf), 'mounted_cgroup_root': str(root),
+            'scope': 'visible mounted cgroup v2 hierarchy only; invisible ancestor limits unknown',
+            'cgroup_ancestors': levels,
+            'cgroup_memory_bytes': levels[0]['memory_current_bytes'],
+            'effective_memory_headroom_bytes': min(headrooms) if headrooms else None,
+            'cpu_quota': levels[0]['cpu_max'], 'effective_cpu_quota_cores': float(min(ratios)) if ratios else None}
+
+
+def guard(phase='monitor'):
+    conditions = cgroup_conditions()
+    conditions.update(captured_at_utc=datetime.now(timezone.utc).isoformat(), controller_pid=os.getpid(),
+                      phase=phase, disk_free=shutil.disk_usage(ROOT).free,
+                      affinity=sorted(os.sched_getaffinity(0)), shared_machine=True,
+                      host={'architecture': platform.machine(), 'kernel': platform.release(),
+                            'cpu_model': next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
+                                               if line.startswith('model name')), None)})
+    # Append immutable observations from build/seed/run admission and monitoring.
+    with (ROOT / 'host-conditions.jsonl').open('a') as stream:
+        stream.write(json.dumps(conditions, allow_nan=False) + '\n')
+    require(conditions['disk_free'] >= RESERVE, 'keep 8 GiB disk reserve')
+    headroom = conditions['effective_memory_headroom_bytes']
+    require(headroom is None or headroom >= 2 * 1024**3, 'keep 2 GiB cgroup memory headroom')
+    return conditions
 
 
 def exclusive():
     # All copies of this harness on the host share this cooperative lock.
     lock = Path('/tmp/pamin-synthetic-measurement.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    guard()
+    guard('admission')
     return lock
 
 
