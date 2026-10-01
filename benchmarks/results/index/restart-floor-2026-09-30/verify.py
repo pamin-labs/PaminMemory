@@ -104,8 +104,34 @@ disk_root=root.with_name('restart-floor-disk-2026-09-30')
 disk_provenance=json.loads((disk_root/'provenance.json').read_text())
 provider_bindings=json.loads((disk_root/'provider-bindings.json').read_text())
 memory_provenance=json.loads((root/'provenance.json').read_text())
-memory_assets={e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>'):e for e in memory_provenance['model_assets']}
+memory_entries=memory_provenance['model_assets']
+assert len(memory_entries)==len({e['path'] for e in memory_entries})==7, 'HNSW duplicate/incomplete prehashed model inventory'
+memory_assets={e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>'):e for e in memory_entries}
 disk_assets={e['path']:e for e in disk_provenance['source_assets']+disk_provenance['prepared_graphs_and_external_weights']}
+# Check this HNSW endpoint itself: the later Disk inventory is a separate
+# observation, not a replacement for missing HNSW endpoint evidence.
+post=json.loads((root/'post-trial-assets.json').read_text())
+assert set(post)=={'prehashed_source_tokenizer_onnx_assets_unchanged','prepared_external_weights_post_trial'}, 'HNSW unexpected endpoint scope/release transition'
+expected_paths=set()
+for role,binding in provider_bindings['roles'].items():
+    source=Path(binding['source_graph'])
+    tokenizer=(source.parent if role=='embedding' else source.parent.parent)/'tokenizer.json'
+    expected_paths.update([binding['source_graph'],str(tokenizer),binding['prepared_graph'],str(Path(binding['prepared_graph']).parent/'model.onnx')])
+assert set(memory_assets)==expected_paths, 'HNSW prehashed model role/path inventory differs'
+unchanged=[p.replace('${MODEL_CACHE}','<MODEL_CACHE>') for p in post['prehashed_source_tokenizer_onnx_assets_unchanged']]
+assert len(unchanged)==len(set(unchanged))==7 and set(unchanged)==set(memory_assets), 'HNSW complete unchanged endpoint pathset differs'
+# Both original CPU exports are explicitly included in the unchanged receipt.
+# No released-source transition was recorded; do not invent one retrospectively.
+external=post['prepared_external_weights_post_trial']
+assert len(external)==len({e['path'] for e in external})==2, 'HNSW incomplete/duplicate external-weight endpoint'
+expected_external={b['external_data'] for b in provider_bindings['roles'].values()}
+assert {e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>') for e in external}==expected_external, 'HNSW external-weight endpoint pathset differs'
+receipt_mtimes={'eecdcf109c0c08402aa8f893fc25d2d4':1790793669634082575,'ac146c082d1526dd1cd10597ae4a0ffc':1790793000506673216}
+for entry in external:
+    normalized=entry['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>')
+    assert set(entry)=={'path','bytes','sha256','mtime_ns','hash_scope'}, 'HNSW external-weight endpoint scope differs'
+    assert normalized in disk_assets and all(entry[k]==disk_assets[normalized][k] for k in ['bytes','sha256']), 'HNSW external-weight endpoint identity differs'
+    assert entry['mtime_ns']==receipt_mtimes[Path(normalized).parent.name] and entry['hash_scope']=='post-trial identity; not independently hashed before timing', 'HNSW external-weight endpoint receipt differs'
 for path,entry in memory_assets.items():
     assert path in disk_assets and all(entry[key]==disk_assets[path][key] for key in ['bytes','sha256']), 'HNSW recorded model inventory differs from retained role binding'
 for row in raw:
