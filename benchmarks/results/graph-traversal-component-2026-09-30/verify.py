@@ -298,6 +298,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert test_lines == ['test scratch_scored_graph_finite_fixture ... ok'], 'complete fixture test markers differ'
  summaries=[line for line in log.splitlines() if line.startswith('test result:')]
  assert len(summaries)==1 and re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9]+(?:\.[0-9]+)?s',summaries[0]), 'complete fixture result summary differs'
+ test_duration=float(re.search(r'finished in ([0-9]+(?:\.[0-9]+)?)s$',summaries[0]).group(1))
  assert log.rstrip().splitlines()[-1]==summaries[0], 'fixture result must be the final log line'
  assert not re.search(r'(?m)^failures:|\bFAILED\b|thread .+ panicked at',log), 'fixture log contains a failure marker'
  # Historical fixture writes GRAPH_OUT directly, so no stdout JSON linkage exists.
@@ -328,6 +329,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid duration/RSS: '+metric
  assert type(usage['exit_status']) is int and usage['exit_status']==0, 'process exit status must be integer zero'
  assert usage['maximum_process_rss_kib']==row['process_lifetime_high_water_kib'], 'raw and process usage RSS differ'
+ assert math.isfinite(test_duration) and 0<=test_duration<=usage['wall_seconds'], 'fixture test duration exceeds whole-process wall time'
  assert row['elapsed_ms']/1000 <= usage['wall_seconds'] and row['early_stop']['elapsed_ms']/1000 <= usage['wall_seconds'], 'graph interval wall time exceeds whole-process total'
  assert all(interval<=usage[key] for interval,key in zip(row['graph_process_cpu_user_system_seconds'],['user_seconds','system_seconds'])), 'graph interval CPU time exceeds whole-process total'
  assert usage['scope']=='Linux wait4 of native test process; setup included, independent services excluded'
