@@ -73,17 +73,47 @@ git cat-file -t 0f023be6a8d8d070a971f7e590ccccff2c3292bb
 
 ## Executable scratch reproduction
 
-The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/eff4c8c55e69c341f00517046aa9e0d6e3aba751) remain outside the tracked tree, with SHA-256 in `persisted-cost-identity.json`. A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. This command aborts rather than timing an empty corpus. In a separate checkout of the retained `bench/persisted-cost-2026-10-01` tag:
+The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/eff4c8c55e69c341f00517046aa9e0d6e3aba751) remain outside the tracked tree, with SHA-256 in `persisted-cost-identity.json`. A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. The harness aborts rather than timing an empty corpus. Use a separate checkout of the exact revision for the selected arm below; install the same frozen scratch source in that checkout. The command matrix explicitly distinguishes CPU policy from automatic policy and the dual profile. These commands reproduce the Rust warm-search rows; whole-process columns use the frozen worker described below.
 
 ```sh
 curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs -o crates/pamin-engine/tests/scratch_matched_costs.rs
 shasum -a 256 crates/pamin-engine/tests/scratch_matched_costs.rs
 # Expected: 2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad
 # Run one arm at a time, builds/other experiments stopped; rotate arms and use fresh processes.
-env -u HF_HOME -u PAMIN_DEVICE PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE=accuracy MATCHED_COST_ROWS=/private/tmp/reproduced-cost.jsonl cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+run_cost() {
+  cost_arm=$1; cost_revision=$2; cost_profile=$3; cost_policy=$4; cost_block=$5
+  test "$(git rev-parse HEAD)" = "$cost_revision" || return 1
+  case "$cost_policy" in cpu|auto) ;; *) return 1 ;; esac
+  test "$cost_block" -ge 0 && test "$cost_block" -le 2 || return 1
+  cost_rows=/private/tmp/reproduced-cost-${cost_arm}-${cost_block}.jsonl
+  if test "$cost_policy" = cpu; then
+    env -u HF_HOME -u PAMIN_DEVICE PAMIN_DEVICE=cpu PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+  else
+    env -u HF_HOME -u PAMIN_DEVICE PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+  fi
+}
+# Select the one line matching this checkout; repeat with block=1 and block=2
+# in fresh processes, rotating arm order. Each source revision needs its own checkout.
+block=0
+run_cost main-cpu 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy cpu "$block"
+run_cost new-cpu 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 accuracy cpu "$block"
+run_cost dual-cpu 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 dual_accuracy cpu "$block"
+run_cost main-auto 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy auto "$block"
+run_cost new-auto 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 accuracy auto "$block"
+run_cost main-auto-repeat 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy auto "$block"
+run_cost new-auto-persist-hit 0f023be6a8d8d070a971f7e590ccccff2c3292bb accuracy auto "$block"
 rm crates/pamin-engine/tests/scratch_matched_costs.rs
 ```
 
-The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Original source hashes are retained; original logs stay local.
+The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Loaded events require a device from `cpu`, `cuda`, `coreml`, `directml`, or `npu`; unrelated events reject device fields. Loaded event/device pairs are independently compared with the published loaded-device summary, including order and count. Each cost block's published manifest must equal its validated raw manifest, and all three `main-cpu` rankings must match the full baseline at every selected query `18*i`. Original source hashes are retained; original logs stay local.
 
 The original `predeclared.json` is immutable. It specified independent question-level inference; the corrected cluster analysis was chosen after the results were observed. The new p-value supports an exploratory signal, not a preregistered acceptance claim. Confirm on an independent corpus before changing defaults.
+
+
+The focused verifier regression suite exercises retained cost rows and redacted events without invoking the 100,000-draw precision calculation, models or native helpers:
+
+```sh
+python3 -B -m unittest discover -s benchmarks -p test_verify_compute_evidence.py -v
+```
+
+This evidence-only correction changes no product behavior and introduces no new accuracy, latency, memory or disk measurement; new before/after performance values are N/A. Original raw rows, precision/cost values, proof summaries and redacted event artifacts remain unchanged.
