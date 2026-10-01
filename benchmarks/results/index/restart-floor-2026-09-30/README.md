@@ -44,7 +44,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Closed index apparent bytes | 126.662 MiB | 131.678 MiB | +5.016 MiB | +3.961% |
 | Vector graph completeness (hybrid visibility checked) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
-Warm p50/p95 are descriptive observations; the warm timing comparison screen is retained separately. Historical HWM-derived peak comparisons are uncertified/N/A because retained process observations decrease. Three independent process repetitions are insufficient to assign small timing or sampled-RSS movements to the patch. Individual process observations and original numerical summaries are retained. No query-level significance test is reported.
+Warm p50/p95 are descriptive observations; the warm timing comparison screen is retained separately. Historical HWM-derived peak comparisons are uncertified/N/A because retained process observations decrease. Three independent process repetitions are insufficient to assign small timing or sampled-RSS movements to the patch. Individual raw process observations remain retained; the derived machine-readable summary explicitly nulls uncertified HWM peaks. No query-level significance test is reported.
 
 ## Conditions and measurement limits
 
@@ -74,4 +74,4 @@ The verifier binds each process/role graph path and node count to the HNSW sourc
 
 Historical `TOKIO_WORKER_THREADS` and the effective Tokio worker count were not recorded and remain unknown. The future guarded runner rejects inherited Tokio tuning, explicitly sets four Tokio workers and records that setting; it does not retrospectively certify historical async concurrency.
 
-Historical memory chronology qualification: the [recomputed receipt](hwm-review.json) binds the exact retained before/after HWM decreases and sampled VmRSS observations. No tolerance is applied: any added, removed or changed anomaly fails verification. The HWM-derived peak process RSS comparisons above are uncertified/N/A; sampled maintenance RSS remains an observation, not a lifetime peak. Original raw/log rows, calculator and numerical summaries remain unchanged and do not restore peak certification.
+Historical memory chronology qualification: the [recomputed receipt](hwm-review.json) binds the exact retained before/after HWM decreases and sampled VmRSS observations. No tolerance is applied: any added, removed or changed anomaly fails verification. The HWM-derived peak process RSS comparisons above are uncertified/N/A; sampled maintenance RSS remains an observation, not a lifetime peak. Original raw/log rows and calculator remain unchanged. The machine-readable summary is newly derived and supersedes its numeric predecessor: all peak-RSS process/median/comparison values are null with enforced N/A certification. Its derivation records the raw, calculator and superseded numeric-summary hashes; other metrics retain the same arithmetic.

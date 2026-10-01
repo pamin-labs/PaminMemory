@@ -151,7 +151,9 @@ assert inventory(post['assets'])==inventory(pre_assets), 'post-trial inventory d
 assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
 assert any(x['path'].endswith('.onnx.data') for x in post['assets'])
 assert review.historical_hwm_review(raw,'disk',hashlib.sha256((root/'raw.jsonl').read_bytes()).hexdigest())==json.loads((root/'hwm-review.json').read_text()), 'historical HWM qualification receipt differs'
-assert calculator.summarize(raw)==json.loads((root/'summary.json').read_text())
+calculated=calculator.summarize(raw)
+qualified=review.qualified_summary(calculated,json.loads((root/'hwm-review.json').read_text()),hashlib.sha256((code/'analyze.py.in').read_bytes()).hexdigest())
+assert qualified==json.loads((root/'summary.json').read_text()), 'qualified summary differs from immutable calculator recomputation'
 for binary in json.loads((root/'binaries.json').read_text()):
     assert binary['sha256']==binary['current_pretrial_hash']['sha256']==binary['posttrial_hash']['sha256']
     assert binary['current_pretrial_hash']['bytes']==binary['posttrial_hash']['bytes']
