@@ -1,5 +1,23 @@
 """Canonical hashes for one selected commit's source snapshot, not its history."""
-import hashlib,re,subprocess
+import functools,hashlib,os,re,subprocess
+
+
+@functools.lru_cache(maxsize=1)
+def local_environment_names():
+    # This builtin query does not need a repository. Isolate the query itself
+    # before trusting names, so hostile repository/config overrides cannot bind it.
+    query={key:value for key,value in os.environ.items() if not key.startswith('GIT_')}
+    names=subprocess.check_output(['git','rev-parse','--local-env-vars'],env=query).decode().splitlines()
+    assert names and all(re.fullmatch(r'GIT_[A-Z_]+',name) for name in names), 'unexpected Git local environment variable list'
+    return frozenset(names)
+
+def environment(parent=None):
+    env=dict(os.environ if parent is None else parent)
+    for key in list(env):
+        if key in local_environment_names() or key.startswith(('GIT_CONFIG_KEY_','GIT_CONFIG_VALUE_')):
+            env.pop(key)
+    env['GIT_NO_REPLACE_OBJECTS']='1'
+    return env
 
 
 def objects(repo, oids, env):

@@ -34,10 +34,10 @@ def compiler(value,checkout):
     assert any(r.get('reason')=='build-finished' and r['success'] is True for r in rows)
     return selected
 def source_inputs(repo,commit):
-    env=dict(os.environ,GIT_NO_REPLACE_OBJECTS='1')
+    guard=runpy.run_path(str(Path(__file__).resolve().parents[4]/'harnesses/restart-floor-2026-09-30/git-object-guards.py.in'))
+    env=guard['environment']()
     namespaces={'refs/replace',os.environ.get('GIT_REPLACE_REF_BASE','refs/replace').rstrip('/')}
     assert not subprocess.check_output(['git','for-each-ref','--format=%(refname)',*sorted(namespaces)],cwd=repo,env=env), 'Git replacement refs refused before source attestation'
-    guard=runpy.run_path(str(Path(__file__).resolve().parents[4]/'harnesses/restart-floor-2026-09-30/git-object-guards.py.in'))
     result={}
     for name,(mode,oid,value) in guard['snapshot'](repo,commit,env).items():
         if mode=='160000':result[name]={'kind':'gitlink','commit':oid};continue

@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory() as directory:
     globals_=build['inputs'].__globals__;old_git=globals_['git'];old_subprocess=globals_['subprocess'];old_objects=globals_['OBJECTS']
     try:
         globals_['git']=fake_git;globals_['subprocess']=FakeSubprocess
-        globals_['OBJECTS']={'snapshot':lambda *args:{name:('100644',name,data) for name,data in tracked.items()}}
+        globals_['OBJECTS']=dict(old_objects,snapshot=lambda *args:{name:('100644',name,data) for name,data in tracked.items()})
         result=build['inputs'](checkout,'fake-commit',allowed,scratch);assert result[scratch]['sha256']==sha
         path.write_bytes(b'changed source');refuse(lambda:build['inputs'](checkout,'fake-commit',allowed,scratch));path.write_bytes(template.read_bytes())
         (checkout/'Cargo.toml').write_bytes(b'dirty HEAD source');refuse(lambda:build['inputs'](checkout,'fake-commit',allowed,scratch))

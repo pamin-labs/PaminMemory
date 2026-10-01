@@ -38,7 +38,7 @@ def reject_overrides(parent):
 def build_environment(parent):
     reject_overrides(parent)
     tools={name:TOOLCHAIN.joinpath(name).resolve(strict=True) for name in ['cargo','rustc','rustdoc']}
-    env=dict(parent,RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo',
+    env=dict(OBJECTS['environment'](parent),RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo',
              CARGO_BUILD_JOBS='4',ZVEC_LIB_DIR='/workspace/.cargo/lib/pamin',ZVEC_AUTO_BUILD='0',
              ORT_LIB_LOCATION='/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',ORT_PREFER_DYNAMIC_LINK='1',
              RUSTC=str(tools['rustc']),RUSTDOC=str(tools['rustdoc']),
@@ -68,7 +68,7 @@ def digest(path):
         for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
     return h.hexdigest()
 def git_environment():
-    return dict(os.environ,GIT_NO_REPLACE_OBJECTS='1')
+    return OBJECTS['environment']()
 def git(checkout,*args):
     return subprocess.check_output(['git',*args],cwd=checkout,env=git_environment())
 def reject_replacements(checkout):
