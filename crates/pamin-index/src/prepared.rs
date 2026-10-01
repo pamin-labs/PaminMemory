@@ -937,7 +937,7 @@ pub(crate) fn source_digest(source: &Path) -> Result<String> {
 /// machines could share a key and pack differently -- and the cost of that is
 /// the heap packing described above, not a wrong score.
 #[cfg(target_arch = "x86_64")]
-fn features() -> Vec<&'static str> {
+pub(crate) fn features() -> Vec<&'static str> {
     use std::arch::is_x86_feature_detected as has;
     let mut found: Vec<&'static str> = [
         ("avx", has!("avx")),
@@ -969,7 +969,7 @@ fn features() -> Vec<&'static str> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn features() -> Vec<&'static str> {
+pub(crate) fn features() -> Vec<&'static str> {
     use std::arch::is_aarch64_feature_detected as has;
     [
         ("neon", has!("neon")),
@@ -986,7 +986,7 @@ fn features() -> Vec<&'static str> {
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn features() -> Vec<&'static str> {
+pub(crate) fn features() -> Vec<&'static str> {
     Vec::new()
 }
 
