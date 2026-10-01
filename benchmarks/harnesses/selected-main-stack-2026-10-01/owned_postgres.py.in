@@ -88,7 +88,7 @@ def show_data_directory(item,base):
 
 def start(home,base):
     item=preflight(home)
-    options=['-p',str(item['record']['port']),'-h','127.0.0.1']
+    options=['-p',str(item['record']['port']),'-h','127.0.0.1','-c','unix_socket_directories=']
     for key,value in NATIVE_SETTINGS.items():options += ['-c',f'{key}={value}']
     command=[str(item['install']/'bin/pg_ctl'),'-D',str(item['data']),'-l',str(item['home']/'postgres/graph-owned-start.log'),'-o',shlex.join(options),'-w','-t','30','start']
     for executable in ['postgres','pg_ctl']:
@@ -101,13 +101,15 @@ def start(home,base):
         show_data_directory(item,base)
         result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c','SHOW server_version_num'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
         require(result.stdout.strip()=='170006','actual PostgreSQL server version differs')
+        result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c','SHOW unix_socket_directories'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
+        require(result.stdout.strip()=='','Unix sockets must be disabled for the owned TCP-only server')
         # Capture actual selected resource settings, excluding credentials.
         settings={}
         for key in NATIVE_SETTINGS:
             result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c',f'SHOW {key}'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
             settings[key]=result.stdout.strip()
         require(settings==NATIVE_SETTINGS,'actual PostgreSQL defaults differ from native frozen source settings')
-        return {'identity':recorded,'data_directory_verified_before_native_fixture':True,'native_settings':settings}
+        return {'identity':recorded,'data_directory_verified_before_native_fixture':True,'native_settings':settings,'unix_socket_directories':''}
     except BaseException as failure:
         try:stop_item(item,base,recorded)
         except BaseException as cleanup:

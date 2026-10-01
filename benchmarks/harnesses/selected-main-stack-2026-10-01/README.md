@@ -85,3 +85,19 @@ changed-input history, or the report fails rather than claiming such coverage.
 Memory sampling skips unavailable `/proc` fields during process exit, without
 substituting zero RSS/HWM. Builds require an exact tool version token and retain
 the complete reported cargo/rustc/rustdoc versions in `build/toolchain.json`.
+
+Owned PostgreSQL runs on loopback TCP with Unix sockets explicitly disabled,
+and authenticated `SHOW unix_socket_directories` must confirm the empty setting.
+The existing PID/data/executable/UID/port ownership and effective native resource
+setting checks still apply. This avoids distribution-specific unwritable socket
+directories; actual PostgreSQL startup remains unverified here.
+
+Builds use fresh owned `build-home` and `build-cargo-home` directories. The latter
+links only prerequisite `registry` and optional `git` caches from the supplied
+Cargo cache; neither inherited home/configuration nor credentials are copied.
+Both `config` and `config.toml` are rejected in the canonical working checkouts,
+every searched ancestor and the owned Cargo home before/after each offline
+build. `build/cargo-config.json` records absent search paths and cache bindings,
+not credential values. Existing RUSTUP/toolchain assets remain prerequisites;
+cache contents are not independently content-attested, and endpoint checks do
+not prevent concurrent mutation. No Cargo build was performed for these tests.

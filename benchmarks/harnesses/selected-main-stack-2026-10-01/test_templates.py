@@ -39,6 +39,8 @@ class Templates(unittest.TestCase):
         self.analyzer = load('reproduction_analyze', self.work / 'analyze.py')
         (self.work / 'main/crates/pamin-engine/tests/corpus').mkdir(parents=True)
         (self.work / 'main/crates/pamin-engine/tests/corpus/queries.json').write_text('[]')
+        (self.work / 'stack').mkdir()
+        (self.work / 'prerequisite-cache/registry').mkdir(parents=True)
         (self.work / 'build').mkdir()
         (self.work / 'build/binaries.json').write_text(json.dumps({'main': {'bytes': 10}, 'stack': {'bytes': 12}}))
         (self.work / 'host-conditions.jsonl').write_text(json.dumps({'cpu_quota': '400000 100000', 'affinity': [0, 1, 2, 3], 'fixture': True}) + '\n')
@@ -356,10 +358,107 @@ class Templates(unittest.TestCase):
             process.wait.assert_not_called()
             self.assertIn(process, self.common.RETAINED_GROUPS)
 
+    def test_debian_pg_socket_default_is_disabled_and_effective_checked(self):
+        import shlex
+        import subprocess
+        item = {'home': self.work, 'data': self.work / 'data', 'install': self.work / 'install',
+                'record': {'port': 1234, 'username': 'fixture', 'password': 'fixture', 'database': 'fixture'}}
+        owned = {'pid': 42, 'port': 1234}
+        def execute(command, **kwargs):
+            if '--version' in command:
+                return Mock(stdout=Path(command[0]).name + ' (PostgreSQL) 17.6')
+            if command[-1] == 'start':
+                options = shlex.split(command[command.index('-o') + 1])
+                if 'unix_socket_directories=' not in options:
+                    raise subprocess.CalledProcessError(1, command, stderr='unwritable Debian socket directory')
+            if command[-1] == 'SHOW server_version_num':
+                return Mock(stdout='170006')
+            if command[-1] == 'SHOW unix_socket_directories':
+                return Mock(stdout='')
+            return Mock(stdout=self.pg.NATIVE_SETTINGS.get(command[-1].removeprefix('SHOW '), ''))
+        with patch.object(self.pg, 'preflight', return_value=item), \
+             patch.object(self.pg.subprocess, 'run', side_effect=execute), \
+             patch.object(self.pg, 'identity', return_value=owned), \
+             patch.object(self.pg, 'listening', return_value=True), \
+             patch.object(self.pg, 'show_data_directory'), patch.object(self.pg, 'stop_item') as stop:
+            receipt = self.pg.start(self.work, {})
+            self.assertEqual(receipt['unix_socket_directories'], '')
+            self.assertEqual(receipt['native_settings'], self.pg.NATIVE_SETTINGS)
+            stop.assert_not_called()
+        def wrong_effective(command, **kwargs):
+            if command[-1] == 'SHOW unix_socket_directories':
+                return Mock(stdout='/var/run/postgresql')
+            return execute(command, **kwargs)
+        with patch.object(self.pg, 'preflight', return_value=item), \
+             patch.object(self.pg.subprocess, 'run', side_effect=wrong_effective), \
+             patch.object(self.pg, 'identity', return_value=owned), \
+             patch.object(self.pg, 'listening', return_value=True), \
+             patch.object(self.pg, 'show_data_directory'), patch.object(self.pg, 'stop_item') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'Unix sockets'):
+                self.pg.start(self.work, {})
+            stop.assert_called_once_with(item, {}, owned)
+
+    def test_cargo_home_is_cache_only_and_searched_configs_are_refused(self):
+        module = load('isolated_build', self.work / 'build.py')
+        cache = self.work / 'prerequisite-cache'
+        (cache / 'registry').mkdir(parents=True, exist_ok=True)
+        (cache / 'git').mkdir()
+        (cache / 'config.toml').write_text('[env]\nUNRECORDED={value="x",force=true}\n')
+        (cache / 'credentials.toml').write_text('private fixture credential')
+        self.common.CONFIG.update(rustc='mock-rustc', rustdoc='mock-rustdoc')
+        with patch.dict(self.common.os.environ, {'CARGO_HOME': str(cache), 'HOME': str(cache),
+                                                'CARGO_BUILD_TARGET': 'unrecorded-target'}):
+            env = module.build_environment()
+        owned = Path(env['CARGO_HOME'])
+        self.assertNotEqual(owned, cache)
+        self.assertNotEqual(Path(env['HOME']), cache)
+        self.assertEqual((owned / 'registry').resolve(), (cache / 'registry').resolve())
+        self.assertEqual((owned / 'git').resolve(), (cache / 'git').resolve())
+        self.assertFalse((owned / 'config.toml').exists())
+        self.assertFalse((owned / 'credentials.toml').exists())
+        self.assertNotIn('CARGO_BUILD_TARGET', env)
+        checkouts = [self.work / 'main', self.work / 'stack']
+        for directory in [self.work / 'main/.cargo', self.work / '.cargo', owned]:
+            directory.mkdir(parents=True, exist_ok=True)
+            for name in ['config.toml', 'config']:
+                path = directory / name
+                path.write_text('[build]\ntarget="unexpected"\n')
+                with self.assertRaisesRegex(ValueError, 'Cargo configuration'):
+                    module.cargo_config_snapshot(checkouts, owned)
+                path.unlink()
+        dangling = self.work / 'main/.cargo/config'
+        dangling.symlink_to(self.work / 'missing-config')
+        with self.assertRaisesRegex(ValueError, 'Cargo configuration'):
+            module.cargo_config_snapshot(checkouts, owned)
+        dangling.unlink()
+        module.cargo_config_snapshot(checkouts, owned)
+
+    def test_cargo_ancestor_config_refused_before_build_home_creation(self):
+        module = load('ancestor_build', self.work / 'build.py')
+        fallback_home = self.work / 'runner-home'
+        (fallback_home / '.cargo/registry').mkdir(parents=True)
+        (fallback_home / '.cargo/config').write_text('unrecorded cache configuration')
+        self.common.CONFIG.update(rustc='mock-rustc', rustdoc='mock-rustdoc')
+        with patch.dict(self.common.os.environ, {'HOME': str(fallback_home)}, clear=True):
+            for directory in [self.work / 'main/.cargo', self.work / '.cargo']:
+                directory.mkdir(parents=True, exist_ok=True)
+                for name in ['config', 'config.toml']:
+                    config = directory / name
+                    config.write_text('[env]\nUNRECORDED={value="injected",force=true}\n')
+                    with self.assertRaisesRegex(ValueError, 'Cargo configuration'):
+                        module.build_environment()
+                    self.assertFalse((self.work / 'build-home').exists())
+                    config.unlink()
+            env = module.build_environment()
+        self.assertEqual((Path(env['CARGO_HOME']) / 'registry').resolve(),
+                         (fallback_home / '.cargo/registry').resolve())
+        self.assertFalse((Path(env['CARGO_HOME']) / 'config').exists())
+
     def test_bound_native_build_environment_excludes_ort_override(self):
         module = load('reproduction_build', self.work / 'build.py')
         self.common.CONFIG.update(rustc='mock-rustc', rustdoc='mock-rustdoc')
-        with patch.dict(self.common.os.environ, {'ORT_LIB_PATH': '/unrelated', 'ZVEC_AUTO_BUILD': '1'}):
+        with patch.dict(self.common.os.environ, {'ORT_LIB_PATH': '/unrelated', 'ZVEC_AUTO_BUILD': '1',
+                                               'CARGO_HOME': str(self.work / 'prerequisite-cache')}):
             env = module.build_environment()
         self.assertEqual(env['ZVEC_LIB_DIR'], self.common.CONFIG['native'])
         self.assertEqual(env['ZVEC_AUTO_BUILD'], '0')
@@ -482,7 +581,7 @@ class Templates(unittest.TestCase):
 
     def test_changed_materialized_compilation_input_is_rejected(self):
         source = self.work / 'stack'
-        source.mkdir()
+        source.mkdir(exist_ok=True)
         path = source / 'Cargo.toml'
         path.write_text('immutable source')
         receipt = {'stack': {'Cargo.toml': {'sha256': self.common.digest(path)}}}
