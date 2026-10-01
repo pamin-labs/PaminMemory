@@ -1,0 +1,72 @@
+{
+  "source_sha256": "c5c26921e870a9dec4b3f8d98bd11fd592de6776ff44b174e652cd480365825d",
+  "redaction": "Every source line mapped to a fixed event enum; no paths, free text, model strings, credentials or user content retained.",
+  "events": [
+    {
+      "line": 0,
+      "event": "other"
+    },
+    {
+      "line": 1,
+      "event": "other"
+    },
+    {
+      "line": 2,
+      "event": "other"
+    },
+    {
+      "line": 3,
+      "event": "other"
+    },
+    {
+      "line": 4,
+      "event": "embedder_loaded",
+      "device": "cpu"
+    },
+    {
+      "line": 5,
+      "event": "other"
+    },
+    {
+      "line": 6,
+      "event": "other"
+    },
+    {
+      "line": 7,
+      "event": "other"
+    },
+    {
+      "line": 8,
+      "event": "other"
+    },
+    {
+      "line": 9,
+      "event": "other"
+    },
+    {
+      "line": 10,
+      "event": "other"
+    },
+    {
+      "line": 11,
+      "event": "reranker_loaded",
+      "device": "coreml"
+    },
+    {
+      "line": 12,
+      "event": "other"
+    },
+    {
+      "line": 13,
+      "event": "other"
+    },
+    {
+      "line": 14,
+      "event": "other"
+    },
+    {
+      "line": 15,
+      "event": "other"
+    }
+  ]
+}

@@ -2449,7 +2449,7 @@
     }
   },
   "cost_scope": "shared-host sequential full runs; no causal latency/RSS claim",
-  "acceptance": "Opt-in only: cluster-level cross nDCG family p < 0.05; same-language cluster-bootstrap lower 95% bound above -0.005; no default promotion from one corpus.",
+  "acceptance": "Exploratory opt-in only. The clustered analysis corrects a post-hoc independence error; it is not preregistered confirmatory acceptance. Independent-corpus confirmation is required before default promotion.",
   "inference_scope": {
     "unit": "shared paragraph-cluster sign flips and cluster bootstrap, preserving correlated questions/translations",
     "cluster_key": "language:paragraph:sentence gold key, normalized to English paragraph (first two components)",
@@ -2477,6 +2477,7 @@
           0.009472807573232924
         ]
       }
-    }
+    },
+    "analysis_status": "Post-hoc correction for paragraph correlation; exploratory, not preregistered confirmatory acceptance."
   }
 }

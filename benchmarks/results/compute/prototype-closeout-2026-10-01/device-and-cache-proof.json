@@ -7,7 +7,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-cpu-0.json",
+    "event_sha256": "bcf87f9d95ab9da945f2c4b88b024c85b20bdac106b59ebd0edb49002391f5be"
   },
   {
     "arm": "main-cpu",
@@ -17,7 +19,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-cpu-1.json",
+    "event_sha256": "9172f3b6b4ba4e9e7e053c759645b4e3e6a4c32befc53a1999ebed2dd24e06dc"
   },
   {
     "arm": "main-cpu",
@@ -27,7 +31,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-cpu-2.json",
+    "event_sha256": "7f3c1c5c7fbf88eb1a740a356d525b9ba4cb1e85f139d78557b5a3418f413f72"
   },
   {
     "arm": "new-cpu",
@@ -38,7 +44,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "new-cpu-0.json",
+    "event_sha256": "6a4e3c2433f46a5d51f53446cd449220ac0410f46659720a9b38a1f826ea083e"
   },
   {
     "arm": "new-cpu",
@@ -49,7 +57,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "new-cpu-1.json",
+    "event_sha256": "c06e362b7745d296449d54967aee5b46042638cfc8440524e3d494bde2fd65e9"
   },
   {
     "arm": "new-cpu",
@@ -60,7 +70,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "new-cpu-2.json",
+    "event_sha256": "095652377747a5354d7c1dbf55adfc82a16f8735dc237a231b6ca1e4fbb64eab"
   },
   {
     "arm": "dual-cpu",
@@ -71,7 +83,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "dual-cpu-0.json",
+    "event_sha256": "04aef69dec92133a3c5c764bf6c5048a2931b3de1a76da05e537b75684532b92"
   },
   {
     "arm": "dual-cpu",
@@ -82,7 +96,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "dual-cpu-1.json",
+    "event_sha256": "0096ebf1d11aee7dcf91fd494af31ba01c8f4e05942b09fc9c36b1d8cd9ea047"
   },
   {
     "arm": "dual-cpu",
@@ -93,7 +109,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "dual-cpu-2.json",
+    "event_sha256": "d91204deee2e48d50931c95aab6fd9db0f6a7ef524397f7b162bebc5c2f65996"
   },
   {
     "arm": "main-auto",
@@ -103,7 +121,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-auto-0.json",
+    "event_sha256": "9c413b470efc301eb86e14c705ef661af73d490fecd2abeb502891491f37724a"
   },
   {
     "arm": "main-auto",
@@ -113,7 +133,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-auto-1.json",
+    "event_sha256": "1121e24b3092e101c82feb1869d7547b8e616d43d2f7d441c5b7bc0749bb1b4a"
   },
   {
     "arm": "main-auto",
@@ -123,7 +145,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-auto-2.json",
+    "event_sha256": "cf61c53cee083700a9b0842a5d6323e6ec73466fab780a3e86873cbfaf196c44"
   },
   {
     "arm": "new-auto",
@@ -134,7 +158,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "new-auto-0.json",
+    "event_sha256": "d2a60633d3b7ea043474716c665c14f5026b2465bd273fd6a75da85689f4af6b"
   },
   {
     "arm": "new-auto",
@@ -145,7 +171,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "new-auto-1.json",
+    "event_sha256": "340dbb1af8658ffdfc47713d1ca9e5322707467ee85a4eaeeeb3daf323f6936b"
   },
   {
     "arm": "new-auto",
@@ -156,7 +184,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "new-auto-2.json",
+    "event_sha256": "583ff647ecec12a8d29ca22507bf985197477c97768490c864954c968a3d4947"
   },
   {
     "arm": "main-auto-repeat",
@@ -166,7 +196,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-auto-repeat-0.json",
+    "event_sha256": "04a81ea6c1dadcd4626af50ed0d024c50fb76c25e27d780b417501f82416b89e"
   },
   {
     "arm": "main-auto-repeat",
@@ -176,7 +208,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-auto-repeat-1.json",
+    "event_sha256": "e5b912f22fa09c4e0ebce2d858a970468f9dcf9f79614025bdfbe83e16b92c6d"
   },
   {
     "arm": "main-auto-repeat",
@@ -186,7 +220,9 @@
     "candidate_rejection_lines": 0,
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "main-auto-repeat-2.json",
+    "event_sha256": "117bb5a01d7a6b728bd48865c8d64306e465f9a5aa20e604864d58a5c5b294a9"
   },
   {
     "arm": "new-auto-persist-hit",
@@ -197,7 +233,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "new-auto-persist-hit-0.json",
+    "event_sha256": "d19a0d72982599b2de4f945cb067eecc893813a2b945bd7da5adb0e00277f951"
   },
   {
     "arm": "new-auto-persist-hit",
@@ -208,7 +246,9 @@
     "loaded_device_evidence": [
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
-    ]
+    ],
+    "event_artifact": "new-auto-persist-hit-1.json",
+    "event_sha256": "b48d08b22a1a512826585e8cc0b2cee360be006dcf034b7cf634e1a50d00996e"
   },
   {
     "arm": "new-auto-persist-hit",
@@ -219,6 +259,8 @@
     "loaded_device_evidence": [
       "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256",
       "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
-    ]
+    ],
+    "event_artifact": "new-auto-persist-hit-2.json",
+    "event_sha256": "257ecdcbdcce9dbbe7725630a8ad4c0f43917dc6f32eb72b0e0569195fe78f1a"
   }
 ]
