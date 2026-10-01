@@ -28,12 +28,13 @@ This conflicts with the pinned wrapper's description of zero as disabling PQ.
 
 ## Installed identity and limits
 
-The Linux runtime library used by the retained restart-floor disk evidence has
+The [retained pretrial provenance](restart-floor-disk-2026-09-30/provenance.json)
+records the Linux runtime library used by the restart-floor disk evidence with
 SHA256 `58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a`.
-The preserved Cargo build output identifies a cached prebuilt library, and
-that cached library has the same SHA256 as the installed runtime copy.
-This establishes binary equality and cached-prebuilt resolution; it does not
-provide an independent attestation of which native source produced it.
+This public audit does not retain cached-library path/hash and Cargo resolution
+output, so it makes no cached-prebuilt resolution or cache/runtime equality
+claim. The recorded runtime identity does not independently attest which
+native source produced it.
 The separate [macOS archive audit](zvec-native-0.7.2-2026-09-30.md) concerns a
 different platform and library hash and cannot attest this Linux runtime.
 
