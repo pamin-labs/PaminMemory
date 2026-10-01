@@ -3,8 +3,8 @@
   "scope": "Offline explicitly supplied PR228 package, verified by exact file hashes. The local integration source revision is provenance, not a promised remote fetch target; restacking may change its commit SHA without changing file bytes. Not supplied by a bare PR216 checkout. No automatic fetch or download.",
   "files": {
     "common.py.in": {
-      "sha256": "c869eb5ec2af82d2ac86647ce74ce7fb21eaa709dd0e0e9d7d3b1e232faf4e29",
-      "bytes": 13776
+      "sha256": "95f32674a874aeee3806744950a7a0955915f0b6e5d969e568466383f9746e47",
+      "bytes": 14898
     },
     "build.py.in": {
       "sha256": "756baddf10aad0ba4e43f9095e7892ed9826a81e01fdb8cee1231e1a7585e617",
@@ -23,8 +23,8 @@
       "bytes": 14775
     },
     "run.py.in": {
-      "sha256": "bbb13708859618cc9ad163965d019f4d7c6606ea6a04b37f1164eed99188a5df",
-      "bytes": 20698
+      "sha256": "97c6f2ffb494c005362df96a04ffe1139c35e8e0e8e0a93b7fb205e162edb67f",
+      "bytes": 20613
     },
     "sources.json": {
       "sha256": "f9aed95517ba156a99751079e1f2121a7ba98e03ad3b69f52b2d3da646c40f33",
@@ -40,5 +40,5 @@
     }
   },
   "public_pr": 228,
-  "source_revision": "4c17fdbf2c7a1ce768e48482699ead483aade735"
+  "source_revision": "d5097df2ac57c81914e97952c073fa224db9f005"
 }
