@@ -149,7 +149,8 @@ def verify(evidence, check_logs=True, logs=None):
             log = (ROOT/(run['arm']+'.log')).read_text() if logs is None else logs[run['arm']]
             require(hashlib.sha256(log.encode()).hexdigest() == run['log_sha256'], 'log hash')
             require([s.removeprefix('PROBE_STAGE ') for s in log.splitlines() if s.startswith('PROBE_STAGE ')] == expected, 'log stages')
-            require('test result: ok. 1 passed; 0 failed' in log, 'test completion')
+            result_lines = [line for line in log.splitlines() if 'test result:' in line]
+            require(len(result_lines) == 1 and re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(?:\.[0-9]+)?s', result_lines[0]) is not None, 'single positive test completion')
             option_lines = [line for line in log.splitlines() if line.startswith('PROBE_OPTIONS ')]
             require(option_lines == ['PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864'], 'raw option getter')
             hit_lines = [line for line in log.splitlines() if line.startswith('PROBE_HITS ')]
