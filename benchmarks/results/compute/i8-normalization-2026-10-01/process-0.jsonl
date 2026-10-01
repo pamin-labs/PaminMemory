@@ -1,0 +1,6 @@
+{"block": 0, "before_ns": 600.70959, "after_ns": 85.33125, "shared_host": true, "process": 0}
+{"block": 1, "before_ns": 604.9775, "after_ns": 103.57625, "shared_host": true, "process": 0}
+{"block": 2, "before_ns": 602.3025, "after_ns": 97.28125, "shared_host": true, "process": 0}
+{"block": 3, "before_ns": 602.01167, "after_ns": 94.67333, "shared_host": true, "process": 0}
+{"block": 4, "before_ns": 612.81167, "after_ns": 94.1775, "shared_host": true, "process": 0}
+{"block": 5, "before_ns": 602.12458, "after_ns": 95.90834, "shared_host": true, "process": 0}

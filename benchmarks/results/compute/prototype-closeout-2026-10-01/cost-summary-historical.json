@@ -1,0 +1,765 @@
+{
+  "main-cpu": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 7.818743542,
+          "open_seconds": 0.1255585,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 1945714688
+        },
+        "p50_ms": 1005.4923125,
+        "p95_ms": 1394.790416,
+        "max_sampled_warm_rss_bytes": 2212839424,
+        "query_seconds": 68.711444336,
+        "process": {
+          "name": "main-cpu-0",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 77.94783654203638,
+          "user_seconds": 383.553058,
+          "system_seconds": 17.851351,
+          "whole_harness_max_rss_bytes": 3693412352,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 6.187752125,
+          "open_seconds": 0.048847166,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 1486077952
+        },
+        "p50_ms": 1244.0067295,
+        "p95_ms": 1552.322125,
+        "max_sampled_warm_rss_bytes": 1707737088,
+        "query_seconds": 83.335697917,
+        "process": {
+          "name": "main-cpu-1",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 90.64678033301607,
+          "user_seconds": 487.17889,
+          "system_seconds": 17.410293,
+          "whole_harness_max_rss_bytes": 1708982272,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 6.045161458,
+          "open_seconds": 0.047185417,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 1485520896
+        },
+        "p50_ms": 1397.4576875,
+        "p95_ms": 2529.29575,
+        "max_sampled_warm_rss_bytes": 1724874752,
+        "query_seconds": 104.468382996,
+        "process": {
+          "name": "main-cpu-2",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 111.58728054212406,
+          "user_seconds": 535.794991,
+          "system_seconds": 17.750631,
+          "whole_harness_max_rss_bytes": 1724973056,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 1244.0067295,
+    "median_p95_ms": 1552.322125,
+    "median_max_sampled_warm_rss_bytes": 1724874752
+  },
+  "new-cpu": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 5.364025,
+          "open_seconds": 0.04870075,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 1487110144
+        },
+        "p50_ms": 957.6163544999999,
+        "p95_ms": 1288.3563330000002,
+        "max_sampled_warm_rss_bytes": 1744142336,
+        "query_seconds": 64.304811627,
+        "process": {
+          "name": "new-cpu-0",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 72.12818095786497,
+          "user_seconds": 373.240666,
+          "system_seconds": 15.057686,
+          "whole_harness_max_rss_bytes": 1745305600,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 6.086200917,
+          "open_seconds": 0.045474458,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 1483898880
+        },
+        "p50_ms": 1366.7487295,
+        "p95_ms": 1759.907084,
+        "max_sampled_warm_rss_bytes": 1700544512,
+        "query_seconds": 90.804642251,
+        "process": {
+          "name": "new-cpu-1",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 97.93315541604534,
+          "user_seconds": 516.334005,
+          "system_seconds": 18.000924,
+          "whole_harness_max_rss_bytes": 1700659200,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 7.911740583,
+          "open_seconds": 0.052417917,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 1491861504
+        },
+        "p50_ms": 1272.3104165,
+        "p95_ms": 1679.64975,
+        "max_sampled_warm_rss_bytes": 1706983424,
+        "query_seconds": 86.295606041,
+        "process": {
+          "name": "new-cpu-2",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 95.35840483289212,
+          "user_seconds": 497.045617,
+          "system_seconds": 17.473428,
+          "whole_harness_max_rss_bytes": 1707048960,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 1272.3104165,
+    "median_p95_ms": 1679.64975,
+    "median_max_sampled_warm_rss_bytes": 1706983424
+  },
+  "dual-cpu": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 8.655831209,
+          "open_seconds": 0.142059791,
+          "profile": "dual_accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2189033472
+        },
+        "p50_ms": 1125.2328954999998,
+        "p95_ms": 1487.079167,
+        "max_sampled_warm_rss_bytes": 2465693696,
+        "query_seconds": 79.055234415,
+        "process": {
+          "name": "dual-cpu-0",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 88.78088549990207,
+          "user_seconds": 444.530027,
+          "system_seconds": 18.257038,
+          "whole_harness_max_rss_bytes": 2466856960,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 8.376620458,
+          "open_seconds": 0.135596917,
+          "profile": "dual_accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2161180672
+        },
+        "p50_ms": 1073.668458,
+        "p95_ms": 1560.9136669999998,
+        "max_sampled_warm_rss_bytes": 2437136384,
+        "query_seconds": 74.054096286,
+        "process": {
+          "name": "dual-cpu-1",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 83.50599754229188,
+          "user_seconds": 431.372973,
+          "system_seconds": 18.040683,
+          "whole_harness_max_rss_bytes": 2437234688,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "cpu",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 7.408467166,
+          "open_seconds": 0.046249375,
+          "profile": "dual_accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2188148736
+        },
+        "p50_ms": 1339.563521,
+        "p95_ms": 1669.270334,
+        "max_sampled_warm_rss_bytes": 2465054720,
+        "query_seconds": 91.15502721,
+        "process": {
+          "name": "dual-cpu-2",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 99.64701387472451,
+          "user_seconds": 522.829008,
+          "system_seconds": 20.686542,
+          "whole_harness_max_rss_bytes": 2465120256,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 1125.2328954999998,
+    "median_p95_ms": 1560.9136669999998,
+    "median_max_sampled_warm_rss_bytes": 2465054720
+  },
+  "main-auto": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 88.817862917,
+          "open_seconds": 0.059849542,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2385199104
+        },
+        "p50_ms": 385.28962449999995,
+        "p95_ms": 487.146792,
+        "max_sampled_warm_rss_bytes": 2576023552,
+        "query_seconds": 25.960324452000002,
+        "process": {
+          "name": "main-auto-0",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 115.78160120826215,
+          "user_seconds": 41.599485,
+          "system_seconds": 9.395065,
+          "whole_harness_max_rss_bytes": 4840947712,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 10.316705875,
+          "open_seconds": 0.066137083,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2668019712
+        },
+        "p50_ms": 395.3274795,
+        "p95_ms": 499.897083,
+        "max_sampled_warm_rss_bytes": 2707210240,
+        "query_seconds": 26.242964706,
+        "process": {
+          "name": "main-auto-1",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 37.54070741729811,
+          "user_seconds": 17.186437,
+          "system_seconds": 2.51586,
+          "whole_harness_max_rss_bytes": 3149316096,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 11.345569834,
+          "open_seconds": 0.066159333,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2667823104
+        },
+        "p50_ms": 407.69604200000003,
+        "p95_ms": 586.29525,
+        "max_sampled_warm_rss_bytes": 2708717568,
+        "query_seconds": 28.337653627,
+        "process": {
+          "name": "main-auto-2",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 40.867780917324126,
+          "user_seconds": 19.882112,
+          "system_seconds": 2.73806,
+          "whole_harness_max_rss_bytes": 3148808192,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 395.3274795,
+    "median_p95_ms": 499.897083,
+    "median_max_sampled_warm_rss_bytes": 2707210240
+  },
+  "new-auto": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 123.090395667,
+          "open_seconds": 0.064883792,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 5962924032
+        },
+        "p50_ms": 398.615896,
+        "p95_ms": 489.789958,
+        "max_sampled_warm_rss_bytes": 5965856768,
+        "query_seconds": 26.566088125,
+        "process": {
+          "name": "new-auto-0",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 150.71129616675898,
+          "user_seconds": 83.157884,
+          "system_seconds": 10.349419,
+          "whole_harness_max_rss_bytes": 10319675392,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 45.037891625,
+          "open_seconds": 0.058619792,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 6463946752
+        },
+        "p50_ms": 398.536625,
+        "p95_ms": 519.889,
+        "max_sampled_warm_rss_bytes": 6496321536,
+        "query_seconds": 26.67429704,
+        "process": {
+          "name": "new-auto-1",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 72.72608983423561,
+          "user_seconds": 59.70785,
+          "system_seconds": 6.50078,
+          "whole_harness_max_rss_bytes": 10318168064,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 53.527267709,
+          "open_seconds": 0.06246275,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 6293635072
+        },
+        "p50_ms": 398.23797850000005,
+        "p95_ms": 490.39833300000004,
+        "max_sampled_warm_rss_bytes": 6322061312,
+        "query_seconds": 26.251357494,
+        "process": {
+          "name": "new-auto-2",
+          "binary_sha256": "86c6ee71bc3d8e64b8ac6afcad78cadf7f1d50d8f5a14410c6d4137c4fc93ea5",
+          "wall_seconds": 80.9304060828872,
+          "user_seconds": 61.502337,
+          "system_seconds": 6.723596,
+          "whole_harness_max_rss_bytes": 10319265792,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 398.536625,
+    "median_p95_ms": 490.39833300000004,
+    "median_max_sampled_warm_rss_bytes": 6322061312
+  },
+  "new-auto-persist-hit": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "0f023be6a8d8d070a971f7e590ccccff2c3292bb",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 9.719930833,
+          "open_seconds": 0.05001825,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2680881152
+        },
+        "p50_ms": 400.009854,
+        "p95_ms": 493.801084,
+        "max_sampled_warm_rss_bytes": 2706604032,
+        "query_seconds": 26.292756544,
+        "process": {
+          "name": "new-auto-persist-hit-0",
+          "binary_sha256": "2c8d4fe2ea6dff3554f45fcff7aee1512ac639f75aeaeb4a6aa1f79d2700491a",
+          "wall_seconds": 36.90775100002065,
+          "user_seconds": 17.223724,
+          "system_seconds": 2.379988,
+          "whole_harness_max_rss_bytes": 3149791232,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "0f023be6a8d8d070a971f7e590ccccff2c3292bb",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 13.484050167,
+          "open_seconds": 0.069642458,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2678849536
+        },
+        "p50_ms": 401.130896,
+        "p95_ms": 501.231875,
+        "max_sampled_warm_rss_bytes": 2705063936,
+        "query_seconds": 26.388429836,
+        "process": {
+          "name": "new-auto-persist-hit-1",
+          "binary_sha256": "2c8d4fe2ea6dff3554f45fcff7aee1512ac639f75aeaeb4a6aa1f79d2700491a",
+          "wall_seconds": 40.88568749977276,
+          "user_seconds": 17.121483,
+          "system_seconds": 2.681978,
+          "whole_harness_max_rss_bytes": 3148677120,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "0f023be6a8d8d070a971f7e590ccccff2c3292bb",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 15.93188975,
+          "open_seconds": 0.044750459,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2677981184
+        },
+        "p50_ms": 398.2192915,
+        "p95_ms": 492.025834,
+        "max_sampled_warm_rss_bytes": 2703720448,
+        "query_seconds": 26.223427418,
+        "process": {
+          "name": "new-auto-persist-hit-2",
+          "binary_sha256": "2c8d4fe2ea6dff3554f45fcff7aee1512ac639f75aeaeb4a6aa1f79d2700491a",
+          "wall_seconds": 43.060560499783605,
+          "user_seconds": 17.317696,
+          "system_seconds": 2.7096109999999998,
+          "whole_harness_max_rss_bytes": 2703769600,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 400.009854,
+    "median_p95_ms": 493.801084,
+    "median_max_sampled_warm_rss_bytes": 2705063936
+  },
+  "main-auto-repeat": {
+    "blocks": [
+      {
+        "block": 0,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 10.988004583,
+          "open_seconds": 0.055847708,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2667692032
+        },
+        "p50_ms": 399.4305835,
+        "p95_ms": 494.15083300000003,
+        "max_sampled_warm_rss_bytes": 2707652608,
+        "query_seconds": 26.31504421,
+        "process": {
+          "name": "main-auto-repeat-0",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 38.26254291692749,
+          "user_seconds": 17.212202,
+          "system_seconds": 2.68841,
+          "whole_harness_max_rss_bytes": 3149266944,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 1,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 9.992973625,
+          "open_seconds": 0.04295425,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2667905024
+        },
+        "p50_ms": 399.811833,
+        "p95_ms": 491.10225,
+        "max_sampled_warm_rss_bytes": 2707390464,
+        "query_seconds": 26.411052835,
+        "process": {
+          "name": "main-auto-repeat-1",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 37.29159220913425,
+          "user_seconds": 17.239851,
+          "system_seconds": 2.509566,
+          "whole_harness_max_rss_bytes": 3149234176,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      },
+      {
+        "block": 2,
+        "manifest": {
+          "code": "315c10242ddf7a1cec3bccbf550a942320e09557",
+          "compiled_cache_warmth": "not independently controlled",
+          "depth": 50,
+          "device_policy": "auto",
+          "documents": 13014,
+          "index": "memory",
+          "kind": "manifest",
+          "limit": 60,
+          "model_warm_search_seconds": 10.45363675,
+          "open_seconds": 0.045905875,
+          "profile": "accuracy",
+          "queries": 66,
+          "shared_host": true,
+          "warmed_rss_bytes": 2666381312
+        },
+        "p50_ms": 407.2985,
+        "p95_ms": 496.104,
+        "max_sampled_warm_rss_bytes": 2706833408,
+        "query_seconds": 26.683296375,
+        "process": {
+          "name": "main-auto-repeat-2",
+          "binary_sha256": "b9a01b6fe43a315452d0f8e0a960213e96dee723ff7599bbbaf0304a08ff5baf",
+          "wall_seconds": 38.035266750026494,
+          "user_seconds": 17.278296,
+          "system_seconds": 2.615006,
+          "whole_harness_max_rss_bytes": 3147579392,
+          "returncode": 0,
+          "shared_host": true,
+          "scope": "complete native process incl model warm; ps children included; warm search timings/RSS are in rows"
+        }
+      }
+    ],
+    "median_p50_ms": 399.811833,
+    "median_p95_ms": 494.15083300000003,
+    "median_max_sampled_warm_rss_bytes": 2707390464
+  }
+}

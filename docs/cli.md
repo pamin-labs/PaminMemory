@@ -15,7 +15,7 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, or `accuracy` |
+| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, `accuracy`, or experimental `dual_accuracy` |
 | `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
@@ -23,7 +23,8 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
-| | `PAMIN_DEVICE` | automatic tier-specific route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
+| | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
+| | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible NPU plugin EP libraries; only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
@@ -161,17 +162,28 @@ entries and preserves v2 packages and mapped CPU models. Logical bytes are
 not a measure of unique APFS allocation; the actual free-space change may
 differ.
 
-The `accurate` reranker tries the available accelerator before optimized CPU:
-CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, and DirectML on Windows.
+The `accurate` reranker calibrates viable shared accelerator plans against optimized CPU:
+Eligible registered NPU devices are considered first, followed by CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, or DirectML on Windows, with optimized CPU/SIMD subgraph fallback. The qualified fastest complete-call plan wins; provider order alone does not determine it.
 The `fast` tier does the same except on Apple silicon, where its measured ARM
 INT8 CPU export is both faster and no less accurate on the complete XQuAD-R
 comparison than its CoreML FP32 export. Provider selection is logged when a
 model loads; Core ML may itself use CPU, GPU or ANE, and its internal placement
 is not established by the provider label. The different weight exports can
 produce different scores. `PAMIN_DEVICE=cpu` forces CPU for comparable tests
-or when another job needs the accelerator. Embedding currently stays on CPU;
-changing it also changes the query and stored vector encoding contract and
-needs paired quality and reindex validation.
+or when another job needs the accelerator. Embedding also tries shared
+accelerator plans using the same export, tokenizer, prefixes and indexed model
+identity. Compatibility checks compare vectors with the CPU export; a rejected
+plan falls back. The finite startup fixtures are a smoke check, not full-corpus
+retrieval certification. With automatic dispatch, a bounded complete model-call
+query fixture compares viable plans against interleaved optimized-CPU controls.
+Maximum batch/length conformance is checked separately from singleton query
+timing, so bulk ingest throughput does not decide the search plan. Its
+validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day; numerical rejects are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration and mapped running-image identity, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
+plan for that fixture; it is not universal per-query autotuning. E5 accelerator
+batches are capped at eight (CPU retains 256), including maximum-token startup
+fixtures, so a 64/256-passage request is split into those bounded shapes.
+Broader retrieval and resource validation remain under review. Changing a model/export or encoding contract needs paired quality
+and reindex validation.
 
 On Linux the CUDA path has two requirements the program cannot meet for you.
 The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
@@ -1282,3 +1294,18 @@ row and paying startup once.
   assembled context can be reused rather than rebuilt.
 - Evidence is never translated and never rewritten. Anything a memory lost in
   summarizing is still in the source it came from, and `pamin grep` reaches it.
+
+### Experimental dual-space profile
+
+`dual_accuracy` uses pinned BGE-M3 INT8 plus a pinned complementary PPLX 0.6B singleton/int8-pooled encoding. It is opt-in; the default remains `accuracy`. Its marker identity is distinct, so changing to it requires `reindex`. Both vectors are written atomically, retained during same-profile rebuild/reshape, and included in recall. The two streams split the existing semantic candidate/vote budget equally; adding a model does not silently double either budget. Full product precision and resource comparisons are required before considering it a default.
+
+Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score entries while preserving lifetime counters, so cached results from different targets or export scales are not mixed. Completed all-plan measurements use the normal plan lifetime; only incomplete/transient qualification keeps the five-minute retry interval.
+
+Cold calibration is coordinated in one per-user cache location across workspace model caches. If coordination is unavailable, disk choice reuse/publication is disabled. A validated accelerator winner can be reused for a short interval while transiently failed alternatives are retried; malformed or nonfinite saved reference fixtures are cache misses.
+
+Cold model reloads retain the earliest relevant execution-quarantine deadline.
+Selection over temporarily excluded targets remains provisional; a completed
+measurement can choose a new accelerator or CPU winner and clears temporary
+recovery state. Transient or numerical qualification failures retain a bounded
+retry interval; configured exclusions and incompatible plans do not by
+themselves require repeated selection.

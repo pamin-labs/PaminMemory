@@ -1902,6 +1902,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "whatlang",
+ "windows-sys 0.61.2",
  "zvec-rust",
 ]
 

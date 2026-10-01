@@ -1,0 +1,19 @@
+{
+  "harness_sha256": "81c806a1fe8e3885786ca31a2181ff9798bf25a971cac01d391d49ca3ca40590",
+  "code": "555846c",
+  "arms": [
+    "accuracy",
+    "dual_accuracy"
+  ],
+  "queries": 1190,
+  "index": "memory",
+  "device": "cpu",
+  "candidate_budget": "unchanged total semantic depth, existing vector vote split equally",
+  "acceptance": "Opt-in only unless cross-language nDCG improves in query-paired randomization and same-language noninferiority margin 0.005; no parameter tuning on this corpus. Report unchanged/default if failing. Latency resource rows descriptive shared-machine process measurements, not independent query significance. Additional corpus required before any default promotion.",
+  "candidate_encoding": "pplx pinned int8 MatMulNBits accuracy_level=4, marker v2-level4",
+  "baseline_encoding": "same cached BGE int8 snapshot and named passages",
+  "family": "cross/same nDCG, Holm family correction; paired bootstrap noninferiority lower 95% limit > -0.005 for same language",
+  "note": "Baseline full run is frozen 555846c CPU path; candidate head after review uses corrected PPLX arithmetic. Numerical/CPU path parity sanity required before comparing.",
+  "candidate_harness_sha256": "a94c254702269f802a35e4c05c480f8641acc641a4e42c9e2f2ae54edaa60810",
+  "candidate_code": "45a3bcc601b2f9ca7d23d0bf49c6c95b3284f73e"
+}

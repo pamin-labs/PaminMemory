@@ -1,0 +1,30 @@
+{
+  "unit": "shared paragraph-cluster sign flips and cluster bootstrap, preserving correlated questions/translations",
+  "cluster_key": "language:paragraph:sentence gold key, normalized to English paragraph (first two components)",
+  "clusters": 240,
+  "queries": 1190,
+  "draws": 100000,
+  "seed": 20261001,
+  "rng": "NumPy PCG64",
+  "numpy_version": "2.5.1",
+  "family": "two predefined nDCG groups; Holm adjustment",
+  "groups": {
+    "cross_lingual": {
+      "paragraph_cluster_sign_flip_p": 1.999980000199998e-05,
+      "holm_p": 3.999960000399996e-05,
+      "cluster_bootstrap_delta_95_ci": [
+        0.004493299761395206,
+        0.011039344338612053
+      ]
+    },
+    "same_language": {
+      "paragraph_cluster_sign_flip_p": 0.15397846021539785,
+      "holm_p": 0.15397846021539785,
+      "cluster_bootstrap_delta_95_ci": [
+        -0.001347812532369668,
+        0.009472807573232924
+      ]
+    }
+  },
+  "analysis_status": "Post-hoc correction for paragraph correlation; exploratory, not preregistered confirmatory acceptance."
+}

@@ -33,7 +33,7 @@ struct Cli {
     #[arg(long, env = "PAMIN_PROJECT", global = true, default_value = "default")]
     project: String,
 
-    /// Which embedding profile to use: speed, balanced, or accuracy.
+    /// Which embedding profile to use: speed, balanced, accuracy, or dual_accuracy (experimental).
     ///
     /// The index records the profile it was built with, so changing this
     /// requires `pamin reindex` rather than silently mixing vector spaces.
@@ -341,11 +341,16 @@ mod tests {
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
     const UNDOCUMENTED: &[&str] = &[
+        // Compile-time source/compiler fingerprint, not a runtime user setting.
+        "PAMIN_INFERENCE_BUILD",
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
         // Cached-export inputs used only by the native preparation regression.
         "PAMIN_NATIVE_MODEL_SOURCE",
         "PAMIN_NATIVE_TEST_CACHE",
+        // Embedding conformance controls compiled only under cfg(test).
+        "PAMIN_TEST_MODEL_CACHE",
+        "PAMIN_TEST_JOINT_GRAPH",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
@@ -465,6 +470,17 @@ mod tests {
         assert_eq!(
             Profile::parse(&declared.to_string_lossy()),
             Some(Profile::default())
+        );
+    }
+
+    #[test]
+    fn profile_help_includes_the_opt_in_dual_profile() {
+        let mut command = <Cli as clap::CommandFactory>::command();
+        assert!(
+            command
+                .render_long_help()
+                .to_string()
+                .contains("dual_accuracy")
         );
     }
 

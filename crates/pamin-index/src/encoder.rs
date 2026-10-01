@@ -13,7 +13,6 @@
 
 use std::path::PathBuf;
 
-use ort::ep::ExecutionProviderDispatch;
 use ort::session::{Session, SessionOutputs};
 use ort::value::Tensor;
 use tokenizers::{EncodeInput, Encoding};
@@ -23,6 +22,7 @@ use crate::hub::Repository;
 use crate::tokenizer::Tokenizer;
 
 pub(crate) struct Encoder {
+    runtime_plan: crate::inference::RuntimePlan,
     tokenizer: Tokenizer,
     session: Session,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -30,6 +30,15 @@ pub(crate) struct Encoder {
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
+}
+
+impl crate::inference::RuntimeModel for Encoder {
+    fn runtime_plan(&self) -> &crate::inference::RuntimePlan {
+        &self.runtime_plan
+    }
+    fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
+        &mut self.runtime_plan
+    }
 }
 
 impl Encoder {
@@ -44,15 +53,24 @@ impl Encoder {
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
-        providers: Vec<ExecutionProviderDispatch>,
+        providers: impl Into<crate::inference::Target>,
     ) -> Result<Self> {
         let session = crate::inference::session(providers, model)?;
+        Self::from_session(session, repository, max_length)
+    }
+
+    pub(crate) fn from_session(
+        session: Session,
+        repository: &Repository,
+        max_length: usize,
+    ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         let token_type_ids = session
             .inputs()
             .iter()
             .any(|input| input.name() == "token_type_ids");
         Ok(Self {
+            runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -81,11 +99,31 @@ impl Encoder {
         })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         Ok(Self {
+            runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             fixed: Some((short, long)),
             token_type_ids: false,
         })
+    }
+
+    /// Registration without assigned nodes is a CPU fallback, not acceleration.
+    pub(crate) fn require_accelerator(&self, device: crate::inference::Device) -> Result<()> {
+        use crate::inference::Device;
+        let provider = match device {
+            // The explicit NPU target is checked by inference::session.
+            Device::Cpu | Device::Npu => return Ok(()),
+            Device::Cuda => "CUDAExecutionProvider",
+            Device::CoreMl => "CoreMLExecutionProvider",
+            Device::DirectMl => "DmlExecutionProvider",
+        };
+        let assigned = crate::inference::assigned_providers(&self.session)?;
+        if assigned.get(provider).copied().unwrap_or(0) == 0 {
+            return Err(crate::error::IndexError::Engine(format!(
+                "{provider} registered but was assigned no model nodes"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
