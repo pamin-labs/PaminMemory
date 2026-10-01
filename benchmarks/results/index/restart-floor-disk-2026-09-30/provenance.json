@@ -15118,5 +15118,9 @@
     "disk",
     "named",
     "reversed-keys"
-  ]
+  ],
+  "retrospective_rebuild_scope_review": {
+    "record": "rebuild/scope-review.json",
+    "qualification": "Named-package clean in a shared Cargo target freshly compiled only the four product libraries and selected integration-test helper. All 538 third-party compiler artifacts per arm were cached. Their source-to-artifact provenance is unknown; byte equality does not establish full source-to-artifact attestation."
+  }
 }
