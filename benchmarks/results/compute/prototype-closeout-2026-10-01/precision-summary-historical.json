@@ -1233,12 +1233,12 @@
         0.024902765507419072,
         0.016390095390875548
       ],
-      "paragraph_cluster_sign_flip_p": 1.999980000199998e-05,
-      "holm_p": 3.999960000399996e-05,
-      "cluster_bootstrap_delta_95_ci": [
-        0.004493299761395206,
-        0.011039344338612053
-      ]
+      "paired_signflip_p": 9.999000099990002e-05,
+      "paired_bootstrap_mean_delta_95ci": [
+        0.004713376672993113,
+        0.010839773443506355
+      ],
+      "holm_p": 0.00019998000199980003
     },
     "same_language": {
       "before": 0.8682008854268036,
@@ -2440,43 +2440,19 @@
         0.0,
         0.0
       ],
-      "paragraph_cluster_sign_flip_p": 0.15397846021539785,
-      "holm_p": 0.15397846021539785,
-      "cluster_bootstrap_delta_95_ci": [
-        -0.001347812532369668,
-        0.009472807573232924
-      ]
+      "paired_signflip_p": 0.1566843315668433,
+      "paired_bootstrap_mean_delta_95ci": [
+        -0.0013318067265372824,
+        0.009631030365004218
+      ],
+      "holm_p": 0.1566843315668433
     }
   },
   "cost_scope": "shared-host sequential full runs; no causal latency/RSS claim",
-  "acceptance": "Opt-in only: cluster-level cross nDCG family p < 0.05; same-language cluster-bootstrap lower 95% bound above -0.005; no default promotion from one corpus.",
-  "inference_scope": {
-    "unit": "shared paragraph-cluster sign flips and cluster bootstrap, preserving correlated questions/translations",
-    "cluster_key": "language:paragraph:sentence gold key, normalized to English paragraph (first two components)",
-    "clusters": 240,
-    "queries": 1190,
-    "draws": 100000,
-    "seed": 20261001,
-    "rng": "NumPy PCG64",
-    "numpy_version": "2.5.1",
-    "family": "two predefined nDCG groups; Holm adjustment",
-    "groups": {
-      "cross_lingual": {
-        "paragraph_cluster_sign_flip_p": 1.999980000199998e-05,
-        "holm_p": 3.999960000399996e-05,
-        "cluster_bootstrap_delta_95_ci": [
-          0.004493299761395206,
-          0.011039344338612053
-        ]
-      },
-      "same_language": {
-        "paragraph_cluster_sign_flip_p": 0.15397846021539785,
-        "holm_p": 0.15397846021539785,
-        "cluster_bootstrap_delta_95_ci": [
-          -0.001347812532369668,
-          0.009472807573232924
-        ]
-      }
-    }
+  "acceptance": {
+    "cross_improvement_significant": true,
+    "same_noninferiority_margin_0_005": true,
+    "default_promotion": false,
+    "reason": "One corpus only; cross recall@50 regresses and resource/latency cost must be compared. Opt-in experiment only."
   }
 }
