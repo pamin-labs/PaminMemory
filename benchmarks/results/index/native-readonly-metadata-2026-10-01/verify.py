@@ -105,7 +105,7 @@ def decode(excerpt, file_size, expected_magic):
 
 
 def verify(evidence, check_logs=True, logs=None):
-    source_binding.validate(json.loads((ROOT/'public-source-binding.json').read_text()))
+    source_binding.validate(source_binding.load_json(ROOT/'public-source-binding.json'))
     require(set(evidence) == {'seed_documents', 'runs', 'helper_source_sha256', 'vendor_commit', 'runtime_assets', 'sdk', 'native_sha256', 'controller_sha256', 'source_commit', 'format', 'helper_binary_sha256', 'source_files', 'storage_type'}, 'evidence schema/scope')
     require(evidence['sdk'] == 'zvec-rust/zvec-rust-sys 0.7.2', 'SDK binding')
     # These pins bind published private receipts; they do not remeasure assets.
@@ -191,8 +191,12 @@ def verify(evidence, check_logs=True, logs=None):
     return True
 
 
-if __name__ == '__main__':
-    verify(json.loads((ROOT/'evidence.json').read_text()))
-    count = source_binding.check_git(json.loads((ROOT/'public-source-binding.json').read_text()))
+def main():
+    verify(source_binding.load_json(ROOT/'evidence.json'))
+    count = source_binding.check_git(source_binding.load_json(ROOT/'public-source-binding.json'))
     print('Both published metadata excerpts verified; omitted payload equality remains a private receipt.')
     print(f'{count} public production-input blobs verified with replacement refs disabled.' if count is not None else 'Public production-input Git objects unavailable: manifest receipt checked, source bytes not independently checked.')
+
+
+if __name__ == '__main__':
+    main()
