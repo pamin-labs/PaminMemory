@@ -165,7 +165,9 @@ targets; other dependency freshness is not claimed.
 `ORT_LIB` and `ZVEC_LIB` are directories containing the exact retained
 `libonnxruntime.so.1.28.0` and `libzvec_c_api.so` assets; resolve the archive
 placeholders to provisioned directories and verify their pinned digests before
-building. `--offline` only constrains Cargo and does not disable a native build
+building. The build subshell canonicalizes both library directories before
+changing to the generated arm, so relative inputs retain their evidence-directory
+meaning. `--offline` only constrains Cargo and does not disable a native build
 script download fallback; `ZVEC_AUTO_BUILD=0` disables that fallback. The build
 clears `ORT_LIB_PATH`, which otherwise takes precedence over `ORT_LIB_LOCATION`.
 For each
@@ -180,6 +182,8 @@ test "$(rustc +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(
 CARGO_VERSION=$(cargo +"$TOOLCHAIN" -Vv)
 printf '%s\n' "$CARGO_VERSION" | python3 -c 'import json, sys; keys = ("release", "commit-hash", "host"); fields = lambda text: {key: [line[len(key)+2:] for line in text.splitlines() if line.startswith(key+": ")] for key in keys}; actual = fields(sys.stdin.read()); expected = fields(json.load(open("provenance.json"))["toolchain"]["cargo"]); sys.exit(0 if all(len(values) == 1 for values in actual.values()) and actual == expected else "Cargo release/commit/host differs")'
 if [ -n "${CARGO_HOME:-}" ]; then CARGO_HOME=$(cd "$CARGO_HOME" && pwd -P); export CARGO_HOME; fi
+ORT_LIB=$(cd "$ORT_LIB" && pwd -P)
+ZVEC_LIB=$(cd "$ZVEC_LIB" && pwd -P)
 ARMS=$(cd "$ARMS" && pwd -P)
 cd "$ARMS/$ARM"
 python3 -c 'import os, sys; from pathlib import Path; home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))).resolve(); folders = [home] + [p / ".cargo" for p in (Path.cwd(), *Path.cwd().parents)]; found = [str(folder / name) for folder in folders for name in ("config", "config.toml") if (folder / name).exists() or (folder / name).is_symlink()]; sys.exit("Cargo configuration files must be absent for this recipe: " + ", ".join(found)) if found else None; clean = {key: value for key, value in os.environ.items() if not key.startswith("CARGO_") or key == "CARGO_HOME"}; os.execvpe(sys.argv[1], sys.argv[1:], clean)' \
@@ -201,7 +205,7 @@ It clears inherited `CARGO_*` configuration environment variables except the
 canonical provisioned `CARGO_HOME` cache path, then assigns the recorded build
 workers and incremental setting. It also clears compiler wrappers, flags and
 bootstrap overrides. Provision an offline dependency cache without Cargo config
-files; a configured cache or source parent fails before the mocked or real build.
+files; a configured cache or source parent fails before the build.
 
 The build and launch both use the pinned dynamic-library directories. These
 variables reproduce the selected native link/runtime path; they are not a
