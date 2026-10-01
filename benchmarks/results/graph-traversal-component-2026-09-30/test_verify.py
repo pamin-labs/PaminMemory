@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Mutate temporary archive copies, refresh digests, and require semantic rejection."""
+import copy
 import hashlib
 import json
 import os
@@ -66,6 +67,66 @@ if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    retained=json.loads((ROOT/'provenance.json').read_text())
+    for name in retained['redactions']:
+        run_case('original redaction digest '+name, lambda r,name=name: mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(original_sha256='0'*64)))
+    for arm in ['baseline','scored']:
+        run_case('raw interference declaration '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(shared_machine='exclusive machine; no interference')))
+        for key in next(a for a in retained['arms'] if a['arm']==arm)['launch_binding']['effective_product_settings']:
+            run_case('launch projection '+arm+' '+key,lambda r,arm=arm,key=key:mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['launch_binding']['effective_product_settings'].update({key:'changed'})))
+        run_case('original launch digest '+arm,lambda r,arm=arm:mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['launch_binding'].update(original_launch_sha256='0'*64)))
+    def leaves(value,prefix=()):
+        for key,item in value.items():
+            if isinstance(item,dict):yield from leaves(item,prefix+(key,))
+            else:yield prefix+(key,)
+    for keys in leaves(retained['toolchain']):
+        def toolchain_mutation(r,keys=keys):
+            def change(p):
+                item=p['toolchain']
+                for key in keys[:-1]:item=item[key]
+                item[keys[-1]]='bogus'
+            mutate_json(r/'provenance.json',change)
+        run_case('toolchain '+'/'.join(keys),toolchain_mutation)
+    run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
+    for endpoint in ['asserted_from','asserted_to']:
+        run_case('early-stop '+endpoint,lambda r,endpoint=endpoint:mutate_json(r/'scored.jsonl',lambda row:next(w for w in row['early_stop']['why'] if w['kind']=='path').update({endpoint:'unrelatedtopic'})))
+    def absent_evidence(r):
+        scored=json.loads((r/'scored.jsonl').read_text())
+        mutate_json(r/'baseline.jsonl',lambda row:row['early_stop'].update(why=scored['early_stop']['why']))
+    run_case('evidence on absent early-stop result',absent_evidence)
+    for arm in ['baseline','scored']:
+        def duplicate_target(r,arm=arm):
+            def change(row):
+                duplicate=copy.deepcopy(row['targets'][0]);next(w for w in duplicate['why'] if w['kind']=='path')['from']='fabricatedseed'
+                row['targets'].insert(0,duplicate)
+            mutate_json(r/(arm+'.jsonl'),change)
+        run_case('duplicate target '+arm,duplicate_target)
+        run_case('missing target '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'].pop()))
+        for metric in ['wall_seconds','user_seconds','system_seconds','maximum_process_rss_kib']:
+            for invalid in [-1,float('nan'),float('inf'),True]:
+                def invalid_usage(r,arm=arm,metric=metric,invalid=invalid):
+                    mutate_json(r/(arm+'.usage.json'),lambda u:u.update({metric:invalid}))
+                    mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['process_usage'].update({metric:invalid}))
+                run_case('invalid process usage '+arm+' '+metric+' '+str(invalid),invalid_usage)
+    for arm in ['baseline','scored']:
+        for metric in ['elapsed_ms','early_elapsed_ms','process_lifetime_high_water_kib','graph_cpu_user','graph_cpu_system']:
+            for invalid in [-1,float('nan'),float('inf'),True]:
+                def invalid_raw_usage(r,arm=arm,metric=metric,invalid=invalid):
+                    def change(row):
+                        if metric=='early_elapsed_ms':row['early_stop']['elapsed_ms']=invalid
+                        elif metric.startswith('graph_cpu_'):row['graph_process_cpu_user_system_seconds'][0 if metric=='graph_cpu_user' else 1]=invalid
+                        else:row[metric]=invalid
+                    mutate_json(r/(arm+'.jsonl'),change)
+                run_case('invalid raw usage '+arm+' '+metric+' '+str(invalid),invalid_raw_usage)
+    run_case('missing sixth compiler artifact',lambda r:mutate_json(r/'provenance.json',lambda p:p['arms'][0]['fresh_compiler_artifacts'].pop()))
+    run_case('duplicate fresh compiler artifact',lambda r:mutate_json(r/'provenance.json',lambda p:p['arms'][0]['fresh_compiler_artifacts'].append(p['arms'][0]['fresh_compiler_artifacts'][-1])))
+    run_case('wrong multihop artifact source',lambda r:mutate_json(r/'provenance.json',lambda p:p['arms'][0]['fresh_compiler_artifacts'][-1].update(source='wrong.rs')))
+    run_case('multihop source bytes',lambda r:(r/'source/multihop.rs.in').write_text((r/'source/multihop.rs.in').read_text()+'\n// changed\n'))
+    for key,value in [('scope','historically attested build input'),('sha256','0'*64),('bytes',0),('source','wrong.rs'),('published_file','source/fixture.rs.in')]:
+        run_case('retrospective multihop binding '+key,lambda r,key=key,value=value:mutate_json(r/'provenance.json',lambda p:p['retrospective_multihop_source'].update({key:value})))
+    run_case('multihop arm source digest',lambda r:mutate_json(r/'provenance.json',lambda p:p['retrospective_multihop_source']['arm_source_sha256'].update(scored='0'*64)))
+    run_case('reproduction workspace omitted',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('PAMIN_EVAL_HOME="$WORKSPACE" ','')))
+    run_case('reproduction multihop compile target omitted',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace(' --test scratch_scored_multihop','')))
     # A tiny source-only preparation proves both exact helpers survive scratch
     # cleanup and are hashed. It never invokes Cargo or an executable helper.
     with tempfile.TemporaryDirectory(prefix='graph-prepare-positive-') as temp:
@@ -92,7 +153,6 @@ if __name__ == '__main__':
         result=subprocess.run([sys.executable,str(root/'source/prepare.py'),'--source',str(Path(temp)/'absent-input'),'--out',str(out)],capture_output=True,text=True)
         assert result.returncode!=0 and not out.exists() and 'preserved multihop source differs' in result.stderr
         print('PASS: preparation rejects changed multihop source before copying')
-    run_case('multihop source bytes',lambda r:(r/'source/multihop.rs.in').write_text((r/'source/multihop.rs.in').read_text()+'\n// changed\n'))
     run_case('Python -O', flags=('-O',))
     run_case('Python -OO', flags=('-OO',))
     reject_optimized_prepare('-O', flags=('-O',))
