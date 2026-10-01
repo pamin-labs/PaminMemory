@@ -1,4 +1,5 @@
 """Synthetic retained-packet integrity tests; no native/model/PG execution."""
+import ast
 import copy
 from contextlib import ExitStack
 import hashlib
@@ -12,7 +13,7 @@ from unittest.mock import patch
 import test_templates as fixtures
 
 ROOT=Path(__file__).resolve().parent
-BASE='7d0dd6ec384c95b7d60c3d7f7d3b9a6bffeec1ca'
+BASE='c85510c629de1adf395fd32c32dcd7c38663c22c'
 BEFORE='--before' in sys.argv
 if BEFORE:sys.argv.remove('--before')
 
@@ -31,6 +32,7 @@ class AnalysisCheckpoints(unittest.TestCase):
         inputs=['config.json','sources.json','source-receipts.json','seed-receipt.json',
                 'build/binaries.json','main/crates/pamin-engine/tests/corpus/queries.json',
                 'run.py','rows.py','common.py','owned_postgres.py']
+        if not BEFORE:inputs += ['analyze.py','metrics.py']
         jobs=self.common.schedule()
         installation={'files':{'bin/postgres':{'bytes':1,'sha256':'a'*64,'kind':'regular_file'}},'pg_config':{'version':'PostgreSQL 17.6'},'installation_sha256':'b'*64}
         build=dict(installation,scope='prospective owned PostgreSQL installation and mapped runtime; historical build identity N/A',server_executable={'bytes':1,'sha256':'a'*64,'installation_file':'bin/postgres'},mapped_libraries=[{'bytes':1,'sha256':'c'*64,'location':'external/libfake.so'}])
@@ -84,14 +86,37 @@ class AnalysisCheckpoints(unittest.TestCase):
             if case=='packet':
                 value=json.loads(path.read_text());value['usage']['native_wall_seconds']=9999;path.write_text(json.dumps(value))
             else:log.write_text('changed retained native log')
-            if BEFORE:
-                self.analyze();(self.work/'metrics.json').unlink()
-            else:
-                with self.assertRaisesRegex(ValueError,'checkpoint '+('packet hash' if case=='packet' else 'log')+' differs'):self.analyze()
-                self.assertFalse((self.work/'metrics.json').exists())
+            with self.assertRaisesRegex(ValueError,'checkpoint '+('packet hash' if case=='packet' else 'log')+' differs'):self.analyze()
+            self.assertFalse((self.work/'metrics.json').exists())
+
+    def test_report_implementation_mutation(self):
+        self.retained()
+        for name in ['metrics.py','analyze.py']:
+            with self.subTest(name=name):
+                source=self.work/name;old=source.read_bytes()
+                source.write_bytes(old+b'\n# altered report behavior\ndef report(*args, **kwargs): return {"changed_report": True}\n' if name=='analyze.py' else old+b'\ndef metric_tables(*args, **kwargs): return {"changed_report": True}\n')
+                if BEFORE:
+                    self.analyze();(self.work/'metrics.json').unlink()
+                else:
+                    with patch.object(runpy,'run_path',side_effect=AssertionError('unvalidated controller loaded')):
+                        with self.assertRaisesRegex(ValueError,'method/configuration input changed: '+name):self.analyzer.main()
+                    self.assertFalse((self.work/'metrics.json').exists())
+                source.write_bytes(old)
+
+    def test_runner_bootstrap_inventory_exactly_agrees(self):
+        # Read literal inventories without executing run_identity/pg_config.
+        def inventory(name, variable):
+            tree=ast.parse((ROOT/name).read_text())
+            values=[ast.literal_eval(node.value) for node in ast.walk(tree)
+                    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id==variable for t in node.targets)]
+            self.assertEqual(len(values),1)
+            return values[0]
+        runner=inventory('run.py.in','files');bootstrap=inventory('analyze.py.in','expected_inputs')
+        self.assertEqual(len(runner),12);self.assertEqual(len(set(runner)),12)
+        self.assertEqual(set(runner),bootstrap)
+        self.assertTrue({'analyze.py','metrics.py'} <= bootstrap)
 
     def test_completion_plan_current_inputs_and_pg_bindings(self):
-        if BEFORE:self.skipTest('new integrity gate absent on published baseline')
         out,jobs=self.retained();complete=out/'complete.json';original=complete.read_text()
         for field,value,reason in [('run_identity_sha256','wrong','plan/cardinality'),('processes',True,'plan/cardinality'),('classifications',[{'changed':True}],'oracle classifications')]:
             complete.write_text(original);changed=json.loads(original);changed[field]=value;complete.write_text(json.dumps(changed))

@@ -179,7 +179,7 @@ def atomic_save(path, value):
 def run_identity(jobs, binaries, bound, seed):
     files = ['config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
              'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
-             'run.py', 'rows.py', 'common.py', 'owned_postgres.py']
+             'run.py', 'rows.py', 'common.py', 'owned_postgres.py', 'analyze.py', 'metrics.py']
     inventory = {}
     for directory, children, names in os.walk(seed, followlinks=False):
         for name in children + names:

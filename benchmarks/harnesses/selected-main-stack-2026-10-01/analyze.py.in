@@ -158,7 +158,7 @@ def main():
     bootstrap = json.loads(plan_path.read_text())
     expected_inputs = {'config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
                        'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
-                       'run.py', 'rows.py', 'common.py', 'owned_postgres.py'}
+                       'run.py', 'rows.py', 'common.py', 'owned_postgres.py', 'analyze.py', 'metrics.py'}
     c.require(set(bootstrap['inputs']) == expected_inputs, 'retained run input set differs')
     for name, digest in bootstrap['inputs'].items():
         path = c.ROOT / name
