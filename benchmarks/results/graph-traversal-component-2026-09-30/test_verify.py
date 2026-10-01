@@ -571,6 +571,9 @@ if __name__ == '__main__':
     for arm in ['baseline','scored']:
         run_case('extra native fixture field '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(product_latency_p50_ms=50)),expected_error='native fixture row field set differs')
         run_case('missing native fixture field '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.pop('record')),expected_error='native fixture row field set differs')
+    def product_opening(root):
+        path=root/'README.md';parts=path.read_text().split('\n\n');parts[2]='This result establishes product retrieval-quality and latency improvements.';path.write_text('\n\n'.join(parts))
+    run_case('opening product improvement claim',product_opening,expected_error='opening component-only disclaimer differs')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
