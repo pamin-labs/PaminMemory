@@ -609,21 +609,6 @@ pub(crate) fn measured<T>(
         load,
         evaluate,
     );
-    if let Some(path) = disk {
-        let _lock = file_lock(&path.with_extension("lock"));
-        let selected = cache
-            .lock()
-            .expect("compute-plan cache poisoned")
-            .get(&key)
-            .cloned();
-        if let Some(plan) = selected {
-            if let Err(error) = write_plan(&path, &key, &plan) {
-                tracing::debug!(%error,"compute-plan persistence unavailable");
-            }
-        } else {
-            let _ = std::fs::remove_file(path);
-        }
-    }
     result
 }
 
@@ -720,6 +705,24 @@ fn write_plan(path: &Path, key: &str, plan: &CachedPlan) -> std::io::Result<()> 
     })();
     let _ = std::fs::remove_file(pending);
     result
+}
+
+fn remember_plan(
+    key: &str,
+    disk: Option<&Path>,
+    cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
+    plan: CachedPlan,
+) {
+    cache
+        .lock()
+        .expect("compute-plan cache poisoned")
+        .insert(key.into(), plan.clone());
+    if let Some(path) = disk {
+        let _lock = file_lock(&path.with_extension("lock"));
+        if let Err(error) = write_plan(path, key, &plan) {
+            tracing::debug!(%error, "compute-plan persistence unavailable");
+        }
+    }
 }
 
 fn fresh_plan(plan: &CachedPlan) -> bool {
@@ -941,8 +944,10 @@ fn calibrated_with_references<T>(
     let (device, target) = fastest;
     if device == Device::Cpu {
         if !transient_failure {
-            cache.lock().expect("compute-plan cache poisoned").insert(
-                key.into(),
+            remember_plan(
+                key,
+                disk,
+                cache,
                 CachedPlan::fresh(device, target, numerical_failure)
                     .with_references(references.borrow().clone()),
             );
@@ -955,8 +960,10 @@ fn calibrated_with_references<T>(
     }) {
         Ok(model) => {
             if !transient_failure {
-                cache.lock().expect("compute-plan cache poisoned").insert(
-                    key.into(),
+                remember_plan(
+                    key,
+                    disk,
+                    cache,
                     CachedPlan::fresh(device, target, numerical_failure)
                         .with_references(references.borrow().clone()),
                 );
@@ -1495,6 +1502,50 @@ mod tests {
         drop(held);
         worker.join().unwrap();
         assert_eq!(result.unwrap().unwrap(), Device::Cuda);
+    }
+
+    #[test]
+    fn cold_calibration_publishes_before_releasing_the_host_lock() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "publication").unwrap();
+        let cache = std::sync::Mutex::default();
+        let plans = vec![(Device::Cuda, vec![cpu()].into())];
+        let (_, device) = calibrated_with_references(
+            "publication",
+            plans.clone(),
+            &cache,
+            &std::cell::RefCell::default(),
+            Some(&path),
+            |device, _, _| Ok(device),
+            |_, device| {
+                Ok(Duration::from_millis(if device == Device::Cpu {
+                    10
+                } else {
+                    1
+                }))
+            },
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cuda);
+        // This is the real publication path, not manual publication in the test.
+        let _host = file_lock(&path.parent().unwrap().join("calibration.lock")).unwrap();
+        assert!(read_plan(&path, "publication", &plans).is_some());
+        drop(_host);
+        let (_, second) = calibrated_with_references(
+            "publication",
+            plans,
+            &std::sync::Mutex::default(),
+            &std::cell::RefCell::default(),
+            Some(&path),
+            |device, _, cached| {
+                assert!(cached, "waiting process repeated calibration");
+                Ok(device)
+            },
+            |_, _| Ok(Duration::from_millis(1)),
+        )
+        .unwrap();
+        assert_eq!(second, Device::Cuda);
     }
 
     #[test]
