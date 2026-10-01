@@ -559,6 +559,13 @@ impl Scores {
         self.order.clear();
     }
 
+    /// A complete uncached request already has every score on the replacement.
+    /// Only a partial miss needs another pass to avoid mixing old cached logits.
+    fn replaced(&mut self, missing: usize, total: usize) -> bool {
+        self.invalidate();
+        missing != total
+    }
+
     fn key(query: &str, document: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -822,10 +829,9 @@ impl Reranker {
                     || load_model(tier, cache),
                 )
                 .map_err(reranking)?;
-                if replaced {
-                    // CPU and accelerator exports may have different logit scales.
-                    // Rescore the whole request; never mix old cached logits with new.
-                    self.scores.invalidate();
+                if replaced && self.scores.replaced(unscored.len(), documents.len()) {
+                    // Some cached logits predate the replacement. Rescore them
+                    // too; a fully uncached successful pass can commit directly.
                     continue;
                 }
                 let scored = self
@@ -1150,6 +1156,23 @@ fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn complete_replacement_results_are_reused_but_partial_results_rescore() {
+        let mut scores = Scores::default();
+        scores.put(Scores::key("query", "old"), 0.5);
+        assert!(
+            !scores.replaced(16, 16),
+            "scheduled complete result must not run twice"
+        );
+        assert!(scores.known.is_empty());
+        scores.put(Scores::key("query", "old"), 0.5);
+        assert!(
+            scores.replaced(8, 16),
+            "partial misses must not mix old logits"
+        );
+        assert!(scores.known.is_empty());
+    }
+
     #[test]
     fn invalidating_backend_scores_preserves_lifetime_counts() {
         let mut scores = Scores::default();
