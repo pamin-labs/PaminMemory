@@ -42,3 +42,8 @@ Every resolved attested arm executable must be outside setup home and, for
 trials, outside both seed and output roots. This includes paths through symlink
 ancestors. Validation runs before writing records, copying fixtures or launching
 setup/trials, so build artifacts cannot enter measured index-disk accounting.
+
+Prospective bootstrap and seed setup require the attested `candidate` arm and
+its candidate commit. Conversion logs must resolve outside the entire measured
+stopped seed, including paths through symlink ancestors, before any log is opened.
+These controls do not add missing historical setup attestations.

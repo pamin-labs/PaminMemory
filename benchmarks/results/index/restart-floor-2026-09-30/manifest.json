@@ -4,7 +4,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
     "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "ddfa0ffcb3c815e7fe2df3f52e4ac9edf49e95dd9ebcf39b021f5f55b16ac62b",
     "benchmarks/harnesses/restart-floor-2026-09-30/build.py.in": "65338fc4e6d77cd0f0d5dbf75e111913f502aecbd9de4d35a4b05918940e940a",
-    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "f2b140c9f77285151691546b296dcd644d731a9b3d8a68feaad6cb658d063388",
+    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "fe61c7c25a55d64336c3b0f8dfab46305007746e3a55c129c683adba136f1c2a",
     "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
     "benchmarks/harnesses/restart-floor-2026-09-30/legacy_schema.rs.in": "c815294086542340d998c346bfa2f3dc3dcddf27f82201746efd40a2df12fca3",
     "benchmarks/harnesses/restart-floor-2026-09-30/model-guards-README.md": "2eaaad2376697d221d4cd7cf7280ace7855cd838bdce26432017ab4928855999",
@@ -12,11 +12,11 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/native-build-guards-README.md": "b7d96cdd8deeb4667706612a15c8329469292a42e9be9ad6b3386868801cbcf4",
     "benchmarks/harnesses/restart-floor-2026-09-30/native-guards.py.in": "59097df945a6084996adc7147f7e9ef7c5eb228d00c4fd1e707585a791bc8309",
     "benchmarks/harnesses/restart-floor-2026-09-30/provenance.py.in": "573ed5b1bf840b5ab3bc8964aad1679795758d11c8cbebdb292a663e10ee8d02",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-conversion-guarded.py.in": "684fc0aaf7479cc9baa0f58534ac1e7bd1dfb28037e57312448147672f01b677",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "42bac290e4c0e267735809e4f0820c6f3b6ec295754403be58cff67cd67b442a",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-conversion-guarded.py.in": "a43821bb932eabf1bd9b49c7af26b30f663f2c417684ea81862fe549569ca8d9",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "4aa44be164f6010e2bb33ed6993b0b8a38b9b1e43f6d1c7c7146170cf4b382d1",
     "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "07c319bfb51262b16f620ffbfb88142a7b11825b63e104a1227fc5c5f6eb8537",
-    "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "2f99346841d374876b6c705aca9cb303ffb9b065b9351d242d5ef6684b485c25",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "72a7e00b15516753f9c44636e4f2f471e2cb327da2f178822c4b95394ca374d9",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "4234fb671ccc61408d79f5f24915c46e575011a6af8557b9d457adf8dcff0184",
     "benchmarks/results/index/restart-floor-2026-09-30/README.md": "33d99c880335768fb3c1fcceee6331a2519cd23bc9c66a7b538f499baec05261",
     "benchmarks/results/index/restart-floor-2026-09-30/binaries.json": "54bb7087b7d8ad2059e4dc6379e13404c5f861ce1c001d5940bbfdf316dbd56f",
@@ -72,6 +72,7 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/provider-bindings.json": "653b8187cefdcd8c88524c6fb5be59b6a6a7b7baccd997b11d1eaf64129ebe09",
     "benchmarks/results/index/restart-floor-2026-09-30/test_cross_archive_bindings.py": "bc1a0644f00b47e86f995384ff2ff11b08e546e16ba20018108f28e62b99c351",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-executable-paths.py.in": "6259886bc84418dfbfde4a3fa12f52858c042e06defba389ae9abfae76422163",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_optimize_counts.py": "f8a41dd87158a095fddcef1ae42e798725baf3f2e5734725429315d371181ca6"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_optimize_counts.py": "f8a41dd87158a095fddcef1ae42e798725baf3f2e5734725429315d371181ca6",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-setup-boundaries.py.in": "a589269675580bc66207631cce177c78504b167fd1c55696a0c2b1530a76a4b2"
   }
 }

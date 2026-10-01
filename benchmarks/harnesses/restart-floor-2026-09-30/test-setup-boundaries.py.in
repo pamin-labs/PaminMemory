@@ -1,0 +1,48 @@
+"""Mock conversion/setup preflight only: no files under real measured roots."""
+import io,json,os,runpy,subprocess,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+ROOT=Path(__file__).resolve().parent;BEFORE='--before' in sys.argv;BASE='a25771cd699b173b7164ee1033b1506d16298b63'
+def load(name):
+ path=ROOT/name
+ if not BEFORE:return runpy.run_path(str(path))
+ code=subprocess.check_output(['git','show',BASE+':'+str(path.relative_to(ROOT.parents[2]))],cwd=ROOT,text=True)
+ module={'__file__':str(path),'__name__':'fixture'};exec(compile(code,str(path),'exec'),module);return module
+with tempfile.TemporaryDirectory() as directory:
+ parent=Path(directory);attestation=parent/'attestation.json';attestation.write_text(json.dumps({'native_loader_inputs':{},'scope':'prospective build-time inputs/outputs only; no historical binary binding','arms':{name:{'commit':name+'-commit'} for name in ['main','predecessor','candidate']}}))
+ conversion=load('run-conversion-guarded.py.in');g=conversion['main'].__globals__;seed=Path('/workspace/scratch/restart-floor/seed-disk');alias=parent/'seed-alias';alias.symlink_to(seed,target_is_directory=True)
+ opens=[];launches=[];original_open=Path.open
+ for log in [seed/'conversion.log',seed/'index/project/conversion.log',alias/'index/project/conversion.log',parent/'external.log']:
+  inside=log!=parent/'external.log'
+  def opened(path,*args,**kwargs):
+   if path==log:opens.append(str(path));return io.StringIO()
+   return original_open(path,*args,**kwargs)
+  with patch.dict(g,{'verified_binary':lambda a:parent/'fake-binary','BUILD':{'NATIVE':{'verify':lambda n:None,'environment':lambda e,n:e}}}),patch.object(Path,'open',opened),patch.object(conversion['subprocess'],'run',side_effect=lambda *a,**k:launches.append(a)),patch.object(sys,'argv',['conversion','--attestation',str(attestation),'--log',str(log)]):
+   try:conversion['main']()
+   except AssertionError as error:assert not BEFORE and inside and 'conversion log must be outside measured seed' in str(error)
+   else:assert BEFORE or not inside
+ assert len(opens)==len(launches)==(4 if BEFORE else 1)
+ guard=load('run-guarded.py.in');g=guard['main'].__globals__
+ executable=parent/'fake-binary';executable.write_bytes(b'attested fake bytes');source='crates/pamin-engine/tests/scratch_restart_floor.rs'
+ data=json.loads(attestation.read_text());data.update(build_kind='restart-trial',scratch_target=source,harness_sha256='fixture')
+ for entry in data['arms'].values():
+  entry.update(binary=str(executable),binary_sha256=guard['digest'](executable),binary_bytes=executable.stat().st_size,scratch_source=source,scratch_sha256='fixture',checkout=str(parent),inputs_before={source:{'sha256':'fixture'}},inputs_after={source:{'sha256':'fixture'}},compiler_artifacts=[{'target':{'name':'scratch_restart_floor','src_path':str(parent/source)},'executable':str(executable),'fresh':False}])
+ attestation.write_text(json.dumps(data))
+ home=parent/'home';home.mkdir();models=parent/'models';models.mkdir();(home/'models').symlink_to(models,target_is_directory=True)
+ count=0
+ for stage in ['bootstrap','seed']:
+  for name,commit in [('main','main-commit'),('predecessor','predecessor-commit'),('candidate','wrong-commit'),('candidate','candidate-commit')]:
+   record=parent/'record.json';calls=[];valid=name=='candidate' and commit=='candidate-commit';accepted=valid or (BEFORE and name!='candidate')
+   def launched(*a,**k):calls.append(a);raise RuntimeError('mock launch boundary')
+   with patch.dict(os.environ,{},clear=True),patch.dict(g,{'MODEL':{'load':lambda p:({'root':str(models)},b'{}','fixture')},'NATIVE':{'environment':lambda e,n:dict(e,LD_LIBRARY_PATH=''),'verify':lambda n:None},'verify_models':lambda r:None}),patch.object(guard['subprocess'],'run',side_effect=launched),patch.object(sys,'argv',['guard','--attestation',str(attestation),'--model-manifest',str(parent/'manifest.json'),'--record',str(record),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'{name},{commit},{parent/"fake-binary"}','--stage',stage]):
+    try:guard['main']()
+    except AssertionError as error:
+     assert not accepted
+     if name!='candidate':assert not BEFORE and 'setup requires attested candidate arm and commit' in str(error)
+    except RuntimeError as error:assert accepted and str(error)=='mock launch boundary'
+    else:raise AssertionError('setup did not reject or reach mock boundary')
+   assert bool(calls)==bool(record.exists())==accepted
+   if record.exists():record.unlink()
+   count+=1
+print('BEFORE: all3 in-seed conversion logs opened and4 noncandidate setup choices reached mocked launch; wrong attested candidate commits already rejected' if BEFORE else 'PASS: reject3 direct/index/symlink conversion logs before open; reject6 bootstrap/seed wrong arm/commit cases before record/launch; external log and2 candidate positives accepted')

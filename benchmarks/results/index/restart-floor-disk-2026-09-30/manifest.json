@@ -6,17 +6,17 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/disk-README.md": "159fa1cd108f8095cf9a6737dd7d6fa0fe32987c2bfa880fe72b75cc3796c196",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema.rs.in": "d21c7cc2b5f0825f93388eac3a2732409c4a5a75d065a35926e3eba32a1e39ce",
     "benchmarks/harnesses/restart-floor-2026-09-30/disk_schema_guarded.rs.in": "61083ba54700c5c809a226d29ed292e21bda69092357a1a727e644269b164fee",
-    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "f2b140c9f77285151691546b296dcd644d731a9b3d8a68feaad6cb658d063388",
+    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "fe61c7c25a55d64336c3b0f8dfab46305007746e3a55c129c683adba136f1c2a",
     "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
     "benchmarks/harnesses/restart-floor-2026-09-30/model-guards-README.md": "2eaaad2376697d221d4cd7cf7280ace7855cd838bdce26432017ab4928855999",
     "benchmarks/harnesses/restart-floor-2026-09-30/model-guards.py.in": "18fe6a2467ce902859a2e5d6ceab1ad2c6a9fa54f32d52c8aa73d99f328ee548",
     "benchmarks/harnesses/restart-floor-2026-09-30/native-build-guards-README.md": "b7d96cdd8deeb4667706612a15c8329469292a42e9be9ad6b3386868801cbcf4",
     "benchmarks/harnesses/restart-floor-2026-09-30/native-guards.py.in": "59097df945a6084996adc7147f7e9ef7c5eb228d00c4fd1e707585a791bc8309",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-conversion-guarded.py.in": "684fc0aaf7479cc9baa0f58534ac1e7bd1dfb28037e57312448147672f01b677",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "42bac290e4c0e267735809e4f0820c6f3b6ec295754403be58cff67cd67b442a",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-conversion-guarded.py.in": "a43821bb932eabf1bd9b49c7af26b30f663f2c417684ea81862fe549569ca8d9",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "4aa44be164f6010e2bb33ed6993b0b8a38b9b1e43f6d1c7c7146170cf4b382d1",
     "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "07c319bfb51262b16f620ffbfb88142a7b11825b63e104a1227fc5c5f6eb8537",
-    "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "2f99346841d374876b6c705aca9cb303ffb9b065b9351d242d5ef6684b485c25",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "72a7e00b15516753f9c44636e4f2f471e2cb327da2f178822c4b95394ca374d9",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "4234fb671ccc61408d79f5f24915c46e575011a6af8557b9d457adf8dcff0184",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "a334d893aa42b907dae314d81dc33184f749d75c79192eda80ecd6b0cb69f294",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/binaries.json": "48c7c274ba590e5317502b9e9f6f7663c38b4cf8b7bdfac277e5e586d87b9f03",
@@ -80,7 +80,8 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_cpu_counter_chronology.py": "999197ae30cd70c269c94710c3ac3e34bfd911d9d0c5699ed2da7aa870b1de54",
     "benchmarks/results/index/restart-floor-2026-09-30/test_cross_archive_bindings.py": "bc1a0644f00b47e86f995384ff2ff11b08e546e16ba20018108f28e62b99c351",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-executable-paths.py.in": "6259886bc84418dfbfde4a3fa12f52858c042e06defba389ae9abfae76422163",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_optimize_counts.py": "f8a41dd87158a095fddcef1ae42e798725baf3f2e5734725429315d371181ca6"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_optimize_counts.py": "f8a41dd87158a095fddcef1ae42e798725baf3f2e5734725429315d371181ca6",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-setup-boundaries.py.in": "a589269675580bc66207631cce177c78504b167fd1c55696a0c2b1530a76a4b2"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }
