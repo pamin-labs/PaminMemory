@@ -49,6 +49,7 @@ for arm,commit in expected_commits.items():
         assert maintenance['extra']['documents']==18001
         review.optimize_job_count(maintenance['extra']['optimize_completed_delta'],0 if arm=='candidate' else 1)
         complete=maintenance['extra']['completeness']
+        assert type(complete) in {int,float} and math.isfinite(complete), 'Disk completeness must be finite numeric, excluding bool'
         assert complete==(struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0), 'Disk arm maintenance completeness differs'
         assert phases['write_and_memory_drain'][0]['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'Disk single-write drain premise differs'
         assert phases['durability_flush'][0]['extra']['flushed']==1
@@ -110,7 +111,9 @@ review.successful_test_log(seed_log)
 seed_rows=[json.loads(line.removeprefix('RESTART_JSON ')) for line in seed_log.splitlines() if line.startswith('RESTART_JSON ')]
 assert Counter(row['phase'] for row in seed_rows)==Counter({'open':1,'seed_complete':1}), 'unexpected seed log phases'
 assert next(row for row in seed_rows if row['phase']=='seed_complete')==provenance['seed_complete_diagnostic'], 'seed diagnostic disagrees with native seed log'
-assert provenance['seed_complete_diagnostic']['extra']['completeness']==1
+seed_complete=provenance['seed_complete_diagnostic']['extra']['completeness']
+assert type(seed_complete) in {int,float} and math.isfinite(seed_complete), 'Disk seed completeness must be finite numeric, excluding bool'
+assert seed_complete==1
 assert provenance['seed_complete_diagnostic']['extra']['index_disk'][0]==provenance['all_files_including_floor_marker']
 seed_files=provenance['seed_files']
 assert len(seed_files)==len({entry['path'] for entry in seed_files}), 'duplicate seed inventory path'

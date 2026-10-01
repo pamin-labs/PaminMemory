@@ -65,7 +65,9 @@ for arm in ['main','predecessor','candidate']:
         assert next(r for r in rows if r['phase']=='open')['extra']['documents']==18000, 'HNSW open document count differs'
         assert upkeep[0]['extra']['documents']==18001, 'HNSW post-write document count differs'
         complete=struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0
-        assert upkeep[0]['extra']['completeness']==complete, 'HNSW arm maintenance completeness differs'
+        actual_complete=upkeep[0]['extra']['completeness']
+        assert type(actual_complete) in {int,float} and math.isfinite(actual_complete), 'HNSW completeness must be finite numeric, excluding bool'
+        assert actual_complete==complete, 'HNSW arm maintenance completeness differs'
         assert next(r for r in rows if r['phase']=='write_and_memory_drain')['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'HNSW single-write drain premise differs'
         assert next(r for r in rows if r['phase']=='durability_flush')['extra']['flushed']==1, 'HNSW durability flush premise differs'
         closed=next(r for r in rows if r['phase']=='closed_index')
