@@ -3,6 +3,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "src/build_profile.rs"]
+mod build_profile;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     build_identity();
@@ -56,7 +59,9 @@ fn build_identity() {
     let mut files = vec![PathBuf::from("build.rs"), PathBuf::from("Cargo.toml")];
     sources(std::path::Path::new("src"), &mut files);
     // Registry installs need not carry the workspace files.
-    for name in ["../../Cargo.toml", "../../Cargo.lock"] {
+    for name in ["../../Cargo.toml", "../../Cargo.lock", ".cargo/config", ".cargo/config.toml",
+        "../../.cargo/config", "../../.cargo/config.toml"] {
+        println!("cargo:rerun-if-changed={name}");
         if std::path::Path::new(name).is_file() {
             files.push(PathBuf::from(name));
         }
@@ -84,6 +89,18 @@ fn build_identity() {
                 .to_string_lossy()
                 .as_bytes(),
         );
+    }
+    for (key, value) in build_profile::settings(
+        &std::env::var("PROFILE").unwrap_or_default(),
+        std::env::vars_os().map(|(key, value)| (
+            key.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()
+        )),
+    ) {
+        println!("cargo:rerun-if-env-changed={key}");
+        hash.update((key.len() as u64).to_le_bytes());
+        hash.update(key.as_bytes());
+        hash.update((value.len() as u64).to_le_bytes());
+        hash.update(value.as_bytes());
     }
     if let Ok(output) = Command::new(std::env::var_os("RUSTC").expect("rustc path"))
         .arg("--version")
