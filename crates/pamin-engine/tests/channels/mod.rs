@@ -947,12 +947,12 @@ pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
 /// -- so the comparison scores exactly what the harness's own shipped row
 /// scores.
 ///
-/// No time is reported, and that is deliberate. Every setting asks the same
-/// question in turn, and the reranker remembers each pair it has scored, so a
-/// setting that reranks a subset of what the shipped pass already scored
-/// costs nothing -- depths 10 and 15 measured 70 ms a question against 1,364
-/// for the shipped twenty on MIRACL, which is the cache and not the depth.
-/// What a depth costs is its pair count, which is the depth.
+/// No time is reported: every setting asks the same question in turn, sharing
+/// model and cache state. The reranker reuses scores only for an identical
+/// complete ordered batch; changing depth can change batch membership and
+/// require tokenization and inference. This paired quality comparison cannot
+/// establish depth latency. Measure that separately with controlled cache
+/// state and the actual batch work recorded for each setting.
 pub async fn compare_reranked(
     engine: &pamin_engine::Engine,
     title: &str,
