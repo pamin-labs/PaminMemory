@@ -4,6 +4,7 @@ This does not run a benchmark or generate optimization numbers.
 """
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 
@@ -102,6 +103,12 @@ def verify():
             close(statistics.mean(scores), summary[side])
             close(statistics.mean(recalls), summary["recall50_" + side])
     verify_cluster_inference(baseline_queries, scored_groups, precision)
+    verify_costs(baseline_queries)
+    verify_device_proof()
+    print("Verified paired precision and 21 independent cost blocks against retained raw rows.")
+
+
+def verify_costs(baseline_queries):
     costs = json.loads((ROOT / "cost-summary.json").read_text())
     expected = {"main-cpu", "new-cpu", "dual-cpu", "main-auto", "new-auto", "main-auto-repeat", "new-auto-persist-hit"}
     assert set(costs) == expected, "retained timing arm set is incomplete"
@@ -132,10 +139,13 @@ def verify():
                 "compiled_cache_warmth": "not independently controlled",
             }
             for key, value in expected_manifest.items():
-                assert manifest[key] == value, (name, key, manifest[key], value)
+                assert manifest[key] == value, f"{name}: unexpected {key}"
             assert [(q["id"], q["language"]) for q in queries] == reference_workload, "cost query slice/order changed"
             assert len(queries) == 66 and len({r["id"] for r in queries}) == 66
+            assert block["manifest"] == manifest, "raw and summary manifests differ"
             assert raw[0]["documents"] == 13014 and all(r["ranked"] for r in queries)
+            if name == "main-cpu":
+                assert [q["ranked"] for q in queries] == [baseline_queries[18 * i]["ranked"] for i in range(66)], "main CPU ranking differs from full baseline"
             work = [r for r in raw if r["kind"] == "work"]
             assert len(work) == 1 and work[0]["new_scores"] > 0 and work[0]["offered"] > 0
             values = sorted(r["seconds"] * 1000 for r in queries)
@@ -145,7 +155,24 @@ def verify():
             assert rss == block["max_sampled_warm_rss_bytes"]
         for cell, median in [("p50_ms", "median_p50_ms"), ("p95_ms", "median_p95_ms"), ("max_sampled_warm_rss_bytes", "median_max_sampled_warm_rss_bytes")]:
             close(statistics.median(b[cell] for b in arm["blocks"]), arm[median])
+
+
+DEVICES = {"cpu", "cuda", "coreml", "directml", "npu"}
+LOADED_EVENTS = {"embedder_loaded", "reranker_loaded"}
+
+
+def loaded_device_summary(line):
+    embedding = re.fullmatch(r'INFO pamin_index::embedding: embedder loaded model="(?:gpahal/bge-m3-onnx-int8|bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822\+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4)" device="([a-z]+)"', line)
+    reranking = re.fullmatch(r'INFO pamin_index::reranking: reranker loaded tier="accurate" device="([a-z]+)" maximum_tokens=256', line)
+    assert embedding or reranking, "unknown loaded-device summary event"
+    match = embedding or reranking
+    assert match.group(1) in DEVICES, "unknown loaded-device summary device"
+    return ("embedder_loaded" if embedding else "reranker_loaded", match.group(1))
+
+
+def verify_device_proof():
     import hashlib
+    expected = {"main-cpu", "new-cpu", "dual-cpu", "main-auto", "new-auto", "main-auto-repeat", "new-auto-persist-hit"}
     proof = json.loads((ROOT / "device-and-cache-proof.json").read_text())
     assert len(proof) == 21 and {(p["arm"], p["process"]) for p in proof} == {(arm, i) for arm in expected for i in range(3)}
     for entry in proof:
@@ -156,12 +183,18 @@ def verify():
         events = log["events"]
         assert [event["line"] for event in events] == list(range(len(events)))
         allowed = {"other", "calibration", "candidate_rejected", "embedder_loaded", "reranker_loaded"}
-        assert all(set(event) <= {"line", "event", "device"} and event["event"] in allowed for event in events)
+        for event in events:
+            assert event["event"] in allowed and type(event["line"]) is int, "invalid redacted event"
+            fields = {"line", "event", "device"} if event["event"] in LOADED_EVENTS else {"line", "event"}
+            assert set(event) == fields, "device belongs only to loaded events"
+            if event["event"] in LOADED_EVENTS:
+                assert type(event["device"]) is str and event["device"] in DEVICES, "unknown redacted device"
+        loaded = [(event["event"], event["device"]) for event in events if event["event"] in LOADED_EVENTS]
+        assert loaded == [loaded_device_summary(line) for line in entry["loaded_device_evidence"]], "loaded-device summary differs from retained events"
         assert sum(event["event"] == "calibration" for event in events) == entry["calibration_lines"]
         assert sum(event["event"] == "candidate_rejected" for event in events) == entry["candidate_rejection_lines"]
         if entry["arm"] == "new-auto-persist-hit":
             assert entry["calibration_lines"] == entry["candidate_rejection_lines"] == 0
-    print("Verified paired precision and 21 independent cost blocks against retained raw rows.")
 
 
 if __name__ == "__main__":
