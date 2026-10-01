@@ -86,7 +86,7 @@ for arm in ['main','predecessor','candidate']:
         assert len([r for r in rows if r['phase']=='search_warmup'])==2
         for r in rows:
             if 'query_document' in r.get('extra',{}):
-                topics=r['extra']['topics'];rank=next((i+1 for i,t in enumerate(topics) if t==f"incident-{r['extra']['query_document']}"),None)
+                topics=r['extra']['topics'];review.topic_strings(topics);rank=next((i+1 for i,t in enumerate(topics) if t==f"incident-{r['extra']['query_document']}"),None)
                 assert len(topics)==len(set(topics))==10, 'HNSW query hit/rank premise differs'
                 review.historical_rank(r['extra']['rank'],rank)
         new=next(r for r in rows if r['phase']=='new_write_search')
