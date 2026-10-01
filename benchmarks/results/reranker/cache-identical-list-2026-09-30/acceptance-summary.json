@@ -1,0 +1,157 @@
+{
+  "comparisons": [
+    {
+      "repeat": 0,
+      "limit": 5,
+      "qid": 80,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 0,
+      "limit": 5,
+      "qid": 80,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 0,
+      "limit": 5,
+      "qid": 101,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 0,
+      "limit": 5,
+      "qid": 101,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 0,
+      "limit": 10,
+      "qid": 80,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 0,
+      "limit": 10,
+      "qid": 80,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 0,
+      "limit": 10,
+      "qid": 101,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 0,
+      "limit": 10,
+      "qid": 101,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 1,
+      "limit": 5,
+      "qid": 80,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 1,
+      "limit": 5,
+      "qid": 80,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 1,
+      "limit": 5,
+      "qid": 101,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 1,
+      "limit": 5,
+      "qid": 101,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 1,
+      "limit": 10,
+      "qid": 80,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 1,
+      "limit": 10,
+      "qid": 80,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": false,
+      "changed_fresh_rows": 0
+    },
+    {
+      "repeat": 1,
+      "limit": 10,
+      "qid": 101,
+      "history": "A->B",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    },
+    {
+      "repeat": 1,
+      "limit": 10,
+      "qid": 101,
+      "history": "B->A",
+      "same_final_bits_order_equal": true,
+      "selected_order_changed": true,
+      "changed_fresh_rows": 20
+    }
+  ],
+  "36_processes_complete": true,
+  "428_timed_calls": true,
+  "all_owned_pg_stopped": true,
+  "limits": [
+    5,
+    10
+  ],
+  "full300_diagnostics_outside_clock": true,
+  "scope": "small CPU controls; no broadquality or stablelatencyclaim"
+}

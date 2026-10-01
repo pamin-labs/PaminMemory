@@ -1,0 +1,44 @@
+{
+  "public_package": "benchmarks/harnesses/selected-main-stack-2026-10-01",
+  "scope": "Offline explicitly supplied PR228 package, verified by exact file hashes. The local integration source revision is provenance, not a promised remote fetch target; restacking may change its commit SHA without changing file bytes. Not supplied by a bare PR216 checkout. No automatic fetch or download.",
+  "files": {
+    "common.py.in": {
+      "sha256": "95f32674a874aeee3806744950a7a0955915f0b6e5d969e568466383f9746e47",
+      "bytes": 14898
+    },
+    "build.py.in": {
+      "sha256": "756baddf10aad0ba4e43f9095e7892ed9826a81e01fdb8cee1231e1a7585e617",
+      "bytes": 6350
+    },
+    "seed.py.in": {
+      "sha256": "d708387f8ab8b9f4b07257feb81bb2e8a65e15eaf31e800f7b738c3f62b4b328",
+      "bytes": 2489
+    },
+    "seed.rs.in": {
+      "sha256": "238306ace819747e7a8ee148c4efb97673cec36ea22a1e95b41a7603feb19cfe",
+      "bytes": 1210
+    },
+    "owned_postgres.py.in": {
+      "sha256": "a9a6d9bda7ee8b150b107e689db80a1c9a70ce4efd64602e65fb869c4a668da9",
+      "bytes": 14775
+    },
+    "run.py.in": {
+      "sha256": "97c6f2ffb494c005362df96a04ffe1139c35e8e0e8e0a93b7fb205e162edb67f",
+      "bytes": 20613
+    },
+    "sources.json": {
+      "sha256": "f9aed95517ba156a99751079e1f2121a7ba98e03ad3b69f52b2d3da646c40f33",
+      "bytes": 6245
+    },
+    "stack-source-manifest.json": {
+      "sha256": "165c95ebfe2284ed7099b9c9f759ad58b4287af7f283988081c30b7244206687",
+      "bytes": 34730
+    },
+    "stack-source.tar.gz": {
+      "sha256": "2083bad5377d6a845146e73530ada9e4747da4ec5dbbf8f0adde14bbf13c9196",
+      "bytes": 651823
+    }
+  },
+  "public_pr": 228,
+  "source_revision": "d5097df2ac57c81914e97952c073fa224db9f005"
+}

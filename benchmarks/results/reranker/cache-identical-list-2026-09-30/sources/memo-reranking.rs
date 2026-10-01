@@ -195,22 +195,17 @@
 //! storage is the smaller of the two obstacles -- see the module notes above
 //! for the sizes and for the licence wall that is the larger one.
 //!
-//! [`Reranker::counted`] measures reuse of complete batch contexts. It does
-//! not measure document recurrence: changing neighbours can make a repeated
-//! document a cache miss. Evaluating precomputed document layers requires a
-//! separate document-recurrence measurement and a storage/cost comparison.
+//! [`Reranker::counted`] is what would decide the first of them. The score
+//! cache's hit rate says whether the hot set is small enough for precomputing
+//! part of each document to pay for itself, and until it was exposed nothing
+//! in this project could read it.
 //!
-//! What is kept is a complete ordered batch's logits, within one loaded model
-//! and tokenizer. With this INT8 export, a pair's score can depend on its batch
-//! neighbours and padding, so reusing it in a different context is incorrect.
-//! The cache includes every pair identity and the logical and physical shapes;
-//! changed contexts are scored again. An identical batch avoids a model forward
-//! pass. The most recent complete input list also skips tokenization and batch
-//! planning when its ordered pair identities and effective limits match and
-//! every referenced batch is still cached. Changed inputs or evicted references
-//! require tokenizing all pairs and planning their complete batches before
-//! lookup. Hashing, cache lookup and retrieval still cost work; this is not a
-//! zero-cost search. Loading another model or tokenizer creates a new cache.
+//! What is here is the one thing that can be kept: the score itself. A query
+//! and a memory score the same every time, so a resident server remembers them,
+//! and a repeated search costs nothing -- 69.6 ms the first time, 0.0 ms the
+//! second, for the same ordering. It does nothing for a query never asked
+//! before, which is most of them; it is worth its quarter of a megabyte because
+//! agents retry.
 //!
 //! ## What the numbers do not say
 //!
@@ -229,7 +224,7 @@
 //! divide the gain differently -- is now the MIRACL section above. It does
 //! divide it differently, and not in the direction the caveat guessed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -632,20 +627,6 @@ struct Scores {
 }
 
 impl Scores {
-    fn invalidate(&mut self) {
-        self.known.clear();
-        self.order.clear();
-        self.remembered = 0;
-        self.last = None;
-    }
-
-    /// Staged cached logits cannot cross a successful backend replacement.
-    /// An entirely uncached replacement already scored the complete request.
-    fn replaced(&mut self, cached: u64) -> bool {
-        self.invalidate();
-        cached != 0
-    }
-
     fn get(&self, key: BatchKey) -> Option<&[f32]> {
         self.known.get(&key).map(Vec::as_slice)
     }
@@ -822,7 +803,6 @@ pub struct Ranked {
 
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
-    cache_dir: PathBuf,
     model: Encoder,
     tier: Rerank,
     device: Device,
@@ -909,10 +889,77 @@ impl Reranker {
     /// directory of weights rather than two.
     pub fn load(tier: Rerank, cache_dir: &Path) -> Result<Self> {
         debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
-        let (model, device) = load_model(tier, cache_dir)?;
+        std::fs::create_dir_all(cache_dir)?;
+
+        let repository = Repository::open(cache_dir, tier.repository())?;
+
+        let session = |device: Device, providers| -> Result<Encoder> {
+            let weights = repository.file(cache_dir, tier.onnx(device));
+            let model = || match device {
+                // The file the hub serves is copied onto the heap whole; on
+                // the CPU, the prepared copy is mapped instead -- see
+                // `crate::prepared` for what that saves -- and the download
+                // removed once the copy has loaded.
+                Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                Device::CoreMl if tier == Rerank::Accurate => {
+                    let source = repository.get(tier.onnx(device))?;
+                    crate::native::prepare(&source, cache_dir)
+                }
+                _ => repository.get(tier.onnx(device)),
+            };
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
+                Encoder::load_fixed_coreml(model, &repository, max_tokens())
+            } else {
+                Encoder::load(model, &repository, max_tokens(), providers)
+            };
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let loaded = Encoder::load(model, &repository, max_tokens(), providers);
+            let encoder = loaded
+                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
+            #[cfg(target_os = "windows")]
+            let mut encoder = encoder;
+            #[cfg(target_os = "windows")]
+            if device == Device::DirectMl {
+                // Compare the same accelerator export, not CPU int8 versus
+                // accelerator FP16: quantization is a separate source of drift.
+                let path = repository.get(tier.onnx(device))?;
+                check_accelerator(&mut encoder, || {
+                    Encoder::load(
+                        || Ok(path.clone()),
+                        &repository,
+                        max_tokens(),
+                        vec![crate::inference::cpu()],
+                    )
+                })?;
+            }
+            if device == Device::Cpu {
+                crate::prepared::release(&weights, cache_dir);
+            }
+            Ok(encoder)
+        };
+
+        // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
+        // XQuAD-R quality and beat its CoreML FP32 export on every paired
+        // search. Accurate still uses the shared CoreML-first policy.
+        let (model, device) =
+            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
+                (
+                    session(Device::Cpu, vec![crate::inference::cpu()])?,
+                    Device::Cpu,
+                )
+            } else {
+                crate::inference::preferred(session)?
+            };
+        tracing::info!(
+            tier = tier.name(),
+            device = device.name(),
+            maximum_tokens = model.maximum_tokens(),
+            "reranker loaded"
+        );
 
         Ok(Self {
-            cache_dir: cache_dir.to_path_buf(),
             model,
             tier,
             device,
@@ -962,65 +1009,50 @@ impl Reranker {
             .iter()
             .map(|document| pair_key(query, document))
             .collect();
-        let scores = loop {
-            if crate::inference::needs_revalidation(&self.model) {
-                self.scores.invalidate();
-            }
-            let limits = self.model.batch_limits(batch_tokens(), batch());
-            let list = ListKey::of(&keys, limits);
-            if let Some(attempt) = self.scores.replay(list, documents.len()) {
-                break attempt.commit(&mut self.scores, &mut self.work, &mut self.lengths, 0);
-            }
+        let limits = self.model.batch_limits(batch_tokens(), batch());
+        let list = ListKey::of(&keys, limits);
+        let scores = if let Some(attempt) = self.scores.replay(list, documents.len()) {
+            attempt.commit(&mut self.scores, &mut self.work, &mut self.lengths, 0)
+        } else {
+            // Different raw input or unavailable plan: tokenize ALL offered
+            // pairs before lookup, never regroup just the cache misses.
             let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
-            let tier = self.tier;
-            let cache_dir = &self.cache_dir;
-            let cached = &self.scores;
-            let ((attempt, encode_us), replaced) = crate::inference::retry_model(
-                &mut self.model,
-                &mut self.device,
-                cache_dir,
-                |model, _| {
-                    // Plan every offered pair with this attempt's active backend.
-                    let start = Instant::now();
-                    let encodings = model.encode(
-                        documents
-                            .iter()
-                            .map(|document| (query, *document))
-                            .collect::<Vec<_>>(),
-                    )?;
-                    let encode_us = start.elapsed().as_micros() as u64;
-                    let limits = model.batch_limits(batch_tokens(), batch());
-                    let list = ListKey::of(&keys, limits);
-                    let planned = model_batches_at(model, encodings, limits);
-                    let attempt = cached.score(
-                        planned,
-                        &keys,
-                        |at| documents[at].chars().count(),
-                        |batch| forward(model, batch),
-                        Some(list),
-                    )?;
-                    Ok((attempt, encode_us))
-                },
-                || load_model(tier, cache_dir),
-            )
-            .map_err(reranking)?;
-            if replaced && self.scores.replaced(attempt.hits) {
-                // Discard staged old-backend hits and rescore the complete list.
-                // Staged counters/cache/work have not been committed.
-                continue;
-            }
-            break attempt.commit(
+            let start = Instant::now();
+            let encodings = self
+                .model
+                .encode(
+                    documents
+                        .iter()
+                        .map(|document| (query, *document))
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(reranking)?;
+            let encode_us = start.elapsed().as_micros() as u64;
+            let planned = model_batches_at(&self.model, encodings, limits);
+            let attempt = self
+                .scores
+                .score(
+                    planned,
+                    &keys,
+                    |at| documents[at].chars().count(),
+                    |batch| forward(&mut self.model, batch),
+                    Some(list),
+                )
+                .map_err(reranking)?;
+            attempt.commit(
                 &mut self.scores,
                 &mut self.work,
                 &mut self.lengths,
                 encode_us,
-            );
+            )
         };
 
         let mut ordered: Vec<usize> = (0..documents.len()).collect();
         ordered.sort_by(|left, right| {
             scores[*right]
                 .total_cmp(&scores[*left])
+                // A stable order when two candidates score alike, so one
+                // shortlist ranks the same way twice.
                 .then_with(|| left.cmp(right))
         });
         Ok(ordered
@@ -1034,12 +1066,15 @@ impl Reranker {
 
     /// What this reranker has been asked to do, and what it did.
     ///
-    /// `offered - scored` counts logical pairs reused in complete cached
-    /// batch contexts. It does not measure a document hot set: changing batch
-    /// neighbours can require scoring recurring documents again. Document
-    /// precomputation needs a separate recurrence metric and storage/cost
-    /// measurements. `scored` records actual model work, while token lengths
-    /// show whether `MAX_TOKENS` binds on the offered corpus.
+    /// Exposed because three of the decisions this project has deferred turn
+    /// on these five numbers and none of them had a value. The cache's hit
+    /// rate is what says whether precomputing part of each document's
+    /// representation at index time would pay for its storage. `scored`
+    /// against `offered` is the size of the only lever proportional to the
+    /// whole of the reranker's cost -- how many pairs reach the model at all,
+    /// which is not the same as `DEPTH` and was never counted. And the lengths
+    /// say whether `MAX_TOKENS` binds, which decides whether truncation is a
+    /// lever or a rounding error on a given corpus.
     ///
     /// An accessor reporting occupancy alone came before this and answered
     /// none of them: it says how much has been stored and nothing about how
@@ -1065,151 +1100,41 @@ impl Reranker {
     }
 }
 
-/// Keep the ordering proof first. Accurate also times long candidates, so
-/// maximum-length execution affects selection rather than only compatibility.
-fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
-    std::fs::create_dir_all(cache_dir)?;
-
-    let repository = Repository::open(cache_dir, tier.repository())?;
-
-    let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-        let weights = repository.file(cache_dir, tier.onnx(device));
-        let model = || match device {
-            // The file the hub serves is copied onto the heap whole; on
-            // the CPU, the prepared copy is mapped instead -- see
-            // `crate::prepared` for what that saves -- and the download
-            // removed once the copy has loaded.
-            Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            Device::CoreMl if tier == Rerank::Accurate => {
-                let source = repository.get(tier.onnx(device))?;
-                crate::native::prepare(&source, cache_dir)
-            }
-            _ => repository.get(tier.onnx(device)),
-        };
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
-            Encoder::load_fixed_coreml(model, &repository, max_tokens())
-        } else {
-            Encoder::load(model, &repository, max_tokens(), providers)
-        };
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let loaded = Encoder::load(model, &repository, max_tokens(), providers);
-        let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
-        // The shared calibration compares actual candidate scores with
-        // the already resident product CPU reference. Do not allocate a
-        // third FP16 CPU session while both plans are live.
-        encoder.require_accelerator(device)?;
-        if device == Device::Cpu {
-            crate::prepared::release(&weights, cache_dir);
-        }
-        Ok(encoder)
-    };
-
-    // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
-    // XQuAD-R quality and beat its CoreML FP32 export on every paired
-    // search. Accurate still uses the shared CoreML-first policy.
-    let (model, device) =
-        if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
-            (
-                session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
-                Device::Cpu,
-            )
-        } else {
-            let references = std::cell::RefCell::new(crate::inference::References::default());
-            crate::inference::measured(
-                &format!(
-                    "reranker-v3:{}:{}:{}:{}:{}",
-                    tier.name(),
-                    repository.identity(cache_dir),
-                    max_tokens(),
-                    batch(),
-                    batch_tokens()
-                ),
-                cache_dir,
-                &references,
-                crate::inference::ReferenceShape {
-                    scores: Some(calibration_pairs(tier, "").len()),
-                    ..Default::default()
-                },
-                session,
-                |model, _device| {
-                    let mut reference = references.borrow_mut();
-                    let long = "harbour migration rollback policy ".repeat(max_tokens());
-                    let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
-                    let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
-                    if longest != max_tokens() {
-                        return Err(IndexError::Engine(
-                            "maximum-token fixture did not reach the configured limit".into(),
-                        ));
-                    }
-                    let values = score(model, encoded, batch_tokens(), batch())?.0;
-                    if values.len() != 1 || !values[0].is_finite() {
-                        return Err(IndexError::Numerical(
-                            "maximum-token reranker fixture returned invalid output".into(),
-                        ));
-                    }
-                    crate::inference::time_calls(|| {
-                        let pairs = calibration_pairs(tier, &long);
-                        let count = pairs.len();
-                        let encoded = model.encode(pairs)?;
-                        let values = score(model, encoded, batch_tokens(), batch())?.0;
-                        if values.len() != count || !values.iter().all(|v| v.is_finite()) {
-                            return Err(IndexError::Numerical(
-                                "reranker calibration returned invalid scores".into(),
-                            ));
-                        }
-                        match &reference.scores {
-                            None => reference.scores = Some(values),
-                            Some(reference) => {
-                                check_accelerator_ordering(&reference[..4], &values[..4])?
-                            }
-                        }
-                        Ok(())
-                    })
-                },
-            )?
-        };
-    tracing::info!(
-        tier = tier.name(),
-        device = device.name(),
-        maximum_tokens = model.maximum_tokens(),
-        "reranker loaded"
-    );
-
-    Ok((model, device))
+/// A startup ordering guard for the actual model/export. A failed attempt
+/// returns to `preferred`, which tries the next viable provider. No persistent
+/// CPU-only setting is written; a later load can retry a repaired accelerator.
+#[cfg(target_os = "windows")]
+fn check_accelerator(
+    accelerator: &mut Encoder,
+    reference: impl FnOnce() -> Result<Encoder>,
+) -> Result<()> {
+    const PAIRS: [(&str, &str); 4] = [
+        (
+            "Where does the harbour pilot board ships?",
+            "The harbour pilot boards ships at the outer buoy.",
+        ),
+        (
+            "Where does the harbour pilot board ships?",
+            "Chocolate cake is baked with flour and cocoa.",
+        ),
+        (
+            "部署流水线在哪里运行？",
+            "部署流水线运行在持续集成服务器上。",
+        ),
+        ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
+    ];
+    let encodings = accelerator.encode(PAIRS.to_vec())?;
+    let observed = score(accelerator, encodings, batch_tokens(), batch())?.0;
+    let mut reference = reference()?;
+    let encodings = reference.encode(PAIRS.to_vec())?;
+    let expected = score(&mut reference, encodings, batch_tokens(), batch())?.0;
+    check_accelerator_ordering(&expected, &observed)
 }
 
-fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
-    let mut pairs = ORDER_PAIRS.to_vec();
-    if tier == Rerank::Accurate {
-        pairs.extend(ORDER_PAIRS.repeat(3));
-        pairs.extend(std::iter::repeat_n((ORDER_PAIRS[0].0, long), 16));
-    }
-    pairs
-}
-
-const ORDER_PAIRS: [(&str, &str); 4] = [
-    (
-        "Where does the harbour pilot board ships?",
-        "The harbour pilot boards ships at the outer buoy.",
-    ),
-    (
-        "Where does the harbour pilot board ships?",
-        "Chocolate cake is baked with flour and cocoa.",
-    ),
-    (
-        "部署流水线在哪里运行？",
-        "部署流水线运行在持续集成服务器上。",
-    ),
-    ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
-];
-
-/// Compare the startup fixture's semantic ordering, allowing ordinary score
-/// drift between a candidate export and the product's optimized CPU export.
+#[cfg(any(target_os = "windows", test))]
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
     let failed =
-        || IndexError::Numerical("accelerator failed the startup reranker ordering fixture".into());
+        || IndexError::Engine("accelerator failed the startup reranker ordering fixture".into());
     if expected.len() != 4
         || observed.len() != 4
         || expected
@@ -1239,6 +1164,7 @@ fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> 
 /// Shortest first, in the batches [`batches`] makes of their lengths, each
 /// batch one forward pass and a pair's score the first column of its row of
 /// `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
+#[cfg(target_os = "windows")]
 fn score(
     model: &mut Encoder,
     encodings: Vec<Encoding>,
@@ -1275,6 +1201,7 @@ impl Batch {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn model_batches(
     model: &Encoder,
     encodings: Vec<Encoding>,
@@ -1382,213 +1309,6 @@ fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn complete_replacement_results_are_reused_but_partial_results_rescore() {
-        let mut scores = Scores::default();
-        let key = BatchKey::of(&[pair_key("query", "old")], (1, 2), (1, 2));
-        scores.put(key, vec![0.5]);
-        assert!(
-            !scores.replaced(0),
-            "complete uncached replacement runs once"
-        );
-        assert!(scores.known.is_empty() && scores.remembered == 0);
-        scores.put(key, vec![0.5]);
-        assert!(
-            scores.replaced(1),
-            "cached old logits require complete rescore"
-        );
-        assert!(scores.known.is_empty() && scores.remembered == 0);
-    }
-
-    #[test]
-    fn partial_backend_replay_counts_each_offered_candidate_once() {
-        let old = [(1, 2), (2, 2)];
-        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
-        let mut scores = Scores::default();
-        let mut work = Work::default();
-        let mut lengths = Lengths::default();
-        scores
-            .score(planned(&old, 4, 2), &identities(&old), |_| 2, context, None)
-            .unwrap()
-            .commit(&mut scores, &mut work, &mut lengths, 0);
-        let replacement = |batch| {
-            context(batch)
-                .map(|(values, us)| (values.into_iter().map(|value| value + 1000.0).collect(), us))
-        };
-        let provisional = scores
-            .score(
-                planned(&rows, 4, 2),
-                &identities(&rows),
-                |_| 2,
-                replacement,
-                None,
-            )
-            .unwrap();
-        assert_eq!((provisional.hits, provisional.misses), (2, 2));
-        assert_eq!((scores.hits, scores.misses, work.pairs), (0, 2, 2));
-        assert!(scores.replaced(provisional.hits));
-        let complete = scores
-            .score(
-                planned(&rows, 4, 2),
-                &identities(&rows),
-                |_| 2,
-                replacement,
-                None,
-            )
-            .unwrap();
-        assert_eq!((complete.hits, complete.misses), (0, 4));
-        let values = complete.commit(&mut scores, &mut work, &mut lengths, 0);
-        assert!(values.iter().all(|value| *value > 1000.0));
-        assert_eq!((scores.hits, scores.misses, work.pairs), (0, 6, 6));
-        assert_eq!(scores.remembered, 4);
-    }
-
-    #[test]
-    fn invalidating_backend_scores_preserves_lifetime_counts() {
-        let rows = [(1, 2), (2, 2)];
-        let keys = identities(&rows);
-        let list = ListKey::of(&keys, (4, 2));
-        let mut scores = Scores {
-            hits: 7,
-            misses: 9,
-            ..Default::default()
-        };
-        let mut work = Work::default();
-        let mut lengths = Lengths::default();
-        scores
-            .score(planned(&rows, 4, 2), &keys, |_| 2, context, Some(list))
-            .unwrap()
-            .commit(&mut scores, &mut work, &mut lengths, 0);
-        assert!(scores.replay(list, rows.len()).is_some());
-        scores.invalidate();
-        assert!(scores.known.is_empty() && scores.order.is_empty());
-        assert_eq!(scores.remembered, 0);
-        assert!(scores.last.is_none() && scores.replay(list, rows.len()).is_none());
-        assert_eq!((scores.hits, scores.misses), (7, 11));
-        assert_eq!(work.pairs, 2);
-    }
-
-    #[test]
-    fn complete_uncached_replacement_forwards_once_and_installs_only_its_plan() {
-        let old = [(1, 2), (2, 2)];
-        let old_keys = identities(&old);
-        let old_list = ListKey::of(&old_keys, (4, 2));
-        let mut scores = Scores::default();
-        let mut work = Work::default();
-        let mut lengths = Lengths::default();
-        scores
-            .score(
-                planned(&old, 4, 2),
-                &old_keys,
-                |_| 2,
-                context,
-                Some(old_list),
-            )
-            .unwrap()
-            .commit(&mut scores, &mut work, &mut lengths, 0);
-        assert!(scores.replay(old_list, old.len()).is_some());
-        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
-        let keys: Vec<_> = rows
-            .iter()
-            .map(|(id, _)| pair_key("replacement", &id.to_string()))
-            .collect();
-        let list = ListKey::of(&keys, (4, 2));
-        let mut forwards = 0;
-        let completed = scores
-            .score(
-                planned(&rows, 4, 2),
-                &keys,
-                |_| 2,
-                |batch| {
-                    forwards += 1;
-                    context(batch).map(|(values, us)| {
-                        (values.into_iter().map(|value| value + 1000.0).collect(), us)
-                    })
-                },
-                Some(list),
-            )
-            .unwrap();
-        assert_eq!((completed.hits, completed.misses, forwards), (0, 4, 2));
-        assert!(!scores.replaced(completed.hits));
-        assert!(scores.last.is_none() && scores.replay(old_list, old.len()).is_none());
-        let values = completed.commit(&mut scores, &mut work, &mut lengths, 0);
-        assert!(values.iter().all(|value| *value > 1000.0));
-        assert_eq!(scores.replay(list, rows.len()).unwrap().values, values);
-        assert_eq!(
-            (scores.hits, scores.misses, work.pairs, forwards),
-            (0, 6, 6, 2)
-        );
-    }
-
-    #[test]
-    fn failed_replacement_attempt_keeps_committed_cache_plan_and_counters() {
-        let old = [(1, 2), (2, 2)];
-        let old_keys = identities(&old);
-        let old_list = ListKey::of(&old_keys, (4, 2));
-        let mut scores = Scores::default();
-        let mut work = Work::default();
-        let mut lengths = Lengths::default();
-        scores
-            .score(
-                planned(&old, 4, 2),
-                &old_keys,
-                |_| 2,
-                context,
-                Some(old_list),
-            )
-            .unwrap()
-            .commit(&mut scores, &mut work, &mut lengths, 0);
-        let before = scores.replay(old_list, old.len()).unwrap().values;
-        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
-        let keys: Vec<_> = rows
-            .iter()
-            .map(|(id, _)| pair_key("replacement", &id.to_string()))
-            .collect();
-        let mut forwards = 0;
-        let failed = scores.score(
-            planned(&rows, 4, 2),
-            &keys,
-            |_| 2,
-            |batch| {
-                forwards += 1;
-                if forwards == 2 {
-                    return Err(IndexError::Engine("replacement second batch failed".into()));
-                }
-                context(batch)
-            },
-            Some(ListKey::of(&keys, (4, 2))),
-        );
-        assert!(failed.is_err());
-        assert_eq!(forwards, 2);
-        assert_eq!(scores.replay(old_list, old.len()).unwrap().values, before);
-        assert_eq!(
-            (
-                scores.hits,
-                scores.misses,
-                scores.remembered,
-                work.pairs,
-                lengths.total
-            ),
-            (0, 2, 2, 2, 4)
-        );
-    }
-
-    #[test]
-    fn calibration_uses_short_fast_and_mixed_accurate_workloads() {
-        let long = "long document ".repeat(512);
-        let fast = super::calibration_pairs(super::Rerank::Fast, &long);
-        let accurate = super::calibration_pairs(super::Rerank::Accurate, &long);
-        assert_eq!(fast, super::ORDER_PAIRS);
-        assert_eq!(accurate.len(), 32);
-        assert_eq!(&accurate[..4], &super::ORDER_PAIRS);
-        assert_eq!(
-            accurate
-                .iter()
-                .filter(|(_, text)| *text == long.as_str())
-                .count(),
-            16
-        );
-    }
 
     #[test]
     fn accelerator_startup_checks_ordering_without_rejecting_score_drift() {
