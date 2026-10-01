@@ -137,6 +137,7 @@ inventory_scope = provenance['source_inventory_scope']
 assert inventory_scope['original_captured_entries_per_arm'] == 52
 assert inventory_scope['original_status'] == 'partial: migration SQL omitted'
 assert inventory_scope['original_sql_build_attestation'] == 'N/A: not captured'
+assert inventory_scope.get('future_requirement') == 'Capture all compiler inputs, including include_str! migration SQL, before and after any future compilation; prepared-source-hashes.json already inventories copied SQL sources.', 'future source-capture requirement differs'
 assert inventory_scope['retrospective_sql_audit'] == 'retrospective-sql-audit.json'
 audit = load('retrospective-sql-audit.json')
 assert audit.get('scope') == 'Retrospective read-only inspection of preserved original binaries and frozen SQL sources; no historical rebuild or runtime execution. This is not a build-time source attestation.', 'retrospective SQL audit scope differs'
@@ -388,6 +389,15 @@ assert '--test scratch_scored_fixture --test scratch_scored_multihop' in readme,
 start = readme.index('| Controlled case |')
 stop = readme.index('\n\n', start)
 assert readme[start:stop].splitlines() == ['| Controlled case | Disabled arm | Scored arm | Explicit oracle | Absolute score change | Score change |','| --- | ---: | ---: | ---: | ---: | ---: |'] + lines, 'displayed score table differs from raw evidence'
+resource_start=readme.index('| Metric | Disabled arm | Scored arm | Difference | Change |')
+resource_stop=readme.index('\n\n',resource_start)
+assert readme[resource_start:resource_stop].splitlines()==[
+ '| Metric | Disabled arm | Scored arm | Difference | Change |',
+ '| --- | ---: | ---: | ---: | ---: |',
+ '| General retrieval accuracy | N/A | N/A | N/A | N/A |',
+ '| Product search latency p50/p95 | N/A | N/A | N/A | N/A |',
+ '| Graph-attributed memory | N/A | N/A | N/A | N/A |',
+ '| Graph-attributed disk | N/A | N/A | N/A | N/A |'], 'unmeasured resource table must remain N/A'
 for p in ROOT.rglob('*'):
  if not p.is_file() or p.name in {'verify.py','test_verify.py'}:continue
  data=p.read_text()
