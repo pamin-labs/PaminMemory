@@ -8,14 +8,16 @@ ROOT=Path(__file__).resolve().parent
 
 def close(a,b):return math.isclose(a,b,rel_tol=0,abs_tol=1e-6)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-def score(hit):
- evidence=[w for w in hit['why'] if w.get('kind')=='channel' and w['channel']=='graph']
- assert len(evidence)==1, 'reached target must have exactly one graph-channel record'
- return evidence[0]['score']
-def path(hit):
- evidence=[w for w in hit['why'] if w.get('kind')=='path']
- assert len(evidence)==1, 'reached target must have exactly one path record'
- return evidence[0]
+def graph_only_evidence(hit):
+ why=hit['why']
+ graph=[w for w in why if w.get('kind')=='channel' and w.get('channel')=='graph']
+ assert len(graph)==1, 'reached target must have exactly one graph-channel record'
+ paths=[w for w in why if w.get('kind')=='path']
+ assert len(paths)==1, 'reached target must have exactly one path record'
+ assert len(why)==2, 'graph-only target complete Why must contain only graph and path records'
+ return graph[0],paths[0]
+def score(hit):return graph_only_evidence(hit)[0]['score']
+def path(hit):return graph_only_evidence(hit)[1]
 def fixture_content(topic):
  # Exact content formula in the hash-pinned measured fixture, indexed by origin.
  if topic=='quartzanchor':return 'orbital navigation calibration beacon'

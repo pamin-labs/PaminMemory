@@ -65,10 +65,33 @@ def reject_optimized_prepare(label, flags=(), optimize_env=None):
         print(f'PASS: rejected prepare {label} before writes')
 
 
+def round7_graph_only_cases():
+    for arm in ['baseline', 'scored']:
+        for index in range(4 if arm == 'scored' else 3):
+            for channel in ['vector', 'lexical_segmented', 'lexical_ngram']:
+                def extra_channel(root, arm=arm, index=index, channel=channel):
+                    def change(row):
+                        why = row['targets'][index]['why'] if index < 3 else row['early_stop']['why']
+                        why.append({'kind': 'channel', 'channel': channel, 'rank': 1, 'score': 1.0})
+                    mutate_json(root / (arm + '.jsonl'), change)
+                run_case('extra non-graph Why ' + arm + '/' + str(index) + '/' + channel,
+                         extra_channel, expected_error='complete Why must contain only graph and path records')
+            def extra_kind(root, arm=arm, index=index):
+                def change(row):
+                    why = row['targets'][index]['why'] if index < 3 else row['early_stop']['why']
+                    why.append({'kind': 'unrelated', 'value': 1})
+                mutate_json(root / (arm + '.jsonl'), change)
+            run_case('extra other Why kind ' + arm + '/' + str(index), extra_kind,
+                     expected_error='complete Why must contain only graph and path records')
+
+
 if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    round7_graph_only_cases()
+    if '--round7-graph-only' in sys.argv:
+        raise SystemExit(0)
     run_case('non-patch traversal replacement with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text('not a patch\n'),expected_error='recorded traversal patch differs')
     run_case('changed traversal patch with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text((r/'source/experimental-traversal.patch').read_text()+'\n# changed\n'),expected_error='recorded traversal patch differs')
     for arm in ['baseline','scored']:
