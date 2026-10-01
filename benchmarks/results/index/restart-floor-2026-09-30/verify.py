@@ -38,7 +38,9 @@ for arm in ['main','predecessor','candidate']:
                 continue
             assert row['wall_ms'] is None if row['phase']=='closed_index' else math.isfinite(row['wall_ms']) and row['wall_ms']>=0, 'HNSW invalid phase clock'
             for snapshot in [row['process_before'],row['process_after']]:
-                if snapshot is not None:assert all(isinstance(snapshot[k],int) and snapshot[k]>=0 for k in ['user_ticks','system_ticks']), 'HNSW negative process counters'
+                if snapshot is not None:
+                    assert all(type(snapshot[k]) is int and snapshot[k]>=0 for k in ['user_ticks','system_ticks']), 'HNSW negative process counters'
+                    review.memory_status(snapshot)
             for k in ['cpu_user_seconds','cpu_system_seconds']:
                 assert row[k] is None or math.isfinite(row[k]) and row[k]>=0, 'HNSW negative CPU delta'
             assert row['index']=='memory' and row['clock_ticks_per_second']==100, 'HNSW measurement configuration differs'

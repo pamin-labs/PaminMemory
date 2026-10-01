@@ -3,6 +3,21 @@ import re
 import hashlib,json,statistics
 from pathlib import PurePosixPath
 
+def memory_status(snapshot):
+    """Require the complete /proc status observations before any RSS arithmetic."""
+    status=snapshot.get('rss_status')
+    assert isinstance(status,list) and len(status)==2, 'RSS/HWM observations must be complete and unique'
+    values={}
+    for line in status:
+        assert isinstance(line,str), 'RSS/HWM observation must be text'
+        match=re.fullmatch(r'(VmRSS|VmHWM):\s+([0-9]+) kB',line)
+        assert match is not None, 'RSS/HWM observation must be well-formed and nonnegative'
+        key,value=match.groups()
+        assert key not in values, 'RSS/HWM observations must be complete and unique'
+        values[key]=int(value)
+    assert set(values)=={'VmRSS','VmHWM'}, 'RSS/HWM observations must be complete and unique'
+    assert values['VmHWM']>=values['VmRSS'], 'RSS exceeds process high-water mark'
+
 def binary_binding(binaries,provenance,expected_commits):
     assert len(binaries)==len(expected_commits), 'incomplete binary arm inventory'
     assert len({b['arm'] for b in binaries})==len(binaries), 'duplicate binary arm'

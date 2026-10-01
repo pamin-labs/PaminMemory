@@ -38,8 +38,8 @@
     "benchmarks/results/index/restart-floor-2026-09-30/test_product_premises.py": "c5788af4f04760a8381faea11917f725067bb839a4158c1083b68f1120346868",
     "benchmarks/results/index/restart-floor-2026-09-30/test_query_schedule.py": "78da849621259f5968b09ea443ab921b68504b68fb80bd0c9cafeebd86f09d32",
     "benchmarks/results/index/restart-floor-2026-09-30/timing-review.json": "a28b005cddaafa76fbc3e3c7d327e557c78214520c7e1ae2acde42235970509a",
-    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "ce8a8413177e2cc5e0f600d86b27e4a71a1b17d6d199b51576b5296b6a2c4655",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "94532bddbf176827424e33a87ad70fc36bdbaaa7199a9e20824b68aed9837b06",
+    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "4778f1124f0d0bd00febb9ab8039ea5614233522680dcca68d53fc93f03c7739",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "917abec7bf7ea3ace448a8f51c0b7d21df1838697f5abca0501145439cb779ea",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/post-review-seed.json": "b174ca378307a5e8882de3eee0e7a51a317e6eb2adc80364d8ca3b669855ccde",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/README.md": "87945fda639ae03604bbf3e6d3ba7f705f29912be37ad88e56a4cc152af53110",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/audit.json.gz": "c57821376d0a0f69df48903985ece1b4402e6d43a434d3c7848f7ba1372fd8c8",
@@ -59,6 +59,7 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/predecessor-build.jsonl.gz": "b14d701c471010b3d5638ae5c66544ccc7f12ea490835c97bbc7ee1aad6d3078",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/predecessor-build.log.gz": "eacf230c0717277a297f8db56e6e4d2a648bb46e645684474872bccd0220c26e",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/predecessor-clean.log.gz": "1441e50551d340ae2add3681d697a2314364bf4340f7398a180728f999b5dbf2",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py": "9a40ad945179d3c16e96e44e295541d34d527b66ecc65ad98ceedce8112f6d26"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py": "9a40ad945179d3c16e96e44e295541d34d527b66ecc65ad98ceedce8112f6d26",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_memory_status.py": "005d7585a6c9abbdf4e80f2833bfafab15c65b9e1464eaf513ce8c36de66df6c"
   }
 }
