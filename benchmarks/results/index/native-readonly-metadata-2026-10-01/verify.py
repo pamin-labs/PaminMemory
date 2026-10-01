@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify published metadata only; never opens an SDK, database or payload file."""
 import datetime
+from functools import lru_cache
 import hashlib
 import json
 import re
@@ -43,18 +44,41 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def crc32c(data):
-    # Raw Castagnoli recurrence, seed zero; offline metadata, no timing claim.
+def _crc32c_lookup():
     table = []
     for value in range(256):
         for _ in range(8):
             value = (value >> 1) ^ (0x82f63b78 if value & 1 else 0)
         table.append(value)
+    return tuple(table)
+
+
+_CRC32C_TABLE = _crc32c_lookup()
+_MAX_CACHED_CRC_BYTES = 2**21
+
+
+def _crc32c_scalar(data):
+    # Raw Castagnoli recurrence, seed zero; not zlib's IEEE CRC32.
     crc = 0
     for byte in data:
-        crc = table[(crc ^ byte) & 255] ^ (crc >> 8)
+        crc = _CRC32C_TABLE[(crc ^ byte) & 255] ^ (crc >> 8)
     return crc
 
+
+@lru_cache(maxsize=2)
+def _crc32c_cached(data):
+    return _crc32c_scalar(data)
+
+
+def crc32c(data):
+    # No optimized CRC32C dependency is required for this offline verifier.
+    # Immutable content keys compare every byte, not only a digest/CRC identity.
+    # Cache at most two <=2 MiB inputs (4 MiB payload bound plus object overhead).
+    # Headers/footers and oversized inputs are not retained. Each new table
+    # content uses the scalar fallback once; unchanged tables avoid rescanning.
+    if 256 < len(data) <= _MAX_CACHED_CRC_BYTES:
+        return _crc32c_cached(bytes(data))
+    return _crc32c_scalar(data)
 
 
 def decode(excerpt, file_size, expected_magic):
