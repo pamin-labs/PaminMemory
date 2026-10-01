@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only checks of retained synthetic component evidence; no runtime loading."""
-import hashlib,json,math,re,sys,struct
+import hashlib,json,math,re,sys,struct,uuid
 if sys.flags.optimize:
  raise SystemExit("FAIL: Python optimization disables assertions; run without -O/-OO")
 from pathlib import Path
@@ -241,6 +241,10 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  channels = {'lexical_segmented','lexical_ngram','vector'}
  fixture_topics = {'quartzanchor'} | {f'islandnode{n:04d}' for n in range(240)}
  for hit in row['non_graph']:
+  assert type(hit.get('id')) is str, 'non-graph identifier must be a canonical UUID'
+  try: parsed_id=uuid.UUID(hit['id'])
+  except ValueError: raise AssertionError('non-graph identifier must be a canonical UUID') from None
+  assert str(parsed_id)==hit['id'], 'non-graph identifier must be a canonical UUID'
   assert hit['topic'] in fixture_topics, 'non-graph topic outside fixture inventory'
   assert hit['ranks'] and all(rank.get('channel') in channels for rank in hit['ranks']), 'non-graph row needs allowed channel evidence'
   for rank in hit['ranks']:
@@ -270,6 +274,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row['early_stop']['via']==bridge and row['early_stop']['target']==hidden[6]
  f32=lambda value:struct.unpack('f',struct.pack('f',value))[0]
  topology = [(row['weak'],shared,1),(row['strong'],shared,.8),(row['strong'],longer,.1),(row['strong'],bridge,.01),(bridge,longer,1),(row['strong'],low,.8),(row['strong'],high,.7),(low,samehop,.1),(high,samehop,1)]
+ assert all(type(e.get('confidence')) in {int,float} and math.isfinite(e['confidence']) for e in row['known_edges']), 'controlled edge confidence must be finite non-boolean'
  assert sorted((e['from'],e['to'],e['confidence']) for e in row['known_edges']) == sorted((a,b,f32(c)) for a,b,c in topology), 'controlled endpoint/confidence topology differs'
 
  log = (ROOT/f'{arm}.log').read_text()
@@ -305,6 +310,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  for metric in ['wall_seconds','user_seconds','system_seconds','maximum_process_rss_kib']:
   value=usage[metric]
   assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid duration/RSS: '+metric
+ assert type(usage['exit_status']) is int and usage['exit_status']==0, 'process exit status must be integer zero'
  assert usage['maximum_process_rss_kib']==row['process_lifetime_high_water_kib'], 'raw and process usage RSS differ'
  assert usage['scope']=='Linux wait4 of native test process; setup included, independent services excluded'
 
