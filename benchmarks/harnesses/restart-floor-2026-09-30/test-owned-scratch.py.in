@@ -1,0 +1,30 @@
+"""Pure fake-byte/ownership mocks; no product, compiler or native process."""
+import hashlib,json,os,runpy,sys,tempfile,unittest
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+ROOT=Path(__file__).resolve().parent
+build=runpy.run_path(str(ROOT/'build-guarded.py.in'))
+class Guards(unittest.TestCase):
+ def test_owned_target_finally_and_existing_refusal(self):
+   with tempfile.TemporaryDirectory() as directory:
+    root=Path(directory);harness=root/'harness';harness.write_bytes(b'fake source')
+    for failure in [False,True]:
+     try:
+      with build['owned_scratch'](root,'target',harness) as target:
+       self.assertEqual(target.read_bytes(),harness.read_bytes())
+       if failure:raise RuntimeError('mock compilation failure')
+     except RuntimeError:pass
+     self.assertFalse((root/'target').exists())
+    (root/'target').write_bytes(b'existing user file')
+    with self.assertRaises(FileExistsError):
+     with build['owned_scratch'](root,'target',harness):self.fail('existing target accepted')
+    self.assertEqual((root/'target').read_bytes(),b'existing user file')
+ def test_owned_target_preserves_replacement(self):
+   with tempfile.TemporaryDirectory() as directory:
+    root=Path(directory);harness=root/'harness';harness.write_bytes(b'fake source')
+    with self.assertRaisesRegex(AssertionError,'preserve replacement'):
+     with build['owned_scratch'](root,'target',harness) as target:
+      target.rename(root/'original');target.write_bytes(b'replacement user file')
+    self.assertEqual((root/'target').read_bytes(),b'replacement user file')
+if __name__=='__main__':unittest.main()
