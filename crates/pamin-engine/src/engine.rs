@@ -49,6 +49,13 @@ impl Default for Depths {
     }
 }
 
+/// Settings the graph channel shares with the fusion that will rank it.
+#[derive(Clone, Copy)]
+struct GraphRecallOptions {
+    depths: Depths,
+    k: f32,
+}
+
 /// How much weight a derived mention carries against an asserted edge.
 ///
 /// A rule matching a name is weaker evidence than somebody saying two things
@@ -1675,7 +1682,10 @@ impl Engine {
                 &candidates,
                 &lists,
                 &mut working,
-                depths,
+                GraphRecallOptions {
+                    depths,
+                    k: fusion.k(),
+                },
             )
             .await?;
 
@@ -1751,7 +1761,7 @@ impl Engine {
         ranked: &[TopicId],
         lists: &[ChannelResults],
         working: &mut WorkingSet,
-        depths: Depths,
+        options: GraphRecallOptions,
     ) -> Result<(ChannelResults, std::collections::HashMap<TopicId, Neighbor>)> {
         // Topics the query names directly. Without these, a question about a
         // topic whose own content happens not to match lexically never walks
@@ -1762,7 +1772,7 @@ impl Engine {
         let widest = self.widest_name().await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
         let named = repository::topics_named_by(&mut *connection, self.project, &runs).await?;
-        let relevance = seed_relevance(&named, lists);
+        let relevance = seed_relevance(&named, lists, options.k);
 
         // A named topic no channel returned is not in the working set, and the
         // filter below keeps only topics that are -- which is what it is for
@@ -1826,8 +1836,8 @@ impl Engine {
         // second bound is checked rather than trusted -- the walk says what it
         // left unread, `strongest` says whether any of that could have ranked
         // here, and when it could the walk is made again reading everything.
-        let keep = depths.channel as usize;
-        let expansion = Expansion::to_depth(depths.graph).keeping(keep);
+        let keep = options.depths.channel as usize;
+        let expansion = Expansion::to_depth(options.depths.graph).keeping(keep);
         let neighbors = match graph::expand_reading(
             &mut *connection,
             self.project,
@@ -2266,12 +2276,13 @@ fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
 fn seed_relevance(
     named: &[TopicId],
     lists: &[ChannelResults],
+    k: f32,
 ) -> std::collections::HashMap<TopicId, f32> {
     let mut relevance = std::collections::HashMap::new();
     for list in lists {
         for (index, candidate) in list.candidates.iter().enumerate() {
             let rank = index as f32 + 1.0;
-            let worth = (pamin_core::DEFAULT_K + 1.0) / (pamin_core::DEFAULT_K + rank);
+            let worth = (k + 1.0) / (k + rank);
             relevance
                 .entry(candidate.topic)
                 .and_modify(|held: &mut f32| *held = held.max(worth))
@@ -2647,7 +2658,7 @@ mod tests {
             list(Channel::Vector, &[11, 1]),
         ];
 
-        let relevance = seed_relevance(&[id(99)], &lists);
+        let relevance = seed_relevance(&[id(99)], &lists, pamin_core::DEFAULT_K);
         assert_eq!(relevance[&id(1)], 1.0, "first in a channel");
         let eleventh = (pamin_core::DEFAULT_K + 1.0) / (pamin_core::DEFAULT_K + 11.0);
         assert!((relevance[&id(2)] - 11.0 / 12.0).abs() < 1e-6, "second");
@@ -2662,6 +2673,10 @@ mod tests {
         );
         assert_eq!(relevance[&id(99)], 1.0, "named by the query");
         assert!(!relevance.contains_key(&id(50)), "not a seed at all");
+
+        let sharper = seed_relevance(&[id(99)], &lists, 5.0);
+        assert!((sharper[&id(2)] - 6.0 / 7.0).abs() < 1e-6);
+        assert!(sharper[&id(2)] < relevance[&id(2)]);
     }
 
     /// A model in use is not idle, however long ago it was handed out.
