@@ -566,24 +566,37 @@ pub(crate) fn retry_model<T, R>(
     mut reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<R> {
     let mut failed_devices = Vec::new();
+    let mut replacement = None;
     loop {
-        match operation(model, *device) {
-            Ok(result) => return Ok(result),
-            Err(error) if *device == Device::Cpu => return Err(error),
+        let (active, selected) = match &mut replacement {
+            Some((active, selected)) => (active, *selected),
+            None => (&mut *model, *device),
+        };
+        match operation(active, selected) {
+            Ok(result) => {
+                // Publish only a complete successful operation. A later reload
+                // error cannot expose a partially advanced model/backend pair.
+                if let Some((active, selected)) = replacement {
+                    *model = active;
+                    *device = selected;
+                }
+                return Ok(result);
+            }
+            Err(error) if selected == Device::Cpu => return Err(error),
             Err(error) => {
-                tracing::warn!(device=device.name(), %error, "accelerator execution failed; qualifying remaining plans");
-                let failed = *device;
-                if failed_devices.contains(&failed) {
+                tracing::warn!(device=selected.name(), %error, "accelerator execution failed; qualifying remaining plans");
+                if failed_devices.contains(&selected) {
                     return Err(error);
                 }
-                failed_devices.push(failed);
-                quarantine_runtime(cache_dir, failed);
-                let (replacement, selected) = reload()?;
+                failed_devices.push(selected);
+                quarantine_runtime(cache_dir, selected);
+                // Drop the failed replacement before another expensive load.
+                replacement = None;
+                let (active, selected) = reload()?;
                 if failed_devices.contains(&selected) {
                     return Err(error.context("recovery selected the failing provider"));
                 }
-                *model = replacement;
-                *device = selected;
+                replacement = Some((active, selected));
             }
         }
     }
@@ -1437,6 +1450,35 @@ mod tests {
         .unwrap();
         assert_eq!(attempts, [Device::Npu, Device::Cuda, Device::Cpu]);
         assert_eq!(result, [1.0, 2.0]);
+        assert_eq!(device, Device::Cpu);
+    }
+
+    #[test]
+    fn failed_recovery_does_not_publish_an_intermediate_backend() {
+        let root = tempfile::tempdir().unwrap();
+        let mut model = Device::Npu;
+        let mut device = Device::Npu;
+        let mut loads = 0;
+        let result: Result<()> = retry_model(
+            &mut model, &mut device, root.path(),
+            |_, _| Err(IndexError::Engine("execution fault".into())),
+            || {
+                loads += 1;
+                if loads == 1 { Ok((Device::Cuda, Device::Cuda)) }
+                else { Err(IndexError::Engine("CPU load failed".into())) }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(model, Device::Npu);
+        assert_eq!(device, Device::Npu);
+        // Old cached NPU logits still match the only observable backend.
+        let next = retry_model(
+            &mut model, &mut device, root.path(),
+            |_, selected| if selected == Device::Cpu { Ok(7) }
+                else { Err(IndexError::Engine("execution fault".into())) },
+            || Ok((Device::Cpu, Device::Cpu)),
+        ).unwrap();
+        assert_eq!(next, 7);
         assert_eq!(device, Device::Cpu);
     }
 
