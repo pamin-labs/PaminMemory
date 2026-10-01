@@ -73,22 +73,7 @@ git cat-file -t 0f023be6a8d8d070a971f7e590ccccff2c3292bb
 
 ## Executable scratch reproduction
 
-The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/eff4c8c55e69c341f00517046aa9e0d6e3aba751) remain outside the tracked tree, with SHA-256 in `persisted-cost-identity.json`. A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. This command aborts rather than timing an empty corpus. In a separate checkout of the retained `bench/persisted-cost-2026-10-01` tag:
-
-```sh
-# Use a fresh shell for this block so cleanup also runs on failure/interruption.
-set -eu
-test "$(git rev-parse HEAD)" = 0f023be6a8d8d070a971f7e590ccccff2c3292bb
-scratch=crates/pamin-engine/tests/scratch_matched_costs.rs
-rm -f "$scratch"
-trap 'rm -f "$scratch"' EXIT HUP INT TERM
-curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs -o "$scratch"
-shasum -a 256 crates/pamin-engine/tests/scratch_matched_costs.rs
-# Expected: 2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad
-# Run one arm at a time, builds/other experiments stopped; rotate arms and use fresh processes.
-env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE=accuracy MATCHED_COST_ROWS=/private/tmp/reproduced-cost.jsonl cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
-rm crates/pamin-engine/tests/scratch_matched_costs.rs
-```
+The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/eff4c8c55e69c341f00517046aa9e0d6e3aba751) remain outside the tracked tree, with SHA-256 in `persisted-cost-identity.json`. A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. The complete guarded recipe below builds all three revisions and aborts rather than timing an empty corpus. It retains separate source/executable identities and uses the provisioned workspace described above.
 
 The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; load events additionally retain only whitelisted public model identities, accurate tier and maximum_tokens=256. Paths, arbitrary free text and content are excluded. Main’s historical log lacks embedder-load events: its BGE identity comes from frozen source/model fingerprints, not an invented load event. Single-model logs identify the repository, not independently the loaded revision; dual logs do include both pinned revisions. Original source hashes are retained; original logs stay local.
 
@@ -108,13 +93,7 @@ Use a separate checkout of each listed revision. Download `pamin-main-cost-harne
 | new-auto | 503bd9e | reconstructed 503 | accuracy | auto (unset PAMIN_DEVICE) |
 | new-auto-persist-hit | 0f023be | persisted | accuracy | auto (unset PAMIN_DEVICE), established nonexpired persisted plan |
 
-For every row, use its checkout/profile/policy and run three fresh processes, rotating arm order. Common command (auto):
-
-```sh
-env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE=accuracy MATCHED_COST_ROWS=/private/tmp/cost-arm-block.jsonl cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
-```
-
-For CPU rows add `PAMIN_DEVICE=cpu` after the `env -u` options. For `dual-cpu` set `PAMIN_PROFILE=dual_accuracy` as well. Build first, freeze/copy the executable, and invoke the retained process-worker with `case-name frozen-executable profile policy` for process resource columns. The cache-hit arm must have zero calibration/rejection events; one setup process may establish the plan but is not a measured hit block. Do not label expired quarantine or cold CoreML compilation as a controlled hit.
+Use the guarded three-build and seven-arm controller below. Each source checkout/profile/policy comes from this matrix; each process writes a distinct arm/block path. Establish the persisted plan with one unmeasured setup process before the measured hit blocks.
 
 ### Whole-process resource reproduction
 
@@ -125,7 +104,8 @@ curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed92
 python3 - /private/tmp/pamin-cost-worker.py <<'PYWORKER'
 import hashlib, sys
 from pathlib import Path
-assert hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == "677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c"
+if not hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == '677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c':
+    raise RuntimeError('reproduction integrity check failed')
 PYWORKER
 python3 -m py_compile /private/tmp/pamin-cost-worker.py
 ```
@@ -150,7 +130,8 @@ build_cost_binary() (
   python3 - "$scratch" "$4" <<'PYSHA'
 import hashlib, sys
 from pathlib import Path
-assert hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == sys.argv[2]
+if not hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == sys.argv[2]:
+    raise RuntimeError('reproduction integrity check failed')
 PYSHA
   export CARGO_TARGET_DIR=/private/tmp/pamin-cost-reproduction-target
   cargo test -p pamin-engine --test scratch_matched_costs --no-run --message-format=json > /private/tmp/cost-build.jsonl
@@ -158,22 +139,53 @@ PYSHA
 import hashlib, json, shutil, sys
 from pathlib import Path
 rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
-executables = [r["executable"] for r in rows if r.get("reason") == "compiler-artifact" and r.get("target", {}).get("name") == "scratch_matched_costs" and r.get("executable")]
-assert len(executables) == 1
-paths = [p.removeprefix("native=") for r in rows if r.get("reason") == "build-script-executed" and "zvec-rust-sys" in r.get("package_id", "") for p in r.get("linked_paths", []) if p.startswith("native=")]
-libraries = [Path(p) / "libzvec_c_api.dylib" for p in paths if (Path(p) / "libzvec_c_api.dylib").is_file()]
-assert libraries, "no resolved macOS zvec library in Cargo build-script output"
+executables = [r['executable'] for r in rows if r.get('reason') == 'compiler-artifact' and r.get('target', {}).get('name') == 'scratch_matched_costs' and r.get('executable')]
+if not len(executables) == 1:
+    raise RuntimeError('reproduction integrity check failed')
+paths = [p.removeprefix('native=') for r in rows if r.get('reason') == 'build-script-executed' and 'zvec-rust-sys' in r.get('package_id', '') for p in r.get('linked_paths', []) if p.startswith('native=')]
+libraries = [Path(p) / 'libzvec_c_api.dylib' for p in paths if (Path(p) / 'libzvec_c_api.dylib').is_file()]
+if not libraries:
+    raise RuntimeError('no resolved macOS zvec library in Cargo build-script output')
 hashes = {hashlib.sha256(p.read_bytes()).hexdigest() for p in libraries}
-assert len(hashes) == 1, "ambiguous zvec linked-library identity"
-source = libraries[0]; sha = next(iter(hashes))
-runtime = Path(sys.argv[3]); runtime.mkdir(parents=True, exist_ok=True)
+if not len(hashes) == 1:
+    raise RuntimeError('ambiguous zvec linked-library identity')
+source = libraries[0]
+sha = next(iter(hashes))
+import subprocess
+ort_paths = [p.removeprefix('native=') for r in rows if r.get('reason') == 'build-script-executed' and 'ort-sys' in r.get('package_id', '') for p in r.get('linked_paths', []) if p.startswith('native=')]
+needed = []
+for line in subprocess.check_output(['otool', '-L', executables[0]], text=True).splitlines()[1:]:
+    dependency = line.strip().split(' (', 1)[0]
+    if 'onnxruntime' not in dependency:
+        continue
+    absolute = Path(dependency)
+    candidates = [absolute] if absolute.is_absolute() and absolute.is_file() else [Path(directory) / absolute.name for directory in ort_paths if (Path(directory) / absolute.name).is_file()]
+    if not candidates:
+        raise RuntimeError('dynamic ONNX Runtime dependency not resolved by Cargo')
+    if len({hashlib.sha256(path.read_bytes()).hexdigest() for path in candidates}) != 1:
+        raise RuntimeError('ambiguous ONNX Runtime dependency')
+    needed.append(candidates[0])
+for directory in {path.parent for path in needed}:
+    needed.extend((path for path in directory.glob('libonnxruntime*.dylib') if path.is_file()))
+runtime = Path(sys.argv[3])
+runtime.mkdir(parents=True, exist_ok=True)
 loaded = runtime / source.name
 if loaded.exists():
-    assert hashlib.sha256(loaded.read_bytes()).hexdigest() == sha, "runtime directory contains a different zvec library"
+    if not hashlib.sha256(loaded.read_bytes()).hexdigest() == sha:
+        raise RuntimeError('runtime directory contains a different zvec library')
 else:
     shutil.copy2(source, loaded)
 shutil.copy2(executables[0], sys.argv[2])
-Path(sys.argv[2] + ".zvec.json").write_text(json.dumps({"sha256": sha, "resolved_source": str(source), "runtime_path": str(loaded)}, indent=2))
+receipt = {'sha256': sha, 'resolved_source': str(source), 'runtime_path': str(loaded), 'onnxruntime': []}
+for library in dict.fromkeys(needed):
+    digest = hashlib.sha256(library.read_bytes()).hexdigest()
+    destination = runtime / library.name
+    if destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        raise RuntimeError('runtime directory contains a different ONNX Runtime/provider library')
+    if not destination.exists():
+        shutil.copy2(library, destination)
+    receipt['onnxruntime'].append({'sha256': digest, 'runtime_path': str(destination), 'resolved_source': str(library)})
+Path(sys.argv[2] + '.zvec.json').write_text(json.dumps(receipt, indent=2))
 PYBUILD
 )
 build_cost_binary /private/tmp/pamin-cost-src-main 315c10242ddf7a1cec3bccbf550a942320e09557 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/b1054c02a237de3f8ecb8e7252fbc562526d6311/pamin-main-cost-harness.rs 253a1546bba55ff9bb3733c60a790d489565729b37edd259b8a6e6b8cfd373cc /private/tmp/pamin-cost-frozen-main
@@ -185,34 +197,31 @@ With all builds stopped, these are the seven per-arm invocations; each runs thre
 
 ```sh
 python3 - <<'PYRUN'
-import hashlib, json, os, subprocess, sys
+import hashlib, json, os, re, subprocess, sys
 from pathlib import Path
-arms = [
-    ("main-cpu", "main", "accuracy", "cpu"),
-    ("main-auto", "main", "accuracy", "auto"),
-    ("main-auto-repeat", "main", "accuracy", "auto"),
-    ("new-cpu", "prototype", "accuracy", "cpu"),
-    ("dual-cpu", "prototype", "dual_accuracy", "cpu"),
-    ("new-auto", "prototype", "accuracy", "auto"),
-    ("new-auto-persist-hit", "persisted", "accuracy", "auto"),
-]
+arms = [('main-cpu', 'main', 'accuracy', 'cpu'), ('main-auto', 'main', 'accuracy', 'auto'), ('main-auto-repeat', 'main', 'accuracy', 'auto'), ('new-cpu', 'prototype', 'accuracy', 'cpu'), ('dual-cpu', 'prototype', 'dual_accuracy', 'cpu'), ('new-auto', 'prototype', 'accuracy', 'auto'), ('new-auto-persist-hit', 'persisted', 'accuracy', 'auto')]
 env = os.environ.copy()
-for key in ("PAMIN_SEARCH_EFFORT", "PAMIN_PREPARED", "PAMIN_FUSED_ATTENTION"):
+for key in ('PAMIN_SEARCH_EFFORT', 'PAMIN_PREPARED', 'PAMIN_FUSED_ATTENTION', 'PYTHONOPTIMIZE', 'ORT_DYLIB_PATH'):
     env.pop(key, None)
-# The retained worker clears HF_HOME/device and all five reranker/thread overrides.
 for block in range(3):
     offset = 2 * block
     for arm, binary, profile, policy in arms[offset:] + arms[:offset]:
-        receipt = json.loads(Path(f"/private/tmp/pamin-cost-frozen-{binary}.zvec.json").read_text())
-        assert hashlib.sha256(Path(receipt["runtime_path"]).read_bytes()).hexdigest() == receipt["sha256"]
-        subprocess.run([
-            sys.executable, "/private/tmp/pamin-cost-worker.py", f"reproduced-{arm}-{block}",
-            f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy,
-        ], env=env, check=True)
-        if arm == "new-auto-persist-hit":
-            log = Path(f"/private/tmp/pamin-cost-reproduced-{arm}-{block}.log").read_text()
-            forbidden = ("complete model-call calibration", "compute candidate", "calibrated winner failed", "cached compute plan failed")
-            assert not any(marker in log for marker in forbidden), "persisted-hit arm recalibrated/rejected; discard its outputs"
+        receipt = json.loads(Path(f'/private/tmp/pamin-cost-frozen-{binary}.zvec.json').read_text())
+        if not hashlib.sha256(Path(receipt['runtime_path']).read_bytes()).hexdigest() == receipt['sha256']:
+            raise RuntimeError('reproduction integrity check failed')
+        for library in receipt['onnxruntime']:
+            if hashlib.sha256(Path(library['runtime_path']).read_bytes()).hexdigest() != library['sha256']:
+                raise RuntimeError('ONNX Runtime/provider bytes changed after build')
+        subprocess.run([sys.executable, '/private/tmp/pamin-cost-worker.py', f'reproduced-{arm}-{block}', f'/private/tmp/pamin-cost-frozen-{binary}', profile, policy], env=env, check=True)
+        if arm == 'new-auto-persist-hit':
+            log = Path(f'/private/tmp/pamin-cost-reproduced-{arm}-{block}.log').read_text()
+            forbidden = ('complete model-call calibration', 'compute candidate', 'calibrated winner failed', 'cached compute plan failed')
+            if any((marker in log for marker in forbidden)):
+                raise RuntimeError('persisted-hit arm recalibrated/rejected; discard its outputs')
+            rerankers = re.findall('reranker loaded tier="([^"\\n]+)" device="([^"\\n]+)" maximum_tokens=(\\d+)', log)
+            embedders = re.findall('embedder loaded model="([^"\\n]+)" device="([^"\\n]+)"', log)
+            if rerankers != [('accurate', 'coreml', '256')] or embedders != [('gpahal/bge-m3-onnx-int8', 'cpu')]:
+                raise RuntimeError('persisted-hit model/device premise differs from retained arm')
 PYRUN
 ```
 
@@ -221,3 +230,5 @@ Each invocation writes `/private/tmp/pamin-cost-reproduced-ARM-BLOCK.jsonl` (war
 Reproduction outputs use a `reproduced-` prefix to avoid replacing the original local cost logs/rows. The source checkouts and shared reproduction target can be removed after retaining the new outputs and frozen executable hashes; historical public rows stay unchanged.
 
 Each frozen executable has a `.zvec.json` receipt from Cargo’s actual `zvec-rust-sys` native link paths, including override/sibling/vendor selections. The worker loop verifies the runtime-library SHA before each process. Conflicting runtime files or differing linked copies fail closed. These receipts belong to the new reproduction, not a retroactive assertion about unrecorded historical library bytes.
+
+The single guarded recipe uses explicit Python exceptions for integrity and arm premises, so optimized Python cannot disable them. The child environment removes PYTHONOPTIMIZE and ORT_DYLIB_PATH. Dynamic ONNX Runtime/provider libraries are captured from actual linked dependencies and rehashed before each process; static ORT needs no external DLL receipt.

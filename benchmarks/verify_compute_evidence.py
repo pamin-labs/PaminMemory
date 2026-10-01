@@ -8,6 +8,9 @@ import re
 import statistics
 from pathlib import Path
 
+if not __debug__:
+    raise RuntimeError("evidence validation requires assertions; do not use optimized Python")
+
 ROOT = Path(__file__).parent / "results/compute/prototype-closeout-2026-10-01"
 
 

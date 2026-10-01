@@ -28,7 +28,8 @@ git show bench/i8-normalization-source-2026-10-01:benchmarks/results/compute/i8-
 python3 - /tmp/normalization.rs <<'PY'
 import hashlib, sys
 from pathlib import Path
-assert hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == "12e11819938fcf062382a651dd7f520de68854e38d4857aec78d404c80db4b08"
+if hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() != "12e11819938fcf062382a651dd7f520de68854e38d4857aec78d404c80db4b08":
+    raise RuntimeError("normalization source checksum differs")
 PY
 rustc --edition=2024 -O /tmp/normalization.rs -o /tmp/normalization
 rustc --edition=2024 -O --emit=asm /tmp/normalization.rs -o /tmp/normalization.s

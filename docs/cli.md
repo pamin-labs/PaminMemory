@@ -178,7 +178,7 @@ retrieval certification. With automatic dispatch, a bounded complete model-call
 query fixture compares viable plans against interleaved optimized-CPU controls.
 Maximum batch/length conformance is checked separately from singleton query
 timing, so bulk ingest throughput does not decide the search plan. Its
-validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day; numerical rejects are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration and executable hash, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
+validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day; numerical rejects are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration and mapped running-image identity, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
 plan for that fixture; it is not universal per-query autotuning. E5 accelerator
 batches are capped at eight (CPU retains 256), including maximum-token startup
 fixtures, so a 64/256-passage request is split into those bounded shapes.
