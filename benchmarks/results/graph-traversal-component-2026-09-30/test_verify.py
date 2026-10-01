@@ -217,7 +217,7 @@ def round7_native_environment_cases():
                      'LD_LIBRARY_PATH="$WRONG_LIB"']:
         def later_build(root, override=override):
             path=root/'README.md';text=path.read_text()
-            old='CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p pamin-engine'
+            old='CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo +"$TOOLCHAIN" test -p pamin-engine'
             assert text.count(old)==1
             path.write_text(text.replace(old,override+' \\\n'+old,1))
         run_case('later effective native build override '+override,later_build,
@@ -264,11 +264,22 @@ def round8_cases():
     import re, shlex
     readme=(ROOT/'README.md').read_text()
     blocks=re.findall(r'```sh\n(.*?)```',readme,re.S)
-    build=next(block for block in blocks if 'cargo test -p pamin-engine' in block)
-    rust_keys=['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']
+    build=next(block for block in blocks if 'CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0' in block)
+    for original,replacement in [('unset RUSTUP_TOOLCHAIN','unset'),('TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu','TOOLCHAIN=stable'),('cd "$ARMS/$ARM"','cd "."')]:
+        def changed_selector(root,original=original,replacement=replacement):
+            path=root/'README.md';text=path.read_text();assert original in text;path.write_text(text.replace(original,replacement,1))
+        run_case('toolchain recipe selector '+original,changed_selector,expected_error='pinned native-library build environment missing or changed')
+    rust_keys=['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','RUSTUP_TOOLCHAIN','RUSTC','RUSTDOC']
     with tempfile.TemporaryDirectory(prefix='graph-recipe-inert-') as temp:
         stub=Path(temp)/'cargo'
-        stub.write_text('#!'+sys.executable+'\nimport json,os,sys\nresult=dict(os.environ);result["__argv__"]=sys.argv[1:];print(json.dumps(result))\n');stub.chmod(0o700)
+        toolchain=json.loads((ROOT/'provenance.json').read_text())['toolchain']
+        for name in ['cargo','rustc']:
+            stub=Path(temp)/name
+            code='import json,os,sys\n'
+            code+='assert sys.argv[1]=="+1.98.1-x86_64-unknown-linux-gnu"\n'
+            code+='if sys.argv[2:]==["-Vv"]: print(os.environ.get("STUB_VERSION_"+'+repr(name)+','+repr(toolchain[name])+'),end="")\n'
+            code+='else:\n result=dict(os.environ);result["__argv__"]=sys.argv[1:];result["__cwd__"]=os.getcwd();print(json.dumps(result))\n'
+            stub.write_text('#!'+sys.executable+'\n'+code);stub.chmod(0o700)
         env=os.environ.copy();env.update({key:'must-be-cleared' for key in rust_keys})
         env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB='/retained-ort',ZVEC_LIB='/retained-zvec',ARMS=str(Path(temp)/'prepared arms'))
         for arm in ['baseline','scored']:
@@ -280,11 +291,17 @@ def round8_cases():
             result=subprocess.run(['sh','-c',build],cwd=ROOT,env=env,capture_output=True,text=True)
             assert result.returncode==0,result.stderr
             captured=json.loads(result.stdout)
+            assert captured['__cwd__']==str(manifest.parent), 'build working directory must be generated arm'
             assert not set(rust_keys).intersection(captured), 'build recipe inherited flags/wrappers'
             args=captured['__argv__'];position=args.index('--manifest-path')
             assert args[position+1]==str(manifest) and manifest.is_file(), 'build recipe must select generated arm manifest'
             assert [args[i+1] for i,value in enumerate(args[:-1]) if value=='--test']==['scratch_scored_fixture','scratch_scored_multihop']
-            print('PASS: inert build selects '+arm+' generated manifest and clears four Rust flags/wrappers')
+            print('PASS: inert build selects pinned toolchain, '+arm+' generated manifest/CWD and clears seven compiler selectors/flags/wrappers')
+        for name in ['rustc','cargo']:
+            wrong=dict(env,**{'STUB_VERSION_'+name:'wrong recorded version'})
+            result=subprocess.run(['sh','-c',build],cwd=ROOT,env=wrong,capture_output=True,text=True)
+            assert result.returncode!=0 and not result.stdout, 'wrong '+name+' version reached build'
+            print('PASS: incorrect '+name+' verbose version rejects before mocked build')
     launch=next(block for block in blocks if '"$BINARY" scratch_scored_graph_finite_fixture' in block)
     code=shlex.split(launch[launch.index('python3 -c '):].replace('\\\n',' '))[2]
     env=os.environ.copy();env.update(PAMIN_EVAL_HOME='/retained-workspace',PAMIN_PROFILE='accuracy',PAMIN_DEVICE='cpu',PAMIN_PREPARED='off',PAMIN_FUSED_ATTENTION='off',PAMIN_INFERENCE_THREADS='999',PAMIN_FUTURE_KNOB='unexpected')
