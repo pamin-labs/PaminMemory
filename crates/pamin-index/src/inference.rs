@@ -949,7 +949,7 @@ mod tests {
                 calibrated(
                     "first",
                     vec![(Device::Cuda, vec![cpu()].into())],
-                    &cache,
+                    cache,
                     |device, _, _| Ok(device),
                     |_, _| {
                         if !announced.replace(true) {
@@ -967,7 +967,7 @@ mod tests {
                 calibrated(
                     "second",
                     vec![(Device::Cuda, vec![cpu()].into())],
-                    &cache,
+                    cache,
                     |device, _, _| {
                         loaded_tx.send(()).unwrap();
                         Ok(device)
