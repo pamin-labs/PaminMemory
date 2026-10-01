@@ -123,6 +123,8 @@ build_cost_binary() (
   set -euo pipefail
   cd "$1"
   test "$(git rev-parse HEAD)" = "$2"
+  git diff --exit-code --ignore-submodules
+  git diff --cached --exit-code --ignore-submodules
   scratch=crates/pamin-engine/tests/scratch_matched_costs.rs
   rm -f "$scratch"
   trap 'rm -f "$scratch"' EXIT HUP INT TERM
@@ -134,7 +136,7 @@ if not hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == sys.argv[2]
     raise RuntimeError('reproduction integrity check failed')
 PYSHA
   export CARGO_TARGET_DIR=/private/tmp/pamin-cost-reproduction-target
-  cargo test -p pamin-engine --test scratch_matched_costs --no-run --message-format=json > /private/tmp/cost-build.jsonl
+  cargo test --locked --offline -p pamin-engine --test scratch_matched_costs --no-run --message-format=json > /private/tmp/cost-build.jsonl
   python3 - /private/tmp/cost-build.jsonl "$5" /private/tmp/pamin-cost-runtime <<'PYBUILD'
 import hashlib, json, shutil, sys
 from pathlib import Path
@@ -216,14 +218,17 @@ arms = [
 env = os.environ.copy()
 for key in ("PAMIN_SEARCH_EFFORT", "PAMIN_PREPARED", "PAMIN_FUSED_ATTENTION", "PYTHONOPTIMIZE", "ORT_DYLIB_PATH"):
     env.pop(key, None)
-def run_case(name, binary, profile, policy, check_persisted=False):
+def run_case(name, binary, profile, policy, check_persisted=False, expected_events=None):
+    worker_source = Path("/private/tmp/pamin-cost-worker.py").read_bytes()
+    if hashlib.sha256(worker_source).hexdigest() != "677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c":
+        raise RuntimeError("retained worker changed before invocation")
     receipt = json.loads(Path(f"/private/tmp/pamin-cost-frozen-{binary}.zvec.json").read_text())
     if hashlib.sha256(Path(f"/private/tmp/pamin-cost-frozen-{binary}").read_bytes()).hexdigest() != receipt["executable_sha256"]:
         raise RuntimeError("frozen executable differs from its build receipt")
     for library in [receipt] + receipt["onnxruntime"]:
         if hashlib.sha256(Path(library["runtime_path"]).read_bytes()).hexdigest() != library["sha256"]:
             raise RuntimeError("native runtime bytes changed after build")
-    subprocess.run([sys.executable, "/private/tmp/pamin-cost-worker.py", name,
+    subprocess.run([sys.executable, "-c", worker_source.decode("utf-8"), name,
         f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy], env=env, check=True)
     log = Path(f"/private/tmp/pamin-cost-{name}.log").read_text()
     rerankers = re.findall(r'reranker loaded tier="([^"\n]+)" device="([^"\n]+)" maximum_tokens=(\d+)', log)
@@ -233,6 +238,9 @@ def run_case(name, binary, profile, policy, check_persisted=False):
     expected_embedders = [] if binary == "main" else [(dual if profile == "dual_accuracy" else "gpahal/bge-m3-onnx-int8", "cpu")]
     if rerankers != [("accurate", expected_device, "256")] or embedders != expected_embedders:
         raise RuntimeError("model/device premise differs from retained arm")
+    observed_events = (sum("complete model-call calibration" in line for line in log.splitlines()), sum("compute candidate" in line for line in log.splitlines()))
+    if expected_events is not None and observed_events != expected_events:
+        raise RuntimeError("calibration/rejection regime differs from retained arm")
     if not check_persisted: return True
     forbidden = ("complete model-call calibration", "compute candidate", "calibrated winner failed", "cached compute plan failed")
     return not any(marker in log for marker in forbidden)
@@ -249,7 +257,8 @@ for block in range(3):
             else:
                 raise RuntimeError("persisted plan did not stabilize; do not label a hit arm")
         name = f"reproduced-{run_id}-{arm}-{block}"
-        if not run_case(name, binary, profile, policy, persisted):
+        expected_events = (1, 1) if arm == "new-auto" else (0, 0)
+        if not run_case(name, binary, profile, policy, persisted, expected_events):
             raise RuntimeError("measured persisted-hit recalibrated/rejected; discard outputs")
 PYRUN
 ```
@@ -261,3 +270,5 @@ Reproduction outputs use a `reproduced-` prefix to avoid replacing the original 
 Each frozen executable has a `.zvec.json` receipt from Cargo’s actual `zvec-rust-sys` native link paths, including override/sibling/vendor selections. The worker loop verifies the runtime-library SHA before each process. Conflicting runtime files or differing linked copies fail closed. These receipts belong to the new reproduction, not a retroactive assertion about unrecorded historical library bytes.
 
 The single guarded recipe uses explicit Python exceptions for integrity and arm premises, so optimized Python cannot disable them. The child environment removes PYTHONOPTIMIZE and ORT_DYLIB_PATH. Dynamic ONNX Runtime/provider libraries are captured from actual linked dependencies and rehashed before each process; static ORT needs no external DLL receipt.
+
+Historical builds require provisioned dependencies and `--locked --offline` with a clean tracked tree. Each process executes the freshly checksum-verified worker bytes rather than reopening its mutable pathname. All measured arms also match their retained calibration/rejection counts (initial new-auto: 1/1; other arms: 0/0); unmeasured primers permit calibration while establishing the hit regime.
