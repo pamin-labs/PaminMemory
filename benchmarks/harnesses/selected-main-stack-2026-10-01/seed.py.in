@@ -1,0 +1,46 @@
+"""Create one fresh synthetic stopped seed using the real product write path."""
+import argparse
+import json
+from pathlib import Path
+import shutil
+import common as c
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--exclusive', action='store_true')
+    args = parser.parse_args()
+    if not args.execute:
+        print('Plan: ingest the immutable public 230-document fixture once, then stop owned PG.')
+        return
+    c.require(args.exclusive, 'exclusive slot required')
+    with c.exclusive():
+        c.source_inputs()
+        c.assets()
+        binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
+        binary = Path(binaries['seed']['path'])
+        c.require(c.digest(binary) == binaries['seed']['sha256'], 'seed executable changed')
+        home = c.ROOT / 'seed'
+        home.mkdir()
+        install = home / 'postgres/install/17.6.0'
+        shutil.copytree(c.CONFIG['postgres'], install)
+        (home / 'models').symlink_to(c.CONFIG['models'], target_is_directory=True)
+        (home / '.graph-disposable-clone').touch()
+        env = c.environment(home)
+        env['PAMIN_POSTGRES_DIR'] = str(install)
+        c.monitored([str(binary), '--ignored', '--exact', 'synthetic_cache_seed',
+                     '--nocapture', '--test-threads=1'], c.ROOT / 'main', env, c.ROOT / 'seed-run')
+        c.require('SYNTHETIC_SEED_OK' in (c.ROOT / 'seed-run.stdout').read_text(), 'seed completion absent')
+        c.require(not (home / 'postgres/data/postmaster.pid').exists(), 'seed PostgreSQL still running')
+        c.save(c.ROOT / 'seed-receipt.json', {'revision': c.MANIFEST['revisions']['main'],
+               'regenerated_identifiers': True, 'historical_index_bytes_reproduced': False,
+               'index_logical_bytes': c.logical(home / 'index'),
+               'index_allocated_bytes': sum(path.stat().st_blocks * 512
+                    for path in (home / 'index').rglob('*') if path.is_file() and not path.is_symlink())})
+        c.assets()
+        c.source_inputs()
+
+
+if __name__ == '__main__':
+    main()

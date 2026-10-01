@@ -1,0 +1,137 @@
+"""Local-only bindings and resource guards for materialized scratch controllers."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parent
+MANIFEST = json.loads((ROOT / 'sources.json').read_text())
+CONFIG = json.loads((ROOT / 'config.json').read_text())
+RESERVE = 8 * 1024**3
+
+
+def require(ok, why):
+    if not ok:
+        raise ValueError(why)
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024**2), b''):
+            value.update(block)
+    return value.hexdigest()
+
+
+def save(path, value):
+    with Path(path).open('x') as stream:
+        json.dump(value, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        stream.write('\n')
+
+
+def assets():
+    result = {}
+    for pin in MANIFEST['assets']:
+        path = Path(CONFIG[pin['root']]) / pin['relative']
+        require(path.is_file() and path.stat().st_size == pin['bytes']
+                and digest(path) == pin['sha256'], 'required offline asset differs: ' + pin['relative'])
+        result[str(path.resolve())] = pin
+    return result
+
+
+def source_inputs():
+    expected = json.loads((ROOT / 'source-receipts.json').read_text())
+    for arm, receipt in expected.items():
+        source = ROOT / arm
+        actual = {str(path.relative_to(source)): ({'link': str(path.readlink())} if path.is_symlink()
+                  else {'sha256': digest(path)}) for path in sorted(source.rglob('*'))
+                  if path.is_file() or path.is_symlink()}
+        require(actual == receipt, 'materialized compilation inputs changed: ' + arm)
+
+
+def logical(root):
+    return sum(p.stat().st_size for p in Path(root).rglob('*')
+               if p.is_file() and not p.is_symlink())
+
+
+def guard():
+    require(shutil.disk_usage(ROOT).free >= RESERVE, 'keep 8 GiB disk reserve')
+    cg = Path('/sys/fs/cgroup')
+    require((cg / 'memory.max').exists(), 'Linux cgroup v2 scope required')
+    maximum = (cg / 'memory.max').read_text().strip()
+    current = int((cg / 'memory.current').read_text())
+    if maximum != 'max':
+        require(int(maximum) - current >= 2 * 1024**3, 'keep 2 GiB cgroup memory headroom')
+    return {'disk_free': shutil.disk_usage(ROOT).free, 'cgroup_memory_bytes': current,
+            'cpu_quota': (cg / 'cpu.max').read_text().strip(),
+            'affinity': sorted(os.sched_getaffinity(0)), 'shared_machine': True}
+
+
+def exclusive():
+    # All copies of this harness on the host share this cooperative lock.
+    lock = Path('/tmp/pamin-synthetic-measurement.lock').open('a')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    guard()
+    return lock
+
+
+def environment(home=None):
+    env = {key: os.environ[key] for key in ['HOME', 'USER', 'TMPDIR'] if key in os.environ}
+    env.update(LANG='C.UTF-8', LC_ALL='C.UTF-8', PATH='/usr/local/bin:/usr/bin:/bin',
+               HF_HOME=CONFIG['models'], HF_HUB_CACHE=CONFIG['models'],
+               HUGGINGFACE_HUB_CACHE=CONFIG['models'], HF_HUB_OFFLINE='1',
+               HF_HUB_DISABLE_TELEMETRY='1',
+               LD_LIBRARY_PATH=CONFIG['native'] + ':' + CONFIG['ort'])
+    if home is not None:
+        env.update(PAMIN_DEVICE='cpu', PAMIN_PROFILE='accuracy', PAMIN_EVAL_HOME=str(home))
+    return env
+
+
+def monitored(command, cwd, env, prefix, limit=900):
+    start = time.monotonic()
+    with Path(str(prefix) + '.stdout').open('x') as out, Path(str(prefix) + '.stderr').open('x') as err:
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err)
+        try:
+            while process.poll() is None:
+                guard()
+                require(time.monotonic() - start < limit, 'operation timeout')
+                time.sleep(1)
+            require(process.returncode == 0, 'operation failed; preserve logs and workspace')
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+
+def schedule():
+    cells = [(limit, qid, 'accurate', initial) for limit in [5, 10]
+             for qid in [80, 101] for initial in ['A', 'B']]
+    cells += [(limit, 80, 'off', 'A') for limit in [5, 10]]
+    jobs = []
+    for round_, order in enumerate([['main', 'stack'], ['stack', 'main'],
+                                    ['stack', 'main'], ['main', 'stack']]):
+        offset = round_ % len(cells)
+        rotated = cells[offset:] + cells[:offset]
+        if round_ in [1, 3]:
+            rotated = list(reversed(rotated))
+        for source in order:
+            for limit, qid, tier, initial in rotated:
+                sequence = (','.join([initial] * 6 + [('B' if initial == 'A' else 'A')] * 6 + ['N'])
+                            if tier == 'accurate' else 'A,A,N')
+                jobs.append({'round': round_, 'source': source, 'limit': limit,
+                             'query_id': qid, 'tier': tier, 'sequence': sequence,
+                             'name': f'r{round_}-{source}-l{limit}-q{qid}-{tier}-{initial}'})
+    require(len(jobs) == 80 and sum(len(j['sequence'].split(',')) for j in jobs) == 880,
+            'complete 80/880 schedule required')
+    return jobs
+
+
+def phase(job, step):
+    if job['tier'] == 'off':
+        return ['off-cold', 'off-hot', 'off-new-query'][step]
+    return ('cold' if step == 0 else 'initial-hot' if step < 6 else
+            'changed-context' if step == 6 else 'changed-hot' if step < 12 else 'new-query')

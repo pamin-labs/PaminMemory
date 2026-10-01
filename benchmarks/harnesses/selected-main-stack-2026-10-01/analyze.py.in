@@ -1,0 +1,126 @@
+"""Recompute every metric category from a complete new 80/880 run; never execute product code."""
+import json
+import statistics
+import common as c
+import metrics
+import rows
+
+
+def report(packets):
+    jobs = c.schedule()
+    c.require(len(packets) == 80 and {p['job']['name'] for p in packets} == {j['name'] for j in jobs},
+              'complete unique process matrix required')
+    expected = {j['name']: j for j in jobs}
+    results, observations, lifetimes = {}, [], []
+    gold = json.loads((c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json').read_text())
+    for packet in packets:
+        job, actual = packet['job'], packet['rows']
+        c.require(job == expected[job['name']] and len(actual) == len(job['sequence'].split(',')),
+                  'process schedule or chronology differs')
+        validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+        c.require(validated == packet['validated'], 'retained validation differs from actual rows')
+        for old, new in zip(actual, actual[1:]):
+            rows.hot_guard(old, new, job['source'])
+        results[(job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])] = packet
+        observations.extend({'job': job, 'row': row, 'validated': valid, 'phase': c.phase(job, step)}
+                            for step, (row, valid) in enumerate(zip(actual, validated)))
+        last = actual[-1]['process_after']
+        samples = packet['usage']['samples']
+        peak = lambda role, key, extra: max([s[role][key] for s in samples] + extra, default=None)
+        lifetimes.append({'job': job,
+            'controller_observed_native_wall_seconds': packet['usage']['native_wall_seconds'],
+            'engine_open_wall_us': packet['opened']['wall_us'],
+            'cumulative_user_seconds_through_last_search': last['utime_ticks'] / rows.CLOCK_TICKS,
+            'cumulative_system_seconds_through_last_search': last['stime_ticks'] / rows.CLOCK_TICKS,
+            'native_sampled_peak_rss_kib': peak('native', 'VmRSS', [last['rss_kib']]),
+            'native_observed_hwm_kib': peak('native', 'VmHWM', [last['hwm_kib']]),
+            'owned_pg_main_pid_sampled_peak_rss_kib': peak('pg_main', 'VmRSS', []),
+            'full_lifetime_cpu_seconds': None, 'total_service_memory_kib': None})
+    c.require(len(observations) == 880, 'missing or extra product calls')
+    classifications = rows.oracle_checks(results)
+    eligible = {item['job']['name']: item['paired_speed_claim_eligible'] for item in classifications}
+    correctness = []
+    for limit in [5, 10]:
+        for qid in [80, 101]:
+            for initial in ['A', 'B']:
+                for key in ['same_final_actual_inputs', 'same_final_raw_bits/order', 'all_changed_and_hot_exact',
+                            'legacy_main_context_failure', 'retrieval_or_input_context_mismatch']:
+                    counts = {arm: sum(item[key] for item in classifications
+                              if item['job']['source'] == arm and item['job']['limit'] == limit
+                              and item['job']['query_id'] == qid and item['job']['sequence'][0] == initial)
+                              for arm in ['main', 'stack']}
+                    correctness.append({'configuration': f'limit{limit}/query{qid}/history{initial}/4 blocks',
+                                        'metric': key, **metrics.difference(counts['main'], counts['stack'])})
+    process_metrics = []
+    groups = {(j['tier'], j['limit'], j['query_id'], j['sequence'][0]) for j in jobs}
+    for group in sorted(groups):
+        for key in lifetimes[0]:
+            if key == 'job':
+                continue
+            values = {arm: [r[key] for r in lifetimes if r['job']['source'] == arm
+                       and (r['job']['tier'], r['job']['limit'], r['job']['query_id'], r['job']['sequence'][0]) == group]
+                       for arm in ['main', 'stack']}
+            means = {arm: statistics.mean(v) if all(x is not None for x in v) else None
+                     for arm, v in values.items()}
+            process_metrics.append({'scope': '/'.join(map(str, group)), 'metric': key,
+                                    **metrics.difference(means['main'], means['stack']),
+                                    'speed_claim_eligible': False})
+    binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
+    disk = []
+    for key in ['index_before_bytes', 'index_after_bytes']:
+        values = {arm: statistics.mean(p[key] for p in packets if p['job']['source'] == arm)
+                  for arm in ['main', 'stack']}
+        disk.append({'metric': key, **metrics.difference(values['main'], values['stack'])})
+    asset_bytes = sum(pin['bytes'] for pin in c.MANIFEST['assets'])
+    disk += [{'metric': 'listed bound model/runtime assets logical bytes',
+              **metrics.difference(asset_bytes, asset_bytes)},
+             {'metric': 'app executable logical bytes',
+              **metrics.difference(binaries['main']['bytes'], binaries['stack']['bytes'])}]
+    baseline = json.loads((c.ROOT / 'seed-receipt.json').read_text())
+    disk.append({'metric': 'index baseline allocated bytes; endpoint unavailable',
+                 **metrics.difference(baseline['index_allocated_bytes'], None)})
+    for key in ['historical full asset inventory parity', 'endpoint allocated bytes',
+                'temporary clone peak allocation', 'readonly full-payload immutability']:
+        disk.append({'metric': key, **metrics.difference(None, None)})
+    return {'complete': True, 'processes': 80, 'calls': 880, 'revisions': c.MANIFEST['revisions'],
+            'regenerated_fixture': True, 'historical_numeric_identity_claimed': False,
+            'correctness': correctness, 'classifications': classifications,
+            'metrics': metrics.metric_tables(observations, eligible),
+            'process_metrics': process_metrics, 'disk': disk,
+            'scope': 'CPU ReadOnly Engine search; four rotated independent process blocks; hot calls dependent; '
+                     'fresh process with prepared caches and preflight-warmed OS pages; shared machine; '
+                     'PG main PID separate, children/device/services unmeasured; zero CPU ticks resolution-censored; '
+                     'no historical UUID/index/binary identity, population p95 or universal quality claim.'}
+
+
+def write_tables(path, result):
+    value = lambda v: 'N/A' if v is None else str(v)
+    lines = ['# Regenerated synthetic experiment', '', result['scope'], '',
+             '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Eligibility |',
+             '| --- | --- | ---: | ---: | ---: | ---: | --- |']
+    for group in ['correctness', 'metrics', 'process_metrics', 'disk']:
+        for item in result[group]:
+            eligibility = ('accuracy excluded' if item.get('accuracy_eligible') is False else
+                           'different work' if item.get('same_successful_work') is False else
+                           'descriptive; stable withheld' if not item.get('stable_claim_eligible') else
+                           'descriptive four-block eligible')
+            lines.append('| ' + ' | '.join([value(item.get('configuration', item.get('scope', group))),
+                         item['metric'] + ' ' + item.get('statistic', '')] +
+                         [value(item[k]) for k in ['before', 'after', 'absolute_difference', 'percentage_change']]
+                         + [eligibility]) + ' |')
+    path.write_text('\n'.join(lines) + '\n')
+
+
+def main():
+    complete = json.loads((c.ROOT / 'results/complete.json').read_text())
+    c.require(complete['complete'] and complete['processes'] == 80 and complete['calls'] == 880,
+              'incomplete run cannot produce a report')
+    packets = [json.loads((c.ROOT / 'results' / (job['name'] + '.json')).read_text()) for job in c.schedule()]
+    result = report(packets)
+    c.require(not (c.ROOT / 'tables.md').exists(), 'preserve prior report')
+    c.save(c.ROOT / 'metrics.json', result)
+    write_tables(c.ROOT / 'tables.md', result)
+
+
+if __name__ == '__main__':
+    main()

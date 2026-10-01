@@ -1,0 +1,73 @@
+"""Shared original quantile, delta, eligibility and per-call metric definitions."""
+import math,statistics
+def require(ok, why):
+    if not ok: raise ValueError(why)
+def percentile(values,p):
+    values=sorted(values)
+    require(bool(values),'empty metric')
+    position=(len(values)-1)*p
+    low=math.floor(position);high=math.ceil(position)
+    return values[low]+(values[high]-values[low])*(position-low)
+
+
+def difference(before,after):
+    if before is None or after is None:return {'before':before,'after':after,'absolute_difference':None,'percentage_change':None}
+    return {'before':before,'after':after,'absolute_difference':after-before,
+            'percentage_change':100*(after-before)/before if before else None}
+
+
+def stability(changes, eligible, same_work, arm_block_medians):
+    require(len(changes)==4,'four independent blocks required')
+    require(set(arm_block_medians)=={'main','stack'} and all(len(v)==4 for v in arm_block_medians.values()),'both arms require four block medians')
+    median_deltas=[after-before for before,after in zip(arm_block_medians['main'],arm_block_medians['stack'])]
+    metric_sign_flip=min(changes)<0<max(changes)
+    median_sign_flip=min(median_deltas)<0<max(median_deltas)
+    sign_flip=metric_sign_flip or median_sign_flip
+    spread=max(changes)-min(changes)
+    arm_spreads={}
+    for arm,values in arm_block_medians.items():
+        require(all(isinstance(v,(int,float)) and math.isfinite(v) and v>=0 for v in values),'nonnegative finite block medians required')
+        median=statistics.median(values)
+        arm_spreads[arm]=(max(values)-min(values))/median if median else None
+    arm_stable=all(v is not None and v<=0.10 for v in arm_spreads.values())
+    return {'four_block_percentage_changes':changes,'sign_flip':sign_flip,
+            'paired_block_median_absolute_deltas':median_deltas,'paired_block_median_sign_flip':median_sign_flip,
+            'reported_metric_block_sign_flip':metric_sign_flip,
+            'spread_percentage_points':spread,'arm_four_block_medians':arm_block_medians,
+            'arm_span_over_median':arm_spreads,
+            'stable_claim_eligible':eligible and same_work and not sign_flip and arm_stable and spread<=10,
+            'interpretation':'descriptive four-block comparison only; no population p95 or platform-wide speed claim'}
+
+
+def metric_tables(observations,eligibility):
+    groups={}
+    for o in observations:
+        j=o['job'];config=o['row']['arm']
+        group=(j['tier'],j['limit'],j['query_id'],j['sequence'][0],o['phase'],config)
+        groups.setdefault(group,[]).append(o)
+    result=[]
+    for group,items in sorted(groups.items()):
+        eligible=all(eligibility.get(o['job']['name'],True) for o in items) if group[4] in ['changed-context','changed-hot'] else True
+        works={s:[{k:o['validated']['actual_delta'][k] for k in ['offered','scored','characters','tokens','padded_tokens','batches']} for o in items if o['job']['source']==s] for s in ['main','stack']}
+        same_work=works['main']==works['stack']
+        definitions=[(f'quality_{k}',lambda o,k=k:o['validated']['quality_at_actual_limit'][k]) for k in ['recall','mrr','ndcg']]
+        definitions += [('wall_us',lambda o:o['row']['wall_us']),('cpu_user_seconds',lambda o:o['validated']['cpu_user_seconds']),('cpu_system_seconds',lambda o:o['validated']['cpu_system_seconds']),('rss_kib',lambda o:o['row']['process_after']['rss_kib']),('hwm_kib',lambda o:o['row']['process_after']['hwm_kib'])]
+        definitions += [(k,lambda o,k=k:o['validated']['actual_delta'][k]) for k in ['scored','characters','tokens','padded_tokens','batches','encode_us','forward_us']]
+        for metric,extract in definitions:
+            for statistic,p in [('p50',0.5),('p95_descriptive',0.95)] if metric=='wall_us' else [('mean',None)]:
+                reduce=lambda values:percentile(values,p) if p is not None else statistics.mean(values)
+                arm_values={s:reduce([extract(o) for o in items if o['job']['source']==s]) for s in ['main','stack']}
+                changes=[]
+                arm_medians={s:[] for s in ['main','stack']}
+                for round_ in range(4):
+                    block={s:reduce([extract(o) for o in items if o['job']['source']==s and o['job']['round']==round_]) for s in ['main','stack']}
+                    for s in ['main','stack']:
+                        arm_medians[s].append(statistics.median([extract(o) for o in items if o['job']['source']==s and o['job']['round']==round_]))
+                    change=difference(block['main'],block['stack'])['percentage_change']
+                    changes.append(change)
+                evidence=stability(changes,eligible,same_work,arm_medians) if all(c is not None for c in changes) else {'stable_claim_eligible':False,'four_block_percentage_changes':changes,'arm_four_block_medians':arm_medians,'reason':'zero baseline percentage undefined'}
+                result.append({'configuration':list(group),'metric':metric,'statistic':statistic,'samples_per_arm':len(items)//2,
+                               'accuracy_eligible':eligible,'same_successful_work':same_work,**difference(arm_values['main'],arm_values['stack']),**evidence})
+    return result
+
+

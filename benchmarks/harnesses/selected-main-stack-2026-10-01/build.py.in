@@ -1,0 +1,63 @@
+"""Build and freeze new helper executables; never overwrite either measured source."""
+import argparse
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import common as c
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--exclusive', action='store_true')
+    args = parser.parse_args()
+    if not args.execute:
+        print('Plan: offline locked release builds of both actual probes and main-only seed helper.')
+        return
+    c.require(args.exclusive, 'claim the exclusive measurement slot before building')
+    with c.exclusive():
+        c.source_inputs()
+        c.assets()
+        for tool in ['cargo', 'rustc', 'rustdoc']:
+            version = subprocess.check_output([c.CONFIG[tool], '--version'], text=True)
+            c.require('1.98.1' in version, 'pinned toolchain required')
+        out = c.ROOT / 'build'
+        out.mkdir()
+        env = c.environment()
+        env.update(RUSTC=c.CONFIG['rustc'], RUSTDOC=c.CONFIG['rustdoc'],
+                   CARGO_BUILD_JOBS='4', CARGO_INCREMENTAL='0',
+                   CARGO_TARGET_DIR=str(c.ROOT / 'target'),
+                   ORT_LIB_LOCATION=c.CONFIG['ort'], ORT_PREFER_DYNAMIC_LINK='1',
+                   LIBRARY_PATH=c.CONFIG['native'] + ':' + c.CONFIG['ort'],
+                   RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
+                   CARGO_ENCODED_RUSTFLAGS='', CARGO_ENCODED_RUSTDOCFLAGS='')
+        # Registry sources/build prerequisites must already be present locally.
+        for key in ['CARGO_HOME', 'RUSTUP_HOME']:
+            if key in __import__('os').environ:
+                env[key] = __import__('os').environ[key]
+        binaries = {}
+        for arm, target in [('main', 'scratch_cache_product_limits'),
+                            ('stack', 'scratch_cache_product_limits'),
+                            ('main', 'scratch_synthetic_seed')]:
+            name = 'seed' if target.endswith('seed') else arm
+            command = [c.CONFIG['cargo'], 'test', '--release', '--offline', '--locked',
+                       '-p', 'pamin-engine', '--test', target, '--no-run', '--message-format=json']
+            c.monitored(command, c.ROOT / arm, env, out / name)
+            artifacts = [json.loads(line) for line in (out / (name + '.stdout')).read_text().splitlines()
+                         if line.startswith('{')]
+            executables = [a['executable'] for a in artifacts if a.get('reason') == 'compiler-artifact'
+                           and a['target']['name'] == target and a.get('executable')]
+            c.require(len(executables) == 1, 'unique actual Cargo helper artifact required')
+            frozen = out / (name + '-frozen')
+            shutil.copy2(executables[0], frozen)
+            binaries[name] = {'path': str(frozen), 'sha256': c.digest(frozen),
+                              'bytes': frozen.stat().st_size,
+                              'revision': c.MANIFEST['revisions'][arm]}
+        c.save(out / 'binaries.json', binaries)
+        c.source_inputs()
+        c.assets()
+
+
+if __name__ == '__main__':
+    main()
