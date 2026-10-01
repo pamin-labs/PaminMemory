@@ -191,6 +191,28 @@ def round8_cases():
     retained=json.loads((ROOT/'provenance.json').read_text())
     for name, record in retained['redactions'].items():
         run_case('incorrect redaction flag '+name, lambda r,name=name,record=record:mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(changed=not record['changed'])),expected_error='redaction changed flag differs')
+    # Exercise only harmless stand-ins, never Cargo or the native fixture.
+    import re, shlex
+    readme=(ROOT/'README.md').read_text()
+    blocks=re.findall(r'```sh\n(.*?)```',readme,re.S)
+    build=next(block for block in blocks if 'cargo test -p pamin-engine' in block)
+    rust_keys=['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']
+    with tempfile.TemporaryDirectory(prefix='graph-recipe-inert-') as temp:
+        stub=Path(temp)/'cargo'
+        stub.write_text('#!'+sys.executable+'\nimport json,os\nprint(json.dumps(dict(os.environ)))\n');stub.chmod(0o700)
+        env=os.environ.copy();env.update({key:'must-be-cleared' for key in rust_keys})
+        env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB='/retained-ort',ZVEC_LIB='/retained-zvec')
+        result=subprocess.run(['sh','-c',build],env=env,capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        assert not set(rust_keys).intersection(json.loads(result.stdout)), 'build recipe inherited flags/wrappers'
+        print('PASS: inert build command clears all four Rust flags/wrappers')
+    launch=next(block for block in blocks if '"$BINARY" scratch_scored_graph_finite_fixture' in block)
+    code=shlex.split(launch[launch.index('python3 -c '):].replace('\\\n',' '))[2]
+    env=os.environ.copy();env.update(PAMIN_EVAL_HOME='/retained-workspace',PAMIN_PROFILE='accuracy',PAMIN_DEVICE='cpu',PAMIN_PREPARED='off',PAMIN_FUSED_ATTENTION='off',PAMIN_INFERENCE_THREADS='999',PAMIN_FUTURE_KNOB='unexpected')
+    result=subprocess.run([sys.executable,'-c',code,sys.executable,'-c','import json,os;print(json.dumps({k:v for k,v in os.environ.items() if k.startswith("PAMIN_")}))'],env=env,capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert json.loads(result.stdout)=={'PAMIN_EVAL_HOME':'/retained-workspace','PAMIN_PROFILE':'accuracy','PAMIN_DEVICE':'cpu'}, 'launch inherited product knobs'
+    print('PASS: inert launch shim retains only the three assigned product values')
 
 
 if __name__ == '__main__':

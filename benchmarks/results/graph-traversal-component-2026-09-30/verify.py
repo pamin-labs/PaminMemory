@@ -7,8 +7,8 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 # Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
-BUILD_RECIPE_SHA256='1e1ded9e162d1e6752a62fa18415df1e4e5400574931071948cc0b9024685449'
-RUNTIME_RECIPE_SHA256='65d314ced2ef896ea9b9e19d7977071a9781cf76787a12e9badcb9fd336c35a8'
+BUILD_RECIPE_SHA256='6808938a2e3d50deb5f244939e30844f1eb67d951324abbd442b0c22973b6e9f'
+RUNTIME_RECIPE_SHA256='8c9404312e9a8f20fb8fade6c2380597aa4155a606c7ba7b94528980156c85d4'
 
 def close(a,b):return math.isclose(a,b,rel_tol=0,abs_tol=1e-6)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
