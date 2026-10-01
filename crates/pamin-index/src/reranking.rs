@@ -1121,7 +1121,6 @@ fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> 
 /// Shortest first, in the batches [`batches`] makes of their lengths, each
 /// batch one forward pass and a pair's score the first column of its row of
 /// `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
-#[cfg(target_os = "windows")]
 fn score(
     model: &mut Encoder,
     encodings: Vec<Encoding>,
