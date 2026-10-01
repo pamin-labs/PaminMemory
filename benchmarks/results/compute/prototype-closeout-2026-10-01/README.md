@@ -56,31 +56,55 @@ python3 -m pip install numpy==2.5.1
 python3 benchmarks/verify_compute_evidence.py
 ```
 
-This independently recomputes paired nDCG/recall, 240-paragraph shared sign flips/cluster bootstrap (exploratory post-hoc correction) and all 21 cost blocks from raw rows, asserts paired IDs/corpus sizes and checks each reported percentile/RSS value. Timing program sources remain scratch-only; source/binary hashes and execution identities are retained. Frozen candidate commits are reachable as `bench/prototype-cost-2026-10-01` (503bd9e) and `bench/persisted-cost-2026-10-01` (0f023be); fetch these tags when inspecting those revisions. Re-running the live workload requires a provisioned unprivileged PostgreSQL workspace and the fingerprinted models/data, 66 fixed query indices `18*i` (i=0..65), warm query 1189, and the product settings above. Freeze executables before launch and keep builds out of timing runs. Historical total ingest time was measured on a shared host with intervening builds and is not a causal speed comparison.
+This independently recomputes paired nDCG/recall, 240-paragraph shared sign flips/cluster bootstrap (exploratory post-hoc correction) and all 21 cost blocks from raw rows, asserts paired IDs/corpus sizes and checks each reported percentile/RSS value. Timing program sources remain scratch-only; source/binary hashes and execution identities are retained. The historical candidate identifiers `503bd9e` and `0f023be` are provenance labels: their Git objects are unavailable in the reviewed checkout, and public tag availability is not established. Candidate source reproduction is currently unavailable from this package. Do not substitute the later published source and label it as either historical candidate. Re-running the live workload requires a provisioned unprivileged PostgreSQL workspace and the fingerprinted models/data, 66 fixed query indices `18*i` (i=0..65), warm query 1189, and the product settings above. Freeze executables before launch and keep builds out of timing runs. Historical total ingest time was measured on a shared host with intervening builds and is not a causal speed comparison.
 
 The original query-level statistical summary is retained as historical, not a valid independent-question acceptance analysis. `cluster-inference.json` records 100,000 shared flips and cluster-bootstrap draws (PCG64 seed 20261001): cross Holm p≈0.000040; same-language p≈0.153978, lower 95% delta bound -0.001348, still above -0.005. Point metrics and raw rankings are unchanged.
 
 ## Fetch measured source refs in a shallow review checkout
 
 A pull-request checkout does not automatically include unrelated benchmark tags.
-The remote refs are verified at [prototype source](https://github.com/pamin-labs/PaminMemory/tree/bench/prototype-cost-2026-10-01) and [persisted source](https://github.com/pamin-labs/PaminMemory/tree/bench/persisted-cost-2026-10-01).
+The retained rows and verifier remain available independently of those missing compilation inputs. No candidate source archive or complete compilation-input manifest is retained here. Publishing private history is not required or authorized by this recipe; a future sanitized exact source subset would need per-file hashes and an explicit build scope before candidate commands can be called runnable.
 
-```sh
-git fetch origin refs/tags/bench/prototype-cost-2026-10-01:refs/tags/bench/prototype-cost-2026-10-01 refs/tags/bench/persisted-cost-2026-10-01:refs/tags/bench/persisted-cost-2026-10-01
-git cat-file -t 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27
-git cat-file -t 0f023be6a8d8d070a971f7e590ccccff2c3292bb
-```
-
-## Executable scratch reproduction
+## Conditional scratch reproduction
 
 The [versioned public scratch bundle](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/72859f283b963c0294875dbef2a4e3a00209f9b5) contains separately retained main and persisted harness sources. The 503bd9e harness is a disclosed reconstruction of the persisted source with only its literal execution identity changed; its original measurement-time source bytes are not archived here. Re-running that reconstruction cannot certify those missing original bytes or historical compiler inputs. Use the source matching the selected revision, rather than labeling the persisted harness as a main/503 execution.
 
-A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. The harness aborts on an empty/incomplete corpus. Each source revision needs a separate checkout. This helper downloads only the selected public scratch source to its ignored test location and checks its frozen SHA-256; it does not provision models or PostgreSQL:
+A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. The harness aborts on an empty/incomplete corpus. Each source revision needs exact available compilation inputs. The candidate recipes below are conditional and must fail if those inputs are unavailable; only main source reachability is established here. Run the following setup and subsequent helpers inside one disposable subshell for each available revision. This helper downloads only the selected public scratch source to its ignored test location inside the fresh external export and checks its frozen SHA-256; it does not provision models or PostgreSQL:
+
+Before defining the helpers, create a fresh external export; never sweep or overwrite an existing checkout's ignored test files. Enclose **all** setup, downloads, builds and runs for that revision in this subshell. Its trap removes only the directory it successfully created, including on command failure, HUP, INT or TERM. SIGKILL/power loss cannot run traps; inspect and remove only your recorded owned directory after such an interruption. Outputs intended for retention remain outside that directory.
+
+```sh
+(
+set -eu
+cost_repository=$(git rev-parse --show-toplevel)
+cost_checkout_revision=$(git rev-parse HEAD)
+cost_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+case "$cost_parent/" in "$cost_repository/"*) exit 1 ;; esac
+cost_owned_root=$(mktemp -d "$cost_parent/pamin-cost.XXXXXXXX")
+readonly cost_owned_root cost_repository cost_checkout_revision
+printf '%s\n' "$cost_owned_root" > "$cost_owned_root/.owned-cost-export"
+cleanup_cost_export() {
+  test ! -L "$cost_owned_root" && test -f "$cost_owned_root/.owned-cost-export" || return 1
+  test "$(cat "$cost_owned_root/.owned-cost-export")" = "$cost_owned_root" || return 1
+  rm -rf -- "$cost_owned_root"
+}
+trap cleanup_cost_export EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mkdir "$cost_owned_root/source"
+git archive --format=tar --output="$cost_owned_root/source.tar" "$cost_checkout_revision"
+tar -xf "$cost_owned_root/source.tar" -C "$cost_owned_root/source"
+rm "$cost_owned_root/source.tar"
+cd "$cost_owned_root/source"
+# Define and use the helpers/selected-revision commands below here.
+# Close with ')' only after that revision's downloads/builds/runs finish.
+```
 
 ```sh
 cost_harness_identity() {
   cost_revision=$1
-  test "$(git rev-parse HEAD)" = "$cost_revision" || return 1
+  test "$cost_checkout_revision" = "$cost_revision" || return 1
   case "$cost_revision" in
     315c10242ddf7a1cec3bccbf550a942320e09557)
       cost_url=https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/b1054c02a237de3f8ecb8e7252fbc562526d6311/pamin-main-cost-harness.rs
@@ -97,12 +121,13 @@ cost_harness_identity() {
 }
 install_cost_harness() {
   cost_harness_identity "$1" || return 1
+  test ! -e "$cost_source" && test ! -L "$cost_source" || return 1
   curl -fsSL "$cost_url" -o "$cost_source" || return 1
   printf '%s  %s\n' "$cost_sha" "$cost_source" | shasum -a 256 -c -
 }
 run_cost() {
   cost_arm=$1; cost_revision=$2; cost_profile=$3; cost_policy=$4; cost_block=$5
-  test "$(git rev-parse HEAD)" = "$cost_revision" || return 1
+  test "$cost_checkout_revision" = "$cost_revision" || return 1
   case "$cost_policy" in cpu|auto) ;; *) return 1 ;; esac
   cost_harness_identity "$cost_revision" || return 1
   printf '%s  %s\n' "$cost_sha" "$cost_source" | shasum -a 256 -c - || return 1
@@ -125,13 +150,12 @@ run_cost main-auto 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy auto "$bloc
 run_cost new-auto 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 accuracy auto "$block"
 run_cost main-auto-repeat 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy auto "$block"
 run_cost new-auto-persist-hit 0f023be6a8d8d070a971f7e590ccccff2c3292bb accuracy auto "$block"
-# Remove the ignored scratch source after that checkout's runs:
-# rm crates/pamin-engine/tests/scratch_matched_costs.rs
+# The enclosing owned-export EXIT trap removes the scratch source on every catchable exit.
 ```
 
 These are warm-search reproduction commands, not a new executed measurement or a complete build certificate. Establish a nonexpired persisted plan in a separate setup process before the persisted-hit blocks, then verify their retained events contain no calibration/rejection. Do not label expired quarantine or uncontrolled CoreML compilation as a controlled hit. Build first and freeze the executable before invoking the retained worker for process-resource columns; the commands above intentionally preserve the historical Cargo-based scratch entry point and exclude its compilation from reported query timers.
 
-The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Loaded events require a device from `cpu`, `cuda`, `coreml`, `directml`, or `npu`; unrelated events reject device fields. Loaded event/device pairs are independently compared with the published loaded-device summary, including order and count. Loaded summaries must identify the correct single/dual model for the arm and the accurate reranker with maximum_tokens=256; these values are independently pinned rather than accepted because two projections agree. Single-model summaries name a repository, not a separately logged revision. They must also match independent frozen per-arm/process role/device sequences in the verifier, including the reversed load order in persisted-hit process 2. Historical main logs contain no embedder-loaded event; no missing event or physical ANE/GPU placement is inferred. This verifies the retained projection and its frozen premises, not completeness or correct classification against externally retained original logs. Each cost block's published manifest must equal its validated raw manifest, and all three `main-cpu` rankings must match the full baseline at every selected query `18*i`. Original source hashes are retained; original logs stay local.
+The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. The exact top-level schema is `source_sha256`, `redaction`, and `events`; hashes must be lowercase SHA-256, the redaction marker is fixed, and extra fields reject even after resealing. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Loaded events require a device from `cpu`, `cuda`, `coreml`, `directml`, or `npu`; unrelated events reject device fields. Loaded event/device pairs are independently compared with the published loaded-device summary, including order and count. Loaded summaries must identify the correct single/dual model for the arm and the accurate reranker with maximum_tokens=256; these values are independently pinned rather than accepted because two projections agree. Single-model summaries name a repository, not a separately logged revision. They must also match independent frozen per-arm/process role/device sequences in the verifier, including the reversed load order in persisted-hit process 2. Historical main logs contain no embedder-loaded event; no missing event or physical ANE/GPU placement is inferred. This verifies the retained projection and its frozen premises, not completeness or correct classification against externally retained original logs. Each cost block's published manifest must equal its validated raw manifest, and all three `main-cpu` rankings must match the full baseline at every selected query `18*i`. Original source hashes are retained; original logs stay local.
 
 The original `predeclared.json` is immutable. It specified independent question-level inference; the corrected cluster analysis was chosen after the results were observed. The new p-value supports an exploratory signal, not a preregistered acceptance claim. Confirm on an independent corpus before changing defaults.
 
@@ -141,11 +165,11 @@ The original `predeclared.json` is immutable. It specified independent question-
 The original [public Python worker](https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/a8327acdbaecfa651ddd78a293df7dae43b223da/pamin-cost-worker.py) is separately pinned; it targets the retained macOS workspace and loader directory. Download and verify it before any workload:
 
 ```sh
-curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/a8327acdbaecfa651ddd78a293df7dae43b223da/pamin-cost-worker.py -o /private/tmp/pamin-cost-worker.py
-printf '%s  %s\n' 677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c /private/tmp/pamin-cost-worker.py | shasum -a 256 -c -
+curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/a8327acdbaecfa651ddd78a293df7dae43b223da/pamin-cost-worker.py -o "$cost_owned_root/pamin-cost-worker.py"
+printf '%s  %s\n' 677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c "$cost_owned_root/pamin-cost-worker.py" | shasum -a 256 -c -
 ```
 
-In each of the three revision checkouts, install and verify its corresponding Rust source using the helper above. Build before timing and extract exactly that test executable from Cargo's structured output. The following example freezes the persisted checkout; use distinct `main` and `prototype` output names in their corresponding checkouts:
+Within the same owned-export subshell, install and verify its corresponding Rust source using the helper above. Build before timing and extract exactly that test executable from Cargo's structured output. The following example freezes the persisted checkout; use distinct `main` and `prototype` output names in their corresponding checkouts:
 
 ```sh
 cost_harness_identity 0f023be6a8d8d070a971f7e590ccccff2c3292bb
@@ -166,7 +190,7 @@ Retain the actual native build/runtime settings and hashes separately. The histo
 With all builds stopped, use fresh case names and existing completed indexes. The original worker clears reranker/intra-op overrides; the outer environment additionally clears graph/search overrides absent from that worker. Each invocation is a fresh Python/native process. The controller rotates the seven source/profile/policy combinations across blocks:
 
 ```sh
-python3 - <<'PYRUN'
+python3 - "$cost_owned_root/pamin-cost-worker.py" <<'PYRUN'
 import os, subprocess, sys
 arms = [
     ("main-cpu", "main", "accuracy", "cpu"),
@@ -184,7 +208,7 @@ for block in range(3):
     offset = 2 * block
     for arm, binary, profile, policy in arms[offset:] + arms[:offset]:
         subprocess.run([
-            sys.executable, "/private/tmp/pamin-cost-worker.py", f"reproduced-{arm}-{block}",
+            sys.executable, sys.argv[1], f"reproduced-{arm}-{block}",
             f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy,
         ], env=env, check=True)
 PYRUN
