@@ -59,7 +59,7 @@ for arm,commit in expected_commits.items():
         closed=phases['closed_index'][0]
         assert closed['wall_ms'] is None and closed['measurement_kind']=='diagnostic'
         new=phases['new_write_search'][0]
-        assert new['extra']['known_new_topic_retrieved'] and 'restart-proof' in new['extra']['topics']
+        review.new_write_visibility(new['extra'])
         for row in rows:
             if row['phase']=='process_total':
                 assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'Disk invalid process elapsed'
