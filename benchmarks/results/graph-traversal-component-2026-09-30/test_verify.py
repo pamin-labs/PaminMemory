@@ -85,13 +85,50 @@ def round7_graph_only_cases():
                      expected_error='complete Why must contain only graph and path records')
 
 
+def round7_weak_window_cases():
+    def reseed(root, arm, outside):
+        def change(row):
+            window = row['non_graph'][63:] if outside else row['non_graph'][:63]
+            replacement = next(hit for hit in window if hit['topic'] not in {row['weak'], row['strong']}
+                               and min(rank['rank'] for rank in hit['ranks']) == row['weak_rank'])
+            old, new = row['weak'], replacement['topic']
+            def content(topic):
+                number = int(topic[10:])
+                return f'orbital navigation calibration beacon archival report category {number % 17} revision {number}'
+            row['weak'] = new
+            for edge in row['known_edges']:
+                for key in ['from', 'to']:
+                    if edge[key] == old:
+                        edge[key] = new
+            for hit in row['targets']:
+                if hit['seed'] == content(old):
+                    hit['seed'] = content(new)
+                for why in hit['why']:
+                    if why.get('kind') == 'path':
+                        for key in ['from', 'via', 'asserted_from', 'asserted_to']:
+                            if why.get(key) == old:
+                                why[key] = new
+        mutate_json(root / (arm + '.jsonl'), change)
+    for arm in ['baseline', 'scored']:
+        run_case('coherent out-of-window weak reseed ' + arm,
+                 lambda root, arm=arm: reseed(root, arm, True),
+                 expected_error='weak origin must occur in first 63 retained fused results')
+        run_case('coherent later eligible weak reseed ' + arm,
+                 lambda root, arm=arm: reseed(root, arm, False),
+                 expected_error='weak origin must be first eligible topic in recorded fixture seed window')
+
+
 if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    if '--round7-weak-only' in sys.argv:
+        round7_weak_window_cases()
+        raise SystemExit(0)
     round7_graph_only_cases()
     if '--round7-graph-only' in sys.argv:
         raise SystemExit(0)
+    round7_weak_window_cases()
     run_case('non-patch traversal replacement with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text('not a patch\n'),expected_error='recorded traversal patch differs')
     run_case('changed traversal patch with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text((r/'source/experimental-traversal.patch').read_text()+'\n# changed\n'),expected_error='recorded traversal patch differs')
     for arm in ['baseline','scored']:
