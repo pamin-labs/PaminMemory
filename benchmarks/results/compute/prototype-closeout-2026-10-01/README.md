@@ -163,22 +163,31 @@ PYBUILD
 
 Retain the actual native build/runtime settings and hashes separately. The historical compiler flags and complete transitive build certificate are not reconstructed by this command. The worker sets `DYLD_LIBRARY_PATH=/private/tmp/pamin-cost-runtime`; provision that directory with the actual dynamic dependencies used by these frozen executables, including their selected Zvec dylib and any required ORT dylibs. Do not infer a library's identity from its filename or silently substitute a different runtime. Build, copying and provisioning finish before running the worker; the commands do not download models or initialize PostgreSQL.
 
-With all builds stopped, use fresh case names and existing completed indexes. The original worker clears reranker/intra-op overrides; the outer environment additionally clears graph/search overrides absent from that worker. Each invocation is a fresh Python/native process. For a new comparison rotate arm order across blocks; this fixed listing only specifies the seven source/profile/policy combinations:
+With all builds stopped, use fresh case names and existing completed indexes. The original worker clears reranker/intra-op overrides; the outer environment additionally clears graph/search overrides absent from that worker. Each invocation is a fresh Python/native process. The controller rotates the seven source/profile/policy combinations across blocks:
 
 ```sh
-while read -r arm binary profile policy; do
-  for block in 0 1 2; do
-    env -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION python3 /private/tmp/pamin-cost-worker.py "reproduced-$arm-$block" "$binary" "$profile" "$policy"
-  done
-done <<'ARMS'
-main-cpu /private/tmp/pamin-cost-frozen-main accuracy cpu
-main-auto /private/tmp/pamin-cost-frozen-main accuracy auto
-main-auto-repeat /private/tmp/pamin-cost-frozen-main accuracy auto
-new-cpu /private/tmp/pamin-cost-frozen-prototype accuracy cpu
-dual-cpu /private/tmp/pamin-cost-frozen-prototype dual_accuracy cpu
-new-auto /private/tmp/pamin-cost-frozen-prototype accuracy auto
-new-auto-persist-hit /private/tmp/pamin-cost-frozen-persisted accuracy auto
-ARMS
+python3 - <<'PYRUN'
+import os, subprocess, sys
+arms = [
+    ("main-cpu", "main", "accuracy", "cpu"),
+    ("main-auto", "main", "accuracy", "auto"),
+    ("main-auto-repeat", "main", "accuracy", "auto"),
+    ("new-cpu", "prototype", "accuracy", "cpu"),
+    ("dual-cpu", "prototype", "dual_accuracy", "cpu"),
+    ("new-auto", "prototype", "accuracy", "auto"),
+    ("new-auto-persist-hit", "persisted", "accuracy", "auto"),
+]
+env = os.environ.copy()
+for key in ("PAMIN_SEARCH_EFFORT", "PAMIN_PREPARED", "PAMIN_FUSED_ATTENTION"):
+    env.pop(key, None)
+for block in range(3):
+    offset = 2 * block
+    for arm, binary, profile, policy in arms[offset:] + arms[:offset]:
+        subprocess.run([
+            sys.executable, "/private/tmp/pamin-cost-worker.py", f"reproduced-{arm}-{block}",
+            f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy,
+        ], env=env, check=True)
+PYRUN
 ```
 
 The worker writes `/private/tmp/pamin-cost-reproduced-ARM-BLOCK.jsonl`, a local diagnostic `.log` and `-process.json`. Existing row filenames abort through `create_new`; preserve historical files and choose a new case prefix for another rerun. Establish the nonexpired persisted plan in one unmeasured setup process before hit blocks and check the measured logs for zero calibration/rejection events. Keep raw diagnostic logs private.
