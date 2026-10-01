@@ -96,6 +96,10 @@ case(copies=8);case(copies=10);print('passed exact nine-copy count')
 for key in ['HF_HOME','HF_HUB_CACHE']:refuse(lambda:guard.controlled_environment({key:'unexpected'}))
 for value in ['','1','64']:refuse(lambda:guard.controlled_environment({'TOKIO_WORKER_THREADS':value}))
 assert guard.controlled_environment({})['TOKIO_WORKER_THREADS']=='4'
+for key in ['TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS']:
+    for value in ['','false','1','64']:refuse(lambda:guard.controlled_environment({key:value}))
+assert guard.controlled_environment({})['TOKENIZERS_PARALLELISM']=='false'
+assert guard.controlled_environment({})['RAYON_NUM_THREADS']=='4'
 with tempfile.TemporaryDirectory() as temporary:
     root=Path(temporary);seed=root/'seed';models=root/'models';models.mkdir();(seed/'postgres/data').mkdir(parents=True);(seed/'index').mkdir();(seed/'models').symlink_to(models,target_is_directory=True)
     (seed/'index/data').write_bytes(b'original');expected=guard.fixture_snapshot(seed,models)

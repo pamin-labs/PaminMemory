@@ -122,16 +122,17 @@ with tempfile.TemporaryDirectory() as directory:
         refuse(lambda:guard['setup_rows'](output,'seed',1))
     previous_run=subprocess.run;previous_env=dict(os.environ);previous_argv=sys.argv
     try:
-        os.environ.clear();os.environ.update({key:value for key,value in previous_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})
+        os.environ.clear();os.environ.update({key:value for key,value in previous_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE','TOKIO_WORKER_THREADS','TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS'}})
         subprocess.run=lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError('unexpected setup launch'))
-        for at,value in enumerate(['','1','64']):
-            private=root/f'tokio-rejected-{at}.json';os.environ['TOKIO_WORKER_THREADS']=value
-            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
-            try:guard['main']()
-            except AssertionError as error:assert 'inherited Tokio worker concurrency' in str(error)
-            else:raise AssertionError('inherited Tokio reached setup')
-            assert not private.exists(), 'Tokio rejection must precede record creation'
-        os.environ.pop('TOKIO_WORKER_THREADS')
+        for key,message in [('TOKIO_WORKER_THREADS','inherited Tokio worker concurrency'),('TOKENIZERS_PARALLELISM','inherited tokenizer/Rayon concurrency'),('RAYON_NUM_THREADS','inherited tokenizer/Rayon concurrency')]:
+            for at,value in enumerate(['','1','64']):
+                private=root/f'{key}-rejected-{at}.json';os.environ[key]=value
+                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+                try:guard['main']()
+                except AssertionError as error:assert message in str(error)
+                else:raise AssertionError('inherited concurrency reached setup')
+                assert not private.exists(), 'concurrency rejection must precede record creation'
+            os.environ.pop(key)
         for kind in ['conversion','wrong_artifact']:
             bad=copy.deepcopy(attested)
             if kind=='conversion':bad['build_kind']='disk-schema-conversion'
@@ -156,6 +157,7 @@ with tempfile.TemporaryDirectory() as directory:
             private=root/(kind+'.json');calls=[]
             def fake_run(command,env,**kwargs):
                 assert env['TOKIO_WORKER_THREADS']=='4', 'setup must receive explicit Tokio concurrency'
+                assert env['TOKENIZERS_PARALLELISM']=='false' and env['RAYON_NUM_THREADS']=='4', 'setup tokenizer/Rayon pins missing'
                 calls.append(command)
                 if kind=='changed_during_setup':(models/'prepared/key/model.onnx.data').write_bytes(b'changed during setup')
                 if kind=='manifest_changed':manifest.write_text(manifest.read_text()+' ')
@@ -167,6 +169,7 @@ with tempfile.TemporaryDirectory() as directory:
             else:refuse(guard['main'])
             data=json.loads(private.read_text());assert data['status']==('finished' if kind=='normal' else 'failed') and len(calls)==1
             assert data['controlled_environment']['TOKIO_WORKER_THREADS']=='4'
+            assert data['controlled_environment']['TOKENIZERS_PARALLELISM']=='false' and data['controlled_environment']['RAYON_NUM_THREADS']=='4'
             assert '_expected_models' not in data and 'entries' not in data['models_before_launch'] and stat.S_IMODE(private.stat().st_mode)==0o600
             (models/'prepared/key/model.onnx.data').write_bytes(b'tiny fake asset');manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
         # Provider text uses the retained native log syntax; the real frozen
