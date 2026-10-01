@@ -85,5 +85,7 @@ def check_git(binding, repository=None):
         expected = f"{row['mode']} blob {row['git_blob']}\t{row['path']}\0".encode()
         require(entry.stdout == expected, 'public Git mode/path/blob mismatch')
         blob = read('cat-file', 'blob', row['git_blob'])
-        require(blob.returncode == 0 and len(blob.stdout) == row['bytes'] and hashlib.sha256(blob.stdout).hexdigest() == row['sha256'], 'public Git source bytes/SHA mismatch')
+        if blob.returncode != 0:
+            return None  # A blobless clone may have the commit/tree but not local blobs.
+        require(len(blob.stdout) == row['bytes'] and hashlib.sha256(blob.stdout).hexdigest() == row['sha256'], 'public Git source bytes/SHA mismatch')
     return len(binding['files'])
