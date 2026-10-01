@@ -1100,6 +1100,13 @@ mod tests {
                 }
             })
             .collect();
+        // Ordinary lexical/combiner/k variants preserve the shipped dual
+        // stream; only an explicit ablation below removes it.
+        for (name, fusion) in variants() {
+            let ranked = as_if(&hits, &fusion);
+            assert!(ranked.iter().any(|topic| topic == "primary"), "{name}");
+            assert!(ranked.iter().any(|topic| topic == "secondary"), "{name}");
+        }
         let split = effective_fusion(&hits, &Fusion::default());
         assert_eq!(
             as_if_effective(&hits, &split.clone().without(Channel::VectorSecondary)),

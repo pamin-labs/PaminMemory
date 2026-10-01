@@ -824,7 +824,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         );
 
         for ((_, fusion), into) in variants.iter().zip(&mut offline) {
-            note(into, &channels::as_if_effective(&hits, fusion));
+            note(into, &channels::as_if(&hits, fusion));
         }
 
         if let (Some(segmented), Some(ngram)) = (
