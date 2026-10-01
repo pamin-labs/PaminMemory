@@ -86,7 +86,13 @@ python3 -B run.py --execute --exclusive
 python3 -B analyze.py
 ```
 
-Configure the local `CARGO_HOME`/`RUSTUP_HOME` offline caches first. Reserve at
+Configure the local `CARGO_HOME`/`RUSTUP_HOME` offline caches first. The shared
+build controller creates owned, config-free `HOME` and `CARGO_HOME` directories,
+linking only existing registry/git caches. It refuses either Cargo configuration
+filename in source-checkout ancestors and the owned Cargo home, and records
+those checks; external cache contents are prerequisites, not independently
+attested. PostgreSQL uses authenticated loopback TCP with Unix sockets disabled.
+Reserve at
 least 8 GiB free disk, additional build/clone growth and the shared controller's
 2 GiB cgroup memory headroom. Claim `--exclusive` only after excluding competing
 builds/model experiments; the cooperative host lock cannot detect unrelated
