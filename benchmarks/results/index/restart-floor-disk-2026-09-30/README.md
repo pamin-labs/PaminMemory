@@ -107,3 +107,11 @@ validate declared historical evidence, not independent runtime cache isolation.
 Stopped-seed endpoint verification requires inventory paths within the recorded
 `<SCRATCH>/seed-disk` root and the exact retained regular-file/credential exclusion
 policy. The late endpoint remains a surviving-file observation, not per-copy proof.
+
+Historical per-copy starting index allocation baseline: **N/A**. Retained
+allocated-byte observations and numeric tables are unchanged, but byte/hash
+identity does not establish identical starting allocation after copying; these
+comparisons cannot exclude allocation differences introduced by the copies.
+The prospective version2 fixture guard binds per-file `st_blocks * 512` and
+rejects different starting clone allocation. It does not retroactively attest
+these archived copies or physical exclusive storage.

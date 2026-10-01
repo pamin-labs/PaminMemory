@@ -30,4 +30,23 @@ with tempfile.TemporaryDirectory() as tmp:
   tree=ast.parse(text);main=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=='main')
   assert any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=='read_attestation' for x in ast.walk(main))
   assert not any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=='digest' and ast.unparse(x.args[0])=='a.attestation' for x in ast.walk(main))
-print('BEFORE: attestation parsed/hash bytes diverge' if before else 'PASS: attestation hash binds parsed bytes')
+ models=p/'models';models.mkdir();seed=p/'seed';(seed/'index').mkdir(parents=True);(seed/'postgres/data').mkdir(parents=True);(seed/'models').symlink_to(models,target_is_directory=True)
+ index=seed/'index/data';index.write_bytes(b'fixture');link=seed/'index/link';link.symlink_to('data');expected=g['fixture_snapshot'](seed,models)
+ original_stat=Path.stat;original_lstat=Path.lstat
+ class Allocation:
+  def __init__(self,actual):self.actual=actual
+  def __getattr__(self,key):return self.actual.st_blocks+8 if key=='st_blocks' else getattr(self.actual,key)
+ def stat(path,*args,**kwargs):
+  actual=original_stat(path,*args,**kwargs);return Allocation(actual) if path==index else actual
+ def lstat(path,*args,**kwargs):
+  actual=original_stat(path,follow_symlinks=False);return Allocation(actual) if path==index else actual
+ with patch.object(Path,'stat',stat),patch.object(Path,'lstat',lstat):
+  if before:g['verify_fixture'](seed,expected)
+  else:
+   try:g['verify_fixture'](seed,expected)
+   except AssertionError as error:assert 'fixture differs' in str(error)
+   else:raise AssertionError('changed allocation accepted')
+ if not before:
+  actual=g['verify_fixture'](seed,expected)
+  assert expected['version']==2 and actual['index_allocated_bytes']==(original_stat(index).st_blocks+original_lstat(link).st_blocks)*512
+print('BEFORE: attestation parsed/hash bytes diverge; changed allocation accepted' if before else 'PASS: attestation hash binds parsed bytes; changed index allocation rejected; positive allocation receipt matches')
