@@ -46,7 +46,7 @@ def main():
             env.update(CACHE_RETURN_LIMIT=str(job['limit']), CACHE_QUERY_ID=str(job['query_id']),
                        CACHE_TIER=job['tier'], CACHE_SEQUENCE=job['sequence'])
             usage = native(home, env, binary, out / job['name'])
-            opened, actual = parse((out / (job['name'] + '.log')).read_text(), job, bound)
+            opened, actual = parse((out / (job['name'] + '.log')).read_text(), job, bound, home)
             validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
             for old, new in zip(actual, actual[1:]):
                 rows.hot_guard(old, new, job['source'])

@@ -107,10 +107,16 @@ memo as `stack` internally; these labels do not mean current main or the entire
 current stack. New reports include the exact frozen revisions and this mapping.
 
 The source/asset guards check the exact probe/scaffold and runtime identities.
-The shared guards record the actual host/affinity and visible nested/ancestor
-cgroup quota/memory conditions rather than assuming the historical host.
+The shared guards locate cgroup2 membership through actual mountinfo and record
+the host/affinity and visible nested/ancestor quota/memory conditions rather
+than assuming the historical host.
 The controllers authenticate and clean up only owned PostgreSQL/child process
-groups. The row checks require actual requested settings, corpus count, Flat
+groups. Each new native-process receipt captures its copied PostgreSQL
+installation/build configuration, running executable and mapped-library file
+hashes; historical PostgreSQL build identity remains `N/A`. These are capture
+checks, not an attestation of library inode identity. This 36-process controller
+does not invoke the shared 80-process controller’s checkpoint/resume logic.
+The row checks require actual requested settings, corpus count, Flat
 coverage, visible selected pairs, typed f32 results, matched gold, hot behavior,
 equal successful work and fresh-final-context oracles. Baseline hot calls may
 encode; memo hot calls must skip encoding. Missing rows, changed work premises

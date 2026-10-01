@@ -46,6 +46,7 @@ def report(packets, gold):
                           'index_after_bytes': packet['index_after_bytes'], 'payload_immutability': None})
         processes[-1]['host_conditions'] = packet['host_conditions']
         processes[-1]['postgres_disk'] = packet['postgres_disk']
+        processes[-1]['postgres_build_identity'] = packet['usage']['postgres_build_identity']
     c.require(calls == 428, 'incomplete timed-call matrix')
     classifications = rows.oracle_checks(results)
     table = []
