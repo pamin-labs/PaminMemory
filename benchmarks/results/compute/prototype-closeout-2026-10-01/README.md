@@ -110,15 +110,34 @@ PYWORKER
 python3 -m py_compile /private/tmp/pamin-cost-worker.py
 ```
 
-Build all three sources explicitly in fresh detached checkouts. The installer checks HEAD and source SHA, removes stale ignored tests, and registers cleanup before downloading/building. All builds share one target directory to limit disk usage; each executable is copied before the next build. Existing checkout paths cause `git worktree add` to fail instead of overwriting them.
+Build all three sources explicitly in fresh detached checkouts. The installer checks HEAD and source SHA, removes stale ignored tests, and registers cleanup before downloading/building. All builds share one target directory to limit disk usage; each executable is copied before the next build. Each build session owns unique temporary source paths and installs outer teardown before adding the first worktree. It unregisters only worktrees it created, on success/failure/interruption; unrelated registrations are preserved.
 
 ```sh
 # Run in a fresh Bash shell from the repository. The PostgreSQL/model/index
 # provisioning described above must already exist, under an unprivileged user.
+(
 set -euo pipefail
-git worktree add --detach /private/tmp/pamin-cost-src-main 315c10242ddf7a1cec3bccbf550a942320e09557
-git worktree add --detach /private/tmp/pamin-cost-src-prototype 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27
-git worktree add --detach /private/tmp/pamin-cost-src-persisted 0f023be6a8d8d070a971f7e590ccccff2c3292bb
+repo_root=$(git rev-parse --show-toplevel)
+source_root=$(mktemp -d /private/tmp/pamin-cost-sources.XXXXXXXX)
+created=()
+cleanup_sources() {
+  for ((i=${#created[@]}-1; i>=0; i--)); do
+    path=${created[i]}
+    git -C "$repo_root" worktree remove --force "$path" 2>/dev/null || true
+  done
+  # Successful remove unregisters each worktree; never prune unrelated entries.
+  rmdir "$source_root" 2>/dev/null || true
+}
+trap cleanup_sources EXIT
+trap 'exit 130' HUP INT TERM
+add_source() {
+  path="$source_root/$1"
+  git -C "$repo_root" -c submodule.recurse=false worktree add --detach "$path" "$2"
+  created+=("$path")
+}
+add_source main 315c10242ddf7a1cec3bccbf550a942320e09557
+add_source prototype 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27
+add_source persisted 0f023be6a8d8d070a971f7e590ccccff2c3292bb
 build_cost_binary() (
   set -euo pipefail
   cd "$1"
@@ -193,9 +212,10 @@ for library in dict.fromkeys(needed):
 Path(sys.argv[2] + '.zvec.json').write_text(json.dumps(receipt, indent=2))
 PYBUILD
 )
-build_cost_binary /private/tmp/pamin-cost-src-main 315c10242ddf7a1cec3bccbf550a942320e09557 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/b1054c02a237de3f8ecb8e7252fbc562526d6311/pamin-main-cost-harness.rs 253a1546bba55ff9bb3733c60a790d489565729b37edd259b8a6e6b8cfd373cc /private/tmp/pamin-cost-frozen-main
-build_cost_binary /private/tmp/pamin-cost-src-prototype 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/451f9cd328dbaa636be72909291b5a9dd97419c7/pamin-new-cost-harness-reconstructed.rs b2f170bd06e488311ec4c1b75d8ded4bb1a56e728ac12802fa47f7d346eccee8 /private/tmp/pamin-cost-frozen-prototype
-build_cost_binary /private/tmp/pamin-cost-src-persisted 0f023be6a8d8d070a971f7e590ccccff2c3292bb https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs 2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad /private/tmp/pamin-cost-frozen-persisted
+build_cost_binary "$source_root/main" 315c10242ddf7a1cec3bccbf550a942320e09557 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/b1054c02a237de3f8ecb8e7252fbc562526d6311/pamin-main-cost-harness.rs 253a1546bba55ff9bb3733c60a790d489565729b37edd259b8a6e6b8cfd373cc /private/tmp/pamin-cost-frozen-main
+build_cost_binary "$source_root/prototype" 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/451f9cd328dbaa636be72909291b5a9dd97419c7/pamin-new-cost-harness-reconstructed.rs b2f170bd06e488311ec4c1b75d8ded4bb1a56e728ac12802fa47f7d346eccee8 /private/tmp/pamin-cost-frozen-prototype
+build_cost_binary "$source_root/persisted" 0f023be6a8d8d070a971f7e590ccccff2c3292bb https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs 2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad /private/tmp/pamin-cost-frozen-persisted
+)
 ```
 
 With all builds stopped, these are the seven per-arm invocations; each runs three fresh processes. The outer environment also clears graph/search overrides missing from the historical worker. Do not run arms in parallel; the executable loop rotates their order across process blocks for a new comparison. This listing reproduces recorded arm settings, not controlled historic machine load or CoreML compilation warmth.
