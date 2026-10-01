@@ -5,6 +5,7 @@ if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; remove -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
 from pathlib import Path
+from collections import Counter
 root=Path(__file__).resolve().parent
 repo=root.parents[3]
 manifest=json.loads((root/'manifest.json').read_text())
@@ -12,9 +13,22 @@ for relative,digest in manifest['files'].items():
     assert hashlib.sha256((repo/relative).read_bytes()).hexdigest()==digest, relative
 raw=[json.loads(line) for line in (root/'raw.jsonl').read_text().splitlines()]
 assert len([r for r in raw if r['phase']=='process_total'])==9
+assert {(r['arm'],r['repetition']) for r in raw}=={(arm,rep) for arm in ['main','predecessor','candidate'] for rep in range(3)}, 'HNSW unexpected arm/repetition'
 for arm in ['main','predecessor','candidate']:
     for rep in range(3):
         rows=[r for r in raw if r['arm']==arm and r['repetition']==rep]
+        expected_phases=Counter({**{p:1 for p in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']},'search_warmup':2,'search_warm':24})
+        assert Counter(r['phase'] for r in rows)==expected_phases, 'HNSW unexpected phase multiset'
+        log=(root/'logs'/f'{rep}-{arm}.log').read_text()
+        assert 'test result: ok. 1 passed;' in log, 'HNSW unsuccessful retained process log'
+        logged=[json.loads(line.removeprefix('RESTART_JSON ')) for line in log.splitlines() if line.startswith('RESTART_JSON ')]
+        unmatched=[r for r in rows if r['phase']!='process_total']
+        assert len(logged)==len(unmatched), 'HNSW raw/log cardinality differs'
+        for observation in logged:
+            matches=[i for i,r in enumerate(unmatched) if all(key in r and r[key]==value for key,value in observation.items())]
+            assert len(matches)==1, 'HNSW native log observation has no unique raw row'
+            unmatched.pop(matches[0])
+        assert not unmatched, 'HNSW raw observations absent from native log'
         upkeep=[r for r in rows if r['phase']=='maintenance']
         assert len(upkeep)==1 and upkeep[0]['extra']['optimize_completed_delta']==(arm!='candidate')
         warm=[r for r in rows if r['phase']=='search_warm']
@@ -50,6 +64,8 @@ assert len(memory_binaries)==3 and {b['arm'] for b in memory_binaries}=={'main',
 for b in memory_binaries:
     prior=next(p for p in disk_binaries if p['arm']==b['arm'])
     assert b['commit']==prior['commit'] and b['sha256']==prior['sha256'] and b['binary'].replace('${SCRATCH}','<SCRATCH>')==prior['binary'], 'HNSW arm-keyed executable binding'
+expected_commits={b['arm']:b['commit'] for b in memory_binaries}
+assert all(r['commit']==expected_commits[r['arm']] for r in raw), 'HNSW raw commit differs from retained arm executable'
 timing_review=review.timing_review(summary,raw)
 assert timing_review==json.loads((root/'timing-review.json').read_text()), 'HNSW timing screen differs'
 # Bind every displayed row/cell, including stable difference and percentage
