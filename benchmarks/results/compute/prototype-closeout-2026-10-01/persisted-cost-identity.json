@@ -1,0 +1,5 @@
+{
+  "code": "0f023be6a8d8d070a971f7e590ccccff2c3292bb",
+  "harness_sha256": "2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad",
+  "scope": "same 66 unique actual searches; first selection and subsequent independent CLI processes separated; cache expiry and actual provider recorded"
+}

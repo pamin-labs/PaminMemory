@@ -1,0 +1,224 @@
+[
+  {
+    "arm": "main-cpu",
+    "process": 0,
+    "log_sha256": "7da541accfd3f9988f32c8bb5d05407242ad0dbdd184f06a13ae81428bb607e4",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-cpu",
+    "process": 1,
+    "log_sha256": "34991d96aa2d45fdae856336f4a63715b0161fd9950479cc66542bee949b048e",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-cpu",
+    "process": 2,
+    "log_sha256": "cde364d300615f9f2e93cddcafc4f9e3c90586d4c1fde87906e74f67c37fa5c3",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-cpu",
+    "process": 0,
+    "log_sha256": "d44249209b3e17987f1570ddb11311978a1dd808803269bbdefc6f1115d8fe02",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
+    ]
+  },
+  {
+    "arm": "new-cpu",
+    "process": 1,
+    "log_sha256": "55f419674360e43dcdf3f9866c7c04febe909b26dd91385d3307de0bb4e83765",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
+    ]
+  },
+  {
+    "arm": "new-cpu",
+    "process": 2,
+    "log_sha256": "e25f09349726410e3a305fce198edc5fca9e40c0799327411380aa45b46e4466",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
+    ]
+  },
+  {
+    "arm": "dual-cpu",
+    "process": 0,
+    "log_sha256": "cd8fa95917374ff02d57c362a7d1b578fc77bf613738e6f911cdbdf6fcabd1bb",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4\" device=\"cpu\""
+    ]
+  },
+  {
+    "arm": "dual-cpu",
+    "process": 1,
+    "log_sha256": "b2a38030f1d1b81b4daaf716ab38977608bbc840e8036b50939b893be4a23266",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4\" device=\"cpu\""
+    ]
+  },
+  {
+    "arm": "dual-cpu",
+    "process": 2,
+    "log_sha256": "3a1866c03378f4e2157801c5fc436317ae6891956356c4a5a26ab8819b73969b",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"cpu\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4\" device=\"cpu\""
+    ]
+  },
+  {
+    "arm": "main-auto",
+    "process": 0,
+    "log_sha256": "97adb54f1bbed643d2b11bf7e0d6f2449d77148b5bbc17468fa48c784a07ce83",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-auto",
+    "process": 1,
+    "log_sha256": "da8ba8704cf03ebe473484e5a9801914d9903b8a5a69275028a9f79682423f9e",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-auto",
+    "process": 2,
+    "log_sha256": "90fa56f935b7a90f24234ca4c870985bf37f8140a268d992e3d8201452f9aa73",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-auto",
+    "process": 0,
+    "log_sha256": "8b03a47f47788715ea2950fe8920e56f47760da6bddb1f92c9f55005cabd858f",
+    "calibration_lines": 1,
+    "candidate_rejection_lines": 1,
+    "loaded_device_evidence": [
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-auto",
+    "process": 1,
+    "log_sha256": "9de2479a3a1099cd06bd3b679a7e55751daf00e22bce5bc3134f3aff23a67373",
+    "calibration_lines": 1,
+    "candidate_rejection_lines": 1,
+    "loaded_device_evidence": [
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-auto",
+    "process": 2,
+    "log_sha256": "e87eae5634bcb761d6ec6951bb01b6a593d9a08d13c0f1ed7df822bb9226617f",
+    "calibration_lines": 1,
+    "candidate_rejection_lines": 1,
+    "loaded_device_evidence": [
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-auto-repeat",
+    "process": 0,
+    "log_sha256": "ca01f74b308cd97203dcbb88031be6cc10dc55bb145487559d86b5d033b81edb",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-auto-repeat",
+    "process": 1,
+    "log_sha256": "f55d6dba22353f04d2cc83dab96f32d4f90c2006832fe1bd9cc93c1078816379",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "main-auto-repeat",
+    "process": 2,
+    "log_sha256": "1f3ceb4733624a3a2db9ff1d1fcf85929c25182250b1e844a4bdc34710f8e201",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-auto-persist-hit",
+    "process": 0,
+    "log_sha256": "c5c26921e870a9dec4b3f8d98bd11fd592de6776ff44b174e652cd480365825d",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-auto-persist-hit",
+    "process": 1,
+    "log_sha256": "1dbb2d643dd9d812730bec051ead5c37c98ea6e10a8e075a22f40fd00f8bef84",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\"",
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256"
+    ]
+  },
+  {
+    "arm": "new-auto-persist-hit",
+    "process": 2,
+    "log_sha256": "4dd79c6161fd0e09aa68b86912ce4c361806cfe4ddcf180db513dd31f4294170",
+    "calibration_lines": 0,
+    "candidate_rejection_lines": 0,
+    "loaded_device_evidence": [
+      "INFO pamin_index::reranking: reranker loaded tier=\"accurate\" device=\"coreml\" maximum_tokens=256",
+      "INFO pamin_index::embedding: embedder loaded model=\"gpahal/bge-m3-onnx-int8\" device=\"cpu\""
+    ]
+  }
+]
