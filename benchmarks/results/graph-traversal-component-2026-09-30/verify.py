@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 # Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
-BUILD_RECIPE_SHA256='2d0af388526f26336d1b414f5d46d765f93f905ec50f9770eea07e4b8e324077'
+BUILD_RECIPE_SHA256='b799b1922812c15d9a3c3ce2762d5db9e21bba5cf7617d3e4081d62bfdafd0be'
 RUNTIME_RECIPE_SHA256='6cef85890f29f6e630fc2a6d6b2dfe77842a0c46988c9bfedeffa41fc393983c'
 
 # Complete retained raw inventories, including native UUIDs/scores; capture-only pins.
@@ -396,7 +396,7 @@ for label, values in zip(labels, computed+[early]):
 readme = (ROOT/'README.md').read_text()
 HISTORICAL_ZVEC_README='The provisioned Zvec file was hashed before and after, but its actual loaded\nmapping was not captured: historical loaded-Zvec identity is **N/A**.'
 assert readme.count(HISTORICAL_ZVEC_README)==1, 'README historical loaded zvec N/A limitation differs'
-build_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if 'cargo test -p pamin-engine' in block]
+build_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if 'CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0' in block]
 assert len(build_commands)==1, 'exact native-library build reproduction command required'
 assert hashlib.sha256(build_commands[0].encode()).hexdigest()==BUILD_RECIPE_SHA256, 'pinned native-library build environment missing or changed: complete approved recipe differs'
 runtime_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if '"$BINARY" scratch_scored_graph_finite_fixture' in block]

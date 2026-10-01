@@ -172,21 +172,32 @@ For each
 scratch arm:
 
 ```sh
+(
+set -eu
+unset RUSTUP_TOOLCHAIN RUSTC RUSTDOC
+TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu
+test "$(rustc +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["rustc"], end="")')"
+test "$(cargo +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["cargo"], end="")')"
+cd "$ARMS/$ARM"
 env -u ORT_LIB_PATH -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
 -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER \
 ORT_LIB_LOCATION="$ORT_LIB" ORT_PREFER_DYNAMIC_LINK=1 \
 ZVEC_LIB_DIR="$ZVEC_LIB" ZVEC_AUTO_BUILD=0 \
 LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB" \
-CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p pamin-engine \
+CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo +"$TOOLCHAIN" test -p pamin-engine \
   --manifest-path "$ARMS/$ARM/Cargo.toml" \
   --test scratch_scored_fixture --test scratch_scored_multihop \
   --no-run --release --offline --locked --message-format=json
+)
 ```
 
 The build and launch both use the pinned dynamic-library directories. These
 variables reproduce the selected native link/runtime path; they are not a
-complete transitive source-to-build certificate. The explicit manifest selects the generated `$ARMS/$ARM` workspace, even when
-the shell remains in the evidence directory. Set `ARM` to `baseline` or `scored`
+complete transitive source-to-build certificate. Run this complete subshell from the evidence directory. It clears inherited
+Rust toolchain/compiler selectors, explicitly selects `1.98.1-x86_64-unknown-linux-gnu`,
+and checks both complete verbose versions against the pinned provenance before
+changing to the generated arm workspace. The explicit manifest and child working
+directory both select `$ARMS/$ARM`. Set `ARM` to `baseline` or `scored`
 before each build. The command selects the same two-target compilation scope. It does not select or run the multihop stress test. Copy the fixture executable before any later
 clean/build. Use a prepared
 workspace and pinned native runtime/model assets; clear inherited `PAMIN_*`
