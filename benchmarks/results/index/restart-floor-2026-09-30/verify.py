@@ -60,7 +60,8 @@ for arm in ['main','predecessor','candidate']:
             unmatched.pop(matches[0])
         assert not unmatched, 'HNSW raw observations absent from native log'
         upkeep=[r for r in rows if r['phase']=='maintenance']
-        assert len(upkeep)==1 and upkeep[0]['extra']['optimize_completed_delta']==(arm!='candidate')
+        assert len(upkeep)==1
+        review.optimize_job_count(upkeep[0]['extra']['optimize_completed_delta'],0 if arm=='candidate' else 1)
         assert next(r for r in rows if r['phase']=='open')['extra']['documents']==18000, 'HNSW open document count differs'
         assert upkeep[0]['extra']['documents']==18001, 'HNSW post-write document count differs'
         complete=struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0

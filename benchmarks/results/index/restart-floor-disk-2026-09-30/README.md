@@ -93,3 +93,8 @@ Historical `TOKIO_WORKER_THREADS` and the effective Tokio worker count were not 
 Historical memory chronology qualification: the [recomputed receipt](hwm-review.json) binds the exact retained before/after HWM decreases and sampled VmRSS observations. No tolerance is applied: any added, removed or changed anomaly fails verification. The HWM-derived peak process RSS comparisons above are uncertified/N/A; sampled maintenance RSS remains an observation, not a lifetime peak. Original raw/log rows and calculator remain unchanged. The machine-readable summary is newly derived and supersedes its numeric predecessor: all peak-RSS process/median/comparison values are null with enforced N/A certification. Its derivation records the raw, calculator and superseded numeric-summary hashes; other metrics retain the same arithmetic.
 
 CPU-counter verification checks nonnegative integer user/system cumulative ticks across every consecutive non-null before/after snapshot, including phase boundaries and missing-snapshot gaps. It does not add full-lifetime CPU coverage beyond the retained measurement scope.
+
+Offline verification requires each maintenance optimize-job observation to be
+an actual nonnegative JSON integer, excluding booleans, before comparing the
+arm’s expected count. Matching raw/log values and refreshed derived summaries
+or manifests do not replace this type check. Historical raw values are unchanged.
