@@ -106,12 +106,34 @@ def verify():
     expected = {"main-cpu", "new-cpu", "dual-cpu", "main-auto", "new-auto", "main-auto-repeat", "new-auto-persist-hit"}
     assert set(costs) == expected, "retained timing arm set is incomplete"
     assert sum(len(a["blocks"]) for a in costs.values()) == 21
+    reference_workload = [(baseline_queries[18 * i]["id"], baseline_queries[18 * i]["language"]) for i in range(66)]
+    source_by_arm = {
+        "main-cpu": "315c10242ddf7a1cec3bccbf550a942320e09557",
+        "main-auto": "315c10242ddf7a1cec3bccbf550a942320e09557",
+        "main-auto-repeat": "315c10242ddf7a1cec3bccbf550a942320e09557",
+        "new-cpu": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+        "dual-cpu": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+        "new-auto": "503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27",
+        "new-auto-persist-hit": "0f023be6a8d8d070a971f7e590ccccff2c3292bb",
+    }
     for name, arm in costs.items():
         assert len(arm["blocks"]) == 3
         assert {b["block"] for b in arm["blocks"]} == {0, 1, 2}
         for block in arm["blocks"]:
             raw = rows(f"{name}-{block['block']}.jsonl")
             queries = [r for r in raw if r["kind"] == "query"]
+            manifest = raw[0]
+            expected_manifest = {
+                "kind": "manifest", "code": source_by_arm[name],
+                "profile": "dual_accuracy" if name == "dual-cpu" else "accuracy",
+                "device_policy": "cpu" if name.endswith("cpu") else "auto",
+                "depth": 50, "limit": 60, "index": "memory", "queries": 66,
+                "documents": 13014, "shared_host": True,
+                "compiled_cache_warmth": "not independently controlled",
+            }
+            for key, value in expected_manifest.items():
+                assert manifest[key] == value, (name, key, manifest[key], value)
+            assert [(q["id"], q["language"]) for q in queries] == reference_workload, "cost query slice/order changed"
             assert len(queries) == 66 and len({r["id"] for r in queries}) == 66
             assert raw[0]["documents"] == 13014 and all(r["ranked"] for r in queries)
             work = [r for r in raw if r["kind"] == "work"]
@@ -123,6 +145,22 @@ def verify():
             assert rss == block["max_sampled_warm_rss_bytes"]
         for cell, median in [("p50_ms", "median_p50_ms"), ("p95_ms", "median_p95_ms"), ("max_sampled_warm_rss_bytes", "median_max_sampled_warm_rss_bytes")]:
             close(statistics.median(b[cell] for b in arm["blocks"]), arm[median])
+    import hashlib
+    proof = json.loads((ROOT / "device-and-cache-proof.json").read_text())
+    assert len(proof) == 21 and {(p["arm"], p["process"]) for p in proof} == {(arm, i) for arm in expected for i in range(3)}
+    for entry in proof:
+        artifact = (ROOT / "logs" / entry["event_artifact"]).read_bytes()
+        assert hashlib.sha256(artifact).hexdigest() == entry["event_sha256"]
+        log = json.loads(artifact)
+        assert log["source_sha256"] == entry["log_sha256"]
+        events = log["events"]
+        assert [event["line"] for event in events] == list(range(len(events)))
+        allowed = {"other", "calibration", "candidate_rejected", "embedder_loaded", "reranker_loaded"}
+        assert all(set(event) <= {"line", "event", "device"} and event["event"] in allowed for event in events)
+        assert sum(event["event"] == "calibration" for event in events) == entry["calibration_lines"]
+        assert sum(event["event"] == "candidate_rejected" for event in events) == entry["candidate_rejection_lines"]
+        if entry["arm"] == "new-auto-persist-hit":
+            assert entry["calibration_lines"] == entry["candidate_rejection_lines"] == 0
     print("Verified paired precision and 21 independent cost blocks against retained raw rows.")
 
 

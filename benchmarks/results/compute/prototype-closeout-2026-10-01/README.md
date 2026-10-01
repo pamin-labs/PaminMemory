@@ -13,7 +13,7 @@ Baseline CPU executable: `555846c`; dual executable: `45a3bcc601b2f9ca7d23d0bf49
 | Same-language nDCG@10 | 0.868201 | 0.872163 | +0.003962 | +0.46% |
 | Same-language recall@50 | 0.964706 | 0.966387 | +0.001681 | +0.17% |
 
-Cross nDCG improves (shared paragraph-cluster sign flips, Holm p≈0.000040); same-language gain is not significant. Cross recall declines. This is a ranking/coverage tradeoff, remains **opt-in**, and does not justify default promotion from one corpus. BGE revision `2b34e84df040034d4b9eabb62383a87c18955822` is combined with PPLX `2c4d510dd4a732063c31a0f70193e35067b51fd8`, with all 196 MatMulNBits at accuracy_level=4. Encoding `pool-int8-single-v2-level4` requires reindex; both dense fields are FP16. Semantic depth and total vector vote budget are unchanged.
+Cross nDCG improves in this exploratory, post-hoc corrected analysis (shared paragraph-cluster sign flips, Holm p≈0.000040); same-language gain is not significant. Cross recall declines. This is a ranking/coverage tradeoff, remains **opt-in**, and does not justify default promotion from one corpus. BGE revision `2b34e84df040034d4b9eabb62383a87c18955822` is combined with PPLX `2c4d510dd4a732063c31a0f70193e35067b51fd8`, with all 196 MatMulNBits at accuracy_level=4. Encoding `pool-int8-single-v2-level4` requires reindex; both dense fields are FP16. Semantic depth and total vector vote budget are unchanged.
 
 ## Product costs
 
@@ -56,9 +56,9 @@ python3 -m pip install numpy==2.5.1
 python3 benchmarks/verify_compute_evidence.py
 ```
 
-This independently recomputes paired nDCG/recall, 240-paragraph shared sign flips/cluster bootstrap and all 21 cost blocks from raw rows, asserts paired IDs/corpus sizes and checks each reported percentile/RSS value. Timing program sources remain scratch-only; source/binary hashes and execution identities are retained. Frozen candidate commits are reachable as `bench/prototype-cost-2026-10-01` (503bd9e) and `bench/persisted-cost-2026-10-01` (0f023be); fetch these tags when inspecting those revisions. Re-running the live workload requires a provisioned unprivileged PostgreSQL workspace and the fingerprinted models/data, 66 fixed query indices `18*i` (i=0..65), warm query 1189, and the product settings above. Freeze executables before launch and keep builds out of timing runs. Historical total ingest time was measured on a shared host with intervening builds and is not a causal speed comparison.
+This independently recomputes paired nDCG/recall, 240-paragraph shared sign flips/cluster bootstrap (exploratory post-hoc correction) and all 21 cost blocks from raw rows, asserts paired IDs/corpus sizes and checks each reported percentile/RSS value. Timing program sources remain scratch-only; source/binary hashes and execution identities are retained. Frozen candidate commits are reachable as `bench/prototype-cost-2026-10-01` (503bd9e) and `bench/persisted-cost-2026-10-01` (0f023be); fetch these tags when inspecting those revisions. Re-running the live workload requires a provisioned unprivileged PostgreSQL workspace and the fingerprinted models/data, 66 fixed query indices `18*i` (i=0..65), warm query 1189, and the product settings above. Freeze executables before launch and keep builds out of timing runs. Historical total ingest time was measured on a shared host with intervening builds and is not a causal speed comparison.
 
-The original query-level statistical summary is retained as historical, not the inference unit for acceptance. `cluster-inference.json` records 100,000 shared flips and cluster-bootstrap draws (PCG64 seed 20261001): cross Holm p≈0.000040; same-language p≈0.153978, lower 95% delta bound -0.001348, still above -0.005. Point metrics and raw rankings are unchanged.
+The original query-level statistical summary is retained as historical, not a valid independent-question acceptance analysis. `cluster-inference.json` records 100,000 shared flips and cluster-bootstrap draws (PCG64 seed 20261001): cross Holm p≈0.000040; same-language p≈0.153978, lower 95% delta bound -0.001348, still above -0.005. Point metrics and raw rankings are unchanged.
 
 ## Fetch measured source refs in a shallow review checkout
 
@@ -70,3 +70,20 @@ git fetch origin refs/tags/bench/prototype-cost-2026-10-01:refs/tags/bench/proto
 git cat-file -t 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27
 git cat-file -t 0f023be6a8d8d070a971f7e590ccccff2c3292bb
 ```
+
+## Executable scratch reproduction
+
+The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/eff4c8c55e69c341f00517046aa9e0d6e3aba751) remain outside the tracked tree, with SHA-256 in `persisted-cost-identity.json`. A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. This command aborts rather than timing an empty corpus. In a separate checkout of the retained `bench/persisted-cost-2026-10-01` tag:
+
+```sh
+curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs -o crates/pamin-engine/tests/scratch_matched_costs.rs
+shasum -a 256 crates/pamin-engine/tests/scratch_matched_costs.rs
+# Expected: 2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad
+# Run one arm at a time, builds/other experiments stopped; rotate arms and use fresh processes.
+env -u HF_HOME -u PAMIN_DEVICE PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE=accuracy MATCHED_COST_ROWS=/private/tmp/reproduced-cost.jsonl cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+rm crates/pamin-engine/tests/scratch_matched_costs.rs
+```
+
+The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Original source hashes are retained; original logs stay local.
+
+The original `predeclared.json` is immutable. It specified independent question-level inference; the corrected cluster analysis was chosen after the results were observed. The new p-value supports an exploratory signal, not a preregistered acceptance claim. Confirm on an independent corpus before changing defaults.
