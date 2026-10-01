@@ -89,11 +89,7 @@ class PublicSourceBinding(unittest.TestCase):
                 with patch.dict('os.environ', {'GIT_NO_LAZY_FETCH': '0'}):
                     with patch.object(source_binding.shutil, 'which', return_value='git'):
                         with patch.object(source_binding.subprocess, 'run', side_effect=promisor_read):
-                            if missing == 'commit':
-                                self.assertIsNone(source_binding.check_git(self.binding))
-                            else:
-                                with self.assertRaisesRegex(ValueError, '^public Git source bytes/SHA mismatch$'):
-                                    source_binding.check_git(self.binding)
+                            self.assertIsNone(source_binding.check_git(self.binding))
                 self.assertEqual(len(calls), 1 if missing == 'commit' else 3)
 
     def test_empty_git_repository_reports_unavailable(self):
@@ -113,7 +109,7 @@ class PublicSourceBinding(unittest.TestCase):
     def check_mock_git(self, responses):
         with patch.object(source_binding.shutil, 'which', return_value='git'):
             with patch.object(source_binding.subprocess, 'run', side_effect=responses):
-                source_binding.check_git(self.binding)
+                return source_binding.check_git(self.binding)
 
     def test_missing_tree_after_available_commit_refused(self):
         responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
@@ -121,12 +117,11 @@ class PublicSourceBinding(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'source tree read'):
             self.check_mock_git(responses)
 
-    def test_missing_blob_after_available_commit_refused(self):
+    def test_missing_blob_after_available_commit_unavailable(self):
         responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
                      SimpleNamespace(returncode=0, stdout=self.first_tree_entry()),
                      SimpleNamespace(returncode=1, stdout=b'')]
-        with self.assertRaisesRegex(ValueError, 'bytes/SHA mismatch'):
-            self.check_mock_git(responses)
+        self.assertIsNone(self.check_mock_git(responses))
 
     def test_public_object_type_refused(self):
         with patch.object(source_binding.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'tag\n', stderr=b'')):
