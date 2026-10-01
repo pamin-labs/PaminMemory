@@ -38,6 +38,27 @@ def mutate_json(path, change, jsonl=False):
         path.write_text(json.dumps(row, indent=2) + '\n')
 
 
+def refresh_graph_comparison(root):
+    rows={arm:json.loads((root/(arm+'.jsonl')).read_text()) for arm in ['baseline','scored']}
+    def value(hit):return next(w['score'] for w in hit['why'] if w.get('channel')=='graph')
+    comparison=json.loads((root/'comparison.json').read_text())
+    for index,entry in enumerate(comparison['invariants']):
+        before=value(next(h for h in rows['baseline']['targets'] if h['topic']==rows['baseline']['target_labels'][index]))
+        after=value(next(h for h in rows['scored']['targets'] if h['topic']==rows['scored']['target_labels'][index]))
+        entry.update(baseline=before,scored=after,absolute_delta=after-before,percent_change=100*(after-before)/before)
+    comparison['early_stop']['scored']=value({'why':rows['scored']['early_stop']['why']})
+    (root/'comparison.json').write_text(json.dumps(comparison,indent=2)+'\n')
+    labels=['Two origins reach one target','A later, stronger arrival from one origin','A stronger route at the same hop','Two-hop answer after 60 one-hop decoys']
+    lines=[]
+    for label,entry in zip(labels,comparison['invariants']+[comparison['early_stop']]):
+        before='Absent' if entry['baseline'] is None else f"{entry['baseline']:.8f}"
+        delta='N/A' if entry['absolute_delta'] is None else f"+{entry['absolute_delta']:.8f}"
+        percent='N/A' if entry['percent_change'] is None else f"+{entry['percent_change']:.6f}%"
+        lines.append(f"| {label} | {before} | {entry['scored']:.8f} | {entry['expected']:g} | {delta} | {percent} |")
+    readme=root/'README.md';text=readme.read_text();start=text.index('| Controlled case |');stop=text.index('\n\n',start);header=text[start:stop].splitlines()[:2]
+    readme.write_text(text[:start]+'\n'.join(header+lines)+text[stop:])
+
+
 def run_case(label, mutate=None, flags=(), refresh_hashes=True, expected_error=None):
     with tempfile.TemporaryDirectory(prefix='graph-archive-negative-') as temp:
         root = Path(temp) / 'archive'
@@ -537,6 +558,14 @@ if __name__ == '__main__':
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
             run_case('nonboolean early-stop '+arm+'/'+repr(reached),lambda r,arm=arm,reached=reached:mutate_json(r/(arm+'.jsonl'),lambda row:row['early_stop'].update(reached=reached)),expected_error='early-stop reached must be an actual boolean')
+    for arm,count in [('baseline',3),('scored',4)]:
+        for index in range(count):
+            def drifted_score(root,arm=arm,index=index):
+                def change(row):
+                    why=row['targets'][index]['why'] if index<3 else row['early_stop']['why']
+                    graph=next(w for w in why if w.get('channel')=='graph');graph['score']+=5e-8
+                mutate_json(root/(arm+'.jsonl'),change);refresh_graph_comparison(root)
+            run_case('nearby retained score '+arm+'/'+str(index),drifted_score,expected_error='retained graph score differs exactly')
     for arm,count in [('baseline',3),('scored',4)]:
         for index in range(count):
             for field in ['confidence','rank','fabricated']:
