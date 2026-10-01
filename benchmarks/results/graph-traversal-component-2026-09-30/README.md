@@ -159,16 +159,31 @@ Build both generated integration targets with the installed pinned Rust/Cargo
 1.98.1 tools, two build workers, explicit runtime paths and no inherited flags or
 wrappers. Keep build and model work out of the run slot. The six retained
 freshness records cover four product path crates and these two integration
-targets; other dependency freshness is not claimed. For each scratch arm:
+targets; other dependency freshness is not claimed.
+
+`ORT_LIB` and `ZVEC_LIB` are directories containing the exact retained
+`libonnxruntime.so.1.28.0` and `libzvec_c_api.so` assets; resolve the archive
+placeholders to provisioned directories and verify their pinned digests before
+building. `--offline` only constrains Cargo and does not disable a native build
+script download fallback; `ZVEC_AUTO_BUILD=0` disables that fallback. The build
+clears `ORT_LIB_PATH`, which otherwise takes precedence over `ORT_LIB_LOCATION`.
+For each
+scratch arm:
 
 ```sh
+env -u ORT_LIB_PATH \
+ORT_LIB_LOCATION="$ORT_LIB" ORT_PREFER_DYNAMIC_LINK=1 \
+ZVEC_LIB_DIR="$ZVEC_LIB" ZVEC_AUTO_BUILD=0 \
+LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB" \
 CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p pamin-engine \
   --test scratch_scored_fixture --test scratch_scored_multihop \
   --no-run --release --offline --locked --message-format=json
 ```
 
-The command selects the same two-target compilation scope. It does not select
-or run the multihop stress test. Copy the fixture executable before any later
+The build and launch both use the pinned dynamic-library directories. These
+variables reproduce the selected native link/runtime path; they are not a
+complete transitive source-to-build certificate. The command selects the same
+two-target compilation scope. It does not select or run the multihop stress test. Copy the fixture executable before any later
 clean/build. Use a prepared
 workspace and pinned native runtime/model assets; clear inherited `PAMIN_*`
 knobs, set `PAMIN_PROFILE=accuracy` and `PAMIN_DEVICE=cpu`, and run each copied
@@ -177,6 +192,7 @@ binary serially with `GRAPH_ARM=baseline` or `scored`, unique `GRAPH_OUT` and
 `GRAPH_CLK_TCK` set to the platform clock-tick frequency:
 
 ```sh
+LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB" \
 PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu \
 GRAPH_ARM="$ARM" GRAPH_OUT="$RESULTS/$ARM.jsonl" \
 GRAPH_TRACE="$RESULTS/$ARM.trace.jsonl" GRAPH_CLK_TCK="$(getconf CLK_TCK)" \
@@ -198,3 +214,11 @@ loading a model or opening a database.
 The score changes above are arithmetic differences between controlled component outcomes, not product accuracy improvements. Percentages use the retained f32 channel values before rounding. An absent result has no numeric baseline or percentage.
 
 The recorded launch projection binds the selected native test and the complete retained effective product-setting projection, including the arm, workspace, output/trace filenames and interference declaration; its original launch digest is retained. The historical fixture persisted its JSON directly to `GRAPH_OUT`; stdout contains test success but no same-log JSON marker. The verifier cannot establish a missing stdout linkage. Trace events record mapped library paths, not inode identities; inode equality was not captured. It independently parses the retained trace and checks exact provider, runtime and mapped-path correspondence with provenance. All published files except the provenance manifest itself have current digests in its explicit inventory; provenance is checked semantically rather than given a circular self-hash. `verify.py` and `source/prepare.py` reject `-O`, `-OO` and `PYTHONOPTIMIZE`; preparation rejects them before reading inputs or writing output. Run `python3 test_verify.py` for mutation checks.
+
+The graph-only target verifier requires the complete Why list to contain only
+one graph-channel record and one path record. The weak origin must be the first
+qualifying non-strong result in the retained first 63 fused results, matching
+the preserved fixture selection rather than an arbitrary equal-rank topic.
+Targeted inert regressions can run with `python3 test_verify.py --round7-graph-only`,
+`--round7-weak-only`, or `--round7-native-env-only`; these do not execute the native
+fixture or load a model/database.
