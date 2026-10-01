@@ -169,6 +169,25 @@ class MetadataInvariants(unittest.TestCase):
     def test_rehashed_segment_reordering_both_phases(self):
         self.reject(lambda e:self.change_table_entries(e,{0:{2:4096},1:{2:0}}))
 
+    def test_all_whole_file_identity_receipts_bound(self):
+        # Mutate every one of the sixteen receipts; metadata CRCs stay valid.
+        for run_index in range(2):
+            for file_index in range(4):
+                for field in ['whole_file_sha256_before', 'whole_file_sha256_after']:
+                    with self.subTest(arm=run_index, file=file_index, field=field):
+                        changed = copy.deepcopy(self.evidence)
+                        changed['runs'][run_index]['files'][file_index][field] = '0'*64
+                        with self.assertRaisesRegex(ValueError, 'whole-file identity receipt binding'):
+                            verify.verify(changed, check_logs=False)
+
+    def test_malformed_whole_file_identity_receipts(self):
+        for value in [None, 123, 'x'*64, '0'*63, 'A'*64]:
+            with self.subTest(value=value):
+                changed = copy.deepcopy(self.evidence)
+                changed['runs'][0]['files'][0]['whole_file_sha256_before'] = value
+                with self.assertRaisesRegex(ValueError, 'whole-file identity format'):
+                    verify.verify(changed, check_logs=False)
+
     def test_source_binding(self):
         self.reject(lambda e:e.update(vendor_commit='0'*40))
 
