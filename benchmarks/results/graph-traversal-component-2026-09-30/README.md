@@ -222,3 +222,9 @@ the preserved fixture selection rather than an arbitrary equal-rank topic.
 Targeted inert regressions can run with `python3 test_verify.py --round7-graph-only`,
 `--round7-weak-only`, or `--round7-native-env-only`; these do not execute the native
 fixture or load a model/database.
+
+The verifier binds the complete approved build and launch shell blocks with
+literal SHA256 values, including their final newline. Retaining an earlier
+correct setting cannot hide a later overriding ORT, zvec or loader assignment.
+These pins protect the documented recipe; they do not execute it or establish
+historical effective settings beyond the retained receipts.

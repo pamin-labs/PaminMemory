@@ -141,6 +141,25 @@ def round7_native_environment_cases():
                             command.replace('LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"', replacement, 1))
         run_case('native runtime loader setting -> ' + repr(replacement), change_runtime,
                  expected_error='pinned native-library runtime loader environment missing or changed')
+    # Earlier approved tokens must not hide later effective overrides. Every
+    # mutation refreshes the README's archive digest before semantic checks.
+    for override in ['ORT_LIB_LOCATION="$WRONG_ORT"','ORT_PREFER_DYNAMIC_LINK=0',
+                     'ZVEC_LIB_DIR="$WRONG_ZVEC"','ZVEC_AUTO_BUILD=1',
+                     'LD_LIBRARY_PATH="$WRONG_LIB"']:
+        def later_build(root, override=override):
+            path=root/'README.md';text=path.read_text()
+            old='CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p pamin-engine'
+            assert text.count(old)==1
+            path.write_text(text.replace(old,override+' \\\n'+old,1))
+        run_case('later effective native build override '+override,later_build,
+                 expected_error='pinned native-library build environment missing or changed')
+    def later_runtime(root):
+        path=root/'README.md';text=path.read_text()
+        old='PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu'
+        assert text.count(old)==1
+        path.write_text(text.replace(old,'LD_LIBRARY_PATH="$WRONG_LIB" \\\n'+old,1))
+    run_case('later effective native runtime loader override',later_runtime,
+             expected_error='pinned native-library runtime loader environment missing or changed')
 
 
 if __name__ == '__main__':
