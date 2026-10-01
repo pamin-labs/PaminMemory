@@ -29,6 +29,48 @@ class MetadataInvariants(unittest.TestCase):
     def test_valid(self):
         self.assertTrue(verify.verify(self.evidence))
 
+    def test_crc_refreshed_unchecked_header_field_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                    values[9] += 1
+                    values[0] = 0
+                    values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                    excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+        self.assert_unchanged_file_receipts_rejected(changed)
+
+    def test_unchecked_linear_field_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    data = bytearray.fromhex(excerpt['streamer_and_linear_header_hex'])
+                    values = list(verify.LINEAR.unpack_from(data, 64))
+                    values[2] += 1
+                    verify.LINEAR.pack_into(data, 64, *values)
+                    excerpt['streamer_and_linear_header_hex'] = data.hex()
+        self.assert_unchanged_file_receipts_rejected(changed)
+
+    def test_unchecked_streamer_padding_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    data = bytearray.fromhex(excerpt['streamer_and_linear_header_hex'])
+                    data[63] ^= 1
+                    excerpt['streamer_and_linear_header_hex'] = data.hex()
+        self.assert_unchanged_file_receipts_rejected(changed)
+
+    def assert_unchanged_file_receipts_rejected(self, changed):
+        for before_run, after_run in zip(self.evidence['runs'], changed['runs']):
+            for before_file, after_file in zip(before_run['files'], after_run['files']):
+                for field in ['whole_file_sha256_before', 'whole_file_sha256_after']:
+                    self.assertEqual(before_file[field], after_file[field])
+        with self.assertRaisesRegex(ValueError, 'original evidence/excerpt receipt binding'):
+            verify.verify(changed, check_logs=False)
+
     def test_invalid_crc(self):
         def mutate(e):
             x = e['runs'][0]['files'][0]['excerpts']['after']
