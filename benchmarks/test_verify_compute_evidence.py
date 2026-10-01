@@ -117,6 +117,30 @@ class DeviceProofTests(unittest.TestCase):
     def test_retained_device_proof(self):
         self.check(self.proof, self.artifacts)
 
+    def test_all_arms_cannot_reuse_the_cpu_control_artifact(self):
+        proof = copy.deepcopy(self.proof)
+        control = proof[0]
+        for entry in proof[1:]:
+            entry.update({key: value for key, value in control.items()
+                          if key not in {"arm", "process"}})
+        with self.assertRaisesRegex(AssertionError, "belongs to another arm or process"):
+            self.check(proof, self.artifacts)
+
+    def test_each_artifact_cannot_be_swapped_with_its_neighbor(self):
+        for index in range(len(self.proof)):
+            proof = copy.deepcopy(self.proof)
+            donor = proof[(index + 1) % len(proof)]
+            proof[index].update({key: value for key, value in donor.items()
+                                 if key not in {"arm", "process"}})
+            with self.subTest(index=index), self.assertRaisesRegex(AssertionError, "belongs to another arm or process"):
+                self.check(proof, self.artifacts)
+
+    def test_boolean_process_identity_is_refused(self):
+        proof = copy.deepcopy(self.proof)
+        next(entry for entry in proof if entry["process"] == 1)["process"] = True
+        with self.assertRaisesRegex(AssertionError, "invalid proof process identity"):
+            self.check(proof, self.artifacts)
+
     def test_resealed_invalid_device_values(self):
         name = self.proof[0]["event_artifact"]
         for value in ["/tmp/private", "unexpected", "", None, False]:

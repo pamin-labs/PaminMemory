@@ -176,6 +176,8 @@ def verify_device_proof():
     proof = json.loads((ROOT / "device-and-cache-proof.json").read_text())
     assert len(proof) == 21 and {(p["arm"], p["process"]) for p in proof} == {(arm, i) for arm in expected for i in range(3)}
     for entry in proof:
+        assert type(entry["process"]) is int, "invalid proof process identity"
+        assert entry["event_artifact"] == f"{entry['arm']}-{entry['process']}.json", "event artifact belongs to another arm or process"
         artifact = (ROOT / "logs" / entry["event_artifact"]).read_bytes()
         assert hashlib.sha256(artifact).hexdigest() == entry["event_sha256"]
         log = json.loads(artifact)
