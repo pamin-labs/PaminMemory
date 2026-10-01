@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 # Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
-BUILD_RECIPE_SHA256='b799b1922812c15d9a3c3ce2762d5db9e21bba5cf7617d3e4081d62bfdafd0be'
+BUILD_RECIPE_SHA256='311101cc4ed9068291e96af98bb711314d34e9ad73982d54389018d69bfad3f5'
 RUNTIME_RECIPE_SHA256='6cef85890f29f6e630fc2a6d6b2dfe77842a0c46988c9bfedeffa41fc393983c'
 
 # Complete retained raw inventories, including native UUIDs/scores; capture-only pins.
