@@ -529,6 +529,7 @@ pub(crate) struct RuntimePlan {
     namespace: String,
     target: String,
     retry_at: Option<std::time::Instant>,
+    restore_target: Option<String>,
 }
 
 pub(crate) trait RuntimeModel {
@@ -635,7 +636,15 @@ fn revalidate_model_at<T: RuntimeModel>(
     // retry on every hit and does not discard a still-usable fallback model.
     model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
     match reload() {
-        Ok((replacement, selected)) => {
+        Ok((mut replacement, selected)) => {
+            let restoring = model.runtime_plan().restore_target.as_deref();
+            let still_fallback = selected == Device::Cpu
+                || restoring.is_some_and(|target| target != replacement.runtime_plan().target);
+            if still_fallback {
+                replacement.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
+                replacement.runtime_plan_mut().restore_target =
+                    model.runtime_plan().restore_target.clone();
+            }
             *model = replacement;
             *device = selected;
             true
@@ -684,6 +693,9 @@ pub(crate) fn retry_model<T: RuntimeModel, R>(
                 failed_devices.push(target);
                 let now = std::time::Instant::now();
                 quarantine_runtime(cache_dir, active.runtime_plan(), now);
+                if model.runtime_plan().restore_target.is_none() {
+                    model.runtime_plan_mut().restore_target = Some(failed_devices[0].clone());
+                }
                 model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
                 // Drop the failed replacement before another expensive load.
                 drop(replacement.take());
@@ -692,6 +704,8 @@ pub(crate) fn retry_model<T: RuntimeModel, R>(
                     return Err(error.context("recovery selected the failing provider"));
                 }
                 active.runtime_plan_mut().retry_at = model.runtime_plan().retry_at;
+                active.runtime_plan_mut().restore_target =
+                    model.runtime_plan().restore_target.clone();
                 replacement = Some((active, selected));
             }
         }
@@ -727,6 +741,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             namespace: namespace.clone(),
             target: target_id,
             retry_at: None,
+            restore_target: None,
         };
         Ok(model)
     };
@@ -1555,6 +1570,7 @@ mod tests {
                     namespace: "fixture-revision-runtime-build-shape".into(),
                     target: target.into(),
                     retry_at: None,
+                    restore_target: None,
                 },
             }
         }
@@ -1762,6 +1778,57 @@ mod tests {
             }
         ));
         assert_eq!(loads, 1);
+    }
+
+    #[test]
+    fn successful_fallback_reloads_keep_deadlines_until_the_faulted_target_recovers() {
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "cpu");
+        model.plan.retry_at = Some(now);
+        model.plan.restore_target = Some("npu:first:1".into());
+        let mut device = Device::Cpu;
+        let mut cache = vec![17.0];
+        let mut loads = 0;
+        for (step, selected, target) in [
+            (0, Device::Cpu, "cpu"),
+            (1, Device::Cuda, "cuda"),
+            (2, Device::Npu, "npu:first:1"),
+        ] {
+            let at = now + RUNTIME_RETRY * step;
+            assert!(revalidate_cached_model_at(
+                &mut model,
+                &mut device,
+                &mut cache,
+                at,
+                || {
+                    loads += 1;
+                    Ok((RuntimeFixture::new(1, target), selected))
+                }
+            ));
+            assert!(
+                cache.is_empty(),
+                "replacement must invalidate the prior hot hit"
+            );
+            assert_eq!(
+                model.plan.retry_at,
+                (step < 2).then_some(at + RUNTIME_RETRY)
+            );
+            cache.push(23.0);
+            assert!(!revalidate_cached_model_at(
+                &mut model,
+                &mut device,
+                &mut cache,
+                at,
+                || {
+                    loads += 1;
+                    unreachable!()
+                }
+            ));
+            assert_eq!(cache, [23.0]);
+        }
+        assert_eq!(loads, 3);
+        assert_eq!(device, Device::Npu);
+        assert!(model.plan.restore_target.is_none());
     }
 
     #[test]
