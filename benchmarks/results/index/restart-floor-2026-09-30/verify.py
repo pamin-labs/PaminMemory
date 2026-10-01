@@ -90,7 +90,7 @@ for arm in ['main','predecessor','candidate']:
                 assert len(topics)==len(set(topics))==10, 'HNSW query hit/rank premise differs'
                 review.historical_rank(r['extra']['rank'],rank)
         new=next(r for r in rows if r['phase']=='new_write_search')
-        assert new['extra']['known_new_topic_retrieved'] and 'restart-proof' in new['extra']['topics']
+        review.new_write_visibility(new['extra'])
         for r in rows:
             if 'actual_providers' in r:
                 assert set(r['actual_providers'])=={'embedding','reranker'}

@@ -260,3 +260,10 @@ def conversion_schema(before,after):
 
 def fixed_work_count(value):
     assert type(value) is int and value>=0, 'drain/flush count must be an actual nonnegative integer'
+
+
+def new_write_visibility(extra):
+    topics=extra['topics']
+    assert type(topics) is list and all(type(topic) is str for topic in topics), 'new-write topics must be an actual list of strings'
+    assert extra['known_new_topic_retrieved'] is True, 'new-write retrieved flag must be exactly true'
+    assert 'restart-proof' in topics, 'new-write topic visibility differs'
