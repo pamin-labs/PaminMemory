@@ -382,6 +382,14 @@ if __name__ == '__main__':
             path=root/'README.md'
             path.write_text(path.read_text().replace('| '+metric+' | N/A | N/A | N/A | N/A |','| '+metric+' | 100 ms | 50 ms | -50 ms | -50% |'))
         run_case('unmeasured table '+metric,overclaim,expected_error='unmeasured resource table must remain N/A')
+    for script in ['verify.py','test_verify.py']:
+        # Split detection strings keep this published test source free of the
+        # private markers it deliberately injects into temporary archives.
+        for marker in ['/ho'+'me/alice/private-project','postgres'+'ql://user:password@host/db','Bearer '+'credential123']:
+            def leaked_script(root,script=script,marker=marker):
+                path=root/script;path.write_text(path.read_text()+'\n# '+marker+'\n')
+            run_case('published script private marker '+script+'/'+marker.split(':')[0],leaked_script,expected_error='private path/credential/session marker: '+script)
+    run_case('modified privacy pattern',lambda root:(root/'verify.py').write_text((root/'verify.py').read_text().replace('Bearer\\s+','Bearer\\s*')),expected_error='approved private-marker pattern differs')
     round10_native_type_cases()
     complete_non_graph_cases()
     complete_graph_record_cases()

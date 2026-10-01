@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only checks of retained synthetic component evidence; no runtime loading."""
-import hashlib,json,math,re,sys,struct,uuid
+import hashlib,json,math,re,sys,struct,uuid,ast
 if sys.flags.optimize:
  raise SystemExit("FAIL: Python optimization disables assertions; run without -O/-OO")
 from pathlib import Path
@@ -398,9 +398,20 @@ assert readme[resource_start:resource_stop].splitlines()==[
  '| Product search latency p50/p95 | N/A | N/A | N/A | N/A |',
  '| Graph-attributed memory | N/A | N/A | N/A | N/A |',
  '| Graph-attributed disk | N/A | N/A | N/A | N/A |'], 'unmeasured resource table must remain N/A'
+PRIVATE_MARKER_PATTERN=r'(?:/workspace/(?:scratch|\.pamin|\.cargo|\.onnxruntime|PaminMemory)|/home/|postgres(?:ql)?://|Bearer\s+[A-Za-z0-9]|claude\.ai/|app://)'
+assert hashlib.sha256(PRIVATE_MARKER_PATTERN.encode()).hexdigest()=='eba13eeaca1a6251a3633bd2121d0bdbfef1f581e8b48f9243ef7fea34d15e8b', 'approved private-marker pattern differs'
 for p in ROOT.rglob('*'):
- if not p.is_file() or p.name in {'verify.py','test_verify.py'}:continue
+ if not p.is_file():continue
  data=p.read_text()
- assert not re.search(r'(?:/workspace/(?:scratch|\.pamin|\.cargo|\.onnxruntime|PaminMemory)|/home/|postgres(?:ql)?://|Bearer\s+[A-Za-z0-9]|claude\.ai/|app://)',data),f'private path/credential/session marker: {p.name}'
+ if p.name=='verify.py':
+  # Exempt only the exact approved regex literal, not the script or its line.
+  assignments=[node for node in ast.walk(ast.parse(data)) if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='PRIVATE_MARKER_PATTERN' for target in node.targets)]
+  assert len(assignments)==1 and isinstance(assignments[0].value,ast.Constant) and assignments[0].value.value==PRIVATE_MARKER_PATTERN, 'approved private-marker pattern assignment differs'
+  literal=assignments[0].value
+  lines=data.splitlines(keepends=True)
+  begin=sum(len(line) for line in lines[:literal.lineno-1])+literal.col_offset
+  end=sum(len(line) for line in lines[:literal.end_lineno-1])+literal.end_col_offset
+  data=data[:begin]+(' '*(end-begin))+data[end:]
+ assert not re.search(PRIVATE_MARKER_PATTERN,data),f'private path/credential/session marker: {p.name}'
  assert p.suffix not in {'.onnx','.bin','.data','.so'},'binary/model material must not be published'
 print('PASS: four native component cases, exact weak-rank arithmetic, fresh builds, exact query/binary pins, retrospective SQL payloads, disclosed historical hardware limits, pinned inference/assets, sanitized text-only evidence')
