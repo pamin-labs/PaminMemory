@@ -124,3 +124,24 @@ and warm-after metadata verification in one process. No new observation was run
 while adding this receipt/procedure; the numbers above retain the prior
 verifier-only observations.
 
+The separate [suite scan producer](probe_suite_scans.py) reproduces all five
+full-suite counters using the same scalar-function instrumentation: clear the
+cache, run `test_verify` and `test_source_binding`, count calls and byte lengths
+for inputs above 256 bytes, and count distinct full-input SHA256 values and
+calls matching the retained table SHA256. It verifies current suite/input pins
+before execution. The suite uses tiny disposable mock/Git directories; published
+files remain unchanged. It does not rerun the three cost observations.
+
+```sh
+python3 -B probe_suite_scans.py
+python3 -B probe_suite_scans.py --execute
+python3 -B -m unittest -v test_cost_procedures.py
+```
+
+The first command only prints a plan. The explicit suite command can regenerate
+69 tests, 17 large scalar calls, 8,424,450 scalar bytes, 13 distinct contents and
+two original-table scans. Strengthened Git availability subcases do not change
+the metadata CRC workload. These counts include deliberate cache eviction tests
+and changed/rehashed tables, and exclude hashing/equality and other byte traffic.
+No historical cost value or original native evidence was replaced by this
+procedure update.
