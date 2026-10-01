@@ -19,7 +19,10 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--attestation',type=Path,required=True)
     parser.add_argument('--log',type=Path,required=True)
-    args=parser.parse_args();attestation=json.loads(args.attestation.read_text())
+    args=parser.parse_args()
+    seed=Path('/workspace/scratch/restart-floor/seed-disk').resolve()
+    assert not args.log.resolve().is_relative_to(seed), 'conversion log must be outside measured seed'
+    attestation=json.loads(args.attestation.read_text())
     binary=verified_binary(attestation);native=attestation['native_loader_inputs']
     BUILD['NATIVE']['verify'](native)
     env={key:value for key,value in os.environ.items() if not key.startswith('FLOOR_')}

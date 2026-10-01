@@ -94,6 +94,7 @@ with tempfile.TemporaryDirectory() as directory:
     attestation=root/'attestation';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'build_kind':'restart-trial','scratch_target':restart_source,'harness_sha256':'fake-harness','arms':{'fake':dict(helper,**{'commit':'fake','binary':str(executable),'binary_sha256':guard['digest'](executable),'binary_bytes':executable.stat().st_size})}}))
     # A conversion-only attestation and a mismatched artifact must fail before launch.
     attested=json.loads(attestation.read_text())
+    attested['arms']['candidate']=copy.deepcopy(attested['arms']['fake']);attestation.write_text(json.dumps(attested))
     for field,value in [('build_kind','disk-schema-conversion'),('scratch_target','crates/pamin-index/tests/scratch_disk_schema.rs')]:
         bad=copy.deepcopy(attested);bad[field]=value
         refuse(lambda:guard['binary'](f'fake,fake,{executable}',bad))
@@ -127,7 +128,7 @@ with tempfile.TemporaryDirectory() as directory:
         for key,message in [('TOKIO_WORKER_THREADS','inherited Tokio worker concurrency'),('TOKENIZERS_PARALLELISM','inherited tokenizer/Rayon concurrency'),('RAYON_NUM_THREADS','inherited tokenizer/Rayon concurrency')]:
             for at,value in enumerate(['','1','64']):
                 private=root/f'{key}-rejected-{at}.json';os.environ[key]=value
-                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
                 try:guard['main']()
                 except AssertionError as error:assert message in str(error)
                 else:raise AssertionError('inherited concurrency reached setup')
@@ -136,22 +137,22 @@ with tempfile.TemporaryDirectory() as directory:
         for kind in ['conversion','wrong_artifact']:
             bad=copy.deepcopy(attested)
             if kind=='conversion':bad['build_kind']='disk-schema-conversion'
-            else:bad['arms']['fake']['compiler_artifacts'][0]['target']['name']='scratch_disk_schema'
+            else:bad['arms']['candidate']['compiler_artifacts'][0]['target']['name']='scratch_disk_schema'
             attestation.write_text(json.dumps(bad));private=root/(kind+'.json')
-            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
             refuse(guard['main']);assert not private.exists()
         attestation.write_text(json.dumps(attested))
         alias=root/'home-alias';alias.symlink_to(home,target_is_directory=True)
         for stage in ['bootstrap','seed']:
             for at,private in enumerate([home/'setup-record.json',home/'index/project/setup-record.json',alias/'linked-record.json']):
-                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage',stage]
+                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage',stage]
                 try:guard['main']()
                 except AssertionError as error:assert 'private setup record must be outside measured home' in str(error),str(error)
                 else:raise AssertionError('setup record contaminated seed')
                 assert not private.exists(), 'record exclusion must precede creation and launch'
         for invalid in ['0','-1']:
             private=root/('invalid-documents-'+invalid+'.json')
-            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents',invalid,'--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents',invalid,'--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
             refuse(guard['main']);assert not private.exists()
         for kind in ['normal','zero_tests','changed_during_setup','manifest_changed','manifest_mode_changed']:
             private=root/(kind+'.json');calls=[]
@@ -164,7 +165,7 @@ with tempfile.TemporaryDirectory() as directory:
                 if kind=='manifest_mode_changed':manifest.chmod(0o644)
                 return types.SimpleNamespace(returncode=0,stdout='running 0 tests\n' if kind=='zero_tests' else 'RESTART_JSON {"phase":"open","extra":{"documents":0}}\nCOLLECTION_PATH fake\n',stderr='')
             subprocess.run=fake_run
-            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
             if kind=='normal':guard['main']()
             else:refuse(guard['main'])
             data=json.loads(private.read_text());assert data['status']==('finished' if kind=='normal' else 'failed') and len(calls)==1
@@ -225,7 +226,7 @@ with tempfile.TemporaryDirectory() as directory:
                 calls.append(command);assert env['FLOOR_MODE']=='seed'
                 return types.SimpleNamespace(returncode=0,stdout=output,stderr='')
             subprocess.run=fake_seed_run
-            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','seed']
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','seed']
             good=kind in ['seed_normal','seed_reverse_load']
             if good:guard['main']()
             else:refuse(guard['main'])
