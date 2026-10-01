@@ -66,9 +66,15 @@ def digest(path):
     with path.open('rb') as stream:
         for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
     return h.hexdigest()
+def git_environment():
+    return dict(os.environ,GIT_NO_REPLACE_OBJECTS='1')
 def git(checkout,*args):
-    return subprocess.check_output(['git',*args],cwd=checkout)
+    return subprocess.check_output(['git',*args],cwd=checkout,env=git_environment())
+def reject_replacements(checkout):
+    namespaces={'refs/replace',os.environ.get('GIT_REPLACE_REF_BASE','refs/replace').rstrip('/')}
+    assert not git(checkout,'for-each-ref','--format=%(refname)',*sorted(namespaces)), 'Git replacement refs refused before source attestation'
 def inputs(checkout,commit,allowed,scratch_target=TARGET):
+    reject_replacements(checkout)
     assert git(checkout,'rev-parse','HEAD').decode().strip()==commit
     assert not git(checkout,'status','--porcelain','--untracked-files=no'), 'tracked changes refused'
     assert not git(checkout,'diff','--cached','--name-only',commit), 'index differs from expected commit'
@@ -76,7 +82,7 @@ def inputs(checkout,commit,allowed,scratch_target=TARGET):
     tracked={name:[header.split()[0],header.split()[2]] for header,name in tree}
     # Read immutable HEAD blobs in one batch. Status can hide worktree changes
     # under assume-unchanged/skip-worktree; index contents are not the authority.
-    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=checkout,
+    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=checkout,env=git_environment(),
         input=('\n'.join(entry[1] for entry in tracked.values() if entry[0]!='160000')+'\n').encode())
     offset=0;expected={}
     for name,(mode,oid) in tracked.items():
