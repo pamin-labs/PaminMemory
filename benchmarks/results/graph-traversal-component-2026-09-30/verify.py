@@ -31,12 +31,14 @@ def graph_only_evidence(hit):
 GRAPH_RECORD_PINS = {
  'baseline': [(4,0.020202022045850754),(6,0.01772727258503437),(7,0.01719697006046772)],
  'scored': [(1,0.025151517242193222),(4,0.02196969836950302),(7,0.02196969836950302),(8,0.01613636501133442)]}
+GRAPH_SCORE_PINS={'baseline':[0.3333333432674408,0.10000000149011612,0.05000000074505806],'scored':[0.800000011920929,0.5,0.5,0.5]}
 def validate_graph_record(hit,arm,index):
  graph,_=graph_only_evidence(hit)
  assert set(graph)=={'kind','channel','rank','score','weight','contribution'}, 'graph channel fields differ'
  assert type(graph['rank']) is int and graph['rank']==GRAPH_RECORD_PINS[arm][index][0], 'retained graph rank differs'
  for key in ['score','weight','contribution']:
   assert type(graph[key]) in {int,float} and math.isfinite(graph[key]), 'invalid graph numeric field'
+ assert graph['score']==GRAPH_SCORE_PINS[arm][index], 'retained graph score differs exactly'
  assert graph['weight']==0.30000001192092896, 'retained graph weight differs'
  assert graph['contribution']==GRAPH_RECORD_PINS[arm][index][1], 'retained graph contribution differs'
 def score(hit):return graph_only_evidence(hit)[0]['score']
