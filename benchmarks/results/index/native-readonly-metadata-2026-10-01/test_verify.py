@@ -188,6 +188,21 @@ class MetadataInvariants(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'whole-file identity format'):
                     verify.verify(changed, check_logs=False)
 
+    def test_rehashed_log_concatenated_failed_summary(self):
+        self.reject_rehashed_log('vector', lambda log:log+'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n')
+
+    def test_rehashed_log_duplicate_positive_summary(self):
+        self.reject_rehashed_log('pure-open', lambda log:log+'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s\n')
+
+    def test_rehashed_log_concatenated_zero_test_summary(self):
+        self.reject_rehashed_log('vector', lambda log:log+'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n')
+
+    def test_rehashed_log_nonzero_ignored_count(self):
+        self.reject_rehashed_log('pure-open', lambda log:log.replace('0 ignored','1 ignored'))
+
+    def test_rehashed_log_missing_summary(self):
+        self.reject_rehashed_log('vector', lambda log:'\n'.join(line for line in log.splitlines() if not line.startswith('test result:')))
+
     def test_source_binding(self):
         self.reject(lambda e:e.update(vendor_commit='0'*40))
 
