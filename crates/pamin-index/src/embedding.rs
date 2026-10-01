@@ -956,7 +956,7 @@ impl Queries {
 
 #[cfg(test)]
 mod pooled_tests {
-    use super::normalized_pooled;
+    use super::{check_complementary_retrieval, compatible_vectors, normalized_pooled};
 
     #[test]
     fn complementary_retrieval_rejects_tied_or_wrong_cpu_fixture_premises() {
