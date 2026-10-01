@@ -18,10 +18,10 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "a0941577215e8daf64138ef53c277743a0a06a6c3047f8dfdefb9ac1dcdf9ad0",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "1d224b75e655cc2bfdca84da10cbb56001fcf3000f0caf4dece520f77841d995",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "6e2d47a90b5c80e86b1df4b7ba0f8bb10012b33afaf1beec0c3590a112b30238",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "be06e7c96d4119028d416144e72edfaa652d736599cd2de4837d67cdcd988593",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "8a3dd730a58b4e00938535c6a2a7196dc0177c22a7d133d6ad2553e4185b05c1",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/binaries.json": "48c7c274ba590e5317502b9e9f6f7663c38b4cf8b7bdfac277e5e586d87b9f03",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/episode-elapsed.json": "7224b831d0a80fdad6a942421d77641afdc68e716cc6e79e748b833d6a42a3a2",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "c0c68a050cc3f3c9304de613ba08555c003e09e39e80dc1d11f10df530fbab8f",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "c0354de4c9bd354a0887887742ba02648331a02f0da7d25b8a2572da5ef6a9f4",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-candidate.log.gz": "c972869e6178ef9f1fea84b859bca994af626cf701816ff123669cc53a13c1d1",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-main.log.gz": "88207bb853f77f8c72a865341cc47a1e37c33ad175190d71942c12a9cd692b4f",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-predecessor.log.gz": "69d0ff1a702b5c26ddc54191cc9bf76a08bedde4be351f868a1006139fb18d77",
@@ -71,8 +71,9 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_result_lists.py": "8ed4329e1ca78b1fe574ca5946241f280a209ea485e70553f112e34e36deb921",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_successful_logs.py": "edca7b9ff99fcc66288ad4811c657e45ecab1b0511ca426a634672cd93008a9a",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/timing-review.json": "dba51b478850d95a440878903f4fcab3ca4cdb4f16ec2baf9625286b1ce14671",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "d8f881aeada8de1a13c4cf717269ea2e860a076f63290cd6ffc71e9bd9a7a4e5",
-    "benchmarks/harnesses/restart-floor-2026-09-30/git-object-guards.py.in": "1943c97b22975474e4e11c5c105941efa552d1202f64ed350f8f931710ea2f3f"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "2a4534a54413bafbbf2a5b54e064fe0de7093547874b9b756331230d508b73e4",
+    "benchmarks/harnesses/restart-floor-2026-09-30/git-object-guards.py.in": "1943c97b22975474e4e11c5c105941efa552d1202f64ed350f8f931710ea2f3f",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/hwm-review.json": "2bdbfa2cee36f01cb40097b785d6e66e0e5508557a5649bab5cc3b9e46108b93"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }

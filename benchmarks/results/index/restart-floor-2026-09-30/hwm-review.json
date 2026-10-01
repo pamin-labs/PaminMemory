@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "index": "memory",
+  "raw_sha256": "a2018bfb4f7eff6f893a30b3483df2293cd29c2b90d0b79dd34c22e532adb079",
+  "scope": "Exact retained historical anomalies only; no tolerance. HWM-derived peak process RSS is uncertified/N/A. Sampled VmRSS observations remain observations, not lifetime peaks. Original raw/log/calculator numbers are preserved.",
+  "exact_historical_anomalies": [
+    {
+      "arm": "main",
+      "repetition": 2,
+      "previous": [
+        2,
+        "durability_flush",
+        "process_before",
+        1263960
+      ],
+      "current": [
+        2,
+        "durability_flush",
+        "process_after",
+        1263580
+      ]
+    },
+    {
+      "arm": "candidate",
+      "repetition": 1,
+      "previous": [
+        5,
+        "search_warmup",
+        "process_before",
+        1771088
+      ],
+      "current": [
+        5,
+        "search_warmup",
+        "process_after",
+        1770628
+      ]
+    }
+  ],
+  "hwm_peak_certified": false,
+  "published_hwm_peak": "N/A",
+  "sampled_rss_observations": [
+    {
+      "arm": "main",
+      "repetition": 0,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1812224
+    },
+    {
+      "arm": "main",
+      "repetition": 1,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1810068
+    },
+    {
+      "arm": "main",
+      "repetition": 2,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1822696
+    },
+    {
+      "arm": "predecessor",
+      "repetition": 0,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1810848
+    },
+    {
+      "arm": "predecessor",
+      "repetition": 1,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1810588
+    },
+    {
+      "arm": "predecessor",
+      "repetition": 2,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1810148
+    },
+    {
+      "arm": "candidate",
+      "repetition": 0,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1781640
+    },
+    {
+      "arm": "candidate",
+      "repetition": 1,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1771088
+    },
+    {
+      "arm": "candidate",
+      "repetition": 2,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1751280
+    }
+  ]
+}

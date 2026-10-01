@@ -1,6 +1,6 @@
 """Read-only semantic evidence guards; no historical runner mutation or inference."""
 import re
-import hashlib,json,statistics
+import hashlib,json,math,statistics
 from pathlib import PurePosixPath
 
 def measurement_annotations(row):
@@ -25,6 +25,62 @@ def memory_status(snapshot):
         values[key]=int(value)
     assert set(values)=={'VmRSS','VmHWM'}, 'RSS/HWM observations must be complete and unique'
     assert values['VmHWM']>=values['VmRSS'], 'RSS exceeds process high-water mark'
+    return values
+
+def real_measurement(value, positive=False):
+    assert type(value) in {int,float} and math.isfinite(value) and (value>0 if positive else value>=0), 'invalid real timing observation (booleans refused)'
+
+
+HWM_ANOMALIES={
+    'disk':[{'arm':'candidate','repetition':2,'previous':[9,'search_warm','process_before',1770044], 'current':[9,'search_warm','process_after',1769984]}],
+    'memory':[{'arm':'main','repetition':2,'previous':[2,'durability_flush','process_before',1263960], 'current':[2,'durability_flush','process_after',1263580]},
+              {'arm':'candidate','repetition':1,'previous':[5,'search_warmup','process_before',1771088], 'current':[5,'search_warmup','process_after',1770628]}],
+}
+HWM_SCOPE='Exact retained historical anomalies only; no tolerance. HWM-derived peak process RSS is uncertified/N/A. Sampled VmRSS observations remain observations, not lifetime peaks. Original raw/log/calculator numbers are preserved.'
+HWM_TABLE_ROW='| Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |'
+
+
+def hwm_allowance(index,arm,repetition):
+    return [item for item in HWM_ANOMALIES[index] if item['arm']==arm and item['repetition']==repetition]
+
+
+def process_observations(rows, historical_anomalies=()):
+    """Validate one process before arithmetic; bind declared historical defects."""
+    previous=None;anomalies=[]
+    for position,row in enumerate(rows):
+        if row['phase']=='process_total':
+            real_measurement(row['wall_seconds'],positive=True)
+            continue
+        if row['phase']=='closed_index':assert row['wall_ms'] is None
+        else:real_measurement(row['wall_ms'])
+        for key in ['cpu_user_seconds','cpu_system_seconds']:
+            if row[key] is not None:real_measurement(row[key])
+        for field in ['process_before','process_after']:
+            snapshot=row[field]
+            if snapshot is None:continue
+            hwm=memory_status(snapshot)['VmHWM'];observation=[position,row['phase'],field,hwm]
+            if previous is not None and hwm<previous[-1]:
+                anomalies.append({'arm':row.get('arm'),'repetition':row.get('repetition'),'previous':previous,'current':observation})
+            previous=observation
+    assert anomalies==list(historical_anomalies), 'process high-water mark decreased within/across phases or declared historical anomaly changed'
+    return anomalies
+
+
+def historical_hwm_review(raw,index,raw_sha256):
+    sampled=[];anomalies=[]
+    for arm in ['main','predecessor','candidate']:
+        for repetition in range(3):
+            rows=[r for r in raw if r['arm']==arm and r['repetition']==repetition]
+            anomalies+=process_observations(rows,hwm_allowance(index,arm,repetition))
+            observations=[memory_status(r[field])['VmRSS'] for r in rows if r['phase']!='process_total'
+                          for field in ['process_before','process_after'] if r[field] is not None]
+            sampled.append({'arm':arm,'repetition':repetition,'observations':len(observations),
+                            'maximum_observed_rss_kib':max(observations,default=None)})
+    assert anomalies==HWM_ANOMALIES[index], 'historical high-water anomaly set differs'
+    return {'schema':1,'index':index,'raw_sha256':raw_sha256,'scope':HWM_SCOPE,
+            'exact_historical_anomalies':anomalies,'hwm_peak_certified':False,'published_hwm_peak':'N/A',
+            'sampled_rss_observations':sampled}
+
 
 def binary_binding(binaries,provenance,expected_commits):
     assert len(binaries)==len(expected_commits), 'incomplete binary arm inventory'
