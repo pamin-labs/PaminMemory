@@ -228,8 +228,12 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert sorted((e['from'],e['to'],e['confidence']) for e in row['known_edges']) == sorted((a,b,f32(c)) for a,b,c in topology), 'controlled endpoint/confidence topology differs'
 
  log = (ROOT/f'{arm}.log').read_text()
- assert re.findall(r'^test scratch_scored_graph_finite_fixture \.\.\. ok$', log, re.M) == ['test scratch_scored_graph_finite_fixture ... ok']
- assert len(re.findall(r'^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9.]+s$', log, re.M)) == 1
+ test_lines=[line for line in log.splitlines() if line.startswith('test ') and not line.startswith('test result:')]
+ assert test_lines == ['test scratch_scored_graph_finite_fixture ... ok'], 'complete fixture test markers differ'
+ summaries=[line for line in log.splitlines() if line.startswith('test result:')]
+ assert len(summaries)==1 and re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9]+(?:\.[0-9]+)?s',summaries[0]), 'complete fixture result summary differs'
+ assert log.rstrip().splitlines()[-1]==summaries[0], 'fixture result must be the final log line'
+ assert not re.search(r'(?m)^failures:|\bFAILED\b|thread .+ panicked at',log), 'fixture log contains a failure marker'
  # Historical fixture writes GRAPH_OUT directly, so no stdout JSON linkage exists.
  assert provenance['fixture_log_linkage'] == 'not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only'
  assert 'std::env::var("GRAPH_OUT").expect("output path")' in (ROOT/'source/fixture.rs.in').read_text()
