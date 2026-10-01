@@ -51,6 +51,9 @@ for arm,commit in expected_commits.items():
         complete=maintenance['extra']['completeness']
         assert type(complete) in {int,float} and math.isfinite(complete), 'Disk completeness must be finite numeric, excluding bool'
         assert complete==(struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0), 'Disk arm maintenance completeness differs'
+        drain=next(r for r in rows if r['phase']=='write_and_memory_drain')['extra']
+        for field in ['applied','completed','pending']:review.fixed_work_count(drain[field])
+        review.fixed_work_count(next(r for r in rows if r['phase']=='durability_flush')['extra']['flushed'])
         assert phases['write_and_memory_drain'][0]['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'Disk single-write drain premise differs'
         assert phases['durability_flush'][0]['extra']['flushed']==1
         closed=phases['closed_index'][0]

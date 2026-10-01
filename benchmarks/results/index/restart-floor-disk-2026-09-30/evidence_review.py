@@ -255,3 +255,7 @@ def conversion_schema(before,after):
         assert after['fields'][name]==before['fields'][name], 'conversion changed nonembedding schema field'
     embedding=dict(before['fields']['embedding'],index_type=5,degree=64,build_list=100,pq_chunks=0)
     assert after['fields']['embedding']==embedding, 'complete retained postconversion DiskANN schema differs'
+
+
+def fixed_work_count(value):
+    assert type(value) is int and value>=0, 'drain/flush count must be an actual nonnegative integer'
