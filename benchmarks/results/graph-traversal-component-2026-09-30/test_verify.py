@@ -574,6 +574,13 @@ if __name__ == '__main__':
     def product_opening(root):
         path=root/'README.md';parts=path.read_text().split('\n\n');parts[2]='This result establishes product retrieval-quality and latency improvements.';path.write_text('\n\n'.join(parts))
     run_case('opening product improvement claim',product_opening,expected_error='opening component-only disclaimer differs')
+    for arm in ['baseline','scored']:
+        for metric in ['wall_seconds','user_seconds','system_seconds','maximum_process_rss_kib']:
+            def fabricated_usage(root,arm=arm,metric=metric):
+                row=json.loads((root/(arm+'.usage.json')).read_text());row[metric]=9999999 if metric=='maximum_process_rss_kib' else 9999
+                (root/(arm+'.usage.json')).write_text(json.dumps(row)+'\n');mutate_json(root/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['process_usage'].update(row))
+                if metric=='maximum_process_rss_kib':mutate_json(root/(arm+'.jsonl'),lambda raw:raw.update(process_lifetime_high_water_kib=row[metric]))
+            run_case('coherent fabricated usage '+arm+'/'+metric,fabricated_usage,expected_error='retained complete process usage differs')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
