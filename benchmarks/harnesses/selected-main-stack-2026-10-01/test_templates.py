@@ -138,6 +138,38 @@ class Templates(unittest.TestCase):
             self.assertTrue(launch.call_args.kwargs['start_new_session'])
             stop.assert_called_once_with(self.work, {}, owned)
 
+    def test_bound_native_build_environment_excludes_ort_override(self):
+        module = load('reproduction_build', self.work / 'build.py')
+        self.common.CONFIG.update(rustc='mock-rustc', rustdoc='mock-rustdoc')
+        with patch.dict(self.common.os.environ, {'ORT_LIB_PATH': '/unrelated', 'ZVEC_AUTO_BUILD': '1'}):
+            env = module.build_environment()
+        self.assertEqual(env['ZVEC_LIB_DIR'], self.common.CONFIG['native'])
+        self.assertEqual(env['ZVEC_AUTO_BUILD'], '0')
+        self.assertEqual(env['ORT_LIB_LOCATION'], self.common.CONFIG['ort'])
+        self.assertEqual(env['ORT_PREFER_DYNAMIC_LINK'], '1')
+        self.assertNotIn('ORT_LIB_PATH', env)
+
+    def test_seed_helper_timeout_stops_owned_pg_and_retains_clone(self):
+        from contextlib import nullcontext
+        import subprocess
+        module = load('reproduction_seed', self.work / 'seed.py')
+        install = self.work / 'pg-copy'
+        install.mkdir()
+        self.common.CONFIG['postgres'] = str(install)
+        (self.work / 'build/binaries.json').write_text(json.dumps({'seed': {'path': 'mock', 'sha256': 'pin'}}))
+        with patch.object(sys, 'argv', ['seed', '--execute', '--exclusive']), \
+             patch.object(self.common, 'exclusive', return_value=nullcontext()), \
+             patch.object(self.common, 'source_inputs'), patch.object(self.common, 'assets'), \
+             patch.object(self.common, 'digest', return_value='pin'), \
+             patch.object(self.common, 'monitored', side_effect=subprocess.TimeoutExpired('mock seed', 900)), \
+             patch.object(self.pg, 'stop_seed') as stop:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                module.main()
+            stop.assert_called_once()
+            self.assertEqual(stop.call_args.args[0], self.work / 'seed')
+        self.assertTrue((self.work / 'seed/.graph-disposable-clone').is_file())
+        self.assertFalse((self.work / 'seed/server.json').exists())
+
     def test_probe_is_identical_to_measured_source(self):
         manifest = json.loads((ROOT / 'sources.json').read_text())
         self.assertEqual(hashlib.sha256((ROOT / 'probe.rs.in').read_bytes()).hexdigest(), manifest['probe_sha256'])

@@ -41,3 +41,7 @@ python3 -B test_templates.py
 ```
 
 These tests cover the complete schedule, quantile/eligibility arithmetic, mocked report orchestration, provider rejection, source/archive bindings and tracked-source boundaries. They do not establish compilation, model execution, fixture ingestion or product accuracy on another host.
+
+The selected build recipe sets `ZVEC_LIB_DIR` to the pinned native-library directory and `ZVEC_AUTO_BUILD=0`, plus `ORT_LIB_LOCATION` and `ORT_PREFER_DYNAMIC_LINK=1`. The clean environment excludes inherited `ORT_LIB_PATH` overrides. The installation package directory is named `17.6.0`; both PostgreSQL executables must report `17.6`, and the owned server must report `server_version_num=170006`.
+
+Build, seed, and native helper processes start in new owned process groups. Cleanup terminates their descendants even if the leader has already exited. PostgreSQL startup failures (including SQL/version/settings assertions) and seed failures attempt a bounded stop only after verifying the actual PID, executable, UID, data directory and port. Seed cleanup works before `server.json` exists. If ownership cannot be proved, cleanup refuses to signal an unknown process and reports the failure. Failed clones and logs remain available for inspection. These guards are covered by synthetic fault tests; native execution remains unverified.

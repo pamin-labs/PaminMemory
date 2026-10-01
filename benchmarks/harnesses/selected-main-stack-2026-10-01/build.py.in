@@ -7,6 +7,23 @@ import subprocess
 import common as c
 
 
+def build_environment():
+    env = c.environment()
+    env.update(RUSTC=c.CONFIG['rustc'], RUSTDOC=c.CONFIG['rustdoc'],
+               CARGO_BUILD_JOBS='4', CARGO_INCREMENTAL='0',
+               CARGO_TARGET_DIR=str(c.ROOT / 'target'),
+               ZVEC_LIB_DIR=c.CONFIG['native'], ZVEC_AUTO_BUILD='0',
+               ORT_LIB_LOCATION=c.CONFIG['ort'], ORT_PREFER_DYNAMIC_LINK='1',
+               LIBRARY_PATH=c.CONFIG['native'] + ':' + c.CONFIG['ort'],
+               RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
+               CARGO_ENCODED_RUSTFLAGS='', CARGO_ENCODED_RUSTDOCFLAGS='')
+    # Registry sources/build prerequisites must already be present locally.
+    for key in ['CARGO_HOME', 'RUSTUP_HOME']:
+        if key in __import__('os').environ:
+            env[key] = __import__('os').environ[key]
+    return env
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--execute', action='store_true')
@@ -24,18 +41,7 @@ def main():
             c.require('1.98.1' in version, 'pinned toolchain required')
         out = c.ROOT / 'build'
         out.mkdir()
-        env = c.environment()
-        env.update(RUSTC=c.CONFIG['rustc'], RUSTDOC=c.CONFIG['rustdoc'],
-                   CARGO_BUILD_JOBS='4', CARGO_INCREMENTAL='0',
-                   CARGO_TARGET_DIR=str(c.ROOT / 'target'),
-                   ORT_LIB_LOCATION=c.CONFIG['ort'], ORT_PREFER_DYNAMIC_LINK='1',
-                   LIBRARY_PATH=c.CONFIG['native'] + ':' + c.CONFIG['ort'],
-                   RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
-                   CARGO_ENCODED_RUSTFLAGS='', CARGO_ENCODED_RUSTDOCFLAGS='')
-        # Registry sources/build prerequisites must already be present locally.
-        for key in ['CARGO_HOME', 'RUSTUP_HOME']:
-            if key in __import__('os').environ:
-                env[key] = __import__('os').environ[key]
+        env = build_environment()
         binaries = {}
         for arm, target in [('main', 'scratch_cache_product_limits'),
                             ('stack', 'scratch_cache_product_limits'),
