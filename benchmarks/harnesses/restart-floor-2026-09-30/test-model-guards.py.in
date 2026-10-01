@@ -140,6 +140,14 @@ with tempfile.TemporaryDirectory() as directory:
             sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
             refuse(guard['main']);assert not private.exists()
         attestation.write_text(json.dumps(attested))
+        alias=root/'home-alias';alias.symlink_to(home,target_is_directory=True)
+        for stage in ['bootstrap','seed']:
+            for at,private in enumerate([home/'setup-record.json',home/'index/project/setup-record.json',alias/'linked-record.json']):
+                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage',stage]
+                try:guard['main']()
+                except AssertionError as error:assert 'private setup record must be outside measured home' in str(error),str(error)
+                else:raise AssertionError('setup record contaminated seed')
+                assert not private.exists(), 'record exclusion must precede creation and launch'
         for invalid in ['0','-1']:
             private=root/('invalid-documents-'+invalid+'.json')
             sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents',invalid,'--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
