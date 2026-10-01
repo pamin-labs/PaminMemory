@@ -293,6 +293,8 @@ def round8_cases():
 
 
 if __name__ == '__main__':
+    from test_future_accounting import resource_gate
+    print('RESOURCE_ADMISSION '+json.dumps(resource_gate(),sort_keys=True))
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
@@ -429,6 +431,9 @@ if __name__ == '__main__':
                 mutate_json(root/source,change)
             run_case('capture timestamp '+source+'/'+repr(value),timestamp,expected_error='retained '+label+' capture timestamp differs')
     run_case('missing generated arm manifest flag',lambda root:(root/'README.md').write_text((root/'README.md').read_text().replace('  --manifest-path "$ARMS/$ARM/Cargo.toml" \\\n','')),expected_error='complete approved recipe differs')
+    run_case('invented historical loaded zvec identity',lambda root:mutate_json(root/'provenance.json',lambda p:p.update(historical_loaded_zvec_identity='loaded zvec verified')),expected_error='historical loaded zvec limitation differs')
+    run_case('historical runner source overclaim',lambda root:mutate_json(root/'provenance.json',lambda p:p['future_reproduction'].update(scope='original historical runner bytes')),expected_error='prospective runner scope differs')
+    run_case('future accounting source mutation',lambda root:(root/'source/future-accounting.py.in').write_text((root/'source/future-accounting.py.in').read_text()+'\n# changed\n'),expected_error='future accounting source bytes differ')
     for arm in ['baseline','scored']:
         run_case('finite raw score replacement '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row['non_graph'][0]['ranks'][0].update(score=999.0)),expected_error='retained non-graph raw inventory differs')
         for index in range(4 if arm=='scored' else 3):

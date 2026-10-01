@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parent
 # Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
 BUILD_RECIPE_SHA256='2d0af388526f26336d1b414f5d46d765f93f905ec50f9770eea07e4b8e324077'
-RUNTIME_RECIPE_SHA256='8c9404312e9a8f20fb8fade6c2380597aa4155a606c7ba7b94528980156c85d4'
+RUNTIME_RECIPE_SHA256='6cef85890f29f6e630fc2a6d6b2dfe77842a0c46988c9bfedeffa41fc393983c'
 
 # Complete retained raw inventories, including native UUIDs/scores; capture-only pins.
 NON_GRAPH_PINS = {'baseline': '2798681a63379fc62f5abe0c79593d97b6533a38a9762224aa429c344d42199a', 'scored': '2fa0b1056f508318241aa00d6e0923e42653859621138fd454cfa3ebd822373b'}
@@ -56,7 +56,14 @@ assert provenance['source_base']=='13ee710c9df865f1dac98dc77a8108e438ddc539'
 MAIN_REF_NOT_RUN = '315c10242ddf7a1cec3bccbf550a942320e09557'
 assert type(provenance.get('compared_main_ref_not_run')) is str and provenance['compared_main_ref_not_run']==MAIN_REF_NOT_RUN, 'prepared unrun main reference differs'
 assert type(provenance.get('mapped_library_identity_scope')) is str and provenance['mapped_library_identity_scope']=='mapped paths and pinned file digests; no inode identity captured', 'mapped-library identity limitation differs'
+assert provenance.get('redaction_validation_scope')=='declared allowed transforms; local read-only audit matched original digests and semantic JSON equivalence modulo declared path prefixes; private originals not distributed and public verifier cannot independently replay that audit', 'redaction validation limitation differs'
+assert provenance.get('historical_loaded_zvec_identity')=='N/A: runtime-map collector captured only ONNX Runtime; provisioned zvec file digest does not establish loaded identity', 'historical loaded zvec limitation differs'
+future=provenance['future_reproduction']
+assert future['scope']=='prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement', 'prospective runner scope differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
+FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '0f8122c033c008b1d398d8bc9e3f0b5bfedaf2ae7c00c638f73fc5c86627c79c', 'test_future_accounting.py': 'bd65bd3ff5d39c12374444aff19482010e314098af910a5b92bf5403a41dfc3a'}
+assert future['files']==FUTURE_SOURCE_PINS, 'future accounting source pins differ'
+for name,digest in FUTURE_SOURCE_PINS.items():assert sha(ROOT/name)==digest, 'future accounting source bytes differ'
 # Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
 # at reviewed commit a7eccf37096bbc1f9c6bdf670ba718459d05ff22.
 assert sha(ROOT/'source/experimental-traversal.patch') == '9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba', 'recorded traversal patch differs'
@@ -79,12 +86,12 @@ for name,record in provenance['redactions'].items():
  if name.endswith('.log'):
   assert type(record.get('scope')) is str and record['scope']=='trim empty trailing log line; no test result content change', 'original log formatting-only redaction scope differs'
  else:
-  expected_scope='canonical JSON formatting only; no metric or exit-status changes' if name.endswith('.usage.json') else 'canonical JSON formatting and local path-prefix replacement only; no score, timing, provider or result changes'
+  expected_scope='canonical JSON formatting only; no metric or exit-status changes' if name.endswith('.usage.json') else 'canonical JSON formatting and local path-prefix replacement only; no score, timing, provider or result changes' if name.endswith('.trace.jsonl') else 'canonical JSON formatting only; no score, timing, provider or result changes'
   assert type(record.get('scope')) is str and record['scope']==expected_scope, 'JSON redaction scope differs'
  assert type(record.get('changed')) is bool and record['changed'] == (record['original_sha256'] != record['published_sha256']), 'redaction changed flag differs'
  assert record['original_sha256'] == ORIGINAL_REDACTION_PINS[name], 'original redaction binding differs'
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
-EXPECTED_FILES = {'source/multihop.rs.in', 'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
+EXPECTED_FILES = {'source/multihop.rs.in', 'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'test_future_accounting.py', 'source/future-accounting.py.in', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
 assert {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()} == EXPECTED_FILES, 'required file inventory differs'
 assert set(provenance['archive_files']) == EXPECTED_FILES - {'provenance.json'}, 'hash inventory differs'
 for name, digest in provenance['archive_files'].items():

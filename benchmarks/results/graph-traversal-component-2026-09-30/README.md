@@ -56,8 +56,9 @@ The product's `accuracy` profile ran on the CPU for this controlled experiment.
 The fixture calls fused search and does not load a reranker. Native assignment
 reports show **1,023 CPUExecutionProvider nodes**, the same prepared graph hash
 and external weight-data hash in both arms. The actual mapped ONNX Runtime
-library was the pinned 1.28.0 build, reporting commit `da9b5e364c`. Native
-library, prepared model, external-weight and tokenizer hashes remained stable
+library was the pinned 1.28.0 build, reporting commit `da9b5e364c`. The provisioned Zvec file was hashed before and after, but its actual loaded
+mapping was not captured: historical loaded-Zvec identity is **N/A**. ONNX Runtime
+mapping, prepared model, external-weight and tokenizer hashes remained stable
 before and after both runs. Previously released CPU download sources are
 identified separately from the prepared assets; no model was downloaded.
 
@@ -201,9 +202,17 @@ GRAPH_ARM="$ARM" GRAPH_OUT="$RESULTS/$ARM.jsonl" \
 GRAPH_TRACE="$RESULTS/$ARM.trace.jsonl" GRAPH_CLK_TCK="$(getconf CLK_TCK)" \
 GRAPH_SHARED_MACHINE="$INTERFERENCE" \
 python3 -c 'import os, sys; retained = {key: os.environ[key] for key in ("PAMIN_EVAL_HOME", "PAMIN_PROFILE", "PAMIN_DEVICE")}; clean = {key: value for key, value in os.environ.items() if not key.startswith("PAMIN_")}; clean.update(retained); os.execvpe(sys.argv[1], sys.argv[1:], clean)' \
-"$BINARY" scratch_scored_graph_finite_fixture \
+python3 source/future-accounting.py.in \
+  --log "$RESULTS/$ARM.log" --usage "$RESULTS/$ARM.usage.json" \
+  --mapped "$RESULTS/$ARM.mapped-libraries.json" \
+  --ort "$ORT_LIB/libonnxruntime.so.1.28.0" --zvec "$ZVEC_LIB/libzvec_c_api.so" \
+  -- "$BINARY" scratch_scored_graph_finite_fixture \
   --exact --ignored --nocapture --test-threads=1
 ```
+
+The new [accounting runner](source/future-accounting.py.in) is a prospective reconstruction of the Linux `wait4` method, not the original measurement-time runner source. It captures native stdout/stderr into a fresh `.log` and writes whole-process wall/user/system/RSS/exit values into `.usage.json`. The wall interval includes process launch, model/fixture setup and wait; wait4 CPU includes the native process and its reaped children, and excludes independent PostgreSQL services. RSS is Linux native-process high water in KiB, not aggregate service memory. This supplies the missing reproduction outputs without changing historical numbers or certifying historical runner bytes.
+
+It also samples actual ONNX Runtime and Zvec mapped paths in that same native process, hashes their files, and requires the supplied pinned paths and digests before accepting a new run. The extra `.mapped-libraries.json` is prospective local evidence; hashes bind files at capture, not mapped inode identity or continuous residency. The frozen historical `graph_trace.rs.in`, trace rows, source/binary identities and 52-entry inventory remain unchanged: their map collector recorded only ONNX Runtime, so historical loaded-Zvec identity cannot be reconstructed from the provisioned Zvec digest. Missing or conflicting future mappings fail while preserving logs and failed-capture accounting whenever the owned child is reaped; timeout has the same failure receipt. If an owned child cannot exit within the bounded kill wait, accounting is explicitly unavailable and the log remains. Failure receipts cannot count as accepted runs. New outputs require separate publication review.
 
 The Python launch shim retains only the three explicitly assigned `PAMIN_*`
 values and removes every other inherited product knob before executing the
@@ -243,3 +252,5 @@ allowed channel evidence; controlled paths require `related_to` edges with
 `deterministic` derivation. Launch scope and redaction-change flags are checked
 against the retained projection and digest differences. Run the bounded new
 counterexamples with `python3 test_verify.py --round8-only`.
+
+A local read-only audit found the exact private original digests for all eight redacted artifacts: raw fixture/usage JSON values were unchanged under canonical formatting, trace JSON additionally replaced five local path prefixes per arm, and logs differed only by trailing newline formatting. The six JSON scope declarations record those allowed transformations. Private originals are not distributed; the public verifier checks the declarations and independent captured-value pins and cannot independently replay the original-to-public transformation audit.
