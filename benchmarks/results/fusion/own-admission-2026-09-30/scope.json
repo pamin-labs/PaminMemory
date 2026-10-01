@@ -1,0 +1,16 @@
+{
+  "kind": "historical_observed_cpu_diagnostic",
+  "entry_point": "Engine::search_reranked",
+  "requested_profile": "accuracy",
+  "requested_reranker": "accurate",
+  "observed_provider": "CPUExecutionProvider",
+  "hardware_model_isa_topology": "UNKNOWN",
+  "complete_effective_tuning": "UNKNOWN",
+  "calibration_acceptance": "not established",
+  "validated_quality_benchmark": false,
+  "shipped_default_certification": false,
+  "public_measurement_runner": false,
+  "public_execution_reproducible": false,
+  "source_to_binary_attestation": "not established",
+  "compiled_target_digest": "historically reported identity only; target source privately retained; not publicly inspectable"
+}
