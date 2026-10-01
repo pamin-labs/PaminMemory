@@ -1,0 +1,12 @@
+"""Documentation agrees with exclusive scratch ownership; no build execution."""
+import ast,subprocess,sys
+from pathlib import Path
+root=Path(__file__).resolve().parent;repo=root.parents[2]
+before='--before' in sys.argv
+text=(root/'README.md').read_text()
+if before:text=subprocess.check_output(['git','show','94a38bace6b34b3c579b23f0c8d1d285596435c9:'+str((root/'README.md').relative_to(repo))],cwd=repo,text=True)
+tree=ast.parse((root/'build-guarded.py.in').read_text());owned=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=='owned_scratch')
+assert any(isinstance(x,ast.Call) and isinstance(x.func,ast.Attribute) and x.func.attr=='open' and x.args and isinstance(x.args[0],ast.Constant) and x.args[0].value=='xb' for x in ast.walk(owned))
+if before:assert 'Existing ignored scratch targets must match the explicit harness hash.' in text
+else:assert 'Remove existing scratch targets, including matching copies of the planned target, before building.' in text and 'rejects any preexisting path' in text
+print('BEFORE: documentation permits matching target but builder exclusively creates it' if before else 'PASS: documentation requires removing every preexisting target before exclusive creation')
