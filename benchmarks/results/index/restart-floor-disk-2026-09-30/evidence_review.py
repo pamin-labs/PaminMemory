@@ -266,10 +266,13 @@ def fixed_work_count(value):
 
 def new_write_visibility(extra):
     topics=extra['topics']
-    assert type(topics) is list and all(type(topic) is str for topic in topics), 'new-write topics must be an actual list of strings'
+    topic_strings(topics,'new-write')
     assert extra['known_new_topic_retrieved'] is True, 'new-write retrieved flag must be exactly true'
     assert 'restart-proof' in topics, 'new-write topic visibility differs'
 
 
 def seed_file_identity(entry):
     assert type(entry['bytes']) is int and entry['bytes']>=0 and type(entry['sha256']) is str and re.fullmatch('[0-9a-f]{64}',entry['sha256']), 'seed file identity must have actual nonnegative integer bytes and canonical SHA256'
+
+def topic_strings(topics,kind='query'):
+    assert type(topics) is list and all(type(topic) is str for topic in topics), kind+' topics must be an actual list of strings'

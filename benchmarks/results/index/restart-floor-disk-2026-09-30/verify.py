@@ -82,6 +82,7 @@ for arm,commit in expected_commits.items():
                     review.provider_binding(provider,role,provenance,provider_bindings)
                     assert provider['model_graph'].startswith(f'<SCRATCH>/results-disk/{rep}-{arm}/models/'), 'provider process differs'
                     assert set(provider['assigned_nodes'])=={'CPUExecutionProvider'} and provider['assigned_nodes']['CPUExecutionProvider']>0
+        for row in phases['search_warm']:review.topic_strings(row['extra']['topics'])
         warm[(arm,rep)]={r['extra']['query_document']:r['extra']['topics'] for r in phases['search_warm']}
         assert len(warm[(arm,rep)])==24 and all(len(topics)==len(set(topics))==10 for topics in warm[(arm,rep)].values()), 'Disk ordered top10 topics must be unique'
         for row in phases['search_warm']:
