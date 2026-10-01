@@ -1,0 +1,6 @@
+{
+  "reason": "Historical p95 selected floor(N*0.95)-1, one rank below the empirical nearest-rank quantile for N=66. Raw rows unchanged.",
+  "definition": "p50=median; p95=sorted[ceil(0.95*N)-1]; table cost cells=median of three independent process-block cells",
+  "historical": "cost-summary-historical.json",
+  "corrected": "cost-summary.json"
+}

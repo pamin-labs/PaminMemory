@@ -1,0 +1,7 @@
+{
+  "executed_code_commit": "45a3bcc601b2f9ca7d23d0bf49c6c95b3284f73e",
+  "binary_sha256": "3ab7abe5c7ed8311d9838d6acb45a7c7b49118a59cccbe57da739fa5d92154fd",
+  "harness_sha256": "a94c254702269f802a35e4c05c480f8641acc641a4e42c9e2f2ae54edaa60810",
+  "correction": "The harness samples git HEAD only after corpus ingestion. The checkout later advanced for non-CPU validation fixes while the already-running frozen executable remained unchanged. Treat that delayed code_commit field as checkout metadata; this immutable binary/source identity is the execution provenance. No result rows are edited.",
+  "predeclared_before_candidate_rows": true
+}
