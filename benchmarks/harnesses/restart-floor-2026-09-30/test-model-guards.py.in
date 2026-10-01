@@ -15,6 +15,10 @@ with tempfile.TemporaryDirectory() as directory:
     for name in files:(models/name).write_bytes(b'tiny fake asset')
     plan={'version':1,'selection_provenance':'fake role map from fake executable, no real inference','models':[{'name':'embedding','asset_directories':['revision','prepared/key'],'load_graph':'prepared/key/attention.onnx','assets':{'source':['revision/source.onnx'],'tokenizer':['revision/tokenizer.json'],'metadata':['revision/config.json','prepared/native.source'],'prepared_graph':['prepared/key/model.onnx','prepared/key/attention.onnx'],'external_weights':['prepared/key/model.onnx.data']},'graph_external_weights':{name:['prepared/key/model.onnx.data'] for name in ['prepared/key/model.onnx','prepared/key/attention.onnx']}}]}
     expected=model['prepare'](models,plan);manifest=root/'manifest.json';manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+    # Current format is common per role, not an arm-keyed graph union.
+    union=copy.deepcopy(plan);other=copy.deepcopy(union['models'][0]);other['name']='embedding-candidate';union['models'].append(other)
+    refuse(lambda:model['validate_plan'](union))
+    duplicate=copy.deepcopy(plan);duplicate['models'].append(copy.deepcopy(duplicate['models'][0]));refuse(lambda:model['validate_plan'](duplicate))
     assert model['verify'](expected['model'])['assets']==len(files)
     for name in files:
         path=models/name;prior=path.read_bytes();path.write_bytes(b'changed');refuse(lambda:model['verify'](expected['model']));path.write_bytes(prior)
@@ -120,6 +124,14 @@ with tempfile.TemporaryDirectory() as directory:
     try:
         os.environ.clear();os.environ.update({key:value for key,value in previous_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})
         subprocess.run=lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError('unexpected setup launch'))
+        for at,value in enumerate(['','1','64']):
+            private=root/f'tokio-rejected-{at}.json';os.environ['TOKIO_WORKER_THREADS']=value
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+            try:guard['main']()
+            except AssertionError as error:assert 'inherited Tokio worker concurrency' in str(error)
+            else:raise AssertionError('inherited Tokio reached setup')
+            assert not private.exists(), 'Tokio rejection must precede record creation'
+        os.environ.pop('TOKIO_WORKER_THREADS')
         for kind in ['conversion','wrong_artifact']:
             bad=copy.deepcopy(attested)
             if kind=='conversion':bad['build_kind']='disk-schema-conversion'
@@ -135,6 +147,7 @@ with tempfile.TemporaryDirectory() as directory:
         for kind in ['normal','zero_tests','changed_during_setup','manifest_changed','manifest_mode_changed']:
             private=root/(kind+'.json');calls=[]
             def fake_run(command,env,**kwargs):
+                assert env['TOKIO_WORKER_THREADS']=='4', 'setup must receive explicit Tokio concurrency'
                 calls.append(command)
                 if kind=='changed_during_setup':(models/'prepared/key/model.onnx.data').write_bytes(b'changed during setup')
                 if kind=='manifest_changed':manifest.write_text(manifest.read_text()+' ')
@@ -145,6 +158,7 @@ with tempfile.TemporaryDirectory() as directory:
             if kind=='normal':guard['main']()
             else:refuse(guard['main'])
             data=json.loads(private.read_text());assert data['status']==('finished' if kind=='normal' else 'failed') and len(calls)==1
+            assert data['controlled_environment']['TOKIO_WORKER_THREADS']=='4'
             assert '_expected_models' not in data and 'entries' not in data['models_before_launch'] and stat.S_IMODE(private.stat().st_mode)==0o600
             (models/'prepared/key/model.onnx.data').write_bytes(b'tiny fake asset');manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
         # Provider text uses the retained native log syntax; the real frozen
