@@ -350,6 +350,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   via = row['strong'] if arm=='baseline' and i==1 else (bridge if i==1 else (low if arm=='baseline' else high))
   assert trace['via']==trace['asserted_from']==via and trace['asserted_to']==row['target_labels'][i]
  early=row['early_stop'];assert early['decoys']==60 and close(early['expected_score'],.5)
+ assert type(early['reached']) is bool, 'early-stop reached must be an actual boolean'
  assert early['reached']==(arm=='scored')
  if arm=='scored':
   validate_graph_record({'why':early['why']},arm,3)

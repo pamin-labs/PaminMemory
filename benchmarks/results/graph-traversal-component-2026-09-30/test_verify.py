@@ -502,6 +502,9 @@ if __name__ == '__main__':
             mutate_json(r/'provenance.json',change)
         run_case('toolchain '+'/'.join(keys),toolchain_mutation)
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
+    for arm in ['baseline','scored']:
+        for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
+            run_case('nonboolean early-stop '+arm+'/'+repr(reached),lambda r,arm=arm,reached=reached:mutate_json(r/(arm+'.jsonl'),lambda row:row['early_stop'].update(reached=reached)),expected_error='early-stop reached must be an actual boolean')
     for endpoint in ['asserted_from','asserted_to']:
         run_case('early-stop '+endpoint,lambda r,endpoint=endpoint:mutate_json(r/'scored.jsonl',lambda row:next(w for w in row['early_stop']['why'] if w['kind']=='path').update({endpoint:'unrelatedtopic'})))
     def absent_evidence(r):
