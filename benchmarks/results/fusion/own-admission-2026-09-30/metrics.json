@@ -1,0 +1,98 @@
+{
+  "monolingual/ndcg10": {
+    "before": 0.9821417622695867,
+    "after": 0.9821417622695867,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "monolingual/recall10": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "monolingual/recall50": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "cross_lingual/ndcg10": {
+    "before": 0.866870645114404,
+    "after": 0.8660001643437671,
+    "absolute_difference": -0.0008704807706368944,
+    "percentage_change": -0.10041645492817604
+  },
+  "cross_lingual/recall10": {
+    "before": 0.8627906976744186,
+    "after": 0.8627906976744186,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "cross_lingual/recall50": {
+    "before": 0.977906976744186,
+    "after": 0.977906976744186,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "lexical/ndcg10": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "lexical/recall10": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "lexical/recall50": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "relational/ndcg10": {
+    "before": 0.704743802857166,
+    "after": 0.704743802857166,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "relational/recall10": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "relational/recall50": {
+    "before": 1.0,
+    "after": 1.0,
+    "absolute_difference": 0.0,
+    "percentage_change": 0.0
+  },
+  "Search latency p50/p95": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  },
+  "Wall time / CPU user-system time": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  },
+  "Process RSS / service-device memory": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  },
+  "Model-cache / index / temporary disk": {
+    "before": "N/A",
+    "after": "N/A",
+    "absolute_difference": "N/A",
+    "percentage_change": "N/A"
+  }
+}

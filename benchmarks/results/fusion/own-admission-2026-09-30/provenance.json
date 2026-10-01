@@ -1,0 +1,148 @@
+{
+  "scope": "Historical observed CPU INT8 handwritten157-query diagnostic only; not a validated quality benchmark or shipped-default certification",
+  "source_revision": "13ee710c9df865f1dac98dc77a8108e438ddc539",
+  "binaries": [
+    {
+      "arm": "baseline",
+      "binary": "${EXPERIMENT}/acceptance/bin/own-baseline-v3",
+      "sha256": "934a91e92ff53725bd367269f33758e827a5f300d05afdd25c3b2f4c98298977",
+      "bytes": 16295216,
+      "source": "${EXPERIMENT}/variants/baseline/crates/pamin-engine/tests/scratch_pool_retrieval.rs",
+      "source_sha256": "69f2f02d8fd3b66c50406899c99bddf425c5095b5e4ac1cb95bacdc6387e4119"
+    },
+    {
+      "arm": "pooled",
+      "binary": "${EXPERIMENT}/acceptance/bin/own-pooled-v3",
+      "sha256": "ac373a295e8d0e7266063785a22ccb8c73cdb3b07b665589469a34fd12ae0c8f",
+      "bytes": 16296880,
+      "source": "${EXPERIMENT}/variants/pooled/crates/pamin-engine/tests/scratch_pool_retrieval.rs",
+      "source_sha256": "69f2f02d8fd3b66c50406899c99bddf425c5095b5e4ac1cb95bacdc6387e4119"
+    }
+  ],
+  "dataset_files": {
+    "memories.json": "67473f12f4f504e9e0ec4f605218cbc9d5fbd01265deadfbc2b7f4982808fd70",
+    "queries.json": "0662914901425b03c2f95667f68eede6caad1392ba367a2c8d5856efa1ed4faf"
+  },
+  "assets_before": {
+    "${CARGO_HOME}/lib/pamin/libzvec_c_api.so": {
+      "sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+      "bytes": 38067280
+    },
+    "${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0": {
+      "sha256": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+      "bytes": 24268848
+    },
+    "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx": {
+      "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "bytes": 569958496
+    },
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx": {
+      "sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "bytes": 570727094
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/attention.unfused": {
+      "sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
+      "bytes": 27
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": {
+      "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+      "bytes": 592479
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": {
+      "sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "bytes": 872738832
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/used": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": {
+      "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+      "bytes": 347238
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": {
+      "sha256": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+      "bytes": 484362
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": {
+      "sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "bytes": 874217472
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/used": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  },
+  "conditions": "seed native corpus once, then two fresh stopped DB/index clones; no parallel build/model experiment; warm OS/model cache; no latency claims",
+  "assets_after": {
+    "${CARGO_HOME}/lib/pamin/libzvec_c_api.so": {
+      "sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+      "bytes": 38067280
+    },
+    "${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0": {
+      "sha256": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+      "bytes": 24268848
+    },
+    "${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx": {
+      "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "bytes": 569958496
+    },
+    "${MODEL_CACHE}/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx": {
+      "sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "bytes": 570727094
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/attention.unfused": {
+      "sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
+      "bytes": 27
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx": {
+      "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+      "bytes": 592479
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data": {
+      "sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "bytes": 872738832
+    },
+    "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/used": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx": {
+      "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+      "bytes": 347238
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx": {
+      "sha256": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+      "bytes": 484362
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data": {
+      "sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "bytes": 874217472
+    },
+    "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/used": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  },
+  "configuration_scope": "Profile::Accuracy and Rerank::Accurate requested; complete inherited effective tuning and CPU model/ISA/topology UNKNOWN; exact public execution reproduction and source-to-binary attestation not established",
+  "config_audit_file": "config-audit-limit.json",
+  "historical_config_limit": "historical-config-limit.md",
+  "controller_parser_repair": "First measure baseline test completed157rows successfully; controller falsely missed libtest-prefixed graph marker and aborted. Explicit resume revalidated completed seed/baseline logs and asset/source hashes without rerunning; then ran pooled. Prior controller failure and failedseed logs retained.",
+  "attestation_scope": "Accepted build JSON proves clean rebuilt product crates and test artifacts; source/binary hashes retained, but no full prospective build/runtime tuning attestation. Independent strict future runner required for certification.",
+  "publication_scope": {
+    "kind": "historical_observed_cpu_diagnostic",
+    "entry_point": "Engine::search_reranked",
+    "requested_profile": "accuracy",
+    "requested_reranker": "accurate",
+    "observed_provider": "CPUExecutionProvider",
+    "hardware_model_isa_topology": "UNKNOWN",
+    "complete_effective_tuning": "UNKNOWN",
+    "calibration_acceptance": "not established",
+    "validated_quality_benchmark": false,
+    "shipped_default_certification": false,
+    "public_measurement_runner": false,
+    "public_execution_reproducible": false,
+    "source_to_binary_attestation": "not established",
+    "compiled_target_digest": "historically reported identity only; target source privately retained; not publicly inspectable"
+  }
+}

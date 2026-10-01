@@ -1,0 +1,23 @@
+{
+  "scope": "observer environment after pooled startup; NOT child environment attestation and NOT historical baseline config",
+  "safe_observer_environment": {
+    "PAMIN_DEVICE": null,
+    "PAMIN_PROFILE": null,
+    "PAMIN_EVAL_HOME": null,
+    "PAMIN_FUSED_ATTENTION": null,
+    "PAMIN_INFERENCE_THREADS": null,
+    "PAMIN_MODEL_IDLE": null,
+    "PAMIN_NATIVE_MODEL_SOURCE": null,
+    "PAMIN_NATIVE_TEST_CACHE": null,
+    "PAMIN_PREPARED": null,
+    "PAMIN_RERANK_BATCH": null,
+    "PAMIN_RERANK_BATCH_TOKENS": null,
+    "PAMIN_RERANK_DEPTH": null,
+    "PAMIN_RERANK_MAX_TOKENS": null,
+    "PAMIN_SEARCH_EFFORT": null,
+    "PAMIN_UNINDEXED_BUDGET": null,
+    "PAMIN_VECTOR_INDEX": null
+  },
+  "unexpected_pamin_variable_names": [],
+  "child_environment_read": "attempt blocked by Linux PermissionError for /proc/<child>/environ; no escalation attempted"
+}
