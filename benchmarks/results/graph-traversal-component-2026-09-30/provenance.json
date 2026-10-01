@@ -518,7 +518,7 @@
     "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
     "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
     "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
-    "verify.py": "44d25b3e9251ca2a76282fd8b6eb4253627253c2f1c98fd9870aca24cf75dfd6",
+    "verify.py": "ea2fbe47c8e40612d686332e31238912fcd5d1b0f80aaa76ef82128a25ecdd17",
     "platform-observation.json": "c9cd36af33d603da177bdc4becdb03cf656bad2faf2d7ba0a37c935b56fb3d3d",
     "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
     "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
@@ -547,7 +547,7 @@
     "source/migrations/V4__current_state_pointer.sql": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
     "source/migrations/V10__settled_jobs_leave.sql": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
     "source/future-accounting.py.in": "0f8122c033c008b1d398d8bc9e3f0b5bfedaf2ae7c00c638f73fc5c86627c79c",
-    "test_future_accounting.py": "2e6fc7a52441addd8e33ac4bb244928cef19a3cf1c2c56c3ddf411615e72fc08"
+    "test_future_accounting.py": "1d98f06ee9ced73b2a68d3248ec97c649ddf6281c0f1a3f73675731a0fee1250"
   },
   "source_inventory_scope": {
     "original_captured_entries_per_arm": 52,
@@ -574,7 +574,7 @@
     "scope": "prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement",
     "files": {
       "source/future-accounting.py.in": "0f8122c033c008b1d398d8bc9e3f0b5bfedaf2ae7c00c638f73fc5c86627c79c",
-      "test_future_accounting.py": "2e6fc7a52441addd8e33ac4bb244928cef19a3cf1c2c56c3ddf411615e72fc08"
+      "test_future_accounting.py": "1d98f06ee9ced73b2a68d3248ec97c649ddf6281c0f1a3f73675731a0fee1250"
     }
   },
   "redaction_validation_scope": "declared allowed transforms; local read-only audit matched original digests and semantic JSON equivalence modulo declared path prefixes; private originals not distributed and public verifier cannot independently replay that audit"

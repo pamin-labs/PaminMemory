@@ -18,13 +18,13 @@ runner=importlib.util.module_from_spec(spec);loader.exec_module(runner)
 
 
 def resource_gate():
-    free=shutil.disk_usage(ROOT).free
-    available=int(next(line for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')).split()[1])*1024
-    cap=Path('/sys/fs/cgroup/memory.max').read_text().strip()
-    raw=None if cap=='max' else int(cap)-int(Path('/sys/fs/cgroup/memory.current').read_text())
-    if raw is not None:available=min(available,raw)
-    if free<8*1024**3 or available<128*1024**2:raise RuntimeError('fixtures require 8 GiB disk reserve and 128 MiB qualified raw headroom')
-    return {'disk_free_bytes':free,'raw_cgroup_headroom_bytes':raw,'qualified_available_memory_bytes':available,'scope':'host MemAvailable capped by cgroup max-current; reclaim not guaranteed'}
+    # One sequential archive copy plus conservative file/temporary overhead.
+    # These tests mock processes; native/shared-host admission is external.
+    archive_bytes=sum(path.stat().st_size for path in ROOT.rglob('*') if path.is_file())
+    required=2*archive_bytes+1024**2
+    free=shutil.disk_usage(tempfile.gettempdir()).free
+    if free<required:raise RuntimeError('insufficient temporary disk for sequential archive-copy fixtures')
+    return {'temporary_disk_free_bytes':free,'archive_bytes':archive_bytes,'required_disk_bytes':required,'scope':'conservative fixture copy budget, not a measured peak or native admission'}
 
 
 class FutureRunnerTests(unittest.TestCase):
@@ -39,6 +39,14 @@ class FutureRunnerTests(unittest.TestCase):
         self.pins={role:hashlib.sha256(path.read_bytes()).hexdigest() for role,path in self.paths.items()}
 
     def tearDown(self):self.temp.cleanup()
+
+    def test_small_fixture_disk_budget(self):
+        required=resource_gate()['required_disk_bytes']
+        self.assertLess(required,8*1024**3)
+        with patch.object(shutil,'disk_usage',return_value=Mock(free=required)):
+            self.assertEqual(resource_gate()['temporary_disk_free_bytes'],required)
+        with patch.object(shutil,'disk_usage',return_value=Mock(free=required-1)):
+            with self.assertRaisesRegex(RuntimeError,'temporary disk'):resource_gate()
 
     def test_collector_requires_both_actual_paths_and_hashes(self):
         lines='\n'.join('1-2 r-xp 0 00:00 1 '+str(path) for path in self.paths.values())
