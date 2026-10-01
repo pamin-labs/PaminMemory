@@ -149,7 +149,12 @@ edition="2024"
         )
         .unwrap();
         std::fs::write(project.join("src/lib.rs"), "").unwrap();
-        let mut script = include_str!("build.rs").replace("fn main()", "fn catalog_main()");
+        let source = include_str!("build.rs");
+        let start = source.find("fn unavailable(").unwrap();
+        let end = source[start..].find("\nfn extractor(").unwrap() + start;
+        // Exercise the actual recovery function without compiling unrelated
+        // unused extractor branches under the caller's -D warnings flags.
+        let mut script = source[start..end].to_string();
         script.push_str(
             r#"
 fn main() {
