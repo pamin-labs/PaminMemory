@@ -341,6 +341,8 @@ mod tests {
     /// table and in this list, where leaving one out is a failing test rather
     /// than a silent omission.
     const UNDOCUMENTED: &[&str] = &[
+        // Compile-time source/compiler fingerprint, not a runtime user setting.
+        "PAMIN_INFERENCE_BUILD",
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
         // Cached-export inputs used only by the native preparation regression.
