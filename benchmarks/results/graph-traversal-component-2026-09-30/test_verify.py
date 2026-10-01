@@ -554,6 +554,18 @@ if __name__ == '__main__':
         run_case('extra comparison field '+field,lambda root,field=field:mutate_json(root/'comparison.json',lambda value:value.update({field:{'baseline':100,'scored':50}})),expected_error='comparison top-level schema differs')
     for key,value in [('early_stop_recovered',1),('cross_arm_non_graph_identical',0)]:
         run_case('nonboolean comparison status '+key,lambda root,key=key,value=value:mutate_json(root/'comparison.json',lambda row:row.update({key:value})),expected_error='comparison status fields must be actual booleans')
+    for name in ['comparison.json','provenance.json','platform-observation.json','retrospective-sql-audit.json','baseline.usage.json','scored.usage.json','baseline.jsonl','scored.jsonl','baseline.trace.jsonl','scored.trace.jsonl']:
+        def duplicate_top(root,name=name):
+            path=root/name;text=path.read_text();offset=text.index('{');path.write_text(text[:offset+1]+'"scope":"first-wins false claim","scope":"second-wins false claim",'+text[offset+1:])
+        run_case('duplicate JSON key '+name,duplicate_top,refresh_hashes=name!='provenance.json',expected_error='duplicate JSON object key')
+    for name in ['baseline.jsonl','scored.jsonl']:
+        def duplicate_nested(root,name=name):
+            path=root/name;text=path.read_text();marker='"early_stop": {' if '"early_stop": {' in text else '"early_stop":{';assert marker in text;path.write_text(text.replace(marker,marker+'"reached":true,"reached":false,',1))
+        run_case('nested duplicate JSON key '+name,duplicate_nested,expected_error='duplicate JSON object key')
+        def duplicate_array_object(root,name=name):
+            import re
+            path=root/name;text,count=re.subn(r'("channel"\s*:\s*"graph"\s*,)',r'\1"score":999,"score":998,',path.read_text(),count=1);assert count==1;path.write_text(text)
+        run_case('array object duplicate JSON key '+name,duplicate_array_object,expected_error='duplicate JSON object key')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:

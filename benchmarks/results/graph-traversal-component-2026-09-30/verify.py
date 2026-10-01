@@ -49,7 +49,14 @@ def fixture_content(topic):
  assert re.fullmatch(r'islandnode[0-9]{4}',topic) and 0 <= int(topic[10:]) < 240, 'invalid fixture origin topic'
  n=int(topic[10:])
  return f'orbital navigation calibration beacon archival report category {n % 17} revision {n}'
-def load(name):return json.loads((ROOT/name).read_text())
+def unique_object(pairs):
+ result={}
+ for key,value in pairs:
+  assert key not in result, 'duplicate JSON object key: '+key
+  result[key]=value
+ return result
+def parse_json(text):return json.loads(text,object_pairs_hook=unique_object)
+def load(name):return parse_json((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
 assert set(comparison)=={'invariants','early_stop_recovered','cross_arm_non_graph_identical','scope','early_stop'}, 'comparison top-level schema differs'
@@ -311,7 +318,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  # Historical fixture writes GRAPH_OUT directly, so no stdout JSON linkage exists.
  assert provenance['fixture_log_linkage'] == 'not captured: native fixture persisted GRAPH_OUT directly; stdout has test success only'
  assert 'std::env::var("GRAPH_OUT").expect("output path")' in (ROOT/'source/fixture.rs.in').read_text()
- events = [json.loads(line) for line in (ROOT/f'{arm}.trace.jsonl').read_text().splitlines()]
+ events = [parse_json(line) for line in (ROOT/f'{arm}.trace.jsonl').read_text().splitlines()]
  assert len(events) == 3
  runtime, loaded, assigned = events
  assert [e['fields']['message'] for e in events] == ['graph fixture runtime','loaded ONNX graph','ONNX graph execution-provider assignment']
