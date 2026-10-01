@@ -1,0 +1,329 @@
+{
+  "scope": "small CPU native Engine same-final-list numerical acceptance and diagnostic component costs; no broad quality or stable percentile claim",
+  "comparisons": [
+    {
+      "repeat": 0,
+      "variant": "refactor",
+      "query_id": 80,
+      "history": "A->B",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 0,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 0,
+      "variant": "refactor",
+      "query_id": 80,
+      "history": "B->A",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 0,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 0,
+      "variant": "refactor",
+      "query_id": 101,
+      "history": "A->B",
+      "changed_logits": 20,
+      "changed_product_positions": 25,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 1,
+        "characters": 55,
+        "tokens": 25,
+        "padded_tokens": 25,
+        "batches": 1,
+        "encode_us": 243,
+        "forward_us": 33331
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 0,
+      "variant": "refactor",
+      "query_id": 101,
+      "history": "B->A",
+      "changed_logits": 20,
+      "changed_product_positions": 25,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 1,
+        "characters": 57,
+        "tokens": 37,
+        "padded_tokens": 37,
+        "batches": 1,
+        "encode_us": 282,
+        "forward_us": 43294
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 0,
+      "variant": "fixed",
+      "query_id": 80,
+      "history": "A->B",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 1205,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 0,
+      "variant": "fixed",
+      "query_id": 80,
+      "history": "B->A",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 992,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 0,
+      "variant": "fixed",
+      "query_id": 101,
+      "history": "A->B",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 20,
+        "characters": 1372,
+        "tokens": 653,
+        "padded_tokens": 672,
+        "batches": 5,
+        "encode_us": 1087,
+        "forward_us": 692059
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 0,
+      "variant": "fixed",
+      "query_id": 101,
+      "history": "B->A",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 20,
+        "characters": 1374,
+        "tokens": 665,
+        "padded_tokens": 684,
+        "batches": 5,
+        "encode_us": 1074,
+        "forward_us": 584703
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 1,
+      "variant": "refactor",
+      "query_id": 80,
+      "history": "A->B",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 0,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 1,
+      "variant": "refactor",
+      "query_id": 80,
+      "history": "B->A",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 0,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 1,
+      "variant": "refactor",
+      "query_id": 101,
+      "history": "A->B",
+      "changed_logits": 20,
+      "changed_product_positions": 25,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 1,
+        "characters": 55,
+        "tokens": 25,
+        "padded_tokens": 25,
+        "batches": 1,
+        "encode_us": 250,
+        "forward_us": 34596
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 1,
+      "variant": "refactor",
+      "query_id": 101,
+      "history": "B->A",
+      "changed_logits": 20,
+      "changed_product_positions": 25,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 1,
+        "characters": 57,
+        "tokens": 37,
+        "padded_tokens": 37,
+        "batches": 1,
+        "encode_us": 256,
+        "forward_us": 38400
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 1,
+      "variant": "fixed",
+      "query_id": 80,
+      "history": "A->B",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 914,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 1,
+      "variant": "fixed",
+      "query_id": 80,
+      "history": "B->A",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 0,
+        "characters": 0,
+        "tokens": 0,
+        "padded_tokens": 0,
+        "batches": 0,
+        "encode_us": 1111,
+        "forward_us": 0
+      },
+      "selected_changed": false
+    },
+    {
+      "repeat": 1,
+      "variant": "fixed",
+      "query_id": 101,
+      "history": "A->B",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 20,
+        "characters": 1372,
+        "tokens": 653,
+        "padded_tokens": 672,
+        "batches": 5,
+        "encode_us": 1297,
+        "forward_us": 713470
+      },
+      "selected_changed": true
+    },
+    {
+      "repeat": 1,
+      "variant": "fixed",
+      "query_id": 101,
+      "history": "B->A",
+      "changed_logits": 0,
+      "changed_product_positions": 0,
+      "changed_product_result_score_bits": 0,
+      "actual_delta": {
+        "offered": 30,
+        "scored": 20,
+        "characters": 1374,
+        "tokens": 665,
+        "padded_tokens": 684,
+        "batches": 5,
+        "encode_us": 1155,
+        "forward_us": 565430
+      },
+      "selected_changed": true
+    }
+  ],
+  "fresh_product_bits_equal": true,
+  "hot_actual_forward_zero": true,
+  "source_binary_assets_unchanged": true,
+  "pg_all_stopped": true
+}
