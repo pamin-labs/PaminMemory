@@ -59,8 +59,10 @@ def parse(text, job, bound, home=None):
     for row in actual:
         mapped = {re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), line.split(maxsplit=5)[5])
                   for line in row['loaded_libraries'] if len(line.split(maxsplit=5)) == 6}
-        for root, name in [('native', 'libzvec_c_api.so'), ('ort', 'libonnxruntime.so.1.28.0')]:
-            c.require(str((Path(c.CONFIG[root]) / name).resolve()) in mapped, 'actual runtime mapping differs')
+        expected = {str((Path(c.CONFIG[root]) / name).resolve())
+                    for root, name in [('native', 'libzvec_c_api.so'), ('ort', 'libonnxruntime.so.1.28.0')]}
+        relevant = {path for path in mapped if Path(path).name.startswith(('libonnxruntime', 'libzvec'))}
+        c.require(relevant == expected, 'actual runtime mapping differs; unexpected or missing ORT/Zvec identity')
     return opened[0], actual
 
 
