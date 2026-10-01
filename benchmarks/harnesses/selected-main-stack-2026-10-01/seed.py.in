@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import common as c
+import owned_postgres as pg
 
 
 def main():
@@ -29,8 +30,16 @@ def main():
         (home / '.graph-disposable-clone').touch()
         env = c.environment(home)
         env['PAMIN_POSTGRES_DIR'] = str(install)
-        c.monitored([str(binary), '--ignored', '--exact', 'synthetic_cache_seed',
-                     '--nocapture', '--test-threads=1'], c.ROOT / 'main', env, c.ROOT / 'seed-run')
+        try:
+            c.monitored([str(binary), '--ignored', '--exact', 'synthetic_cache_seed',
+                         '--nocapture', '--test-threads=1'], c.ROOT / 'main', env, c.ROOT / 'seed-run')
+        except BaseException as failure:
+            try:pg.stop_seed(home,env,install)
+            except BaseException as cleanup:
+                failure.add_note('Owned seed PostgreSQL cleanup refused or failed: '+str(cleanup))
+            raise
+        else:
+            pg.stop_seed(home,env,install)
         c.require('SYNTHETIC_SEED_OK' in (c.ROOT / 'seed-run.stdout').read_text(), 'seed completion absent')
         c.require(not (home / 'postgres/data/postmaster.pid').exists(), 'seed PostgreSQL still running')
         c.save(c.ROOT / 'seed-receipt.json', {'revision': c.MANIFEST['revisions']['main'],

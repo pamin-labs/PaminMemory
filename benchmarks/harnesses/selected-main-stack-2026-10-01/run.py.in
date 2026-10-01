@@ -53,11 +53,13 @@ def status(pid):
 
 
 def native(home, env, binary, prefix):
-    owned = pg.start(home, env)['identity']
+    owned = None
     start = time.monotonic()
     samples = []
     process = None
     try:
+        owned = pg.start(home, env)['identity']
+        start = time.monotonic()
         with Path(str(prefix) + '.log').open('x') as stream:
             process = subprocess.Popen([str(binary), '--ignored', '--exact', 'cache_product_limit_probe',
                                         '--nocapture', '--test-threads=1'], cwd=c.ROOT / 'main', env=env,
@@ -78,7 +80,8 @@ def native(home, env, binary, prefix):
         if process is not None and process.poll() is None:
             process.kill()
             process.wait(timeout=10)
-        pg.stop(home, env, owned)
+        if owned is not None:
+            pg.stop(home, env, owned)
 
 
 def main():
