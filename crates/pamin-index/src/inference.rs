@@ -1135,6 +1135,8 @@ fn inventory_with_permit(
         .name("cuda-inventory".into())
         .spawn(move || {
             let Some(mut child) = command.spawn().ok() else {
+                // Dropping the sole Sender wakes recv_timeout immediately;
+                // the captured permit is released with this worker as well.
                 return;
             };
             let deadline = std::time::Instant::now() + timeout;
@@ -2570,6 +2572,29 @@ mod tests {
             &[(Device::CoreMl, vec![cpu()].into())],
             false
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_spawn_failure_returns_immediately_and_releases_admission() {
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let permit = InventoryPermit::acquire(busy.clone()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let command = std::process::Command::new(root.path().join("nonexistent-inventory"));
+        let start = std::time::Instant::now();
+        assert!(
+            inventory_with_permit(command, std::time::Duration::from_secs(30), permit).is_none()
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        // Sender disconnect can wake before the final captured permit drops.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let _permit = loop {
+            if let Some(permit) = InventoryPermit::acquire(busy.clone()) {
+                break permit;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
     }
 
     #[cfg(unix)]
