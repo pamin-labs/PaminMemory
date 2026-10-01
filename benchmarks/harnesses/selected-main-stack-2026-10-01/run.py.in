@@ -183,6 +183,7 @@ def atomic_save(path, value):
 
 
 def run_identity(jobs, binaries, bound, seed):
+    c.validate_binaries(binaries)
     files = ['config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
              'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
              'run.py', 'rows.py', 'common.py', 'owned_postgres.py', 'analyze.py', 'metrics.py']
@@ -292,9 +293,7 @@ def main():
     with c.exclusive():
         c.source_inputs()
         bound = c.assets()
-        binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
-        for pin in binaries.values():
-            c.require(c.digest(pin['path']) == pin['sha256'], 'frozen binary changed')
+        binaries = c.validate_binaries(read_json(c.ROOT / 'build/binaries.json'))
         seed = c.ROOT / 'seed'
         pg.preflight(seed)
         out = c.ROOT / 'results'

@@ -35,6 +35,21 @@ def digest(path):
     return value.hexdigest()
 
 
+def validate_binaries(binaries):
+    require(type(binaries) is dict and set(binaries)=={'main','stack','seed'}, 'frozen binary receipt arms differ')
+    for arm,pin in binaries.items():
+        require(type(pin) is dict and set(pin)=={'path','sha256','bytes','revision'}, 'frozen binary receipt schema differs')
+        require(type(pin['path']) is str and pin['path'] and Path(pin['path']).is_absolute(), 'invalid frozen binary path')
+        require(type(pin['sha256']) is str and re.fullmatch('[0-9a-f]{64}',pin['sha256']) is not None, 'invalid frozen binary digest')
+        require(type(pin['bytes']) is int and pin['bytes']>=0, 'invalid frozen binary size')
+        require(type(pin['revision']) is str and pin['revision']==MANIFEST['revisions']['main' if arm=='seed' else arm], 'frozen binary revision differs')
+        path=Path(pin['path'])
+        require(not path.is_symlink() and path.is_file(), 'frozen binary file missing or symlink')
+        require(path.stat().st_size==pin['bytes'], 'frozen binary size differs')
+        require(digest(path)==pin['sha256'], 'frozen binary changed')
+    return binaries
+
+
 def save(path, value):
     with Path(path).open('x') as stream:
         json.dump(value, stream, indent=2, ensure_ascii=False, allow_nan=False)

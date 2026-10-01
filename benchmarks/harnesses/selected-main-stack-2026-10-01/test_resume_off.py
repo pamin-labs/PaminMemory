@@ -42,7 +42,8 @@ class ResumeAndOff(unittest.TestCase):
         (self.work / 'source-receipts.json').write_text('{}')
         binary = self.work / 'fake-binary'; binary.write_bytes(b'never execute')
         identity = self.pg_identity()
-        pins = {arm: {'path':str(binary),'sha256':self.common.digest(binary)} for arm in ['main','stack']}
+        pins = {arm: {'path':str(binary),'sha256':self.common.digest(binary),'bytes':binary.stat().st_size,'revision':self.common.MANIFEST['revisions'][arm]} for arm in ['main','stack']}
+        pins['seed']=dict(pins['main'])
         (self.work / 'build/binaries.json').write_text(json.dumps(pins))
         jobs = self.common.schedule(); called = []; interrupt = [True]
         def native(home, env, executable, prefix):
