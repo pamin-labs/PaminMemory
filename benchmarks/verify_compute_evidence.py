@@ -209,6 +209,10 @@ def verify_device_proof():
         artifact = (ROOT / "logs" / entry["event_artifact"]).read_bytes()
         assert hashlib.sha256(artifact).hexdigest() == entry["event_sha256"]
         log = json.loads(artifact)
+        assert type(log) is dict and set(log) == {"source_sha256", "redaction", "events"}, "invalid redacted log top-level fields"
+        assert type(log["source_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", log["source_sha256"]), "invalid redacted source hash"
+        assert type(log["redaction"]) is str and log["redaction"] == "Every source line mapped to a fixed event enum; no paths, free text, model strings, credentials or user content retained.", "invalid redaction marker"
+        assert type(log["events"]) is list, "invalid redacted event list"
         assert log["source_sha256"] == entry["log_sha256"]
         events = log["events"]
         assert [event["line"] for event in events] == list(range(len(events)))
