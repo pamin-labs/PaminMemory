@@ -424,6 +424,11 @@ fn primary_model(
         &identity,
         cache_dir,
         &references,
+        crate::inference::ReferenceShape {
+            vectors: Some((fixtures.len(), profile.dimensions() as usize)),
+            queries: Some((2, profile.dimensions() as usize)),
+            scores: None,
+        },
         |device, target, _validated| load_on(profile, cache_dir, device, target),
         |model, device| {
             let mut reference = references.borrow_mut();
@@ -746,6 +751,10 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         ),
         cache,
         &references,
+        crate::inference::ReferenceShape {
+            vectors: Some((6, 1024)),
+            ..Default::default()
+        },
         |device, target, _validated| load(device, target),
         |model, _device| {
             let mut reference = references.borrow_mut();
