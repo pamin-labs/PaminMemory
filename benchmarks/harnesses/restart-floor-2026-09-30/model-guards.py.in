@@ -23,7 +23,7 @@ def asset(root,name,may_be_absent=False):
     resolved=path.resolve()
     assert resolved.is_relative_to(root), 'model symlink escapes pinned cache'
     if not path.exists():
-        assert may_be_absent and not path.is_symlink(), 'required model asset missing'
+        assert may_be_absent, 'required model asset missing'
         return {'absent':True,'links':links,'resolved':str(resolved)}
     before=path.stat();assert stat.S_ISREG(before.st_mode), 'model asset must be a regular file'
     hashed=digest(path);after=path.stat()
@@ -52,6 +52,14 @@ def validate_plan(plan):
             assert model['source_release_provenance'].strip(), 'source release needs explicit policy/provenance'
             assert set(model['source_records'])==set(model['assets']['source']), 'each released source needs its native digest record'
             assert set(model['source_records'].values())<=set(model['assets']['metadata']), 'source provenance record must be bound metadata'
+            origins=model['source_origins'];blobs=model['source_blob_targets']
+            assert set(origins)==set(model['assets']['source']) and set(origins.values())<=set(origins), 'explicit declared source leaf origins required'
+            assert all(origins[origin]==origin for origin in origins.values()), 'source origins must identify original leaves'
+            assert set(blobs)<=set(origins.values()) and set(blobs.values())<=set(origins), 'source blobs must be explicitly declared assets'
+            assert all(blob!=origin and origins[blob]==origin for origin,blob in blobs.items()), 'owned source blob must identify the same original leaf'
+            for name,origin in origins.items():
+                assert name==origin or blobs.get(origin)==name, 'source blob must bind to its declared original leaf'
+                assert model['source_records'][name]==model['source_records'][origin], 'source leaf/blob must share native provenance'
     return plan
 
 def snapshot(root,plan):
@@ -69,7 +77,16 @@ def snapshot(root,plan):
                     assert len(lines)==4 and lines[0] and lines[2].isdigit(), 'native source provenance record required'
                     length=int(lines[1]);hashed=lines[3].removeprefix('sha256 ')
                     assert lines[3].startswith('sha256 ') and len(hashed)==64 and all(c in '0123456789abcdef' for c in hashed), 'native source digest required'
-                    if not entry.get('absent'):assert Path(entry['resolved']).name==lines[0] and entry['bytes']==length and entry['sha256']==hashed, 'source differs from native release provenance'
+                    origin=model['source_origins'][name]
+                    assert lines[0]==Path(origin).name, 'native provenance must name the declared original source leaf'
+                    blob=model['source_blob_targets'].get(origin)
+                    if blob is not None:
+                        leaf=root/origin;target=root/blob
+                        assert target.resolve()==target.absolute(), 'owned source blob must not redirect'
+                        if leaf.is_symlink():assert leaf.resolve()==target.absolute(), 'source leaf redirects its declared owned blob'
+                        else:assert not leaf.exists(), 'declared hub source leaf must remain a symlink or be released'
+                    else:assert not (root/origin).is_symlink(), 'source link needs an explicitly bound owned blob'
+                    if not entry.get('absent'):assert entry['bytes']==length and entry['sha256']==hashed, 'source differs from native release provenance'
                 if name in entries:assert entries[name]==entry, 'inconsistent shared model asset'
                 entries[name]=entry
         # Scan only selected revision/prepared directories, never the whole hub cache.
@@ -86,7 +103,7 @@ def snapshot(root,plan):
                     if filename=='used' and path.parent in {root/Path(x).parent for x in model['assets']['prepared_graph']}:
                         assert not path.is_symlink() and path.is_file() and path.stat().st_size==0, 'invalid prepared usage stamp'
                     else:actual.add(name)
-            absent_sources={x for x in model['assets']['source'] if model.get('allow_source_release',False) and entries[x].get('absent')}
+            absent_sources={x for x in model['assets']['source'] if model.get('allow_source_release',False) and entries[x].get('absent') and not (root/x).is_symlink()}
             assert actual==declared-absent_sources, 'selected model directory has undeclared or missing assets'
     return {'version':1,'root':str(root),'plan':plan,'entries':entries}
 def prepare(root,plan):
@@ -101,7 +118,9 @@ def verify(expected):
             before=expected['entries'][name];after=actual['entries'][name]
             if after.get('absent') and not before.get('absent'):
                 # Release may remove a source leaf and its owned blob, never redirect it.
-                assert not after['links'] and after['resolved']==str((Path(expected['root'])/name).absolute()), 'changed released source location'
+                unchanged_dangling_link=after['links']==before['links'] and after['resolved']==before['resolved']
+                removed_leaf=not after['links'] and after['resolved']==str((Path(expected['root'])/name).absolute())
+                assert unchanged_dangling_link or removed_leaf, 'changed released source location'
                 actual['entries'][name]=before;released+=1
     assert actual==expected, 'model assets differ from separately prepared expected manifest'
     return {'selected_models':len(expected['plan']['models']),'assets':len(expected['entries']),'permitted_released_sources':released}
