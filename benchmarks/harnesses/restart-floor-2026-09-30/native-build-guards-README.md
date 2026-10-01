@@ -14,6 +14,8 @@ Both run modes also require a separately prepared private [external-model manife
 
 Read-only ELF inspection of the installed inputs on 2026-09-30 found zvec's RUNPATH `$ORIGIN/../lib64:$ORIGIN/../lib:$ORIGIN` and ORT's RUNPATH `$ORIGIN`. Those two additional zvec directories were absent and are included as declared search locations. The declared primary libraries also depend on system libraries (`libdl`, `librt`, `libpthread`, `libm`, `libc`, the ELF loader, and for ORT `libstdc++`/`libgcc_s`). This attestation covers the declared loader files and search directories only. It does **not** prove actual process mappings, pin those system/transitive libraries, exclude every later dynamic load, or make an endpoint fingerprint continuous monitoring. A change that is reverted between endpoints can escape detection. A trial requiring full native runtime identity must additionally retain its resolved system dependencies and actual mapping evidence; these wrappers make no such claim.
 
+`build-guarded.py.in --conversion-only` also builds the prospective disk-schema setup helper from the exact reviewed `disk_schema_guarded.rs.in` digest, with only the candidate arm and exact ignored `crates/pamin-index/tests/scratch_disk_schema.rs` allowlist. Its artifact source path must match that target. The source/commit, native/config/toolchain and fresh-artifact checks remain the same; the required product set is `pamin-core` and `pamin-index`. The separate conversion launcher verifies the retained helper source and executable binding and declared native inventory at launch and return. These prospective records never bind the historical conversion binary.
+
 Fake-only checks (no Cargo, native loading, models, PostgreSQL, or measurement):
 
 ```sh
