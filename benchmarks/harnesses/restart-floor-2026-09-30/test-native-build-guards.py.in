@@ -33,6 +33,24 @@ with tempfile.TemporaryDirectory() as directory:
     unexpected=libs/'shadow.so';unexpected.write_bytes(b'extra');refuse(lambda:native['verify'](expected));unexpected.unlink()
     absent.mkdir();refuse(lambda:native['verify'](expected));absent.rmdir()
     outside=parent/'external.so';outside.write_bytes(b'outside');alias.unlink();alias.symlink_to(outside);refuse(lambda:native['snapshot']([str(libs)],[str(libs)]))
+with tempfile.TemporaryDirectory() as directory:
+    parent=Path(directory).resolve();checkout=parent/'ancestor'/'checkout';checkout.mkdir(parents=True)
+    home=parent/'cargo-home';home.mkdir()
+    expected=build['cargo_config_snapshot']([checkout],home)
+    for ancestor in [checkout,*checkout.parents]:
+        # Only mutate this disposable hierarchy; remaining real ancestors are
+        # still included by the production discovery and absence assertion.
+        if not ancestor.is_relative_to(parent):continue
+        config_dir=ancestor/'.cargo';config_dir.mkdir(exist_ok=True)
+        for name in ['config','config.toml']:
+            config=config_dir/name;config.write_text('[env]\nZVEC_AUTO_BUILD={value="1",force=true}\n')
+            refuse(lambda:build['cargo_config_snapshot']([checkout],home))
+            refuse(lambda:build['verify_cargo_configs'](expected,[checkout],home));config.unlink()
+    for name in ['config','config.toml']:
+        config=home/name;config.write_text('[build]\nrustc-wrapper="uncontrolled"\n')
+        refuse(lambda:build['cargo_config_snapshot']([checkout],home));config.unlink()
+        config.symlink_to('missing');refuse(lambda:build['cargo_config_snapshot']([checkout],home));config.unlink()
+    build['verify_cargo_configs'](expected,[checkout],home)
 for key in ['ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','ORT_LIB_LOCATION','RUSTC','CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS']:
     refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
 print('passed every dependency/product/helper fresh check, private target containment, loader file/link/inventory/absence mutations, loader scrub, native/compiler overrides; no build or native execution')
