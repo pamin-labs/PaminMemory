@@ -71,3 +71,51 @@ Every published excerpt byte and receipt is also bound by the verifier's literal
 Vendor source at the recorded revision provides a close path consistent with the observation: Collection destruction closes segments; vector index cleanup calls FlatStreamer close; `flush_linear_meta` writes its realtime timestamp; dirty mmap storage refresh updates the footer timestamp and CRC. Read-only top-level flush guards do not guard this cleanup path. Storage options default `copy_on_write=false`, consistent with actual writable shared mappings. JSON retains the five source-file identities listed above; other causal references below are revision-pinned upstream links without retained file hashes. See [FlatStreamer close](https://github.com/alibaba/zvec/blob/1ab7975dfc2d2160054bafff614831b7099cd930/src/core/algorithm/flat/flat_streamer.cc), [metadata flush](https://github.com/alibaba/zvec/blob/1ab7975dfc2d2160054bafff614831b7099cd930/src/core/algorithm/flat/flat_streamer_entity.cc), [IndexMapping refresh](https://github.com/alibaba/zvec/blob/1ab7975dfc2d2160054bafff614831b7099cd930/src/core/framework/index_mapping.cc), and [format layout](https://github.com/alibaba/zvec/blob/1ab7975dfc2d2160054bafff614831b7099cd930/src/include/zvec/core/framework/index_format.h).
 
 Source-layout decoding matches the actual metadata bytes. This is not a reproducible source build of the released native binary, and no runtime call stack was captured. Two runs establish only the behavior observed on this Flat component/native pin; they do not establish HNSW, read-write access, product graph/Engine behavior, lexical safety, ranking/self-match, returned-vector completeness, another format/corpus/pin or a general read-only guarantee. The 36 previously disposed clones retain only SHA-level historical evidence; this cannot retroactively diagnose their fields. Native/product defaults and strict byte guards remain unchanged. No whitelist or guard relaxation is proposed.
+
+## Verifier-component cost observation
+
+[Compact recorded receipt](verifier-cost.json) retains full-precision clock
+values, source/input identities and the complete table payload SHA256
+`fcfab93bd3a47ad3e3ae6a76ae3e408bfbc88ca7cfb779ead5b36ccc614d82ea`.
+These are **one shared-host observation per case**, covering the same 16 metadata
+excerpts, with no product search, native/SDK, model or database execution.
+Timers cover metadata validation, logs and the canonical evidence digest;
+interpreter startup/imports, input loading and Git source-byte checks are excluded.
+They do not establish statistical latency or a product speedup.
+
+| Metric | Before | After | Absolute difference | Percentage change |
+| --- | ---: | ---: | ---: | ---: |
+| Wall seconds (cold) | 2.153045189 | 0.716812514 | -1.436232675 | -66.707038% |
+| Process CPU seconds (cold) | 2.152929824 | 0.716466029 | -1.436463795 | -66.721348% |
+| Scalar CRC table bytes (cold) | 16839680 | 1052480 | -15787200 | -93.750000% |
+| Wall seconds (warm) | 2.153045189 | 0.589296649 | -1.563748540 | -72.629620% |
+| Process CPU seconds (warm) | 2.152929824 | 0.589027994 | -1.563901830 | -72.640632% |
+| Scalar CRC table bytes (warm) | 16839680 | 0 | -16839680 | -100.000000% |
+| Maximum retained CRC cache input payload bytes | 0 | 4194304 | +4194304 | N/A (zero baseline) |
+| Process RSS bytes | N/A | N/A | N/A | N/A |
+
+All 16 retained tables have one identical complete byte payload. Cold validation
+has 1 scalar table scan and 15 cache hits; warm validation has 0 scalar table
+scans and 16 hits. Scalar-byte counts exclude byte-key hashing/equality scans,
+reconstruction/copying, header/footer CRCs, metadata comparisons and other hash
+work: they are **not total memory transfer**. The cache bound covers retained
+input payload only; lookup/cache/Python object overhead and process RSS were not
+measured. The full 69-test scan audit in the receipt includes changed tables and
+deliberate cache tests; it is separate from these three timed observations.
+
+To produce new observations later, use the read-only
+[probe](probe_verifier_cost.py) from this directory. The before comparator requires
+commit `775de8a2d0e81a80239df4a0279600da7df68ec0` already present in a local Git
+repository; no remote fetch is promised or attempted. Current input/source bytes
+must match the recorded pins. This procedure does not reproduce the exact timing
+values and does not run the invariant suite or any product benchmark:
+
+```sh
+python3 -B probe_verifier_cost.py
+python3 -B probe_verifier_cost.py --execute --repository /local/existing/repository
+```
+
+The first command only prints the plan. The second opts in to before, cold-after
+and warm-after metadata verification in one process. No new observation was run
+while adding this receipt/procedure; the numbers above retain the prior
+verifier-only observations.
