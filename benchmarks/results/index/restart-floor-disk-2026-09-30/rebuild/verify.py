@@ -6,6 +6,7 @@ if sys.flags.optimize:raise SystemExit('Rebuild verification requires assertions
 sys.dont_write_bytecode=True
 TARGET='crates/pamin-engine/tests/scratch_restart_floor.rs'
 PRODUCTS={'pamin-core','pamin-store','pamin-index','pamin-engine'}
+REBUILD_SCOPE='Named-package clean in a shared Cargo target freshly compiled only the four product libraries and selected integration-test helper. All 538 third-party compiler artifacts per arm were cached. Their source-to-artifact provenance is unknown; byte equality does not establish full source-to-artifact attestation.'
 def historical_paths(repo):
     # Recover the documented original locations from the immutable historical
     # builder, without executing it or embedding raw checkout paths here.
@@ -46,15 +47,27 @@ def source_inputs(repo,commit):
         if mode==b'120000':result[name]={'kind':'symlink','target':value.decode(),'sha256':sha(value)}
         else:result[name]={'kind':'file','bytes':count,'sha256':sha(value)}
     return result
-def verify(root=None,repo=None,audit=None):
+def verify(root=None,repo=None,audit=None,scope_review=None):
     root=Path(root or Path(__file__).resolve().parent)
     disk=root.parent
     repo=Path(repo or disk.parents[3])
     audit=audit or json.loads(text(root,'audit.json.gz'))
+    scope_review=scope_review or json.loads((root/'scope-review.json').read_text())
+    assert scope_review['recorded_utc']
+    assert scope_review['scope']==REBUILD_SCOPE, 'rebuild qualification wording differs'
+    assert scope_review['historical_audit_sha256']==sha((root/'audit.json.gz').read_bytes())
+    assert scope_review['historical_procedure_sha256']==sha((root/'audit.py.in').read_bytes())
+    assert scope_review['target_scope']=='shared Cargo target; cargo clean --release -p only for the four product packages'
+    assert scope_review['fresh_product_and_helper_artifacts_per_arm']==5
+    assert scope_review['third_party_source_to_artifact_provenance']=='unknown' and scope_review['full_source_to_artifact_attestation'] is False, 'rebuild qualification falsely certifies cached third-party provenance'
+    assert set(scope_review['cached_third_party_artifacts_per_arm'])=={'main','predecessor','candidate'}
     paths=historical_paths(repo)
     historical=json.loads((disk/'binaries.json').read_text())
     memory=json.loads((disk.with_name('restart-floor-2026-09-30')/'binaries.json').read_text())
     provenance=json.loads((disk/'provenance.json').read_text())
+    memory_provenance=json.loads((disk.with_name('restart-floor-2026-09-30')/'provenance.json').read_text())
+    for value,record_path in [(provenance,'rebuild/scope-review.json'),(memory_provenance,'../restart-floor-disk-2026-09-30/rebuild/scope-review.json')]:
+        assert value['retrospective_rebuild_scope_review']=={'record':record_path,'qualification':REBUILD_SCOPE}, 'rebuild provenance qualification differs'
     assert audit['all_three_byte_for_byte_identical'] is True and audit['started_utc'] and audit['finished_utc']
     assert set(audit['arms'])=={r['arm'] for r in historical}=={'main','predecessor','candidate'}
     assert audit['toolchain']==audit['toolchain_after'] and audit['toolchain'].startswith('rustc 1.98.1 ')
@@ -99,6 +112,10 @@ def verify(root=None,repo=None,audit=None):
         assert sha(original_log)==prior['original_build_log']['sha256'] and len(original_log)==prior['original_build_log']['bytes']
         fresh_json=text(root,f'{arm}-build.jsonl.gz');selected=compiler(fresh_json,checkout)
         assert selected==record['compiler_artifacts'] and all(r['fresh'] is False for r in selected)
+        all_rows=[json.loads(line) for line in fresh_json.splitlines() if line.startswith('{')]
+        all_artifacts=[r for r in all_rows if r.get('reason')=='compiler-artifact']
+        third_party=[r for r in all_artifacts if r not in selected]
+        assert len(third_party)==scope_review['cached_third_party_artifacts_per_arm'][arm]==538 and all(r['fresh'] is True for r in third_party), 'rebuild cached third-party scope differs from compiler records'
         for name,identity in record['logs'].items():
             raw=original_bytes(text(root,name+'.gz'),paths)
             assert sha(raw)==identity['sha256'] and len(raw)==identity['bytes'], 'retained build log identity differs'
@@ -113,4 +130,4 @@ def verify(root=None,repo=None,audit=None):
     return audit
 if __name__=='__main__':
     verify()
-    print('Verified 3 byte-identical retrospective rebuilds: HNSW/Disk frozen identities, pristine revision + 384 inputs/arm, original/fresh raw compiler logs, all4+helper fresh:false, toolchain/flags/runtime unchanged; historical build-time attestation/tuning not established.')
+    print('Verified 3 byte-identical retrospective rebuilds: HNSW/Disk frozen identities, pristine revision + 384 inputs/arm, original/fresh raw compiler logs, all4+helper fresh:false, toolchain/flags/runtime unchanged; 538 cached third-party artifacts/arm have unknown source-to-artifact provenance; no full source-to-artifact attestation or historical build-time/tuning certification.')
