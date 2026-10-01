@@ -371,8 +371,9 @@ impl Embedder {
 
     /// How many queries this remembers, per profile.
     ///
-    /// A vector is [`Profile::dimensions`] floats -- four kilobytes at the
-    /// widest -- so this is a megabyte at the top of the range. Per process,
+    /// A single space is at most four kilobytes of float payload per query;
+    /// the dual profile keeps both 1024-dimensional vectors (eight kilobytes).
+    /// At 256 entries that is up to one/two MiB of vector payload. Per process,
     /// like the reranker's, so it is `pamin serve` that makes it worth
     /// anything.
     const REMEMBERED_QUERIES: usize = 256;
@@ -695,15 +696,20 @@ fn complementary_vector(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
             "complementary vector shape {shape:?}"
         )));
     }
-    let mut vector: Vec<f32> = values.iter().map(|v| f32::from(*v)).collect();
-    let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm == 0.0 {
+    normalized_pooled(values.try_into().expect("validated pooled shape"))
+}
+
+fn normalized_pooled(values: &[i8; 1024]) -> Result<Vec<f32>> {
+    // Every squared i8 is an exact integer. The complete sum is at most
+    // 1024 * 128^2 = 2^24, exact in f32 too. Integer reduction allows LLVM's
+    // portable SIMD vectorization without reassociating floating additions
+    // or changing the encoding's normalization.
+    let squared: i32 = values.iter().map(|v| i32::from(*v).pow(2)).sum();
+    if squared == 0 {
         return Err(IndexError::Engine("zero complementary vector".into()));
     }
-    for value in &mut vector {
-        *value /= norm;
-    }
-    Ok(vector)
+    let norm = (squared as f32).sqrt();
+    Ok(values.iter().map(|v| f32::from(*v) / norm).collect())
 }
 
 /// Query vectors already computed, oldest first.
@@ -744,6 +750,29 @@ impl Queries {
                 self.known.remove(&oldest);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pooled_tests {
+    use super::normalized_pooled;
+
+    #[test]
+    fn signed_pooled_normalization_matches_scalar_encoding_exactly() {
+        for values in [
+            [-128i8; 1024],
+            [127i8; 1024],
+            std::array::from_fn(|i| (i % 256) as u8 as i8),
+        ] {
+            let norm = values
+                .iter()
+                .map(|v| f32::from(*v).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            let expected: Vec<_> = values.iter().map(|v| f32::from(*v) / norm).collect();
+            assert_eq!(normalized_pooled(&values).unwrap(), expected);
+        }
+        assert!(normalized_pooled(&[0; 1024]).is_err());
     }
 }
 

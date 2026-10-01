@@ -1,0 +1,57 @@
+{
+  "scope": "standalone 1024-i8 normalization kernel, not inference or product search latency",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "flags": [
+    "--edition=2024",
+    "-O"
+  ],
+  "shared_host": true,
+  "blocks": 6,
+  "iterations_per_block_per_arm": 100000,
+  "source_sha256": "12e11819938fcf062382a651dd7f520de68854e38d4857aec78d404c80db4b08",
+  "rows": [
+    {
+      "block": 0,
+      "before_ns": 898.88458,
+      "after_ns": 98.21541,
+      "shared_host": true
+    },
+    {
+      "block": 1,
+      "before_ns": 608.61708,
+      "after_ns": 98.8025,
+      "shared_host": true
+    },
+    {
+      "block": 2,
+      "before_ns": 616.19667,
+      "after_ns": 99.17125,
+      "shared_host": true
+    },
+    {
+      "block": 3,
+      "before_ns": 618.01459,
+      "after_ns": 100.24833,
+      "shared_host": true
+    },
+    {
+      "block": 4,
+      "before_ns": 612.56125,
+      "after_ns": 98.72833,
+      "shared_host": true
+    },
+    {
+      "block": 5,
+      "before_ns": 612.2275,
+      "after_ns": 98.7475,
+      "shared_host": true
+    }
+  ],
+  "before_median_ns": 614.37896,
+  "after_median_ns": 98.775,
+  "delta_ns": -515.60396,
+  "relative_change": -0.8392278928301842,
+  "speed_ratio": 6.219984409010377,
+  "output": "bit identical; no model/index encoding change",
+  "asm": "new integer reduction addv.4s and output fdiv.4s; old already uses SIMD conversion/division but ordered float norm reduction remains scalar"
+}
