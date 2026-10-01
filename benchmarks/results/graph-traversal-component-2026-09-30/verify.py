@@ -143,7 +143,7 @@ audit = load('retrospective-sql-audit.json')
 assert audit.get('scope') == 'Retrospective read-only inspection of preserved original binaries and frozen SQL sources; no historical rebuild or runtime execution. This is not a build-time source attestation.', 'retrospective SQL audit scope differs'
 assert audit['source_base'] == provenance['source_base']
 assert audit['original_build_sql_attestation'] == 'N/A: SQL omitted from the original 52-entry pre/post-build inventory'
-assert re.fullmatch(r'2026-09-30T[0-9:.]+\+00:00', audit['captured_at_utc'])
+assert type(audit.get('captured_at_utc')) is str and audit['captured_at_utc']=='2026-09-30T23:02:04.562271+00:00', 'retained SQL capture timestamp differs'
 sql_sources = audit['migration_sources']
 assert len(sql_sources) == 14
 assert hashlib.sha256(json.dumps({k:v['sha256'] for k,v in sql_sources.items()},sort_keys=True,separators=(',',':')).encode()).hexdigest() == SQL_MAP_DIGEST
@@ -165,7 +165,7 @@ for arm, binary in audit['arms'].items():
 platform_observation = load(provenance['hardware_observation'])
 assert platform_observation['scope']=='Current platform observation after the original runs; never substituted for missing historical fields.', 'current platform scope differs'
 assert platform_observation['comparison']=='Original memory.max equals current memory.max for both arms. CPU model/kernel/quota/affinity equality with original execution is unknown.', 'historical hardware limitation differs'
-assert re.fullmatch(r'2026-09-30T[0-9:.]+\+00:00', platform_observation['captured_at_utc'])
+assert type(platform_observation.get('captured_at_utc')) is str and platform_observation['captured_at_utc']=='2026-09-30T23:02:04.562271+00:00', 'retained platform capture timestamp differs'
 assert platform_observation['historical'] == {'cpu_model':'N/A: not captured','kernel':'N/A: not captured','cpu_quota':'N/A: not captured','cpu_affinity':'N/A: not captured','memory_max_bytes':{'baseline':17179869184,'scored':17179869184}}
 assert platform_observation['current'] == CURRENT_PLATFORM_PINS, 'dated current platform capture differs'
 assert platform_observation['current']['cpu_model'] and platform_observation['current']['kernel'] and platform_observation['current']['cpu_affinity']
@@ -205,7 +205,7 @@ assert sha(ROOT/'source/fixture.rs.in') == '0daa185fcf9eff2d174ce13569407ff97282
 assert 'let query = \"quartzanchor orbital navigation calibration beacon\";' in (ROOT/'source/fixture.rs.in').read_text()
 retrospective = provenance['retrospective_multihop_source']
 assert retrospective['scope'] == 'retrospective equality of preserved baseline/scored scratch source copies; original build-time source byte attestation N/A: omitted from the 52-entry source maps'
-assert re.fullmatch(r'2026-10-01T[0-9:.]+\+00:00', retrospective['captured_at_utc'])
+assert type(retrospective.get('captured_at_utc')) is str and retrospective['captured_at_utc']=='2026-10-01T01:40:22.945699+00:00', 'retained multihop capture timestamp differs'
 assert retrospective['source'] == 'crates/pamin-engine/tests/scratch_scored_multihop.rs'
 assert retrospective['published_file'] == 'source/multihop.rs.in'
 assert retrospective['sha256'] == sha(ROOT/retrospective['published_file']) == '70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00'
@@ -314,7 +314,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid duration/RSS: '+metric
  assert type(usage['exit_status']) is int and usage['exit_status']==0, 'process exit status must be integer zero'
  assert usage['maximum_process_rss_kib']==row['process_lifetime_high_water_kib'], 'raw and process usage RSS differ'
- assert all(row[key]/1000 <= usage['wall_seconds'] for key in ['elapsed_ms']) and row['early_stop']['elapsed_ms']/1000 <= usage['wall_seconds'], 'graph interval wall time exceeds whole-process total'
+ assert row['elapsed_ms']/1000 <= usage['wall_seconds'] and row['early_stop']['elapsed_ms']/1000 <= usage['wall_seconds'], 'graph interval wall time exceeds whole-process total'
  assert all(interval<=usage[key] for interval,key in zip(row['graph_process_cpu_user_system_seconds'],['user_seconds','system_seconds'])), 'graph interval CPU time exceeds whole-process total'
  assert usage['scope']=='Linux wait4 of native test process; setup included, independent services excluded'
 
