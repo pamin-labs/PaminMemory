@@ -188,7 +188,7 @@ pub fn as_if(hits: &[SearchHit], fusion: &Fusion) -> Vec<String> {
     as_if_effective(hits, &effective_fusion(hits, fusion))
 }
 
-fn effective_fusion(hits: &[SearchHit], fusion: &Fusion) -> Fusion {
+pub fn effective_fusion(hits: &[SearchHit], fusion: &Fusion) -> Fusion {
     if hits.iter().any(|hit| {
         hit.result.why.iter().any(|why| {
             matches!(
@@ -206,7 +206,7 @@ fn effective_fusion(hits: &[SearchHit], fusion: &Fusion) -> Fusion {
     }
 }
 
-fn as_if_effective(hits: &[SearchHit], fusion: &Fusion) -> Vec<String> {
+pub fn as_if_effective(hits: &[SearchHit], fusion: &Fusion) -> Vec<String> {
     let named: BTreeMap<TopicId, &str> = hits
         .iter()
         .map(|hit| (hit.result.topic, hit.topic.as_str()))
@@ -1055,6 +1055,60 @@ mod tests {
             seed: None,
         };
         same_as_the_engine(&[hit], &Fusion::default());
+    }
+
+    #[test]
+    fn secondary_ablation_does_not_restore_the_removed_stream() {
+        let primary = pamin_core::TopicId::new();
+        let secondary = pamin_core::TopicId::new();
+        let results = Fusion::default().with_secondary_vector().fuse(&[
+            pamin_core::ChannelResults::new(
+                Channel::Vector,
+                vec![pamin_core::Scored::new(primary, 1.0)],
+            ),
+            pamin_core::ChannelResults::new(
+                Channel::VectorSecondary,
+                vec![pamin_core::Scored::new(secondary, 1.0)],
+            ),
+        ]);
+        let hits: Vec<_> = results
+            .into_iter()
+            .map(|result| {
+                let topic = result.topic;
+                SearchHit {
+                    topic: if topic == primary {
+                        "primary".into()
+                    } else {
+                        "secondary".into()
+                    },
+                    result,
+                    state: pamin_core::TopicState {
+                        id: pamin_core::TopicStateId::new(),
+                        project_id: pamin_core::ProjectId::new(),
+                        topic_id: topic,
+                        version: 1,
+                        content: "fixture".into(),
+                        source_span_id: pamin_core::SourceSpanId::new(),
+                        language: None,
+                        observed_at: time::OffsetDateTime::UNIX_EPOCH,
+                        recorded_at: time::OffsetDateTime::UNIX_EPOCH,
+                        validity: pamin_core::Validity::ALWAYS,
+                        supersedes: None,
+                        deleted_at: None,
+                    },
+                    seed: None,
+                }
+            })
+            .collect();
+        let split = effective_fusion(&hits, &Fusion::default());
+        assert_eq!(
+            as_if_effective(&hits, &split.clone().without(Channel::VectorSecondary)),
+            vec!["primary"]
+        );
+        assert_eq!(
+            as_if_effective(&hits, &split.without(Channel::Vector)),
+            vec!["secondary"]
+        );
     }
 
     #[test]
