@@ -489,10 +489,49 @@ pub(crate) fn preferred<T>(
 /// Small CPU output references reused for per-session validation. These are
 /// proof fixtures, not a resident second model or a query-result cache.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct References {
     pub(crate) vectors: Option<Vec<Vec<f32>>>,
     pub(crate) queries: Option<Vec<Vec<f32>>>,
     pub(crate) scores: Option<Vec<f32>>,
+}
+
+/// Exact persisted CPU-fixture contract supplied by each model role.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ReferenceShape {
+    pub(crate) vectors: Option<(usize, usize)>,
+    pub(crate) queries: Option<(usize, usize)>,
+    pub(crate) scores: Option<usize>,
+}
+
+impl ReferenceShape {
+    fn accepts(self, reference: &References) -> bool {
+        fn vectors(actual: &Option<Vec<Vec<f32>>>, shape: Option<(usize, usize)>) -> bool {
+            match (actual, shape) {
+                (None, None) => true,
+                (Some(rows), Some((count, width))) => {
+                    count > 0
+                        && width > 0
+                        && rows.len() == count
+                        && rows.iter().all(|row| {
+                            row.len() == width
+                                && row.iter().all(|v| v.is_finite())
+                                && row.iter().any(|v| *v != 0.0)
+                        })
+                }
+                _ => false,
+            }
+        }
+        vectors(&reference.vectors, self.vectors)
+            && vectors(&reference.queries, self.queries)
+            && match (&reference.scores, self.scores) {
+                (None, None) => true,
+                (Some(values), Some(count)) => {
+                    count > 0 && values.len() == count && values.iter().all(|v| v.is_finite())
+                }
+                _ => false,
+            }
+    }
 }
 
 #[derive(Clone)]
@@ -735,6 +774,7 @@ pub(crate) fn measured<T: RuntimeModel>(
     identity: &str,
     cache_dir: &Path,
     references: &std::cell::RefCell<References>,
+    shape: ReferenceShape,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -844,8 +884,8 @@ pub(crate) fn measured<T: RuntimeModel>(
         .expect("compute-plan cache poisoned")
         .contains_key(&key)
         && let Some(plan) = disk.as_ref().and_then(|path| {
-            let _lock = plan_metadata_lock(path);
-            read_plan(path, &key, &plans)
+            let _lock = plan_metadata_lock(path)?;
+            read_plan_shaped(path, &key, &plans, Some(shape))
         })
     {
         cache
@@ -861,8 +901,10 @@ pub(crate) fn measured<T: RuntimeModel>(
         references,
         PlanFiles {
             record: disk.as_deref(),
-            directory: location.as_deref().and_then(Path::parent),
             retry: Some(&retry),
+            shape: Some(shape),
+            #[cfg(test)]
+            lock_root: None,
         },
         load,
         evaluate,
@@ -985,13 +1027,26 @@ fn unix_seconds() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+#[cfg(test)]
 fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<CachedPlan> {
+    read_plan_shaped(path, key, plans, None)
+}
+
+fn read_plan_shaped(
+    path: &Path,
+    key: &str,
+    plans: &[(Device, Target)],
+    shape: Option<ReferenceShape>,
+) -> Option<CachedPlan> {
     if std::fs::metadata(path).ok()?.len() > 1_048_576 {
         return None;
     }
     let saved: DiskPlan = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let now = unix_seconds();
-    if saved.fingerprint != fingerprint(key) || saved.expires <= now || saved.expires > now + 86400
+    if shape.is_some_and(|shape| !shape.accepts(&saved.references))
+        || saved.fingerprint != fingerprint(key)
+        || saved.expires <= now
+        || saved.expires > now + 86400
     {
         return None;
     }
@@ -1058,7 +1113,9 @@ fn remember_plan(
         .expect("compute-plan cache poisoned")
         .insert(key.into(), plan.clone());
     if let Some(path) = disk {
-        let _lock = plan_metadata_lock(path);
+        let Some(_lock) = plan_metadata_lock(path) else {
+            return;
+        };
         if let Err(error) = write_plan(path, key, &plan)
             .and_then(|()| prune_plans(path.parent().expect("plan directory"), Some(path)))
         {
@@ -1082,6 +1139,14 @@ fn file_lock(path: &Path) -> Option<std::fs::File> {
         .ok()?;
     lock.lock().ok()?;
     Some(lock)
+}
+
+/// CPU/GPU/NPU cold comparisons sharing the OS home use this location,
+/// independently of PAMIN_HOME. Other users/programs are not coordinated.
+fn host_calibration_path(home: Option<PathBuf>) -> Option<PathBuf> {
+    let directory = home?.join(".cache").join("pamin-memory");
+    std::fs::create_dir_all(&directory).ok()?;
+    Some(directory.join("calibration.lock"))
 }
 
 fn persistence_supported(plans: &[(Device, Target)], cuda_identified: bool) -> bool {
@@ -1267,11 +1332,21 @@ fn host_identity() -> &'static str {
 #[derive(Clone, Copy, Default)]
 struct PlanFiles<'a> {
     record: Option<&'a Path>,
-    directory: Option<&'a Path>,
     retry: Option<&'a std::cell::Cell<Option<std::time::Instant>>>,
+    shape: Option<ReferenceShape>,
+    #[cfg(test)]
+    lock_root: Option<&'a Path>,
 }
 
 impl<'a> PlanFiles<'a> {
+    fn calibration_lock(self) -> Option<std::fs::File> {
+        #[cfg(test)]
+        if let Some(root) = self.lock_root {
+            return file_lock(&root.join("calibration.lock"));
+        }
+        file_lock(&host_calibration_path(std::env::home_dir())?)
+    }
+
     fn reused(self, deadline: Option<std::time::Instant>) {
         if let Some(retry) = self.retry {
             let now = std::time::Instant::now();
@@ -1287,8 +1362,9 @@ impl<'a> PlanFiles<'a> {
     fn for_record(path: &'a Path) -> Self {
         Self {
             record: Some(path),
-            directory: path.parent(),
             retry: None,
+            shape: None,
+            lock_root: path.parent(),
         }
     }
 }
@@ -1315,7 +1391,12 @@ fn calibrated_with_references<T>(
             .expect("compute-plan cache poisoned")
             .get(key)
             .cloned()
-            .filter(fresh_plan);
+            .filter(|plan| {
+                fresh_plan(plan)
+                    && files
+                        .shape
+                        .is_none_or(|shape| shape.accepts(&plan.references))
+            });
         if let Some(mut plan) = remembered {
             let device = plan.device;
             references.replace(std::mem::take(&mut plan.references));
@@ -1349,21 +1430,35 @@ fn calibrated_with_references<T>(
             }
         }
         let calibration = CALIBRATION.lock().expect("compute calibration poisoned");
-        let host_lock = files
-            .directory
-            .and_then(|directory| file_lock(&directory.join("calibration.lock")));
+        let Some(host_lock) = files.calibration_lock() else {
+            // No unlocked comparison may become a selected RAM/disk plan.
+            // Keep serving with a validated CPU model and retry coordination.
+            tracing::warn!("host calibration lock unavailable; deferring plan selection");
+            if let Some(retry) = files.retry {
+                retry.set(Some(std::time::Instant::now() + RUNTIME_RETRY));
+            }
+            references.replace(References::default());
+            let mut model = load(Device::Cpu, vec![cpu()].into(), false)?;
+            evaluate(&mut model, Device::Cpu)?;
+            return Ok((model, Device::Cpu));
+        };
         // A different caller/process may have populated the plan while we waited.
         if cache
             .lock()
             .expect("compute-plan cache poisoned")
             .get(key)
-            .is_some_and(fresh_plan)
+            .is_some_and(|plan| {
+                fresh_plan(plan)
+                    && files
+                        .shape
+                        .is_none_or(|shape| shape.accepts(&plan.references))
+            })
         {
             continue;
         }
         if let Some(plan) = disk.and_then(|path| {
-            let _lock = plan_metadata_lock(path);
-            read_plan(path, key, &plans)
+            let _lock = plan_metadata_lock(path)?;
+            read_plan_shaped(path, key, &plans, files.shape)
         }) {
             cache
                 .lock()
@@ -1456,7 +1551,11 @@ fn calibrated_with_references<T>(
     }
     let (device, target) = fastest;
     if device == Device::Cpu {
-        if !transient_failure {
+        if !transient_failure
+            && files
+                .shape
+                .is_none_or(|shape| shape.accepts(&references.borrow()))
+        {
             remember_plan(
                 key,
                 disk,
@@ -1472,7 +1571,11 @@ fn calibrated_with_references<T>(
         Ok(model)
     }) {
         Ok(model) => {
-            if !transient_failure {
+            if !transient_failure
+                && files
+                    .shape
+                    .is_none_or(|shape| shape.accepts(&references.borrow()))
+            {
                 remember_plan(
                     key,
                     disk,
@@ -2649,8 +2752,9 @@ mod tests {
             &std::cell::RefCell::default(),
             PlanFiles {
                 record: None,
-                directory: Some(dir),
                 retry: None,
+                shape: None,
+                lock_root: Some(dir),
             },
             |device, _, _| {
                 if !checked {
@@ -3030,6 +3134,126 @@ mod tests {
         assert!(cuda_inventory(b"").is_none());
         assert!(cuda_inventory(b"0, N/A, 0000:01:00.0, A100, 580.0").is_none());
         assert!(cuda_inventory(b"NVIDIA-SMI has failed").is_none());
+    }
+
+    #[test]
+    fn persisted_reference_shapes_are_role_exact() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "reference-shape").unwrap();
+        let candidates = vec![(Device::Cuda, vec![cpu()].into())];
+        let shape = ReferenceShape {
+            scores: Some(4),
+            ..Default::default()
+        };
+        for count in [0, 1, 3, 4, 5, 32] {
+            let plan = CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false).with_references(
+                References {
+                    scores: Some(vec![1.0; count]),
+                    ..Default::default()
+                },
+            );
+            write_plan(&path, "reference-shape", &plan).unwrap();
+            assert_eq!(
+                read_plan_shaped(&path, "reference-shape", &candidates, Some(shape)).is_some(),
+                count == 4
+            );
+        }
+        let mut vectors = References {
+            vectors: Some(vec![vec![1.0; 1024]; 6]),
+            ..Default::default()
+        };
+        let complementary = ReferenceShape {
+            vectors: Some((6, 1024)),
+            ..Default::default()
+        };
+        assert!(complementary.accepts(&vectors));
+        vectors.vectors.as_mut().unwrap()[0].pop();
+        assert!(!complementary.accepts(&vectors));
+        vectors.vectors = Some(vec![vec![1.0; 1024]; 5]);
+        assert!(!complementary.accepts(&vectors));
+        vectors.vectors = Some(vec![vec![f32::NAN; 1024]; 6]);
+        assert!(!complementary.accepts(&vectors));
+        vectors.vectors = Some(vec![vec![0.0; 1024]; 6]);
+        assert!(!complementary.accepts(&vectors));
+        vectors.vectors = Some(vec![vec![1.0; 1024]; 6]);
+        vectors.queries = Some(vec![vec![1.0; 1024]; 2]);
+        assert!(
+            !complementary.accepts(&vectors),
+            "unrelated role fields accepted"
+        );
+        for (count, width) in [(3, 1024), (8, 384), (8, 768)] {
+            let primary = ReferenceShape {
+                vectors: Some((count, width)),
+                queries: Some((2, width)),
+                scores: None,
+            };
+            let mut proof = References {
+                vectors: Some(vec![vec![1.0; width]; count]),
+                queries: Some(vec![vec![1.0; width]; 2]),
+                scores: None,
+            };
+            assert!(primary.accepts(&proof));
+            proof.queries.as_mut().unwrap().pop();
+            assert!(!primary.accepts(&proof));
+        }
+        assert!(
+            serde_json::from_str::<References>(r#"{"scores":[1,2,3,4],"unexpected":[]} "#).is_err()
+        );
+    }
+
+    #[test]
+    fn unavailable_host_lock_returns_cpu_without_publishing_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "uncoordinated").unwrap();
+        std::fs::create_dir(path.parent().unwrap().join("calibration.lock")).unwrap();
+        let cache = std::sync::Mutex::default();
+        let retry = std::cell::Cell::new(None);
+        let (_, selected) = calibrated_with_references(
+            "uncoordinated",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            &std::cell::RefCell::default(),
+            PlanFiles {
+                retry: Some(&retry),
+                ..PlanFiles::for_record(&path)
+            },
+            |device, _, cached| {
+                assert!(!cached);
+                assert_eq!(device, Device::Cpu);
+                Ok(device)
+            },
+            |_, device| {
+                assert_eq!(device, Device::Cpu);
+                Ok(std::time::Duration::from_millis(10))
+            },
+        )
+        .unwrap();
+        assert_eq!(selected, Device::Cpu);
+        assert!(cache.lock().unwrap().is_empty());
+        assert!(!path.exists());
+        assert!(retry.get().is_some());
+    }
+
+    #[test]
+    fn host_calibration_path_is_independent_of_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let first_workspace = tempfile::tempdir().unwrap();
+        let second_workspace = tempfile::tempdir().unwrap();
+        let first = host_calibration_path(Some(home.path().to_path_buf())).unwrap();
+        let second = host_calibration_path(Some(home.path().to_path_buf())).unwrap();
+        assert_eq!(first, second);
+        assert!(!first.starts_with(first_workspace.path()));
+        assert!(!first.starts_with(second_workspace.path()));
+        let held = file_lock(&first).unwrap();
+        let other = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(second)
+            .unwrap();
+        assert!(other.try_lock().is_err());
+        drop(held);
+        assert!(other.try_lock().is_ok());
+        assert!(host_calibration_path(None).is_none());
     }
 
     #[test]
