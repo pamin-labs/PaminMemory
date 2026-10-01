@@ -1275,7 +1275,6 @@ impl Batch {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn model_batches(
     model: &Encoder,
     encodings: Vec<Encoding>,
