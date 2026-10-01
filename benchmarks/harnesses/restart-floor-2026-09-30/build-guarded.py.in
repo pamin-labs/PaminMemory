@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Prospective builds only; preserve archived build.py.in and historical outputs."""
+import argparse,hashlib,json,os,runpy,shutil,subprocess,sys
+from contextlib import contextmanager
+from datetime import datetime,timezone
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Build guards require assertions; remove -O/PYTHONOPTIMIZE')
+
+TARGET='crates/pamin-engine/tests/scratch_restart_floor.rs'
+CONVERSION_TARGET='crates/pamin-index/tests/scratch_disk_schema.rs'
+PRODUCTS={'pamin-core','pamin-store','pamin-index','pamin-engine'}
+NATIVE=runpy.run_path(str(Path(__file__).with_name('native-guards.py.in')))
+OBJECTS=runpy.run_path(str(Path(__file__).with_name('git-object-guards.py.in')))
+MIN_DISK=12*1024**3
+MIN_MEMORY=4*1024**3
+def resource_preflight(directory):
+    free=shutil.disk_usage(directory).free
+    available=int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')))*1024
+    limit=Path('/sys/fs/cgroup/memory.max');current=Path('/sys/fs/cgroup/memory.current')
+    if limit.exists() and current.exists() and limit.read_text().strip()!='max':available=min(available,int(limit.read_text())-int(current.read_text()))
+    assert free>=MIN_DISK and available>=MIN_MEMORY, 'fresh targets require >=12 GiB disk and >=4 GiB available memory/headroom'
+    return {'disk_free_bytes':free,'memory_headroom_bytes':available,'required_disk_bytes':MIN_DISK,'required_memory_bytes':MIN_MEMORY,'scope':'policy preflight, not a measured peak resource guarantee'}
+TOOLCHAIN=Path('/workspace/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin')
+CARGO_HOME=Path('/workspace/.cargo')
+CONTROLLED_CARGO={'CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS'}
+# cc crate documented compiler/archiver/flag inputs, including target suffixes
+# and HOST_/TARGET_ prefixes; OpenSSL uses an uppercase target prefix.
+CC_INPUTS={'CC','CXX','AR','ARFLAGS','CFLAGS','CXXFLAGS','CPPFLAGS','RANLIB','RANLIBFLAGS','CXXSTDLIB','CROSS_COMPILE'}
+NATIVE_EXACT={'CRATE_CC_NO_DEFAULTS','RING_PREGENERATE_ASM','PERL_EXECUTABLE'}
+def native_override(key):
+    return (key in NATIVE_EXACT or key.startswith(('CC_','RUSTONIG_','OPENSSL_','PKG_CONFIG','VCPKG_')) or
+            '_OPENSSL_' in key or '_PKG_CONFIG' in key or
+            any(key==name or key.startswith(name+'_') or key in {'HOST_'+name,'TARGET_'+name} for name in CC_INPUTS))
+def reject_overrides(parent):
+    unexpected=sorted(key for key in parent if
+        (key.startswith('CARGO_') and key not in CONTROLLED_CARGO) or
+        native_override(key) or key.startswith(('RUSTC','RUSTDOC','ORT_','ZVEC_')) or key in {'RUSTFLAGS','RUSTUP_TOOLCHAIN'})
+    assert not unexpected, 'refuse inherited compiler/Cargo overrides: '+', '.join(unexpected)
+def build_environment(parent):
+    reject_overrides(parent)
+    tools={name:TOOLCHAIN.joinpath(name).resolve(strict=True) for name in ['cargo','rustc','rustdoc']}
+    env=dict(OBJECTS['environment'](parent),RUSTUP_HOME='/workspace/.rustup',CARGO_HOME='/workspace/.cargo',
+             CARGO_BUILD_JOBS='4',ZVEC_LIB_DIR='/workspace/.cargo/lib/pamin',ZVEC_AUTO_BUILD='0',
+             ORT_LIB_LOCATION='/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib',ORT_PREFER_DYNAMIC_LINK='1',
+             RUSTC=str(tools['rustc']),RUSTDOC=str(tools['rustdoc']),
+             RUSTC_WRAPPER='',RUSTC_WORKSPACE_WRAPPER='',
+             CARGO_ENCODED_RUSTFLAGS='',CARGO_ENCODED_RUSTDOCFLAGS='')
+    env.pop('CARGO_TARGET_DIR',None)
+    env['PATH']=str(TOOLCHAIN)+os.pathsep+env.get('PATH','')
+    return env,tools
+def cargo_config_snapshot(checkouts,cargo_home):
+    # Cargo discovers both spellings in the working directory, every ancestor,
+    # and CARGO_HOME. Even force=true [env] entries can defeat environment pins.
+    locations={cargo_home/'config',cargo_home/'config.toml'}
+    for checkout in checkouts:
+        assert checkout.is_absolute() and checkout==checkout.resolve(strict=True), 'checkout must be canonical and absolute'
+        for ancestor in [checkout,*checkout.parents]:
+            locations.update(ancestor/'.cargo'/name for name in ['config','config.toml'])
+    result={str(path):{'absent':not os.path.lexists(path)} for path in sorted(locations)}
+    assert all(row['absent'] for row in result.values()), 'Cargo configuration refused: '+', '.join(path for path,row in result.items() if not row['absent'])
+    return result
+def verify_cargo_configs(expected,checkouts,cargo_home):
+    assert cargo_config_snapshot(checkouts,cargo_home)==expected, 'Cargo configuration search paths changed'
+def tool_identities(tools):
+    return {name:{'path':str(path),'bytes':path.stat().st_size,'sha256':digest(path)} for name,path in tools.items()}
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
+    return h.hexdigest()
+def git_environment():
+    return OBJECTS['environment']()
+def git(checkout,*args):
+    return subprocess.check_output(['git',*args],cwd=checkout,env=git_environment())
+def reject_replacements(checkout):
+    namespaces={'refs/replace',os.environ.get('GIT_REPLACE_REF_BASE','refs/replace').rstrip('/')}
+    assert not git(checkout,'for-each-ref','--format=%(refname)',*sorted(namespaces)), 'Git replacement refs refused before source attestation'
+def inputs(checkout,commit,allowed,scratch_target=TARGET):
+    reject_replacements(checkout)
+    assert git(checkout,'rev-parse','HEAD').decode().strip()==commit
+    assert not git(checkout,'status','--porcelain','--untracked-files=no'), 'tracked changes refused'
+    assert not git(checkout,'diff','--cached','--name-only',commit), 'index differs from expected commit'
+    canonical=OBJECTS['snapshot'](checkout,commit,git_environment())
+    tracked={name:[mode,oid] for name,(mode,oid,content) in canonical.items()}
+    expected={name:{'bytes':len(content),'sha256':hashlib.sha256(content).hexdigest()}
+              for name,(mode,oid,content) in canonical.items() if mode!='160000'}
+    assert scratch_target not in tracked, 'scratch target must remain untracked'
+    extra=set()
+    for options in [[],['--ignored']]:
+        extra.update(git(checkout,'ls-files','--others',*options,'--exclude-standard','-z').decode().split('\0')[:-1])
+    assert extra<=set(allowed), 'unexpected untracked/ignored source or dependency'
+    for name in extra:
+        assert (checkout/name).is_file() and not (checkout/name).is_symlink(), 'scratch input must be a regular file'
+        assert digest(checkout/name)==allowed[name], 'scratch content differs from explicit manifest'
+    result={}
+    for name in sorted(set(tracked)|extra):
+        if name in tracked and tracked[name][0]=='160000':
+            result[name]={'kind':'gitlink','commit':tracked[name][1]};continue
+        path=checkout/name
+        if name in tracked and tracked[name][0]=='120000':
+            assert path.is_symlink(), 'tracked symlink replaced'
+            target=os.fsencode(os.readlink(path))
+            assert {'bytes':len(target),'sha256':hashlib.sha256(target).hexdigest()}==expected[name], 'tracked link target differs from HEAD git blob'
+            result[name]={'kind':'symlink','bytes':len(target),'sha256':hashlib.sha256(target).hexdigest(),'target':os.fsdecode(target)}
+            continue
+        assert path.is_file() and not path.is_symlink(), 'non-file/symlink source requires separate explicit audit'
+        result[name]={'bytes':path.stat().st_size,'sha256':digest(path)}
+        if name in tracked:assert result[name]==expected[name], 'tracked regular file differs from HEAD git blob'
+    assert 'Cargo.lock' in result and 'Cargo.toml' in result
+    return result
+def fresh_artifacts(records,checkout,target,products=PRODUCTS,test_name='scratch_restart_floor',scratch_target=TARGET):
+    all_artifacts=[x for x in records if x.get('reason')=='compiler-artifact']
+    assert all_artifacts
+    for artifact in all_artifacts:
+        assert artifact['fresh'] is False, 'dependency/product/helper reused'
+        filenames=artifact['filenames']+([artifact['executable']] if artifact.get('executable') else [])
+        for filename in filenames:
+            assert Path(filename).resolve().is_relative_to(target.resolve()), 'artifact outside new private target'
+    selected=[x for x in records if x.get('reason')=='compiler-artifact' and x.get('target',{}).get('name','').replace('_','-') in products|{test_name.replace('_','-')}]
+    assert {x['target']['name'].replace('_','-') for x in selected}==products|{test_name.replace('_','-')}
+    for x in selected:
+        assert x['fresh'] is False, 'product/helper reused'
+        assert Path(x['manifest_path']).resolve().is_relative_to(checkout.resolve()), 'product compiled from another checkout'
+    tests=[x for x in selected if x['target']['name']==test_name and x.get('executable')]
+    assert len(tests)==1, 'exactly one scratch executable required'
+    assert Path(tests[0]['target']['src_path']).resolve()==(checkout/scratch_target).resolve(), 'scratch artifact source path differs'
+    assert any(x.get('reason')=='build-finished' and x['success'] is True for x in records)
+    return all_artifacts,Path(tests[0]['executable'])
+def validate_harness(plan,scratch_target,conversion_only):
+    harness=Path(plan['harness']);assert digest(harness)==plan['harness_sha256']
+    if conversion_only:
+        assert plan['harness_sha256']==digest(Path(__file__).with_name('disk_schema_guarded.rs.in')), 'only the reviewed guarded conversion template is allowed'
+    # Only this exact ignored integration-test file is allowed; no directory
+    # exclusions that could hide a modified dependency or other build input.
+    for arm in plan['arms'].values():
+        assert arm['allowed_untracked']=={scratch_target:plan['harness_sha256']}
+    return harness
+@contextmanager
+def owned_scratch(checkout,target,harness):
+    """Create exclusively; remove only the inode this invocation created."""
+    path=checkout/target
+    with path.open('xb') as stream:
+        identity=os.fstat(stream.fileno())
+        try:
+            with harness.open('rb') as source:shutil.copyfileobj(source,stream)
+            stream.flush()
+            yield path
+        finally:
+            if os.path.lexists(path):
+                actual=path.lstat()
+                assert not path.is_symlink() and (actual.st_dev,actual.st_ino)==(identity.st_dev,identity.st_ino), 'owned scratch target replaced; preserve replacement'
+                path.unlink()
+
+def read_plan(path):
+    raw=path.read_bytes()
+    return json.loads(raw),hashlib.sha256(raw).hexdigest()
+
+def main():
+    env,tools=build_environment(os.environ) # refuse overrides before copying/writing
+    parser=argparse.ArgumentParser(description='New source-attested restart builds; never historical certification')
+    parser.add_argument('--conversion-only',action='store_true',help='build only the source-bound candidate disk-schema setup helper')
+    parser.add_argument('--plan',type=Path,required=True)
+    parser.add_argument('--output',type=Path,required=True)
+    args=parser.parse_args();plan,plan_sha256=read_plan(args.plan)
+    assert not args.output.exists(), 'preserve all prior outputs'
+    assert set(plan['arms'])==({'candidate'} if args.conversion_only else {'main','predecessor','candidate'})
+    scratch_target=CONVERSION_TARGET if args.conversion_only else TARGET
+    test_name='scratch_disk_schema' if args.conversion_only else 'scratch_restart_floor'
+    package='pamin-index' if args.conversion_only else 'pamin-engine'
+    products={'pamin-core','pamin-index'} if args.conversion_only else PRODUCTS
+    harness=validate_harness(plan,scratch_target,args.conversion_only)
+    for arm in plan['arms'].values():
+        inputs(Path(arm['checkout']),arm['commit'],arm['allowed_untracked'],scratch_target)
+    checkouts=[Path(arm['checkout']) for arm in plan['arms'].values()]
+    configs=cargo_config_snapshot(checkouts,CARGO_HOME)
+    assert args.output.parent.is_dir()
+    assert all(not args.output.resolve().is_relative_to(Path(arm['checkout']).resolve()) for arm in plan['arms'].values()), 'target/output must be outside source checkouts'
+    resource_before=resource_preflight(args.output.parent)
+    native=NATIVE['snapshot']()
+    assert 'libzvec_c_api.so' in native['directories'][env['ZVEC_LIB_DIR']]['entries']
+    assert 'libonnxruntime.so' in native['directories'][env['ORT_LIB_LOCATION']]['entries']
+    env=NATIVE['environment'](env,native)
+    tool_before=tool_identities(tools)
+    rustc_version=subprocess.check_output([env['RUSTC'],'-Vv'],env=env,text=True)
+    rustdoc_version=subprocess.check_output([env['RUSTDOC'],'-V'],env=env,text=True)
+    cargo_version=subprocess.check_output([str(tools['cargo']),'-V'],env=env,text=True)
+    assert rustc_version.startswith('rustc 1.98.1 ') and rustdoc_version.startswith('rustdoc 1.98.1 ') and cargo_version.startswith('cargo 1.98.1 ')
+    args.output.mkdir(mode=0o700)
+    target_root=args.output/'targets';target_root.mkdir(mode=0o700)
+    audit={'recorded_utc':datetime.now(timezone.utc).isoformat(),
+           'scope':'prospective build-time inputs/outputs only; no historical binary binding',
+           'build_kind':'disk-schema-conversion' if args.conversion_only else 'restart-trial','scratch_target':scratch_target,
+           'plan_sha256':plan_sha256,'harness_sha256':digest(harness),
+           'toolchain':rustc_version,'rustdoc':rustdoc_version,'cargo':cargo_version,'tools_before':tool_before,
+           'cargo_config_search':configs,'cargo_config_policy':'both config spellings absent at canonical checkout and all ancestors and fixed CARGO_HOME; endpoint checks only; offline registry/cache unchanged and not content-attested',
+           'inherited_compiler_cargo_overrides':{},'native_loader_inputs':native,'resource_preflight':resource_before,
+           'target_scope':'new empty per-arm target; all emitted compiler artifacts fresh:false; prebuilt declared native libraries remain pinned external inputs; Cargo registry/system build tools are not fully content-attested',
+           'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','LD_LIBRARY_PATH','RUSTC','RUSTDOC','RUSTFLAGS','RUSTDOCFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_ENCODED_RUSTDOCFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
+    for name in (['candidate'] if args.conversion_only else ['main','predecessor','candidate']):
+        arm=plan['arms'][name];checkout=Path(arm['checkout'])
+        resources=resource_preflight(args.output)
+        target=target_root/name;target.mkdir(mode=0o700)
+        assert not list(target.iterdir()), 'target must start empty'
+        env['CARGO_TARGET_DIR']=str(target.resolve())
+        NATIVE['verify'](native)
+        verify_cargo_configs(configs,checkouts,CARGO_HOME)
+        with owned_scratch(checkout,scratch_target,harness):
+            before=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target)
+            assert tool_identities(tools)==tool_before
+            command=[str(tools['cargo']),'test','-p',package,'--test',test_name,'--no-run','--release','--offline','--locked','--message-format=json']
+            outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
+            with outpath.open('w') as out,errpath.open('w') as err:
+                subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
+            verify_cargo_configs(configs,checkouts,CARGO_HOME)
+            after=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target);assert before==after
+            tool_after=tool_identities(tools);assert tool_after==tool_before
+            NATIVE['verify'](native)
+            records=[json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')]
+            selected,executable=fresh_artifacts(records,checkout,target,products,test_name,scratch_target)
+            frozen=args.output/('disk-schema' if args.conversion_only else name);shutil.copy2(executable,frozen)
+            assert digest(frozen)==digest(executable)
+            audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'scratch_source':scratch_target,'scratch_sha256':before[scratch_target]['sha256'],'inputs_before':before,'inputs_after':after,
+                                'command':command,'target_directory':str(target.resolve()),'target_initially_empty':True,'resource_preflight':resources,'build_script_records':[x for x in records if x.get('reason')=='build-script-executed'],'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
+                                'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size,'tools_after':tool_after}
+            (args.output/'build-attestation.json').write_text(json.dumps(audit,indent=2)+'\n')
+if __name__=='__main__':main()

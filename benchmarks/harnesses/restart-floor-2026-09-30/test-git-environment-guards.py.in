@@ -1,0 +1,31 @@
+"""Disposable Git only; no Cargo/build/native/model process."""
+import os,runpy,subprocess,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent;build=runpy.run_path(str(root/'build-guarded.py.in'))
+retro=runpy.run_path(str(root.parents[1]/'results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'))
+with tempfile.TemporaryDirectory() as directory:
+ parent=Path(directory);checkout=parent/'checkout';checkout.mkdir();clean=parent/'clean'
+ env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')};env.update(GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull)
+ def git(*args):return subprocess.check_output(['git',*args],cwd=checkout,env=env,stderr=subprocess.PIPE)
+ git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
+ for name in ['Cargo.toml','Cargo.lock','crates/pamin-engine/src/lib.rs']:
+  path=checkout/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture\n')
+ git('add','.');git('commit','-qm','fixture');commit=git('rev-parse','HEAD').decode().strip()
+ subprocess.run(['git','clone','-q',str(checkout),str(clean)],env=env,check=True,stderr=subprocess.PIPE)
+ extra=checkout/'crates/pamin-engine/build.rs';extra.write_text('fn main() {}\n')
+ with patch.dict(os.environ,dict(env,GIT_WORK_TREE=str(clean)),clear=True):
+  try:build['inputs'](checkout,commit,{})
+  except AssertionError as error:assert 'unexpected untracked/ignored source' in str(error)
+  else:raise AssertionError('alternate clean worktree hid real build.rs')
+ extra.unlink()
+ names=build['OBJECTS']['local_environment_names']();hostile={name:'uncontrolled' for name in names}
+ hostile.update(GIT_WORK_TREE=str(clean),GIT_DIR=str(clean/'.git'),GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='core.worktree',GIT_CONFIG_VALUE_0=str(clean))
+ with patch.dict(os.environ,dict(env,**hostile),clear=True):
+  build['OBJECTS']['local_environment_names'].cache_clear()
+  safe=build['git_environment']();assert all(name not in safe for name in names-{'GIT_NO_REPLACE_OBJECTS'})
+  assert 'GIT_CONFIG_KEY_0' not in safe and 'GIT_CONFIG_VALUE_0' not in safe and safe['GIT_NO_REPLACE_OBJECTS']=='1'
+  actual=build['inputs'](checkout,commit,{});assert set(actual)=={'Cargo.toml','Cargo.lock','crates/pamin-engine/src/lib.rs'}
+  historical=retro['source_inputs'](checkout,commit);assert set(historical)==set(actual)
+print('PASS: real untracked build.rs cannot be hidden; all Git local/config overrides scrubbed in prospective/retrospective source guards')

@@ -1,0 +1,39 @@
+"""Tiny fake-byte/ownership tests only; never execute a copied program or build."""
+import hashlib,json,os,runpy,sys,tempfile,unittest
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+ROOT=Path(__file__).resolve().parent
+stable=runpy.run_path(str(ROOT/'stable-executables.py.in'))
+class Binding(unittest.TestCase):
+ def test_fd_survives_path_replacement(self):
+  with tempfile.TemporaryDirectory() as directory:
+   parent=Path(directory);source=parent/'source';source.write_bytes(b'original fake executable')
+   identity={'sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'bytes':source.stat().st_size}
+   with stable['copies']({'arm':source},{'arm':identity},parent) as entries:
+    entry=entries['arm'];path=Path(entry['path']);path.rename(path.with_name('old'));path.write_bytes(b'unrelated replacement')
+    command,kwargs=stable['invocation']([str(source),'argument'],entry,{'pass_fds':()})
+    self.assertEqual(command[0],'/proc/self/fd/'+str(entry['fd']));self.assertEqual(kwargs['pass_fds'],(entry['fd'],))
+    self.assertEqual(os.pread(entry['fd'],100,0),b'original fake executable');stable['verify'](entry)
+   self.assertFalse(path.parent.exists())
+   with self.assertRaises(OSError):os.fstat(entry['fd'])
+ def test_mutation_and_failure_cleanup(self):
+  with tempfile.TemporaryDirectory() as directory:
+   parent=Path(directory);source=parent/'source';source.write_bytes(b'fake')
+   identity={'sha256':hashlib.sha256(b'fake').hexdigest(),'bytes':4}
+   with self.assertRaisesRegex(AssertionError,'bytes/mode'):
+    with stable['copies']({'arm':source},{'arm':identity},parent) as entries:
+     entry=entries['arm'];path=Path(entry['path']);path.chmod(0o700);path.write_bytes(b'evil');path.chmod(0o500);stable['verify'](entry)
+   self.assertFalse(path.parent.exists())
+   with self.assertRaises(OSError):os.fstat(entry['fd'])
+   with self.assertRaisesRegex(RuntimeError,'mock failed launch'):
+    with stable['copies']({'arm':source},{'arm':identity},parent) as entries:
+     path=Path(entries['arm']['path']);raise RuntimeError('mock failed launch')
+   self.assertFalse(path.parent.exists())
+ def test_copies_outside_seed_and_direct_only(self):
+  with tempfile.TemporaryDirectory() as directory:
+   root=Path(directory)
+   with self.assertRaisesRegex(AssertionError,'outside measured fixtures'):
+    with stable['copies']({}, {},root,excluded=(root,)):self.fail('inside copy accepted')
+  with self.assertRaisesRegex(AssertionError,'direct invocation'):stable['invocation'](['fake'],{'fd':10},{'shell':True})
+if __name__=='__main__':unittest.main()

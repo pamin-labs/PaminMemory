@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "index": "disk",
+  "raw_sha256": "817b907934688c585f7c88347649f46ebebbff38390d85313bd7e96b1391621d",
+  "scope": "Exact retained historical anomalies only; no tolerance. HWM-derived peak process RSS is uncertified/N/A. Sampled VmRSS observations remain observations, not lifetime peaks. Original raw/log/calculator numbers are preserved.",
+  "exact_historical_anomalies": [
+    {
+      "arm": "candidate",
+      "repetition": 2,
+      "previous": [
+        9,
+        "search_warm",
+        "process_before",
+        1770044
+      ],
+      "current": [
+        9,
+        "search_warm",
+        "process_after",
+        1769984
+      ]
+    }
+  ],
+  "hwm_peak_certified": false,
+  "published_hwm_peak": "N/A",
+  "sampled_rss_observations": [
+    {
+      "arm": "main",
+      "repetition": 0,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1824476
+    },
+    {
+      "arm": "main",
+      "repetition": 1,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1837512
+    },
+    {
+      "arm": "main",
+      "repetition": 2,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1822288
+    },
+    {
+      "arm": "predecessor",
+      "repetition": 0,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1820784
+    },
+    {
+      "arm": "predecessor",
+      "repetition": 1,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1828056
+    },
+    {
+      "arm": "predecessor",
+      "repetition": 2,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1824772
+    },
+    {
+      "arm": "candidate",
+      "repetition": 0,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1757544
+    },
+    {
+      "arm": "candidate",
+      "repetition": 1,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1799860
+    },
+    {
+      "arm": "candidate",
+      "repetition": 2,
+      "observations": 64,
+      "maximum_observed_rss_kib": 1770044
+    }
+  ]
+}

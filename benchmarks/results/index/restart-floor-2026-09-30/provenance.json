@@ -1453,5 +1453,9 @@
     16000,
     18000
   ],
-  "seed_setup_scope": "real Engine writes with batch drain every256; each setup process explicitly optimizes and stops PostgreSQL; supported legacy2000 schema"
+  "seed_setup_scope": "real Engine writes with batch drain every256; each setup process explicitly optimizes and stops PostgreSQL; supported legacy2000 schema",
+  "retrospective_rebuild_scope_review": {
+    "record": "../restart-floor-disk-2026-09-30/rebuild/scope-review.json",
+    "qualification": "Named-package clean in a shared Cargo target freshly compiled only the four product libraries and selected integration-test helper. All 538 third-party compiler artifacts per arm were cached. Their source-to-artifact provenance is unknown; byte equality does not establish full source-to-artifact attestation."
+  }
 }

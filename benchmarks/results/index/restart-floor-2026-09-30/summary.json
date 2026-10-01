@@ -17,7 +17,7 @@
           "warm_p95_ms": 2368.29456245,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1858592768,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1289113600,
           "index_apparent_bytes": 138074725,
           "index_allocated_bytes": 135700480,
@@ -38,7 +38,7 @@
           "warm_p95_ms": 2370.1417937,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1866715136,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1290911744,
           "index_apparent_bytes": 138074725,
           "index_allocated_bytes": 135700480,
@@ -59,7 +59,7 @@
           "warm_p95_ms": 2359.7768212,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1868943360,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1289768960,
           "index_apparent_bytes": 138074725,
           "index_allocated_bytes": 135700480,
@@ -80,7 +80,7 @@
         "warm_p95_ms": 2368.29456245,
         "known_topic_recall_at_10": 0.875,
         "known_topic_mrr_at_10": 0.8263888888888888,
-        "peak_process_rss_bytes": 1866715136,
+        "peak_process_rss_bytes": null,
         "maintenance_rss_bytes": 1289768960,
         "index_apparent_bytes": 138074725,
         "index_allocated_bytes": 135700480,
@@ -104,7 +104,7 @@
           "warm_p95_ms": 2256.8430543,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1855717376,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1368506368,
           "index_apparent_bytes": 132814555,
           "index_allocated_bytes": 134561792,
@@ -125,7 +125,7 @@
           "warm_p95_ms": 2242.01383385,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1853509632,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1368281088,
           "index_apparent_bytes": 132814555,
           "index_allocated_bytes": 134561792,
@@ -146,7 +146,7 @@
           "warm_p95_ms": 2248.1180835,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1866440704,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1376522240,
           "index_apparent_bytes": 132814555,
           "index_allocated_bytes": 134561792,
@@ -167,7 +167,7 @@
         "warm_p95_ms": 2248.1180835,
         "known_topic_recall_at_10": 0.875,
         "known_topic_mrr_at_10": 0.8263888888888888,
-        "peak_process_rss_bytes": 1855717376,
+        "peak_process_rss_bytes": null,
         "maintenance_rss_bytes": 1368506368,
         "index_apparent_bytes": 132814555,
         "index_allocated_bytes": 134561792,
@@ -191,7 +191,7 @@
           "warm_p95_ms": 2289.5234913000004,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1854308352,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1368190976,
           "index_apparent_bytes": 132814555,
           "index_allocated_bytes": 134561792,
@@ -212,7 +212,7 @@
           "warm_p95_ms": 2300.14096535,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1854042112,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1368379392,
           "index_apparent_bytes": 132814555,
           "index_allocated_bytes": 134561792,
@@ -233,7 +233,7 @@
           "warm_p95_ms": 2230.17266605,
           "known_topic_recall_at_10": 0.875,
           "known_topic_mrr_at_10": 0.8263888888888888,
-          "peak_process_rss_bytes": 1853591552,
+          "peak_process_rss_bytes": null,
           "maintenance_rss_bytes": 1367605248,
           "index_apparent_bytes": 132814555,
           "index_allocated_bytes": 134561792,
@@ -254,7 +254,7 @@
         "warm_p95_ms": 2289.5234913000004,
         "known_topic_recall_at_10": 0.875,
         "known_topic_mrr_at_10": 0.8263888888888888,
-        "peak_process_rss_bytes": 1854042112,
+        "peak_process_rss_bytes": null,
         "maintenance_rss_bytes": 1368190976,
         "index_apparent_bytes": 132814555,
         "index_allocated_bytes": 134561792,
@@ -351,10 +351,10 @@
           "percent_delta": 0.0
         },
         "peak_process_rss_bytes": {
-          "before": 1854042112,
-          "after": 1866715136,
-          "absolute_delta": 12673024,
-          "percent_delta": 0.6835348516614492
+          "before": null,
+          "after": null,
+          "absolute_delta": null,
+          "percent_delta": null
         },
         "maintenance_rss_bytes": {
           "before": 1368190976,
@@ -480,10 +480,10 @@
           "percent_delta": 0.0
         },
         "peak_process_rss_bytes": {
-          "before": 1855717376,
-          "after": 1866715136,
-          "absolute_delta": 10997760,
-          "percent_delta": 0.5926419692046899
+          "before": null,
+          "after": null,
+          "absolute_delta": null,
+          "percent_delta": null
         },
         "maintenance_rss_bytes": {
           "before": 1368506368,
@@ -523,5 +523,19 @@
         }
       }
     }
+  },
+  "metric_certification": {
+    "peak_process_rss_bytes": {
+      "certified": false,
+      "status": "N/A",
+      "reason": "historical VmHWM chronology uncertified"
+    }
+  },
+  "summary_derivation": {
+    "schema": 1,
+    "method": "archived calculator recomputation followed by explicit HWM qualification; supersedes numeric summary only",
+    "raw_sha256": "a2018bfb4f7eff6f893a30b3483df2293cd29c2b90d0b79dd34c22e532adb079",
+    "archived_calculator_sha256": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
+    "superseded_numeric_summary_sha256": "f2af9584033fcc9dbdcf687512c10479b712b76789ea5ed41edc8e72adcddb57"
   }
 }

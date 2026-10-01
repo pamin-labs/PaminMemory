@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Prepare read-only inputs; --execute requires an independently granted build slot."""
+import argparse,filecmp,hashlib,json,os,shutil,subprocess,sys,time
+from datetime import datetime,timezone
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Audit requires assertions; remove -O/PYTHONOPTIMIZE')
+ROOT=Path('${SCRATCH}')
+AUDIT=Path(__file__).resolve().parent
+ARCHIVE=Path('${REPO}/benchmarks/results/index/restart-floor-disk-2026-09-30')
+TARGET='crates/pamin-engine/tests/scratch_restart_floor.rs'
+PRODUCTS={'pamin-core','pamin-store','pamin-index','pamin-engine'}
+HARNESS='6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca'
+def now():return datetime.now(timezone.utc).isoformat()
+def sha(path):
+    value=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(4*1024*1024),b''):value.update(block)
+    return value.hexdigest()
+def identity(path):return {'path':str(path),'bytes':path.stat().st_size,'sha256':sha(path)}
+def git(checkout,*args):return subprocess.check_output(['git',*args],cwd=checkout)
+def snapshot(checkout,commit):
+    assert git(checkout,'rev-parse','HEAD').decode().strip()==commit
+    assert git(checkout,'status','--porcelain','--untracked-files=no')==b'', 'tracked checkout dirty'
+    tracked=[entry.split('\t',1) for entry in git(checkout,'ls-files','--stage','-z').decode().split('\0')[:-1]]
+    # Compare current regular tracked contents directly with HEAD/index blobs;
+    # do not trust timestamp/status shortcuts such as assume-unchanged alone.
+    headers=[entry[0].split() for entry in tracked]
+    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=checkout,input=('\n'.join(h[1] for h in headers if h[0]!='160000')+'\n').encode())
+    offset=0;inputs={}
+    for (header,name),h in zip(tracked,headers):
+        mode,oid,stage=h;assert stage=='0'
+        if mode=='160000':inputs[name]={'kind':'gitlink','commit':oid};continue
+        end=blobs.index(b'\n',offset);blob_header=blobs[offset:end].split();assert blob_header[:2]==[oid.encode(),b'blob']
+        size=int(blob_header[2]);content=blobs[end+1:end+1+size];offset=end+size+2
+        path=checkout/name
+        if mode=='120000':
+            assert path.is_symlink() and os.readlink(path).encode()==content
+            inputs[name]={'kind':'symlink','target':os.readlink(path),'sha256':hashlib.sha256(content).hexdigest()}
+        else:
+            assert path.is_file() and not path.is_symlink()
+            expected=hashlib.sha256(content).hexdigest();assert sha(path)==expected, ('tracked blob differs',name)
+            inputs[name]={'kind':'file','bytes':size,'sha256':expected}
+    extras=set()
+    for options in [[],['--ignored']]:extras.update(git(checkout,'ls-files','--others',*options,'--exclude-standard','-z').decode().split('\0')[:-1])
+    allowed={TARGET}
+    if checkout.name=='candidate':allowed|={'crates/pamin-index/tests/scratch_disk_schema.rs','crates/pamin-index/tests/scratch_legacy_schema.rs'}
+    assert extras<=allowed and TARGET in extras, 'unexpected extra build/dependency inputs'
+    assert sha(checkout/TARGET)==HARNESS
+    inputs[TARGET]={'kind':'selected_ignored_test','bytes':(checkout/TARGET).stat().st_size,'sha256':HARNESS}
+    return {'inputs':inputs,'unselected_ignored_tests':{name:identity(checkout/name) for name in sorted(extras-{TARGET})},
+            'unselected_scope':'native conversion/bootstrap integration tests are not selected by --test scratch_restart_floor; hashes retained without attributing them to this executable',
+            'tracked_status':'clean','tracked_regular_contents_equal_git_blobs':True}
+def environment():
+    env=dict(os.environ,RUSTUP_HOME='${RUSTUP_HOME}',CARGO_HOME='${CARGO_HOME}',
+             CARGO_TARGET_DIR='${TARGET_DIR}',CARGO_BUILD_JOBS='4',
+             ORT_LIB_LOCATION='${ORT_ROOT}/onnxruntime-linux-x64-1.28.0/lib',ORT_PREFER_DYNAMIC_LINK='1')
+    env['PATH']='${CARGO_HOME}/bin:'+env['PATH'];return env
+def records(path):return [json.loads(line) for line in path.read_text().splitlines() if line.startswith('{')]
+def selected(data,checkout,require_fresh):
+    chosen=[x for x in data if x.get('reason')=='compiler-artifact' and x.get('target',{}).get('name','').replace('_','-') in PRODUCTS|{'scratch-restart-floor'}]
+    assert {x['target']['name'].replace('_','-') for x in chosen}==PRODUCTS|{'scratch-restart-floor'}
+    for x in chosen:
+        name=x['target']['name'].replace('_','-')
+        expected=checkout/'crates'/('pamin-engine' if name=='scratch-restart-floor' else name)/'Cargo.toml'
+        assert Path(x['manifest_path']).resolve()==expected.resolve()
+        if require_fresh:assert x['fresh'] is False
+    assert any(x.get('reason')=='build-finished' and x['success'] is True for x in data)
+    helpers=[x for x in chosen if x['target']['name']=='scratch_restart_floor' and x.get('executable')];assert len(helpers)==1
+    return chosen,Path(helpers[0]['executable'])
+def premises():
+    binaries=json.loads((ARCHIVE/'binaries.json').read_text());provenance=json.loads((ARCHIVE/'provenance.json').read_text())
+    env=environment()
+    result={'recorded_utc':now(),'scope':'dated current clean-source and surviving identity check; cannot certify historical build-time inputs or inherited tuning',
+            'script':identity(Path(__file__)),'original_harness':identity(ROOT/'harness.rs'),
+            'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},
+            'current_inherited_pamin_environment':{k:v for k,v in os.environ.items() if k.startswith('PAMIN_')},
+            'inherited_tuning_scope':'current rebuild environment only; executables are never run; historical trial environment unknown','libraries':{},'arms':{}}
+    assert result['original_harness']['sha256']==HARNESS
+    library_paths={'runtime_library':Path('${ORT_ROOT}/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0'),'native_zvec_library':Path('${CARGO_HOME}/lib/pamin/libzvec_c_api.so')}
+    for key,path in library_paths.items():
+        actual=identity(path);assert actual['sha256']==provenance[key]['sha256'] and actual['bytes']==provenance[key]['bytes'];result['libraries'][key]=actual
+    for old in binaries:
+        arm=old['arm'];checkout=ROOT/'checkouts'/arm;oldbin=identity(ROOT/'bin'/arm)
+        assert oldbin['sha256']==old['sha256'] and oldbin['bytes']==old['current_pretrial_hash']['bytes']
+        original_artifacts,_=selected(records(ROOT/f'build-{arm}.jsonl'),checkout,False)
+        result['arms'][arm]={'commit':old['commit'],'snapshot':snapshot(checkout,old['commit']),'historical_binary':oldbin,
+                             'original_compiler_json':identity(ROOT/f'build-{arm}.jsonl'),'original_build_log':identity(ROOT/f'build-{arm}.log'),
+                             'original_selected_compiler_artifacts':original_artifacts}
+    return result
+def execute():
+    output=AUDIT/'executed';assert not output.exists(), 'preserve all audit outputs'
+    before=premises();output.mkdir();env=environment()
+    audit={'started_utc':now(),'scope':'retrospective exact-path fresh rebuild; identical bytes can bind reproduced inputs to the archived artifact, not historical build-time attestation or trial tuning',
+           'before':before,'toolchain':subprocess.check_output(['rustc','+1.98.1','-Vv'],env=env,text=True),
+           'cargo':subprocess.check_output(['cargo','+1.98.1','-V'],env=env,text=True),'arms':{}}
+    for arm in ['main','predecessor','candidate']:
+        checkout=ROOT/'checkouts'/arm;commit=before['arms'][arm]['commit'];inputs_before=snapshot(checkout,commit)
+        clean=['cargo','+1.98.1','clean','--release',*[x for p in sorted(PRODUCTS) for x in ['-p',p]]]
+        build=['cargo','+1.98.1','test','-p','pamin-engine','--test','scratch_restart_floor','--no-run','--release','--offline','--locked','--message-format=json']
+        start=time.monotonic()
+        with (output/f'{arm}-clean.log').open('w') as log:subprocess.run(clean,cwd=checkout,env=env,stdout=log,stderr=log,check=True)
+        with (output/f'{arm}-build.jsonl').open('w') as out,(output/f'{arm}-build.log').open('w') as err:subprocess.run(build,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
+        inputs_after=snapshot(checkout,commit);assert inputs_before==inputs_after==before['arms'][arm]['snapshot']
+        artifacts,executable=selected(records(output/f'{arm}-build.jsonl'),checkout,True)
+        frozen=output/arm;shutil.copy2(executable,frozen)
+        old=ROOT/'bin'/arm;original=identity(old);assert original==before['arms'][arm]['historical_binary']
+        rebuilt=identity(frozen);assert rebuilt['sha256']==sha(executable)
+        same=filecmp.cmp(old,frozen,shallow=False)
+        audit['arms'][arm]={'recorded_utc':now(),'elapsed_seconds':time.monotonic()-start,'clean_command':clean,'build_command':build,
+                            'inputs_before':inputs_before,'inputs_after':inputs_after,'compiler_artifacts':artifacts,
+                            'logs':{path.name:identity(path) for path in output.glob(f'{arm}-*.log')}|{f'{arm}-build.jsonl':identity(output/f'{arm}-build.jsonl')},
+                            'historical_binary_after':original,'rebuilt_binary':rebuilt,'byte_for_byte_identical':same}
+        (output/'audit.json').write_text(json.dumps(audit,indent=2)+'\n')
+    audit['after']=premises()
+    assert audit['before']['arms']==audit['after']['arms'] and audit['before']['libraries']==audit['after']['libraries']
+    assert audit['before']['build_environment']==audit['after']['build_environment']
+    audit['toolchain_after']=subprocess.check_output(['rustc','+1.98.1','-Vv'],env=env,text=True)
+    audit['cargo_after']=subprocess.check_output(['cargo','+1.98.1','-V'],env=env,text=True)
+    assert audit['toolchain']==audit['toolchain_after'] and audit['cargo']==audit['cargo_after']
+    audit['finished_utc']=now();audit['all_three_byte_for_byte_identical']=all(x['byte_for_byte_identical'] for x in audit['arms'].values())
+    (output/'audit.json').write_text(json.dumps(audit,indent=2)+'\n')
+    print(json.dumps({'output':str(output),'all_three_byte_for_byte_identical':audit['all_three_byte_for_byte_identical']}))
+def main():
+    parser=argparse.ArgumentParser();group=parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--prepare',action='store_true');group.add_argument('--execute',action='store_true');args=parser.parse_args()
+    if args.execute:execute()
+    else:
+        output=AUDIT/'prepared.json';assert not output.exists()
+        data=premises();output.write_text(json.dumps(data,indent=2)+'\n')
+        print(json.dumps({'prepared':str(output),'arms':{k:{'inputs':len(v['snapshot']['inputs']),'unselected_ignored_tests':list(v['snapshot']['unselected_ignored_tests'])} for k,v in data['arms'].items()}}))
+if __name__=='__main__':main()
