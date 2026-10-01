@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prospective builds only; preserve archived build.py.in and historical outputs."""
 import argparse,hashlib,json,os,runpy,shutil,subprocess,sys
+from contextlib import contextmanager
 from datetime import datetime,timezone
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Build guards require assertions; remove -O/PYTHONOPTIMIZE')
@@ -134,6 +135,22 @@ def validate_harness(plan,scratch_target,conversion_only):
     for arm in plan['arms'].values():
         assert arm['allowed_untracked']=={scratch_target:plan['harness_sha256']}
     return harness
+@contextmanager
+def owned_scratch(checkout,target,harness):
+    """Create exclusively; remove only the inode this invocation created."""
+    path=checkout/target
+    with path.open('xb') as stream:
+        identity=os.fstat(stream.fileno())
+        try:
+            with harness.open('rb') as source:shutil.copyfileobj(source,stream)
+            stream.flush()
+            yield path
+        finally:
+            if os.path.lexists(path):
+                actual=path.lstat()
+                assert not path.is_symlink() and (actual.st_dev,actual.st_ino)==(identity.st_dev,identity.st_ino), 'owned scratch target replaced; preserve replacement'
+                path.unlink()
+
 def main():
     env,tools=build_environment(os.environ) # refuse overrides before copying/writing
     parser=argparse.ArgumentParser(description='New source-attested restart builds; never historical certification')
@@ -183,23 +200,23 @@ def main():
         env['CARGO_TARGET_DIR']=str(target.resolve())
         NATIVE['verify'](native)
         verify_cargo_configs(configs,checkouts,CARGO_HOME)
-        shutil.copyfile(harness,checkout/scratch_target)
-        before=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target)
-        assert tool_identities(tools)==tool_before
-        command=[str(tools['cargo']),'test','-p',package,'--test',test_name,'--no-run','--release','--offline','--locked','--message-format=json']
-        outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
-        with outpath.open('w') as out,errpath.open('w') as err:
-            subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
-        verify_cargo_configs(configs,checkouts,CARGO_HOME)
-        after=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target);assert before==after
-        tool_after=tool_identities(tools);assert tool_after==tool_before
-        NATIVE['verify'](native)
-        records=[json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')]
-        selected,executable=fresh_artifacts(records,checkout,target,products,test_name,scratch_target)
-        frozen=args.output/('disk-schema' if args.conversion_only else name);shutil.copy2(executable,frozen)
-        assert digest(frozen)==digest(executable)
-        audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'scratch_source':scratch_target,'scratch_sha256':before[scratch_target]['sha256'],'inputs_before':before,'inputs_after':after,
-                            'command':command,'target_directory':str(target.resolve()),'target_initially_empty':True,'resource_preflight':resources,'build_script_records':[x for x in records if x.get('reason')=='build-script-executed'],'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
-                            'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size,'tools_after':tool_after}
-        (args.output/'build-attestation.json').write_text(json.dumps(audit,indent=2)+'\n')
+        with owned_scratch(checkout,scratch_target,harness):
+            before=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target)
+            assert tool_identities(tools)==tool_before
+            command=[str(tools['cargo']),'test','-p',package,'--test',test_name,'--no-run','--release','--offline','--locked','--message-format=json']
+            outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
+            with outpath.open('w') as out,errpath.open('w') as err:
+                subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
+            verify_cargo_configs(configs,checkouts,CARGO_HOME)
+            after=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target);assert before==after
+            tool_after=tool_identities(tools);assert tool_after==tool_before
+            NATIVE['verify'](native)
+            records=[json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')]
+            selected,executable=fresh_artifacts(records,checkout,target,products,test_name,scratch_target)
+            frozen=args.output/('disk-schema' if args.conversion_only else name);shutil.copy2(executable,frozen)
+            assert digest(frozen)==digest(executable)
+            audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'scratch_source':scratch_target,'scratch_sha256':before[scratch_target]['sha256'],'inputs_before':before,'inputs_after':after,
+                                'command':command,'target_directory':str(target.resolve()),'target_initially_empty':True,'resource_preflight':resources,'build_script_records':[x for x in records if x.get('reason')=='build-script-executed'],'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
+                                'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size,'tools_after':tool_after}
+            (args.output/'build-attestation.json').write_text(json.dumps(audit,indent=2)+'\n')
 if __name__=='__main__':main()
