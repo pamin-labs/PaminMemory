@@ -31,6 +31,7 @@ def graph_only_evidence(hit):
 GRAPH_RECORD_PINS = {
  'baseline': [(4,0.020202022045850754),(6,0.01772727258503437),(7,0.01719697006046772)],
  'scored': [(1,0.025151517242193222),(4,0.02196969836950302),(7,0.02196969836950302),(8,0.01613636501133442)]}
+INTERVAL_PINS={'baseline': {'elapsed_ms': 5.411432, 'early_stop_elapsed_ms': 5.865667, 'graph_process_cpu_user_system_seconds': [0.0, 0.0]}, 'scored': {'elapsed_ms': 5.420928, 'early_stop_elapsed_ms': 7.003564, 'graph_process_cpu_user_system_seconds': [0.0, 0.0]}}
 USAGE_PINS={'baseline': {'exit_status': 0, 'maximum_process_rss_kib': 825568, 'scope': 'Linux wait4 of native test process; setup included, independent services excluded', 'system_seconds': 1.954844, 'user_seconds': 22.679407, 'wall_seconds': 11.006847980999737}, 'scored': {'exit_status': 0, 'maximum_process_rss_kib': 824976, 'scope': 'Linux wait4 of native test process; setup included, independent services excluded', 'system_seconds': 1.828223, 'user_seconds': 22.846165, 'wall_seconds': 12.008825205999528}}
 GRAPH_SCORE_PINS={'baseline':[0.3333333432674408,0.10000000149011612,0.05000000074505806],'scored':[0.800000011920929,0.5,0.5,0.5]}
 def validate_graph_record(hit,arm,index):
@@ -352,6 +353,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert all(interval<=usage[key] for interval,key in zip(row['graph_process_cpu_user_system_seconds'],['user_seconds','system_seconds'])), 'graph interval CPU time exceeds whole-process total'
  assert usage['scope']=='Linux wait4 of native test process; setup included, independent services excluded'
  assert usage==USAGE_PINS[arm], 'retained complete process usage differs'
+ assert {'elapsed_ms':row['elapsed_ms'],'early_stop_elapsed_ms':row['early_stop']['elapsed_ms'],'graph_process_cpu_user_system_seconds':row['graph_process_cpu_user_system_seconds']}==INTERVAL_PINS[arm], 'retained graph intervals differ exactly'
 
  assert len(row['targets'])==3 and len({h['topic'] for h in row['targets']})==3, 'exactly three unique target records required'
  hits={h['topic']:h for h in row['targets']};assert set(hits)==set(row['target_labels'])
