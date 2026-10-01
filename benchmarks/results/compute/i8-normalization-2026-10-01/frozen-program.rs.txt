@@ -1,0 +1,33 @@
+
+use std::{hint::black_box,time::Instant};
+#[inline(never)]
+#[unsafe(no_mangle)]
+fn old(values:&[i8;1024])->Vec<f32>{
+ let mut vector:Vec<f32>=values.iter().map(|v|f32::from(*v)).collect();
+ let norm=vector.iter().map(|v|v*v).sum::<f32>().sqrt();
+ assert_ne!(norm,0.0);
+ for value in &mut vector {*value/=norm;}
+ vector
+}
+#[inline(never)]
+#[unsafe(no_mangle)]
+fn new(values:&[i8;1024])->Vec<f32>{
+ let squared:i32=values.iter().map(|v|i32::from(*v).pow(2)).sum();
+ assert_ne!(squared,0);
+ let norm=(squared as f32).sqrt();
+ values.iter().map(|v|f32::from(*v)/norm).collect()
+}
+fn timed(f:fn(&[i8;1024])->Vec<f32>,values:&[i8;1024])->f64 {
+ let start=Instant::now();
+ for _ in 0..100_000 {black_box(f(black_box(values)));}
+ start.elapsed().as_secs_f64()*1e9/100_000.0
+}
+fn main(){
+ let values=std::array::from_fn(|i|(i%256)as u8 as i8);
+ assert_eq!(old(&values),new(&values));
+ for _ in 0..1000 {black_box(old(black_box(&values)));black_box(new(black_box(&values)));}
+ for block in 0..6 {
+  let (before,after)=if block%2==0 {(timed(old,&values),timed(new,&values))} else {let n=timed(new,&values);(timed(old,&values),n)};
+  println!("{{\"block\":{block},\"before_ns\":{before},\"after_ns\":{after},\"shared_host\":true}}");
+ }
+}
