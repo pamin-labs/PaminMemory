@@ -1,0 +1,16 @@
+{
+  "dual-product-accuracy-24ad7f1862182925": {
+    "project_id": "01a0f43a-c4a1-7c01-8415-4464fce2b815",
+    "files": 260,
+    "logical_bytes": 83303573,
+    "allocated_blocks_bytes": 83877888,
+    "scope": "projection only; excludes shared PostgreSQL and model cache; APFS shared extents not resolved"
+  },
+  "dual-product-dual_accuracy-24ad7f1862182925": {
+    "project_id": "01a0f47e-f7bf-7bc0-98e0-374e29d33e93",
+    "files": 262,
+    "logical_bytes": 117151847,
+    "allocated_blocks_bytes": 117755904,
+    "scope": "projection only; excludes shared PostgreSQL and model cache; APFS shared extents not resolved"
+  }
+}

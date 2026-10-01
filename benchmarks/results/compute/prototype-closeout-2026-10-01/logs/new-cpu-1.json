@@ -1,0 +1,63 @@
+{
+  "source_sha256": "55f419674360e43dcdf3f9866c7c04febe909b26dd91385d3307de0bb4e83765",
+  "redaction": "Every source line mapped to a fixed event enum and whitelisted public model/tier/token/device metadata; no paths, arbitrary free text, credentials or user content retained.",
+  "events": [
+    {
+      "line": 0,
+      "event": "other"
+    },
+    {
+      "line": 1,
+      "event": "other"
+    },
+    {
+      "line": 2,
+      "event": "other"
+    },
+    {
+      "line": 3,
+      "event": "other"
+    },
+    {
+      "line": 4,
+      "event": "other"
+    },
+    {
+      "line": 5,
+      "event": "other"
+    },
+    {
+      "line": 6,
+      "event": "reranker_loaded",
+      "device": "cpu",
+      "tier": "accurate",
+      "maximum_tokens": 256
+    },
+    {
+      "line": 7,
+      "event": "embedder_loaded",
+      "device": "cpu",
+      "model": "gpahal/bge-m3-onnx-int8"
+    },
+    {
+      "line": 8,
+      "event": "other"
+    },
+    {
+      "line": 9,
+      "event": "other"
+    },
+    {
+      "line": 10,
+      "event": "other"
+    },
+    {
+      "line": 11,
+      "event": "other"
+    },
+    {
+      "line": 12,
+      "event": "other"
+    }
+  ]
+}

@@ -1,0 +1,185 @@
+{
+  "scope": "1024-i8 normalization kernel throughput diagnostic; not product/model latency",
+  "baseline_commit": "034fe12b9562c52d2d8bb3bfcdd014bab7c73e02",
+  "candidate_commit": "cf1b7b4c8b2c6d511f903b72e33771b2954cd8a6",
+  "host": {
+    "model": "Mac16,12",
+    "chip": "Apple M4",
+    "shared": true
+  },
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "flags": [
+    "--edition=2024",
+    "-O"
+  ],
+  "source_sha256": "12e11819938fcf062382a651dd7f520de68854e38d4857aec78d404c80db4b08",
+  "warmup_calls_per_arm": 1000,
+  "calls_per_block_per_arm": 100000,
+  "independent_processes": 3,
+  "processes": [
+    {
+      "process": 0,
+      "before_median_ns": 602.21354,
+      "after_median_ns": 95.290835,
+      "rows": [
+        {
+          "block": 0,
+          "before_ns": 600.70959,
+          "after_ns": 85.33125,
+          "shared_host": true,
+          "process": 0
+        },
+        {
+          "block": 1,
+          "before_ns": 604.9775,
+          "after_ns": 103.57625,
+          "shared_host": true,
+          "process": 0
+        },
+        {
+          "block": 2,
+          "before_ns": 602.3025,
+          "after_ns": 97.28125,
+          "shared_host": true,
+          "process": 0
+        },
+        {
+          "block": 3,
+          "before_ns": 602.01167,
+          "after_ns": 94.67333,
+          "shared_host": true,
+          "process": 0
+        },
+        {
+          "block": 4,
+          "before_ns": 612.81167,
+          "after_ns": 94.1775,
+          "shared_host": true,
+          "process": 0
+        },
+        {
+          "block": 5,
+          "before_ns": 602.12458,
+          "after_ns": 95.90834,
+          "shared_host": true,
+          "process": 0
+        }
+      ]
+    },
+    {
+      "process": 1,
+      "before_median_ns": 601.63167,
+      "after_median_ns": 92.61104,
+      "rows": [
+        {
+          "block": 0,
+          "before_ns": 614.85833,
+          "after_ns": 92.29083,
+          "shared_host": true,
+          "process": 1
+        },
+        {
+          "block": 1,
+          "before_ns": 600.6,
+          "after_ns": 93.94791,
+          "shared_host": true,
+          "process": 1
+        },
+        {
+          "block": 2,
+          "before_ns": 602.10291,
+          "after_ns": 90.75583,
+          "shared_host": true,
+          "process": 1
+        },
+        {
+          "block": 3,
+          "before_ns": 600.53583,
+          "after_ns": 92.07542,
+          "shared_host": true,
+          "process": 1
+        },
+        {
+          "block": 4,
+          "before_ns": 601.8425,
+          "after_ns": 92.93125,
+          "shared_host": true,
+          "process": 1
+        },
+        {
+          "block": 5,
+          "before_ns": 601.42084,
+          "after_ns": 93.87083,
+          "shared_host": true,
+          "process": 1
+        }
+      ]
+    },
+    {
+      "process": 2,
+      "before_median_ns": 601.0200050000001,
+      "after_median_ns": 91.84375,
+      "rows": [
+        {
+          "block": 0,
+          "before_ns": 600.98334,
+          "after_ns": 87.755,
+          "shared_host": true,
+          "process": 2
+        },
+        {
+          "block": 1,
+          "before_ns": 600.41041,
+          "after_ns": 90.03875,
+          "shared_host": true,
+          "process": 2
+        },
+        {
+          "block": 2,
+          "before_ns": 600.76958,
+          "after_ns": 102.99417,
+          "shared_host": true,
+          "process": 2
+        },
+        {
+          "block": 3,
+          "before_ns": 601.05667,
+          "after_ns": 105.3075,
+          "shared_host": true,
+          "process": 2
+        },
+        {
+          "block": 4,
+          "before_ns": 603.11292,
+          "after_ns": 86.14667,
+          "shared_host": true,
+          "process": 2
+        },
+        {
+          "block": 5,
+          "before_ns": 610.42291,
+          "after_ns": 93.64875,
+          "shared_host": true,
+          "process": 2
+        }
+      ]
+    }
+  ],
+  "before_ns": 601.63167,
+  "after_ns": 92.61104,
+  "delta_ns": -509.02063,
+  "change_percent": -84.6066880089607,
+  "ratio": 6.4963277596277935,
+  "p50_ns": null,
+  "p95_ns": null,
+  "latency_reason": "Every block times 100000 calls in aggregate; no individual-call distribution retained. These are mean throughput costs, not p50/p95.",
+  "before_process_median_range_ns": [
+    601.0200050000001,
+    602.21354
+  ],
+  "after_process_median_range_ns": [
+    91.84375,
+    95.290835
+  ],
+  "output": "both outputs asserted bit-identical in every process; one 4096-byte vector payload each"
+}

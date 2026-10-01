@@ -1,0 +1,75 @@
+{
+  "source_sha256": "1dbb2d643dd9d812730bec051ead5c37c98ea6e10a8e075a22f40fd00f8bef84",
+  "redaction": "Every source line mapped to a fixed event enum and whitelisted public model/tier/token/device metadata; no paths, arbitrary free text, credentials or user content retained.",
+  "events": [
+    {
+      "line": 0,
+      "event": "other"
+    },
+    {
+      "line": 1,
+      "event": "other"
+    },
+    {
+      "line": 2,
+      "event": "other"
+    },
+    {
+      "line": 3,
+      "event": "other"
+    },
+    {
+      "line": 4,
+      "event": "embedder_loaded",
+      "device": "cpu",
+      "model": "gpahal/bge-m3-onnx-int8"
+    },
+    {
+      "line": 5,
+      "event": "other"
+    },
+    {
+      "line": 6,
+      "event": "other"
+    },
+    {
+      "line": 7,
+      "event": "other"
+    },
+    {
+      "line": 8,
+      "event": "other"
+    },
+    {
+      "line": 9,
+      "event": "other"
+    },
+    {
+      "line": 10,
+      "event": "other"
+    },
+    {
+      "line": 11,
+      "event": "reranker_loaded",
+      "device": "coreml",
+      "tier": "accurate",
+      "maximum_tokens": 256
+    },
+    {
+      "line": 12,
+      "event": "other"
+    },
+    {
+      "line": 13,
+      "event": "other"
+    },
+    {
+      "line": 14,
+      "event": "other"
+    },
+    {
+      "line": 15,
+      "event": "other"
+    }
+  ]
+}

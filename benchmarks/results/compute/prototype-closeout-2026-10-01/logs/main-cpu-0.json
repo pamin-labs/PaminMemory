@@ -1,0 +1,73 @@
+{
+  "source_sha256": "7da541accfd3f9988f32c8bb5d05407242ad0dbdd184f06a13ae81428bb607e4",
+  "redaction": "Every source line mapped to a fixed event enum and whitelisted public model/tier/token/device metadata; no paths, arbitrary free text, credentials or user content retained.",
+  "events": [
+    {
+      "line": 0,
+      "event": "other"
+    },
+    {
+      "line": 1,
+      "event": "other"
+    },
+    {
+      "line": 2,
+      "event": "other"
+    },
+    {
+      "line": 3,
+      "event": "other"
+    },
+    {
+      "line": 4,
+      "event": "other"
+    },
+    {
+      "line": 5,
+      "event": "other"
+    },
+    {
+      "line": 6,
+      "event": "other"
+    },
+    {
+      "line": 7,
+      "event": "other"
+    },
+    {
+      "line": 8,
+      "event": "other"
+    },
+    {
+      "line": 9,
+      "event": "other"
+    },
+    {
+      "line": 10,
+      "event": "reranker_loaded",
+      "device": "cpu",
+      "tier": "accurate",
+      "maximum_tokens": 256
+    },
+    {
+      "line": 11,
+      "event": "other"
+    },
+    {
+      "line": 12,
+      "event": "other"
+    },
+    {
+      "line": 13,
+      "event": "other"
+    },
+    {
+      "line": 14,
+      "event": "other"
+    },
+    {
+      "line": 15,
+      "event": "other"
+    }
+  ]
+}

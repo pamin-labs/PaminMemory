@@ -23,6 +23,8 @@ pub enum Channel {
     LexicalNgram,
     /// Approximate nearest neighbours over dense embeddings.
     Vector,
+    /// A complementary dense model, only present in dual-space indexes.
+    VectorSecondary,
     /// Expansion through the relationship graph, which lives in PostgreSQL and
     /// is therefore invisible to the projection index.
     Graph,
@@ -67,7 +69,9 @@ impl Channel {
         match self {
             // BM25 is unbounded above and scale-free; a cosine similarity is
             // bounded and query-relative. See above for why neither qualifies.
-            Self::LexicalSegmented | Self::LexicalNgram | Self::Vector => None,
+            Self::LexicalSegmented | Self::LexicalNgram | Self::Vector | Self::VectorSecondary => {
+                None
+            }
             // `confidence` is `(0, 1]` by a schema constraint and the hop
             // decay only ever reduces it.
             Self::Graph => Some((0.0, 1.0)),
@@ -79,6 +83,7 @@ impl Channel {
             Self::LexicalSegmented => "lexical_segmented",
             Self::LexicalNgram => "lexical_ngram",
             Self::Vector => "vector",
+            Self::VectorSecondary => "vector_secondary",
             Self::Graph => "graph",
         }
     }

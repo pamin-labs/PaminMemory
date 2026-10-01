@@ -32,8 +32,13 @@ Embedding models
     Profile `balanced`.
 
   gpahal/bge-m3-onnx-int8                              MIT
-    Profile `accuracy`, the default. An int8 export of BAAI/bge-m3, itself
+    Profiles `accuracy` (default) and `dual_accuracy`. An int8 export of BAAI/bge-m3, itself
     MIT.
+
+  perplexity-ai/pplx-embed-v1-0.6b                     MIT
+    Complementary model in the opt-in `dual_accuracy` profile, pinned to
+    2c4d510dd4a732063c31a0f70193e35067b51fd8. The model card at that revision
+    declares MIT. Both primary and complementary dense fields are FP16.
 
 Reranker models
 ---------------

@@ -65,10 +65,11 @@ use std::collections::BTreeMap;
 use pamin_core::{Channel, ChannelResults, Combine, Fusion, Scored, TopicId, Why};
 use pamin_engine::SearchHit;
 
-pub const CHANNELS: [Channel; 4] = [
+pub const CHANNELS: [Channel; 5] = [
     Channel::LexicalSegmented,
     Channel::LexicalNgram,
     Channel::Vector,
+    Channel::VectorSecondary,
     Channel::Graph,
 ];
 
@@ -184,6 +185,28 @@ pub fn replay(hits: &[SearchHit]) -> Vec<ChannelResults> {
 /// engine's arithmetic and not a copy of it -- there is nothing here to drift.
 /// Names rather than identifiers, because that is what the scorers compare.
 pub fn as_if(hits: &[SearchHit], fusion: &Fusion) -> Vec<String> {
+    as_if_effective(hits, &effective_fusion(hits, fusion))
+}
+
+pub fn effective_fusion(hits: &[SearchHit], fusion: &Fusion) -> Fusion {
+    if hits.iter().any(|hit| {
+        hit.result.why.iter().any(|why| {
+            matches!(
+                why,
+                Why::Channel {
+                    channel: Channel::VectorSecondary,
+                    ..
+                }
+            )
+        })
+    }) {
+        fusion.clone().with_secondary_vector()
+    } else {
+        fusion.clone()
+    }
+}
+
+pub fn as_if_effective(hits: &[SearchHit], fusion: &Fusion) -> Vec<String> {
     let named: BTreeMap<TopicId, &str> = hits
         .iter()
         .map(|hit| (hit.result.topic, hit.topic.as_str()))
@@ -726,7 +749,10 @@ impl Diagnosis {
             );
         }
         for channel in CHANNELS {
-            let ranking = as_if(hits, &Fusion::default().without(channel));
+            let ranking = as_if_effective(
+                hits,
+                &effective_fusion(hits, &Fusion::default()).without(channel),
+            );
             note(self.without.entry(channel).or_default(), &ranking);
         }
         for ((_, fusion), into) in self.variants.iter().zip(&mut self.offline) {
@@ -985,6 +1011,112 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn dual_replay_uses_the_products_split_semantic_vote() {
+        let topic = pamin_core::TopicId::new();
+        let primary = pamin_core::ChannelResults::new(
+            Channel::Vector,
+            vec![pamin_core::Scored::new(topic, 1.0)],
+        );
+        let secondary = pamin_core::ChannelResults::new(
+            Channel::VectorSecondary,
+            vec![pamin_core::Scored::new(topic, 1.0)],
+        );
+        let expected = Fusion::default()
+            .with_secondary_vector()
+            .fuse(&[primary, secondary]);
+        // No ledger/model needed: the public fusion trace is the actual
+        // evidence consumed by the feature/replay paths.
+        assert!(expected[0].why.iter().any(|why| matches!(
+            why,
+            Why::Channel {
+                channel: Channel::VectorSecondary,
+                ..
+            }
+        )));
+        let hit = SearchHit {
+            topic: "fixture".into(),
+            result: expected.into_iter().next().unwrap(),
+            state: pamin_core::TopicState {
+                id: pamin_core::TopicStateId::new(),
+                project_id: pamin_core::ProjectId::new(),
+                topic_id: topic,
+                version: 1,
+                content: "fixture".into(),
+                source_span_id: pamin_core::SourceSpanId::new(),
+                language: None,
+                observed_at: time::OffsetDateTime::UNIX_EPOCH,
+                recorded_at: time::OffsetDateTime::UNIX_EPOCH,
+                validity: pamin_core::Validity::ALWAYS,
+                supersedes: None,
+                deleted_at: None,
+            },
+            seed: None,
+        };
+        same_as_the_engine(&[hit], &Fusion::default());
+    }
+
+    #[test]
+    fn secondary_ablation_does_not_restore_the_removed_stream() {
+        let primary = pamin_core::TopicId::new();
+        let secondary = pamin_core::TopicId::new();
+        let results = Fusion::default().with_secondary_vector().fuse(&[
+            pamin_core::ChannelResults::new(
+                Channel::Vector,
+                vec![pamin_core::Scored::new(primary, 1.0)],
+            ),
+            pamin_core::ChannelResults::new(
+                Channel::VectorSecondary,
+                vec![pamin_core::Scored::new(secondary, 1.0)],
+            ),
+        ]);
+        let hits: Vec<_> = results
+            .into_iter()
+            .map(|result| {
+                let topic = result.topic;
+                SearchHit {
+                    topic: if topic == primary {
+                        "primary".into()
+                    } else {
+                        "secondary".into()
+                    },
+                    result,
+                    state: pamin_core::TopicState {
+                        id: pamin_core::TopicStateId::new(),
+                        project_id: pamin_core::ProjectId::new(),
+                        topic_id: topic,
+                        version: 1,
+                        content: "fixture".into(),
+                        source_span_id: pamin_core::SourceSpanId::new(),
+                        language: None,
+                        observed_at: time::OffsetDateTime::UNIX_EPOCH,
+                        recorded_at: time::OffsetDateTime::UNIX_EPOCH,
+                        validity: pamin_core::Validity::ALWAYS,
+                        supersedes: None,
+                        deleted_at: None,
+                    },
+                    seed: None,
+                }
+            })
+            .collect();
+        // Ordinary lexical/combiner/k variants preserve the shipped dual
+        // stream; only an explicit ablation below removes it.
+        for (name, fusion) in variants() {
+            let ranked = as_if(&hits, &fusion);
+            assert!(ranked.iter().any(|topic| topic == "primary"), "{name}");
+            assert!(ranked.iter().any(|topic| topic == "secondary"), "{name}");
+        }
+        let split = effective_fusion(&hits, &Fusion::default());
+        assert_eq!(
+            as_if_effective(&hits, &split.clone().without(Channel::VectorSecondary)),
+            vec!["primary"]
+        );
+        assert_eq!(
+            as_if_effective(&hits, &split.without(Channel::Vector)),
+            vec!["secondary"]
+        );
+    }
 
     #[test]
     fn absent_channels_keep_zero_scores_in_paired_order() {

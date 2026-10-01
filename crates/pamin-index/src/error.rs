@@ -3,6 +3,10 @@
 /// Anything that can go wrong talking to the projection index.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
+    #[error("incompatible compute plan: {0}")]
+    Incompatible(String),
+    #[error("numerical accelerator validation: {0}")]
+    Numerical(String),
     #[error("projection index: {0}")]
     Engine(String),
 
@@ -46,6 +50,16 @@ pub enum IndexError {
     Io(#[from] std::io::Error),
 }
 
+impl IndexError {
+    pub(crate) fn context(self, context: &str) -> Self {
+        match self {
+            Self::Incompatible(message) => Self::Incompatible(format!("{context}: {message}")),
+            Self::Numerical(message) => Self::Numerical(format!("{context}: {message}")),
+            other => Self::Engine(format!("{context}: {other}")),
+        }
+    }
+}
+
 impl From<zvec_rust::Error> for IndexError {
     fn from(error: zvec_rust::Error) -> Self {
         Self::Engine(error.to_string())
@@ -54,3 +68,23 @@ impl From<zvec_rust::Error> for IndexError {
 
 /// Result alias for index operations.
 pub type Result<T> = std::result::Result<T, IndexError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn loader_context_preserves_plan_failure_classification() {
+        assert!(matches!(
+            IndexError::Incompatible("shape".into()).context("loader"),
+            IndexError::Incompatible(_)
+        ));
+        assert!(matches!(
+            IndexError::Numerical("drift".into()).context("loader"),
+            IndexError::Numerical(_)
+        ));
+        assert!(matches!(
+            IndexError::Engine("pressure".into()).context("loader"),
+            IndexError::Engine(_)
+        ));
+    }
+}

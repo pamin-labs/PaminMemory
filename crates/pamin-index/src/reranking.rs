@@ -224,7 +224,7 @@
 //! divide the gain differently -- is now the MIRACL section above. It does
 //! divide it differently, and not in the direction the caveat guessed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -554,6 +554,25 @@ struct Scores {
 }
 
 impl Scores {
+    fn invalidate(&mut self) {
+        self.known.clear();
+        self.order.clear();
+    }
+
+    /// A complete uncached request already has every score on the replacement.
+    /// Only a partial miss needs another pass to avoid mixing old cached logits.
+    fn replaced(&mut self, missing: usize, total: usize, checkpoint: (u64, u64)) -> bool {
+        self.invalidate();
+        if missing != total {
+            // The first pass's hits/misses were provisional: its cached logits
+            // cannot be used with the replacement. Account only the final pass.
+            (self.hits, self.misses) = checkpoint;
+            true
+        } else {
+            false
+        }
+    }
+
     fn key(query: &str, document: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -617,6 +636,7 @@ pub struct Ranked {
 
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
+    cache_dir: PathBuf,
     model: Encoder,
     tier: Rerank,
     device: Device,
@@ -711,77 +731,10 @@ impl Reranker {
     /// directory of weights rather than two.
     pub fn load(tier: Rerank, cache_dir: &Path) -> Result<Self> {
         debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
-        std::fs::create_dir_all(cache_dir)?;
-
-        let repository = Repository::open(cache_dir, tier.repository())?;
-
-        let session = |device: Device, providers| -> Result<Encoder> {
-            let weights = repository.file(cache_dir, tier.onnx(device));
-            let model = || match device {
-                // The file the hub serves is copied onto the heap whole; on
-                // the CPU, the prepared copy is mapped instead -- see
-                // `crate::prepared` for what that saves -- and the download
-                // removed once the copy has loaded.
-                Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                Device::CoreMl if tier == Rerank::Accurate => {
-                    let source = repository.get(tier.onnx(device))?;
-                    crate::native::prepare(&source, cache_dir)
-                }
-                _ => repository.get(tier.onnx(device)),
-            };
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
-                Encoder::load_fixed_coreml(model, &repository, max_tokens())
-            } else {
-                Encoder::load(model, &repository, max_tokens(), providers)
-            };
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            let loaded = Encoder::load(model, &repository, max_tokens(), providers);
-            let encoder = loaded
-                .map_err(|error| IndexError::Engine(format!("loading the reranker: {error}")))?;
-            #[cfg(target_os = "windows")]
-            let mut encoder = encoder;
-            #[cfg(target_os = "windows")]
-            if device == Device::DirectMl {
-                // Compare the same accelerator export, not CPU int8 versus
-                // accelerator FP16: quantization is a separate source of drift.
-                let path = repository.get(tier.onnx(device))?;
-                check_accelerator(&mut encoder, || {
-                    Encoder::load(
-                        || Ok(path.clone()),
-                        &repository,
-                        max_tokens(),
-                        vec![crate::inference::cpu()],
-                    )
-                })?;
-            }
-            if device == Device::Cpu {
-                crate::prepared::release(&weights, cache_dir);
-            }
-            Ok(encoder)
-        };
-
-        // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
-        // XQuAD-R quality and beat its CoreML FP32 export on every paired
-        // search. Accurate still uses the shared CoreML-first policy.
-        let (model, device) =
-            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
-                (
-                    session(Device::Cpu, vec![crate::inference::cpu()])?,
-                    Device::Cpu,
-                )
-            } else {
-                crate::inference::preferred(session)?
-            };
-        tracing::info!(
-            tier = tier.name(),
-            device = device.name(),
-            maximum_tokens = model.maximum_tokens(),
-            "reranker loaded"
-        );
+        let (model, device) = load_model(tier, cache_dir)?;
 
         Ok(Self {
+            cache_dir: cache_dir.to_path_buf(),
             model,
             tier,
             device,
@@ -827,77 +780,106 @@ impl Reranker {
             return Ok(Vec::new());
         }
 
+        if crate::inference::needs_revalidation(&self.model) {
+            self.scores.invalidate();
+        }
+
         let keys: Vec<u64> = documents
             .iter()
             .map(|document| Scores::key(query, document))
             .collect();
-        let mut scores: Vec<Option<f32>> = keys
-            .iter()
-            .map(|key| self.scores.get(*key))
-            .collect::<Vec<_>>();
-
-        // Only what has not been scored before goes through the model,
-        // tokenized once here so that `score` can group the pairs by their
-        // real length in tokens. See `BATCH_TOKENS` for why that grouping is
-        // not score-neutral.
-        let unscored: Vec<usize> = (0..documents.len())
-            .filter(|position| scores[*position].is_none())
-            .collect();
-
-        if !unscored.is_empty() {
-            let mut characters = 0;
-            let mut longest = 0;
-            for position in &unscored {
-                let length = documents[*position].chars().count();
-                characters += length as u64;
-                longest = longest.max(length);
-            }
-            let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
-            let pairs: Vec<(&str, &str)> = unscored
+        loop {
+            let checkpoint = (self.scores.hits, self.scores.misses);
+            let mut scores: Vec<Option<f32>> = keys
                 .iter()
-                .map(|position| (query, documents[*position]))
+                .map(|key| self.scores.get(*key))
+                .collect::<Vec<_>>();
+
+            // Only what has not been scored before goes through the model,
+            // tokenized once here so that `score` can group the pairs by their
+            // real length in tokens. See `BATCH_TOKENS` for why that grouping is
+            // not score-neutral.
+            let unscored: Vec<usize> = (0..documents.len())
+                .filter(|position| scores[*position].is_none())
                 .collect();
-            let encoding = Instant::now();
-            let encodings = self.model.encode(pairs).map_err(reranking)?;
-            let encode_us = encoding.elapsed().as_micros() as u64;
-            let tokens = encodings
-                .iter()
-                .map(|encoding| encoding.len() as u64)
-                .sum::<u64>();
-            let attempt = score(&mut self.model, encodings, batch_tokens(), batch());
-            let scored = self
-                .work
-                .commit(unscored.len(), tokens, encode_us, attempt)
-                .map_err(reranking)?;
-            self.lengths.total += characters;
-            self.lengths.longest = self.lengths.longest.max(longest);
-            for (position, score) in unscored.iter().zip(scored) {
-                scores[*position] = Some(score);
-                self.scores.put(keys[*position], score);
-            }
-        }
 
-        let mut ordered: Vec<usize> = (0..documents.len()).collect();
-        ordered.sort_by(|left, right| {
-            scores[*right]
-                .unwrap_or(f32::MIN)
-                .total_cmp(&scores[*left].unwrap_or(f32::MIN))
-                // A stable order when two candidates score alike, so one
-                // shortlist ranks the same way twice.
-                .then_with(|| left.cmp(right))
-        });
-        Ok(ordered
-            .into_iter()
-            .map(|position| Ranked {
-                position,
-                // `None` is unreachable: every position is either a cache hit
-                // or went through the model above. Carried as the same
-                // sentinel the sort used rather than unwrapped, so a future
-                // early return cannot turn a missing score into a panic in a
-                // search.
-                score: scores[position].unwrap_or(f32::MIN),
-            })
-            .collect())
+            if !unscored.is_empty() {
+                let mut characters = 0;
+                let mut longest = 0;
+                for position in &unscored {
+                    let length = documents[*position].chars().count();
+                    characters += length as u64;
+                    longest = longest.max(length);
+                }
+                let reranking =
+                    |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
+                let tier = self.tier;
+                let cache = &self.cache_dir;
+                let ((tokens, encode_us, attempt), replaced) = crate::inference::retry_model(
+                    &mut self.model,
+                    &mut self.device,
+                    cache,
+                    |model, _| {
+                        let pairs: Vec<(&str, &str)> = unscored
+                            .iter()
+                            .map(|position| (query, documents[*position]))
+                            .collect();
+                        let encoding = Instant::now();
+                        let encodings = model.encode(pairs)?;
+                        let encode_us = encoding.elapsed().as_micros() as u64;
+                        let tokens = encodings
+                            .iter()
+                            .map(|encoding| encoding.len() as u64)
+                            .sum::<u64>();
+                        let completed = score(model, encodings, batch_tokens(), batch())?;
+                        Ok((tokens, encode_us, completed))
+                    },
+                    || load_model(tier, cache),
+                )
+                .map_err(reranking)?;
+                if replaced
+                    && self
+                        .scores
+                        .replaced(unscored.len(), documents.len(), checkpoint)
+                {
+                    // Some cached logits predate the replacement. Rescore them
+                    // too; a fully uncached successful pass can commit directly.
+                    continue;
+                }
+                let scored = self
+                    .work
+                    .commit(unscored.len(), tokens, encode_us, Ok(attempt))
+                    .map_err(reranking)?;
+                self.lengths.total += characters;
+                self.lengths.longest = self.lengths.longest.max(longest);
+                for (position, score) in unscored.iter().zip(scored) {
+                    scores[*position] = Some(score);
+                    self.scores.put(keys[*position], score);
+                }
+            }
+
+            let mut ordered: Vec<usize> = (0..documents.len()).collect();
+            ordered.sort_by(|left, right| {
+                scores[*right]
+                    .unwrap_or(f32::MIN)
+                    .total_cmp(&scores[*left].unwrap_or(f32::MIN))
+                    // A stable order when two candidates score alike, so one
+                    // shortlist ranks the same way twice.
+                    .then_with(|| left.cmp(right))
+            });
+            return Ok(ordered
+                .into_iter()
+                .map(|position| Ranked {
+                    position,
+                    // `None` is unreachable: every position is either a cache hit
+                    // or went through the model above. Carried as the same
+                    // sentinel the sort used rather than unwrapped, so a future
+                    // early return cannot turn a missing score into a panic in a
+                    // search.
+                    score: scores[position].unwrap_or(f32::MIN),
+                })
+                .collect());
+        }
     }
 
     /// What this reranker has been asked to do, and what it did.
@@ -936,41 +918,151 @@ impl Reranker {
     }
 }
 
-/// A startup ordering guard for the actual model/export. A failed attempt
-/// returns to `preferred`, which tries the next viable provider. No persistent
-/// CPU-only setting is written; a later load can retry a repaired accelerator.
-#[cfg(target_os = "windows")]
-fn check_accelerator(
-    accelerator: &mut Encoder,
-    reference: impl FnOnce() -> Result<Encoder>,
-) -> Result<()> {
-    const PAIRS: [(&str, &str); 4] = [
-        (
-            "Where does the harbour pilot board ships?",
-            "The harbour pilot boards ships at the outer buoy.",
-        ),
-        (
-            "Where does the harbour pilot board ships?",
-            "Chocolate cake is baked with flour and cocoa.",
-        ),
-        (
-            "部署流水线在哪里运行？",
-            "部署流水线运行在持续集成服务器上。",
-        ),
-        ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
-    ];
-    let encodings = accelerator.encode(PAIRS.to_vec())?;
-    let observed = score(accelerator, encodings, batch_tokens(), batch())?.0;
-    let mut reference = reference()?;
-    let encodings = reference.encode(PAIRS.to_vec())?;
-    let expected = score(&mut reference, encodings, batch_tokens(), batch())?.0;
-    check_accelerator_ordering(&expected, &observed)
+/// Keep the ordering proof first. Accurate also times long candidates, so
+/// maximum-length execution affects selection rather than only compatibility.
+fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
+    std::fs::create_dir_all(cache_dir)?;
+
+    let repository = Repository::open(cache_dir, tier.repository())?;
+
+    let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
+        let weights = repository.file(cache_dir, tier.onnx(device));
+        let model = || match device {
+            // The file the hub serves is copied onto the heap whole; on
+            // the CPU, the prepared copy is mapped instead -- see
+            // `crate::prepared` for what that saves -- and the download
+            // removed once the copy has loaded.
+            Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Device::CoreMl if tier == Rerank::Accurate => {
+                let source = repository.get(tier.onnx(device))?;
+                crate::native::prepare(&source, cache_dir)
+            }
+            _ => repository.get(tier.onnx(device)),
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
+            Encoder::load_fixed_coreml(model, &repository, max_tokens())
+        } else {
+            Encoder::load(model, &repository, max_tokens(), providers)
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let loaded = Encoder::load(model, &repository, max_tokens(), providers);
+        let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
+        // The shared calibration compares actual candidate scores with
+        // the already resident product CPU reference. Do not allocate a
+        // third FP16 CPU session while both plans are live.
+        encoder.require_accelerator(device)?;
+        if device == Device::Cpu {
+            crate::prepared::release(&weights, cache_dir);
+        }
+        Ok(encoder)
+    };
+
+    // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
+    // XQuAD-R quality and beat its CoreML FP32 export on every paired
+    // search. Accurate still uses the shared CoreML-first policy.
+    let (model, device) =
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
+            (
+                session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
+                Device::Cpu,
+            )
+        } else {
+            let references = std::cell::RefCell::new(crate::inference::References::default());
+            crate::inference::measured(
+                &format!(
+                    "reranker-v3:{}:{}:{}:{}:{}",
+                    tier.name(),
+                    repository.identity(cache_dir),
+                    max_tokens(),
+                    batch(),
+                    batch_tokens()
+                ),
+                cache_dir,
+                &references,
+                crate::inference::ReferenceShape {
+                    scores: Some(calibration_pairs(tier, "").len()),
+                    ..Default::default()
+                },
+                session,
+                |model, _device| {
+                    let mut reference = references.borrow_mut();
+                    let long = "harbour migration rollback policy ".repeat(max_tokens());
+                    let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
+                    let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
+                    if longest != max_tokens() {
+                        return Err(IndexError::Engine(
+                            "maximum-token fixture did not reach the configured limit".into(),
+                        ));
+                    }
+                    let values = score(model, encoded, batch_tokens(), batch())?.0;
+                    if values.len() != 1 || !values[0].is_finite() {
+                        return Err(IndexError::Numerical(
+                            "maximum-token reranker fixture returned invalid output".into(),
+                        ));
+                    }
+                    crate::inference::time_calls(|| {
+                        let pairs = calibration_pairs(tier, &long);
+                        let count = pairs.len();
+                        let encoded = model.encode(pairs)?;
+                        let values = score(model, encoded, batch_tokens(), batch())?.0;
+                        if values.len() != count || !values.iter().all(|v| v.is_finite()) {
+                            return Err(IndexError::Numerical(
+                                "reranker calibration returned invalid scores".into(),
+                            ));
+                        }
+                        match &reference.scores {
+                            None => reference.scores = Some(values),
+                            Some(reference) => {
+                                check_accelerator_ordering(&reference[..4], &values[..4])?
+                            }
+                        }
+                        Ok(())
+                    })
+                },
+            )?
+        };
+    tracing::info!(
+        tier = tier.name(),
+        device = device.name(),
+        maximum_tokens = model.maximum_tokens(),
+        "reranker loaded"
+    );
+
+    Ok((model, device))
 }
 
-#[cfg(any(target_os = "windows", test))]
+fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
+    let mut pairs = ORDER_PAIRS.to_vec();
+    if tier == Rerank::Accurate {
+        pairs.extend(ORDER_PAIRS.repeat(3));
+        pairs.extend(std::iter::repeat_n((ORDER_PAIRS[0].0, long), 16));
+    }
+    pairs
+}
+
+const ORDER_PAIRS: [(&str, &str); 4] = [
+    (
+        "Where does the harbour pilot board ships?",
+        "The harbour pilot boards ships at the outer buoy.",
+    ),
+    (
+        "Where does the harbour pilot board ships?",
+        "Chocolate cake is baked with flour and cocoa.",
+    ),
+    (
+        "部署流水线在哪里运行？",
+        "部署流水线运行在持续集成服务器上。",
+    ),
+    ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
+];
+
+/// Compare the startup fixture's semantic ordering, allowing ordinary score
+/// drift between a candidate export and the product's optimized CPU export.
 fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
     let failed =
-        || IndexError::Engine("accelerator failed the startup reranker ordering fixture".into());
+        || IndexError::Numerical("accelerator failed the startup reranker ordering fixture".into());
     if expected.len() != 4
         || observed.len() != 4
         || expected
@@ -1080,6 +1172,85 @@ fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn complete_replacement_results_are_reused_but_partial_results_rescore() {
+        let mut scores = Scores::default();
+        scores.put(Scores::key("query", "old"), 0.5);
+        assert!(
+            !scores.replaced(16, 16, (0, 0)),
+            "scheduled complete result must not run twice"
+        );
+        assert!(scores.known.is_empty());
+        scores.put(Scores::key("query", "old"), 0.5);
+        assert!(
+            scores.replaced(8, 16, (0, 0)),
+            "partial misses must not mix old logits"
+        );
+        assert!(scores.known.is_empty());
+    }
+
+    #[test]
+    fn partial_backend_replay_counts_each_offered_candidate_once() {
+        let mut scores = Scores {
+            hits: 7,
+            misses: 9,
+            ..Default::default()
+        };
+        let keys: Vec<_> = (0..4)
+            .map(|n| Scores::key("query", &n.to_string()))
+            .collect();
+        scores.put(keys[0], 0.5);
+        let checkpoint = (scores.hits, scores.misses);
+        let missing = keys
+            .iter()
+            .filter(|key| scores.get(**key).is_none())
+            .count();
+        assert_eq!(missing, 3);
+        assert!(scores.replaced(missing, keys.len(), checkpoint));
+        for key in keys {
+            assert!(scores.get(key).is_none());
+        }
+        assert_eq!(
+            scores.hits, 7,
+            "discarded provisional cache hit must not count"
+        );
+        assert_eq!(
+            scores.hits + scores.misses,
+            16 + 4,
+            "one public request offers four candidates, not eight"
+        );
+    }
+
+    #[test]
+    fn invalidating_backend_scores_preserves_lifetime_counts() {
+        let mut scores = Scores::default();
+        let key = Scores::key("query", "document");
+        assert!(scores.get(key).is_none());
+        scores.put(key, 1.0);
+        assert_eq!(scores.get(key), Some(1.0));
+        scores.invalidate();
+        assert!(scores.known.is_empty() && scores.order.is_empty());
+        assert_eq!((scores.hits, scores.misses), (1, 1));
+        assert!(scores.get(key).is_none());
+        assert_eq!(scores.hits + scores.misses, 3);
+    }
+
+    #[test]
+    fn calibration_uses_short_fast_and_mixed_accurate_workloads() {
+        let long = "long document ".repeat(512);
+        let fast = super::calibration_pairs(super::Rerank::Fast, &long);
+        let accurate = super::calibration_pairs(super::Rerank::Accurate, &long);
+        assert_eq!(fast, super::ORDER_PAIRS);
+        assert_eq!(accurate.len(), 32);
+        assert_eq!(&accurate[..4], &super::ORDER_PAIRS);
+        assert_eq!(
+            accurate
+                .iter()
+                .filter(|(_, text)| *text == long.as_str())
+                .count(),
+            16
+        );
+    }
 
     #[test]
     fn accelerator_startup_checks_ordering_without_rejecting_score_drift() {

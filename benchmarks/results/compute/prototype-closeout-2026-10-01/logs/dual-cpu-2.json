@@ -1,0 +1,71 @@
+{
+  "source_sha256": "3a1866c03378f4e2157801c5fc436317ae6891956356c4a5a26ab8819b73969b",
+  "redaction": "Every source line mapped to a fixed event enum and whitelisted public model/tier/token/device metadata; no paths, arbitrary free text, credentials or user content retained.",
+  "events": [
+    {
+      "line": 0,
+      "event": "other"
+    },
+    {
+      "line": 1,
+      "event": "other"
+    },
+    {
+      "line": 2,
+      "event": "other"
+    },
+    {
+      "line": 3,
+      "event": "other"
+    },
+    {
+      "line": 4,
+      "event": "other"
+    },
+    {
+      "line": 5,
+      "event": "other"
+    },
+    {
+      "line": 6,
+      "event": "reranker_loaded",
+      "device": "cpu",
+      "tier": "accurate",
+      "maximum_tokens": 256
+    },
+    {
+      "line": 7,
+      "event": "other"
+    },
+    {
+      "line": 8,
+      "event": "other"
+    },
+    {
+      "line": 9,
+      "event": "embedder_loaded",
+      "device": "cpu",
+      "model": "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
+    },
+    {
+      "line": 10,
+      "event": "other"
+    },
+    {
+      "line": 11,
+      "event": "other"
+    },
+    {
+      "line": 12,
+      "event": "other"
+    },
+    {
+      "line": 13,
+      "event": "other"
+    },
+    {
+      "line": 14,
+      "event": "other"
+    }
+  ]
+}
