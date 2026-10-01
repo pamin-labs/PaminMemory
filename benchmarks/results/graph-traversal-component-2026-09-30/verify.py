@@ -210,7 +210,11 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row.get('setup') == 'native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved', 'recorded native fixture setup differs'
  assert row['expected_scores'] == [.8,.5,.5]
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
- weak=next(r for r in row['non_graph'] if r['topic']==row['weak'])
+ seed_window=row['non_graph'][:63]
+ assert any(hit['topic']==row['weak'] for hit in seed_window), 'weak origin must occur in first 63 retained fused results'
+ chosen=next(hit for hit in seed_window if hit['topic']!=row['strong'] and min(rank['rank'] for rank in hit['ranks'])>=22)
+ assert chosen['topic']==row['weak'], 'weak origin must be first eligible topic in recorded fixture seed window'
+ weak=next(r for r in seed_window if r['topic']==row['weak'])
  assert min(r['rank'] for r in weak['ranks'])==weak_rank
  channels = {'lexical_segmented','lexical_ngram','vector'}
  assert {r['channel'] for h in row['non_graph'] for r in h['ranks']} == channels
