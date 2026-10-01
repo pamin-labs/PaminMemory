@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from fractions import Fraction
 import platform
+import re
 import stat
 import fcntl
 import hashlib
@@ -81,14 +82,41 @@ def disk_sizes(root):
     return {'logical_bytes': logical_bytes, 'allocated_bytes': allocated_bytes, 'files': files}
 
 
-def cgroup_conditions(root=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup')):
+def cgroup_conditions(root=None, membership=Path('/proc/self/cgroup'), mountinfo=Path('/proc/self/mountinfo')):
     lines = [line.split(':', 2)[2] for line in membership.read_text().splitlines() if line.startswith('0::')]
     require(len(lines) == 1, 'one cgroup v2 membership required')
     relative = lines[0]
     require(relative.startswith('/') and not any(part in {'.', '..'} for part in relative.split('/')),
             'cgroup membership path escape')
-    root = root.resolve()
-    leaf = root / relative.lstrip('/')
+    member = Path(relative)
+    candidates = []
+    for line in mountinfo.read_text().splitlines():
+        fields = line.split()
+        if '-' not in fields:
+            continue
+        separator = fields.index('-')
+        if separator + 1 >= len(fields) or fields[separator + 1] != 'cgroup2':
+            continue
+        require(separator >= 6, 'truncated cgroup2 mountinfo')
+        decode = lambda value: re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), value)
+        subtree, mounted = decode(fields[3]), decode(fields[4])
+        require(all(value.startswith('/') and not any(part in {'.', '..'} for part in value.split('/'))
+                    for value in [subtree, mounted]), 'cgroup mount path escape')
+        subtree, mounted = Path(subtree), Path(mounted)
+        if root is not None and mounted != Path(root):
+            continue
+        if member.is_relative_to(subtree):
+            candidates.append((subtree, mounted))
+    require(candidates, 'cgroup membership does not map to a visible cgroup2 mount')
+    # Prefer the broadest visible filesystem subtree so ancestor limits are included.
+    depth = min(len(subtree.parts) for subtree, mounted in candidates)
+    broadest = set((subtree, mounted) for subtree, mounted in candidates if len(subtree.parts) == depth)
+    conventional = [item for item in broadest if item[1] == Path('/sys/fs/cgroup')]
+    require(len(conventional) == 1 or len(broadest) == 1, 'ambiguous visible cgroup2 mounts')
+    subtree, mounted = conventional[0] if conventional else next(iter(broadest))
+    require(not mounted.is_symlink(), 'cgroup mount symlink forbidden')
+    root = mounted.resolve()
+    leaf = root / member.relative_to(subtree)
     require(leaf.resolve().is_relative_to(root), 'cgroup membership path escape')
     require(leaf.is_dir(), 'effective cgroup missing')
     levels = []
@@ -113,7 +141,7 @@ def cgroup_conditions(root=Path('/sys/fs/cgroup'), membership=Path('/proc/self/c
     headrooms = [level['memory_headroom_bytes'] for level in levels if level['memory_headroom_bytes'] is not None]
     ratios = [Fraction(int(level['cpu_max'].split()[0]), int(level['cpu_max'].split()[1]))
               for level in levels if not level['cpu_max'].startswith('max ')]
-    return {'cgroup_path': str(leaf), 'mounted_cgroup_root': str(root),
+    return {'cgroup_path': str(leaf), 'mounted_cgroup_root': str(root), 'mounted_filesystem_subtree': str(subtree), 'membership_path': relative,
             'scope': 'visible mounted cgroup v2 hierarchy only; invisible ancestor limits unknown',
             'cgroup_ancestors': levels,
             'cgroup_memory_bytes': levels[0]['memory_current_bytes'],
@@ -176,8 +204,23 @@ def live_group_members(group):
             stat = (entry / 'stat').read_text()
         except (FileNotFoundError, ProcessLookupError):
             continue
+        except PermissionError:
+            # hidepid may expose another UID's directory but deny its stat file.
+            # Never hide an inaccessible owned/unknown-UID process from cleanup.
+            try:
+                owner = entry.stat().st_uid
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            require(int(entry.name) != group and owner != os.geteuid(),
+                    'owned or same-UID process stat inaccessible; retain unreaped leader')
+            continue
         fields = stat[stat.rfind(')') + 2:].split()
         if int(fields[2]) == group and fields[0] not in {'Z', 'X'}:
+            try:
+                owner = entry.stat().st_uid
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            require(owner == os.geteuid(), 'owned process group UID differs')
             members.append(int(entry.name))
     return members
 
