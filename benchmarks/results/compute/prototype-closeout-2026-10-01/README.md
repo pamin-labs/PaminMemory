@@ -209,6 +209,10 @@ for block in range(3):
             sys.executable, "/private/tmp/pamin-cost-worker.py", f"reproduced-{arm}-{block}",
             f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy,
         ], env=env, check=True)
+        if arm == "new-auto-persist-hit":
+            log = Path(f"/private/tmp/pamin-cost-reproduced-{arm}-{block}.log").read_text()
+            forbidden = ("complete model-call calibration", "compute candidate", "calibrated winner failed", "cached compute plan failed")
+            assert not any(marker in log for marker in forbidden), "persisted-hit arm recalibrated/rejected; discard its outputs"
 PYRUN
 ```
 

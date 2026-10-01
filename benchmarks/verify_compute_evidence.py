@@ -11,6 +11,19 @@ from pathlib import Path
 ROOT = Path(__file__).parent / "results/compute/prototype-closeout-2026-10-01"
 
 
+REDACTION = "Every source line mapped to a fixed event enum and whitelisted public model/tier/token/device metadata; no paths, arbitrary free text, credentials or user content retained."
+
+
+def strict_json(data):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            assert key not in result, "duplicate JSON property"
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=unique)
+
+
 def rows(name):
     return [json.loads(line) for line in (ROOT / name).read_text().splitlines()]
 
@@ -164,18 +177,17 @@ LOADED_EVENTS = {"embedder_loaded", "reranker_loaded"}
 def verify_device_proof():
     import hashlib
     expected = {"main-cpu", "new-cpu", "dual-cpu", "main-auto", "new-auto", "main-auto-repeat", "new-auto-persist-hit"}
-    proof = json.loads((ROOT / "device-and-cache-proof.json").read_text())
+    proof = strict_json((ROOT / "device-and-cache-proof.json").read_text())
     assert len(proof) == 21 and {(p["arm"], p["process"]) for p in proof} == {(arm, i) for arm in expected for i in range(3)}
     for entry in proof:
         assert type(entry["process"]) is int, "invalid proof process identity"
         assert entry["event_artifact"] == f"{entry['arm']}-{entry['process']}.json", "event artifact belongs to another arm or process"
         artifact = (ROOT / "logs" / entry["event_artifact"]).read_bytes()
         assert hashlib.sha256(artifact).hexdigest() == entry["event_sha256"]
-        log = json.loads(artifact)
-        assert type(log) is dict and set(log) == {"source_sha256", "redaction", "events"}, "invalid redacted log top-level fields"
+        log = strict_json(artifact)
+        assert type(log) is dict and set(log) == {"source_sha256", "redaction", "events"}, "invalid redaction envelope"
         assert type(log["source_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", log["source_sha256"]), "invalid redacted source hash"
-        assert type(log["redaction"]) is str and log["redaction"] == "Every source line mapped to a fixed event enum; no paths, free text, model strings, credentials or user content retained.", "invalid redaction marker"
-        assert type(log["events"]) is list, "invalid redacted event list"
+        assert log["redaction"] == REDACTION and type(log["events"]) is list, "invalid redaction marker/events"
         assert log["source_sha256"] == entry["log_sha256"]
         events = log["events"]
         assert [event["line"] for event in events] == list(range(len(events)))

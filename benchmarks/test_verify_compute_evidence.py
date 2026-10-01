@@ -117,22 +117,6 @@ class DeviceProofTests(unittest.TestCase):
     def test_retained_device_proof(self):
         self.check(self.proof, self.artifacts)
 
-    def test_resealed_top_level_extra_text_is_rejected(self):
-        name = self.proof[0]["event_artifact"]
-        artifacts = copy.deepcopy(self.artifacts)
-        artifacts[name]["internal_note"] = "unapproved free text"
-        with self.assertRaisesRegex(AssertionError, "top-level fields"):
-            self.check(self.proof, artifacts)
-
-    def test_resealed_top_level_types_and_marker_are_rejected(self):
-        name = self.proof[0]["event_artifact"]
-        for field, value in [("redaction", "changed marker"), ("redaction", 1),
-                             ("source_sha256", 1), ("events", {})]:
-            artifacts = copy.deepcopy(self.artifacts)
-            artifacts[name][field] = value
-            with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
-                self.check(self.proof, artifacts)
-
     def test_all_arms_cannot_reuse_the_cpu_control_artifact(self):
         proof = copy.deepcopy(self.proof)
         control = proof[0]
@@ -215,6 +199,33 @@ class DeviceProofTests(unittest.TestCase):
                 for e in artifacts[entry["event_artifact"]]["events"] if e["event"] in verifier.LOADED_EVENTS]
             with self.subTest(field=field), self.assertRaisesRegex(AssertionError, message):
                 self.check(proof, artifacts)
+
+    def test_redacted_top_level_fields_and_marker_are_exact(self):
+        for kind in ("extra", "marker", "events-type", "hash-type"):
+            artifacts = copy.deepcopy(self.artifacts)
+            artifact = artifacts[self.proof[0]["event_artifact"]]
+            if kind == "extra": artifact["unused"] = "should-not-be-retained"
+            elif kind == "marker": artifact["redaction"] = "unverified"
+            elif kind == "events-type": artifact["events"] = {}
+            else: artifact["source_sha256"] = 17
+            with self.subTest(kind=kind), self.assertRaisesRegex(AssertionError, "redact"):
+                self.check(self.proof, artifacts)
+
+    def test_resealed_duplicate_properties_are_rejected_in_retained_bytes(self):
+        for key, payload in [("redaction", '"redaction":"should-not-be-retained",'), ("event", '"event":"should-not-be-retained",')]:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); (root / "logs").mkdir()
+                proof = copy.deepcopy(self.proof)
+                for entry in proof:
+                    data = json.dumps(self.artifacts[entry["event_artifact"]])
+                    if entry is proof[0]:
+                        point = 1 if key == "redaction" else data.index('{"line"') + 1
+                        data = data[:point] + payload + data[point:]
+                    raw = data.encode(); (root / "logs" / entry["event_artifact"]).write_bytes(raw)
+                    entry["event_sha256"] = hashlib.sha256(raw).hexdigest()
+                (root / "device-and-cache-proof.json").write_text(json.dumps(proof))
+                with self.subTest(key=key), patch.object(verifier, "ROOT", root), self.assertRaisesRegex(AssertionError, "duplicate JSON property"):
+                    verifier.verify_device_proof()
 
 
 if __name__ == "__main__":

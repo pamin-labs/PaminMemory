@@ -20,11 +20,11 @@ The full squared sum is at most 1024 * 128^2 = 2^24, exactly representable in i3
 
 ## Reproduce
 
-The numbers-only program lives in scratch space, not the current tracked tree. Its immutable source (SHA-256 in both summaries) is recoverable from reachable ancestor `494842bd107775c0171904fb973a0010a322fe50` of this published stack. The source bytes match the historical measured revision and both summaries (SHA-256 `12e11819938fcf062382a651dd7f520de68854e38d4857aec78d404c80db4b08`); this source reference does not relabel the measured candidate revision:
+The numbers-only program lives in scratch space, not the current tracked tree. Its immutable source (SHA-256 in both summaries) is recoverable from the historical measured revision:
 
 ```sh
-git show 494842bd107775c0171904fb973a0010a322fe50:benchmarks/results/compute/i8-normalization-2026-10-01/frozen-program.rs.txt > /tmp/normalization.rs
-printf '%s  %s\n' 12e11819938fcf062382a651dd7f520de68854e38d4857aec78d404c80db4b08 /tmp/normalization.rs | shasum -a 256 -c -
+git fetch origin refs/tags/bench/i8-normalization-source-2026-10-01:refs/tags/bench/i8-normalization-source-2026-10-01
+git show bench/i8-normalization-source-2026-10-01:benchmarks/results/compute/i8-normalization-2026-10-01/frozen-program.rs.txt > /tmp/normalization.rs
 rustc --edition=2024 -O /tmp/normalization.rs -o /tmp/normalization
 rustc --edition=2024 -O --emit=asm /tmp/normalization.rs -o /tmp/normalization.s
 for run in 0 1 2; do /tmp/normalization > "/tmp/normalization-$run.jsonl"; done
