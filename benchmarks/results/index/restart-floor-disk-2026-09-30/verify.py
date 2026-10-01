@@ -131,9 +131,7 @@ assert [row['phase'] for row in observed]==['before','after']
 assert hashlib.sha256((code/'disk_schema.rs.in').read_bytes()).hexdigest()==provenance['conversion_helper_artifact']['scratch_source_sha256']
 assert conversion[0]['logical_digest']==conversion[1]['logical_digest']==[18000,'eb2483ff691e5e245079745e4745934620caf7ae692deea3766c84511c061d6b']
 assert conversion[1]['same_all_stored_document_bits'] and not conversion[1]['floor_written']
-schema=conversion[1]['schema'];assert schema['segment_documents']==2000
-vector=schema['fields']['embedding']
-assert {key:vector[key] for key in ['dtype','dimension','index_type','metric','degree','build_list','pq_chunks','quantize','quantizer_rotate']}=={'dtype':22,'dimension':1024,'index_type':5,'metric':3,'degree':64,'build_list':100,'pq_chunks':0,'quantize':0,'quantizer_rotate':False}
+review.conversion_schema(conversion[0]['schema'],conversion[1]['schema'])
 libraries=json.loads((root/'post-trial-libraries.json').read_text())
 assert libraries['recorded_utc'] and libraries['scope']
 assert set(libraries['libraries'])=={'runtime_library','native_zvec_library'}
