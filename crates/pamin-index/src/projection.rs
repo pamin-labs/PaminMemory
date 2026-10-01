@@ -1993,7 +1993,7 @@ unsafe extern "C" {
 }
 
 /// The dot product used for exact rescoring after vector-index recall.
-fn dot(left: &[f32], right: &[f32]) -> f32 {
+pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
     #[cfg(target_os = "macos")]
     {
         let count = i32::try_from(left.len().min(right.len())).expect("vector dimensions fit i32");
