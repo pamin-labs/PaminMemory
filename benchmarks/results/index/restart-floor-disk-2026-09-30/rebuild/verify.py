@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only retrospective binding; requires local Git objects for the three revisions."""
-import ast,gzip,hashlib,json,os,subprocess,sys
+import ast,gzip,hashlib,json,os,runpy,subprocess,sys
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Rebuild verification requires assertions; remove -O/PYTHONOPTIMIZE')
 sys.dont_write_bytecode=True
@@ -37,18 +37,12 @@ def source_inputs(repo,commit):
     env=dict(os.environ,GIT_NO_REPLACE_OBJECTS='1')
     namespaces={'refs/replace',os.environ.get('GIT_REPLACE_REF_BASE','refs/replace').rstrip('/')}
     assert not subprocess.check_output(['git','for-each-ref','--format=%(refname)',*sorted(namespaces)],cwd=repo,env=env), 'Git replacement refs refused before source attestation'
-    tree=subprocess.check_output(['git','ls-tree','-r','-z',commit],cwd=repo,env=env)
-    entries=[entry.split(b'\t',1) for entry in tree.split(b'\0') if entry]
-    header=[a.split() for a,b in entries]
-    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=repo,env=env,input=b'\n'.join(h[2] for h in header if h[0]!=b'160000')+b'\n')
-    offset=0;result={}
-    for (meta,name),h in zip(entries,header):
-        mode,kind,oid=h;name=name.decode()
-        if mode==b'160000':result[name]={'kind':'gitlink','commit':oid.decode()};continue
-        end=blobs.index(b'\n',offset);blob_header=blobs[offset:end].split();assert blob_header[:2]==[oid,b'blob']
-        count=int(blob_header[2]);value=blobs[end+1:end+count+1];offset=end+count+2
-        if mode==b'120000':result[name]={'kind':'symlink','target':value.decode(),'sha256':sha(value)}
-        else:result[name]={'kind':'file','bytes':count,'sha256':sha(value)}
+    guard=runpy.run_path(str(Path(__file__).resolve().parents[4]/'harnesses/restart-floor-2026-09-30/git-object-guards.py.in'))
+    result={}
+    for name,(mode,oid,value) in guard['snapshot'](repo,commit,env).items():
+        if mode=='160000':result[name]={'kind':'gitlink','commit':oid};continue
+        if mode=='120000':result[name]={'kind':'symlink','target':value.decode(),'sha256':sha(value)}
+        else:result[name]={'kind':'file','bytes':len(value),'sha256':sha(value)}
     return result
 def verify(root=None,repo=None,audit=None,scope_review=None):
     root=Path(root or Path(__file__).resolve().parent)
