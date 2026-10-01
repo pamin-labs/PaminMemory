@@ -7,6 +7,8 @@ import re
 import struct
 from pathlib import Path
 
+import source_binding
+
 ROOT = Path(__file__).resolve().parent
 HEADER = struct.Struct('<IHHIIHHIQQ3Q')
 FOOTER = struct.Struct('<IIIIIIQQQQ7QQQ')
@@ -84,6 +86,7 @@ def decode(excerpt, file_size):
 
 
 def verify(evidence, check_logs=True, logs=None):
+    source_binding.validate(json.loads((ROOT/'public-source-binding.json').read_text()))
     require(set(evidence) == {'seed_documents', 'runs', 'helper_source_sha256', 'vendor_commit', 'runtime_assets', 'sdk', 'native_sha256', 'controller_sha256', 'source_commit', 'format', 'helper_binary_sha256', 'source_files', 'storage_type'}, 'evidence schema/scope')
     require(evidence['sdk'] == 'zvec-rust/zvec-rust-sys 0.7.2', 'SDK binding')
     # These pins bind published private receipts; they do not remeasure assets.
@@ -169,4 +172,6 @@ def verify(evidence, check_logs=True, logs=None):
 
 if __name__ == '__main__':
     verify(json.loads((ROOT/'evidence.json').read_text()))
+    count = source_binding.check_git(json.loads((ROOT/'public-source-binding.json').read_text()))
     print('Both published metadata excerpts verified; omitted payload equality remains a private receipt.')
+    print(f'{count} public production-input blobs verified with replacement refs disabled.' if count is not None else 'Public production-input Git objects unavailable: manifest receipt checked, source bytes not independently checked.')
