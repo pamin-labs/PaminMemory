@@ -230,13 +230,10 @@ impl Embedder {
             &references,
             |device, target, _validated| load_on(profile, cache_dir, device, target),
             |model, device| {
-                let mut reference=references.borrow_mut();
-                // Gate the maximum production batch/length independently of
-                // timing. Select for search's uncached singleton queries,
-                // rather than mistaking bulk ingest throughput for query cost.
-                let vectors = profile_vectors(profile, model, device, fixtures.clone())?;
-                check_vectors(vectors, &mut reference.vectors, profile.dimensions() as usize)?;
-                crate::inference::time_calls(|| {
+                let mut reference = references.borrow_mut();
+                // Reject an already incompatible short query before compiling
+                // or allocating the much larger maximum-token/batch shape.
+                let elapsed = crate::inference::time_calls(|| {
                     let mut vectors = Vec::new();
                     for query in ["deployment rollback", "数据库迁移失败后如何回滚？"]
                     {
@@ -251,7 +248,14 @@ impl Embedder {
                         &mut reference.queries,
                         profile.dimensions() as usize,
                     )
-                })
+                })?;
+                let vectors = profile_vectors(profile, model, device, fixtures.clone())?;
+                check_vectors(
+                    vectors,
+                    &mut reference.vectors,
+                    profile.dimensions() as usize,
+                )?;
+                Ok(elapsed)
             },
         )?;
 
@@ -661,9 +665,14 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         &references,
         |device, target, _validated| load(device, target),
         |model, _device| {
-            let mut reference=references.borrow_mut();
-            // Maximum length is a conformance premise, not the query timing
-            // workload. Production queries run one text, including no prefix.
+            let mut reference = references.borrow_mut();
+            let elapsed = crate::inference::time_calls(|| {
+                let vectors = ["deployment rollback", "数据库迁移失败后如何回滚？"]
+                    .iter()
+                    .map(|query| complementary_vector(model, query))
+                    .collect::<Result<Vec<_>>>()?;
+                check_vectors(vectors, &mut reference.queries, 1024)
+            })?;
             let vectors = [
                 "deployment rollback".to_string(),
                 "数据库迁移失败后如何回滚？".to_string(),
@@ -673,13 +682,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
             .map(|text| complementary_vector(model, text))
             .collect::<Result<Vec<_>>>()?;
             check_vectors(vectors, &mut reference.vectors, 1024)?;
-            crate::inference::time_calls(|| {
-                let vectors = ["deployment rollback", "数据库迁移失败后如何回滚？"]
-                    .iter()
-                    .map(|query| complementary_vector(model, query))
-                    .collect::<Result<Vec<_>>>()?;
-                check_vectors(vectors, &mut reference.queries, 1024)
-            })
+            Ok(elapsed)
         },
     )
 }
