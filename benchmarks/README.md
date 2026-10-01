@@ -145,9 +145,15 @@ about it shaped this harness and would not shape a laptop:
 ## What is committed under `results/`, and how to regenerate it
 
 A run writes one row per arm per question, continuously, into
-`results/<dataset>/`. Those rows are the evidence and they stay out of git:
-they are too many to review in a diff, and a run in progress is still writing
-them. What is committed is one `summary-*.json` per table in
+`results/<dataset>/`. Conversation/user-derived per-question rows stay out of git: they can contain
+private content and a running experiment is still writing them. The scoped
+`results/compute/` exception retains immutable, vetted public-fixture IDs,
+relevance/exclusion labels, rankings and numeric timing/resource records, with
+provenance and independent validation. It excludes personal conversation text,
+provider credentials and live/incomplete runs. Those archives explicitly add
+only their audited raw files; the default `*.jsonl` ignore remains.
+
+For the conversation benchmarks, what is committed is one `summary-*.json` per table in
 [docs/benchmarks.md](../docs/benchmarks.md), so that a reader of that page has
 an artifact to check it against rather than a promise:
 
