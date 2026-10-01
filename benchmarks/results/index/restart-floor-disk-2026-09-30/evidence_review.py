@@ -133,6 +133,8 @@ def runner_binding(path,provenance):
 
 def provider_binding(provider,role,provenance,bindings):
     record=bindings['roles'][role]
+    observed=provider['assigned_nodes'].get('CPUExecutionProvider')
+    assert type(record['cpu_nodes']) is int and record['cpu_nodes']>0 and type(observed) is int and observed>0, 'provider node count must be an actual positive integer'
     expected_source={'embedding':('model_quantized.onnx','2b34e84df040034d4b9eabb62383a87c18955822','gpahal--bge-m3-onnx-int8--model_quantized.onnx.source'),'reranker':('model_int8.onnx','6f5ff65298512715a1e669753bc754d2bc8f367b','onnx-community--bge-reranker-v2-m3-ONNX--onnx--model_int8.onnx.source')}
     name,revision,metadata_name=expected_source[role]
     assert PurePosixPath(record['source_graph']).name==name and record['revision']==revision and PurePosixPath(record['source_metadata']['path']).name==metadata_name, 'role/source artifact differs'
