@@ -488,7 +488,7 @@ pub(crate) fn preferred<T>(
 
 /// Small CPU output references reused for per-session validation. These are
 /// proof fixtures, not a resident second model or a query-result cache.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct References {
     pub(crate) vectors: Option<Vec<Vec<f32>>>,
     pub(crate) queries: Option<Vec<Vec<f32>>>,
@@ -509,8 +509,10 @@ impl CachedPlan {
             device,
             target,
             references: References::default(),
-            revalidate: numerical
-                .then(|| std::time::Instant::now() + std::time::Duration::from_secs(300)),
+            revalidate: Some(
+                std::time::Instant::now()
+                    + std::time::Duration::from_secs(if numerical { 300 } else { 86400 }),
+            ),
         }
     }
     fn with_references(mut self, references: References) -> Self {
@@ -524,6 +526,7 @@ impl CachedPlan {
 /// every query shape or an accelerator's internal hardware placement.
 pub(crate) fn measured<T>(
     identity: &str,
+    cache_dir: &Path,
     references: &std::cell::RefCell<References>,
     load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
@@ -532,6 +535,10 @@ pub(crate) fn measured<T>(
     use std::sync::{Mutex, OnceLock};
     static PLANS: OnceLock<Mutex<HashMap<String, CachedPlan>>> = OnceLock::new();
     let plans = accelerators();
+    if plans.is_empty() {
+        let mut load = load;
+        return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
+    }
     let signature: Vec<_> = plans
         .iter()
         .map(|(device, target)| match target {
@@ -544,19 +551,205 @@ pub(crate) fn measured<T>(
         .collect();
     let mut settings = settings;
     settings.sort();
+    let libraries: Vec<_> = std::env::var_os("PAMIN_EP_LIBRARIES")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|path| {
+            let metadata = std::fs::metadata(&path).ok();
+            (
+                path,
+                metadata.as_ref().map(std::fs::Metadata::len),
+                metadata.and_then(|m| m.modified().ok()),
+            )
+        })
+        .collect();
     let key = format!(
-        "{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}",
+        "persistent-plan-v1|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}",
         threads(),
-        std::thread::available_parallelism()
+        std::thread::available_parallelism(),
+        ort::info(),
+        host_identity(),
+        crate::prepared::features()
     );
-    calibrated_with_references(
-        &key,
-        plans,
-        PLANS.get_or_init(Default::default),
-        references,
-        load,
-        evaluate,
-    )
+    let cache = PLANS.get_or_init(Default::default);
+    // Only hashes and fixed-fixture outputs reach disk; the full key can
+    // contain paths/environment values and is never persisted or logged.
+    let disk = plan_file(cache_dir, &key);
+    // Avoid measuring different model calibrations against each other even
+    // when separate CLI/server processes share this workspace cache.
+    let _host_lock = disk.as_ref().and_then(|path| {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path.parent()?.join("calibration.lock"))
+            .ok()?;
+        lock.lock().ok()?;
+        Some(lock)
+    });
+    let _disk_lock = disk.as_ref().and_then(|path| {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path.with_extension("lock"))
+            .ok()?;
+        lock.lock().ok()?;
+        Some(lock)
+    });
+    if !cache
+        .lock()
+        .expect("compute-plan cache poisoned")
+        .contains_key(&key)
+        && let Some(plan) = disk.as_ref().and_then(|path| read_plan(path, &key, &plans))
+    {
+        cache
+            .lock()
+            .expect("compute-plan cache poisoned")
+            .insert(key.clone(), plan);
+    }
+    let result = calibrated_with_references(&key, plans, cache, references, load, evaluate);
+    if let Some(path) = disk {
+        let selected = cache
+            .lock()
+            .expect("compute-plan cache poisoned")
+            .get(&key)
+            .cloned();
+        if let Some(plan) = selected {
+            if let Err(error) = write_plan(&path, &key, &plan) {
+                tracing::debug!(%error,"compute-plan persistence unavailable");
+            }
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    result
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiskPlan {
+    fingerprint: String,
+    target: String,
+    expires: u64,
+    references: References,
+}
+
+fn target_identity(device: Device, target: &Target) -> String {
+    match target {
+        Target::Npu { provider, id } => format!("npu:{provider}:{id}"),
+        _ => device.name().to_string(),
+    }
+}
+
+fn fingerprint(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(key.as_bytes()))
+}
+
+fn plan_file(root: &Path, key: &str) -> Option<PathBuf> {
+    let directory = root.join("compute-plans-v1");
+    std::fs::create_dir_all(&directory).ok()?;
+    Some(directory.join(format!("{}.json", fingerprint(key))))
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<CachedPlan> {
+    if std::fs::metadata(path).ok()?.len() > 1_048_576 {
+        return None;
+    }
+    let saved: DiskPlan = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let now = unix_seconds();
+    if saved.fingerprint != fingerprint(key) || saved.expires <= now || saved.expires > now + 86400
+    {
+        return None;
+    }
+    let (device, target) = if saved.target == Device::Cpu.name() {
+        (Device::Cpu, vec![cpu()].into())
+    } else {
+        plans
+            .iter()
+            .find(|(device, target)| target_identity(*device, target) == saved.target)?
+            .clone()
+    };
+    Some(CachedPlan {
+        device,
+        target,
+        revalidate: Some(
+            std::time::Instant::now() + std::time::Duration::from_secs(saved.expires - now),
+        ),
+        references: saved.references,
+    })
+}
+
+fn write_plan(path: &Path, key: &str, plan: &CachedPlan) -> std::io::Result<()> {
+    let remaining = plan.revalidate.map_or(86400, |deadline| {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs()
+    });
+    if remaining == 0 {
+        let _ = std::fs::remove_file(path);
+        return Ok(());
+    }
+    let record = DiskPlan {
+        fingerprint: fingerprint(key),
+        target: target_identity(plan.device, &plan.target),
+        expires: unix_seconds() + remaining.min(86400),
+        references: plan.references.clone(),
+    };
+    let pending = path.with_extension(format!("{}.partial", uuid::Uuid::now_v7()));
+    let result = (|| {
+        std::fs::write(&pending, serde_json::to_vec(&record)?)?;
+        match std::fs::rename(&pending, path) {
+            #[cfg(target_os = "windows")]
+            Err(_) if path.exists() => {
+                // The per-key file lock excludes readers/writers. A crash
+                // between removal and publication is just a safe cache miss.
+                std::fs::remove_file(path)?;
+                std::fs::rename(&pending, path)
+            }
+            result => result,
+        }
+    })();
+    let _ = std::fs::remove_file(pending);
+    result
+}
+
+fn host_identity() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        let mut pieces = vec![
+            std::env::consts::OS.to_string(),
+            std::env::consts::ARCH.to_string(),
+        ];
+        for key in ["COMPUTERNAME", "PROCESSOR_IDENTIFIER"] {
+            if let Ok(value) = std::env::var(key) {
+                pieces.push(value);
+            }
+        }
+        #[cfg(unix)]
+        for (command, args) in [("hostname", vec![]), ("uname", vec!["-rs"])] {
+            if let Ok(output) = std::process::Command::new(command).args(args).output() {
+                pieces.push(String::from_utf8_lossy(&output.stdout).trim().to_string());
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Ok(output) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.model", "machdep.cpu.brand_string"])
+            .output()
+        {
+            pieces.push(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
+        pieces.join("|")
+    })
 }
 
 fn calibrated_with_references<T>(
@@ -1168,6 +1361,46 @@ mod tests {
             Device::Cpu,
             "cached target bypassed its stored CPU output proof"
         );
+    }
+
+    #[test]
+    fn persisted_plans_reuse_proofs_and_reject_wrong_identity_or_expiry() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "fixture host runtime model").unwrap();
+        let proof = References {
+            scores: Some(vec![1.0, 2.0, 3.0, 4.0]),
+            ..Default::default()
+        };
+        let plan =
+            CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false).with_references(proof);
+        write_plan(&path, "fixture host runtime model", &plan).unwrap();
+        let candidates = vec![(Device::Cuda, vec![cpu()].into())];
+        let loaded = read_plan(&path, "fixture host runtime model", &candidates).unwrap();
+        assert_eq!(loaded.device, Device::Cuda);
+        assert_eq!(loaded.references.scores, Some(vec![1.0, 2.0, 3.0, 4.0]));
+        assert!(read_plan(&path, "different runtime", &candidates).is_none());
+        assert!(read_plan(&path, "fixture host runtime model", &[]).is_none());
+        let mut record: DiskPlan = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record.expires = unix_seconds();
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(read_plan(&path, "fixture host runtime model", &candidates).is_none());
+        std::fs::write(&path, b"damaged").unwrap();
+        assert!(read_plan(&path, "fixture host runtime model", &candidates).is_none());
+    }
+
+    #[test]
+    fn persisted_numerical_quarantine_has_a_bounded_lifetime() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "fixture").unwrap();
+        write_plan(
+            &path,
+            "fixture",
+            &CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), true),
+        )
+        .unwrap();
+        let record: DiskPlan = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(record.expires > unix_seconds());
+        assert!(record.expires <= unix_seconds() + 300);
     }
 
     #[test]
