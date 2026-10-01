@@ -62,7 +62,11 @@ def validate(data):
     require((comparison['before_commit'],comparison['after_commit'])==REVISIONS,'compared revisions')
     require(type(comparison['process_count']) is int and comparison['process_count']==80 and type(comparison['call_count']) is int and comparison['call_count']==880,'80/880 declared count')
     conditions=data['conditions'];keys(conditions,CONDITIONS)
-    for key,expected in [('entrypoint','Engine.search_reranked'),('access_mode','ReadOnly'),('profile','accuracy'),('provider','CPUExecutionProvider')]:
+    # The immutable legacy entrypoint label is recorded metadata, not the
+    # method of every call. Actual methods follow the retained probe's context
+    # routing and are exposed by execution_conditions below.
+    require(conditions['entrypoint']=='Engine.search_reranked','historical recorded entrypoint label differs')
+    for key,expected in [('access_mode','ReadOnly'),('profile','accuracy'),('provider','CPUExecutionProvider')]:
         require(conditions[key]==expected,'fixed execution condition')
     require(type(conditions['document_count']) is int and conditions['document_count']==230 and type(conditions['tick_hz']) is int and conditions['tick_hz']==100,'document/tick scope')
     keys(conditions['provider_nodes'],('embedding','accurate_reranker'))
@@ -139,6 +143,24 @@ def validate(data):
     return data
 
 
+def timed_entrypoint(context):
+    # Byte-exact retained probe: A/N use the standard method; B explicitly
+    # supplies fusion. Full-result diagnostics are outside the timed interval.
+    require(context in ('A','B','N'), 'unknown timed context')
+    return 'Engine.search_reranked_with' if context=='B' else 'Engine.search_reranked'
+
+
+def execution_conditions(data):
+    counts={name:0 for name in ('Engine.search_reranked','Engine.search_reranked_with')}
+    for process in data['processes']:
+        for call in process['calls']:
+            counts[timed_entrypoint(call['context'])]+=1
+    require(counts=={'Engine.search_reranked':496,'Engine.search_reranked_with':384}, 'mixed timed entrypoint counts differ')
+    return dict(data['conditions'], recorded_entrypoint=data['conditions']['entrypoint'],
+                entrypoint='mixed Engine.search_reranked and Engine.search_reranked_with',
+                timed_entrypoint_calls=counts)
+
+
 def delta(before,after):
     return {'before':before,'after':after,'absolute_difference':after-before if before is not None and after is not None else None,
             'percentage_change':100*(after-before)/before if before is not None and after is not None and before!=0 else None}
@@ -211,13 +233,14 @@ def tables(data, audit=None):
             values={s:[p['cost'][key] for p in processes if p['arm']==s and (p['tier'],p['limit'],p['scenario'],p['initial_context'])==group] for s in ('main','stack')}
             means={s:statistics.mean(v) if all(x is not None for x in v) else None for s,v in values.items()}
             costs.append({'configuration':list(group),'metric':key,**delta(means['main'],means['stack'])})
-    return {'input_audit_present':audit is not None,'correctness':correctness,'control_diagnostics':control_diagnostics,'metrics':rows,'process_metrics':costs,'disk':[{'configuration':['integration_test_helper_executable' if d['scope']=='app_executable' else d['scope'],d['measure']],'metric':d['measure'],**delta(d['before'],d['after'])} for d in data['disk']] + [{'configuration':['shipped_product_executable','logical_bytes'],'metric':'logical_bytes',**delta(None,None)}]}
+    return {'conditions':execution_conditions(data),'input_audit_present':audit is not None,'correctness':correctness,'control_diagnostics':control_diagnostics,'metrics':rows,'process_metrics':costs,'disk':[{'configuration':['integration_test_helper_executable' if d['scope']=='app_executable' else d['scope'],d['measure']],'metric':d['measure'],**delta(d['before'],d['after'])} for d in data['disk']] + [{'configuration':['shipped_product_executable','logical_bytes'],'metric':'logical_bytes',**delta(None,None)}]}
 
 
 def markdown(result):
     def fmt(v):return 'N/A' if v is None else format(v,'.17g') if type(v) in (float,int) else str(v)
     lines=['Sanitized table arithmetic only. Correctness, quality, source/runtime and payload attestations require retained private evidence.',
            ('Input-scope audit is private-attested: 16 paired history cells changed model bytes; 16 were unchanged-input controls. Controls are excluded from changed-input correctness/speed proof.' if result['input_audit_present'] else 'Input-change audit unavailable; changed-input correctness and speed eligibility withheld.'),
+           'Timed boundary is mixed: 496 calls use Engine.search_reranked (A/N); 384 Accurate B-context calls use Engine.search_reranked_with (explicit fusion). The legacy blanket entrypoint label remains recorded metadata, not the corrected execution condition. Full-result diagnostics are outside timing.',
            'Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.',
            'Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.',
            'Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.',
