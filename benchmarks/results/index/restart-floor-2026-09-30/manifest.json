@@ -18,7 +18,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "aef80ca69e6ba7794e065bca05769720f756256f9f75c1e7dea62b8d51f67a6b",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "9db0c2c27c339a34f18332c940101fa746d627e181e8c548bd1ef8b15f621177",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "f379544b0a62ae78a5146342f87d536b636954eb7df10aed221babf2d1f67860",
-    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "c0a4380fb46b8caacc2f5fd9c25a308c7eed2553b571bf55b0c9cdfbd8d8b437",
+    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "20595a0f54b5724b66ac3ce03cd13057f077498beefa13885d5c78af98541b60",
     "benchmarks/results/index/restart-floor-2026-09-30/binaries.json": "54bb7087b7d8ad2059e4dc6379e13404c5f861ce1c001d5940bbfdf316dbd56f",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-candidate.log": "46d336d7e5744a4a82ecb1e0893f77eaa4595e2f61d2956e5649d8ca556f6949",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-main.log": "edce0e144c0d58a3e11ff3eb11c64b6754a69b431cd29f6336c39fa788ac6908",
