@@ -51,3 +51,17 @@ These controls do not add missing historical setup attestations.
 Prospective setup and every trial now copy each attested executable into an external mode-0700 temporary directory, set copies to mode 0500, open them read-only, and invoke `/proc/self/fd/<fd>` with Python `pass_fds`. Byte count, SHA-256, device and inode endpoints identify the opened file actually supplied to each direct invocation even if a pathname is replaced. The private setup/trial record retains the endpoints and actual FD command; FD numbers themselves are local, ephemeral labels. Copies and descriptors are released on success and failure. The historical `run.py.in` and accepted archives remain byte-identical. The prospective wrapper's trial elapsed interval includes executable endpoint hashing/recording; its timings are not interchangeable with the historical unwrapped interval. These checks do not certify every intervening instant or exclude same-user writes to an opened inode between endpoints.
 
 Conversion attestations, original executables, logs and private executable copies must resolve outside the fixed measured Disk seed before reads or launch. `test-execution-binding.py.in` uses only tiny fake bytes and mocked invocations, including path replacement, in-place mutation, failure cleanup and conversion seed-boundary rejection.
+
+Version2 prospective fixture manifests additionally bind every regular file and symlink under
+`index/` to its `st_blocks * 512` allocation. Source and clone endpoint checks
+require the same per-entry allocation as the separately prepared manifest, and
+private copy receipts retain the aggregate starting index allocation. Copies
+that preserve bytes but change allocation are rejected before launch; sparse,
+CoW or compressed copies may therefore require a different controlled copy
+method, rather than silently passing. This certifies the checked starting
+allocation endpoints, not physical exclusive storage or continuous allocation.
+Historical per-copy starting allocation was not recorded and remains N/A;
+the retained allocated-byte observations cannot exclude starting-copy effects.
+Version1 manifests must be prepared again for prospective runs. The attestation
+is read once: the parsed document and recorded SHA-256 use the same byte buffer,
+so a concurrent pathname replacement cannot identify a different document.

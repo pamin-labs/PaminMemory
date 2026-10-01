@@ -93,3 +93,11 @@ validate declared historical evidence, not independent runtime cache isolation.
 The hardware check binds the retained kernel, CPU model, cgroup CPU quota and
 memory-limit annotations to the published configuration; it does not independently
 attest historical hardware.
+
+Historical per-copy starting index allocation baseline: **N/A**. Retained
+allocated-byte observations and numeric tables are unchanged, but byte/hash
+identity does not establish identical starting allocation after copying; these
+comparisons cannot exclude allocation differences introduced by the copies.
+The prospective version2 fixture guard binds per-file `st_blocks * 512` and
+rejects different starting clone allocation. It does not retroactively attest
+these archived copies or physical exclusive storage.
