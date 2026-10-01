@@ -46,9 +46,11 @@ def capture(command,expected,log,usage,mapped,timeout=900):
     environment=os.environ.copy()
     result=environment.get('GRAPH_OUT')
     require(bool(result),'GRAPH_OUT result path required')
-    outputs=[Path(path) for path in [log,usage,mapped,result]]
+    trace=environment.get('GRAPH_TRACE')
+    require(bool(trace),'GRAPH_TRACE trace path required')
+    outputs=[Path(path) for path in [log,usage,mapped,result,trace]]
     require(len({path.resolve() for path in outputs})==len(outputs),'output paths must be distinct after resolving aliases')
-    require(all(not os.path.lexists(path) for path in outputs),'outputs must be fresh, including GRAPH_OUT')
+    require(all(not os.path.lexists(path) for path in outputs),'outputs must be fresh, including GRAPH_OUT and GRAPH_TRACE')
     expected={role:Path(path).resolve() for role,path in expected.items()}
     require(all(digest(path)==PINS[role] for role,path in expected.items()),'provided runtime file differs')
     start=time.monotonic();found={};reaped=False;accounting=None;failure=None

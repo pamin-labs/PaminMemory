@@ -518,7 +518,7 @@
     "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
     "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
     "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
-    "verify.py": "5a18eeaafeca11f1f3fc2e2b8e6a7d740d02cbe7fcbd73e26e3087aadc584b5a",
+    "verify.py": "d7cd5db5445f718cb9231fba7b035a8f6e7d85333cd2c3e700bf755be69219e9",
     "platform-observation.json": "c9cd36af33d603da177bdc4becdb03cf656bad2faf2d7ba0a37c935b56fb3d3d",
     "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
     "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
@@ -526,7 +526,7 @@
     "test_verify.py": "27e273491d1c0ec3effb45e51ca286c3adfcd8e7339cc1f66c1580f6ed9558bd",
     "baseline.log": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
     "baseline.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
-    "README.md": "a0733b0c099233326b2bbf2592d25431cf7e3d8b33c9a92efcfb2a73a8439ebc",
+    "README.md": "002250c802232f7055e80d661d2adaec298cc7b50a6ac6f85512f5d3d9ee13cd",
     "source/multihop.rs.in": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00",
     "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
@@ -546,8 +546,8 @@
     "source/migrations/V3__shard_key_and_indexes.sql": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
     "source/migrations/V4__current_state_pointer.sql": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
     "source/migrations/V10__settled_jobs_leave.sql": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
-    "source/future-accounting.py.in": "b10597de65ca8b612f16e9180f1a8d22b4c94305db044ba9778d32e84494e0e5",
-    "test_future_accounting.py": "f7f80ac992fb843565c643af8663cfc931e0d69cee50543ec0b9cafe28600666"
+    "source/future-accounting.py.in": "d42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027",
+    "test_future_accounting.py": "5d2bbafedeac42848b573a19ddfd60b8b232f92ab8620b0d65f3f97cfbf2028f"
   },
   "source_inventory_scope": {
     "original_captured_entries_per_arm": 52,
@@ -573,8 +573,8 @@
   "future_reproduction": {
     "scope": "prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement",
     "files": {
-      "source/future-accounting.py.in": "b10597de65ca8b612f16e9180f1a8d22b4c94305db044ba9778d32e84494e0e5",
-      "test_future_accounting.py": "f7f80ac992fb843565c643af8663cfc931e0d69cee50543ec0b9cafe28600666"
+      "source/future-accounting.py.in": "d42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027",
+      "test_future_accounting.py": "5d2bbafedeac42848b573a19ddfd60b8b232f92ab8620b0d65f3f97cfbf2028f"
     }
   },
   "redaction_validation_scope": "declared allowed transforms; local read-only audit matched original digests and semantic JSON equivalence modulo declared path prefixes; private originals not distributed and public verifier cannot independently replay that audit"
