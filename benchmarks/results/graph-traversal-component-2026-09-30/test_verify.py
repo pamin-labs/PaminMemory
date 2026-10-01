@@ -409,7 +409,7 @@ if __name__ == '__main__':
     for arm in ['baseline','scored']:
         for setup in ['existing project reused; no writes or optimization','native write/drain; no OptimizeIndex','',None,True,{},['native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved']]:
             run_case('contradictory setup '+arm+' '+repr(setup),lambda r,arm=arm,setup=setup:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(setup=setup)),expected_error='recorded native fixture setup differs')
-        run_case('missing setup '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.pop('setup')),expected_error='recorded native fixture setup differs')
+        run_case('missing setup '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.pop('setup')),expected_error='native fixture row field set differs')
     retained=json.loads((ROOT/'provenance.json').read_text())
     main_ref='315c10242ddf7a1cec3bccbf550a942320e09557'
     for ref in ['0'*40, retained['source_base'], 'nonexistent', '', None, True, [main_ref]]:
@@ -568,6 +568,9 @@ if __name__ == '__main__':
             import re
             path=root/name;text,count=re.subn(r'("channel"\s*:\s*"graph"\s*,)',r'\1"score":999,"score":998,',path.read_text(),count=1);assert count==1;path.write_text(text)
         run_case('array object duplicate JSON key '+name,duplicate_array_object,expected_error='duplicate JSON object key')
+    for arm in ['baseline','scored']:
+        run_case('extra native fixture field '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(product_latency_p50_ms=50)),expected_error='native fixture row field set differs')
+        run_case('missing native fixture field '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.pop('record')),expected_error='native fixture row field set differs')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:

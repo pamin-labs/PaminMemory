@@ -240,6 +240,7 @@ rows = {}
 
 for arm,weak_rank in [('baseline',23),('scored',22)]:
  row=load(f'{arm}.jsonl');record=arm_records[arm];rows[arm]=row
+ assert set(row)==set(['arm', 'documents', 'early_stop', 'elapsed_ms', 'expected_scores', 'graph_process_cpu_user_system_seconds', 'known_edges', 'non_graph', 'process_lifetime_high_water_kib', 'query', 'record', 'setup', 'shared_machine', 'strong', 'target_labels', 'targets', 'weak', 'weak_rank', 'weak_relevance']), 'native fixture row field set differs'
  resources=record['resources']
  assert resources==RESOURCE_PINS[arm], 'retained resource-pressure record differs'
  assert type(resources['reclaim_pressure']) is bool and all(type(resources[key]) is int for key in resources if key.endswith('_bytes') or key.startswith('oom_')), 'resource-pressure record types differ'
