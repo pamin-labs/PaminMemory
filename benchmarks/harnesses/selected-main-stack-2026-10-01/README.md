@@ -122,7 +122,13 @@ processes remains unverified.
 
 The plan and each prospective process packet retain the PostgreSQL installation
 file inventory/configuration digest, actual server executable digest and mapped
-library file digests. The report keeps per-job build identities. Historical
+library file digests. The report keeps per-job build identities. All new and
+resumed jobs must share the same sorted mapped-library location, byte count and
+SHA-256 identities. A changed, added or removed mapped PostgreSQL dependency
+refuses checkpoint loading, new packet publication and completion; the analyzer
+reuses checkpoint loading before reporting. Native runtime mapping paths decode
+procfs octal escapes before matching pinned zvec and ORT paths, including scratch
+directories containing spaces, tabs, newlines or backslashes. Historical
 PostgreSQL build identity is N/A; version text alone does not establish equality.
 Mapped library inode identity is unmeasured. `pg_config` configuration flags may
 contain local build paths; generated receipts stay local until publication review.
