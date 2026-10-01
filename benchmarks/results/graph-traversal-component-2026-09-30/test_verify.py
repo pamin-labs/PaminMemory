@@ -652,6 +652,9 @@ if __name__ == '__main__':
     run_case('changed compiled source digest with refreshed hashes', lambda r: mutate_json(r/'provenance.json', lambda p: p['arms'][0]['source_hashes'].update({'Cargo.lock':'0'*64})))
     run_case('missing vector rank50 with refreshed hashes', lambda r: mutate_json(r/'baseline.jsonl', lambda row: row.update(non_graph=[h for h in row['non_graph'] if not any(x['channel']=='vector' and x['rank']==50 for x in h['ranks'])])))
     run_case('duplicate channel rank with refreshed hashes', lambda r: mutate_json(r/'baseline.jsonl', lambda row: next(x for h in row['non_graph'] for x in h['ranks'] if x['channel']=='vector' and x['rank']==50).update(rank=49)))
+    for arm in ['baseline','scored']:
+        for index in range(9):
+            run_case('extra controlled-edge field '+arm+'/'+str(index),lambda root,arm=arm,index=index:mutate_json(root/(arm+'.jsonl'),lambda row:row['known_edges'][index].update(note='altered')),expected_error='controlled-edge field set differs')
     run_case('changed controlled edge endpoint with refreshed hashes', lambda r: mutate_json(r/'baseline.jsonl', lambda row: row['known_edges'][0].update({'from':'arbitrarytopic'})))
     run_case('changed controlled edge confidence with refreshed hashes', lambda r: mutate_json(r/'baseline.jsonl', lambda row: row['known_edges'][0].update(confidence=.9)))
     run_case('extra file with refreshed known hashes', lambda r: (r/'extra.txt').write_text('extra\n'))

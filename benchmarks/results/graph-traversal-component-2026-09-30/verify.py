@@ -294,6 +294,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row['early_stop']['via']==bridge and row['early_stop']['target']==hidden[6]
  f32=lambda value:struct.unpack('f',struct.pack('f',value))[0]
  topology = [(row['weak'],shared,1),(row['strong'],shared,.8),(row['strong'],longer,.1),(row['strong'],bridge,.01),(bridge,longer,1),(row['strong'],low,.8),(row['strong'],high,.7),(low,samehop,.1),(high,samehop,1)]
+ assert all(set(edge)=={'from','to','confidence'} for edge in row['known_edges']), 'controlled-edge field set differs'
  assert all(type(e.get('confidence')) in {int,float} and math.isfinite(e['confidence']) for e in row['known_edges']), 'controlled edge confidence must be finite non-boolean'
  assert sorted((e['from'],e['to'],e['confidence']) for e in row['known_edges']) == sorted((a,b,f32(c)) for a,b,c in topology), 'controlled endpoint/confidence topology differs'
 
