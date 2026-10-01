@@ -969,6 +969,10 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
                 ),
                 cache_dir,
                 &references,
+                crate::inference::ReferenceShape {
+                    scores: Some(calibration_pairs(tier, "").len()),
+                    ..Default::default()
+                },
                 session,
                 |model, _device| {
                     let mut reference = references.borrow_mut();
