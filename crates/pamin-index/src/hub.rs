@@ -13,6 +13,7 @@ pub(crate) struct Repository {
     repo: hf_hub::api::sync::ApiRepo,
     name: String,
     revision: String,
+    cache_dir: PathBuf,
 }
 
 impl Repository {
@@ -31,7 +32,7 @@ impl Repository {
     pub(crate) fn open_at(cache_dir: &Path, name: &str, revision: &str) -> Result<Self> {
         let cache_dir = cache_root(cache_dir);
         let mut builder = hf_hub::api::sync::ApiBuilder::new()
-            .with_cache_dir(cache_dir)
+            .with_cache_dir(cache_dir.clone())
             .with_progress(false);
         if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
             builder = builder.with_endpoint(endpoint);
@@ -48,6 +49,7 @@ impl Repository {
             repo,
             name: name.to_string(),
             revision: revision.to_string(),
+            cache_dir,
         })
     }
 
@@ -73,9 +75,35 @@ impl Repository {
     /// The local path of one of the repository's files, downloading it first
     /// if it is not cached yet.
     pub(crate) fn get(&self, file: &str) -> Result<PathBuf> {
+        let _transaction = match self.snapshot_transaction() {
+            Ok(lock) => lock,
+            // Read-only caches remain usable. No download is started without
+            // the transaction, and cleanup also refuses if it cannot lock.
+            Err(error) => {
+                return cached_at(&self.cache_dir, &self.name, &self.revision, file).ok_or(error);
+            }
+        };
         self.repo.get(file).map_err(|error| {
             IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
         })
+    }
+
+    /// hf-hub releases its blob lock before linking the snapshot. In our
+    /// owned cache, fetch and cleanup share a repository transaction through
+    /// that final link/ref publication. Shared external caches are never cleaned.
+    fn snapshot_transaction(&self) -> Result<std::fs::File> {
+        let root = self
+            .cache_dir
+            .join(format!("models--{}", self.name.replace('/', "--")));
+        std::fs::create_dir_all(&root)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join(".pamin-snapshots.lock"))?;
+        lock.lock()?;
+        Ok(lock)
     }
 
     /// One of the repository's files, as `crate::prepared` asks for a model:
@@ -139,9 +167,15 @@ impl crate::prepared::Download for File<'_> {
     fn remove(&self) -> Result<bool> {
         if std::env::var_os("HF_HOME").is_some()
             || std::fs::symlink_metadata(self.cache_dir)?.is_symlink()
+            || std::fs::symlink_metadata(self.cache_dir.join(format!(
+                "models--{}",
+                self.repository.name.replace('/', "--")
+            )))?
+            .is_symlink()
         {
             return Ok(false);
         }
+        let _transaction = self.repository.snapshot_transaction()?;
         let Some(entry) = self.on_disk() else {
             return Ok(false);
         };
@@ -162,7 +196,22 @@ impl crate::prepared::Download for File<'_> {
         )?;
         let own = std::fs::canonicalize(entry.parent().expect("snapshot entry parent"))?
             .join(entry.file_name().expect("snapshot file name"));
-        if referenced_elsewhere(&snapshots, &own, &blob)? {
+        let refs = snapshots
+            .parent()
+            .expect("snapshot repository")
+            .join("refs");
+        let own_ref = refs.join(&self.repository.revision);
+        let snapshot = own
+            .strip_prefix(&snapshots)
+            .expect("entry in snapshots")
+            .components()
+            .next()
+            .expect("snapshot commit")
+            .as_os_str()
+            .to_string_lossy();
+        if revision_references(&refs, &own_ref, &snapshot)?
+            || referenced_elsewhere(&snapshots, &own, &blob)?
+        {
             return Ok(false);
         }
         std::fs::remove_file(&entry)?;
@@ -173,6 +222,26 @@ impl crate::prepared::Download for File<'_> {
         }
         Ok(true)
     }
+}
+
+fn revision_references(directory: &Path, own: &Path, snapshot: &str) -> std::io::Result<bool> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            if revision_references(&path, own, snapshot)? {
+                return Ok(true);
+            }
+        } else if path != own && std::fs::read_to_string(&path)?.trim() == snapshot {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn referenced_elsewhere(directory: &Path, own: &Path, blob: &Path) -> std::io::Result<bool> {
@@ -283,6 +352,77 @@ mod tests {
             pinned.file(dir.path(), FILE).label(),
             main.file(dir.path(), FILE).label()
         );
+    }
+
+    #[test]
+    fn a_cached_model_is_readable_when_its_transaction_file_cannot_be_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let (entry, _) = downloaded(dir.path());
+        std::fs::create_dir(
+            dir.path()
+                .join("models--someone--model/.pamin-snapshots.lock"),
+        )
+        .unwrap();
+        let repository = Repository::open(dir.path(), NAME).unwrap();
+        assert_eq!(repository.get(FILE).unwrap(), entry);
+        assert!(repository.file(dir.path(), FILE).remove().is_err());
+        assert!(entry.exists());
+    }
+
+    #[test]
+    fn two_revision_refs_preserve_the_same_snapshot_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (entry, blob) = downloaded(dir.path());
+        std::fs::write(
+            dir.path().join("models--someone--model/refs/fixed"),
+            "c0ffee",
+        )
+        .unwrap();
+        let moving = Repository::open(dir.path(), NAME).unwrap();
+        let pinned = Repository::open_at(dir.path(), NAME, "fixed").unwrap();
+        assert!(!moving.file(dir.path(), FILE).remove().unwrap());
+        assert!(!pinned.file(dir.path(), FILE).remove().unwrap());
+        assert_eq!(pinned.get(FILE).unwrap(), entry);
+        assert_eq!(std::fs::read(blob).unwrap(), b"weights");
+    }
+
+    #[test]
+    fn removal_waits_for_snapshot_publication_before_scanning_references() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let (entry, blob) = downloaded(dir.path());
+        let repository = Repository::open(dir.path(), NAME).unwrap();
+        let held = repository.snapshot_transaction().unwrap();
+        let root = dir.path().to_path_buf();
+        let (started, ready) = std::sync::mpsc::channel();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let repository = Repository::open(&root, NAME).unwrap();
+            started.send(()).unwrap();
+            sent.send(repository.file(&root, FILE).remove()).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let early = received.recv_timeout(Duration::from_millis(100));
+        let other = dir
+            .path()
+            .join("models--someone--model/snapshots/decaf")
+            .join(FILE);
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("../../../blobs/0123abcd", &other).unwrap();
+        drop(held);
+        worker.join().unwrap();
+        assert!(
+            matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "cleanup ran inside snapshot publication"
+        );
+        assert!(
+            !received
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap()
+        );
+        assert!(entry.exists() && blob.exists());
+        assert_eq!(std::fs::read(other).unwrap(), b"weights");
     }
 
     #[test]
