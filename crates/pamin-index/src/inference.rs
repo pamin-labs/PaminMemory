@@ -489,10 +489,49 @@ pub(crate) fn preferred<T>(
 /// Small CPU output references reused for per-session validation. These are
 /// proof fixtures, not a resident second model or a query-result cache.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct References {
     pub(crate) vectors: Option<Vec<Vec<f32>>>,
     pub(crate) queries: Option<Vec<Vec<f32>>>,
     pub(crate) scores: Option<Vec<f32>>,
+}
+
+/// Exact persisted CPU-fixture contract supplied by each model role.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ReferenceShape {
+    pub(crate) vectors: Option<(usize, usize)>,
+    pub(crate) queries: Option<(usize, usize)>,
+    pub(crate) scores: Option<usize>,
+}
+
+impl ReferenceShape {
+    fn accepts(self, reference: &References) -> bool {
+        fn vectors(actual: &Option<Vec<Vec<f32>>>, shape: Option<(usize, usize)>) -> bool {
+            match (actual, shape) {
+                (None, None) => true,
+                (Some(rows), Some((count, width))) => {
+                    count > 0
+                        && width > 0
+                        && rows.len() == count
+                        && rows.iter().all(|row| {
+                            row.len() == width
+                                && row.iter().all(|v| v.is_finite())
+                                && row.iter().any(|v| *v != 0.0)
+                        })
+                }
+                _ => false,
+            }
+        }
+        vectors(&reference.vectors, self.vectors)
+            && vectors(&reference.queries, self.queries)
+            && match (&reference.scores, self.scores) {
+                (None, None) => true,
+                (Some(values), Some(count)) => {
+                    count > 0 && values.len() == count && values.iter().all(|v| v.is_finite())
+                }
+                _ => false,
+            }
+    }
 }
 
 #[derive(Clone)]
@@ -875,6 +914,7 @@ pub(crate) fn measured<T: RuntimeModel>(
     identity: &str,
     cache_dir: &Path,
     references: &std::cell::RefCell<References>,
+    shape: ReferenceShape,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -994,7 +1034,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         .contains_key(&key)
         && let Some(plan) = disk.as_ref().and_then(|path| {
             let _lock = plan_metadata_lock(path);
-            read_plan(path, &key, &plans)
+            read_plan_shaped(path, &key, &plans, Some(shape))
         })
     {
         cache
@@ -1010,6 +1050,8 @@ pub(crate) fn measured<T: RuntimeModel>(
         PlanFiles {
             record: disk.as_deref(),
             directory: coordination.as_deref(),
+            shape: Some(shape),
+            require_coordination: true,
         },
         load,
         evaluate,
@@ -1163,15 +1205,8 @@ fn valid_references(references: &References) -> bool {
 }
 
 fn host_calibration_directory() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let cache = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
-    #[cfg(target_os = "macos")]
-    let cache = PathBuf::from(std::env::var_os("HOME")?).join("Library/Caches");
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
-    let directory = cache.join("pamin-memory");
+    // Keep the exact established namespace on every platform during upgrades.
+    let directory = std::env::home_dir()?.join(".cache").join("pamin-memory");
     std::fs::create_dir_all(&directory).ok()?;
     Some(directory)
 }
@@ -1201,12 +1236,25 @@ fn unix_seconds() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+#[cfg(test)]
 fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<CachedPlan> {
+    read_plan_shaped(path, key, plans, None)
+}
+
+fn read_plan_shaped(
+    path: &Path,
+    key: &str,
+    plans: &[(Device, Target)],
+    shape: Option<ReferenceShape>,
+) -> Option<CachedPlan> {
     if std::fs::metadata(path).ok()?.len() > 1_048_576 {
         return None;
     }
     let saved: DiskPlan = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let now = unix_seconds();
+    if shape.is_some_and(|shape| !shape.accepts(&saved.references)) {
+        return None;
+    }
     if saved.fingerprint != fingerprint(key)
         || saved.expires <= now
         || saved.expires > now + 86400
@@ -1495,6 +1543,8 @@ fn host_identity() -> &'static str {
 struct PlanFiles<'a> {
     record: Option<&'a Path>,
     directory: Option<&'a Path>,
+    shape: Option<ReferenceShape>,
+    require_coordination: bool,
 }
 
 impl<'a> PlanFiles<'a> {
@@ -1503,6 +1553,7 @@ impl<'a> PlanFiles<'a> {
         Self {
             record: Some(path),
             directory: path.parent(),
+            ..Default::default()
         }
     }
 }
@@ -1534,7 +1585,12 @@ fn calibrated_with_references<T>(
             .expect("compute-plan cache poisoned")
             .get(key)
             .cloned()
-            .filter(fresh_plan);
+            .filter(|plan| {
+                fresh_plan(plan)
+                    && files
+                        .shape
+                        .is_none_or(|shape| shape.accepts(&plan.references))
+            });
         if let Some(mut plan) = remembered {
             let device = plan.device;
             let deadline = plan.revalidate;
@@ -1572,20 +1628,34 @@ fn calibrated_with_references<T>(
             .directory
             .and_then(|directory| file_lock(&directory.join("calibration.lock")));
         if host_lock.is_none() {
-            disk = None; // Never publish/reuse cross-process timing without coordination.
+            disk = None;
+            if files.require_coordination {
+                // No timing decision may outlive uncoordinated contention.
+                let model = load(Device::Cpu, vec![cpu()].into(), false)?;
+                return Ok((
+                    model,
+                    Device::Cpu,
+                    Some(std::time::Instant::now() + RUNTIME_RETRY),
+                ));
+            }
         }
         // A different caller/process may have populated the plan while we waited.
         if cache
             .lock()
             .expect("compute-plan cache poisoned")
             .get(key)
-            .is_some_and(fresh_plan)
+            .is_some_and(|plan| {
+                fresh_plan(plan)
+                    && files
+                        .shape
+                        .is_none_or(|shape| shape.accepts(&plan.references))
+            })
         {
             continue;
         }
         if let Some(plan) = disk.and_then(|path| {
             let _lock = plan_metadata_lock(path);
-            read_plan(path, key, &plans)
+            read_plan_shaped(path, key, &plans, files.shape)
         }) {
             cache
                 .lock()
@@ -2267,7 +2337,7 @@ mod tests {
         assert!(!coordination_supported(None));
         let cache = std::sync::Mutex::default();
         let references = std::cell::RefCell::default();
-        calibrated_with_references(
+        let (_, selected, deadline) = calibrated_with_references(
             "uncoordinated",
             vec![(Device::Cuda, vec![cpu()].into())],
             &cache,
@@ -2275,6 +2345,8 @@ mod tests {
             PlanFiles {
                 record: Some(&record),
                 directory: Some(&not_directory),
+                require_coordination: true,
+                ..Default::default()
             },
             |device, _, _| Ok(device),
             |_, device| {
@@ -2287,6 +2359,16 @@ mod tests {
         )
         .unwrap();
         assert!(!record.exists());
+        assert_eq!(
+            selected,
+            Device::Cpu,
+            "uncoordinated timing must not select a winner"
+        );
+        assert!(deadline.is_some());
+        assert!(
+            cache.lock().unwrap().is_empty(),
+            "uncoordinated timing entered RAM choices"
+        );
     }
 
     #[test]
@@ -2499,6 +2581,47 @@ mod tests {
             "pamin-memory",
             "legacy user-wide lock namespace must survive upgrades"
         );
+    }
+
+    #[test]
+    fn persisted_proof_is_exact_for_its_model_role() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("plan.json");
+        let key = "role-proof";
+        let candidates = [(Device::Cuda, vec![cpu()].into())];
+        let reranker = ReferenceShape {
+            scores: Some(4),
+            ..Default::default()
+        };
+        let embedding = ReferenceShape {
+            vectors: Some((3, 2)),
+            queries: Some((2, 2)),
+            scores: None,
+        };
+        let score_proof = References {
+            scores: Some(vec![1.0; 4]),
+            ..Default::default()
+        };
+        let vector_proof = References {
+            vectors: Some(vec![vec![1.0, 2.0]; 3]),
+            queries: Some(vec![vec![1.0, 2.0]; 2]),
+            scores: None,
+        };
+        for (proof, good, bad) in [
+            (score_proof, reranker, embedding),
+            (vector_proof, embedding, reranker),
+        ] {
+            let plan =
+                CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false).with_references(proof);
+            write_plan(&path, key, &plan).unwrap();
+            assert!(read_plan_shaped(&path, key, &candidates, Some(good)).is_some());
+            assert!(read_plan_shaped(&path, key, &candidates, Some(bad)).is_none());
+        }
+        assert!(!embedding.accepts(&References {
+            vectors: Some(vec![vec![1.0]; 3]),
+            queries: Some(vec![vec![1.0]; 2]),
+            scores: None
+        }));
     }
 
     #[test]
@@ -2947,6 +3070,7 @@ mod tests {
             PlanFiles {
                 record: None,
                 directory: Some(dir),
+                ..Default::default()
             },
             |device, _, _| {
                 if !checked {
