@@ -347,11 +347,11 @@ fn report(title: &str, scores: &Scores, per_query_ms: f64) {
 
 /// What the reranker did during a run, printed beside the scores.
 ///
-/// A row of numbers nothing in this project had: how many candidates reached
-/// the model against how many were offered it, how long they were, and how
-/// often the score cache answered instead. Each of the three gates a decision
-/// recorded as deferred -- see [`pamin_index::Reranked`] -- and each was an
-/// inference from what the corpus is until this printed it.
+/// Report offered candidates, actual model work, lengths and complete
+/// identical-batch reuse -- see [`pamin_index::Reranked`]. Reused logical pairs
+/// do not measure document recurrence: changing batch neighbours can require
+/// recurring documents to be scored again. Hot-set or document-precomputation
+/// decisions need a separate recurrence measurement and storage/cost comparison.
 ///
 /// This corpus is the one where the lengths matter most. `MAX_TOKENS` is 256
 /// and these are Wikipedia passages rather than the sentences the other
