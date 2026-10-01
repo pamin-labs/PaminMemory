@@ -175,8 +175,11 @@ if loaded.exists():
         raise RuntimeError('runtime directory contains a different zvec library')
 else:
     shutil.copy2(source, loaded)
+executable_sha = hashlib.sha256(Path(executables[0]).read_bytes()).hexdigest()
 shutil.copy2(executables[0], sys.argv[2])
-receipt = {'sha256': sha, 'resolved_source': str(source), 'runtime_path': str(loaded), 'onnxruntime': []}
+if hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest() != executable_sha:
+    raise RuntimeError('executable changed during freezing')
+receipt = {'sha256': sha, 'resolved_source': str(source), 'runtime_path': str(loaded), 'onnxruntime': [], 'executable_sha256': executable_sha}
 for library in dict.fromkeys(needed):
     digest = hashlib.sha256(library.read_bytes()).hexdigest()
     destination = runtime / library.name
@@ -215,17 +218,22 @@ for key in ("PAMIN_SEARCH_EFFORT", "PAMIN_PREPARED", "PAMIN_FUSED_ATTENTION", "P
     env.pop(key, None)
 def run_case(name, binary, profile, policy, check_persisted=False):
     receipt = json.loads(Path(f"/private/tmp/pamin-cost-frozen-{binary}.zvec.json").read_text())
+    if hashlib.sha256(Path(f"/private/tmp/pamin-cost-frozen-{binary}").read_bytes()).hexdigest() != receipt["executable_sha256"]:
+        raise RuntimeError("frozen executable differs from its build receipt")
     for library in [receipt] + receipt["onnxruntime"]:
         if hashlib.sha256(Path(library["runtime_path"]).read_bytes()).hexdigest() != library["sha256"]:
             raise RuntimeError("native runtime bytes changed after build")
     subprocess.run([sys.executable, "/private/tmp/pamin-cost-worker.py", name,
         f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy], env=env, check=True)
-    if not check_persisted: return True
     log = Path(f"/private/tmp/pamin-cost-{name}.log").read_text()
     rerankers = re.findall(r'reranker loaded tier="([^"\n]+)" device="([^"\n]+)" maximum_tokens=(\d+)', log)
     embedders = re.findall(r'embedder loaded model="([^"\n]+)" device="([^"\n]+)"', log)
-    if rerankers != [("accurate", "coreml", "256")] or embedders != [("gpahal/bge-m3-onnx-int8", "cpu")]:
-        raise RuntimeError("persisted model/device premise differs from retained arm")
+    expected_device = "cpu" if policy == "cpu" else "coreml"
+    dual = "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
+    expected_embedders = [] if binary == "main" else [(dual if profile == "dual_accuracy" else "gpahal/bge-m3-onnx-int8", "cpu")]
+    if rerankers != [("accurate", expected_device, "256")] or embedders != expected_embedders:
+        raise RuntimeError("model/device premise differs from retained arm")
+    if not check_persisted: return True
     forbidden = ("complete model-call calibration", "compute candidate", "calibrated winner failed", "cached compute plan failed")
     return not any(marker in log for marker in forbidden)
 for block in range(3):
