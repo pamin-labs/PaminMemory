@@ -205,6 +205,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row['shared_machine'] == SHARED_MACHINE, 'retained interference declaration differs'
  assert row['query'] == 'quartzanchor orbital navigation calibration beacon', 'native fixture query differs'
  assert row['record']=='fixture' and row['arm']==arm and row['documents']==241
+ assert row.get('setup') == 'native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved', 'recorded native fixture setup differs'
  assert row['expected_scores'] == [.8,.5,.5]
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
  weak=next(r for r in row['non_graph'] if r['topic']==row['weak'])

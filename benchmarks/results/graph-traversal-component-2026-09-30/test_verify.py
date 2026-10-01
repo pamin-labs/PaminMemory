@@ -84,6 +84,10 @@ if __name__ == '__main__':
             p=r/(arm+'.log');s=p.read_text();p.write_text(s.replace('test result:', 'failures:\n    bad_case\n\ntest result:'))
         run_case('failure section before final success '+arm,failed_before_summary,expected_error='fixture log contains a failure marker')
         run_case('wrong filtered count '+arm,lambda r,arm=arm:(r/(arm+'.log')).write_text((r/(arm+'.log')).read_text().replace('1 filtered out','0 filtered out')),expected_error='complete fixture result summary differs')
+    for arm in ['baseline','scored']:
+        for setup in ['existing project reused; no writes or optimization','native write/drain; no OptimizeIndex','',None,True,{},['native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved']]:
+            run_case('contradictory setup '+arm+' '+repr(setup),lambda r,arm=arm,setup=setup:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(setup=setup)),expected_error='recorded native fixture setup differs')
+        run_case('missing setup '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.pop('setup')),expected_error='recorded native fixture setup differs')
     retained=json.loads((ROOT/'provenance.json').read_text())
     main_ref='315c10242ddf7a1cec3bccbf550a942320e09557'
     for ref in ['0'*40, retained['source_base'], 'nonexistent', '', None, True, [main_ref]]:
