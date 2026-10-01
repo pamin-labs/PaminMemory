@@ -26,6 +26,7 @@ def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
 assert provenance['source_base']=='13ee710c9df865f1dac98dc77a8108e438ddc539'
+assert type(provenance.get('mapped_library_identity_scope')) is str and provenance['mapped_library_identity_scope']=='mapped paths and pinned file digests; no inode identity captured', 'mapped-library identity limitation differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 ORIGINAL_REDACTION_PINS = {'baseline.jsonl': '302e70b2463379af148eaf8c3ced4f4d3606c1fc865af1b1bc38d1d69597929e',

@@ -70,6 +70,9 @@ if __name__ == '__main__':
     if success.returncode:
         raise SystemExit(success.stderr)
     retained=json.loads((ROOT/'provenance.json').read_text())
+    for scope in ['mapped inode identity captured and verified', 'mapped paths and pinned file digests', '', None, True, 0, ['mapped paths and pinned file digests; no inode identity captured']]:
+        run_case('mapped-library identity scope '+repr(scope),lambda r,scope=scope:mutate_json(r/'provenance.json',lambda p:p.update(mapped_library_identity_scope=scope)),expected_error='mapped-library identity limitation differs')
+    run_case('missing mapped-library identity scope',lambda r:mutate_json(r/'provenance.json',lambda p:p.pop('mapped_library_identity_scope')),expected_error='mapped-library identity limitation differs')
     for arm in ['baseline','scored']:
         row=json.loads((ROOT/(arm+'.jsonl')).read_text())
         weak_n=int(row['weak'][10:])
