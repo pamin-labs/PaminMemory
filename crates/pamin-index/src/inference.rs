@@ -572,7 +572,7 @@ pub(crate) fn measured<T>(
     ]
     .map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v2|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        "persistent-plan-v3|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         threads(),
         std::thread::available_parallelism(),
         ort::info(),
@@ -593,7 +593,7 @@ pub(crate) fn measured<T>(
         .expect("compute-plan cache poisoned")
         .contains_key(&key)
         && let Some(plan) = disk.as_ref().and_then(|path| {
-            let _lock = file_lock(&path.with_extension("lock"));
+            let _lock = plan_metadata_lock(path);
             read_plan(path, &key, &plans)
         })
     {
@@ -602,7 +602,7 @@ pub(crate) fn measured<T>(
             .expect("compute-plan cache poisoned")
             .insert(key.clone(), plan);
     }
-    let result = calibrated_with_references(
+    calibrated_with_references(
         &key,
         plans,
         cache,
@@ -610,8 +610,7 @@ pub(crate) fn measured<T>(
         disk.as_deref(),
         load,
         evaluate,
-    );
-    result
+    )
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -638,7 +637,54 @@ fn fingerprint(key: &str) -> String {
 fn plan_file(root: &Path, key: &str) -> Option<PathBuf> {
     let directory = root.join("compute-plans-v1");
     std::fs::create_dir_all(&directory).ok()?;
+    let _lock = file_lock(&directory.join("plans.lock"))?;
+    prune_plans(&directory).ok()?;
     Some(directory.join(format!("{}.json", fingerprint(key))))
+}
+
+const MAX_DISK_PLANS: usize = 256;
+
+fn plan_metadata_lock(path: &Path) -> Option<std::fs::File> {
+    file_lock(&path.parent()?.join("plans.lock"))
+}
+
+/// Call while holding plans.lock. One fixed metadata lock replaces per-key
+/// lock files; never unlink legacy locks, whose old inode may have waiters.
+fn prune_plans(directory: &Path) -> std::io::Result<()> {
+    let now = unix_seconds();
+    let mut valid = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if path.extension().is_none_or(|ext| ext != "json")
+            || stem.len() != 64
+            || !stem.bytes().all(|b| b.is_ascii_hexdigit())
+            || !entry.file_type()?.is_file()
+        {
+            continue;
+        }
+        let record = if entry.metadata()?.len() <= 1_048_576 {
+            serde_json::from_slice::<DiskPlan>(&std::fs::read(&path)?).ok()
+        } else {
+            None
+        };
+        if let Some(record) =
+            record.filter(|r| r.fingerprint == stem && r.expires > now && r.expires <= now + 86400)
+        {
+            valid.push((record.expires, path));
+        } else {
+            std::fs::remove_file(path)?;
+        }
+    }
+    valid.sort();
+    let excess = valid.len().saturating_sub(MAX_DISK_PLANS);
+    for (_, path) in valid.into_iter().take(excess) {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 fn unix_seconds() -> u64 {
@@ -720,8 +766,10 @@ fn remember_plan(
         .expect("compute-plan cache poisoned")
         .insert(key.into(), plan.clone());
     if let Some(path) = disk {
-        let _lock = file_lock(&path.with_extension("lock"));
-        if let Err(error) = write_plan(path, key, &plan) {
+        let _lock = plan_metadata_lock(path);
+        if let Err(error) = write_plan(path, key, &plan)
+            .and_then(|()| prune_plans(path.parent().expect("plan directory")))
+        {
             tracing::debug!(%error, "compute-plan persistence unavailable");
         }
     }
@@ -847,7 +895,7 @@ fn calibrated_with_references<T>(
                         .expect("compute-plan cache poisoned")
                         .remove(key);
                     if let Some(path) = disk {
-                        let _lock = file_lock(&path.with_extension("lock"));
+                        let _lock = plan_metadata_lock(path);
                         let _ = std::fs::remove_file(path);
                     }
                 }
@@ -865,7 +913,7 @@ fn calibrated_with_references<T>(
             continue;
         }
         if let Some(plan) = disk.and_then(|path| {
-            let _lock = file_lock(&path.with_extension("lock"));
+            let _lock = plan_metadata_lock(path);
             read_plan(path, key, &plans)
         }) {
             cache
@@ -1585,7 +1633,7 @@ mod tests {
         });
         ready.recv_timeout(Duration::from_secs(2)).unwrap();
         {
-            let _lock = file_lock(&path.with_extension("lock"));
+            let _lock = plan_metadata_lock(&path);
             write_plan(
                 &path,
                 "published",
@@ -1595,6 +1643,78 @@ mod tests {
         }
         drop(held);
         assert_eq!(worker.join().unwrap(), Device::Cuda);
+    }
+
+    #[test]
+    fn plan_maintenance_retires_expired_records_and_bounds_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("compute-plans-v1");
+        std::fs::create_dir(&dir).unwrap();
+        for i in 0..MAX_DISK_PLANS + 4 {
+            let key = format!("fixture-{i}");
+            let path = dir.join(format!("{}.json", fingerprint(&key)));
+            write_plan(
+                &path,
+                &key,
+                &CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false),
+            )
+            .unwrap();
+        }
+        let stale = dir.join(format!("{}.json", fingerprint("expired")));
+        std::fs::write(
+            &stale,
+            serde_json::to_vec(&DiskPlan {
+                fingerprint: fingerprint("expired"),
+                target: "cpu".into(),
+                expires: unix_seconds(),
+                references: References::default(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let unrelated = dir.join("leave-me.json");
+        std::fs::write(&unrelated, b"not our record").unwrap();
+        plan_file(root.path(), "requested").unwrap();
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+        let remaining = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| {
+                let p = e.as_ref().unwrap().path();
+                p.extension().is_some_and(|ext| ext == "json") && p != unrelated
+            })
+            .count();
+        assert!(remaining <= MAX_DISK_PLANS);
+        let locks: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| {
+                let p = e.unwrap().path();
+                p.extension().is_some_and(|ext| ext == "lock").then_some(p)
+            })
+            .collect();
+        assert_eq!(locks, vec![dir.join("plans.lock")]);
+        let cache = std::sync::Mutex::default();
+        for i in 0..4 {
+            let key = format!("queued-{i}");
+            let path = dir.join(format!("{}.json", fingerprint(&key)));
+            remember_plan(
+                &key,
+                Some(&path),
+                &cache,
+                CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false),
+            );
+        }
+        let plans = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| {
+                let p = e.as_ref().unwrap().path();
+                p.extension().is_some_and(|ext| ext == "json") && p != unrelated
+            })
+            .count();
+        assert!(
+            plans <= MAX_DISK_PLANS,
+            "queued publications exceeded the bound"
+        );
     }
 
     #[test]
