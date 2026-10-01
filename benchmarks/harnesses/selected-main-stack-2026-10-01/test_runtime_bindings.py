@@ -45,6 +45,36 @@ class RuntimeBindings(unittest.TestCase):
         with patch.object(self.run, 'checkpoint', side_effect=[first, copy.deepcopy(first)]):
             self.assertEqual(len(self.run.load_checkpoints(out, jobs, 'identity', {}, [], {})), 2)
 
+    def mapping_log(self, extra):
+        job = self.common.schedule()[0]
+        expected = [str((Path(self.common.CONFIG[root]) / name).resolve()) for root, name in
+                    [('native', 'libzvec_c_api.so'), ('ort', 'libonnxruntime.so.1.28.0')]]
+        bound = {}
+        provider_lines = ''
+        for role, pin in self.common.MANIFEST['roles'].items():
+            path = str(self.work / 'models' / pin['relative'])
+            bound[path] = {'sha256': 'synthetic'}
+            provider_lines += 'ONNX graph execution-provider assignment model_graph=' + json.dumps(path)
+            provider_lines += ' assigned_nodes=' + json.dumps({'CPUExecutionProvider': pin['nodes']}) + '\n'
+        encode = lambda path:path.replace('\\', r'\134').replace(' ', r'\040')
+        mapped = expected + [expected[0], '/unrelated/libc.so.6'] + extra
+        row = {'loaded_libraries': ['1-2 r-xp 0 00:00 1 ' + encode(path) for path in mapped]}
+        text = ('test result: ok. 1 passed; 0 failed;\nCACHE_ENGINE_OPEN {"documents":230,"coverage":0.0}\n'
+                'CACHE_ENGINE_GRAPH [["mentions",11]]\n' + provider_lines +
+                ''.join('CACHE_ENGINE_ROW ' + json.dumps(row) + '\n' for _ in job['sequence'].split(',')))
+        return text, job, bound
+
+    def test_extra_ort_zvec_mappings_are_rejected_but_repeated_and_unrelated_are_allowed(self):
+        with patch.object(self.common, 'digest', return_value='synthetic'):
+            self.run.parse(*self.mapping_log([]))
+            extras = ['/other runtime/libonnxruntime.so.1.29.0', '/other/libzvec_c_api.so',
+                      '/other/libonnxruntime_providers_shared.so',
+                      str((Path(self.common.CONFIG['native']) / 'libzvec_c_api.so').resolve()) + ' (deleted)']
+            for extra in extras:
+                with self.subTest(extra=extra):
+                    with self.assertRaisesRegex(ValueError, 'actual runtime mapping differs'):
+                        self.run.parse(*self.mapping_log([extra]))
+
     def test_runtime_maps_decode_space_tab_newline_and_backslash(self):
         job = self.common.schedule()[0]
         for character in [' ', '\t', '\n', '\\']:
