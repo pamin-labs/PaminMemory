@@ -27,6 +27,7 @@ for arm in ['main','predecessor','candidate']:
         rows=[r for r in raw if r['arm']==arm and r['repetition']==rep]
         expected_order=['open','write_and_memory_drain','durability_flush','maintenance','search_cold','search_warmup','search_warmup']+['search_warm']*24+['new_write_search','closed_index','process_total']
         assert [r['phase'] for r in rows]==expected_order, 'HNSW product phase chronology differs'
+        review.process_observations(rows,review.hwm_allowance('memory',arm,rep))
         expected_phases=Counter({**{p:1 for p in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']},'search_warmup':2,'search_warm':24})
         assert Counter(r['phase'] for r in rows)==expected_phases, 'HNSW unexpected phase multiset'
         log=(root/'logs'/f'{rep}-{arm}.log').read_text()
@@ -97,6 +98,7 @@ source=repo/'benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in'
 loader=importlib.machinery.SourceFileLoader('archived_restart_analysis',str(source))
 spec=importlib.util.spec_from_loader(loader.name,loader)
 module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+assert review.historical_hwm_review(raw,'memory',hashlib.sha256((root/'raw.jsonl').read_bytes()).hexdigest())==json.loads((root/'hwm-review.json').read_text()), 'historical HWM qualification receipt differs'
 summary=module.summarize(raw)
 assert summary==json.loads((root/'summary.json').read_text())
 review.runner_binding(repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in',json.loads((root/'provenance.json').read_text()))
@@ -181,6 +183,9 @@ for reference in ['predecessor','main']:
     for label,key,divisor,unit,precision in labels:
         metric=summary['comparisons'][reference]['metric_differences'][key]
         before,after,delta,percent=[metric[k] for k in ['before','after','absolute_delta','percent_delta']]
+        if key=='peak_process_rss_bytes':
+            expected.append(review.HWM_TABLE_ROW)
+            continue
         if key in timing_review[reference] and timing_review[reference][key]['withhold_comparison']:
             difference=percentage='Withheld: unstable three-process sample'
         else:

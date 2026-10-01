@@ -20,7 +20,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | First-search wall median, model load included | 3286.225253 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2743.028312 ms | 2860.084011 ms | +117.055699 ms | +4.267% |
 | Warm search p95, median across processes | 2999.154590 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Peak process RSS | 1782.003906 MiB | 1778.898438 MiB | -3.105469 MiB | -0.174% |
+| Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
 | RSS after maintenance | 1351.167969 MiB | 1272.832031 MiB | -78.335938 MiB | -5.798% |
 | Open index apparent bytes | 152.999107 MiB | 158.007785 MiB | +5.008677 MiB | +3.274% |
 | Open index allocated bytes | 154.695312 MiB | 155.773438 MiB | +1.078125 MiB | +0.697% |
@@ -46,7 +46,7 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | First-search wall median, model load included | 3088.230447 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2746.017698 ms | 2860.084011 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p95, median across processes | 3000.415286 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Peak process RSS | 1781.714844 MiB | 1778.898438 MiB | -2.816406 MiB | -0.158% |
+| Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
 | RSS after maintenance | 1351.890625 MiB | 1272.832031 MiB | -79.058594 MiB | -5.848% |
 | Open index apparent bytes | 152.999107 MiB | 158.007785 MiB | +5.008677 MiB | +3.274% |
 | Open index allocated bytes | 154.695312 MiB | 155.773438 MiB | +1.078125 MiB | +0.697% |
@@ -89,3 +89,5 @@ A [dated review-time seed endpoint](post-review-seed.json) rehashes all 2,952 re
 Maintenance CPU is censored: all candidate observations have zero user and system ticks. At the stated 100 Hz accounting resolution, each component is below one 10 ms tick, with a nominal combined bound below 20 ms; this is not zero CPU cost. Exact CPU differences and percentages are withheld. Raw tick arithmetic remains retained for recomputation, without treating zero ticks as a measured zero. PostgreSQL/service/device CPU is excluded.
 
 Historical `TOKIO_WORKER_THREADS` and the effective Tokio worker count were not recorded and remain unknown. The future guarded runner rejects inherited Tokio tuning, explicitly sets four Tokio workers and records that setting; it does not retrospectively certify historical async concurrency.
+
+Historical memory chronology qualification: the [recomputed receipt](hwm-review.json) binds the exact retained before/after HWM decreases and sampled VmRSS observations. No tolerance is applied: any added, removed or changed anomaly fails verification. The HWM-derived peak process RSS comparisons above are uncertified/N/A; sampled maintenance RSS remains an observation, not a lifetime peak. Original raw/log rows, calculator and numerical summaries remain unchanged and do not restore peak certification.

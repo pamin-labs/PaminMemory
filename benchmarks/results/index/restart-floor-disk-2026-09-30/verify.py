@@ -36,6 +36,7 @@ for arm,commit in expected_commits.items():
         rows=[r for r in raw if r['arm']==arm and r['repetition']==rep]
         expected_order=['open','write_and_memory_drain','durability_flush','maintenance','search_cold','search_warmup','search_warmup']+['search_warm']*24+['new_write_search','closed_index','process_total']
         assert [r['phase'] for r in rows]==expected_order, 'Disk product phase chronology differs'
+        review.process_observations(rows,review.hwm_allowance('disk',arm,rep))
         assert rows and all(r['commit']==commit for r in rows)
         phases={phase:[r for r in rows if r['phase']==phase] for phase in {r['phase'] for r in rows}}
         for phase in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']:assert len(phases[phase])==1,(arm,rep,phase)
@@ -149,6 +150,7 @@ def inventory(entries):
 assert inventory(post['assets'])==inventory(pre_assets), 'post-trial inventory differs from pretrial provenance'
 assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
 assert any(x['path'].endswith('.onnx.data') for x in post['assets'])
+assert review.historical_hwm_review(raw,'disk',hashlib.sha256((root/'raw.jsonl').read_bytes()).hexdigest())==json.loads((root/'hwm-review.json').read_text()), 'historical HWM qualification receipt differs'
 assert calculator.summarize(raw)==json.loads((root/'summary.json').read_text())
 for binary in json.loads((root/'binaries.json').read_text()):
     assert binary['sha256']==binary['current_pretrial_hash']['sha256']==binary['posttrial_hash']['sha256']
@@ -195,7 +197,9 @@ for reference in ['predecessor','main']:
         else:
             value=summary['comparisons'][reference]['metric_differences'][key]
             before,after,delta,percent=[value[k] for k in ['before','after','absolute_delta','percent_delta']]
-        if key=='maintenance_cpu_s' and after==0:
+        if key=='peak_process_rss_bytes':
+            expected.append(review.HWM_TABLE_ROW)
+        elif key=='maintenance_cpu_s' and after==0:
             rows=[r for r in raw if r['arm']=='candidate' and r['phase']=='maintenance']
             assert len(rows)==3 and all(r['cpu_user_seconds']==r['cpu_system_seconds']==0 for r in rows), 'censored maintenance CPU does not match raw counters'
             expected.append(f'| {label} | {before:.6f} s | <0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation |')

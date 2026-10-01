@@ -19,7 +19,7 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | First-search wall median (model load included) | 2618.299 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50: median across processes | 2126.304 ms | 2139.206 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p95: median across processes | 2289.523 ms | 2368.295 ms | +78.771 ms | +3.441% |
-| Peak process RSS | 1768.152 MiB | 1780.238 MiB | +12.086 MiB | +0.684% |
+| Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
 | RSS after maintenance | 1304.809 MiB | 1230.020 MiB | -74.789 MiB | -5.732% |
 | Closed index allocated bytes | 127.336 MiB | 128.422 MiB | +1.086 MiB | +0.853% |
 | Closed index apparent bytes | 126.662 MiB | 131.678 MiB | +5.016 MiB | +3.961% |
@@ -38,13 +38,13 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | First-search wall median (model load included) | 2731.516 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50: median across processes | 2134.241 ms | 2139.206 ms | +4.965 ms | +0.233% |
 | Warm search p95: median across processes | 2248.118 ms | 2368.295 ms | +120.176 ms | +5.346% |
-| Peak process RSS | 1769.750 MiB | 1780.238 MiB | +10.488 MiB | +0.593% |
+| Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
 | RSS after maintenance | 1305.109 MiB | 1230.020 MiB | -75.090 MiB | -5.754% |
 | Closed index allocated bytes | 127.336 MiB | 128.422 MiB | +1.086 MiB | +0.853% |
 | Closed index apparent bytes | 126.662 MiB | 131.678 MiB | +5.016 MiB | +3.961% |
 | Vector graph completeness (hybrid visibility checked) | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
-Warm p50/p95 and peak RSS are descriptive observations. Peak process RSS increases 0.684%; the warm timing comparison screen is retained separately. Three independent process repetitions are insufficient to assign these changes to the patch. Both the increases and individual process values are retained. No query-level significance test is reported.
+Warm p50/p95 are descriptive observations; the warm timing comparison screen is retained separately. Historical HWM-derived peak comparisons are uncertified/N/A because retained process observations decrease. Three independent process repetitions are insufficient to assign small timing or sampled-RSS movements to the patch. Individual process observations and original numerical summaries are retained. No query-level significance test is reported.
 
 ## Conditions and measurement limits
 
@@ -55,7 +55,7 @@ Warm p50/p95 and peak RSS are descriptive observations. Peak process RSS increas
 - BGE-M3 int8 revision `2b34e84df040034d4b9eabb62383a87c18955822`; Accurate BGE reranker int8 revision `6f5ff65298512715a1e669753bc754d2bc8f367b`; fp16 stored 1,024-dimensional vectors, HNSW/Cosine, explicit accuracy profile; inherited search effort, reranker depth, batch/token controls and other `PAMIN_*` tuning were not recorded. Both actual scoring graphs are asserted to have only nonzero CPUExecutionProvider assignment. This is a CPU measurement, not a CoreML/ANE comparison. Loaded ORT distribution is 1.28.0; the historical prepared-key label 1.24 identifies its Rust API compatibility target, and is not the loaded binary version.
 - Model download/prepared-graph and OS file caches are warm; every arm starts a fresh Engine process. The first search includes reranker load. The verifier checks the exact ordered schedule in every process: cold document `0`, warmups `n//2` then `n-1`, and warm documents `j*(n-2)//25+1` for `j=1..24`, with `n=18000`. Every warm query asserts actual fresh reranker scores for all offered pairs. Retained pretrial identities and observed CPU provider graph paths agree across arms; these records do not establish unchanged shared model-cache bytes between launches or rule out model substitution.
 - Per-process p95 uses linear interpolation at (n−1)×0.95, followed by the median of three process p95s. Other table values are medians of process metrics. Wall time is separate from all-thread process user/system CPU; PostgreSQL child/service CPU and RSS are excluded. CPU tick resolution is 10 ms: median measured upkeep CPU is 0.47 s for predecessor, 0.44 s for main and 0 observed ticks for candidate. This does not mean zero CPU cost. Device/service memory and total server-resource comparisons are N/A.
-- RSS is this Engine process, including mapped model/index pages; peak is kernel VmHWM. Index disk is reported while open and after Engine/PG close, with apparent and allocated bytes separate. Common model-cache disk, PostgreSQL data, runner copies and build/scratch artifacts are excluded. DiskANN, full corpus multilingual quality and service concurrency are N/A in this HNSW experiment.
+- RSS observations cover this Engine process, including mapped model/index pages; retained VmHWM observations do not certify a lifetime peak. Index disk is reported while open and after Engine/PG close, with apparent and allocated bytes separate. Common model-cache disk, PostgreSQL data, runner copies and build/scratch artifacts are excluded. DiskANN, full corpus multilingual quality and service concurrency are N/A in this HNSW experiment.
 - The saved-floor marker is present in the identical seed for all arms. Before-patch binaries ignore it and count its one file; the candidate excludes it from its file budget. The genuine floor is already 271 without this file, so it does not create the >256 premise.
 
 ## Recompute and reproduce
@@ -73,3 +73,5 @@ Timing comparison policy now scans every retained wall/CPU timing metric and ful
 The verifier binds each process/role graph path and node count to the HNSW source/prepared-graph inventory, whose retained byte counts and hashes agree with the Disk archive role binding. Prepared source metadata and external-weight inventories are retained in that separate Disk archive; they were not independently inventoried for each HNSW process. This cross-archive consistency check does not recover historical per-launch shared-cache immutability.
 
 Historical `TOKIO_WORKER_THREADS` and the effective Tokio worker count were not recorded and remain unknown. The future guarded runner rejects inherited Tokio tuning, explicitly sets four Tokio workers and records that setting; it does not retrospectively certify historical async concurrency.
+
+Historical memory chronology qualification: the [recomputed receipt](hwm-review.json) binds the exact retained before/after HWM decreases and sampled VmRSS observations. No tolerance is applied: any added, removed or changed anomaly fails verification. The HWM-derived peak process RSS comparisons above are uncertified/N/A; sampled maintenance RSS remains an observation, not a lifetime peak. Original raw/log rows, calculator and numerical summaries remain unchanged and do not restore peak certification.
