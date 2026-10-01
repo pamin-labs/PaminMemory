@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 ROOT = Path(__file__).resolve().parent
 
@@ -34,7 +34,7 @@ class Templates(unittest.TestCase):
         self.common = load('common', self.work / 'common.py')
         self.metrics = load('metrics', self.work / 'metrics.py')
         self.rows = load('rows', self.work / 'rows.py')
-        load('owned_postgres', self.work / 'owned_postgres.py')
+        self.pg = load('owned_postgres', self.work / 'owned_postgres.py')
         self.run = load('reproduction_run', self.work / 'run.py')
         self.analyzer = load('reproduction_analyze', self.work / 'analyze.py')
         (self.work / 'main/crates/pamin-engine/tests/corpus').mkdir(parents=True)
@@ -45,6 +45,55 @@ class Templates(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_post_start_faults_always_attempt_verified_cleanup(self):
+        import subprocess
+        item = {'home': self.work, 'data': self.work / 'data',
+                'install': self.work / 'install', 'record': {'port': 1234, 'username': 'fixture', 'password': 'fixture', 'database': 'fixture'}}
+        owned = {'pid': 42, 'port': 1234}
+        for stage in ['launch', 'identity', 'sql', 'version', 'settings']:
+            with self.subTest(stage=stage):
+                def execute(command, **kwargs):
+                    if '--version' in command:
+                        return Mock(stdout=Path(command[0]).name + ' (PostgreSQL) 17.6')
+                    if command[-1] == 'start' and stage == 'launch':
+                        raise subprocess.TimeoutExpired(command, 35)
+                    if command[-1] == 'SHOW server_version_num':
+                        return Mock(stdout='170005' if stage == 'version' else '170006')
+                    return Mock(stdout='wrong setting')
+                with patch.object(self.pg, 'preflight', return_value=item), \
+                     patch.object(self.pg.subprocess, 'run', side_effect=execute), \
+                     patch.object(self.pg, 'identity', side_effect=RuntimeError('unowned') if stage == 'identity' else None, return_value=owned), \
+                     patch.object(self.pg, 'listening', return_value=True), \
+                     patch.object(self.pg, 'show_data_directory', side_effect=subprocess.TimeoutExpired('SQL', 5) if stage == 'sql' else None), \
+                     patch.object(self.pg, 'stop_item') as stop:
+                    with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)):
+                        self.pg.start(self.work, {})
+                    stop.assert_called_once_with(item, {}, None if stage in ['launch', 'identity'] else owned)
+
+    def test_unproven_seed_pid_never_runs_stop_command(self):
+        home = self.work / 'seed-owned'
+        data = home / 'postgres/data'
+        data.mkdir(parents=True)
+        (home / '.graph-disposable-clone').touch()
+        (data / 'PG_VERSION').write_text('17')
+        (data / 'postmaster.pid').write_text('42\n' + str(data) + '\n0\n1234\n')
+        install = home / 'postgres/install/17.6.0'
+        with patch.object(self.pg, 'identity', side_effect=RuntimeError('unowned PID')), \
+             patch.object(self.pg.subprocess, 'run') as execute:
+            with self.assertRaisesRegex(RuntimeError, 'unowned PID'):
+                self.pg.stop_seed(home, {}, install)
+            execute.assert_not_called()
+        self.assertTrue((data / 'postmaster.pid').exists())
+
+    def test_native_start_failure_does_not_guess_stop_identity(self):
+        with patch.object(self.pg, 'start', side_effect=RuntimeError('start refused')), \
+             patch.object(self.pg, 'stop') as stop, \
+             patch.object(self.run.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError, 'start refused'):
+                self.run.native(self.work, {}, 'unused', self.work / 'log')
+            stop.assert_not_called()
+            launch.assert_not_called()
 
     def test_probe_is_identical_to_measured_source(self):
         manifest = json.loads((ROOT / 'sources.json').read_text())

@@ -91,16 +91,28 @@ def start(home,base):
     options=['-p',str(item['record']['port']),'-h','127.0.0.1']
     for key,value in NATIVE_SETTINGS.items():options += ['-c',f'{key}={value}']
     command=[str(item['install']/'bin/pg_ctl'),'-D',str(item['data']),'-l',str(item['home']/'postgres/graph-owned-start.log'),'-o',shlex.join(options),'-w','-t','30','start']
-    subprocess.run(command,env=base,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=35,check=True)
-    recorded=identity(item);require(listening(recorded['port']),'owned PostgreSQL did not listen')
-    show_data_directory(item,base)
-    # Capture actual selected resource settings, excluding credentials.
-    settings={}
-    for key in NATIVE_SETTINGS:
-        result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c',f'SHOW {key}'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
-        settings[key]=result.stdout.strip()
-    require(settings==NATIVE_SETTINGS,'actual PostgreSQL defaults differ from native frozen source settings')
-    return {'identity':recorded,'data_directory_verified_before_native_fixture':True,'native_settings':settings}
+    for executable in ['postgres','pg_ctl']:
+        result=subprocess.run([str(item['install']/'bin'/executable),'--version'],env=base,capture_output=True,text=True,timeout=5,check=True)
+        require(result.stdout.strip()==f'{executable} (PostgreSQL) 17.6','copied PostgreSQL executable version differs')
+    recorded=None
+    try:
+        subprocess.run(command,env=base,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=35,check=True)
+        recorded=identity(item);require(listening(recorded['port']),'owned PostgreSQL did not listen')
+        show_data_directory(item,base)
+        result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c','SHOW server_version_num'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
+        require(result.stdout.strip()=='170006','actual PostgreSQL server version differs')
+        # Capture actual selected resource settings, excluding credentials.
+        settings={}
+        for key in NATIVE_SETTINGS:
+            result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c',f'SHOW {key}'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
+            settings[key]=result.stdout.strip()
+        require(settings==NATIVE_SETTINGS,'actual PostgreSQL defaults differ from native frozen source settings')
+        return {'identity':recorded,'data_directory_verified_before_native_fixture':True,'native_settings':settings}
+    except BaseException as failure:
+        try:stop_item(item,base,recorded)
+        except BaseException as cleanup:
+            failure.add_note('Owned PostgreSQL cleanup refused or failed: '+str(cleanup))
+        raise
 
 
 def check(home,expected):
@@ -120,7 +132,28 @@ def owned_processes(item):
     return result
 
 def stop(home,base,expected=None):
-    item=layout(home);pidfile=item['data']/'postmaster.pid'
+    return stop_item(layout(home),base,expected)
+
+
+def stop_seed(home,base,install):
+    # The product can fail before writing server.json. Use only the fresh
+    # controller-created data/installation and an actual, verified pid record.
+    home=Path(home).resolve();install=Path(install).resolve();data=(home/'postgres/data').resolve()
+    require((home/'.graph-disposable-clone').is_file() and install.is_relative_to(home) and data.is_relative_to(home),'seed cleanup ownership boundary differs')
+    item={'home':home,'data':data,'install':install,'record':{'port':0}}
+    pidfile=data/'postmaster.pid'
+    if not pidfile.exists():
+        require(not owned_processes(item),'seed PostgreSQL survives without pid proof; retain clone')
+        return {'already_stopped':True}
+    lines=pidfile.read_text().splitlines()
+    require(len(lines)>=4 and (data/'PG_VERSION').is_file(),'seed pid/data record incomplete')
+    port=int(lines[3]);require(1<=port<=65535,'seed pid port invalid')
+    item['record']['port']=port
+    return stop_item(item,base)
+
+
+def stop_item(item,base,expected=None):
+    pidfile=item['data']/'postmaster.pid'
     if not pidfile.exists():
         require(not listening(item['record']['port']),'port remains bound without owned pid proof')
         require(not owned_processes(item),'owned PostgreSQL process remains without pid file')
