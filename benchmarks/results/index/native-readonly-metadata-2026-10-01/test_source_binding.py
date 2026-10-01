@@ -2,7 +2,9 @@
 import copy
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -69,32 +71,57 @@ class PublicSourceBinding(unittest.TestCase):
         with patch.object(source_binding.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout=b'', stderr=b'unavailable')):
             self.assertIsNone(source_binding.check_git(self.binding))
 
+    def test_empty_git_repository_reports_unavailable(self):
+        git = source_binding.shutil.which('git')
+        if git is None:
+            self.skipTest('Git unavailable')
+        env = {key:value for key,value in os.environ.items() if not key.startswith('GIT_')}
+        with tempfile.TemporaryDirectory() as repository:
+            subprocess.run([git, 'init', '--bare', repository], env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            self.assertIsNone(source_binding.check_git(self.binding, repository))
+
+    def first_tree_entry(self):
+        row = self.binding['files'][0]
+        return f"{row['mode']} blob {row['git_blob']}\t{row['path']}\0".encode()
+
+    def check_mock_git(self, responses):
+        with patch.object(source_binding.shutil, 'which', return_value='git'):
+            with patch.object(source_binding.subprocess, 'run', side_effect=responses):
+                source_binding.check_git(self.binding)
+
+    def test_missing_tree_after_available_commit_refused(self):
+        responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                     SimpleNamespace(returncode=1, stdout=b'')]
+        with self.assertRaisesRegex(ValueError, 'source tree read'):
+            self.check_mock_git(responses)
+
+    def test_missing_blob_after_available_commit_refused(self):
+        responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                     SimpleNamespace(returncode=0, stdout=self.first_tree_entry()),
+                     SimpleNamespace(returncode=1, stdout=b'')]
+        with self.assertRaisesRegex(ValueError, 'bytes/SHA mismatch'):
+            self.check_mock_git(responses)
+
     def test_public_object_type_refused(self):
         with patch.object(source_binding.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'tag\n', stderr=b'')):
             with self.assertRaisesRegex(ValueError, 'not a commit'):
                 source_binding.check_git(self.binding)
 
-    def test_actual_git_byte_corruption_refused(self):
-        actual_run = subprocess.run
-        def corrupt(command, **kwargs):
-            result = actual_run(command, **kwargs)
-            if 'cat-file' in command and 'blob' in command and result.returncode == 0:
-                result.stdout += b'changed'
-            return result
-        with patch.object(source_binding.subprocess, 'run', side_effect=corrupt):
-            with self.assertRaisesRegex(ValueError, 'bytes/SHA mismatch'):
-                source_binding.check_git(self.binding)
+    def test_git_byte_corruption_refused(self):
+        row = self.binding['files'][0]
+        responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                     SimpleNamespace(returncode=0, stdout=self.first_tree_entry()),
+                     SimpleNamespace(returncode=0, stdout=b'x'*row['bytes'])]
+        with self.assertRaisesRegex(ValueError, 'bytes/SHA mismatch'):
+            self.check_mock_git(responses)
 
-    def test_actual_git_tree_alias_refused(self):
-        actual_run = subprocess.run
-        def corrupt(command, **kwargs):
-            result = actual_run(command, **kwargs)
-            if 'ls-tree' in command and result.returncode == 0:
-                result.stdout = result.stdout.replace(self.binding['files'][0]['git_blob'].encode(), b'refs/heads/main')
-            return result
-        with patch.object(source_binding.subprocess, 'run', side_effect=corrupt):
-            with self.assertRaisesRegex(ValueError, 'mode/path/blob mismatch'):
-                source_binding.check_git(self.binding)
+    def test_git_tree_alias_refused(self):
+        entry = self.first_tree_entry().replace(self.binding['files'][0]['git_blob'].encode(), b'refs/heads/main')
+        responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                     SimpleNamespace(returncode=0, stdout=entry)]
+        with self.assertRaisesRegex(ValueError, 'mode/path/blob mismatch'):
+            self.check_mock_git(responses)
 
 
 if __name__ == '__main__':
