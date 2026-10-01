@@ -66,6 +66,33 @@ if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    # A tiny source-only preparation proves both exact helpers survive scratch
+    # cleanup and are hashed. It never invokes Cargo or an executable helper.
+    with tempfile.TemporaryDirectory(prefix='graph-prepare-positive-') as temp:
+        source=Path(temp)/'input';out=Path(temp)/'prepared'
+        engine=source/'crates/pamin-engine/src/engine.rs';engine.parent.mkdir(parents=True)
+        engine.write_text('const USE_SCORED_GRAPH_RECALL: bool = false;\nseed_relevance(&named, lists, options.k)\nk: fusion.k()\n')
+        (source/'crates/pamin-engine/Cargo.toml').write_text('[dev-dependencies]\n')
+        (source/'Cargo.lock').write_text('[[package]]\nname = "pamin-engine"\ndependencies = [\n "pamin-core",\n]\n[[package]]\nname = "pamin-core"\n')
+        tests=source/'crates/pamin-engine/tests';tests.mkdir();(tests/'scratch_discard.rs').write_text('discard')
+        result=subprocess.run([sys.executable,str(ROOT/'source/prepare.py'),'--source',str(source),'--out',str(out)],capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        prepared=json.loads((out/'prepared-source-hashes.json').read_text())
+        for arm in ['baseline','scored']:
+            assert not (out/arm/'crates/pamin-engine/tests/scratch_discard.rs').exists()
+            for target,artifact in [('scratch_scored_fixture','fixture.rs.in'),('scratch_scored_multihop','multihop.rs.in')]:
+                relative=arm+'/crates/pamin-engine/tests/'+target+'.rs'
+                expected=hashlib.sha256((ROOT/'source'/artifact).read_bytes()).hexdigest()
+                assert prepared[relative]==hashlib.sha256((out/relative).read_bytes()).hexdigest()==expected
+        print('PASS: preparation retains and hashes both exact scratch target sources')
+    with tempfile.TemporaryDirectory(prefix='graph-prepare-source-negative-') as temp:
+        root=Path(temp)/'archive';shutil.copytree(ROOT,root)
+        (root/'source/multihop.rs.in').write_text('changed source')
+        out=Path(temp)/'never-created'
+        result=subprocess.run([sys.executable,str(root/'source/prepare.py'),'--source',str(Path(temp)/'absent-input'),'--out',str(out)],capture_output=True,text=True)
+        assert result.returncode!=0 and not out.exists() and 'preserved multihop source differs' in result.stderr
+        print('PASS: preparation rejects changed multihop source before copying')
+    run_case('multihop source bytes',lambda r:(r/'source/multihop.rs.in').write_text((r/'source/multihop.rs.in').read_text()+'\n// changed\n'))
     run_case('Python -O', flags=('-O',))
     run_case('Python -OO', flags=('-OO',))
     reject_optimized_prepare('-O', flags=('-O',))
