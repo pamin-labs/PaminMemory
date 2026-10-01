@@ -80,7 +80,8 @@ for arm,commit in expected_commits.items():
             rank=next((i+1 for i,topic in enumerate(row['extra']['topics']) if topic==f'incident-{row["extra"]["query_document"]}'),None)
             assert rank==row['extra']['rank']
         log=gzip.decompress((root/'logs'/f'{rep}-{arm}.log.gz').read_bytes()).decode()
-        assert 'test result: ok. 1 passed;' in log and 'synchronous pread()' in log
+        assert 'test result: ok. 1 passed;' in log
+        review.disk_backend(log)
         actual_providers=runner.cpu_provider_assignments(log)
         assert actual_providers==maintenance['actual_providers']
         logged=[json.loads(x.removeprefix('RESTART_JSON ')) for x in log.splitlines() if x.startswith('RESTART_JSON ')]
