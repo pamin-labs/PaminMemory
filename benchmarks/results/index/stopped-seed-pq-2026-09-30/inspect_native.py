@@ -14,6 +14,22 @@ def crc32c(data, seed=0):
         seed = TABLE[(seed ^ value) & 255] ^ (seed >> 8)
     return seed
 
+def validate_section_extents(sections, content_offset, content_size):
+    """Validate every occupied section range, including its trailing padding."""
+    occupied = []
+    for name, section in sections.items():
+        start = section['offset']
+        end = start + section['size'] + section['padding']
+        if not (content_offset <= start <= end <= content_offset + content_size):
+            raise ValueError('Section exceeds container')
+        if end > start:
+            occupied.append((start, end, name))
+    previous_end = content_offset
+    for start, end, _ in sorted(occupied):
+        if start < previous_end:
+            raise ValueError('Overlapping section extents')
+        previous_end = end
+
 def exact(handle, offset, size, total):
     if not (0 <= offset <= total and 0 <= size <= total - offset):
         raise ValueError('Unsupported or malformed index metadata')
@@ -72,6 +88,7 @@ def inspect(path, expected):
             if not (index + length + padding <= content_size):
                 raise ValueError('Unsupported or malformed index metadata')
             sections[name] = dict(offset=co+index, size=length, padding=padding, crc32c=checksum)
+        validate_section_extents(sections, co, content_size)
         for name in ['diskann.meta', 'diskann.pq_meta', 'diskann.pq_data']:
             if not (name in sections):
                 raise ValueError('Not a supported DiskANN package')
