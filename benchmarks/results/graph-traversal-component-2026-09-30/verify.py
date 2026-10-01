@@ -238,7 +238,12 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  for hit in row['non_graph']:
   assert hit['topic'] in fixture_topics, 'non-graph topic outside fixture inventory'
   assert hit['ranks'] and all(rank.get('channel') in channels for rank in hit['ranks']), 'non-graph row needs allowed channel evidence'
+  for rank in hit['ranks']:
+   assert type(rank.get('rank')) is int and rank['rank']>0, 'non-graph rank must be a positive integer'
+   assert rank.get('score') is None or (type(rank['score']) in {int,float} and math.isfinite(rank['score'])), 'non-graph score must be real non-boolean or null'
+ assert row['strong']=='quartzanchor' and sum(h['topic']=='quartzanchor' for h in row['non_graph'])==1, 'strong origin must occur exactly once in retained inventory'
  seed_window=row['non_graph'][:63]
+ assert sum(h['topic']=='quartzanchor' for h in seed_window)==1, 'strong origin must occur exactly once in fixture seed window'
  assert any(hit['topic']==row['weak'] for hit in seed_window), 'weak origin must occur in first 63 retained fused results'
  chosen=next(hit for hit in seed_window if hit['topic']!=row['strong'] and min(rank['rank'] for rank in hit['ranks'])>=22)
  assert chosen['topic']==row['weak'], 'weak origin must be first eligible topic in recorded fixture seed window'
