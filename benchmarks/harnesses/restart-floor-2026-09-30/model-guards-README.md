@@ -33,3 +33,5 @@ Prospective trials also bind retained actual provider assignments to the selecte
 Restart setup and trials require `build_kind:restart-trial`, the restart scratch target, matching before/after source hashes and an actual fresh `scratch_restart_floor` compiler artifact from that checkout. Conversion-only build attestations cannot launch either mode. Setup captures output outside timing and requires one `RESTART_JSON` open row; bootstrap also requires the empty-collection path, and seed requires its completion row. An exit-zero executable reporting zero tests fails instead of marking setup finished.
 
 Setup configuration records must resolve outside the entire measured home, including its index and any symlink alias into that home. This exclusion precedes record creation and product launch for both bootstrap and seed. `test-setup-record-guards.py.in` checks those boundaries using mocked launch only.
+
+The build attestation must resolve outside setup home and trial seed/output, including symlinked ancestors. This is checked before loading manifests, writing records, or launching; build metadata is excluded from measured index disk.
