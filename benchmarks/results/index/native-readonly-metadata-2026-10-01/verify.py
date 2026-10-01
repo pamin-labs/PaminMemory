@@ -27,6 +27,12 @@ HEADER_MAGIC = {
     'embedding.index.8.proxima': 2318598652,
 }
 
+# Canonical JSON SHA256 independently derived from the original evidence blob
+# 98786c984cb13a517599c9b575618c05e48f7e4e at publication commit
+# 444b8e7771f76351a7ec5b2f9c4a276505d39d22, not from a mutable manifest.
+# This binds every retained excerpt byte and receipt, not omitted payload bytes.
+EVIDENCE_SHA256 = '61b72c36d017b0a79a70dbc9b8484869c6f7095abe08a988aad6a5f6376b2a22'
+
 
 # Identity receipts only: omitted whole-file payloads are never verified here.
 WHOLE_FILE_SHA256 = {'pure-open': {'embedding.index.2.proxima': ('781e78bad2994332a4fc3614d4d323c5517acfd8e329e941713fa2a92fb79522', 'd9d326f771e174fa829bfe1fec4deb7dabce204937ca8fb702bcc4f45f2f1a67'), 'embedding.index.4.proxima': ('47db1851ed2c2838236b5a144043fc357b73da2c599e438ba91092886ae863bc', 'be169c527efc44c19438835785dbd7448b50235930e23a96eda7e62dd351cf22'), 'embedding.index.6.proxima': ('30959a1299958d26835d004560f7f4b70eca40b020bb9c17759f4ce7ede3d849', '44c714a9a4315da19cf9289861a638d88a82476faffd12908e673d4436d59d71'), 'embedding.index.8.proxima': ('2bb0ea85ce32144e60e82089e619406d0c6fb4d582b470cbec32d57e434c7c35', 'afa255490e3dade9e0ce2b341e728efe5dfe69f371a55bc1a28c7a738d8fe8be')}, 'vector': {'embedding.index.2.proxima': ('781e78bad2994332a4fc3614d4d323c5517acfd8e329e941713fa2a92fb79522', '4e5a3e98656d2ac4a0ee6847bf224383a1e3f49a03bd80a72a61f664ba352ef1'), 'embedding.index.4.proxima': ('47db1851ed2c2838236b5a144043fc357b73da2c599e438ba91092886ae863bc', 'c6816c8d5febcee0fd51be3878061780834b09f214c9777762660e4bb620e2ec'), 'embedding.index.6.proxima': ('30959a1299958d26835d004560f7f4b70eca40b020bb9c17759f4ce7ede3d849', 'e55c616663934b6f3f31427a67acbe2cc80720d0a42c496e1ec048164e950488'), 'embedding.index.8.proxima': ('2bb0ea85ce32144e60e82089e619406d0c6fb4d582b470cbec32d57e434c7c35', '656c7ee3bc65805e1ec5edd3ae250cacbaaf9808aedd6e53743d0d9fa9c0e60d')}}
@@ -180,6 +186,8 @@ def verify(evidence, check_logs=True, logs=None):
             require(option_lines == ['PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864'], 'raw option getter')
             hit_lines = [line for line in log.splitlines() if line.startswith('PROBE_HITS ')]
             require(hit_lines == (['PROBE_HITS 50'] if run['arm'] == 'vector' else []), 'raw hit count/cardinality')
+    digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    require(digest == EVIDENCE_SHA256, 'original evidence/excerpt receipt binding')
     return True
 
 
