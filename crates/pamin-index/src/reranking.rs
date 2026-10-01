@@ -761,96 +761,107 @@ impl Reranker {
             return Ok(Vec::new());
         }
 
+        let tier = self.tier;
+        let cache = &self.cache_dir;
+        crate::inference::revalidate_cached_model(
+            &mut self.model,
+            &mut self.device,
+            &mut self.scores,
+            || load_model(tier, cache),
+        );
+
         let keys: Vec<u64> = documents
             .iter()
             .map(|document| Scores::key(query, document))
             .collect();
-        let mut scores: Vec<Option<f32>> = keys
-            .iter()
-            .map(|key| self.scores.get(*key))
-            .collect::<Vec<_>>();
+        loop {
+            let mut scores: Vec<Option<f32>> = keys
+                .iter()
+                .map(|key| self.scores.get(*key))
+                .collect::<Vec<_>>();
 
-        // Only what has not been scored before goes through the model,
-        // tokenized once here so that `score` can group the pairs by their
-        // real length in tokens. See `BATCH_TOKENS` for why that grouping is
-        // not score-neutral.
-        let unscored: Vec<usize> = (0..documents.len())
-            .filter(|position| scores[*position].is_none())
-            .collect();
+            // Only what has not been scored before goes through the model,
+            // tokenized once here so that `score` can group the pairs by their
+            // real length in tokens. See `BATCH_TOKENS` for why that grouping is
+            // not score-neutral.
+            let unscored: Vec<usize> = (0..documents.len())
+                .filter(|position| scores[*position].is_none())
+                .collect();
 
-        if !unscored.is_empty() {
-            let mut characters = 0;
-            let mut longest = 0;
-            for position in &unscored {
-                let length = documents[*position].chars().count();
-                characters += length as u64;
-                longest = longest.max(length);
-            }
-            let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
-            let previous = self.device;
-            let tier = self.tier;
-            let cache = &self.cache_dir;
-            let (tokens, encode_us, attempt) = crate::inference::retry_model(
-                &mut self.model,
-                &mut self.device,
-                cache,
-                |model, _| {
-                    let pairs: Vec<(&str, &str)> = unscored
-                        .iter()
-                        .map(|position| (query, documents[*position]))
-                        .collect();
-                    let encoding = Instant::now();
-                    let encodings = model.encode(pairs)?;
-                    let encode_us = encoding.elapsed().as_micros() as u64;
-                    let tokens = encodings
-                        .iter()
-                        .map(|encoding| encoding.len() as u64)
-                        .sum::<u64>();
-                    let completed = score(model, encodings, batch_tokens(), batch())?;
-                    Ok((tokens, encode_us, completed))
-                },
-                || load_model(tier, cache),
-            )
-            .map_err(reranking)?;
-            if self.device != previous {
-                // CPU and accelerator exports may have different logit scales.
-                // Rescore the whole request; never mix old cached logits with new.
-                self.scores = Scores::default();
-                return self.rank(query, documents);
-            }
-            let scored = self
-                .work
-                .commit(unscored.len(), tokens, encode_us, Ok(attempt))
+            if !unscored.is_empty() {
+                let mut characters = 0;
+                let mut longest = 0;
+                for position in &unscored {
+                    let length = documents[*position].chars().count();
+                    characters += length as u64;
+                    longest = longest.max(length);
+                }
+                let reranking =
+                    |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
+                let tier = self.tier;
+                let cache = &self.cache_dir;
+                let ((tokens, encode_us, attempt), replaced) = crate::inference::retry_model(
+                    &mut self.model,
+                    &mut self.device,
+                    cache,
+                    |model, _| {
+                        let pairs: Vec<(&str, &str)> = unscored
+                            .iter()
+                            .map(|position| (query, documents[*position]))
+                            .collect();
+                        let encoding = Instant::now();
+                        let encodings = model.encode(pairs)?;
+                        let encode_us = encoding.elapsed().as_micros() as u64;
+                        let tokens = encodings
+                            .iter()
+                            .map(|encoding| encoding.len() as u64)
+                            .sum::<u64>();
+                        let completed = score(model, encodings, batch_tokens(), batch())?;
+                        Ok((tokens, encode_us, completed))
+                    },
+                    || load_model(tier, cache),
+                )
                 .map_err(reranking)?;
-            self.lengths.total += characters;
-            self.lengths.longest = self.lengths.longest.max(longest);
-            for (position, score) in unscored.iter().zip(scored) {
-                scores[*position] = Some(score);
-                self.scores.put(keys[*position], score);
+                if replaced {
+                    // CPU and accelerator exports may have different logit scales.
+                    // Rescore the whole request; never mix old cached logits with new.
+                    self.scores = Scores::default();
+                    continue;
+                }
+                let scored = self
+                    .work
+                    .commit(unscored.len(), tokens, encode_us, Ok(attempt))
+                    .map_err(reranking)?;
+                self.lengths.total += characters;
+                self.lengths.longest = self.lengths.longest.max(longest);
+                for (position, score) in unscored.iter().zip(scored) {
+                    scores[*position] = Some(score);
+                    self.scores.put(keys[*position], score);
+                }
             }
-        }
 
-        let mut ordered: Vec<usize> = (0..documents.len()).collect();
-        ordered.sort_by(|left, right| {
-            scores[*right]
-                .unwrap_or(f32::MIN)
-                .total_cmp(&scores[*left].unwrap_or(f32::MIN))
-                // A stable order when two candidates score alike, so one
-                // shortlist ranks the same way twice.
-                .then_with(|| left.cmp(right))
-        });
-        Ok(ordered
-            .into_iter()
-            .map(|position| Ranked {
-                position,
-                // `None` is unreachable: every position is either a cache hit
-                // or went through the model above. Carried as the same
-                // sentinel the sort used rather than unwrapped, so a future
-                // early return cannot turn a missing score into a panic in a
-                // search.
-                score: scores[position].unwrap_or(f32::MIN),
-            })
-            .collect())
+            let mut ordered: Vec<usize> = (0..documents.len()).collect();
+            ordered.sort_by(|left, right| {
+                scores[*right]
+                    .unwrap_or(f32::MIN)
+                    .total_cmp(&scores[*left].unwrap_or(f32::MIN))
+                    // A stable order when two candidates score alike, so one
+                    // shortlist ranks the same way twice.
+                    .then_with(|| left.cmp(right))
+            });
+            return Ok(ordered
+                .into_iter()
+                .map(|position| Ranked {
+                    position,
+                    // `None` is unreachable: every position is either a cache hit
+                    // or went through the model above. Carried as the same
+                    // sentinel the sort used rather than unwrapped, so a future
+                    // early return cannot turn a missing score into a panic in a
+                    // search.
+                    score: scores[position].unwrap_or(f32::MIN),
+                })
+                .collect());
+        }
     }
 
     /// What this reranker has been asked to do, and what it did.
