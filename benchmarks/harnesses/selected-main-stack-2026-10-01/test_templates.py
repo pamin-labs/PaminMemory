@@ -241,7 +241,7 @@ class Templates(unittest.TestCase):
         process = Mock(pid=1234)
         def proc_status(path, *args, **kwargs):
             return 'Name:\thelper\nState:\tZ (zombie)\n'
-        with patch.object(self.pg, 'start', return_value={'identity': owned}), \
+        with patch.object(self.pg, 'start', return_value={'identity': owned, 'postgres_build_identity': {'mock': 'build'}}), \
              patch.object(self.pg, 'check'), patch.object(self.pg, 'stop') as stop, \
              patch.object(self.common, 'guard'), patch.object(self.common, 'stop_group'), \
              patch.object(self.common, 'exit_status', side_effect=[None, 0]), \
@@ -315,7 +315,7 @@ class Templates(unittest.TestCase):
         owned = {'pid': 42}
         process = Mock(pid=1234, returncode=1)
         process.poll.return_value = 1
-        with patch.object(self.pg, 'start', return_value={'identity': owned}), \
+        with patch.object(self.pg, 'start', return_value={'identity': owned, 'postgres_build_identity': {'mock': 'build'}}), \
              patch.object(self.run.subprocess, 'Popen', return_value=process) as launch, \
              patch.object(self.common, 'exit_status', return_value=1), \
              patch.object(self.common, 'stop_group', side_effect=RuntimeError('group wait failed')), \
