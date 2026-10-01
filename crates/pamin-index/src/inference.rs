@@ -586,43 +586,31 @@ pub(crate) fn measured<T>(
     let disk = (!cuda || cuda_inventory.is_some())
         .then(|| plan_file(cache_dir, &key))
         .flatten();
-    // Avoid measuring different model calibrations against each other even
-    // when separate CLI/server processes share this workspace cache.
-    let _host_lock = disk.as_ref().and_then(|path| {
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path.parent()?.join("calibration.lock"))
-            .ok()?;
-        lock.lock().ok()?;
-        Some(lock)
-    });
-    let _disk_lock = disk.as_ref().and_then(|path| {
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path.with_extension("lock"))
-            .ok()?;
-        lock.lock().ok()?;
-        Some(lock)
-    });
     if !cache
         .lock()
         .expect("compute-plan cache poisoned")
         .contains_key(&key)
-        && let Some(plan) = disk.as_ref().and_then(|path| read_plan(path, &key, &plans))
+        && let Some(plan) = disk.as_ref().and_then(|path| {
+            let _lock = file_lock(&path.with_extension("lock"));
+            read_plan(path, &key, &plans)
+        })
     {
         cache
             .lock()
             .expect("compute-plan cache poisoned")
             .insert(key.clone(), plan);
     }
-    let result = calibrated_with_references(&key, plans, cache, references, load, evaluate);
+    let result = calibrated_with_references(
+        &key,
+        plans,
+        cache,
+        references,
+        disk.as_deref(),
+        load,
+        evaluate,
+    );
     if let Some(path) = disk {
+        let _lock = file_lock(&path.with_extension("lock"));
         let selected = cache
             .lock()
             .expect("compute-plan cache poisoned")
@@ -734,6 +722,23 @@ fn write_plan(path: &Path, key: &str, plan: &CachedPlan) -> std::io::Result<()> 
     result
 }
 
+fn fresh_plan(plan: &CachedPlan) -> bool {
+    plan.revalidate
+        .is_none_or(|deadline| std::time::Instant::now() < deadline)
+}
+
+fn file_lock(path: &Path) -> Option<std::fs::File> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .ok()?;
+    lock.lock().ok()?;
+    Some(lock)
+}
+
 fn cuda_identity() -> Option<String> {
     let output = std::process::Command::new("nvidia-smi")
         .args([
@@ -795,43 +800,69 @@ fn calibrated_with_references<T>(
     plans: Vec<(Device, Target)>,
     cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
     references: &std::cell::RefCell<References>,
+    disk: Option<&Path>,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
     if plans.is_empty() {
         return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
     }
-    // Cold warm-up may load different models concurrently. Keep their
-    // calibration sections independent instead of timing competing plans.
+    // Serialize only actual calibration misses. Cached loading and output
+    // validation may fetch/compile a model and must not hold either global lock.
     static CALIBRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _calibration = CALIBRATION.lock().expect("compute calibration poisoned");
-    let remembered = cache
-        .lock()
-        .expect("compute-plan cache poisoned")
-        .get(key)
-        .cloned();
-    if let Some(plan) = remembered.filter(|plan| {
-        plan.revalidate
-            .is_none_or(|deadline| std::time::Instant::now() < deadline)
-    }) {
-        let device = plan.device;
-        references.replace(plan.references);
-        match load(device, plan.target, true).and_then(|mut model| {
-            if device != Device::Cpu {
-                evaluate(&mut model, device)?;
-            }
-            Ok(model)
-        }) {
-            Ok(model) => return Ok((model, device)),
-            Err(error) => {
-                tracing::warn!(%error, "cached compute plan failed; recalibrating");
-                cache
-                    .lock()
-                    .expect("compute-plan cache poisoned")
-                    .remove(key);
+    let (_calibration, _host_lock) = loop {
+        let remembered = cache
+            .lock()
+            .expect("compute-plan cache poisoned")
+            .get(key)
+            .cloned()
+            .filter(fresh_plan);
+        if let Some(plan) = remembered {
+            let device = plan.device;
+            references.replace(plan.references);
+            match load(device, plan.target, true).and_then(|mut model| {
+                if device != Device::Cpu {
+                    evaluate(&mut model, device)?;
+                }
+                Ok(model)
+            }) {
+                Ok(model) => return Ok((model, device)),
+                Err(error) => {
+                    tracing::warn!(%error, "cached compute plan failed; recalibrating");
+                    cache
+                        .lock()
+                        .expect("compute-plan cache poisoned")
+                        .remove(key);
+                    if let Some(path) = disk {
+                        let _lock = file_lock(&path.with_extension("lock"));
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
             }
         }
-    }
+        let calibration = CALIBRATION.lock().expect("compute calibration poisoned");
+        let host_lock = disk.and_then(|path| file_lock(&path.parent()?.join("calibration.lock")));
+        // A different caller/process may have populated the plan while we waited.
+        if cache
+            .lock()
+            .expect("compute-plan cache poisoned")
+            .get(key)
+            .is_some_and(fresh_plan)
+        {
+            continue;
+        }
+        if let Some(plan) = disk.and_then(|path| {
+            let _lock = file_lock(&path.with_extension("lock"));
+            read_plan(path, key, &plans)
+        }) {
+            cache
+                .lock()
+                .expect("compute-plan cache poisoned")
+                .insert(key.into(), plan);
+            continue;
+        }
+        break (calibration, host_lock);
+    };
     references.replace(References::default());
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut transient_failure = false;
@@ -952,6 +983,7 @@ fn calibrated<T>(
         plans,
         cache,
         &std::cell::RefCell::default(),
+        None,
         load,
         evaluate,
     )
@@ -1378,6 +1410,7 @@ mod tests {
             vec![(Device::Cuda, vec![cpu()].into())],
             &cache,
             &references,
+            None,
             |device, _, _| Ok(if device == Device::Cpu { 1.0 } else { 9.0 }),
             |actual, device| {
                 let mut proof = references.borrow_mut();
@@ -1399,6 +1432,77 @@ mod tests {
             Device::Cpu,
             "cached target bypassed its stored CPU output proof"
         );
+    }
+
+    #[test]
+    fn cached_model_load_does_not_wait_for_another_process_calibration() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "cached").unwrap();
+        let held = file_lock(&path.parent().unwrap().join("calibration.lock")).unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
+                "cached".into(),
+                CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false),
+            )]));
+            let result = calibrated_with_references(
+                "cached",
+                vec![(Device::Cuda, vec![cpu()].into())],
+                &cache,
+                &std::cell::RefCell::default(),
+                Some(&path),
+                |device, _, cached| {
+                    assert!(cached);
+                    Ok(device)
+                },
+                |_, _| Ok(Duration::from_millis(1)),
+            );
+            sent.send(result.map(|(_, device)| device)).unwrap();
+        });
+        let result = received.recv_timeout(Duration::from_secs(2));
+        drop(held);
+        worker.join().unwrap();
+        assert_eq!(result.unwrap().unwrap(), Device::Cuda);
+    }
+
+    #[test]
+    fn a_calibration_miss_rechecks_the_disk_plan_after_waiting() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "published").unwrap();
+        let held = file_lock(&path.parent().unwrap().join("calibration.lock")).unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            calibrated_with_references(
+                "published",
+                vec![(Device::Cuda, vec![cpu()].into())],
+                &std::sync::Mutex::default(),
+                &std::cell::RefCell::default(),
+                Some(&worker_path),
+                |device, _, cached| {
+                    assert!(cached, "miss ignored the newly published plan");
+                    Ok(device)
+                },
+                |_, _| Ok(Duration::from_millis(1)),
+            )
+            .unwrap()
+            .1
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        {
+            let _lock = file_lock(&path.with_extension("lock"));
+            write_plan(
+                &path,
+                "published",
+                &CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false),
+            )
+            .unwrap();
+        }
+        drop(held);
+        assert_eq!(worker.join().unwrap(), Device::Cuda);
     }
 
     #[test]
