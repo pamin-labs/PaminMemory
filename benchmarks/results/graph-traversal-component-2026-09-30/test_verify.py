@@ -529,6 +529,10 @@ if __name__ == '__main__':
                 item[keys[-1]]='bogus'
             mutate_json(r/'provenance.json',change)
         run_case('toolchain '+'/'.join(keys),toolchain_mutation)
+    for field in ['product_latency_p50_ms','corpus_accuracy','fabricated']:
+        run_case('extra comparison field '+field,lambda root,field=field:mutate_json(root/'comparison.json',lambda value:value.update({field:{'baseline':100,'scored':50}})),expected_error='comparison top-level schema differs')
+    for key,value in [('early_stop_recovered',1),('cross_arm_non_graph_identical',0)]:
+        run_case('nonboolean comparison status '+key,lambda root,key=key,value=value:mutate_json(root/'comparison.json',lambda row:row.update({key:value})),expected_error='comparison status fields must be actual booleans')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:

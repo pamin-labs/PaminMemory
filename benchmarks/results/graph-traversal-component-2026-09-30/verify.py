@@ -50,6 +50,8 @@ def fixture_content(topic):
 def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
+assert set(comparison)=={'invariants','early_stop_recovered','cross_arm_non_graph_identical','scope','early_stop'}, 'comparison top-level schema differs'
+assert all(type(comparison[key]) is bool for key in ['early_stop_recovered','cross_arm_non_graph_identical']), 'comparison status fields must be actual booleans'
 # Independent experiment date for the dated evidence directory; later
 # retrospective inspections retain their separately recorded capture dates.
 assert type(provenance.get('date')) is str and provenance['date']=='2026-09-30', 'recorded experiment date differs'
