@@ -7,7 +7,7 @@ import struct
 import unittest
 
 from inspect_native import crc32c, inspect
-from verify import verify_row
+from verify import verify_archive, verify_row
 
 HERE = Path(__file__).resolve().parent
 
@@ -127,6 +127,38 @@ class MetadataGuardTests(unittest.TestCase):
                 handle.truncate(self.row['bytes'])
             with self.assertRaisesRegex(ValueError, 'differs from retained seed'):
                 inspect(path, self.row)
+
+
+class ArchiveGuardTests(unittest.TestCase):
+    def test_top_level_command_accepts_retained_archive(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, '-B', str(HERE/'verify.py')],
+                                check=True, capture_output=True, text=True)
+        report = json.loads(result.stdout)
+        self.assertEqual((report['file_count'], report['documents'], report['effective_pq_chunks']),
+                         (10, 18000, 512))
+
+    def test_mutated_provenance_rejected_by_archive_entry(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            archive = parent/HERE.name
+            archive.mkdir()
+            (archive/'excerpts.json').write_bytes((HERE/'excerpts.json').read_bytes())
+            provenance_dir = parent/'restart-floor-disk-2026-09-30'
+            provenance_dir.mkdir()
+            provenance = json.loads((HERE.parent/provenance_dir.name/'provenance.json').read_text())
+            provenance['seed_documents'] = 17999
+            (provenance_dir/'provenance.json').write_text(json.dumps(provenance))
+            with self.assertRaisesRegex(ValueError, 'Provenance hash mismatch'):
+                verify_archive(archive)
+            # A refreshed pin must still fail the semantic corpus-count check.
+            document = json.loads((archive/'excerpts.json').read_text())
+            document['provenance_sha256'] = hashlib.sha256((provenance_dir/'provenance.json').read_bytes()).hexdigest()
+            (archive/'excerpts.json').write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, 'Document count mismatch'):
+                verify_archive(archive)
 
 
 if __name__ == '__main__':
