@@ -787,10 +787,6 @@ impl Reranker {
                 longest = longest.max(length);
             }
             let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
-            let pairs: Vec<(&str, &str)> = unscored
-                .iter()
-                .map(|position| (query, documents[*position]))
-                .collect();
             let previous = self.device;
             let tier = self.tier;
             let cache = &self.cache_dir;
@@ -799,8 +795,12 @@ impl Reranker {
                 &mut self.device,
                 cache,
                 |model, _| {
+                    let pairs: Vec<(&str, &str)> = unscored
+                        .iter()
+                        .map(|position| (query, documents[*position]))
+                        .collect();
                     let encoding = Instant::now();
-                    let encodings = model.encode(pairs.clone())?;
+                    let encodings = model.encode(pairs)?;
                     let encode_us = encoding.elapsed().as_micros() as u64;
                     let tokens = encodings
                         .iter()
