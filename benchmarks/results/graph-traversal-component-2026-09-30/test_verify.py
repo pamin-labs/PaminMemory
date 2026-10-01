@@ -36,7 +36,7 @@ def mutate_json(path, change, jsonl=False):
         path.write_text(json.dumps(row, indent=2) + '\n')
 
 
-def run_case(label, mutate=None, flags=(), refresh_hashes=True):
+def run_case(label, mutate=None, flags=(), refresh_hashes=True, expected_error=None):
     with tempfile.TemporaryDirectory(prefix='graph-archive-negative-') as temp:
         root = Path(temp) / 'archive'
         shutil.copytree(ROOT, root)
@@ -47,6 +47,8 @@ def run_case(label, mutate=None, flags=(), refresh_hashes=True):
         result = subprocess.run([sys.executable, *flags, str(root / 'verify.py')], capture_output=True, text=True)
         if result.returncode == 0 or 'PASS:' in result.stdout:
             raise SystemExit(f'FAIL: {label} was accepted')
+        if expected_error is not None and expected_error not in result.stderr:
+            raise SystemExit(f'FAIL: {label} rejected for wrong reason: {result.stderr}')
         print(f'PASS: rejected {label}')
 
 
@@ -68,6 +70,17 @@ if __name__ == '__main__':
     if success.returncode:
         raise SystemExit(success.stderr)
     retained=json.loads((ROOT/'provenance.json').read_text())
+    run_case('product overclaim in provenance scope',lambda r:mutate_json(r/'provenance.json',lambda p:p.update(scope='native search_fused component; validated product accuracy and speed improvement')),expected_error='component provenance scope differs')
+    for key,value in [('scope','Historical platform capture from the measured runs.'),('comparison','Current CPU/kernel/quota/affinity exactly match the original runs.')]:
+        run_case('historical hardware overclaim '+key,lambda r,key=key,value=value:mutate_json(r/'platform-observation.json',lambda p:p.update({key:value})),expected_error='current platform scope differs' if key=='scope' else 'historical hardware limitation differs')
+    for arm in ['baseline','scored']:
+        recorded=next(a for a in retained['arms'] if a['arm']==arm)['resources']
+        for key in recorded:
+            value=False if key=='reclaim_pressure' else 'guaranteed reclaim; exclusive machine' if key=='scope' else -1 if key=='estimated_headroom_bytes' else 1
+            run_case('resource-pressure '+arm+' '+key,lambda r,arm=arm,key=key,value=value:mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['resources'].update({key:value})),expected_error='retained resource-pressure record differs')
+        for key in ['reclaim_pressure','estimated_headroom_bytes','oom_before']:
+            value=1 if key=='reclaim_pressure' else False if key=='oom_before' else float(recorded[key])
+            run_case('resource-pressure strict type '+arm+' '+key,lambda r,arm=arm,key=key,value=value:mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['resources'].update({key:value})),expected_error='resource-pressure record types differ')
     for name in retained['redactions']:
         run_case('original redaction digest '+name, lambda r,name=name: mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(original_sha256='0'*64)))
     for arm in ['baseline','scored']:

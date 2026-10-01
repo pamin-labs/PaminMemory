@@ -14,7 +14,7 @@ def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
 assert provenance['source_base']=='13ee710c9df865f1dac98dc77a8108e438ddc539'
-assert provenance['scope'].startswith('native search_fused component')
+assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 ORIGINAL_REDACTION_PINS = {'baseline.jsonl': '302e70b2463379af148eaf8c3ced4f4d3606c1fc865af1b1bc38d1d69597929e',
  'baseline.log': '6f5b1350ed22fcf72dbc0a38dddd65ea99dace15f875298b0ae15becb077e025',
@@ -112,6 +112,8 @@ for arm, binary in audit['arms'].items():
   assert payload['sha256'] == sql_sources[name]['sha256'] and payload['bytes'] == sql_sources[name]['bytes']
   assert type(payload['first_binary_offset']) is int and 0 <= payload['first_binary_offset'] <= binary['binary_bytes'] - payload['bytes']
 platform_observation = load(provenance['hardware_observation'])
+assert platform_observation['scope']=='Current platform observation after the original runs; never substituted for missing historical fields.', 'current platform scope differs'
+assert platform_observation['comparison']=='Original memory.max equals current memory.max for both arms. CPU model/kernel/quota/affinity equality with original execution is unknown.', 'historical hardware limitation differs'
 assert re.fullmatch(r'2026-09-30T[0-9:.]+\+00:00', platform_observation['captured_at_utc'])
 assert platform_observation['historical'] == {'cpu_model':'N/A: not captured','kernel':'N/A: not captured','cpu_quota':'N/A: not captured','cpu_affinity':'N/A: not captured','memory_max_bytes':{'baseline':17179869184,'scored':17179869184}}
 assert platform_observation['current'] == CURRENT_PLATFORM_PINS, 'dated current platform capture differs'
@@ -119,6 +121,22 @@ assert platform_observation['current']['cpu_model'] and platform_observation['cu
 assert platform_observation['current']['memory_max_bytes'] == 17179869184
 assert platform_observation['current']['cpu_quota'] == '400000 100000'
 
+RESOURCE_PINS = {'baseline': {'estimated_headroom_bytes': 8437116928,
+              'oom_after': 0,
+              'oom_before': 0,
+              'oom_kill_after': 0,
+              'oom_kill_before': 0,
+              'reclaim_pressure': True,
+              'scope': 'max-current+inactive_file; reclaim not guaranteed; no '
+                       'cache drop'},
+ 'scored': {'estimated_headroom_bytes': 8410218496,
+            'oom_after': 0,
+            'oom_before': 0,
+            'oom_kill_after': 0,
+            'oom_kill_before': 0,
+            'reclaim_pressure': True,
+            'scope': 'max-current+inactive_file; reclaim not guaranteed; no '
+                     'cache drop'}}
 arm_records={r['arm']:r for r in provenance['arms']}
 assert len(provenance['arms']) == 2 and set(arm_records) == {'baseline','scored'}
 SOURCE_PATHS = {'crates/pamin-engine/tests/graph_trace/mod.rs', 'crates/pamin-cli/Cargo.toml', 'crates/pamin-store/src/error.rs', 'crates/pamin-index/src/half.rs', 'crates/pamin-index/src/tokenizer.rs', 'crates/pamin-index/src/encoder.rs', 'crates/pamin-index/src/hub.rs', 'crates/pamin-index/src/inference.rs', 'crates/pamin-index/src/reshape.rs', 'crates/pamin-index/src/segmentation.rs', 'crates/pamin-core/src/version.rs', 'crates/pamin-core/src/graph.rs', 'benchmarks/results/inference/vector-rescore-device-2026-09-30/Cargo.toml', 'Cargo.lock', 'crates/pamin-store/src/lib.rs', 'crates/pamin-core/src/lib.rs', 'crates/pamin-index/src/onnx.rs', 'crates/pamin-index/src/reranking.rs', 'crates/pamin-core/Cargo.toml', 'crates/pamin-store/src/workspace.rs', 'crates/pamin-engine/Cargo.toml', 'crates/pamin-index/src/error.rs', 'crates/pamin-core/src/env.rs', 'crates/pamin-index/src/descriptors.rs', 'Cargo.toml', 'crates/pamin-core/src/id.rs', 'crates/pamin-store/src/sql.rs', 'crates/pamin-index/src/lib.rs', 'crates/pamin-core/src/channel.rs', 'crates/pamin-index/Cargo.toml', 'crates/pamin-index/src/prepared.rs', 'crates/pamin-store/src/repository.rs', 'crates/pamin-core/src/fusion.rs', 'crates/pamin-index/src/projection.rs', 'crates/pamin-engine/src/reshape.rs', 'crates/pamin-index/src/attention.rs', 'crates/pamin-store/src/database.rs', 'crates/pamin-engine/src/cascade.rs', 'benchmarks/results/inference/vector-rescore-accelerate-2026-09-30-Cargo.toml', 'crates/pamin-core/src/cascade.rs', 'crates/pamin-core/src/ledger.rs', 'crates/pamin-engine/tests/scratch_scored_fixture.rs', 'crates/pamin-store/src/migrate.rs', 'crates/pamin-index/src/native.rs', 'crates/pamin-store/Cargo.toml', 'crates/pamin-store/src/jobs.rs', 'crates/pamin-engine/src/engine.rs', 'crates/pamin-core/src/filter.rs', 'crates/pamin-engine/src/lib.rs', 'crates/pamin-store/src/graph.rs', 'crates/pamin-engine/tests/harness/mod.rs', 'crates/pamin-index/src/embedding.rs'}
@@ -146,6 +164,9 @@ rows = {}
 
 for arm,weak_rank in [('baseline',23),('scored',22)]:
  row=load(f'{arm}.jsonl');record=arm_records[arm];rows[arm]=row
+ resources=record['resources']
+ assert resources==RESOURCE_PINS[arm], 'retained resource-pressure record differs'
+ assert type(resources['reclaim_pressure']) is bool and all(type(resources[key]) is int for key in resources if key.endswith('_bytes') or key.startswith('oom_')), 'resource-pressure record types differ'
  launch = record['launch_binding']
  assert launch['original_launch_sha256'] == ORIGINAL_LAUNCH_PINS[arm]
  assert launch['command'] == ['${FROZEN_BINARY}','scratch_scored_graph_finite_fixture','--exact','--ignored','--nocapture','--test-threads=1']
