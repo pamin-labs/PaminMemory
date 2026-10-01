@@ -259,6 +259,7 @@ def main():
     trial.add_argument('--output',type=Path,required=True);trial.add_argument('--arm',action='append',required=True)
     a=p.parse_args();assert a.documents>0, 'requested document count must be positive'
     excluded=[a.home] if a.mode=='setup' else [a.seed,a.output]
+    if a.mode=='trials':assert not a.output.resolve().is_relative_to(a.seed.resolve()), 'trial output must be outside source seed'
     assert all(not a.attestation.resolve().is_relative_to(root.resolve()) for root in excluded), 'build attestation must be outside measured home/seed/output'
     assert not a.record.exists(), 'preserve previous configuration evidence'
     expected_models,model_bytes,model_prepared=MODEL['load'](a.model_manifest)
