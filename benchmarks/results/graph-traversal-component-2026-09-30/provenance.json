@@ -518,15 +518,15 @@
     "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
     "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
     "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
-    "verify.py": "3880339771b8ef1f6e0e3beaaa0e5f2fcfa57fc9ed25629089c05a45150a48f9",
+    "verify.py": "49ce9404d7c4e2837c4fdee73c9769b8dd95546adc5cddfc3a54dc1237489ea9",
     "platform-observation.json": "c9cd36af33d603da177bdc4becdb03cf656bad2faf2d7ba0a37c935b56fb3d3d",
     "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
     "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
     "comparison.json": "b14f2c9ab62fc85abc25f87cf295e1b49e37ca3b723c1943ba498e6e964b24eb",
-    "test_verify.py": "c940b3b1f9467abdec20708d53ab357de821acc254984b7218faeca0334b4472",
+    "test_verify.py": "02000ea9468ebe7cb15001ae4c1f8eb665dc9df07c84bfc2891a54d18861c28f",
     "baseline.log": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
     "baseline.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
-    "README.md": "002250c802232f7055e80d661d2adaec298cc7b50a6ac6f85512f5d3d9ee13cd",
+    "README.md": "6922b9f40416583a0f3b974dd00cc2eacfdb6c0c08be691564c192a1e3bab8cf",
     "source/multihop.rs.in": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00",
     "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
@@ -547,7 +547,9 @@
     "source/migrations/V4__current_state_pointer.sql": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
     "source/migrations/V10__settled_jobs_leave.sql": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
     "source/future-accounting.py.in": "d42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027",
-    "test_future_accounting.py": "5d2bbafedeac42848b573a19ddfd60b8b232f92ab8620b0d65f3f97cfbf2028f"
+    "test_future_accounting.py": "73242bbe736474dd182aada58c2cc999cb0532a24e962f004c131c2da1970787",
+    "source/fixture-future.rs.in": "ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373",
+    "source/prepare-future.py": "ce84a958284d2aa2f234cfd45d61123973258d67eb22f9b98359eba8f2306a37"
   },
   "source_inventory_scope": {
     "original_captured_entries_per_arm": 52,
@@ -574,7 +576,17 @@
     "scope": "prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement",
     "files": {
       "source/future-accounting.py.in": "d42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027",
-      "test_future_accounting.py": "5d2bbafedeac42848b573a19ddfd60b8b232f92ab8620b0d65f3f97cfbf2028f"
+      "test_future_accounting.py": "73242bbe736474dd182aada58c2cc999cb0532a24e962f004c131c2da1970787",
+      "source/fixture-future.rs.in": "ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373",
+      "source/prepare-future.py": "ce84a958284d2aa2f234cfd45d61123973258d67eb22f9b98359eba8f2306a37"
+    },
+    "fixture_policy": {
+      "scope": "prospective disabled-arm defect assertions; historical fixture and preparation bytes unchanged",
+      "historical_fixture": "source/fixture.rs.in",
+      "historical_fixture_sha256": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
+      "fixture": "source/fixture-future.rs.in",
+      "prepare": "source/prepare-future.py",
+      "native_execution": "N/A: prospective baseline assertions not compiled or run; benchmarks deferred"
     }
   },
   "redaction_validation_scope": "declared allowed transforms; local read-only audit matched original digests and semantic JSON equivalence modulo declared path prefixes; private originals not distributed and public verifier cannot independently replay that audit"
