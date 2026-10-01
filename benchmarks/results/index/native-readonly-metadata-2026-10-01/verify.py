@@ -39,12 +39,13 @@ def crc32c(data):
 
 
 def decode(excerpt, file_size):
+    require(set(excerpt) == {'header_hex', 'footer_hex', 'table_size', 'table_nonzero_runs', 'streamer_and_linear_header_hex'}, 'phase excerpt schema/scope')
     header = bytes.fromhex(excerpt['header_hex'])
     footer = bytes.fromhex(excerpt['footer_hex'])
     linear = bytes.fromhex(excerpt['streamer_and_linear_header_hex'])
     require(len(header) == 64 and len(footer) == 128 and len(linear) == 128, 'metadata extent')
     h, f = HEADER.unpack(header), FOOTER.unpack(footer)
-    require(h[2] == 2 and h[5:7] == (64, 128), 'wrong format')
+    require(h[2] == 2 and h[3] == 0 and h[5:7] == (64, 128), 'wrong format/revision')
     require(crc32c(b'\0'*4 + header[4:]) == h[0], 'header CRC')
     require(crc32c(b'\0'*4 + footer[4:]) == f[0], 'footer CRC')
     require(f[3] == 5 and f[4] == excerpt['table_size'] and f[4] <= 2**21, 'table bounds')
@@ -122,6 +123,8 @@ def verify(evidence, check_logs=True, logs=None):
         require([f['label'] for f in run['files']] == [f'embedding.index.{i}.proxima' for i in [2,4,6,8]], 'file set')
         counts = []
         for file in run['files']:
+            require(set(file) == {'label', 'file_size_before', 'file_size_after', 'whole_file_sha256_before', 'whole_file_sha256_after', 'actual_changed_ranges', 'allowed_full_field_ranges', 'excerpts'}, 'file schema/scope')
+            require(set(file['excerpts']) == {'before', 'after'}, 'excerpts schema/scope')
             recorded_hashes = (file['whole_file_sha256_before'], file['whole_file_sha256_after'])
             require(all(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None for value in recorded_hashes), 'whole-file identity format')
             require(recorded_hashes == WHOLE_FILE_SHA256[run['arm']][file['label']], 'whole-file identity receipt binding')
@@ -148,7 +151,13 @@ def verify(evidence, check_logs=True, logs=None):
         if check_logs:
             log = (ROOT/(run['arm']+'.log')).read_text() if logs is None else logs[run['arm']]
             require(hashlib.sha256(log.encode()).hexdigest() == run['log_sha256'], 'log hash')
-            require([s.removeprefix('PROBE_STAGE ') for s in log.splitlines() if s.startswith('PROBE_STAGE ')] == expected, 'log stages')
+            option_event = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864'
+            expected_events = ['PROBE_STAGE initialized', option_event, 'PROBE_STAGE options_readonly', 'PROBE_STAGE opened']
+            if run['arm'] == 'vector':
+                expected_events += ['PROBE_STAGE stats_schema', 'PROBE_STAGE vector_prepared', 'PROBE_HITS 50', 'PROBE_STAGE vector_queried']
+            expected_events += ['PROBE_STAGE dropped']
+            events = [line for line in log.splitlines() if line.startswith(('PROBE_STAGE ', 'PROBE_OPTIONS ', 'PROBE_HITS '))]
+            require(events == expected_events, 'ordered probe events')
             result_lines = [line for line in log.splitlines() if 'test result:' in line]
             require(len(result_lines) == 1 and re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(?:\.[0-9]+)?s', result_lines[0]) is not None, 'single positive test completion')
             option_lines = [line for line in log.splitlines() if line.startswith('PROBE_OPTIONS ')]
