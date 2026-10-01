@@ -398,6 +398,8 @@ for label, values in zip(labels, computed+[early]):
  percent = 'N/A' if values['percent_change'] is None else f"+{values['percent_change']:.6f}%"
  lines.append(f"| {label} | {before} | {values['scored']:.8f} | {values['expected']:g} | {delta} | {percent} |")
 readme = (ROOT/'README.md').read_text()
+FRONTIER_LIMITATION='The unresolved 2,000-position frontier cap remains approximate; its stress test\nwas compiled but not run.'
+assert readme.count(FRONTIER_LIMITATION)==1, 'README compiled-but-unrun frontier-stress limitation differs'
 HISTORICAL_ZVEC_README='The provisioned Zvec file was hashed before and after, but its actual loaded\nmapping was not captured: historical loaded-Zvec identity is **N/A**.'
 assert readme.count(HISTORICAL_ZVEC_README)==1, 'README historical loaded zvec N/A limitation differs'
 build_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if 'CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0' in block]
