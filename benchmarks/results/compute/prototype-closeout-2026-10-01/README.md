@@ -73,27 +73,50 @@ git cat-file -t 0f023be6a8d8d070a971f7e590ccccff2c3292bb
 
 ## Executable scratch reproduction
 
-The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/eff4c8c55e69c341f00517046aa9e0d6e3aba751) remain outside the tracked tree, with SHA-256 in `persisted-cost-identity.json`. A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. The harness aborts rather than timing an empty corpus. Use a separate checkout of the exact revision for the selected arm below; install the same frozen scratch source in that checkout. The command matrix explicitly distinguishes CPU policy from automatic policy and the dual profile. These commands reproduce the Rust warm-search rows; whole-process columns use the frozen worker described below.
+The [versioned public scratch bundle](https://gist.github.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/72859f283b963c0294875dbef2a4e3a00209f9b5) contains separately retained main and persisted harness sources. The 503bd9e harness is a disclosed reconstruction of the persisted source with only its literal execution identity changed; its original measurement-time source bytes are not archived here. Re-running that reconstruction cannot certify those missing original bytes or historical compiler inputs. Use the source matching the selected revision, rather than labeling the persisted harness as a main/503 execution.
+
+A provisioned, unprivileged `/private/tmp/pamin-dual-product-eval` must already contain the fingerprinted corpus, model cache, PostgreSQL and complete `dual-product-accuracy-24ad7f1862182925` / `dual-product-dual_accuracy-24ad7f1862182925` indexes. The harness aborts on an empty/incomplete corpus. Each source revision needs a separate checkout. This helper downloads only the selected public scratch source to its ignored test location and checks its frozen SHA-256; it does not provision models or PostgreSQL:
 
 ```sh
-curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs -o crates/pamin-engine/tests/scratch_matched_costs.rs
-shasum -a 256 crates/pamin-engine/tests/scratch_matched_costs.rs
-# Expected: 2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad
-# Run one arm at a time, builds/other experiments stopped; rotate arms and use fresh processes.
+cost_harness_identity() {
+  cost_revision=$1
+  test "$(git rev-parse HEAD)" = "$cost_revision" || return 1
+  case "$cost_revision" in
+    315c10242ddf7a1cec3bccbf550a942320e09557)
+      cost_url=https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/b1054c02a237de3f8ecb8e7252fbc562526d6311/pamin-main-cost-harness.rs
+      cost_sha=253a1546bba55ff9bb3733c60a790d489565729b37edd259b8a6e6b8cfd373cc ;;
+    503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27)
+      cost_url=https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/451f9cd328dbaa636be72909291b5a9dd97419c7/pamin-new-cost-harness-reconstructed.rs
+      cost_sha=b2f170bd06e488311ec4c1b75d8ded4bb1a56e728ac12802fa47f7d346eccee8 ;;
+    0f023be6a8d8d070a971f7e590ccccff2c3292bb)
+      cost_url=https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/2faf59eecb05cebd9376d24f157403e7057a3121/pamin-persist-cost-harness.rs
+      cost_sha=2f697a84df87277b65091dd7bf633bec179c167c4a4c50b66d50995e2ba6eaad ;;
+    *) return 1 ;;
+  esac
+  cost_source=crates/pamin-engine/tests/scratch_matched_costs.rs
+}
+install_cost_harness() {
+  cost_harness_identity "$1" || return 1
+  curl -fsSL "$cost_url" -o "$cost_source" || return 1
+  printf '%s  %s\n' "$cost_sha" "$cost_source" | shasum -a 256 -c -
+}
 run_cost() {
   cost_arm=$1; cost_revision=$2; cost_profile=$3; cost_policy=$4; cost_block=$5
   test "$(git rev-parse HEAD)" = "$cost_revision" || return 1
   case "$cost_policy" in cpu|auto) ;; *) return 1 ;; esac
+  cost_harness_identity "$cost_revision" || return 1
+  printf '%s  %s\n' "$cost_sha" "$cost_source" | shasum -a 256 -c - || return 1
   test "$cost_block" -ge 0 && test "$cost_block" -le 2 || return 1
   cost_rows=/private/tmp/reproduced-cost-${cost_arm}-${cost_block}.jsonl
   if test "$cost_policy" = cpu; then
-    env -u HF_HOME -u PAMIN_DEVICE PAMIN_DEVICE=cpu PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+    env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_DEVICE=cpu PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
   else
-    env -u HF_HOME -u PAMIN_DEVICE PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+    env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
   fi
 }
-# Select the one line matching this checkout; repeat with block=1 and block=2
-# in fresh processes, rotating arm order. Each source revision needs its own checkout.
+# In each checkout install its matching source before using the corresponding rows.
+# Repeat blocks 0, 1, 2 as fresh processes, rotating arm order; do not run these builds during timings.
+# Example for main: install_cost_harness 315c10242ddf7a1cec3bccbf550a942320e09557
 block=0
 run_cost main-cpu 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy cpu "$block"
 run_cost new-cpu 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 accuracy cpu "$block"
@@ -102,8 +125,11 @@ run_cost main-auto 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy auto "$bloc
 run_cost new-auto 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 accuracy auto "$block"
 run_cost main-auto-repeat 315c10242ddf7a1cec3bccbf550a942320e09557 accuracy auto "$block"
 run_cost new-auto-persist-hit 0f023be6a8d8d070a971f7e590ccccff2c3292bb accuracy auto "$block"
-rm crates/pamin-engine/tests/scratch_matched_costs.rs
+# Remove the ignored scratch source after that checkout's runs:
+# rm crates/pamin-engine/tests/scratch_matched_costs.rs
 ```
+
+These are warm-search reproduction commands, not a new executed measurement or a complete build certificate. Establish a nonexpired persisted plan in a separate setup process before the persisted-hit blocks, then verify their retained events contain no calibration/rejection. Do not label expired quarantine or uncontrolled CoreML compilation as a controlled hit. Build first and freeze the executable before invoking the retained worker for process-resource columns; the commands above intentionally preserve the historical Cargo-based scratch entry point and exclude its compilation from reported query timers.
 
 The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Loaded events require a device from `cpu`, `cuda`, `coreml`, `directml`, or `npu`; unrelated events reject device fields. Loaded event/device pairs are independently compared with the published loaded-device summary, including order and count. Each cost block's published manifest must equal its validated raw manifest, and all three `main-cpu` rankings must match the full baseline at every selected query `18*i`. Original source hashes are retained; original logs stay local.
 
