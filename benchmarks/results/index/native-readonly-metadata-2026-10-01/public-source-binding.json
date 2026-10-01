@@ -1,0 +1,262 @@
+{
+  "format": "public-equivalent-production-inputs-v1",
+  "historical_local_source_commit": "af917642a1fba637b9a8fc02bffb2c966c50f7ec",
+  "historical_source_public": false,
+  "public_equivalent_commit": "47edbae70bbc72b108e4b6b09b938d32edab918c",
+  "public_reference": "https://github.com/pamin-labs/PaminMemory/pull/214",
+  "scope": "pamin-core and pamin-index tracked production src; all workspace Cargo manifests; root Cargo.lock and toolchain declaration; tracked Cargo config if present. Excludes private scratch helper, complete historical tree, actual compiler/environment/cache provenance.",
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "mode": "100644",
+      "git_blob": "e1b5f801ed4c43741518d9b35665eb52cd25ffb6",
+      "bytes": 97540,
+      "sha256": "a9d3ef6df00c0cadb3c901b7d3c6bc50f21d53c72d7d2604592b871d413970ef"
+    },
+    {
+      "path": "Cargo.toml",
+      "mode": "100644",
+      "git_blob": "b9098a1d03e32655a07d53dd02ca39209fea93b1",
+      "bytes": 4420,
+      "sha256": "986e728a929f2294b48df88da4b7ba92dc44b785534f5f6f7022109d4e92d769"
+    },
+    {
+      "path": "crates/pamin-cli/Cargo.toml",
+      "mode": "100644",
+      "git_blob": "489505d800c14d758775abcba00c7a3cfde426d0",
+      "bytes": 957,
+      "sha256": "327baead6dc7c8ac8b73da4cd1062021edb94d974e9fdf8715205dedd2ceee63"
+    },
+    {
+      "path": "crates/pamin-core/Cargo.toml",
+      "mode": "100644",
+      "git_blob": "f49db9965a00a426102933dc37b15eb6c1fcea0a",
+      "bytes": 514,
+      "sha256": "b0bf263868ae18b4f680f4ad61782e91cb59915f55ee1f0342cd5318d56ed851"
+    },
+    {
+      "path": "crates/pamin-core/src/cascade.rs",
+      "mode": "100644",
+      "git_blob": "1074f0d7e320124fc8a2e3043b0a4cbd0f033e15",
+      "bytes": 7802,
+      "sha256": "bfcfd7745e84c64c7220d62b00ad7da794e0f0ccd86706824631cbd9cb58a92d"
+    },
+    {
+      "path": "crates/pamin-core/src/channel.rs",
+      "mode": "100644",
+      "git_blob": "2a00ab33c59b262332544247b08696fe152b2ce1",
+      "bytes": 8085,
+      "sha256": "17ed5d2bbd0119002a0beb421316f852e99d1e9dde3bfdbfa811cfaf5737345c"
+    },
+    {
+      "path": "crates/pamin-core/src/env.rs",
+      "mode": "100644",
+      "git_blob": "5fece6d3c001501a4326e9cf7238a04041bf753d",
+      "bytes": 3085,
+      "sha256": "48dc84c0f65481312bf0120fe8f422275a22a38912e157d9ae0463efc78356e7"
+    },
+    {
+      "path": "crates/pamin-core/src/filter.rs",
+      "mode": "100644",
+      "git_blob": "ec4d199592154a236469d08d30cf85cff6fcad32",
+      "bytes": 6547,
+      "sha256": "0dae0f26de508e94325b24745d7303d85ec819b2c7dfccbc146b8f2718dccc80"
+    },
+    {
+      "path": "crates/pamin-core/src/fusion.rs",
+      "mode": "100644",
+      "git_blob": "7c3b47a03c5aec54c1f9437ce7a4a78e8e2e1616",
+      "bytes": 49022,
+      "sha256": "fa0a810d174ef4d87f3fbcf413dc9a739a2ed0cccc896fa763048397cfe9085a"
+    },
+    {
+      "path": "crates/pamin-core/src/graph.rs",
+      "mode": "100644",
+      "git_blob": "9bc62ef05682e44c7b80c006638c13a4f3b3f1ce",
+      "bytes": 7339,
+      "sha256": "98a55efa6f9d45084c683a22ad2cc3927e1aafab3e07ab2f0d341aec8720ceb5"
+    },
+    {
+      "path": "crates/pamin-core/src/id.rs",
+      "mode": "100644",
+      "git_blob": "e8470059f3e0aad470f46cfdd1a665583df43030",
+      "bytes": 3548,
+      "sha256": "5040618538f744f1e09b505d173b7bb7c0aec8a79319888cb23eb85aeee52904"
+    },
+    {
+      "path": "crates/pamin-core/src/ledger.rs",
+      "mode": "100644",
+      "git_blob": "b5b895c0ae4e00772d7959e6f9a397b9d6dfc1e2",
+      "bytes": 8065,
+      "sha256": "d372263bf89b564b67702dac7555baa7caeb0b2ef3f03c99fd5e8c1c4a81188a"
+    },
+    {
+      "path": "crates/pamin-core/src/lib.rs",
+      "mode": "100644",
+      "git_blob": "664aeb77c135cbbfacb72b22e216edc952691284",
+      "bytes": 1158,
+      "sha256": "9ed8b6589970d617e75cab8d1f0b660379a6aa0864f077bdea9ccf4c36351f88"
+    },
+    {
+      "path": "crates/pamin-core/src/version.rs",
+      "mode": "100644",
+      "git_blob": "b4066e05db79944bd7de70e14f4648fac8ee16da",
+      "bytes": 4328,
+      "sha256": "741dae19af31858360cf5ab05745090b40336cc1c3f9889d1dc773a7dbca2f8e"
+    },
+    {
+      "path": "crates/pamin-engine/Cargo.toml",
+      "mode": "100644",
+      "git_blob": "de96ca8447fb979d679e6c2e5793ba03c959a38a",
+      "bytes": 1346,
+      "sha256": "749e8cc88ea59ccb91be4e49c45a2796bc05bf623e54dc90b32e14b849b07d7d"
+    },
+    {
+      "path": "crates/pamin-index/Cargo.toml",
+      "mode": "100644",
+      "git_blob": "867195d1ae153976a86aa3153732382a02a0c917",
+      "bytes": 3248,
+      "sha256": "a30da5feba2e964e3176bc825e11e0c13b3872b398a44a71e6345210a1e09334"
+    },
+    {
+      "path": "crates/pamin-index/src/attention.rs",
+      "mode": "100644",
+      "git_blob": "eea07489ca7021b7d8defe5d7c807595a4d04776",
+      "bytes": 27955,
+      "sha256": "8c5ac9c253c549792b0d27221a7cfc73d854a617269e7df7e7162abd11d9cc94"
+    },
+    {
+      "path": "crates/pamin-index/src/descriptors.rs",
+      "mode": "100644",
+      "git_blob": "ebcd3277382092effe278c0161621f9afeb6c3b2",
+      "bytes": 6614,
+      "sha256": "81cd23cdb2f1e2848b597a9e313a345bec2bc5b3febc04a99879c3027a10651e"
+    },
+    {
+      "path": "crates/pamin-index/src/embedding.rs",
+      "mode": "100644",
+      "git_blob": "0bb9ca85edfcb5061ca8c3a682a1363d8df67ac1",
+      "bytes": 24710,
+      "sha256": "788cf9fe2a1608c66c315e513d495cdfc742e4b1806182d5707a21a7d2a5eb9b"
+    },
+    {
+      "path": "crates/pamin-index/src/encoder.rs",
+      "mode": "100644",
+      "git_blob": "0dedb19c99c20b1d08ab21e5ff5e4435a2b0920e",
+      "bytes": 15177,
+      "sha256": "bbd5f95fd8a5a0ec00fe795778d815b75efb724059d1f215d7aaeef8a8c0503b"
+    },
+    {
+      "path": "crates/pamin-index/src/error.rs",
+      "mode": "100644",
+      "git_blob": "43cb23fd5eb00c64eb0aba86ffaf01a48ddabaf4",
+      "bytes": 1720,
+      "sha256": "b8aedaef9998baf6bf659c3d654866ec3e862bafa64a3ebff44699c7598c0b92"
+    },
+    {
+      "path": "crates/pamin-index/src/half.rs",
+      "mode": "100644",
+      "git_blob": "ab19b5a96d32271ce93032894a51f87a46dd0914",
+      "bytes": 8364,
+      "sha256": "b25ed578dd4d9e2ba5113411b6f4e9a316233185ca3f2785982322f916898964"
+    },
+    {
+      "path": "crates/pamin-index/src/hub.rs",
+      "mode": "100644",
+      "git_blob": "2abef3693355a692fb4a3e7f01bce6a0ffc1b62f",
+      "bytes": 8729,
+      "sha256": "2eed22ebb43cd7753fa6f1ec6cf5e098bc3915c937fa27f7e0123e29a51fe697"
+    },
+    {
+      "path": "crates/pamin-index/src/inference.rs",
+      "mode": "100644",
+      "git_blob": "cea362562332dc233a8757b22b967ca9c361334d",
+      "bytes": 41267,
+      "sha256": "78ec6898ec65209fcde3ff860911d83302616f143f6a68cdb22cde4fad010000"
+    },
+    {
+      "path": "crates/pamin-index/src/lib.rs",
+      "mode": "100644",
+      "git_blob": "228de760be02af92e74caa7965030a38405d6267",
+      "bytes": 1057,
+      "sha256": "d9229a506adfdd3c599f1f9d010bd7882856e9860867cee5c22b26dea72b7d1e"
+    },
+    {
+      "path": "crates/pamin-index/src/native.rs",
+      "mode": "100644",
+      "git_blob": "54d61e190627b192dfca1346346fdf6cd4e6a8cb",
+      "bytes": 26714,
+      "sha256": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27"
+    },
+    {
+      "path": "crates/pamin-index/src/onnx.rs",
+      "mode": "100644",
+      "git_blob": "e7a73ee9aab23ab50fd70e895439807c6d42b27a",
+      "bytes": 12899,
+      "sha256": "3fe1b5a703c2ff2f1f53085f72d262e17f5eb5f8420de7477d99510238948894"
+    },
+    {
+      "path": "crates/pamin-index/src/prepared.rs",
+      "mode": "100644",
+      "git_blob": "383fbb1efd6486d44bd7609ee046be9cae153104",
+      "bytes": 65327,
+      "sha256": "1170263cf2ec4570bb1fc32606fe2865facc2d5a6df0c9359b614650d9ddbb03"
+    },
+    {
+      "path": "crates/pamin-index/src/projection.rs",
+      "mode": "100644",
+      "git_blob": "8cea566f2c3abf5066cbff2e8168c03a1d534741",
+      "bytes": 98243,
+      "sha256": "254a44e8a3acec00c12c666cb53eb0009dc60ed7cc137448d33ec354773f70f5"
+    },
+    {
+      "path": "crates/pamin-index/src/reranking.rs",
+      "mode": "100644",
+      "git_blob": "b88945f529c3c9f07a0dcde9988ac961a4addc37",
+      "bytes": 69964,
+      "sha256": "167afe6969fd269a2f85a9ef8a0a8f4b581f678c1d9cd8cb5ea9cf5a0460a262"
+    },
+    {
+      "path": "crates/pamin-index/src/reshape.rs",
+      "mode": "100644",
+      "git_blob": "8833ba9efc91b0142481565722884ce863189af2",
+      "bytes": 35268,
+      "sha256": "f025bf6e1e170e4ccad5bb152ccaf6b9cd25c950c5bfda5de49e20c3fd15c8bd"
+    },
+    {
+      "path": "crates/pamin-index/src/segmentation.rs",
+      "mode": "100644",
+      "git_blob": "fc378be92a1490b423eab47deae789f8de68abbb",
+      "bytes": 12030,
+      "sha256": "1b5afa16352c4f13b8bfe6292c4f5d321054d461bc0c5392adf2b1e114215815"
+    },
+    {
+      "path": "crates/pamin-index/src/tokenizer.rs",
+      "mode": "100644",
+      "git_blob": "576f2c9b00e6219c7f3f76df26b116fc0975578b",
+      "bytes": 18865,
+      "sha256": "4b205de6c491c4c6705a8a88f15ae19e02bc82d9b70cddff52c505382d6daebf"
+    },
+    {
+      "path": "crates/pamin-store/Cargo.toml",
+      "mode": "100644",
+      "git_blob": "b4895239c449568cdff020f008da6df976d7e43d",
+      "bytes": 643,
+      "sha256": "551e9c88b325710e5d3775e99bd67128e061b48c19050b635a2f3c59cb87a8b4"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "mode": "100644",
+      "git_blob": "9383a2f4aa87ab48c37e2774d4d1b3bf55ea1523",
+      "bytes": 181,
+      "sha256": "94342e46c88b37332d333c15a6e114b8cad748f3faa01c60ac4a3728edf729c6"
+    }
+  ],
+  "tracked_cargo_config_paths": [],
+  "private_build_receipt": "subset hashes matched private before/after freshly compiled helper receipt; full helper/build state unavailable publicly",
+  "reconstructs_historical_helper_binary": false,
+  "public_tag": "evidence/native-readonly-production-source-20261001",
+  "public_tree_url": "https://github.com/pamin-labs/PaminMemory/tree/47edbae70bbc72b108e4b6b09b938d32edab918c",
+  "public_tag_url": "https://github.com/pamin-labs/PaminMemory/tree/evidence%2Fnative-readonly-production-source-20261001",
+  "public_commit_url": "https://github.com/pamin-labs/PaminMemory/commit/47edbae70bbc72b108e4b6b09b938d32edab918c"
+}
