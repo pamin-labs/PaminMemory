@@ -1437,6 +1437,7 @@ fn calibrated_with_references<T>(
             if let Some(retry) = files.retry {
                 retry.set(Some(std::time::Instant::now() + RUNTIME_RETRY));
             }
+            drop(calibration);
             references.replace(References::default());
             let mut model = load(Device::Cpu, vec![cpu()].into(), false)?;
             evaluate(&mut model, Device::Cpu)?;
