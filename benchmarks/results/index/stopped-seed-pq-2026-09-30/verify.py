@@ -103,9 +103,14 @@ def verify(document, provenance):
                 effective_pq_chunks=512, public_whole_file_sha_or_complete_section_crc_verified=False)
 
 
-if __name__ == '__main__':
-    here = Path(__file__).resolve().parent
+def verify_archive(here=None):
+    here = Path(__file__).resolve().parent if here is None else Path(here)
     provenance_path = here.parent / 'restart-floor-disk-2026-09-30/provenance.json'
     document = json.loads((here / 'excerpts.json').read_text())
-    require(hashlib.sha256(provenance_path.read_bytes()).hexdigest() == document['provenance_sha256'], 'Provenance hash mismatch')
-    print(json.dumps(verify(document, json.loads(provenance_path.read_text())), sort_keys=True))
+    provenance_bytes = provenance_path.read_bytes()
+    require(hashlib.sha256(provenance_bytes).hexdigest() == document['provenance_sha256'], 'Provenance hash mismatch')
+    return verify(document, json.loads(provenance_bytes))
+
+
+if __name__ == '__main__':
+    print(json.dumps(verify_archive(), sort_keys=True))
