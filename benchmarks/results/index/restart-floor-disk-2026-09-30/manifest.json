@@ -21,7 +21,7 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "b22869555aecf40733ee9001ffb178934c355726689eb2da9b41be74efa3a403",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/binaries.json": "48c7c274ba590e5317502b9e9f6f7663c38b4cf8b7bdfac277e5e586d87b9f03",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/episode-elapsed.json": "7224b831d0a80fdad6a942421d77641afdc68e716cc6e79e748b833d6a42a3a2",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "263f346c34b305ca6beae690df73cd2a55665c89b5de3bc45cdce19562111bbc",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "c0a689754d690ac1d4303f982a6b84c5bdef043226140fe5a2b13780f9a67d23",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-candidate.log.gz": "c972869e6178ef9f1fea84b859bca994af626cf701816ff123669cc53a13c1d1",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-main.log.gz": "88207bb853f77f8c72a865341cc47a1e37c33ad175190d71942c12a9cd692b4f",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/logs/0-predecessor.log.gz": "69d0ff1a702b5c26ddc54191cc9bf76a08bedde4be351f868a1006139fb18d77",
@@ -66,8 +66,9 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_evidence_review.py": "15778de1e1dd14d4ddb1e90a97d0c6434b5e26e5c9855ef189bf27f8789658cb",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_initial_queries.py": "6b77c3da7dd820948dbcf576d2b75fa5f55b8b4875670a55a263b9d480adc2fa",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_result_lists.py": "8ed4329e1ca78b1fe574ca5946241f280a209ea485e70553f112e34e36deb921",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_successful_logs.py": "edca7b9ff99fcc66288ad4811c657e45ecab1b0511ca426a634672cd93008a9a",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/timing-review.json": "dba51b478850d95a440878903f4fcab3ca4cdb4f16ec2baf9625286b1ce14671",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "8518dd52c54ebac413ff585e070e7d9b353f1cbd9f5a39b17718ebfa43f55c14"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "4ec05ae012a5c1f7035c2535495c10839227d7031cb0d57366b553513686bdd5"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }

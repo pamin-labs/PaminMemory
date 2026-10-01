@@ -80,7 +80,7 @@ for arm,commit in expected_commits.items():
             rank=next((i+1 for i,topic in enumerate(row['extra']['topics']) if topic==f'incident-{row["extra"]["query_document"]}'),None)
             assert rank==row['extra']['rank']
         log=gzip.decompress((root/'logs'/f'{rep}-{arm}.log.gz').read_bytes()).decode()
-        assert 'test result: ok. 1 passed;' in log
+        review.successful_test_log(log)
         review.disk_backend(log)
         actual_providers=runner.cpu_provider_assignments(log)
         assert actual_providers==maintenance['actual_providers']
@@ -102,7 +102,7 @@ assert manifest['files'][str((code/'harness.rs.in').relative_to(repo))]==provena
 assert hashlib.sha256((code/'harness.rs.in').read_bytes()).hexdigest()==provenance['harness']['sha256'], 'harness disagrees with recorded compiled source'
 assert len((code/'harness.rs.in').read_bytes())==provenance['harness']['bytes']
 seed_log=gzip.decompress((root/'logs/seed-disk.log.gz').read_bytes()).decode()
-assert seed_log.rstrip().splitlines()[-1].startswith('test result: ok. 1 passed; 0 failed;'), 'seed missing successful final marker'
+review.successful_test_log(seed_log)
 seed_rows=[json.loads(line.removeprefix('RESTART_JSON ')) for line in seed_log.splitlines() if line.startswith('RESTART_JSON ')]
 assert Counter(row['phase'] for row in seed_rows)==Counter({'open':1,'seed_complete':1}), 'unexpected seed log phases'
 assert next(row for row in seed_rows if row['phase']=='seed_complete')==provenance['seed_complete_diagnostic'], 'seed diagnostic disagrees with native seed log'
@@ -124,7 +124,7 @@ profile_bytes='\n'.join(expected_profile).encode()
 assert profile_assets[0]['bytes']==len(profile_bytes) and profile_assets[0]['sha256']==hashlib.sha256(profile_bytes).hexdigest()
 conversion=provenance['conversion_schema_and_logical_digest']
 conversion_log=gzip.decompress((root/'logs/disk-conversion.log.gz').read_bytes()).decode()
-assert conversion_log.rstrip().splitlines()[-1].startswith('test result: ok. 1 passed; 0 failed;'), 'conversion missing successful final marker'
+review.successful_test_log(conversion_log)
 observed=[json.loads(line.split('DISK_SETUP_JSON ',1)[1]) for line in conversion_log.splitlines() if 'DISK_SETUP_JSON ' in line]
 assert observed==conversion, 'conversion provenance disagrees with retained setup log'
 assert [row['phase'] for row in observed]==['before','after']
