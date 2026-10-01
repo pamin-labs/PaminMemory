@@ -203,6 +203,46 @@ class MetadataInvariants(unittest.TestCase):
     def test_rehashed_log_missing_summary(self):
         self.reject_rehashed_log('vector', lambda log:'\n'.join(line for line in log.splitlines() if not line.startswith('test result:')))
 
+    def test_crc_refreshed_unsupported_revision_both_phases(self):
+        def mutate(e):
+            for phase in ['before', 'after']:
+                excerpt = e['runs'][0]['files'][0]['excerpts'][phase]
+                values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                values[3] = 1; values[0] = 0
+                values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+        self.reject(mutate)
+
+    def test_rehashed_options_after_open(self):
+        option = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n'
+        for arm in ['pure-open', 'vector']:
+            with self.subTest(arm=arm):
+                self.reject_rehashed_log(arm, lambda log:log.replace(option,'').replace('PROBE_STAGE opened\n','PROBE_STAGE opened\n'+option))
+
+    def test_rehashed_options_after_drop(self):
+        option = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n'
+        self.reject_rehashed_log('vector', lambda log:log.replace(option,'').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\n'+option))
+
+    def test_rehashed_hits_after_drop(self):
+        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\nPROBE_HITS 50\n'))
+
+    def test_rehashed_hits_before_preparation(self):
+        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE vector_prepared\n','PROBE_HITS 50\nPROBE_STAGE vector_prepared\n'))
+
+    def test_unverified_file_claim(self):
+        for arm in range(2):
+            for index in range(4):
+                with self.subTest(arm=arm, file=index):
+                    self.reject(lambda e:e['runs'][arm]['files'][index].update(public_full_payload_verified=True))
+
+    def test_unverified_excerpts_claim(self):
+        self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'].update(public_full_payload_verified=True))
+
+    def test_unverified_phase_excerpt_claim(self):
+        for phase in ['before', 'after']:
+            with self.subTest(phase=phase):
+                self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'][phase].update(public_full_payload_verified=True))
+
     def test_source_binding(self):
         self.reject(lambda e:e.update(vendor_commit='0'*40))
 
