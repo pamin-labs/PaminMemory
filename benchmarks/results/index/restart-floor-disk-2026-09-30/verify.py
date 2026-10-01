@@ -75,7 +75,7 @@ for arm,commit in expected_commits.items():
                     assert provider['model_graph'].startswith(f'<SCRATCH>/results-disk/{rep}-{arm}/models/'), 'provider process differs'
                     assert set(provider['assigned_nodes'])=={'CPUExecutionProvider'} and provider['assigned_nodes']['CPUExecutionProvider']>0
         warm[(arm,rep)]={r['extra']['query_document']:r['extra']['topics'] for r in phases['search_warm']}
-        assert len(warm[(arm,rep)])==24 and all(len(topics)==10 for topics in warm[(arm,rep)].values())
+        assert len(warm[(arm,rep)])==24 and all(len(topics)==len(set(topics))==10 for topics in warm[(arm,rep)].values()), 'Disk ordered top10 topics must be unique'
         for row in phases['search_warm']:
             rank=next((i+1 for i,topic in enumerate(row['extra']['topics']) if topic==f'incident-{row["extra"]["query_document"]}'),None)
             assert rank==row['extra']['rank']
