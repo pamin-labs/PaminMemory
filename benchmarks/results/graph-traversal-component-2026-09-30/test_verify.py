@@ -303,7 +303,8 @@ def round8_cases():
             stub.write_text('#!'+sys.executable+'\n'+code);stub.chmod(0o700)
         env=os.environ.copy();env.update({key:'must-be-cleared' for key in rust_keys})
         env['CARGO_HOME']=str(Path(temp)/'offline cargo home');Path(env['CARGO_HOME']).mkdir()
-        env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB='/retained-ort',ZVEC_LIB='/retained-zvec',ARMS=str(Path(temp)/'prepared arms'))
+        env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB=str(Path(temp)/'retained ort'),ZVEC_LIB=str(Path(temp)/'retained zvec'),ARMS=str(Path(temp)/'prepared arms'))
+        Path(env['ORT_LIB']).mkdir();Path(env['ZVEC_LIB']).mkdir()
         for arm in ['baseline','scored']:
             manifest=Path(env['ARMS'])/arm/'Cargo.toml'
             manifest.parent.mkdir(parents=True);manifest.write_text('# synthetic '+arm+' manifest\n')
@@ -318,7 +319,7 @@ def round8_cases():
             args=captured['__argv__'];position=args.index('--manifest-path')
             assert args[position+1]==str(manifest) and manifest.is_file(), 'build recipe must select generated arm manifest'
             assert [args[i+1] for i,value in enumerate(args[:-1]) if value=='--test']==['scratch_scored_fixture','scratch_scored_multihop']
-            print('PASS: inert build selects pinned toolchain, '+arm+' generated manifest/CWD and clears seven compiler selectors/flags/wrappers')
+            print('PASS: inert build selects pinned toolchain, '+arm+' generated manifest/CWD and clears compiler selectors, flags, wrappers and Cargo overrides')
         for config_parent in [Path(env['CARGO_HOME']),Path(env['ARMS'])/'.cargo']:
             config_parent.mkdir(exist_ok=True)
             for config_name in ['config','config.toml']:
@@ -329,6 +330,8 @@ def round8_cases():
                     print('PASS: inherited Cargo '+config_name+' rejects before mocked build')
                 finally:config.unlink()
         absolute_arms=Path(env['ARMS'])
+        expected_libraries={key:env[key] for key in ['ORT_LIB','ZVEC_LIB']}
+        for key in expected_libraries:env[key]=os.path.relpath(expected_libraries[key],ROOT)
         env['ARMS']=os.path.relpath(absolute_arms,ROOT)
         for arm in ['baseline','scored']:
             env['ARM']=arm
@@ -337,7 +340,9 @@ def round8_cases():
             captured=json.loads(result.stdout);manifest=absolute_arms/arm/'Cargo.toml'
             args=captured['__argv__'];position=args.index('--manifest-path')
             assert args[position+1]==str(manifest) and captured['__cwd__']==str(manifest.parent), 'relative ARMS must canonicalize before child cd'
-            print('PASS: inert build canonicalizes relative ARMS for '+arm+' manifest/CWD')
+            assert captured['ORT_LIB_LOCATION']==expected_libraries['ORT_LIB'] and captured['ZVEC_LIB_DIR']==expected_libraries['ZVEC_LIB'], 'relative native paths changed after child cd'
+            assert captured['LD_LIBRARY_PATH']==expected_libraries['ORT_LIB']+':'+expected_libraries['ZVEC_LIB'], 'runtime native directories must be canonical'
+            print('PASS: inert build canonicalizes relative native paths and ARMS for '+arm+' manifest/CWD')
         import re
         other_os=re.sub(r'^os: .*$', 'os: synthetic alternate distribution [64-bit]',toolchain['cargo'],flags=re.M)
         alternate=dict(env,STUB_VERSION_cargo=other_os)
@@ -595,6 +600,8 @@ if __name__ == '__main__':
         run_case('nearby captured weak relevance '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(weak_relevance=row['weak_relevance']+5e-7)),expected_error='retained weak relevance differs exactly')
     run_case('displayed wrong source base',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('The source base is `13ee710c9df865f1dac98dc77a8108e438ddc539`.','The source base is `'+('0'*40)+'`.')),expected_error='README source base differs from pinned provenance')
     run_case('removed Cargo configuration guard',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('if not key.startswith("CARGO_") or key == "CARGO_HOME"','if True')),expected_error='pinned native-library build environment missing or changed')
+    for key in ['ORT_LIB','ZVEC_LIB']:
+        run_case('removed native path canonicalization '+key,lambda r,key=key:(r/'README.md').write_text((r/'README.md').read_text().replace(key+'=$(cd "$'+key+'" && pwd -P)',key+'="$'+key+'"')),expected_error='pinned native-library build environment missing or changed')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
