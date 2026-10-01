@@ -290,7 +290,7 @@ def round8_cases():
         def changed_selector(root,original=original,replacement=replacement):
             path=root/'README.md';text=path.read_text();assert original in text;path.write_text(text.replace(original,replacement,1))
         run_case('toolchain recipe selector '+original,changed_selector,expected_error='pinned native-library build environment missing or changed')
-    rust_keys=['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','RUSTUP_TOOLCHAIN','RUSTC','RUSTDOC']
+    rust_keys=['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','RUSTUP_TOOLCHAIN','RUSTC','RUSTDOC','RUSTC_BOOTSTRAP','RUSTDOCFLAGS','CARGO_BUILD_RUSTC_WRAPPER','CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS','CARGO_PROFILE_RELEASE_DEBUG','CARGO_BUILD_RUSTC']
     with tempfile.TemporaryDirectory(prefix='graph-recipe-inert-') as temp:
         stub=Path(temp)/'cargo'
         toolchain=json.loads((ROOT/'provenance.json').read_text())['toolchain']
@@ -302,6 +302,7 @@ def round8_cases():
             code+='else:\n result=dict(os.environ);result["__argv__"]=sys.argv[1:];result["__cwd__"]=os.getcwd();print(json.dumps(result))\n'
             stub.write_text('#!'+sys.executable+'\n'+code);stub.chmod(0o700)
         env=os.environ.copy();env.update({key:'must-be-cleared' for key in rust_keys})
+        env['CARGO_HOME']=str(Path(temp)/'offline cargo home');Path(env['CARGO_HOME']).mkdir()
         env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB='/retained-ort',ZVEC_LIB='/retained-zvec',ARMS=str(Path(temp)/'prepared arms'))
         for arm in ['baseline','scored']:
             manifest=Path(env['ARMS'])/arm/'Cargo.toml'
@@ -318,6 +319,15 @@ def round8_cases():
             assert args[position+1]==str(manifest) and manifest.is_file(), 'build recipe must select generated arm manifest'
             assert [args[i+1] for i,value in enumerate(args[:-1]) if value=='--test']==['scratch_scored_fixture','scratch_scored_multihop']
             print('PASS: inert build selects pinned toolchain, '+arm+' generated manifest/CWD and clears seven compiler selectors/flags/wrappers')
+        for config_parent in [Path(env['CARGO_HOME']),Path(env['ARMS'])/'.cargo']:
+            config_parent.mkdir(exist_ok=True)
+            for config_name in ['config','config.toml']:
+                config=config_parent/config_name;config.write_text('[build]\nrustc-wrapper="unselected-wrapper"\n')
+                try:
+                    rejected=subprocess.run(['sh','-c',build],cwd=ROOT,env=env,capture_output=True,text=True)
+                    assert rejected.returncode!=0 and not rejected.stdout and 'Cargo configuration files must be absent' in rejected.stderr, 'inherited Cargo config reached mocked build'
+                    print('PASS: inherited Cargo '+config_name+' rejects before mocked build')
+                finally:config.unlink()
         absolute_arms=Path(env['ARMS'])
         env['ARMS']=os.path.relpath(absolute_arms,ROOT)
         for arm in ['baseline','scored']:
@@ -584,6 +594,7 @@ if __name__ == '__main__':
     for arm in ['baseline','scored']:
         run_case('nearby captured weak relevance '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(weak_relevance=row['weak_relevance']+5e-7)),expected_error='retained weak relevance differs exactly')
     run_case('displayed wrong source base',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('The source base is `13ee710c9df865f1dac98dc77a8108e438ddc539`.','The source base is `'+('0'*40)+'`.')),expected_error='README source base differs from pinned provenance')
+    run_case('removed Cargo configuration guard',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('if not key.startswith("CARGO_") or key == "CARGO_HOME"','if True')),expected_error='pinned native-library build environment missing or changed')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:

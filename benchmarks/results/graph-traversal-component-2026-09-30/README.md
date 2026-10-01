@@ -174,13 +174,15 @@ scratch arm:
 ```sh
 (
 set -eu
-unset RUSTUP_TOOLCHAIN RUSTC RUSTDOC
+unset RUSTUP_TOOLCHAIN RUSTC RUSTDOC RUSTC_BOOTSTRAP RUSTDOCFLAGS
 TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu
 test "$(rustc +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["rustc"], end="")')"
 CARGO_VERSION=$(cargo +"$TOOLCHAIN" -Vv)
 printf '%s\n' "$CARGO_VERSION" | python3 -c 'import json, sys; keys = ("release", "commit-hash", "host"); fields = lambda text: {key: [line[len(key)+2:] for line in text.splitlines() if line.startswith(key+": ")] for key in keys}; actual = fields(sys.stdin.read()); expected = fields(json.load(open("provenance.json"))["toolchain"]["cargo"]); sys.exit(0 if all(len(values) == 1 for values in actual.values()) and actual == expected else "Cargo release/commit/host differs")'
+if [ -n "${CARGO_HOME:-}" ]; then CARGO_HOME=$(cd "$CARGO_HOME" && pwd -P); export CARGO_HOME; fi
 ARMS=$(cd "$ARMS" && pwd -P)
 cd "$ARMS/$ARM"
+python3 -c 'import os, sys; from pathlib import Path; home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))).resolve(); folders = [home] + [p / ".cargo" for p in (Path.cwd(), *Path.cwd().parents)]; found = [str(folder / name) for folder in folders for name in ("config", "config.toml") if (folder / name).exists() or (folder / name).is_symlink()]; sys.exit("Cargo configuration files must be absent for this recipe: " + ", ".join(found)) if found else None; clean = {key: value for key, value in os.environ.items() if not key.startswith("CARGO_") or key == "CARGO_HOME"}; os.execvpe(sys.argv[1], sys.argv[1:], clean)' \
 env -u ORT_LIB_PATH -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
 -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER \
 ORT_LIB_LOCATION="$ORT_LIB" ORT_PREFER_DYNAMIC_LINK=1 \
@@ -192,6 +194,14 @@ CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo +"$TOOLCHAIN" test -p pamin-engine 
   --no-run --release --offline --locked --message-format=json
 )
 ```
+
+The build guard rejects Cargo `config` and `config.toml` files in the selected
+Cargo home and generated-arm ancestor directories, including dangling symlinks.
+It clears inherited `CARGO_*` configuration environment variables except the
+canonical provisioned `CARGO_HOME` cache path, then assigns the recorded build
+workers and incremental setting. It also clears compiler wrappers, flags and
+bootstrap overrides. Provision an offline dependency cache without Cargo config
+files; a configured cache or source parent fails before the mocked or real build.
 
 The build and launch both use the pinned dynamic-library directories. These
 variables reproduce the selected native link/runtime path; they are not a
