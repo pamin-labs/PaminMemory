@@ -481,6 +481,12 @@ fn check_vectors(
     expected: &mut Option<Vec<Vec<f32>>>,
     dimensions: usize,
 ) -> Result<()> {
+    if vectors.is_empty() || vectors.iter().any(|vector| {
+        vector.len() != dimensions || !vector.iter().all(|value| value.is_finite())
+            || !vector.iter().any(|value| *value != 0.0)
+    }) {
+        return Err(IndexError::Numerical("invalid CPU-space embedding fixture".into()));
+    }
     match expected {
         None => *expected = Some(vectors),
         Some(reference)
@@ -710,7 +716,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
     let references = std::cell::RefCell::new(crate::inference::References::default());
     crate::inference::measured(
         &format!(
-            "complementary-query-v2:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
+            "complementary-query-v3:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
             repository.identity(cache)
         ),
         cache,
@@ -719,24 +725,133 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
         |model, _device| {
             let mut reference = references.borrow_mut();
             let elapsed = crate::inference::time_calls(|| {
-                let vectors = ["deployment rollback", "数据库迁移失败后如何回滚？"]
-                    .iter()
-                    .map(|query| complementary_vector(model, query))
-                    .collect::<Result<Vec<_>>>()?;
-                check_vectors(vectors, &mut reference.queries, 1024)
+                for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
+                    let vector = complementary_vector(model, query)?;
+                    valid_complementary_vectors(&[vector])?;
+                }
+                Ok(())
             })?;
             let vectors = [
                 "deployment rollback".to_string(),
                 "数据库迁移失败后如何回滚？".to_string(),
+                "Roll back a failed deployment to the previous application version.".to_string(),
+                "数据库迁移失败后，回滚事务并恢复之前的数据库版本。".to_string(),
+                "Bake a chocolate cake and serve it with fresh strawberries.".to_string(),
                 "migration ".repeat(600),
             ]
             .iter()
             .map(|text| complementary_vector(model, text))
             .collect::<Result<Vec<_>>>()?;
-            check_vectors(vectors, &mut reference.vectors, 1024)?;
+            check_complementary_retrieval(vectors, &mut reference.vectors)?;
             Ok(elapsed)
         },
     )
+}
+
+fn valid_complementary_vectors(vectors: &[Vec<f32>]) -> Result<()> {
+    if vectors.iter().any(|vector| {
+        vector.len() != 1024
+            || !vector.iter().all(|value| value.is_finite())
+            || !vector.iter().any(|value| *value != 0.0)
+    }) {
+        return Err(IndexError::Numerical(
+            "invalid complementary fixture vector".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A predefined same-export retrieval gate, including queries against stored
+/// CPU documents and CPU queries against new accelerator documents. Numerical
+/// drift alone does not quarantine a plan; changed non-tied rankings do.
+fn check_complementary_retrieval(
+    vectors: Vec<Vec<f32>>,
+    expected: &mut Option<Vec<Vec<f32>>>,
+) -> Result<()> {
+    valid_complementary_vectors(&vectors)?;
+    if vectors.len() != 6 {
+        return Err(IndexError::Numerical(
+            "incomplete complementary retrieval fixture".into(),
+        ));
+    }
+    let reference = expected.as_ref().unwrap_or(&vectors);
+    valid_complementary_vectors(reference)?;
+    if reference.len() != vectors.len() {
+        return Err(IndexError::Numerical(
+            "incomplete CPU retrieval fixture".into(),
+        ));
+    }
+    // The product stores documents as FP16 and exactly rescores recalled
+    // documents against the raw query. Reuse that conversion and dot kernel;
+    // this fixture covers the scorer contract, not ANN recall or corpus quality.
+    let stored_reference: Vec<_> = reference[2..]
+        .iter()
+        .map(|v| crate::half::as_stored(v))
+        .collect();
+    let stored_candidate: Vec<_> = vectors[2..]
+        .iter()
+        .map(|v| crate::half::as_stored(v))
+        .collect();
+    let dot = crate::projection::dot;
+    let similarity = |query: &[f32], document: &[f32]| {
+        let lengths = dot(query, query).sqrt() * dot(document, document).sqrt();
+        if lengths > 0.0 {
+            dot(query, document) / lengths
+        } else {
+            0.0
+        }
+    };
+    for (actual, expected) in vectors.iter().zip(reference) {
+        tracing::debug!(
+            similarity = similarity(actual, expected),
+            "complementary fixture numerical drift"
+        );
+    }
+    for query in 0..2 {
+        // Predeclared premise: each query must rank its corresponding rollback
+        // document above the unrelated cake document. A 1e-4 cosine gap defines
+        // a meaningful fixture comparison, independently of benchmark results;
+        // no tolerance is applied to an observed reversal of that comparison.
+        let premise = similarity(&reference[query], &stored_reference[query])
+            - similarity(&reference[query], &stored_reference[2]);
+        if !premise.is_finite() || premise <= 1e-4 {
+            return Err(IndexError::Numerical(
+                "CPU complementary retrieval fixture is not informative".into(),
+            ));
+        }
+        for left in 0..stored_reference.len() {
+            for right in left + 1..stored_reference.len() {
+                let control = similarity(&reference[query], &stored_reference[left])
+                    - similarity(&reference[query], &stored_reference[right]);
+                if !control.is_finite() {
+                    return Err(IndexError::Numerical(
+                        "invalid stored CPU retrieval fixture".into(),
+                    ));
+                }
+                if control.abs() <= 1e-4 {
+                    continue;
+                }
+                for (queries, documents) in [
+                    (&vectors, &stored_reference),
+                    (reference, &stored_candidate),
+                    (&vectors, &stored_candidate),
+                ] {
+                    let observed = similarity(&queries[query], &documents[left])
+                        - similarity(&queries[query], &documents[right]);
+                    if !observed.is_finite() || observed * control <= 0.0 {
+                        return Err(IndexError::Numerical(
+                            "complementary plan failed the startup retrieval ordering fixture"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if expected.is_none() {
+        *expected = Some(vectors);
+    }
+    Ok(())
 }
 
 fn complementary_vector(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
@@ -812,6 +927,55 @@ impl Queries {
 #[cfg(test)]
 mod pooled_tests {
     use super::normalized_pooled;
+
+    #[test]
+    fn complementary_retrieval_rejects_tied_or_wrong_cpu_fixture_premises() {
+        let mut vector = vec![0.0; 1024];
+        vector[0] = 1.0;
+        let tied = vec![vector; 6];
+        let mut absent = None;
+        assert!(check_complementary_retrieval(tied.clone(), &mut absent).is_err());
+        assert!(absent.is_none(), "invalid CPU control was published");
+        let mut cached = Some(tied.clone());
+        assert!(check_complementary_retrieval(tied, &mut cached).is_err());
+        let mut vector = vec![0.0; 1024];
+        vector[1] = 1.0;
+        let mut wrong = cached.unwrap();
+        wrong[2] = vector;
+        // Finite and distinct is insufficient: the related document must beat
+        // the unrelated document before this control can validate a candidate.
+        assert!(check_complementary_retrieval(wrong, &mut None).is_err());
+    }
+
+    #[test]
+    fn complementary_retrieval_accepts_drift_but_rejects_changed_rankings() {
+        let vector = |x, y| {
+            let mut v = vec![0.0; 1024];
+            v[0] = x;
+            v[1] = y;
+            v
+        };
+        let reference = vec![
+            vector(1.0, 0.0),
+            vector(0.0, 1.0),
+            vector(1.0, 0.0),
+            vector(0.0, 1.0),
+            vector(-1.0, -1.0),
+            vector(0.2, 0.3),
+        ];
+        let mut expected = Some(reference.clone());
+        let mut drifted = reference.clone();
+        drifted[0] = vector(0.99998, 0.0063245);
+        assert!(compatible_vectors(&drifted[0], &reference[0], 1024));
+        assert!(check_complementary_retrieval(drifted, &mut expected).is_ok());
+        let mut reversed = reference.clone();
+        reversed.swap(2, 3);
+        assert!(check_complementary_retrieval(reversed, &mut expected).is_err());
+        let mut invalid = reference;
+        invalid[0][0] = f32::NAN;
+        assert!(check_complementary_retrieval(invalid, &mut expected).is_err());
+        assert!(check_complementary_retrieval(vec![], &mut expected).is_err());
+    }
 
     #[test]
     fn signed_pooled_normalization_matches_scalar_encoding_exactly() {
