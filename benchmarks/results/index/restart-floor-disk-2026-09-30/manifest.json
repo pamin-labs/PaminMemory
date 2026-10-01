@@ -64,8 +64,9 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/summary.json": "4e7d0a4b4967479bfe7550eb8b9b69c5fb79550053d0cc15e94a20e8c70962e5",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_evidence_review.py": "15778de1e1dd14d4ddb1e90a97d0c6434b5e26e5c9855ef189bf27f8789658cb",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_initial_queries.py": "6b77c3da7dd820948dbcf576d2b75fa5f55b8b4875670a55a263b9d480adc2fa",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_result_lists.py": "8ed4329e1ca78b1fe574ca5946241f280a209ea485e70553f112e34e36deb921",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/timing-review.json": "dba51b478850d95a440878903f4fcab3ca4cdb4f16ec2baf9625286b1ce14671",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "21721db8ee04f42deffff8e6833b1213cc2825d4a795f9ac3257e062625ef352"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/verify.py": "077f3730f088a94a54de5b6902147c209f37c9948bed7922f7c6989651a91e7a"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }
