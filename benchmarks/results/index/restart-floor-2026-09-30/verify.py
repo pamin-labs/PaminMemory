@@ -68,6 +68,9 @@ for arm in ['main','predecessor','candidate']:
         actual_complete=upkeep[0]['extra']['completeness']
         assert type(actual_complete) in {int,float} and math.isfinite(actual_complete), 'HNSW completeness must be finite numeric, excluding bool'
         assert actual_complete==complete, 'HNSW arm maintenance completeness differs'
+        drain=next(r for r in rows if r['phase']=='write_and_memory_drain')['extra']
+        for field in ['applied','completed','pending']:review.fixed_work_count(drain[field])
+        review.fixed_work_count(next(r for r in rows if r['phase']=='durability_flush')['extra']['flushed'])
         assert next(r for r in rows if r['phase']=='write_and_memory_drain')['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'HNSW single-write drain premise differs'
         assert next(r for r in rows if r['phase']=='durability_flush')['extra']['flushed']==1, 'HNSW durability flush premise differs'
         closed=next(r for r in rows if r['phase']=='closed_index')
