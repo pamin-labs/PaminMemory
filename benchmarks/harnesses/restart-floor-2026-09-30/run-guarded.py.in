@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Prospective cleared tuning for setup/trials; preserve historical run.py.in."""
-import argparse,hashlib,importlib.machinery,importlib.util,json,os,runpy,shutil,stat,subprocess,sys
+import argparse,hashlib,importlib.machinery,importlib.util,json,os,re,runpy,shutil,stat,subprocess,sys
 from datetime import datetime,timezone
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Run guards require assertions; remove -O/PYTHONOPTIMIZE')
@@ -107,6 +107,7 @@ def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record)
         return result
     def providers(log_text):
         result=original_provider(log_text)
+        verify_provider_graphs(result,record['_expected_models'])
         assert len(record['copies'])==len(record['native_after_arms'])+1
         identity=NATIVE['verify'](native) # original runner already stopped its elapsed clock
         record['models_after_arms'].append(dict(verify_models(record),arm=record['copies'][-1]['arm'],repetition=record['copies'][-1]['repetition']))
@@ -135,8 +136,34 @@ def load_runner(path):
         sys.dont_write_bytecode=True;loader.exec_module(runner)
     finally:sys.dont_write_bytecode=prior
     return runner
+def verify_provider_graphs(providers,expected):
+    models={model['name']:model for model in expected['plan']['models']}
+    assert set(providers)==set(models)=={'embedding','reranker'}, 'actual provider/model roles must be embedding and reranker'
+    root=Path(expected['root'])
+    for role,provider in providers.items():
+        graph=Path(provider['model_graph'])
+        assert graph.is_absolute(), 'actual model graph must be absolute'
+        assert graph.resolve(strict=True)==(root/models[role]['load_graph']).resolve(strict=True), 'actual role graph differs from declared load_graph'
+        nodes=provider['assigned_nodes']
+        assert set(nodes)=={'CPUExecutionProvider'} and type(nodes['CPUExecutionProvider']) is int and nodes['CPUExecutionProvider']>0, 'actual CPU assignment missing'
+def setup_rows(output,stage,documents):
+    clean=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',output)
+    rows=[json.loads(line[len('RESTART_JSON '):]) for line in clean.splitlines() if line.startswith('RESTART_JSON ')]
+    opened=[row for row in rows if row['phase']=='open']
+    assert len(opened)==1, 'setup must execute restart_floor and emit exactly one open row'
+    if stage=='bootstrap':
+        assert opened[0]['documents']==0 and any(line.startswith('COLLECTION_PATH ') for line in clean.splitlines()), 'bootstrap output missing empty collection'
+    else:
+        assert len([row for row in rows if row['phase']=='seed_complete'])==1, 'seed completion row missing'
+    return {'phases':[row['phase'] for row in rows],'requested_documents':documents}
 def binary(arm,attestation):
+    source='crates/pamin-engine/tests/scratch_restart_floor.rs'
+    assert attestation['build_kind']=='restart-trial' and attestation['scratch_target']==source, 'restart setup/trials require restart helper build'
     name,commit,path=arm.split(',',2);entry=attestation['arms'][name];path=Path(path).resolve()
+    assert entry['scratch_source']==source and entry['scratch_sha256']==attestation['harness_sha256']
+    assert entry['inputs_before'][source]==entry['inputs_after'][source] and entry['inputs_before'][source]['sha256']==attestation['harness_sha256'], 'restart helper source binding missing'
+    helpers=[x for x in entry['compiler_artifacts'] if x['target']['name']=='scratch_restart_floor' and x.get('executable')]
+    assert len(helpers)==1 and Path(helpers[0]['target']['src_path']).resolve()==(Path(entry['checkout'])/source).resolve() and helpers[0]['fresh'] is False, 'actual restart helper artifact missing'
     assert entry['commit']==commit and Path(entry['binary']).resolve()==path
     assert digest(path)==entry['binary_sha256'] and path.stat().st_size==entry['binary_bytes']
     return path
@@ -193,10 +220,12 @@ def main():
         record['models_before_launch']=verify_models(record);write_record(a.record,record)
         if a.mode=='setup':
             NATIVE['verify'](native)
-            result=subprocess.run(command,env=env);record['returncode']=result.returncode
+            result=subprocess.run(command,env=env,capture_output=True,text=True);record['returncode']=result.returncode
+            sys.stdout.write(result.stdout);sys.stderr.write(result.stderr)
             record['native_after_setup']=NATIVE['verify'](native)
             record['models_after_setup']=verify_models(record)
             assert result.returncode==0
+            record['setup_output']=setup_rows(result.stdout,a.stage,a.documents)
         else:
             record.update(fixture_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),fixture_prepared_utc=fixture_manifest['recorded_utc'])
             record['arm_binary_identities']={arm.split(',',2)[0]:{key:attestation['arms'][arm.split(',',2)[0]][source] for key,source in [('commit','commit'),('sha256','binary_sha256'),('bytes','binary_bytes')]} for arm in a.arm}
