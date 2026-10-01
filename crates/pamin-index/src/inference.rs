@@ -785,7 +785,7 @@ fn executable_identity() -> Option<&'static str> {
 fn mapped_image_identity() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
-        return executable_hash(Path::new("/proc/self/exe")).map(|hash| format!("elf:{hash}"));
+        executable_hash(Path::new("/proc/self/exe")).map(|hash| format!("elf:{hash}"))
     }
     #[cfg(target_os = "macos")]
     {
@@ -810,10 +810,10 @@ fn mapped_image_identity() -> Option<String> {
             std::slice::from_raw_parts(header.add(32), size)
         };
         let uuid = mach_uuid(commands)?;
-        return Some(format!(
+        Some(format!(
             "macho:{}",
             uuid.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        ));
+        ))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
