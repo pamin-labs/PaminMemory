@@ -38,7 +38,8 @@ receipt consistency, not the omitted file contents. Excerpt hashes likewise
 check internal consistency, not independent authenticity.
 
 [verify.py](verify.py) independently recomputes container-header/footer/table
-CRCs (those complete bytes are included), section layout, document counts,
+CRCs (those complete bytes are included), section layout including padding and
+non-overlap of every occupied section extent, document counts,
 PQ header/payload agreement and codebook/code-length arithmetic. It checks
 reported native/file identity against the public pretrial manifest and prints
 `public_whole_file_sha_or_complete_section_crc_verified: false`. Offsets are
@@ -77,7 +78,7 @@ python3 -O -m unittest test_verify.py
 ```
 
 The verifier returns 10 files, 18,000 documents, requested zero and effective
-512. Sixteen tests (14 metadata guards and two archive guards) cover malformed
+512. Eighteen tests (16 metadata guards and two archive guards) cover malformed
 header/footer/table CRCs, unknown container
 with valid CRC, unknown quantizer, legacy header, mismatched chunk counts,
 unknown metric, Flat package, code-length arithmetic, zero-as-no-PQ rejection,
@@ -85,7 +86,12 @@ omitted-file identity rejection and a synthetic full
 metadata CRC corruption. The archive guards accept the retained archive and
 reject mutated provenance after checking the archive identity.
 Synthetic omitted content is zero-filled; tests do
-not read the private seed.
+not read the private seed. CRC-refreshed section overlap and padding-only overlap
+fixtures are rejected by both readers before persisted-PQ interpretation.
+Adjacent extents and zero-length unpadded sections remain valid. The shared
+range check uses each serialized section padding value; it imposes no new
+alignment constant or contiguity rule. Complete PQ-data CRC validation remains
+unavailable from excerpts and is not added by this layout check.
 
 [inspect_native.py](inspect_native.py) is the standalone offline parser for
 holders of original files. Its full-file SHA256 and complete metadata CRC

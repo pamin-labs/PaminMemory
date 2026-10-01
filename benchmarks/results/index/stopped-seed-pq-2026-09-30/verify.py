@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import struct
 
-from inspect_native import crc32c
+from inspect_native import crc32c, validate_section_extents
 
 
 def require(condition, message):
@@ -48,6 +48,7 @@ def verify_row(row):
         require(name not in sections, 'Duplicate section')
         require(index + length + section_padding <= content_size, 'Section exceeds container')
         sections[name] = dict(offset=co + index, size=length, padding=section_padding, crc32c=checksum)
+    validate_section_extents(sections, co, content_size)
     require(all(name in sections for name in ['diskann.meta', 'diskann.pq_meta', 'diskann.pq_data']),
             'Unsupported non-DiskANN package')
     require({name: sections[name] for name in row['sections']} == row['sections'], 'Reported sections differ')
