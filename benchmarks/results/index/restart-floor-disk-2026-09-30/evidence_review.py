@@ -1,4 +1,5 @@
 """Read-only semantic evidence guards; no historical runner mutation or inference."""
+import re
 import hashlib,json,statistics
 from pathlib import PurePosixPath
 
@@ -104,3 +105,9 @@ def seed_endpoint(provenance, record):
     assert record['started_utc'] and record['finished_utc'] and record['started_utc']<=record['finished_utc']
     assert 'not historical per-copy attestation' in record['scope']
     assert record['canonical_encoding']=='UTF-8 JSON object path -> [bytes, sha256], sorted keys, separators comma/colon'
+
+PREAD_FALLBACK="DiskAnn: no async I/O backend available: io_uring is unavailable and libaio could not be loaded. Enable io_uring or install libaio (e.g. 'apt-get install libaio1', or 'libaio1t64' on Ubuntu 24.04+) and retry. DiskAnn will use synchronous pread(); performance may be degraded."
+def disk_backend(log):
+    diagnostics=[line for line in log.splitlines() if re.search(r'io_uring|libaio|pread\(\)|async I/O|I/O backend|diskann_file_reader\.cc',line,re.I)]
+    prefix=r"\[ WARN \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ diskann_file_reader\.cc:57\] "
+    assert len(diagnostics)==1 and re.fullmatch(prefix+re.escape(PREAD_FALLBACK),diagnostics[0]), 'Disk native backend diagnostic must be exactly one synchronous pread fallback without conflicting backend evidence'
