@@ -11,6 +11,10 @@ repo=root.parents[3]
 manifest=json.loads((root/'manifest.json').read_text())
 for relative,digest in manifest['files'].items():
     assert hashlib.sha256((repo/relative).read_bytes()).hexdigest()==digest, relative
+runner_path=repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in'
+runner_loader=importlib.machinery.SourceFileLoader('archived_hnsw_runner',str(runner_path))
+runner_spec=importlib.util.spec_from_loader(runner_loader.name,runner_loader)
+runner=importlib.util.module_from_spec(runner_spec);runner_loader.exec_module(runner)
 raw=[json.loads(line) for line in (root/'raw.jsonl').read_text().splitlines()]
 assert len([r for r in raw if r['phase']=='process_total'])==9
 assert {(r['arm'],r['repetition']) for r in raw}=={(arm,rep) for arm in ['main','predecessor','candidate'] for rep in range(3)}, 'HNSW unexpected arm/repetition'
@@ -21,6 +25,14 @@ for arm in ['main','predecessor','candidate']:
         assert Counter(r['phase'] for r in rows)==expected_phases, 'HNSW unexpected phase multiset'
         log=(root/'logs'/f'{rep}-{arm}.log').read_text()
         assert 'test result: ok. 1 passed;' in log, 'HNSW unsuccessful retained process log'
+        observed_providers=runner.cpu_provider_assignments(log)
+        for row in rows:
+            if row['phase']=='process_total':continue
+            assert row['index']=='memory' and row['clock_ticks_per_second']==100, 'HNSW measurement configuration differs'
+            assert row['actual_providers']==observed_providers, 'HNSW provider assignment differs from process log'
+            for kind in ['user','system']:
+                expected=None if row['process_before'] is None or row['process_after'] is None else (row['process_after'][kind+'_ticks']-row['process_before'][kind+'_ticks'])/row['clock_ticks_per_second']
+                assert row['cpu_'+kind+'_seconds']==expected, 'HNSW derived CPU differs from retained ticks'
         logged=[json.loads(line.removeprefix('RESTART_JSON ')) for line in log.splitlines() if line.startswith('RESTART_JSON ')]
         unmatched=[r for r in rows if r['phase']!='process_total']
         assert len(logged)==len(unmatched), 'HNSW raw/log cardinality differs'
