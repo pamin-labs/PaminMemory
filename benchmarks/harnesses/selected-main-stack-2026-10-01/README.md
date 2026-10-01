@@ -136,3 +136,11 @@ contain local build paths; generated receipts stay local until publication revie
 Off cold/new-query controls must agree across sources on limited, complete and
 fused results before the comparison is accepted. Equal zero model work alone
 does not establish like-for-like retrieval.
+
+New completion receipts bind the exact bytes of all 80 checkpoint packets with
+a per-job SHA256 map, checked against validated packets at completion and again
+before reporting. This includes controller-only usage, host and PostgreSQL disk
+fields even if an in-packet self-hash is refreshed. These are mutable local
+endpoint receipts, not independent authenticity or continuous immutability
+proof. Legacy completed receipts without the exact binding are rejected; there
+is no in-place upgrade. Original historical evidence and reports are unchanged.
