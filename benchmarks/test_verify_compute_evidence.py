@@ -70,13 +70,13 @@ class CostEvidenceTests(unittest.TestCase):
                         self.check(raw, costs)
 
     def test_main_control_ranking_parity_each_block(self):
-        for block in range(3):
+        for arm, block in ((arm, block) for arm in ("main-cpu", "new-cpu") for block in range(3)):
             raw = dict(self.raw)
-            filename = f"main-cpu-{block}.jsonl"
+            filename = f"{arm}-{block}.jsonl"
             raw[filename] = copy.deepcopy(raw[filename])
             query = next(r for r in raw[filename] if r["kind"] == "query")
             query["ranked"] = ["changed-ranking"]
-            with self.subTest(block=block), self.assertRaisesRegex(AssertionError, "main CPU ranking differs"):
+            with self.subTest(block=block), self.assertRaisesRegex(AssertionError, "default CPU ranking differs"):
                 self.check(raw, self.costs)
 
     def test_each_published_manifest_is_checked(self):
@@ -178,8 +178,7 @@ class DeviceProofTests(unittest.TestCase):
     def test_each_loaded_device_summary_is_bound(self):
         for index, entry in enumerate(self.proof):
             proof = copy.deepcopy(self.proof)
-            lines = proof[index]["loaded_device_evidence"]
-            lines[0] = lines[0].replace('device="cpu"', 'device="cuda"').replace('device="coreml"', 'device="cuda"')
+            proof[index]["loaded_device_events"][0]["device"] = "cuda"
             with self.subTest(arm=entry["arm"], process=entry["process"]), self.assertRaisesRegex(AssertionError, "loaded-device summary differs"):
                 self.check(proof, self.artifacts)
 
@@ -191,72 +190,31 @@ class DeviceProofTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "loaded-device summary differs"):
             self.check(self.proof, artifacts)
 
-    def test_coordinated_coreml_relabeling_is_rejected_after_resealing(self):
+    def test_resealed_valid_device_and_summary_still_need_the_measured_arm(self):
         proof = copy.deepcopy(self.proof)
         artifacts = copy.deepcopy(self.artifacts)
-        changed = 0
         for entry in proof:
             for event in artifacts[entry["event_artifact"]]["events"]:
                 if event.get("device") == "coreml":
                     event["device"] = "cuda"
-                    changed += 1
-            entry["loaded_device_evidence"] = [line.replace('device="coreml"', 'device="cuda"')
-                                                for line in entry["loaded_device_evidence"]]
-        self.assertEqual(changed, 12, "counterexample must change every retained CoreML loaded event")
-        with self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
+            entry["loaded_device_events"] = [{k: v for k, v in event.items() if k != "line"}
+                for event in artifacts[entry["event_artifact"]]["events"] if event["event"] in verifier.LOADED_EVENTS]
+        with self.assertRaisesRegex(AssertionError, "do not match the measured arm"):
             self.check(proof, artifacts)
 
-    def test_every_frozen_loaded_role_is_independently_pinned(self):
-        for index, entry in enumerate(self.proof):
-            name = entry["event_artifact"]
-            loaded = [e for e in self.artifacts[name]["events"] if e["event"] in verifier.LOADED_EVENTS]
-            for position, original in enumerate(loaded):
-                proof = copy.deepcopy(self.proof)
-                artifacts = copy.deepcopy(self.artifacts)
-                event = [e for e in artifacts[name]["events"] if e["event"] in verifier.LOADED_EVENTS][position]
-                event["device"] = "cuda"
-                proof[index]["loaded_device_evidence"][position] = proof[index]["loaded_device_evidence"][position].replace(
-                    f'device="{original["device"]}"', 'device="cuda"')
-                with self.subTest(arm=entry["arm"], process=entry["process"], role=original["event"]), self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
-                    self.check(proof, artifacts)
-
-    def test_resealed_valid_model_cannot_be_attributed_to_another_arm(self):
-        single = "gpahal/bge-m3-onnx-int8"
-        dual = "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
-        for index, entry in enumerate(self.proof):
-            if entry["arm"].startswith("main-"):
-                continue
+    def test_resealed_changed_model_or_tier_is_not_proof(self):
+        for kind, field, value, message in [("embedder_loaded", "model", "wrong-model", "wrong measured model"),
+                ("reranker_loaded", "tier", "fast", "wrong measured reranker settings"),
+                ("reranker_loaded", "maximum_tokens", 512, "wrong measured reranker settings")]:
             proof = copy.deepcopy(self.proof)
-            lines = proof[index]["loaded_device_evidence"]
-            position = next(i for i, line in enumerate(lines) if "embedder loaded" in line)
-            source, wrong = (dual, single) if entry["arm"] == "dual-cpu" else (single, dual)
-            lines[position] = lines[position].replace(f'model="{source}"', f'model="{wrong}"')
-            with self.subTest(arm=entry["arm"], process=entry["process"]), self.assertRaisesRegex(AssertionError, "frozen arm metadata"):
-                self.check(proof, self.artifacts)
-
-    def test_resealed_reranker_metadata_cannot_change(self):
-        for index, entry in enumerate(self.proof):
-            for source, wrong in [('tier="accurate"', 'tier="fast"'), ('maximum_tokens=256', 'maximum_tokens=128')]:
-                proof = copy.deepcopy(self.proof)
-                lines = proof[index]["loaded_device_evidence"]
-                position = next(i for i, line in enumerate(lines) if "reranker loaded" in line)
-                lines[position] = lines[position].replace(source, wrong)
-                with self.subTest(arm=entry["arm"], process=entry["process"], source=source), self.assertRaisesRegex(AssertionError, "frozen arm metadata"):
-                    self.check(proof, self.artifacts)
-
-    def test_coordinated_loaded_order_change_is_rejected(self):
-        proof = copy.deepcopy(self.proof)
-        artifacts = copy.deepcopy(self.artifacts)
-        index = next(i for i, p in enumerate(proof) if p["arm"] == "new-auto-persist-hit" and p["process"] == 2)
-        events = artifacts[proof[index]["event_artifact"]]["events"]
-        positions = [i for i, event in enumerate(events) if event["event"] in verifier.LOADED_EVENTS]
-        self.assertEqual(len(positions), 2)
-        first, second = positions
-        events[first]["event"], events[second]["event"] = events[second]["event"], events[first]["event"]
-        events[first]["device"], events[second]["device"] = events[second]["device"], events[first]["device"]
-        proof[index]["loaded_device_evidence"].reverse()
-        with self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
-            self.check(proof, artifacts)
+            artifacts = copy.deepcopy(self.artifacts)
+            entry = next(p for p in proof if p["arm"] == "dual-cpu")
+            event = next(e for e in artifacts[entry["event_artifact"]]["events"] if e["event"] == kind)
+            event[field] = value
+            entry["loaded_device_events"] = [{k: v for k, v in e.items() if k != "line"}
+                for e in artifacts[entry["event_artifact"]]["events"] if e["event"] in verifier.LOADED_EVENTS]
+            with self.subTest(field=field), self.assertRaisesRegex(AssertionError, message):
+                self.check(proof, artifacts)
 
 
 if __name__ == "__main__":

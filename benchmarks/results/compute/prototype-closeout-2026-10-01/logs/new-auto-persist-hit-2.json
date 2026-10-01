@@ -37,7 +37,9 @@
     {
       "line": 8,
       "event": "reranker_loaded",
-      "device": "coreml"
+      "device": "coreml",
+      "tier": "accurate",
+      "maximum_tokens": 256
     },
     {
       "line": 9,
@@ -50,7 +52,8 @@
     {
       "line": 11,
       "event": "embedder_loaded",
-      "device": "cpu"
+      "device": "cpu",
+      "model": "gpahal/bge-m3-onnx-int8"
     },
     {
       "line": 12,

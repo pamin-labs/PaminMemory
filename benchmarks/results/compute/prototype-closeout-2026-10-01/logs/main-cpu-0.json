@@ -45,7 +45,9 @@
     {
       "line": 10,
       "event": "reranker_loaded",
-      "device": "cpu"
+      "device": "cpu",
+      "tier": "accurate",
+      "maximum_tokens": 256
     },
     {
       "line": 11,

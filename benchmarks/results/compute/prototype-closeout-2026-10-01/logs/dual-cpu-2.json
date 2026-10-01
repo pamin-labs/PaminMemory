@@ -29,7 +29,9 @@
     {
       "line": 6,
       "event": "reranker_loaded",
-      "device": "cpu"
+      "device": "cpu",
+      "tier": "accurate",
+      "maximum_tokens": 256
     },
     {
       "line": 7,
@@ -42,7 +44,8 @@
     {
       "line": 9,
       "event": "embedder_loaded",
-      "device": "cpu"
+      "device": "cpu",
+      "model": "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
     },
     {
       "line": 10,
