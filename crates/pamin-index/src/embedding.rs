@@ -238,6 +238,7 @@ impl Embedder {
     }
 
     pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
+        self.revalidate();
         if let Some(known) = self.remembered.get(text) {
             return Ok(known);
         }
@@ -325,16 +326,37 @@ impl Embedder {
     /// vector does not depend on which other documents happened to be in
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
-    fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    fn revalidate(&mut self) {
         let profile = self.profile;
         let cache = &self.cache_dir;
-        crate::inference::retry_model(
+        crate::inference::revalidate_cached_model(
+            &mut self.model,
+            &mut self.device,
+            &mut self.remembered,
+            || primary_model(profile, cache).map(|(model, device)| (Box::new(model), device)),
+        );
+        if let Some((model, device)) = &mut self.secondary {
+            crate::inference::revalidate_cached_model(model, device, &mut self.remembered, || {
+                complementary(cache).map(|(model, device)| (Box::new(model), device))
+            });
+        }
+    }
+
+    fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        self.revalidate();
+        let profile = self.profile;
+        let cache = &self.cache_dir;
+        let (vectors, replaced) = crate::inference::retry_model(
             &mut self.model,
             &mut self.device,
             cache,
             |model, device| profile_vectors(profile, model, device, &texts),
             || primary_model(profile, cache).map(|(model, device)| (Box::new(model), device)),
-        )
+        )?;
+        if replaced {
+            self.remembered = Queries::default();
+        }
+        Ok(vectors)
     }
 
     fn secondary_vector(&mut self, text: &str) -> Result<Option<Vec<f32>>> {
@@ -342,14 +364,17 @@ impl Embedder {
             return Ok(None);
         };
         let cache = &self.cache_dir;
-        crate::inference::retry_model(
+        let (vector, replaced) = crate::inference::retry_model(
             model,
             device,
             cache,
             |model, _| complementary_vector(model, text),
             || complementary(cache).map(|(model, device)| (Box::new(model), device)),
-        )
-        .map(Some)
+        )?;
+        if replaced {
+            self.remembered = Queries::default();
+        }
+        Ok(Some(vector))
     }
 }
 
@@ -375,7 +400,7 @@ fn primary_model(
         Repository::open(cache_dir, &info.model_code)?
     };
     let identity = format!(
-        "embedding-query-v3:{}:{}",
+        "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:{}:{}",
         profile.model_id(),
         repository.identity(cache_dir)
     );
@@ -481,11 +506,16 @@ fn check_vectors(
     expected: &mut Option<Vec<Vec<f32>>>,
     dimensions: usize,
 ) -> Result<()> {
-    if vectors.is_empty() || vectors.iter().any(|vector| {
-        vector.len() != dimensions || !vector.iter().all(|value| value.is_finite())
-            || !vector.iter().any(|value| *value != 0.0)
-    }) {
-        return Err(IndexError::Numerical("invalid CPU-space embedding fixture".into()));
+    if vectors.is_empty()
+        || vectors.iter().any(|vector| {
+            vector.len() != dimensions
+                || !vector.iter().all(|value| value.is_finite())
+                || !vector.iter().any(|value| *value != 0.0)
+        })
+    {
+        return Err(IndexError::Numerical(
+            "invalid CPU-space embedding fixture".into(),
+        ));
     }
     match expected {
         None => *expected = Some(vectors),
@@ -716,7 +746,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
     let references = std::cell::RefCell::new(crate::inference::References::default());
     crate::inference::measured(
         &format!(
-            "complementary-query-v3:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
+            "complementary-query-v4:max512:singleton:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
             repository.identity(cache)
         ),
         cache,

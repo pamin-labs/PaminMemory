@@ -22,6 +22,7 @@ use crate::hub::Repository;
 use crate::tokenizer::Tokenizer;
 
 pub(crate) struct Encoder {
+    runtime_plan: crate::inference::RuntimePlan,
     tokenizer: Tokenizer,
     session: Session,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -29,6 +30,15 @@ pub(crate) struct Encoder {
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
+}
+
+impl crate::inference::RuntimeModel for Encoder {
+    fn runtime_plan(&self) -> &crate::inference::RuntimePlan {
+        &self.runtime_plan
+    }
+    fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
+        &mut self.runtime_plan
+    }
 }
 
 impl Encoder {
@@ -60,6 +70,7 @@ impl Encoder {
             .iter()
             .any(|input| input.name() == "token_type_ids");
         Ok(Self {
+            runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -88,6 +99,7 @@ impl Encoder {
         })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         Ok(Self {
+            runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             fixed: Some((short, long)),
