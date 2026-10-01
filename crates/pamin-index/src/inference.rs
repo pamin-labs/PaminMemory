@@ -486,11 +486,21 @@ pub(crate) fn preferred<T>(
     load(Device::Cpu, vec![cpu()].into()).map(|model| (model, Device::Cpu))
 }
 
+/// Small CPU output references reused for per-session validation. These are
+/// proof fixtures, not a resident second model or a query-result cache.
+#[derive(Clone, Default)]
+pub(crate) struct References {
+    pub(crate) vectors: Option<Vec<Vec<f32>>>,
+    pub(crate) queries: Option<Vec<Vec<f32>>>,
+    pub(crate) scores: Option<Vec<f32>>,
+}
+
 #[derive(Clone)]
 struct CachedPlan {
     device: Device,
     target: Target,
     revalidate: Option<std::time::Instant>,
+    references: References,
 }
 
 impl CachedPlan {
@@ -498,9 +508,14 @@ impl CachedPlan {
         Self {
             device,
             target,
+            references: References::default(),
             revalidate: numerical
                 .then(|| std::time::Instant::now() + std::time::Duration::from_secs(300)),
         }
+    }
+    fn with_references(mut self, references: References) -> Self {
+        self.references = references;
+        self
     }
 }
 
@@ -509,6 +524,7 @@ impl CachedPlan {
 /// every query shape or an accelerator's internal hardware placement.
 pub(crate) fn measured<T>(
     identity: &str,
+    references: &std::cell::RefCell<References>,
     load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -533,25 +549,31 @@ pub(crate) fn measured<T>(
         threads(),
         std::thread::available_parallelism()
     );
-    calibrated(
+    calibrated_with_references(
         &key,
         plans,
         PLANS.get_or_init(Default::default),
+        references,
         load,
         evaluate,
     )
 }
 
-fn calibrated<T>(
+fn calibrated_with_references<T>(
     key: &str,
     plans: Vec<(Device, Target)>,
     cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
+    references: &std::cell::RefCell<References>,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
     if plans.is_empty() {
         return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
     }
+    // Cold warm-up may load different models concurrently. Keep their
+    // calibration sections independent instead of timing competing plans.
+    static CALIBRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _calibration = CALIBRATION.lock().expect("compute calibration poisoned");
     let remembered = cache
         .lock()
         .expect("compute-plan cache poisoned")
@@ -562,7 +584,13 @@ fn calibrated<T>(
             .is_none_or(|deadline| std::time::Instant::now() < deadline)
     }) {
         let device = plan.device;
-        match load(device, plan.target, true) {
+        references.replace(plan.references);
+        match load(device, plan.target, true).and_then(|mut model| {
+            if device != Device::Cpu {
+                evaluate(&mut model, device)?;
+            }
+            Ok(model)
+        }) {
             Ok(model) => return Ok((model, device)),
             Err(error) => {
                 tracing::warn!(%error, "cached compute plan failed; recalibrating");
@@ -573,10 +601,7 @@ fn calibrated<T>(
             }
         }
     }
-    // Cold warm-up may load different models concurrently. Keep their
-    // calibration sections independent instead of timing competing plans.
-    static CALIBRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _calibration = CALIBRATION.lock().expect("compute calibration poisoned");
+    references.replace(References::default());
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut fastest = (Device::Cpu, vec![cpu()].into());
     let mut fastest_elapsed = std::time::Duration::MAX;
@@ -635,27 +660,49 @@ fn calibrated<T>(
         if !transient_failure {
             cache.lock().expect("compute-plan cache poisoned").insert(
                 key.into(),
-                CachedPlan::fresh(device, target, numerical_failure),
+                CachedPlan::fresh(device, target, numerical_failure)
+                    .with_references(references.borrow().clone()),
             );
         }
         return Ok((reference, device));
     }
-    drop(reference);
-    match load(device, target.clone(), true) {
+    match load(device, target.clone(), true).and_then(|mut model| {
+        evaluate(&mut model, device)?;
+        Ok(model)
+    }) {
         Ok(model) => {
             if !transient_failure {
                 cache.lock().expect("compute-plan cache poisoned").insert(
                     key.into(),
-                    CachedPlan::fresh(device, target, numerical_failure),
+                    CachedPlan::fresh(device, target, numerical_failure)
+                        .with_references(references.borrow().clone()),
                 );
             }
             Ok((model, device))
         }
         Err(error) => {
             tracing::warn!(%error, "calibrated winner failed to reload; using optimized CPU");
-            load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu))
+            Ok((reference, Device::Cpu))
         }
     }
+}
+
+#[cfg(test)]
+fn calibrated<T>(
+    key: &str,
+    plans: Vec<(Device, Target)>,
+    cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
+    load: impl FnMut(Device, Target, bool) -> Result<T>,
+    evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
+) -> Result<(T, Device)> {
+    calibrated_with_references(
+        key,
+        plans,
+        cache,
+        &std::cell::RefCell::default(),
+        load,
+        evaluate,
+    )
 }
 
 /// Three uncached calls after a warm call. The callback includes tokenizer,
@@ -909,6 +956,7 @@ mod tests {
                 device: Device::Cpu,
                 target: vec![cpu()].into(),
                 revalidate: Some(Instant::now()),
+                references: References::default(),
             },
         )]));
         let (_, device) = calibrated(
@@ -986,6 +1034,79 @@ mod tests {
                 "a second calibration loaded a reference while the first was timed"
             );
         });
+    }
+
+    #[test]
+    fn the_returned_winner_instance_must_execute_successfully() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let loads = Cell::new(0);
+        let (_, device) = calibrated(
+            "fixture",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            |device, _, _| {
+                if device == Device::Cuda {
+                    loads.set(loads.get() + 1);
+                }
+                Ok((device, loads.get()))
+            },
+            |model, device| {
+                if device == Device::Cuda && model.1 > 1 {
+                    Err(IndexError::Numerical("replacement lazy failure".into()))
+                } else {
+                    Ok(Duration::from_millis(if device == Device::Cpu {
+                        10
+                    } else {
+                        1
+                    }))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cpu, "unvalidated replacement was returned");
+        assert!(cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_cached_accelerator_session_reuses_cpu_reference_outputs() {
+        use std::time::Duration;
+        let saved = References {
+            scores: Some(vec![1.0]),
+            ..Default::default()
+        };
+        let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
+            "fixture".into(),
+            CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false).with_references(saved),
+        )]));
+        let references = std::cell::RefCell::default();
+        let (_, device) = calibrated_with_references(
+            "fixture",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            &references,
+            |device, _, _| Ok(if device == Device::Cpu { 1.0 } else { 9.0 }),
+            |actual, device| {
+                let mut proof = references.borrow_mut();
+                match &proof.scores {
+                    None => proof.scores = Some(vec![*actual]),
+                    Some(expected) if *actual == expected[0] => {}
+                    _ => return Err(IndexError::Numerical("wrong replacement output".into())),
+                };
+                Ok(Duration::from_millis(if device == Device::Cpu {
+                    10
+                } else {
+                    1
+                }))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            device,
+            Device::Cpu,
+            "cached target bypassed its stored CPU output proof"
+        );
     }
 
     #[test]

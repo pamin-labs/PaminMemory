@@ -759,7 +759,7 @@ impl Reranker {
                     Device::Cpu,
                 )
             } else {
-                let mut expected: Option<Vec<f32>> = None;
+                let references = std::cell::RefCell::new(crate::inference::References::default());
                 crate::inference::measured(
                     &format!(
                         "reranker-v1:{}:{}:{}:{}:{}",
@@ -769,8 +769,10 @@ impl Reranker {
                         batch(),
                         batch_tokens()
                     ),
+                    &references,
                     session,
                     |model, _device| {
+                        let mut reference = references.borrow_mut();
                         let long = "harbour migration rollback policy ".repeat(max_tokens());
                         let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
                         let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
@@ -794,8 +796,8 @@ impl Reranker {
                                     "reranker calibration returned invalid scores".into(),
                                 ));
                             }
-                            match &expected {
-                                None => expected = Some(values),
+                            match &reference.scores {
+                                None => reference.scores = Some(values),
                                 Some(reference) => {
                                     check_accelerator_ordering(&reference[..4], &values[..4])?
                                 }
