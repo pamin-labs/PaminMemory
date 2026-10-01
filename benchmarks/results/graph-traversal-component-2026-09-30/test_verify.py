@@ -70,6 +70,15 @@ if __name__ == '__main__':
     if success.returncode:
         raise SystemExit(success.stderr)
     retained=json.loads((ROOT/'provenance.json').read_text())
+    for scope in ['Contemporaneous build-time SQL source attestation.', 'Historical rebuild verified the SQL sources.', '', None]:
+        run_case('retrospective SQL scope '+str(scope),lambda r,scope=scope:mutate_json(r/'retrospective-sql-audit.json',lambda a:a.update(scope=scope)),expected_error='retrospective SQL audit scope differs')
+    run_case('missing retrospective SQL scope',lambda r:mutate_json(r/'retrospective-sql-audit.json',lambda a:a.pop('scope')),expected_error='retrospective SQL audit scope differs')
+    audit=json.loads((ROOT/'retrospective-sql-audit.json').read_text())
+    for arm in ['baseline','scored']:
+        length=audit['arms'][arm]['binary_bytes']
+        for value in [length+1, length+1024*1024, length-1, 0, -1, float(length), True, str(length), None]:
+            run_case('binary length '+arm+' '+repr(value),lambda r,arm=arm,value=value:mutate_json(r/'retrospective-sql-audit.json',lambda a:a['arms'][arm].update(binary_bytes=value)),expected_error='retained binary byte length differs: '+arm)
+        run_case('missing binary length '+arm,lambda r,arm=arm:mutate_json(r/'retrospective-sql-audit.json',lambda a:a['arms'][arm].pop('binary_bytes')),expected_error='retained binary byte length differs: '+arm)
     run_case('product overclaim in provenance scope',lambda r:mutate_json(r/'provenance.json',lambda p:p.update(scope='native search_fused component; validated product accuracy and speed improvement')),expected_error='component provenance scope differs')
     for key,value in [('scope','Historical platform capture from the measured runs.'),('comparison','Current CPU/kernel/quota/affinity exactly match the original runs.')]:
         run_case('historical hardware overclaim '+key,lambda r,key=key,value=value:mutate_json(r/'platform-observation.json',lambda p:p.update({key:value})),expected_error='current platform scope differs' if key=='scope' else 'historical hardware limitation differs')
