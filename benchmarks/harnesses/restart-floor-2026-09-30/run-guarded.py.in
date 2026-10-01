@@ -49,10 +49,10 @@ def fixture_snapshot(seed,models):
             path=Path(directory)/name;relative=path.relative_to(seed).as_posix()
             before=path.lstat();mode=stat.S_IMODE(before.st_mode)
             if path.is_symlink():
+                assert relative!='index' and not relative.startswith('index/'), 'measured index tree symlinks forbidden'
                 target=os.readlink(path);resolved=path.resolve(strict=True)
                 assert relative=='models' or resolved.is_relative_to(seed), 'external fixture symlink refused'
                 entries[relative]={'kind':'symlink','target':target}
-                if relative.startswith('index/'):entries[relative]['allocated_bytes']=before.st_blocks*512
             elif path.is_file():
                 actual=digest(path);after=path.stat()
                 assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns,before.st_blocks)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_blocks), 'fixture changed while hashing'
@@ -67,7 +67,7 @@ def verify_fixture(seed,expected):
     assert expected['version']==2 and expected['tree_sha256']==fixture_digest(expected['entries'],expected['models_target']), 'malformed expected fixture manifest'
     actual=fixture_snapshot(seed,Path(expected['models_target']))
     assert actual==expected, 'fixture differs from explicitly prepared manifest'
-    return {'tree_sha256':actual['tree_sha256'],'files':sum(x['kind']=='file' for x in actual['entries'].values()),'entries':len(actual['entries']),'models_target':actual['models_target'],'index_allocated_bytes':sum(x.get('allocated_bytes',0) for x in actual['entries'].values()),'allocation_scope':'index non-directory st_blocks*512 endpoints; historical per-copy allocation baseline N/A'}
+    return {'tree_sha256':actual['tree_sha256'],'files':sum(x['kind']=='file' for x in actual['entries'].values()),'entries':len(actual['entries']),'models_target':actual['models_target'],'index_allocated_bytes':sum(x.get('allocated_bytes',0) for x in actual['entries'].values()),'allocation_scope':'index regular-file st_blocks*512 endpoints; historical per-copy allocation baseline N/A'}
 def independent_files(source,clone,expected):
     source_inodes={(path.stat().st_dev,path.stat().st_ino) for name,entry in expected['entries'].items() if entry['kind']=='file' for path in [source/name]}
     clone_inodes=set()

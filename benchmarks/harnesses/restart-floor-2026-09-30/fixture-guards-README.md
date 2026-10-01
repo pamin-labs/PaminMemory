@@ -52,9 +52,9 @@ Prospective setup and every trial now copy each attested executable into an exte
 
 Conversion attestations, original executables, logs and private executable copies must resolve outside the fixed measured Disk seed before reads or launch. `test-execution-binding.py.in` uses only tiny fake bytes and mocked invocations, including path replacement, in-place mutation, failure cleanup and conversion seed-boundary rejection.
 
-Version2 prospective fixture manifests additionally bind every regular file and symlink under
+Version2 prospective fixture manifests additionally bind every regular file under
 `index/` to its `st_blocks * 512` allocation. Source and clone endpoint checks
-require the same per-entry allocation as the separately prepared manifest, and
+require the same per-file allocation as the separately prepared manifest, and
 private copy receipts retain the aggregate starting index allocation. Copies
 that preserve bytes but change allocation are rejected before launch; sparse,
 CoW or compressed copies may therefore require a different controlled copy
@@ -70,3 +70,10 @@ The prospective trial output must resolve outside the entire stopped source
 seed, including through symlink ancestors. This check precedes reading models,
 creating records or invoking the archived runner, so the runner cannot first
 create output/raw evidence inside the source fixture.
+
+Every symlink at `index`
+or beneath `index/` is rejected when preparing or verifying a fixture. The
+Rust disk walker may follow directory targets; rejecting those links prevents
+counting PostgreSQL or duplicate subtrees and recursion cycles. The separately
+pinned `models` symlink remains outside the measured index tree. These are
+prospective controls and do not establish missing historical per-copy proof.
