@@ -561,9 +561,16 @@ impl Scores {
 
     /// A complete uncached request already has every score on the replacement.
     /// Only a partial miss needs another pass to avoid mixing old cached logits.
-    fn replaced(&mut self, missing: usize, total: usize) -> bool {
+    fn replaced(&mut self, missing: usize, total: usize, checkpoint: (u64, u64)) -> bool {
         self.invalidate();
-        missing != total
+        if missing != total {
+            // The first pass's hits/misses were provisional: its cached logits
+            // cannot be used with the replacement. Account only the final pass.
+            (self.hits, self.misses) = checkpoint;
+            true
+        } else {
+            false
+        }
     }
 
     fn key(query: &str, document: &str) -> u64 {
@@ -782,6 +789,7 @@ impl Reranker {
             .map(|document| Scores::key(query, document))
             .collect();
         loop {
+            let checkpoint = (self.scores.hits, self.scores.misses);
             let mut scores: Vec<Option<f32>> = keys
                 .iter()
                 .map(|key| self.scores.get(*key))
@@ -829,7 +837,11 @@ impl Reranker {
                     || load_model(tier, cache),
                 )
                 .map_err(reranking)?;
-                if replaced && self.scores.replaced(unscored.len(), documents.len()) {
+                if replaced
+                    && self
+                        .scores
+                        .replaced(unscored.len(), documents.len(), checkpoint)
+                {
                     // Some cached logits predate the replacement. Rescore them
                     // too; a fully uncached successful pass can commit directly.
                     continue;
@@ -1161,16 +1173,48 @@ mod tests {
         let mut scores = Scores::default();
         scores.put(Scores::key("query", "old"), 0.5);
         assert!(
-            !scores.replaced(16, 16),
+            !scores.replaced(16, 16, (0, 0)),
             "scheduled complete result must not run twice"
         );
         assert!(scores.known.is_empty());
         scores.put(Scores::key("query", "old"), 0.5);
         assert!(
-            scores.replaced(8, 16),
+            scores.replaced(8, 16, (0, 0)),
             "partial misses must not mix old logits"
         );
         assert!(scores.known.is_empty());
+    }
+
+    #[test]
+    fn partial_backend_replay_counts_each_offered_candidate_once() {
+        let mut scores = Scores {
+            hits: 7,
+            misses: 9,
+            ..Default::default()
+        };
+        let keys: Vec<_> = (0..4)
+            .map(|n| Scores::key("query", &n.to_string()))
+            .collect();
+        scores.put(keys[0], 0.5);
+        let checkpoint = (scores.hits, scores.misses);
+        let missing = keys
+            .iter()
+            .filter(|key| scores.get(**key).is_none())
+            .count();
+        assert_eq!(missing, 3);
+        assert!(scores.replaced(missing, keys.len(), checkpoint));
+        for key in keys {
+            assert!(scores.get(key).is_none());
+        }
+        assert_eq!(
+            scores.hits, 7,
+            "discarded provisional cache hit must not count"
+        );
+        assert_eq!(
+            scores.hits + scores.misses,
+            16 + 4,
+            "one public request offers four candidates, not eight"
+        );
     }
 
     #[test]
