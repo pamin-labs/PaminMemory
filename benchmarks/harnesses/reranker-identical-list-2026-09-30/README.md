@@ -65,6 +65,10 @@ execution is required.
 Use a dedicated disposable model-cache copy: product cache housekeeping may
 write only there. Run as a non-root user capable of starting owned PostgreSQL.
 Keep the original clone, shared dependency and historical evidence untouched.
+Scratch output must be outside this source repository. A supplied dependency
+at its standard `benchmarks/harnesses/selected-main-stack-2026-10-01` path protects
+its entire enclosing repository; a generic offline package protects that package
+directory itself.
 Replace all example paths with existing local prerequisites:
 
 ```sh
