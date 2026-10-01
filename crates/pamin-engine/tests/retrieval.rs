@@ -812,7 +812,10 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
             note(alone.entry(*channel).or_default(), ranking);
         }
         for missing in CHANNELS {
-            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
+            let ranking = channels::as_if_effective(
+                &hits,
+                &channels::effective_fusion(&hits, &Fusion::default()).without(*missing),
+            );
             note(without.entry(*missing).or_default(), &ranking);
         }
         note(
@@ -821,7 +824,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         );
 
         for ((_, fusion), into) in variants.iter().zip(&mut offline) {
-            note(into, &channels::as_if(&hits, fusion));
+            note(into, &channels::as_if_effective(&hits, fusion));
         }
 
         if let (Some(segmented), Some(ngram)) = (

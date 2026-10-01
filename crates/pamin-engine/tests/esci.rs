@@ -459,7 +459,10 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             );
         }
         for missing in CHANNELS {
-            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
+            let ranking = channels::as_if_effective(
+                &hits,
+                &channels::effective_fusion(&hits, &Fusion::default()).without(*missing),
+            );
             score(
                 without
                     .entry(*missing)
@@ -482,7 +485,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             score(
                 into.entry(query.locale.clone()).or_default(),
                 query,
-                &channels::as_if(&hits, fusion),
+                &channels::as_if_effective(&hits, fusion),
             );
         }
     }
