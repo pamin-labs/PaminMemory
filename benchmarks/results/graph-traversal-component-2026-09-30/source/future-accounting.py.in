@@ -43,12 +43,17 @@ def maps(pid,expected,cached=None):
 
 def capture(command,expected,log,usage,mapped,timeout=900):
     require(set(expected)==set(PINS),'both expected runtime paths required')
+    environment=os.environ.copy()
+    result=environment.get('GRAPH_OUT')
+    require(bool(result),'GRAPH_OUT result path required')
+    outputs=[Path(path) for path in [log,usage,mapped,result]]
+    require(len({path.resolve() for path in outputs})==len(outputs),'output paths must be distinct after resolving aliases')
+    require(all(not os.path.lexists(path) for path in outputs),'outputs must be fresh, including GRAPH_OUT')
     expected={role:Path(path).resolve() for role,path in expected.items()}
     require(all(digest(path)==PINS[role] for role,path in expected.items()),'provided runtime file differs')
-    require(all(not Path(path).exists() for path in [log,usage,mapped]),'outputs must be fresh')
     start=time.monotonic();found={};reaped=False;accounting=None;failure=None
     with Path(log).open('x') as stream:
-        process=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+        process=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True,env=environment)
         try:
             while True:
                 found.update(maps(process.pid,expected,found))

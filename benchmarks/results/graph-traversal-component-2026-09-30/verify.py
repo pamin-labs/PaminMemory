@@ -64,7 +64,7 @@ assert provenance.get('historical_loaded_zvec_identity')=='N/A: runtime-map coll
 future=provenance['future_reproduction']
 assert future['scope']=='prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement', 'prospective runner scope differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
-FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '0f8122c033c008b1d398d8bc9e3f0b5bfedaf2ae7c00c638f73fc5c86627c79c', 'test_future_accounting.py': '1d98f06ee9ced73b2a68d3248ec97c649ddf6281c0f1a3f73675731a0fee1250'}
+FUTURE_SOURCE_PINS={'source/future-accounting.py.in': 'b10597de65ca8b612f16e9180f1a8d22b4c94305db044ba9778d32e84494e0e5', 'test_future_accounting.py': 'f7f80ac992fb843565c643af8663cfc931e0d69cee50543ec0b9cafe28600666'}
 assert future['files']==FUTURE_SOURCE_PINS, 'future accounting source pins differ'
 for name,digest in FUTURE_SOURCE_PINS.items():assert sha(ROOT/name)==digest, 'future accounting source bytes differ'
 # Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
