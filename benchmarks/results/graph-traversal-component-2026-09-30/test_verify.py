@@ -486,6 +486,8 @@ if __name__ == '__main__':
                 mutate_json(root/source,change)
             run_case('capture timestamp '+source+'/'+repr(value),timestamp,expected_error='retained '+label+' capture timestamp differs')
     run_case('missing generated arm manifest flag',lambda root:(root/'README.md').write_text((root/'README.md').read_text().replace('  --manifest-path "$ARMS/$ARM/Cargo.toml" \\\n','')),expected_error='complete approved recipe differs')
+    for replacement in ['was compiled and passed.','was compiled and run successfully.']:
+        run_case('invented frontier stress execution '+replacement,lambda root,replacement=replacement:(root/'README.md').write_text((root/'README.md').read_text().replace('was compiled but not run.',replacement)),expected_error='README compiled-but-unrun frontier-stress limitation differs')
     run_case('invented README historical loaded zvec identity',lambda root:(root/'README.md').write_text((root/'README.md').read_text().replace('mapping was not captured: historical loaded-Zvec identity is **N/A**.','mapping was captured and verified: historical loaded-Zvec identity is **verified**.')),expected_error='README historical loaded zvec N/A limitation differs')
     run_case('invented historical loaded zvec identity',lambda root:mutate_json(root/'provenance.json',lambda p:p.update(historical_loaded_zvec_identity='loaded zvec verified')),expected_error='historical loaded zvec limitation differs')
     run_case('historical runner source overclaim',lambda root:mutate_json(root/'provenance.json',lambda p:p['future_reproduction'].update(scope='original historical runner bytes')),expected_error='prospective runner scope differs')
