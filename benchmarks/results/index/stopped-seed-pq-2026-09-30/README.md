@@ -77,11 +77,14 @@ python3 -O -m unittest test_verify.py
 ```
 
 The verifier returns 10 files, 18,000 documents, requested zero and effective
-512. Fourteen tests cover malformed header/footer/table CRCs, unknown container
+512. Sixteen tests (14 metadata guards and two archive guards) cover malformed
+header/footer/table CRCs, unknown container
 with valid CRC, unknown quantizer, legacy header, mismatched chunk counts,
 unknown metric, Flat package, code-length arithmetic, zero-as-no-PQ rejection,
 omitted-file identity rejection and a synthetic full
-metadata CRC corruption. Synthetic omitted content is zero-filled; tests do
+metadata CRC corruption. The archive guards accept the retained archive and
+reject mutated provenance after checking the archive identity.
+Synthetic omitted content is zero-filled; tests do
 not read the private seed.
 
 [inspect_native.py](inspect_native.py) is the standalone offline parser for
