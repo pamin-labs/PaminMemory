@@ -12,6 +12,45 @@ import metrics
 import rows
 
 
+def paired_correctness(classifications):
+    """Count only complete main/stack pairs with equal actual input-change scope."""
+    groups={}
+    for item in classifications:
+        job=item['job']
+        key=(job['limit'],job['query_id'],job['sequence'][0])
+        block=groups.setdefault(key,{}).setdefault(job['round'],{})
+        c.require(job['source'] in ['main','stack'] and job['source'] not in block,
+                  'duplicate or unknown correctness pair arm')
+        c.require(type(item.get('changed_actual_reranker_inputs')) is bool, 'invalid actual input-change scope')
+        block[job['source']]=item
+    correctness,controls,excluded=[],[],[]
+    fields=['same_final_actual_inputs','same_final_raw_bits/order','all_changed_and_hot_exact',
+            'legacy_main_context_failure','retrieval_or_input_context_mismatch']
+    for (limit,qid,initial),blocks in sorted(groups.items()):
+        c.require(set(blocks)==set(range(4)) and all(set(pair)=={'main','stack'} for pair in blocks.values()),
+                  'complete four-block correctness pairs required')
+        paired=[]
+        for block,pair in sorted(blocks.items()):
+            scopes={arm:item['changed_actual_reranker_inputs'] for arm,item in pair.items()}
+            if scopes['main']!=scopes['stack']:
+                excluded.append({'limit':limit,'query_id':qid,'initial':initial,'block':block,
+                                 'actual_input_change_by_arm':scopes,
+                                 'reason':'unpaired actual input-change scope; excluded from correctness differences'})
+            else:
+                paired.append(pair)
+        for changed,target in [(True,correctness),(False,controls)]:
+            selected=[pair for pair in paired if pair['main']['changed_actual_reranker_inputs'] is changed]
+            if not selected:
+                continue
+            for field in fields:
+                counts={arm:sum(pair[arm][field] for pair in selected) for arm in ['main','stack']}
+                target.append({'configuration':f'limit{limit}/query{qid}/history{initial}/{len(selected)} paired blocks',
+                               'samples_per_arm':len(selected),'excluded_unpaired_blocks':len(blocks)-len(paired),
+                               'history_scope':'changed-input history' if changed else 'unchanged-input control',
+                               'metric':field,**metrics.difference(counts['main'],counts['stack'])})
+    return correctness,controls,excluded
+
+
 def report(packets, provider_binding=None):
     jobs = c.schedule()
     c.require(len(packets) == 80 and {p['job']['name'] for p in packets} == {j['name'] for j in jobs},
@@ -55,23 +94,7 @@ def report(packets, provider_binding=None):
                       (item['job']['tier'], item['job']['limit'], item['job']['query_id'], item['job']['sequence'][0]) == tuple(config[:4])]
             if scoped and not any(item['changed_actual_reranker_inputs'] for item in scoped):
                 metric['history_scope'] = 'unchanged-input control'
-    correctness, control_diagnostics = [], []
-    for limit in [5, 10]:
-        for qid in [80, 101]:
-            for initial in ['A', 'B']:
-                for key in ['same_final_actual_inputs', 'same_final_raw_bits/order', 'all_changed_and_hot_exact',
-                            'legacy_main_context_failure', 'retrieval_or_input_context_mismatch']:
-                    items = [item for item in classifications if item['job']['limit'] == limit
-                             and item['job']['query_id'] == qid and item['job']['sequence'][0] == initial]
-                    for changed, target in [(True, correctness), (False, control_diagnostics)]:
-                        selected = [item for item in items if item['changed_actual_reranker_inputs'] is changed]
-                        if not selected:
-                            continue
-                        counts = {arm: sum(item[key] for item in selected if item['job']['source'] == arm)
-                                  for arm in ['main', 'stack']}
-                        target.append({'configuration': f'limit{limit}/query{qid}/history{initial}/4 blocks',
-                                       'history_scope': 'changed-input history' if changed else 'unchanged-input control',
-                                       'metric': key, **metrics.difference(counts['main'], counts['stack'])})
+    correctness,control_diagnostics,unpaired_history_scopes=paired_correctness(classifications)
     process_metrics = []
     groups = {(j['tier'], j['limit'], j['query_id'], j['sequence'][0]) for j in jobs}
     for group in sorted(groups):
@@ -116,6 +139,7 @@ def report(packets, provider_binding=None):
     return {'complete': True, 'processes': 80, 'calls': 880, 'revisions': c.MANIFEST['revisions'],
             'regenerated_fixture': True, 'historical_numeric_identity_claimed': False,
             'correctness': correctness, 'control_diagnostics': control_diagnostics, 'classifications': classifications,
+            'unpaired_history_scopes': unpaired_history_scopes,
             'metrics': measured_metrics,
             'process_metrics': process_metrics, 'disk': disk,
             'host_conditions': [{'job': p['job']['name'], 'endpoint': endpoint,
@@ -140,6 +164,7 @@ def write_tables(path, result):
              result.get('host_conditions_scope', 'Endpoint metadata; binding N/A for direct renderer fixtures.') + ' '
              + str(len(result['host_conditions'])) + ' endpoint records. First endpoint: '
              + json.dumps(result['host_conditions'][0] if result['host_conditions'] else None), '',
+             str(len(result.get('unpaired_history_scopes', []))) + ' paired blocks excluded from correctness differences for unequal actual input-change scope; denominators shown per row.', '',
              '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Samples per arm | Eligibility |',
              '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
     for group in ['correctness', 'control_diagnostics', 'metrics', 'process_metrics', 'disk']:
