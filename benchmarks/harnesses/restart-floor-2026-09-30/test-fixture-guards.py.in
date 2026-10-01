@@ -14,8 +14,9 @@ def refuse(operation):
 def case(kind='normal',copies=9):
     with tempfile.TemporaryDirectory() as temporary:
         root=Path(temporary);seed=root/'seed';models=root/'models';models.mkdir();(models/'prepared').mkdir();(models/'snapshot').mkdir()
-        for name in ['source','snapshot/tokenizer','prepared/model.onnx','prepared/model.onnx.data','prepared/attention.unfused']:(models/name).write_bytes(b'fake model asset')
-        model_plan={'version':1,'selection_provenance':'fake executable selection only','models':[{'name':'fake','asset_directories':['snapshot','prepared'],'load_graph':'prepared/model.onnx','assets':{'source':['source'],'tokenizer':['snapshot/tokenizer'],'prepared_graph':['prepared/model.onnx'],'external_weights':['prepared/model.onnx.data'],'metadata':['prepared/attention.unfused']},'graph_external_weights':{'prepared/model.onnx':['prepared/model.onnx.data']}}]}
+        for name in ['source','snapshot/tokenizer','prepared/model.onnx','prepared/model.onnx.data','prepared/attention.unfused','prepared/reranker.onnx','prepared/alternate.onnx']:(models/name).write_bytes(b'fake model asset')
+        model_plan={'version':1,'selection_provenance':'fake executable selection only','models':[{'name':'embedding','asset_directories':['snapshot','prepared'],'load_graph':'prepared/model.onnx','assets':{'source':['source'],'tokenizer':['snapshot/tokenizer'],'prepared_graph':['prepared/model.onnx','prepared/alternate.onnx'],'external_weights':['prepared/model.onnx.data'],'metadata':['prepared/attention.unfused']},'graph_external_weights':{name:['prepared/model.onnx.data'] for name in ['prepared/model.onnx','prepared/alternate.onnx']}}]}
+        second=json.loads(json.dumps(model_plan['models'][0]));second['name']='reranker';second['load_graph']='prepared/reranker.onnx';second['assets']['prepared_graph'].append('prepared/reranker.onnx');second['graph_external_weights']['prepared/reranker.onnx']=['prepared/model.onnx.data'];model_plan['models'][0]['assets']['prepared_graph'].append('prepared/reranker.onnx');model_plan['models'][0]['graph_external_weights']['prepared/reranker.onnx']=['prepared/model.onnx.data'];model_plan['models'].append(second)
         model_manifest=root/'models.json';model_manifest.write_text(json.dumps(guard.MODEL['prepare'](models,model_plan)));model_manifest.chmod(0o600)
         (seed/'postgres/data/nested').mkdir(parents=True);(seed/'index').mkdir()
         (seed/'postgres/data/nested/data').write_bytes(b'fake stopped data')
@@ -27,7 +28,11 @@ def case(kind='normal',copies=9):
         libs=root/'libs';libs.mkdir();library=libs/'libfake.so';library.write_bytes(b'fake native bytes')
         native=guard.NATIVE['snapshot']([str(libs)],[str(libs)])
         names=['predecessor','candidate','main'];arms=[f'{name},{name},{executable}' for name in names]
-        attestation=root/'attestation.json';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'arms':{name:{'commit':name,'binary':str(executable),'binary_sha256':guard.digest(executable),'binary_bytes':executable.stat().st_size} for name in names}}))
+        restart_source='crates/pamin-engine/tests/scratch_restart_floor.rs'
+        helper={'scratch_source':restart_source,'scratch_sha256':'fake-harness','checkout':str(root),
+                'inputs_before':{restart_source:{'sha256':'fake-harness'}},'inputs_after':{restart_source:{'sha256':'fake-harness'}},
+                'compiler_artifacts':[{'target':{'name':'scratch_restart_floor','src_path':str(root/restart_source)},'executable':str(executable),'fresh':False}]}
+        attestation=root/'attestation.json';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'build_kind':'restart-trial','scratch_target':restart_source,'harness_sha256':'fake-harness','arms':{name:dict(helper,**{'commit':name,'binary':str(executable),'binary_sha256':guard.digest(executable),'binary_bytes':executable.stat().st_size}) for name in names}}))
         output=root/'copies';record=root/'record.json'
         original_copy=shutil.copytree;original_load=guard.load_runner;original_argv=sys.argv;original_env=dict(os.environ)
         def altered_copy(source,destination,*args,**kwargs):
@@ -54,7 +59,14 @@ def case(kind='normal',copies=9):
                 runner.cpu_provider_assignments('fake retained log')
                 if kind=='late_failure' and index==1:raise RuntimeError('fake late failure')
             if kind=='post_source_change':(seed/'index/data').write_bytes(b'changed after copies')
-        provider=lambda log:[]
+        def provider(log):
+            actual={role:{'model_graph':str(models/('prepared/model.onnx' if role=='embedding' else 'prepared/reranker.onnx')),'assigned_nodes':{'CPUExecutionProvider':1}} for role in ['embedding','reranker']}
+            if kind=='empty_providers':return {}
+            if kind=='missing_role':actual.pop('reranker')
+            if kind=='wrong_graph':actual['embedding']['model_graph']=str(models/'prepared/alternate.onnx')
+            if kind=='swapped_roles':actual['embedding'],actual['reranker']=actual['reranker'],actual['embedding']
+            if kind=='non_cpu':actual['embedding']['assigned_nodes']={'CUDAExecutionProvider':1}
+            return actual
         runner=types.SimpleNamespace(shutil=shutil,main=fake_main,cpu_provider_assignments=provider)
         try:
             shutil.copytree=altered_copy;guard.load_runner=lambda path:runner
@@ -78,7 +90,7 @@ def case(kind='normal',copies=9):
         finally:
             shutil.copytree=original_copy;guard.load_runner=original_load;sys.argv=original_argv
             os.environ.clear();os.environ.update(original_env)
-for kind in ['normal','clone_change','source_change','shared_inode','external_link','binary_change','late_failure','post_source_change','native_change','model_prearm_change','model_graph_change','model_weight_change']:
+for kind in ['normal','clone_change','source_change','shared_inode','external_link','binary_change','late_failure','post_source_change','native_change','model_prearm_change','model_graph_change','model_weight_change','empty_providers','missing_role','wrong_graph','swapped_roles','non_cpu']:
     case(kind);print('passed',kind)
 case(copies=8);case(copies=10);print('passed exact nine-copy count')
 for key in ['HF_HOME','HF_HUB_CACHE']:refuse(lambda:guard.controlled_environment({key:'unexpected'}))
