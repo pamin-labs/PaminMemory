@@ -485,7 +485,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             score(
                 into.entry(query.locale.clone()).or_default(),
                 query,
-                &channels::as_if_effective(&hits, fusion),
+                &channels::as_if(&hits, fusion),
             );
         }
     }
