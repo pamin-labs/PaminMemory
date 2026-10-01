@@ -83,18 +83,41 @@ with tempfile.TemporaryDirectory() as directory:
     executable=root/'binary';executable.write_bytes(b'never executed');home=root/'home';home.mkdir();(home/'models').symlink_to(models)
     libs=root/'libs';libs.mkdir();(libs/'libfake.so').write_bytes(b'fake native')
     native=guard['NATIVE']['snapshot']([str(libs)],[str(libs)])
-    attestation=root/'attestation';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'arms':{'fake':{'commit':'fake','binary':str(executable),'binary_sha256':guard['digest'](executable),'binary_bytes':executable.stat().st_size}}}))
+    restart_source='crates/pamin-engine/tests/scratch_restart_floor.rs'
+    helper={'scratch_source':restart_source,'scratch_sha256':'fake-harness','checkout':str(root),
+            'inputs_before':{restart_source:{'sha256':'fake-harness'}},'inputs_after':{restart_source:{'sha256':'fake-harness'}},
+            'compiler_artifacts':[{'target':{'name':'scratch_restart_floor','src_path':str(root/restart_source)},'executable':str(executable),'fresh':False}]}
+    attestation=root/'attestation';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'build_kind':'restart-trial','scratch_target':restart_source,'harness_sha256':'fake-harness','arms':{'fake':dict(helper,**{'commit':'fake','binary':str(executable),'binary_sha256':guard['digest'](executable),'binary_bytes':executable.stat().st_size})}}))
+    # A conversion-only attestation and a mismatched artifact must fail before launch.
+    attested=json.loads(attestation.read_text())
+    for field,value in [('build_kind','disk-schema-conversion'),('scratch_target','crates/pamin-index/tests/scratch_disk_schema.rs')]:
+        bad=copy.deepcopy(attested);bad[field]=value
+        refuse(lambda:guard['binary'](f'fake,fake,{executable}',bad))
+    bad=copy.deepcopy(attested);bad['arms']['fake']['compiler_artifacts'][0]['target']['name']='scratch_disk_schema'
+    refuse(lambda:guard['binary'](f'fake,fake,{executable}',bad))
+    guard['setup_rows']('RESTART_JSON {"phase":"open","documents":1}\nRESTART_JSON {"phase":"seed_complete"}\n','seed',1)
+    refuse(lambda:guard['setup_rows']('RESTART_JSON {"phase":"open","documents":1}\n','seed',1))
+    refuse(lambda:guard['setup_rows']('running 0 tests\n','bootstrap',1))
     previous_run=subprocess.run;previous_env=dict(os.environ);previous_argv=sys.argv
     try:
         os.environ.clear();os.environ.update({key:value for key,value in previous_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})
-        for kind in ['normal','changed_during_setup','manifest_changed','manifest_mode_changed']:
+        subprocess.run=lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError('unexpected setup launch'))
+        for kind in ['conversion','wrong_artifact']:
+            bad=copy.deepcopy(attested)
+            if kind=='conversion':bad['build_kind']='disk-schema-conversion'
+            else:bad['arms']['fake']['compiler_artifacts'][0]['target']['name']='scratch_disk_schema'
+            attestation.write_text(json.dumps(bad));private=root/(kind+'.json')
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
+            refuse(guard['main']);assert not private.exists()
+        attestation.write_text(json.dumps(attested))
+        for kind in ['normal','zero_tests','changed_during_setup','manifest_changed','manifest_mode_changed']:
             private=root/(kind+'.json');calls=[]
-            def fake_run(command,env):
+            def fake_run(command,env,**kwargs):
                 calls.append(command)
                 if kind=='changed_during_setup':(models/'prepared/key/model.onnx.data').write_bytes(b'changed during setup')
                 if kind=='manifest_changed':manifest.write_text(manifest.read_text()+' ')
                 if kind=='manifest_mode_changed':manifest.chmod(0o644)
-                return types.SimpleNamespace(returncode=0)
+                return types.SimpleNamespace(returncode=0,stdout='running 0 tests\n' if kind=='zero_tests' else 'RESTART_JSON {"phase":"open","documents":0}\nCOLLECTION_PATH fake\n',stderr='')
             subprocess.run=fake_run
             sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','bootstrap']
             if kind=='normal':guard['main']()
