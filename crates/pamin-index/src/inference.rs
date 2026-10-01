@@ -912,15 +912,71 @@ fn persistence_supported(plans: &[(Device, Target)], cuda_identified: bool) -> b
 }
 
 fn cuda_identity() -> Option<String> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
+    let bytes = optional_output(
+        std::process::Command::new("nvidia-smi").args([
             "--query-gpu=index,uuid,pci.bus_id,name,driver_version",
             "--format=csv,noheader",
-        ])
-        .output()
+        ]),
+        std::time::Duration::from_secs(2),
+    )?;
+    cuda_inventory(&bytes)
+}
+
+/// Optional hardware inventory must never hold inference behind a wedged
+/// driver. A regular output file avoids waiting on inherited pipe handles.
+fn optional_output(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek};
+    let path = std::env::temp_dir().join(format!("pamin-inventory-{}", uuid::Uuid::now_v7()));
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
         .ok()?;
-    output.status.success().then_some(())?;
-    cuda_inventory(&output.stdout)
+    let result = (|| {
+        let mut child = command
+            .stdout(file.try_clone().ok()?)
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = std::time::Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Err(_) => break None,
+                Ok(None) => {}
+            }
+            if std::time::Instant::now() >= deadline
+                || file.metadata().map_or(true, |meta| meta.len() > 65536)
+            {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        if status.is_none() {
+            let _ = child.kill();
+            // Reap asynchronously: kill/wait cannot synchronously unblock a
+            // process stuck inside an uninterruptible driver syscall.
+            let _ = std::thread::Builder::new()
+                .name("inventory-reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+            return None;
+        }
+        if !status?.success() || file.metadata().ok()?.len() > 65536 {
+            return None;
+        }
+        file.rewind().ok()?;
+        let mut bytes = Vec::new();
+        file.take(65536).read_to_end(&mut bytes).ok()?;
+        Some(bytes)
+    })();
+    let _ = std::fs::remove_file(path);
+    result
 }
 
 fn cuda_inventory(bytes: &[u8]) -> Option<String> {
@@ -2037,6 +2093,28 @@ mod tests {
             &[(Device::CoreMl, vec![cpu()].into())],
             false
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn optional_inventory_times_out_without_blocking_model_loading() {
+        let start = std::time::Instant::now();
+        assert!(
+            optional_output(
+                std::process::Command::new("sh").args(["-c", "exec sleep 10"]),
+                std::time::Duration::from_millis(50)
+            )
+            .is_none()
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(
+            optional_output(
+                std::process::Command::new("sh").args(["-c", "printf ready"]),
+                std::time::Duration::from_secs(1)
+            )
+            .unwrap(),
+            b"ready"
+        );
     }
 
     #[test]
