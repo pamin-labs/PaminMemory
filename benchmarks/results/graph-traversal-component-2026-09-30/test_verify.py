@@ -493,7 +493,7 @@ if __name__ == '__main__':
     for script in ['verify.py','test_verify.py']:
         # Split detection strings keep this published test source free of the
         # private markers it deliberately injects into temporary archives.
-        for marker in ['/ho'+'me/alice/private-project','postgres'+'ql://user:password@host/db','Bearer '+'credential123']:
+        for marker in ['/ho'+'me/alice/private-project','/ro'+'ot/private-project/token.txt','/Us'+'ers/alice/private-project','/usr/ho'+'me/alice/private-project','/var/ro'+'ot/private-project','C:'+chr(92)+'Us'+'ers'+chr(92)+'alice'+chr(92)+'private-project','postgres'+'ql://user:password@host/db','Bearer '+'credential123']:
             def leaked_script(root,script=script,marker=marker):
                 path=root/script;path.write_text(path.read_text()+'\n# '+marker+'\n')
             run_case('published script private marker '+script+'/'+marker.split(':')[0],leaked_script,expected_error='private path/credential/session marker: '+script)

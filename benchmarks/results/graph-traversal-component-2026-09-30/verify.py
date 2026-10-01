@@ -437,8 +437,8 @@ assert readme[resource_start:resource_stop].splitlines()==[
  '| Product search latency p50/p95 | N/A | N/A | N/A | N/A |',
  '| Graph-attributed memory | N/A | N/A | N/A | N/A |',
  '| Graph-attributed disk | N/A | N/A | N/A | N/A |'], 'unmeasured resource table must remain N/A'
-PRIVATE_MARKER_PATTERN=r'(?:/workspace/(?:scratch|\.pamin|\.cargo|\.onnxruntime|PaminMemory)|/home/|postgres(?:ql)?://|Bearer\s+[A-Za-z0-9]|claude\.ai/|app://)'
-assert hashlib.sha256(PRIVATE_MARKER_PATTERN.encode()).hexdigest()=='eba13eeaca1a6251a3633bd2121d0bdbfef1f581e8b48f9243ef7fea34d15e8b', 'approved private-marker pattern differs'
+PRIVATE_MARKER_PATTERN=r'(?:/workspace/(?:scratch|\.pamin|\.cargo|\.onnxruntime|PaminMemory)|/home/|/root/|/Users/|/usr/home/|/var/root/|(?i:[a-z]:[\\/]+(?:users|documents and settings)[\\/]+)|postgres(?:ql)?://|Bearer\s+[A-Za-z0-9]|claude\.ai/|app://)'
+assert hashlib.sha256(PRIVATE_MARKER_PATTERN.encode()).hexdigest()=='4da79e7aecf6c60d50131ec4daca2df63e3bfc9fd26ff354ee6a27b023e70335', 'approved private-marker pattern differs'
 for p in ROOT.rglob('*'):
  if not p.is_file():continue
  data=p.read_text()
