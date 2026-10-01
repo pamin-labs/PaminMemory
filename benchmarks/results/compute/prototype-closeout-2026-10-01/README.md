@@ -218,6 +218,14 @@ The worker writes `/private/tmp/pamin-cost-reproduced-ARM-BLOCK.jsonl`, a local 
 
 These commands are a reconstruction recipe, not new executed evidence. Historical shared-machine load and CoreML compilation warmth cannot be recreated or claimed controlled. The original worker's wall interval includes log setup, native startup/model warm/search and its post-run executable hashing; child user/system time excludes the Python wrapper/hash CPU and includes reaped helper children such as `ps`. Its maximum RSS is the child-resource high-water measure, not an aggregate of PostgreSQL, concurrent processes or accelerator services. Product-call timings and sampled native RSS remain in Rust rows. Other hosts require appropriate native loader settings and produce new measurements; native device/service memory, whole-system cost and exact historical build reproduction remain N/A.
 
+After the selected revision's final build or run, close the subshell opened in the setup block:
+
+```sh
+)
+```
+
+The setup and reproduction blocks form one shell session inside that open subshell; they cannot be executed as independent blocks in separate shells. Paste the opening setup, helper definitions, selected-revision commands and this closing `)` together as one script, omitting commands for unavailable revisions. The closing delimiter runs the script and its EXIT trap. A failure in any command under `set -eu`, or a caught HUP/INT/TERM, exits through the same owned-directory cleanup.
+
 The focused verifier regression suite exercises retained cost rows and redacted events without invoking the 100,000-draw precision calculation, models or native helpers:
 
 ```sh
