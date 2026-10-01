@@ -22,7 +22,7 @@ benchmarks/
                      ways: the value that holds, the value it replaced, neither
   run.py             pick a dataset, pick arms, run
   summarise.py       raw rows in, the committed summaries out
-  results/           one directory per dataset; only summaries are committed
+  results/           one directory per dataset; summaries and scoped raw evidence are retained
 
   latency.py            query latency at the same layer on every arm, and what
                         the reader costs against how much context it is handed
@@ -204,3 +204,7 @@ manifest records both hub revisions, tokenizer files and prepared ONNX bytes;
 checks the cache before treating a run as the same configuration. The
 concurrent rerun was used for accuracy only; its wall time is not a latency
 measurement.
+
+## Prototype compute evidence (2026-10-01)
+
+See [dual-vector and shared compute results](results/compute/prototype-closeout-2026-10-01/README.md) for paired precision, independent process costs, resource tradeoffs and frozen revision limits; [normalization evidence](results/compute/i8-normalization-2026-10-01/README.md) is a kernel throughput diagnostic. Run `python3 benchmarks/verify_compute_evidence.py` to independently check the retained product rows.
