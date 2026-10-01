@@ -70,8 +70,14 @@ copied out of the build target before the next clean/build. The original **parti
 source hashes, binary digests, filtered compiler-artifact records,
 runtime/provider evidence and asset hashes are in [provenance.json](provenance.json).
 
-The original source inventory omitted the 14 embedded migration SQL files; their
-build-time pre/post-byte attestation is **N/A**. A dated, read-only
+The original source inventory omitted the second integration target's source and the 14 embedded migration SQL files; their
+build-time pre/post-byte attestation is **N/A**. The exact preserved
+`scratch_scored_multihop.rs` source is now retained as [multihop.rs.in](source/multihop.rs.in),
+with a separate dated retrospective source binding in provenance. Its two frozen
+arm copies were byte-identical before copying (SHA256
+`70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00`).
+This binds the preserved later-inspected source, not its historical compilation
+bytes; the original 52-entry maps remain unchanged and partial. A dated, read-only
 [retrospective SQL audit](retrospective-sql-audit.json) now confirms that every
 preserved frozen SQL file matches Git at the recorded base and occurs verbatim
 in both preserved binaries whose SHA256 matches the original run records.
@@ -135,7 +141,7 @@ JSON is canonicalized and empty trailing log lines are trimmed in the published 
 digests document the formatting and path redactions in
 `provenance.json`; the original evidence was preserved.
 
-The inert [source files](source) contain the exact native fixture, its
+The inert [source files](source) contain the exact native fixture, the separately compiled multihop target, its
 structured inference tracer, the experimental patch and a preparation script.
 They are artifacts, not active product changes. The fixture also contains an
 ignored hub test that was not selected by the recorded command.
@@ -149,7 +155,21 @@ and run:
 python3 source/prepare.py --source "$SOURCE" --out "$ARMS"
 ```
 
-Build the generated `scratch_scored_fixture` integration target. Use a prepared
+Build both generated integration targets with the installed pinned Rust/Cargo
+1.98.1 tools, two build workers, explicit runtime paths and no inherited flags or
+wrappers. Keep build and model work out of the run slot. The six retained
+freshness records cover four product path crates and these two integration
+targets; other dependency freshness is not claimed. For each scratch arm:
+
+```sh
+CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p pamin-engine \
+  --test scratch_scored_fixture --test scratch_scored_multihop \
+  --no-run --release --offline --locked --message-format=json
+```
+
+The command selects the same two-target compilation scope. It does not select
+or run the multihop stress test. Copy the fixture executable before any later
+clean/build. Use a prepared
 workspace and pinned native runtime/model assets; clear inherited `PAMIN_*`
 knobs, set `PAMIN_PROFILE=accuracy` and `PAMIN_DEVICE=cpu`, and run each copied
 binary serially with `GRAPH_ARM=baseline` or `scored`, unique `GRAPH_OUT` and
@@ -157,12 +177,20 @@ binary serially with `GRAPH_ARM=baseline` or `scored`, unique `GRAPH_OUT` and
 `GRAPH_CLK_TCK` set to the platform clock-tick frequency:
 
 ```sh
+PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu \
+GRAPH_ARM="$ARM" GRAPH_OUT="$RESULTS/$ARM.jsonl" \
+GRAPH_TRACE="$RESULTS/$ARM.trace.jsonl" GRAPH_CLK_TCK="$(getconf CLK_TCK)" \
+GRAPH_SHARED_MACHINE="$INTERFERENCE" \
 "$BINARY" scratch_scored_graph_finite_fixture \
   --exact --ignored --nocapture --test-threads=1
 ```
 
-Use separate output paths and retain every failure. Verify source/build hashes,
-all four path-crate freshness records, actual provider assignment and model
+Set `WORKSPACE` to that arm's prepared pinned workspace and `ARM` to `baseline` or
+`scored`; retain the actual interference declaration in `INTERFERENCE`. The
+archive declaration is `exclusive model/build slot; shared file cache and reclaim
+pressure; non-timing component reproduction`. Future runs must record their own
+conditions. Use separate output paths and retain every failure. Verify source/build hashes,
+all six product/helper freshness records, actual provider assignment and model
 asset stability before accepting the result. The read-only
 [verifier](verify.py) checks the retained published evidence without compiling,
 loading a model or opening a database.
