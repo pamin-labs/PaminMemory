@@ -18,11 +18,12 @@ def close(actual, expected):
     assert math.isclose(actual, expected, rel_tol=1e-10, abs_tol=1e-10), (actual, expected)
 
 
-def verify_cluster_inference(queries, scored):
+def verify_cluster_inference(queries, scored, precision):
     import collections
     import numpy as np
 
     expected = json.loads((ROOT / "cluster-inference.json").read_text())
+    assert precision["inference_scope"] == expected, "published inference scope diverged"
     clusters = collections.defaultdict(list)
     for index, query in enumerate(queries):
         # Sentence keys are language:paragraph:sentence; languages have
@@ -56,6 +57,8 @@ def verify_cluster_inference(queries, scored):
     bootstrap = np.concatenate(bootstraps, axis=1)
     for index, group in enumerate(groups):
         reference = expected["groups"][group]
+        for key, value in reference.items():
+            assert precision["groups"][group][key] == value, "published inference field diverged"
         close(float(p[index]), reference["paragraph_cluster_sign_flip_p"])
         close(float(adjusted[index]), reference["holm_p"])
         for actual, target in zip(np.quantile(bootstrap[index], [.025, .975]), reference["cluster_bootstrap_delta_95_ci"]):
@@ -97,7 +100,7 @@ def verify():
             scored_groups[(group, side)] = scores
             close(statistics.mean(scores), summary[side])
             close(statistics.mean(recalls), summary["recall50_" + side])
-    verify_cluster_inference(baseline_queries, scored_groups)
+    verify_cluster_inference(baseline_queries, scored_groups, precision)
     costs = json.loads((ROOT / "cost-summary.json").read_text())
     expected = {"main-cpu", "new-cpu", "dual-cpu", "main-auto", "new-auto", "main-auto-repeat", "new-auto-persist-hit"}
     assert set(costs) == expected, "retained timing arm set is incomplete"
