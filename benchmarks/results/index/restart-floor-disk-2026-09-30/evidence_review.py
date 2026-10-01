@@ -46,7 +46,7 @@ def hwm_allowance(index,arm,repetition):
 
 def process_observations(rows, historical_anomalies=()):
     """Validate one process before arithmetic; bind declared historical defects."""
-    previous=None;anomalies=[]
+    previous=None;previous_ticks=None;anomalies=[]
     for position,row in enumerate(rows):
         if row['phase']=='process_total':
             real_measurement(row['wall_seconds'],positive=True)
@@ -58,6 +58,10 @@ def process_observations(rows, historical_anomalies=()):
         for field in ['process_before','process_after']:
             snapshot=row[field]
             if snapshot is None:continue
+            ticks=tuple(snapshot[key] for key in ['user_ticks','system_ticks'])
+            assert all(type(value) is int and value>=0 for value in ticks), 'invalid process CPU tick counters (booleans refused)'
+            assert previous_ticks is None or all(current>=old for current,old in zip(ticks,previous_ticks)), 'process cumulative CPU counters decreased within/across phases'
+            previous_ticks=ticks
             hwm=memory_status(snapshot)['VmHWM'];observation=[position,row['phase'],field,hwm]
             if previous is not None and hwm<previous[-1]:
                 anomalies.append({'arm':row.get('arm'),'repetition':row.get('repetition'),'previous':previous,'current':observation})
