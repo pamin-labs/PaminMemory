@@ -1,0 +1,146 @@
+"""Run the fixed 80-process/880-call method against newly generated fixture clones."""
+import argparse
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+import common as c
+import owned_postgres as pg
+import rows
+
+
+def records(text, marker):
+    return [json.loads(line.split(marker, 1)[1]) for line in text.splitlines() if marker in line]
+
+
+def parse(text, job, bound):
+    c.require(len(re.findall(r'test result: ok\. 1 passed; 0 failed;', text)) == 1
+              and not any(word in text for word in ['panicked at', 'test result: FAILED',
+                                                    'failed to close collection']), 'native helper did not complete successfully')
+    opened, graph, actual = [records(text, marker) for marker in
+                            ['CACHE_ENGINE_OPEN ', 'CACHE_ENGINE_GRAPH ', 'CACHE_ENGINE_ROW ']]
+    c.require(len(opened) == len(graph) == 1 and opened[0]['documents'] == 230
+              and opened[0]['coverage'] == 0.0 and graph[0] == [['mentions', 11]], 'fixture premise differs')
+    c.require(len(actual) == len(job['sequence'].split(',')), 'missing or extra timed calls')
+    roles = []
+    decoder = json.JSONDecoder()
+    for line in text.splitlines():
+        if 'ONNX graph execution-provider assignment' not in line:
+            continue
+        graph_path = decoder.raw_decode(line.split('model_graph=', 1)[1])[0]
+        nodes = decoder.raw_decode(line.split('assigned_nodes=', 1)[1])[0]
+        path = str(Path(graph_path).resolve())
+        role = next((name for name, pin in c.MANIFEST['roles'].items()
+                     if path == str((Path(c.CONFIG['models']) / pin['relative']).resolve())), None)
+        c.require(role is not None and nodes == {'CPUExecutionProvider': c.MANIFEST['roles'][role]['nodes']}
+                  and path in bound and c.digest(path) == bound[path]['sha256'], 'actual provider/graph binding differs')
+        roles.append(role)
+    c.require(sorted(roles) == (['embedding', 'reranker'] if job['tier'] == 'accurate' else ['embedding']),
+              'missing or duplicate model provider')
+    for row in actual:
+        mapped = {line.split(maxsplit=5)[5] for line in row['loaded_libraries'] if len(line.split(maxsplit=5)) == 6}
+        for root, name in [('native', 'libzvec_c_api.so'), ('ort', 'libonnxruntime.so.1.28.0')]:
+            c.require(str((Path(c.CONFIG[root]) / name).resolve()) in mapped, 'actual runtime mapping differs')
+    return opened[0], actual
+
+
+def status(pid):
+    text = (Path('/proc') / str(pid) / 'status').read_text()
+    return {key: int(next(line for line in text.splitlines() if line.startswith(key + ':')).split()[1])
+            for key in ['VmRSS', 'VmHWM']}
+
+
+def native(home, env, binary, prefix):
+    owned = pg.start(home, env)['identity']
+    start = time.monotonic()
+    samples = []
+    process = None
+    try:
+        with Path(str(prefix) + '.log').open('x') as stream:
+            process = subprocess.Popen([str(binary), '--ignored', '--exact', 'cache_product_limit_probe',
+                                        '--nocapture', '--test-threads=1'], cwd=c.ROOT / 'main', env=env,
+                                       stdout=stream, stderr=subprocess.STDOUT)
+            while process.poll() is None:
+                c.guard()
+                pg.check(home, owned)
+                c.require(time.monotonic() - start < 900, 'native process timeout')
+                try:
+                    samples.append({'native': status(process.pid), 'pg_main': status(owned['pid'])})
+                except FileNotFoundError:
+                    pass
+                time.sleep(1)
+            c.require(process.returncode == 0, 'native process failed; retain clone and logs')
+        return {'native_wall_seconds': time.monotonic() - start, 'samples': samples,
+                'polling_seconds': 1, 'PG_start_stop_included': False}
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        pg.stop(home, env, owned)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--exclusive', action='store_true')
+    args = parser.parse_args()
+    jobs = c.schedule()
+    if not args.execute:
+        print(json.dumps({'processes': len(jobs), 'timed_calls': 880, 'schedule': jobs}))
+        return
+    c.require(args.exclusive, 'exclusive slot required; no other builds or model experiments')
+    with c.exclusive():
+        c.source_inputs()
+        bound = c.assets()
+        binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
+        seed = c.ROOT / 'seed'
+        pg.preflight(seed)
+        out = c.ROOT / 'results'
+        out.mkdir()
+        gold = json.loads((c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json').read_text())
+        results = {}
+        rows.shown_source_identity(c.ROOT / 'main', c.ROOT / 'stack')
+        for job in jobs:
+            c.source_inputs()
+            c.guard()
+            binary = Path(binaries[job['source']]['path'])
+            c.require(c.digest(binary) == binaries[job['source']]['sha256'], 'frozen binary changed')
+            home = out / (job['name'] + '-home')
+            shutil.copytree(seed, home, symlinks=True)
+            record = json.loads((home / 'server.json').read_text())
+            record['installation_dir'] = str(home / 'postgres/install/17.6.0')
+            (home / 'server.json').write_text(json.dumps(record))
+            before = c.logical(home / 'index')
+            env = c.environment(home)
+            env.update(CACHE_RETURN_LIMIT=str(job['limit']), CACHE_QUERY_ID=str(job['query_id']),
+                       CACHE_TIER=job['tier'], CACHE_SEQUENCE=job['sequence'])
+            usage = native(home, env, binary, out / job['name'])
+            opened, actual = parse((out / (job['name'] + '.log')).read_text(), job, bound)
+            validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+            for old, new in zip(actual, actual[1:]):
+                rows.hot_guard(old, new, job['source'])
+            packet = {'job': job, 'rows': actual, 'validated': validated, 'opened': opened, 'usage': usage,
+                      'index_before_bytes': before, 'index_after_bytes': c.logical(home / 'index'),
+                      'full_payload_immutability_attestation': None}
+            c.save(out / (job['name'] + '.json'), packet)
+            key = (job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])
+            results[key] = packet
+            round_records = {key: value for key, value in results.items() if key[0] == job['round']}
+            if len(round_records) == 20:
+                rows.oracle_checks(round_records)
+            pg.preflight(home)
+            c.require(home.parent == out and (home / '.graph-disposable-clone').is_file(), 'cleanup boundary differs')
+            shutil.rmtree(home)
+            c.assets()
+            c.source_inputs()
+        c.require(len(results) == 80 and sum(len(v['rows']) for v in results.values()) == 880, 'incomplete matrix')
+        classifications = rows.oracle_checks(results)
+        c.save(out / 'complete.json', {'complete': True, 'processes': 80, 'calls': 880,
+               'classifications': classifications, 'regenerated_fixture': True,
+               'historical_numeric_identity_claimed': False})
+
+
+if __name__ == '__main__':
+    main()
