@@ -61,7 +61,9 @@ for arm,commit in expected_commits.items():
             if row['phase']!='process_total':
                 assert row['wall_ms'] is None if row['phase']=='closed_index' else math.isfinite(row['wall_ms']) and row['wall_ms']>=0, 'Disk invalid phase clock'
                 for snapshot in [row['process_before'],row['process_after']]:
-                    if snapshot is not None:assert all(isinstance(snapshot[k],int) and snapshot[k]>=0 for k in ['user_ticks','system_ticks']), 'Disk negative process counters'
+                    if snapshot is not None:
+                        assert all(type(snapshot[k]) is int and snapshot[k]>=0 for k in ['user_ticks','system_ticks']), 'Disk negative process counters'
+                        review.memory_status(snapshot)
                 for k in ['cpu_user_seconds','cpu_system_seconds']:
                     assert row[k] is None or math.isfinite(row[k]) and row[k]>=0, 'Disk negative CPU delta'
                 assert row['index']=='disk'
