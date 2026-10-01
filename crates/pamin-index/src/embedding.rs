@@ -238,9 +238,10 @@ impl Embedder {
     }
 
     pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
-        self.revalidate();
-        if let Some(known) = self.remembered.get(text) {
-            return Ok(known);
+        if !self.revalidation_due() {
+            if let Some(known) = self.remembered.get(text) {
+                return Ok(known);
+            }
         }
         let primary = match self.profile.prefixes() {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
@@ -326,24 +327,15 @@ impl Embedder {
     /// vector does not depend on which other documents happened to be in
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
-    fn revalidate(&mut self) {
-        let profile = self.profile;
-        let cache = &self.cache_dir;
-        crate::inference::revalidate_cached_model(
-            &mut self.model,
-            &mut self.device,
-            &mut self.remembered,
-            || primary_model(profile, cache).map(|(model, device)| (Box::new(model), device)),
-        );
-        if let Some((model, device)) = &mut self.secondary {
-            crate::inference::revalidate_cached_model(model, device, &mut self.remembered, || {
-                complementary(cache).map(|(model, device)| (Box::new(model), device))
-            });
-        }
+    fn revalidation_due(&self) -> bool {
+        crate::inference::runtime_due(&self.model)
+            || self
+                .secondary
+                .as_ref()
+                .is_some_and(|(model, _)| crate::inference::runtime_due(model))
     }
 
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        self.revalidate();
         let profile = self.profile;
         let cache = &self.cache_dir;
         let (vectors, replaced) = crate::inference::retry_model(

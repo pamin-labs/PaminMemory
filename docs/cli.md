@@ -1307,3 +1307,9 @@ measurement can choose a new accelerator or CPU winner and clears temporary
 recovery state. Transient or numerical qualification failures retain a bounded
 retry interval; configured exclusions and incompatible plans do not by
 themselves require repeated selection.
+
+Deadline revalidation bypasses cached results and stages the qualified model
+until its first complete operation on the caller’s actual input succeeds.
+Failed replacement/recovery retains the previous resident model and reserves
+the next retry interval. Successful reranker target replacement clears cached
+scores while preserving lifetime hit/miss and work counters.

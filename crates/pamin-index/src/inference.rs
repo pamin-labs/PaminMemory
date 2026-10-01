@@ -626,20 +626,16 @@ fn qualify_runtime_plan(
     plan.restore_target = blocked.map(|(target, _)| target);
 }
 
-/// Check before a result-cache lookup, so even a busy all-hit resident model
-/// gets a bounded chance to recover. The ordinary hot path only reads Option.
-pub(crate) fn revalidate_cached_model<T: RuntimeModel, C: Default>(
-    model: &mut T,
-    device: &mut Device,
-    cache: &mut C,
-    reload: impl FnMut() -> Result<(T, Device)>,
-) -> bool {
-    if model.runtime_plan().retry_at.is_none() {
-        return false;
-    }
-    revalidate_cached_model_at(model, device, cache, std::time::Instant::now(), reload)
+/// An expired provisional plan must process the real input before cache hits.
+/// Healthy plans avoid reading the clock.
+pub(crate) fn runtime_due<T: RuntimeModel>(model: &T) -> bool {
+    model
+        .runtime_plan()
+        .retry_at
+        .is_some_and(|at| at <= std::time::Instant::now())
 }
 
+#[cfg(test)]
 fn revalidate_cached_model_at<T: RuntimeModel, C: Default>(
     model: &mut T,
     device: &mut Device,
@@ -647,42 +643,13 @@ fn revalidate_cached_model_at<T: RuntimeModel, C: Default>(
     now: std::time::Instant,
     reload: impl FnMut() -> Result<(T, Device)>,
 ) -> bool {
-    let replaced = revalidate_model_at(model, device, now, reload);
+    let root = std::env::temp_dir();
+    let (_, replaced) =
+        retry_model_at(model, device, &root, Some(now), |_, _| Ok(()), reload).unwrap();
     if replaced {
         *cache = C::default();
     }
     replaced
-}
-
-fn revalidate_model_at<T: RuntimeModel>(
-    model: &mut T,
-    device: &mut Device,
-    now: std::time::Instant,
-    mut reload: impl FnMut() -> Result<(T, Device)>,
-) -> bool {
-    if !model
-        .runtime_plan()
-        .retry_at
-        .is_some_and(|deadline| deadline <= now)
-    {
-        return false;
-    }
-    // Reserve the next attempt before loading. Failed revalidation does not
-    // retry on every hit and does not discard a still-usable fallback model.
-    model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
-    match reload() {
-        Ok((replacement, selected)) => {
-            // The selector owns qualification status: a complete new winner
-            // ends recovery even when it differs from the historical target.
-            *model = replacement;
-            *device = selected;
-            true
-        }
-        Err(error) => {
-            tracing::warn!(%error, "resident accelerator revalidation failed; retaining qualified fallback");
-            false
-        }
-    }
 }
 
 /// Retry the complete owned-result operation on a newly qualified model.
@@ -691,11 +658,37 @@ pub(crate) fn retry_model<T: RuntimeModel, R>(
     model: &mut T,
     device: &mut Device,
     cache_dir: &Path,
+    operation: impl FnMut(&mut T, Device) -> Result<R>,
+    reload: impl FnMut() -> Result<(T, Device)>,
+) -> Result<(R, bool)> {
+    let now = model
+        .runtime_plan()
+        .retry_at
+        .map(|_| std::time::Instant::now());
+    retry_model_at(model, device, cache_dir, now, operation, reload)
+}
+
+fn retry_model_at<T: RuntimeModel, R>(
+    model: &mut T,
+    device: &mut Device,
+    cache_dir: &Path,
+    now: Option<std::time::Instant>,
     mut operation: impl FnMut(&mut T, Device) -> Result<R>,
     mut reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<(R, bool)> {
     let mut failed_devices = Vec::new();
     let mut replacement = None;
+    if let Some(now) = now
+        && model.runtime_plan().retry_at.is_some_and(|at| at <= now)
+    {
+        model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
+        match reload() {
+            Ok(qualified) => replacement = Some(qualified),
+            Err(error) => {
+                tracing::warn!(%error, "resident revalidation failed; retaining qualified fallback")
+            }
+        }
+    }
     loop {
         let (active, selected) = match &mut replacement {
             Some((active, selected)) => (active, *selected),
@@ -1806,6 +1799,113 @@ mod tests {
         assert!(
             replaced,
             "same coarse Device may select a different NPU target"
+        );
+    }
+
+    #[test]
+    fn failed_real_revalidation_keeps_resident_and_drops_failed_candidate() {
+        struct Tracked {
+            id: u8,
+            drops: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+        }
+        impl Drop for Tracked {
+            fn drop(&mut self) {
+                self.drops.borrow_mut().push(self.id);
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let drops = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut model = RuntimeFixture::new(
+            Tracked {
+                id: 0,
+                drops: drops.clone(),
+            },
+            "cpu",
+        );
+        model.plan.retry_at = Some(now);
+        let mut device = Device::Cpu;
+        let mut loads = 0;
+        let result: Result<((), bool)> = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            Some(now),
+            |_, selected| {
+                assert!(
+                    drops.borrow().is_empty(),
+                    "resident was dropped before real input succeeded"
+                );
+                assert_eq!(selected, Device::Npu);
+                Err(IndexError::Engine("real input shape failure".into()))
+            },
+            || {
+                loads += 1;
+                if loads == 1 {
+                    Ok((
+                        RuntimeFixture::new(
+                            Tracked {
+                                id: 1,
+                                drops: drops.clone(),
+                            },
+                            "npu:first:1",
+                        ),
+                        Device::Npu,
+                    ))
+                } else {
+                    assert_eq!(
+                        *drops.borrow(),
+                        [1],
+                        "failed intermediate must drop before another load"
+                    );
+                    Err(IndexError::Engine("CPU replacement load failed".into()))
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(model.value.id, 0);
+        assert_eq!(device, Device::Cpu);
+        assert_eq!(*drops.borrow(), [1]);
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            Some(now),
+            |resident, _| Ok(resident.value.id),
+            || unreachable!("deadline must be reserved"),
+        )
+        .unwrap();
+        assert_eq!(answer, 0);
+        assert!(!replaced);
+    }
+
+    #[test]
+    fn resident_publishes_only_after_replacement_completes_real_input() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "cpu");
+        model.plan.retry_at = Some(now);
+        let mut device = Device::Cpu;
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            Some(now),
+            |candidate, selected| {
+                assert_eq!(candidate.value, 1);
+                assert_eq!(selected, Device::Npu);
+                Ok(7)
+            },
+            || Ok((RuntimeFixture::new(1, "npu:first:1"), Device::Npu)),
+        )
+        .unwrap();
+        assert_eq!(answer, 7);
+        assert!(replaced);
+        assert_eq!(model.value, 1);
+        assert_eq!(device, Device::Npu);
+        assert!(
+            model.plan.retry_at.is_none(),
+            "complete new winner must not rearm"
         );
     }
 
