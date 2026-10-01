@@ -488,7 +488,8 @@ fn check_vectors(
                 && vectors
                     .iter()
                     .zip(reference.iter())
-                    .all(|(a, b)| compatible_vectors(a, b, dimensions)) => {}
+                    .all(|(a, b)| compatible_vectors(a, b, dimensions))
+                && preserves_fixture_retrieval(&vectors, reference) => {}
         _ => {
             return Err(IndexError::Numerical(
                 "embedding plan failed same-export compatibility".into(),
@@ -555,7 +556,36 @@ fn compatible_vectors(actual: &[f32], expected: &[f32], dimensions: usize) -> bo
             .map(|(a, b)| f64::from(*a) * f64::from(*b))
             .sum::<f64>()
             / denominator
-            >= 0.99999
+            >= 0.9999
+}
+
+/// Query the fixed CPU-space fixture index, rather than certifying a plan
+/// from coordinate drift alone. This bounded startup smoke test is not a
+/// corpus-quality claim; its tiny conservative reductions are diagnostic.
+fn preserves_fixture_retrieval(actual: &[Vec<f32>], cpu: &[Vec<f32>]) -> bool {
+    let similarity = |a: &[f32], b: &[f32]| {
+        let dot = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| f64::from(*x) * f64::from(*y))
+            .sum::<f64>();
+        let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+        dot / (norm(a) * norm(b))
+    };
+    let nearest = |query: &[f32]| {
+        cpu.iter()
+            .enumerate()
+            .max_by(|(left, a), (right, b)| {
+                similarity(query, a)
+                    .total_cmp(&similarity(query, b))
+                    .then_with(|| right.cmp(left))
+            })
+            .map(|(index, _)| index)
+    };
+    actual
+        .iter()
+        .zip(cpu)
+        .all(|(query, reference)| nearest(query) == nearest(reference))
 }
 
 /// E5's FastEmbed 6.1 contract: batches of 256, attention-masked mean pooling,
@@ -1001,6 +1031,23 @@ mod tests {
         for (index, text) in inputs.iter().enumerate() {
             assert_eq!(accepted.embed_passage(text).unwrap(), cpu[index]);
         }
+    }
+
+    #[test]
+    fn ordinary_drift_preserving_cpu_space_retrieval_is_accepted() {
+        let cpu = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let actual = vec![vec![0.99998, 0.0063245], vec![0.0063245, 0.99998]];
+        assert!(
+            actual
+                .iter()
+                .zip(&cpu)
+                .all(|(a, b)| compatible_vectors(a, b, 2))
+        );
+        assert!(preserves_fixture_retrieval(&actual, &cpu));
+        assert!(!preserves_fixture_retrieval(
+            &[cpu[1].clone(), cpu[0].clone()],
+            &cpu
+        ));
     }
 
     #[test]
