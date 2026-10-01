@@ -65,6 +65,19 @@ def reject_optimized_prepare(label, flags=(), optimize_env=None):
         print(f'PASS: rejected prepare {label} before writes')
 
 
+def round10_native_type_cases():
+    for arm in ['baseline','scored']:
+        for value in [True,False,'1',None,float('inf')]:
+            run_case('edge confidence type '+arm+'/'+repr(value),lambda root,arm=arm,value=value:mutate_json(root/(arm+'.jsonl'),lambda row:next(e for e in row['known_edges'] if e['confidence']==1).update(confidence=value)),expected_error='controlled edge confidence must be finite non-boolean')
+        for value in [False,0.0,'0',None]:
+            def change_status(root,arm=arm,value=value):
+                mutate_json(root/(arm+'.usage.json'),lambda u:u.update(exit_status=value))
+                mutate_json(root/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['process_usage'].update(exit_status=value))
+            run_case('exit status type '+arm+'/'+repr(value),change_status,expected_error='process exit status must be integer zero')
+        for value in ['not-a-uuid',None,True,123,'01a0f44292f37151b129111520058494']:
+            run_case('native topic UUID '+arm+'/'+repr(value),lambda root,arm=arm,value=value:mutate_json(root/(arm+'.jsonl'),lambda row:row['non_graph'][0].update(id=value)),expected_error='non-graph identifier must be a canonical UUID')
+
+
 def complete_non_graph_cases():
     for arm in ['baseline','scored']:
         for field,value,error in [('rank',True,'non-graph rank must be a positive integer'),('score',True,'non-graph score must be real non-boolean or null')]:
@@ -361,6 +374,7 @@ if __name__ == '__main__':
         for value in ['removed FAILED test and rewrote summary','',None,True]:
             run_case('original log scope '+arm+'/'+repr(value),lambda root,arm=arm,value=value:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.log'].update(scope=value)),expected_error='original log formatting-only redaction scope differs')
         run_case('missing original log scope '+arm,lambda root,arm=arm:mutate_json(root/'provenance.json',lambda p:p['redactions'][arm+'.log'].pop('scope')),expected_error='original log formatting-only redaction scope differs')
+    round10_native_type_cases()
     complete_non_graph_cases()
     complete_graph_record_cases()
     for name in retained['redactions']:
