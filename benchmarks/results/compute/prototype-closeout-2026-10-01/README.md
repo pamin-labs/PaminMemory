@@ -93,7 +93,7 @@ Use a separate checkout of each listed revision. Download `pamin-main-cost-harne
 | new-auto | 503bd9e | reconstructed 503 | accuracy | auto (unset PAMIN_DEVICE) |
 | new-auto-persist-hit | 0f023be | persisted | accuracy | auto (unset PAMIN_DEVICE), established nonexpired persisted plan |
 
-Use the guarded three-build and seven-arm controller below. Each source checkout/profile/policy comes from this matrix; each process writes a distinct arm/block path. Establish the persisted plan with one unmeasured setup process before the measured hit blocks.
+Use the guarded three-build and seven-arm controller below. Each source checkout/profile/policy comes from this matrix; each process writes a distinct arm/block path. The controller automatically runs bounded unmeasured primers immediately before each measured persisted-hit block, requiring one clean hit probe before measurement.
 
 ### Whole-process resource reproduction
 
@@ -199,33 +199,54 @@ With all builds stopped, these are the seven per-arm invocations; each runs thre
 python3 - <<'PYRUN'
 import hashlib, json, os, re, subprocess, sys
 from pathlib import Path
-arms = [('main-cpu', 'main', 'accuracy', 'cpu'), ('main-auto', 'main', 'accuracy', 'auto'), ('main-auto-repeat', 'main', 'accuracy', 'auto'), ('new-cpu', 'prototype', 'accuracy', 'cpu'), ('dual-cpu', 'prototype', 'dual_accuracy', 'cpu'), ('new-auto', 'prototype', 'accuracy', 'auto'), ('new-auto-persist-hit', 'persisted', 'accuracy', 'auto')]
+from datetime import datetime, timezone
+run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+arms = [
+    ("main-cpu", "main", "accuracy", "cpu"),
+    ("main-auto", "main", "accuracy", "auto"),
+    ("main-auto-repeat", "main", "accuracy", "auto"),
+    ("new-cpu", "prototype", "accuracy", "cpu"),
+    ("dual-cpu", "prototype", "dual_accuracy", "cpu"),
+    ("new-auto", "prototype", "accuracy", "auto"),
+    ("new-auto-persist-hit", "persisted", "accuracy", "auto"),
+]
 env = os.environ.copy()
-for key in ('PAMIN_SEARCH_EFFORT', 'PAMIN_PREPARED', 'PAMIN_FUSED_ATTENTION', 'PYTHONOPTIMIZE', 'ORT_DYLIB_PATH'):
+for key in ("PAMIN_SEARCH_EFFORT", "PAMIN_PREPARED", "PAMIN_FUSED_ATTENTION", "PYTHONOPTIMIZE", "ORT_DYLIB_PATH"):
     env.pop(key, None)
+def run_case(name, binary, profile, policy, check_persisted=False):
+    receipt = json.loads(Path(f"/private/tmp/pamin-cost-frozen-{binary}.zvec.json").read_text())
+    for library in [receipt] + receipt["onnxruntime"]:
+        if hashlib.sha256(Path(library["runtime_path"]).read_bytes()).hexdigest() != library["sha256"]:
+            raise RuntimeError("native runtime bytes changed after build")
+    subprocess.run([sys.executable, "/private/tmp/pamin-cost-worker.py", name,
+        f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy], env=env, check=True)
+    if not check_persisted: return True
+    log = Path(f"/private/tmp/pamin-cost-{name}.log").read_text()
+    rerankers = re.findall(r'reranker loaded tier="([^"\n]+)" device="([^"\n]+)" maximum_tokens=(\d+)', log)
+    embedders = re.findall(r'embedder loaded model="([^"\n]+)" device="([^"\n]+)"', log)
+    if rerankers != [("accurate", "coreml", "256")] or embedders != [("gpahal/bge-m3-onnx-int8", "cpu")]:
+        raise RuntimeError("persisted model/device premise differs from retained arm")
+    forbidden = ("complete model-call calibration", "compute candidate", "calibrated winner failed", "cached compute plan failed")
+    return not any(marker in log for marker in forbidden)
 for block in range(3):
     offset = 2 * block
     for arm, binary, profile, policy in arms[offset:] + arms[:offset]:
-        receipt = json.loads(Path(f'/private/tmp/pamin-cost-frozen-{binary}.zvec.json').read_text())
-        if not hashlib.sha256(Path(receipt['runtime_path']).read_bytes()).hexdigest() == receipt['sha256']:
-            raise RuntimeError('reproduction integrity check failed')
-        for library in receipt['onnxruntime']:
-            if hashlib.sha256(Path(library['runtime_path']).read_bytes()).hexdigest() != library['sha256']:
-                raise RuntimeError('ONNX Runtime/provider bytes changed after build')
-        subprocess.run([sys.executable, '/private/tmp/pamin-cost-worker.py', f'reproduced-{arm}-{block}', f'/private/tmp/pamin-cost-frozen-{binary}', profile, policy], env=env, check=True)
-        if arm == 'new-auto-persist-hit':
-            log = Path(f'/private/tmp/pamin-cost-reproduced-{arm}-{block}.log').read_text()
-            forbidden = ('complete model-call calibration', 'compute candidate', 'calibrated winner failed', 'cached compute plan failed')
-            if any((marker in log for marker in forbidden)):
-                raise RuntimeError('persisted-hit arm recalibrated/rejected; discard its outputs')
-            rerankers = re.findall('reranker loaded tier="([^"\\n]+)" device="([^"\\n]+)" maximum_tokens=(\\d+)', log)
-            embedders = re.findall('embedder loaded model="([^"\\n]+)" device="([^"\\n]+)"', log)
-            if rerankers != [('accurate', 'coreml', '256')] or embedders != [('gpahal/bge-m3-onnx-int8', 'cpu')]:
-                raise RuntimeError('persisted-hit model/device premise differs from retained arm')
+        persisted = arm == "new-auto-persist-hit"
+        if persisted:
+            # Unmeasured primers run immediately before each hit block, so a
+            # short negative-plan expiry cannot invalidate a whole-loop setup.
+            for attempt in range(3):
+                if run_case(f"setup-{run_id}-persisted-{block}-{attempt}", binary, profile, policy, True):
+                    break
+            else:
+                raise RuntimeError("persisted plan did not stabilize; do not label a hit arm")
+        name = f"reproduced-{run_id}-{arm}-{block}"
+        if not run_case(name, binary, profile, policy, persisted):
+            raise RuntimeError("measured persisted-hit recalibrated/rejected; discard outputs")
 PYRUN
 ```
 
-Each invocation writes `/private/tmp/pamin-cost-reproduced-ARM-BLOCK.jsonl` (warm product rows), `.log` (local-only diagnostic log) and `-process.json` (whole-process wall/user/system, binary SHA and maximum RSS). For persisted-hit, first establish a nonexpired plan using one unmeasured persisted setup process and check measured logs have zero calibration/rejection events. Do not publish raw logs: only the strictly whitelisted structured load events are public evidence. These commands target the retained macOS environment; other hosts need their native runtime-library setup and produce new measurements.
+Each invocation writes `/private/tmp/pamin-cost-reproduced-RUN-ARM-BLOCK.jsonl` (warm product rows), `.log` (local-only diagnostic log) and `-process.json` (whole-process wall/user/system, binary SHA and maximum RSS). For persisted-hit, first establish a nonexpired plan using one unmeasured persisted setup process and check measured logs have zero calibration/rejection events. Do not publish raw logs: only the strictly whitelisted structured load events are public evidence. These commands target the retained macOS environment; other hosts need their native runtime-library setup and produce new measurements.
 
 Reproduction outputs use a `reproduced-` prefix to avoid replacing the original local cost logs/rows. The source checkouts and shared reproduction target can be removed after retaining the new outputs and frozen executable hashes; historical public rows stay unchanged.
 
