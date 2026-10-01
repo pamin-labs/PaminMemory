@@ -1850,6 +1850,12 @@ attribute its recall, memory or query time to disabled PQ. The
 [read-only source audit](../../benchmarks/results/index/zvec-native-source-audit-2026-09-30.md)
 separates immutable source behavior from the installed Linux binary's identity;
 schema getters report the requested value and do not establish effective PQ.
+A separate [offline persisted-header inspection](../../benchmarks/results/index/stopped-seed-pq-2026-09-30/README.md)
+finds 512 effective chunks in all 10 files of the current stopped Linux
+18,000-document seed. Public excerpts recompute layout/count arithmetic;
+full-file hash and complete metadata CRC checks are private receipts. This
+closes the effective-PQ question for this seed only, without identifying the
+historical 50k arms or the macOS index.
 A future comparison must retain runtime provenance and assert the effective
 chunk count or native PQ sections before labeling an arm as having no PQ.
 No measurements or product defaults were changed by this correction.
