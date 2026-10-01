@@ -117,6 +117,22 @@ class DeviceProofTests(unittest.TestCase):
     def test_retained_device_proof(self):
         self.check(self.proof, self.artifacts)
 
+    def test_resealed_top_level_extra_text_is_rejected(self):
+        name = self.proof[0]["event_artifact"]
+        artifacts = copy.deepcopy(self.artifacts)
+        artifacts[name]["internal_note"] = "unapproved free text"
+        with self.assertRaisesRegex(AssertionError, "top-level fields"):
+            self.check(self.proof, artifacts)
+
+    def test_resealed_top_level_types_and_marker_are_rejected(self):
+        name = self.proof[0]["event_artifact"]
+        for field, value in [("redaction", "changed marker"), ("redaction", 1),
+                             ("source_sha256", 1), ("events", {})]:
+            artifacts = copy.deepcopy(self.artifacts)
+            artifacts[name][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
+                self.check(self.proof, artifacts)
+
     def test_all_arms_cannot_reuse_the_cpu_control_artifact(self):
         proof = copy.deepcopy(self.proof)
         control = proof[0]
