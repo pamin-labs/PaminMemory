@@ -1,0 +1,37 @@
+positive {'processes': 36, 'timed_calls': 428, 'limits': [5, 10], 'full300_diagnostic_outside_clock': True, 'exact_fresh_history_hot_bits_and_gold': True, 'memo_hot_encoding_and_model_operations_skipped': True, 'original_seed_assets_unchanged_with_four_unexplained_clone_proxima_changes': True, 'scope': 'two rounds; descriptive wall costs, CPU100Hz zero ticks censored, diagnostics included in process memory, no broad quality/platform/default claim'}
+PASS rejected source copy binding — measured source copy binding
+PASS rejected cold raw logit drift — hot exact typed bits/order
+PASS rejected memo hot encoding — timed/diagnostic lifetime counter continuity
+PASS rejected wrong query/limit — exact matrix row
+PASS rejected duplicate selected position — selected positions
+PASS rejected can_be_seen skip — can_be_seen actual selected positions
+PASS rejected executed graph role substitution — executed graph role/nodecount binding
+PASS rejected negative lifetime counter shift — unsigned integer lifetime counters
+PASS rejected provider mismatch — actual node providers
+PASS rejected inherited cache override — pinned offline cache
+PASS rejected unauthenticated PG — authenticated before Engine/owned stop proof
+PASS rejected foreign stop PID — same PID stopped
+PASS rejected hidden index mutation — preserved unexplained four-file mutation
+PASS rejected OOM endpoint — OOM event
+PASS rejected fabricated wall cost — cost derivation
+PASS rejected fabricated gold rank — full raw derivation of retained calls/gold
+PASS rejected fresh product lib reused — fresh source path
+PASS rejected runtime library unbound — mandatory native libraries unbound
+PASS rejected external weights unbound — mandatory graph/weights/tokenizer coverage
+PASS rejected tokenizer unbound — mandatory graph/weights/tokenizer coverage
+PASS rejected model asset roles incomplete — complete executed model asset roles
+PASS rejected frozen source identity false — exact frozen source/binary identity
+PASS rejected frozen binary identity false — exact frozen source/binary identity
+PASS rejected changed proxima size false — four changed file sizes
+PASS rejected global rank quality shift — one-based rank positions
+PASS rejected fusion bits inconsistent — fusion Why contributions and f32 scorebits disagree
+PASS rejected lifetime counter discontinuity — between-call lifetime counter continuity
+PASS rejected Off character work — Off avoids reranker
+PASS rejected negative raw wall cost — positive integer timed wall cost
+PASS rejected negative raw process memory — positive process RSS/HWM scope
+PASS rejected reversed process CPU ticks — unsigned monotonic process CPU ticks
+PASS rejected memory cost fabricated — paired process memory derivation
+PASS checksum corruption
+PASS rejected -O
+PASS rejected -OO
+PASS positive +32semantic/1hash/2optimized negatives; no native/model/PG/build executed

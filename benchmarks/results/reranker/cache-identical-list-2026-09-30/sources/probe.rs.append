@@ -1,0 +1,179 @@
+fn cache_process_snapshot() -> serde_json::Value {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+    let rest = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    serde_json::json!({"utime_ticks":rest[11].parse::<u64>().unwrap(),"stime_ticks":rest[12].parse::<u64>().unwrap(),"rss_kib":status.lines().find(|l|l.starts_with("VmRSS:")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap(),"hwm_kib":status.lines().find(|l|l.starts_with("VmHWM:")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap()})
+}
+
+// Scratch-only actual product-entrypoint probe. Controller isolates each history
+// in a new process and disposable clone; no product selection changes.
+fn cache_stats(s: Option<pamin_index::Reranked>) -> serde_json::Value {
+    let s = s.unwrap_or_default();
+    serde_json::json!({"maximum_tokens":s.maximum_tokens,"remembered":s.remembered,
+        "offered":s.offered,"scored":s.scored,"characters":s.characters,
+        "longest":s.longest,"tokens":s.tokens,"padded_tokens":s.padded_tokens,
+        "batches":s.batches,"encode_us":s.encode_us,"forward_us":s.forward_us})
+}
+fn cache_hit_rows(hits: &[pamin_engine::SearchHit]) -> serde_json::Value {
+    serde_json::json!(
+        hits.iter()
+            .enumerate()
+            .map(|(at, h)| {
+                let bits: Vec<_> = h
+                    .result
+                    .why
+                    .iter()
+                    .filter_map(|w| match w {
+                        pamin_core::Why::Reranked { score } => Some(score.to_bits()),
+                        _ => None,
+                    })
+                    .collect();
+                serde_json::json!({"rank":at+1,"topic":h.topic,"topic_id":h.result.topic,
+            "score_bits":h.result.score.to_bits(),"why":h.result.why,
+            "reranked_bits":bits,"state":h.state,"seed":h.seed})
+            })
+            .collect::<Vec<_>>()
+    )
+}
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "coordinated disposable native Engine cache/cost probe; no downloads or shared index writes"]
+async fn cache_product_limit_probe() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("pamin_index=info,pamin_engine=info")
+        .with_ansi(false)
+        .try_init();
+    // Reject every unrecognized tuning variable, including inherited unknown
+    // future PAMIN knobs. Controller additionally attests all relevant ORT/HF
+    // and thread variables before spawning, and archives the effective config.
+    for (key, _) in std::env::vars() {
+        if key.starts_with("PAMIN_") {
+            assert!(
+                matches!(
+                    key.as_str(),
+                    "PAMIN_DEVICE" | "PAMIN_PROFILE" | "PAMIN_EVAL_HOME"
+                ),
+                "unexpected {key}"
+            );
+        }
+    }
+    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+    assert_eq!(std::env::var("PAMIN_PROFILE").as_deref(), Ok("accuracy"));
+    assert_eq!(Rerank::Accurate.depth(), 30);
+    let home = std::env::var("PAMIN_EVAL_HOME").unwrap();
+    let corpus: Vec<Memory> = load("memories.json");
+    let queries: Vec<Query> = load("queries.json");
+    assert_eq!((corpus.len(), queries.len()), (230, 157));
+    let project = format!("eval-accuracy-{}", fingerprint(&corpus));
+    let opened = std::time::Instant::now();
+    let engine = Engine::open(
+        &Workspace::at(home),
+        &project,
+        Profile::Accuracy,
+        VectorIndex::Memory,
+        Access::ReadOnly,
+    )
+    .await
+    .unwrap();
+    println!(
+        "CACHE_ENGINE_OPEN {}",
+        serde_json::json!({"wall_us":opened.elapsed().as_micros(),"documents":engine.indexed_documents().unwrap(),"coverage":engine.vector_index_completeness().unwrap()})
+    );
+    assert_eq!(engine.indexed_documents().unwrap(), 230);
+    assert_eq!(
+        pamin_store::repository::topic_count(engine.database.pool(), engine.project)
+            .await
+            .unwrap(),
+        230
+    );
+    let graph = channels::live_edges(&engine).await;
+    assert!(graph.iter().map(|(_, count)| count).sum::<i64>() > 0);
+    println!("CACHE_ENGINE_GRAPH {}", serde_json::json!(graph));
+    assert_eq!(engine.vector_index_completeness().unwrap(), 0.0);
+    let limit: u32 = std::env::var("CACHE_RETURN_LIMIT")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        limit == 5 || limit == 10,
+        "actual product return-limit cases only"
+    );
+    let qid: usize = std::env::var("CACHE_QUERY_ID").unwrap().parse().unwrap();
+    let sequence = std::env::var("CACHE_SEQUENCE").unwrap();
+    let tier = match std::env::var("CACHE_TIER").as_deref() {
+        Ok("accurate") => Rerank::Accurate,
+        Ok("off") => Rerank::Off,
+        Ok("fast") => Rerank::Fast,
+        _ => panic!("explicit tier required"),
+    };
+    assert!(qid < queries.len());
+
+    for (step, arm) in sequence.split(',').enumerate() {
+        let actual_qid = if arm == "N" {
+            (qid + 1) % queries.len()
+        } else {
+            qid
+        };
+        let query = &queries[actual_qid].query;
+        // Supported explicit per-call ablation creates a changed shortlist;
+        // shipped Fusion and default selectors are untouched. Differences are
+        // asserted from actual rows, not forced or inferred from this setting.
+        let fusion = match arm {
+            "A" | "N" => Fusion::default(),
+            "B" => Fusion::default().without(pamin_core::Channel::LexicalNgram),
+            _ => panic!("unknown per-call arm"),
+        };
+        let before = cache_stats(engine.reranked(tier));
+        let process_before = cache_process_snapshot();
+        let call = std::time::Instant::now();
+        let hits = if arm == "A" || arm == "N" {
+            engine
+                .search_reranked(query, limit, Depths::default(), tier)
+                .await
+                .unwrap()
+        } else {
+            engine
+                .search_reranked_with(query, limit, Depths::default(), tier, fusion.clone())
+                .await
+                .unwrap()
+        };
+        let wall_us = call.elapsed().as_micros();
+        let process_after = cache_process_snapshot();
+        let after = cache_stats(engine.reranked(tier));
+        // Full score/context evidence is OUTSIDE the product timing interval.
+        let diagnostic_before = cache_stats(engine.reranked(tier));
+        let complete = engine
+            .search_reranked_with(query, 300, Depths::default(), tier, fusion.clone())
+            .await
+            .unwrap();
+        let diagnostic_after = cache_stats(engine.reranked(tier));
+        assert_eq!(
+            cache_hit_rows(&hits),
+            cache_hit_rows(&complete[..hits.len()]),
+            "actual limited result equals full postblend prefix"
+        );
+        // Run retrieval-only diagnostic AFTER timed actual entrypoint, so cold
+        // embedder/reranker loads are not prewarmed or incorrectly summed.
+        let fused = engine
+            .search_fused(query, 300, Depths::default(), fusion)
+            .await
+            .unwrap();
+        channels::enough_room(&fused, 300);
+        let refs: Vec<_> = fused.iter().map(|h| h.result.why.as_slice()).collect();
+        let selected = pamin_engine::rerankable(&refs, tier);
+        let visible =
+            selected.len() >= 2 && selected.first().is_some_and(|at| *at < limit as usize);
+        println!(
+            "CACHE_ENGINE_ROW {}",
+            serde_json::json!({"query_id":actual_qid,"query":query,
+            "step":step,"arm":arm,"tier":tier.name(),"return_limit":limit,"wall_us":wall_us,"diagnostic_before":diagnostic_before,"diagnostic_after":diagnostic_after,
+            "process_before":process_before,"process_after":process_after,"before":before,"after":after,"selected_fused_positions":selected,"can_be_seen":visible,
+            "loaded_libraries":std::fs::read_to_string("/proc/self/maps").unwrap().lines().filter(|l|l.contains("libonnxruntime")||l.contains("libzvec")).collect::<Vec<_>>(),"fused":cache_hit_rows(&fused),"limited":cache_hit_rows(&hits),"complete":cache_hit_rows(&complete),
+            "coverage":engine.vector_index_completeness().unwrap(),"documents":engine.indexed_documents().unwrap()})
+        );
+    }
+}
