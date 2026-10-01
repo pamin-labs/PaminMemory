@@ -202,16 +202,16 @@ def tables(data):
 def markdown(result):
     def fmt(v):return 'N/A' if v is None else format(v,'.17g') if type(v) in (float,int) else str(v)
     lines=['Sanitized table arithmetic only. Correctness, quality, source/runtime and payload attestations require retained private evidence.',
-           'Four independent process blocks; hot quantiles pool 20 dependent calls, five per block. CPU zero ticks are resolution-censored.',
+           'Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.',
            'Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.',
            'Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.',
-           '', '| Configuration | Metric | Before | After | Absolute difference | % change | Eligibility |', '| --- | --- | ---: | ---: | ---: | ---: | --- |']
+           '', '| Configuration | Metric | Before | After | Absolute difference | % change | Samples per arm | Eligibility |', '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
     metrics=sorted(result['metrics'],key=lambda r:(0 if r['metric'].startswith('quality') else 1 if r['metric'] in ('wall_us','cpu_user_seconds','cpu_system_seconds') else 2 if r['metric'] in ('rss_kib','hwm_kib') else 3,str(r['configuration']),r['metric']))
     for r in result['correctness']+metrics+result['process_metrics']+result['disk']:
         reason='private-attested/descriptive'
         if 'accuracy_eligible' in r:
             reason='accuracy excluded' if not r['accuracy_eligible'] else 'different recomputation work' if not r['same_successful_work'] else 'stable withheld' if not r['stable_claim_eligible'] else 'four-block descriptive eligible; no statistical proof'
-        lines.append('| '+' | '.join(['/'.join(map(str,r['configuration'])),r['metric']+' '+r.get('statistic','')]+[fmt(r[k]) for k in ('before','after','absolute_difference','percentage_change')]+[reason])+' |')
+        lines.append('| '+' | '.join(['/'.join(map(str,r['configuration'])),r['metric']+' '+r.get('statistic','')]+[fmt(r[k]) for k in ('before','after','absolute_difference','percentage_change')]+[str(r.get('samples_per_arm', 'N/A')),reason])+' |')
     lines += ['', '| Configuration / metric | Four paired block statistics (before, after, delta, %) | Four main medians | Four stack medians | Arm span/median | Sign reversal |', '| --- | --- | --- | --- | --- | --- |']
     for r in metrics:
         blocks=[[b[k] for k in ('before','after','absolute_difference','percentage_change')] for b in r['four_block_statistics']]

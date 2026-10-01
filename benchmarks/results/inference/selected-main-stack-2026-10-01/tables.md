@@ -1,883 +1,883 @@
 Sanitized table arithmetic only. Correctness, quality, source/runtime and payload attestations require retained private evidence.
-Four independent process blocks; hot quantiles pool 20 dependent calls, five per block. CPU zero ticks are resolution-censored.
+Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.
 Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.
 Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.
 
-| Configuration | Metric | Before | After | Absolute difference | % change | Eligibility |
-| --- | --- | ---: | ---: | ---: | ---: | --- |
-| 5/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_2/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_2/A | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 5/scenario_2/A | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 5/scenario_2/A | legacy_main_context_failure  | 4 | 0 | -4 | -100 | private-attested/descriptive |
-| 5/scenario_2/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_2/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 5/scenario_2/B | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 5/scenario_2/B | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 5/scenario_2/B | legacy_main_context_failure  | 4 | 0 | -4 | -100 | private-attested/descriptive |
-| 5/scenario_2/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_2/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_2/A | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 10/scenario_2/A | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 10/scenario_2/A | legacy_main_context_failure  | 4 | 0 | -4 | -100 | private-attested/descriptive |
-| 10/scenario_2/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_2/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | private-attested/descriptive |
-| 10/scenario_2/B | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 10/scenario_2/B | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | private-attested/descriptive |
-| 10/scenario_2/B | legacy_main_context_failure  | 4 | 0 | -4 | -100 | private-attested/descriptive |
-| 10/scenario_2/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | private-attested/descriptive |
-| accurate/10/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/initial-hot/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/initial-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/initial-hot/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/initial-hot/B | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/cold/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/cold/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/initial-hot/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/initial-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | quality_ndcg mean | 0.80516285021997969 | 0.80516285021997969 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | quality_recall mean | 0.80000000000000004 | 0.80000000000000004 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/cold/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/cold/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/initial-hot/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/initial-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | quality_ndcg mean | 0.80516285021997969 | 0.80516285021997969 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | quality_recall mean | 0.80000000000000004 | 0.80000000000000004 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-hot/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/initial-hot/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/initial-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/initial-hot/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/initial-hot/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/cold/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/cold/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/initial-hot/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/initial-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | quality_ndcg mean | 0.68435154752048555 | 0.68435154752048555 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | quality_recall mean | 0.59999999999999998 | 0.59999999999999998 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | accuracy excluded |
-| accurate/5/scenario_2/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/cold/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/cold/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/initial-hot/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/initial-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | quality_ndcg mean | 0.68435154752048555 | 0.68435154752048555 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | quality_recall mean | 0.59999999999999998 | 0.59999999999999998 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-cold/A | quality_ndcg mean | 0.92675823647141253 | 0.92675823647141253 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-cold/A | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-hot/A | quality_ndcg mean | 0.92675823647141253 | 0.92675823647141253 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-new-query/N | quality_ndcg mean | 0.8396538878217249 | 0.8396538878217249 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-cold/A | quality_ndcg mean | 0.787702056960637 | 0.787702056960637 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-cold/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-hot/A | quality_ndcg mean | 0.787702056960637 | 0.787702056960637 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-new-query/N | quality_ndcg mean | 0.70952720449102435 | 0.70952720449102435 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-new-query/N | quality_recall mean | 0.75 | 0.75 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | wall_us p50 | 2925 | 3001 | 76 | 2.5982905982905984 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | wall_us p95_descriptive | 3662.8999999999996 | 6466.6499999999987 | 2803.7499999999991 | 76.544541210516229 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.002 | 0.0030000000000000001 | 0.001 | 50 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | wall_us p50 | 2922 | 2848 | -74 | -2.5325119780971939 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3836.5500000000002 | 5374.6500000000024 | 1538.1000000000022 | 40.090706494115864 | stable withheld |
-| accurate/10/scenario_1/A/cold/A | cpu_system_seconds mean | 0.40749999999999997 | 0.4425 | 0.035000000000000031 | 8.588957055214733 | stable withheld |
-| accurate/10/scenario_1/A/cold/A | cpu_user_seconds mean | 5.3925000000000001 | 5.4350000000000005 | 0.042500000000000426 | 0.78813166434864024 | stable withheld |
-| accurate/10/scenario_1/A/cold/A | wall_us p50 | 2619473.5 | 2716576 | 97102.5 | 3.7069472166830471 | stable withheld |
-| accurate/10/scenario_1/A/cold/A | wall_us p95_descriptive | 2748269.5499999998 | 2941912.6000000001 | 193643.05000000028 | 7.0459991815577299 | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | cpu_user_seconds mean | 0.0015 | 0.0025000000000000001 | 0.001 | 66.666666666666671 | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | wall_us p50 | 3235.5 | 3063 | -172.5 | -5.3314789058878072 | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | wall_us p95_descriptive | 4461.8500000000013 | 5652.7000000000062 | 1190.8500000000049 | 26.689601846767701 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | cpu_system_seconds mean | 0.074999999999999997 | 0.072499999999999995 | -0.0025000000000000022 | -3.3333333333333366 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | cpu_user_seconds mean | 3.4775 | 3.4775 | 0 | 0 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | wall_us p50 | 1143498.5 | 1197042.5 | 53544 | 4.6824722551013407 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | wall_us p95_descriptive | 1181191.3500000001 | 1367954.3999999999 | 186763.04999999981 | 15.811413620663561 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | wall_us p50 | 2646.5 | 2897 | 250.5 | 9.46533156999811 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | wall_us p95_descriptive | 3002.0499999999997 | 2925.25 | -76.799999999999727 | -2.5582518612281517 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0025000000000000001 | -0.00050000000000000001 | -16.666666666666668 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | wall_us p50 | 2637 | 2889 | 252 | 9.5563139931740615 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3106.8000000000002 | 3660.7500000000005 | 553.95000000000027 | 17.830243337195835 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | cpu_system_seconds mean | 0.38500000000000001 | 0.34999999999999998 | -0.035000000000000031 | -9.0909090909090988 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | cpu_user_seconds mean | 4.9000000000000004 | 5.0824999999999996 | 0.18249999999999922 | 3.7244897959183509 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | wall_us p50 | 2429671 | 2565681.5 | 136010.5 | 5.5978978223800668 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | wall_us p95_descriptive | 2545695.25 | 2638118.2000000002 | 92422.950000000186 | 3.6305582924743325 | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | cpu_system_seconds mean | 0.00050000000000000001 | 0.00050000000000000001 | 0 | 0 | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | cpu_user_seconds mean | 0.0015 | 0.00050000000000000001 | -0.001 | -66.666666666666671 | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | wall_us p50 | 2837 | 3087.5 | 250.5 | 8.829749735636236 | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | wall_us p95_descriptive | 4131.0500000000002 | 4422.9499999999998 | 291.89999999999964 | 7.0660001694484365 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | cpu_system_seconds mean | 0.095000000000000001 | 0.092499999999999999 | -0.0025000000000000022 | -2.6315789473684235 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | cpu_user_seconds mean | 3.3875000000000002 | 3.8700000000000001 | 0.48249999999999993 | 14.243542435424352 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | wall_us p50 | 1097679 | 1302421.5 | 204742.5 | 18.652310921498909 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | wall_us p95_descriptive | 1187945.95 | 1305819.25 | 117873.30000000005 | 9.9224463873966684 | stable withheld |
-| accurate/10/scenario_2/A/changed-context/B | cpu_system_seconds mean | 0.0074999999999999997 | 0.065000000000000002 | 0.057500000000000002 | 766.66666666666674 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | cpu_user_seconds mean | 0.082500000000000004 | 1.8999999999999999 | 1.8174999999999999 | 2203.030303030303 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | wall_us p50 | 38403 | 613060 | 574657 | 1496.3856990339295 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | wall_us p95_descriptive | 42970.900000000001 | 786973.84999999998 | 744002.94999999995 | 1731.4111410279979 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | cpu_user_seconds mean | 0.001 | 0.001 | 0 | 0 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | wall_us p50 | 2723 | 2606.5 | -116.5 | -4.2783694454645609 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | wall_us p95_descriptive | 3056.0500000000002 | 3086.4500000000003 | 30.400000000000091 | 0.99474812257653145 | accuracy excluded |
-| accurate/10/scenario_2/A/cold/A | cpu_system_seconds mean | 0.3725 | 0.38250000000000001 | 0.010000000000000009 | 2.6845637583892641 | stable withheld |
-| accurate/10/scenario_2/A/cold/A | cpu_user_seconds mean | 4.8100000000000005 | 4.6699999999999999 | -0.14000000000000057 | -2.9106029106029223 | stable withheld |
-| accurate/10/scenario_2/A/cold/A | wall_us p50 | 2591488 | 2371782.5 | -219705.5 | -8.4779670984391977 | stable withheld |
-| accurate/10/scenario_2/A/cold/A | wall_us p95_descriptive | 2658214.6499999999 | 2463648.3500000001 | -194566.29999999981 | -7.3194352457578935 | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | cpu_user_seconds mean | 0.001 | 0.002 | 0.001 | 100 | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | wall_us p50 | 2977.5 | 2903.5 | -74 | -2.4853064651553316 | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | wall_us p95_descriptive | 4138.2000000000007 | 4556.6000000000004 | 418.39999999999964 | 10.110676139384262 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | cpu_system_seconds mean | 0.097500000000000003 | 0.095000000000000001 | -0.0025000000000000022 | -2.5641025641025661 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | cpu_user_seconds mean | 3.6800000000000002 | 3.3875000000000002 | -0.29249999999999998 | -7.9483695652173907 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | wall_us p50 | 1171720.5 | 1128744.5 | -42976 | -3.6677688919840525 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | wall_us p95_descriptive | 1338897 | 1221848.3500000001 | -117048.64999999991 | -8.7421698607136999 | stable withheld |
-| accurate/10/scenario_2/B/changed-context/A | cpu_system_seconds mean | 0.012500000000000001 | 0.067500000000000004 | 0.055000000000000007 | 440.00000000000006 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | cpu_user_seconds mean | 0.11 | 1.9424999999999999 | 1.8324999999999998 | 1665.9090909090905 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | wall_us p50 | 49322 | 623754 | 574432 | 1164.6567454685535 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | wall_us p95_descriptive | 51307.300000000003 | 742925.64999999991 | 691618.34999999986 | 1347.9920985902588 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0.001 | 0.00050000000000000001 | 100 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | cpu_user_seconds mean | 0.001 | 0.00050000000000000001 | -0.00050000000000000001 | -50 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | wall_us p50 | 2536.5 | 2825 | 288.5 | 11.373940469150405 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | wall_us p95_descriptive | 3387.5500000000002 | 4475.3500000000031 | 1087.8000000000029 | 32.111703148293095 | accuracy excluded |
-| accurate/10/scenario_2/B/cold/B | cpu_system_seconds mean | 0.38 | 0.39749999999999996 | 0.01749999999999996 | 4.6052631578947265 | stable withheld |
-| accurate/10/scenario_2/B/cold/B | cpu_user_seconds mean | 4.6299999999999999 | 4.5274999999999999 | -0.10250000000000004 | -2.2138228941684672 | stable withheld |
-| accurate/10/scenario_2/B/cold/B | wall_us p50 | 2405165 | 2404491 | -674 | -0.028023025447318581 | stable withheld |
-| accurate/10/scenario_2/B/cold/B | wall_us p95_descriptive | 2507085.1499999999 | 2436847.6499999999 | -70237.5 | -2.8015602102704809 | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | cpu_user_seconds mean | 0.00050000000000000001 | 0.0030000000000000001 | 0.0025000000000000001 | 500 | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | wall_us p50 | 2767 | 2841.5 | 74.5 | 2.6924466931694977 | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | wall_us p95_descriptive | 4988.3500000000095 | 3520.6999999999998 | -1467.6500000000096 | -29.421552216664967 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | cpu_system_seconds mean | 0.074999999999999997 | 0.10249999999999999 | 0.027499999999999997 | 36.666666666666664 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | cpu_user_seconds mean | 3.4674999999999998 | 3.4824999999999999 | 0.015000000000000124 | 0.43258832011536047 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | wall_us p50 | 1210832 | 1119839.5 | -90992.5 | -7.5148740700609169 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | wall_us p95_descriptive | 1248526.8 | 1239923.3 | -8603.5 | -0.68909213642830891 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0.0050000000000000001 | 0 | -0.0050000000000000001 | -100 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | wall_us p50 | 2600.5 | 2630 | 29.5 | 1.1343972313016728 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | wall_us p95_descriptive | 2746.8000000000002 | 2696.5999999999999 | -50.200000000000273 | -1.8275811853793604 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.0025000000000000001 | 0.001 | -0.0015 | -60 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | wall_us p50 | 2842.5 | 2643.5 | -199 | -7.0008795074758137 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3208.3000000000002 | 3925.7500000000009 | 717.45000000000073 | 22.362310257768932 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | cpu_system_seconds mean | 0.51000000000000001 | 0.3775 | -0.13250000000000001 | -25.980392156862745 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | cpu_user_seconds mean | 5.2125000000000004 | 4.8849999999999998 | -0.32750000000000057 | -6.2829736211031282 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | wall_us p50 | 2566220 | 2567844.5 | 1624.5 | 0.063303224197457736 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | wall_us p95_descriptive | 2929494.75 | 2610038.2999999998 | -319456.45000000019 | -10.904830943970806 | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | cpu_user_seconds mean | 0.002 | 0.002 | 0 | 0 | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | wall_us p50 | 2702.5 | 2827.5 | 125 | 4.6253469010175765 | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | wall_us p95_descriptive | 3569.4500000000016 | 3877.5500000000002 | 308.09999999999854 | 8.6315818963705446 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | cpu_system_seconds mean | 0.084999999999999992 | 0.10250000000000001 | 0.017500000000000016 | 20.588235294117666 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | cpu_user_seconds mean | 3.585 | 3.625 | 0.040000000000000036 | 1.1157601115760121 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | wall_us p50 | 1158097 | 1231911.5 | 73814.5 | 6.3737752537136352 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | wall_us p95_descriptive | 1229700.55 | 1345559.25 | 115858.69999999995 | 9.4217002667844589 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0.0050000000000000001 | 0.0025000000000000001 | 100 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | wall_us p50 | 3467 | 2746.5 | -720.5 | -20.781655610037497 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | wall_us p95_descriptive | 4759.5499999999993 | 2943.9499999999998 | -1815.5999999999995 | -38.146463426164232 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0015 | -0.0015 | -50 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | wall_us p50 | 2804.5 | 2910 | 105.5 | 3.7618113745765736 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3333.9000000000024 | 3665.3000000000002 | 331.39999999999782 | 9.9403101472748912 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | cpu_system_seconds mean | 0.36749999999999999 | 0.35750000000000004 | -0.0099999999999999534 | -2.7210884353741371 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | cpu_user_seconds mean | 4.9900000000000002 | 4.7699999999999996 | -0.22000000000000064 | -4.4088176352705535 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | wall_us p50 | 2464041 | 2545688 | 81647 | 3.3135406431954664 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | wall_us p95_descriptive | 2539766.6499999999 | 2610260.7999999998 | 70494.149999999907 | 2.7756152322104044 | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | cpu_system_seconds mean | 0.001 | 0 | -0.001 | -100 | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | cpu_user_seconds mean | 0.0025000000000000001 | 0.002 | -0.00050000000000000001 | -20 | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | wall_us p50 | 3084.5 | 2856 | -228.5 | -7.4080077808396823 | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | wall_us p95_descriptive | 4343.5 | 4182.3000000000002 | -161.19999999999982 | -3.7112927362725872 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | cpu_system_seconds mean | 0.089999999999999997 | 0.097500000000000003 | 0.0075000000000000067 | 8.333333333333341 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | cpu_user_seconds mean | 3.6875 | 3.665 | -0.022499999999999964 | -0.61016949152542277 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | wall_us p50 | 1233704 | 1247222 | 13518 | 1.0957247443471043 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | wall_us p95_descriptive | 1309872.7 | 1326776.55 | 16903.850000000093 | 1.2904956336596749 | stable withheld |
-| accurate/5/scenario_2/A/changed-context/B | cpu_system_seconds mean | 0.01 | 0.050000000000000003 | 0.040000000000000001 | 400 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | cpu_user_seconds mean | 0.10000000000000001 | 1.95 | 1.8499999999999999 | 1850 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | wall_us p50 | 38303 | 647641 | 609338 | 1590.8362269273948 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | wall_us p95_descriptive | 41485.800000000003 | 732838.75 | 691352.94999999995 | 1666.4809404663763 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | cpu_user_seconds mean | 0.002 | 0.0015 | -0.00050000000000000001 | -25 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | wall_us p50 | 2607.5 | 2632 | 24.5 | 0.93959731543624159 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | wall_us p95_descriptive | 4393.5 | 2956.4000000000001 | -1437.0999999999999 | -32.709684761579609 | accuracy excluded |
-| accurate/5/scenario_2/A/cold/A | cpu_system_seconds mean | 0.4325 | 0.39000000000000001 | -0.042499999999999982 | -9.8265895953757187 | stable withheld |
-| accurate/5/scenario_2/A/cold/A | cpu_user_seconds mean | 4.7625000000000002 | 4.6325000000000003 | -0.12999999999999989 | -2.7296587926509162 | stable withheld |
-| accurate/5/scenario_2/A/cold/A | wall_us p50 | 2520089 | 2419818.5 | -100270.5 | -3.9788475724468459 | stable withheld |
-| accurate/5/scenario_2/A/cold/A | wall_us p95_descriptive | 2601536.4500000002 | 2464309.25 | -137227.20000000019 | -5.2748520974980062 | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | cpu_user_seconds mean | 0.0035000000000000001 | 0.0015 | -0.002 | -57.142857142857146 | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | wall_us p50 | 3033 | 2926 | -107 | -3.5278602044180678 | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | wall_us p95_descriptive | 4383.5500000000002 | 3638.5500000000002 | -745 | -16.995357643918741 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | cpu_system_seconds mean | 0.074999999999999997 | 0.105 | 0.029999999999999999 | 40 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | cpu_user_seconds mean | 3.5750000000000002 | 3.7024999999999997 | 0.1274999999999995 | 3.5664335664335525 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | wall_us p50 | 1178986 | 1242835.5 | 63849.5 | 5.4156283450354801 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | wall_us p95_descriptive | 1288413 | 1387229.6499999999 | 98816.649999999907 | 7.669640868261955 | stable withheld |
-| accurate/5/scenario_2/B/changed-context/A | cpu_system_seconds mean | 0.0074999999999999997 | 0.037499999999999999 | 0.029999999999999999 | 400 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | cpu_user_seconds mean | 0.1275 | 1.9450000000000001 | 1.8175000000000001 | 1425.4901960784314 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | wall_us p50 | 47833.5 | 636322.5 | 588489 | 1230.2863056226286 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | wall_us p95_descriptive | 49338.800000000003 | 731140.19999999995 | 681801.39999999991 | 1381.8767379830879 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | cpu_user_seconds mean | 0.0015 | 0.001 | -0.00050000000000000001 | -33.333333333333336 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | wall_us p50 | 2604.5 | 2540 | -64.5 | -2.4764830101746975 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | wall_us p95_descriptive | 7140.1000000000004 | 2950.5500000000002 | -4189.5500000000002 | -58.676349070741303 | accuracy excluded |
-| accurate/5/scenario_2/B/cold/B | cpu_system_seconds mean | 0.38 | 0.37 | -0.010000000000000009 | -2.6315789473684235 | stable withheld |
-| accurate/5/scenario_2/B/cold/B | cpu_user_seconds mean | 4.7524999999999995 | 4.6524999999999999 | -0.099999999999999645 | -2.1041557075223496 | stable withheld |
-| accurate/5/scenario_2/B/cold/B | wall_us p50 | 2463177.5 | 2363576 | -99601.5 | -4.0436184562419886 | stable withheld |
-| accurate/5/scenario_2/B/cold/B | wall_us p95_descriptive | 2480386.9500000002 | 2486188 | 5801.0499999998137 | 0.23387681506709318 | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | cpu_system_seconds mean | 0.001 | 0.001 | 0 | 0 | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | cpu_user_seconds mean | 0.0040000000000000001 | 0.001 | -0.0030000000000000001 | -75 | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | wall_us p50 | 2903.5 | 3238.5 | 335 | 11.537799207852592 | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | wall_us p95_descriptive | 3628.3500000000013 | 7021.6500000000005 | 3393.2999999999993 | 93.521848774236176 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | cpu_system_seconds mean | 0.070000000000000007 | 0.089999999999999997 | 0.01999999999999999 | 28.571428571428555 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | cpu_user_seconds mean | 3.4950000000000001 | 3.5125000000000002 | 0.017500000000000071 | 0.50071530758226235 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | wall_us p50 | 1198738 | 1162784.5 | -35953.5 | -2.9992792420028396 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | wall_us p95_descriptive | 1240697 | 1245789.55 | 5092.5500000000466 | 0.41045879856242473 | stable withheld |
-| off/10/scenario_1/A/off-cold/A | cpu_system_seconds mean | 0.2175 | 0.20999999999999999 | -0.0075000000000000067 | -3.4482758620689684 | stable withheld |
-| off/10/scenario_1/A/off-cold/A | cpu_user_seconds mean | 1.1625000000000001 | 1.1299999999999999 | -0.032500000000000195 | -2.7956989247311994 | stable withheld |
-| off/10/scenario_1/A/off-cold/A | wall_us p50 | 1324647 | 1316444.5 | -8202.5 | -0.61922157374757203 | stable withheld |
-| off/10/scenario_1/A/off-cold/A | wall_us p95_descriptive | 1395201.3 | 1331977.95 | -63223.350000000093 | -4.5314858866602323 | stable withheld |
-| off/10/scenario_1/A/off-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | cpu_user_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | stable withheld |
-| off/10/scenario_1/A/off-hot/A | wall_us p50 | 3837.5 | 3766 | -71.5 | -1.8631921824104234 | stable withheld |
-| off/10/scenario_1/A/off-hot/A | wall_us p95_descriptive | 6413.0999999999985 | 4262 | -2151.0999999999985 | -33.542280644306167 | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | cpu_system_seconds mean | 0.0074999999999999997 | 0 | -0.0074999999999999997 | -100 | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | cpu_user_seconds mean | 0.067500000000000004 | 0.065000000000000002 | -0.0025000000000000022 | -3.7037037037037068 | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | wall_us p50 | 32464 | 33429.5 | 965.5 | 2.974063578117299 | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | wall_us p95_descriptive | 34821.599999999999 | 34619.949999999997 | -201.65000000000146 | -0.57909458497025257 | stable withheld |
-| off/5/scenario_1/A/off-cold/A | cpu_system_seconds mean | 0.20750000000000002 | 0.22750000000000001 | 0.01999999999999999 | 9.6385542168674654 | stable withheld |
-| off/5/scenario_1/A/off-cold/A | cpu_user_seconds mean | 1.125 | 1.1175000000000002 | -0.0074999999999998401 | -0.66666666666665242 | stable withheld |
-| off/5/scenario_1/A/off-cold/A | wall_us p50 | 1265814.5 | 1292733.5 | 26919 | 2.126614918694643 | stable withheld |
-| off/5/scenario_1/A/off-cold/A | wall_us p95_descriptive | 1378573.3499999999 | 1344493.55 | -34079.799999999814 | -2.4721063989812233 | stable withheld |
-| off/5/scenario_1/A/off-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | cpu_user_seconds mean | 0.0025000000000000001 | 0.0025000000000000001 | 0 | 0 | stable withheld |
-| off/5/scenario_1/A/off-hot/A | wall_us p50 | 3765 | 3589.5 | -175.5 | -4.6613545816733071 | stable withheld |
-| off/5/scenario_1/A/off-hot/A | wall_us p95_descriptive | 4705.2999999999993 | 3700.9000000000001 | -1004.3999999999992 | -21.34614158502113 | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | cpu_system_seconds mean | 0.0050000000000000001 | 0.0074999999999999997 | 0.0024999999999999996 | 49.999999999999993 | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | cpu_user_seconds mean | 0.057500000000000002 | 0.052499999999999998 | -0.0050000000000000044 | -8.6956521739130501 | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | wall_us p50 | 31233 | 29819.5 | -1413.5 | -4.525661960106298 | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | wall_us p95_descriptive | 32373.75 | 35924.949999999997 | 3551.1999999999971 | 10.969381057183666 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | hwm_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | rss_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | hwm_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | rss_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | hwm_kib mean | 1127315 | 1125860 | -1455 | -0.1290677406048886 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | rss_kib mean | 1127315 | 1125860 | -1455 | -0.1290677406048886 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/initial-hot/A | hwm_kib mean | 1127320.3999999999 | 1125865.6000000001 | -1454.7999999998137 | -0.12904938116970241 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/initial-hot/A | rss_kib mean | 1127320.3999999999 | 1125865.6000000001 | -1454.7999999998137 | -0.12904938116970241 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | hwm_kib mean | 1139494 | 1135199 | -4295 | -0.3769216862923368 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | rss_kib mean | 1139494 | 1135199 | -4295 | -0.3769216862923368 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | hwm_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | rss_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | hwm_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | rss_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | hwm_kib mean | 1127534 | 1127726 | 192 | 0.017028311341387489 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | rss_kib mean | 1127534 | 1127726 | 192 | 0.017028311341387489 | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | hwm_kib mean | 1127537 | 1127732.3999999999 | 195.39999999990687 | 0.017329808245752188 | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | rss_kib mean | 1127537 | 1127732.3999999999 | 195.39999999990687 | 0.017329808245752188 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | hwm_kib mean | 1136605 | 1136614 | 9 | 0.00079183181492251044 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | rss_kib mean | 1136605 | 1136614 | 9 | 0.00079183181492251044 | stable withheld |
-| accurate/10/scenario_2/A/changed-context/B | hwm_kib mean | 1125254 | 1125732 | 478 | 0.042479298007383225 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | rss_kib mean | 1125254 | 1125404 | 150 | 0.013330323642484274 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | hwm_kib mean | 1125254.8 | 1125732 | 477.19999999995343 | 0.042408172797836846 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | rss_kib mean | 1125254.8 | 1125404 | 149.19999999995343 | 0.013259219156403814 | accuracy excluded |
-| accurate/10/scenario_2/A/cold/A | hwm_kib mean | 1124831 | 1125536 | 705 | 0.062676082006985934 | stable withheld |
-| accurate/10/scenario_2/A/cold/A | rss_kib mean | 1124831 | 1125536 | 705 | 0.062676082006985934 | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | hwm_kib mean | 1124834 | 1125410.6000000001 | 576.60000000009313 | 0.051260897163500851 | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | rss_kib mean | 1124834 | 1124986.6000000001 | 152.60000000009313 | 0.013566446248965903 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | hwm_kib mean | 1135438 | 1133386 | -2052 | -0.1807232098978544 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | rss_kib mean | 1135356 | 1133386 | -1970 | -0.1735138582083505 | stable withheld |
-| accurate/10/scenario_2/B/changed-context/A | hwm_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | rss_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | hwm_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | rss_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | accuracy excluded |
-| accurate/10/scenario_2/B/cold/B | hwm_kib mean | 1124225 | 1125967 | 1742 | 0.15495118859658877 | stable withheld |
-| accurate/10/scenario_2/B/cold/B | rss_kib mean | 1124225 | 1125967 | 1742 | 0.15495118859658877 | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | hwm_kib mean | 1124226.3999999999 | 1125972.6000000001 | 1746.2000000001863 | 0.15532458586635098 | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | rss_kib mean | 1124226.3999999999 | 1125972.6000000001 | 1746.2000000001863 | 0.15532458586635098 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | hwm_kib mean | 1132266 | 1134019 | 1753 | 0.1548222767441573 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | rss_kib mean | 1132266 | 1134019 | 1753 | 0.1548222767441573 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | hwm_kib mean | 1126254 | 1127430 | 1176 | 0.10441694324726039 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | rss_kib mean | 1126254 | 1127430 | 1176 | 0.10441694324726039 | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | hwm_kib mean | 1126258.8 | 1127433.6000000001 | 1174.8000000000466 | 0.10430995078573828 | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | rss_kib mean | 1126258.8 | 1127433.6000000001 | 1174.8000000000466 | 0.10430995078573828 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | hwm_kib mean | 1135029 | 1136469 | 1440 | 0.12686900510912055 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | rss_kib mean | 1135029 | 1136469 | 1440 | 0.12686900510912055 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | hwm_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | rss_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | hwm_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | rss_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | hwm_kib mean | 1125046 | 1125760 | 714 | 0.063464071691290841 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | rss_kib mean | 1125046 | 1125760 | 714 | 0.063464071691290841 | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | hwm_kib mean | 1125055.3999999999 | 1125764.8 | 709.4000000001397 | 0.063054672685464178 | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | rss_kib mean | 1125055.3999999999 | 1125764.8 | 709.4000000001397 | 0.063054672685464178 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | hwm_kib mean | 1135719 | 1134609 | -1110 | -0.097735443362310576 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | rss_kib mean | 1135719 | 1134609 | -1110 | -0.097735443362310576 | stable withheld |
-| accurate/5/scenario_2/A/changed-context/B | hwm_kib mean | 1124651 | 1127017 | 2366 | 0.2103763745375232 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | rss_kib mean | 1124651 | 1127017 | 2366 | 0.2103763745375232 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | hwm_kib mean | 1124652.2 | 1127017 | 2364.8000000000466 | 0.21026945041320744 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | rss_kib mean | 1124652.2 | 1127017 | 2364.8000000000466 | 0.21026945041320744 | accuracy excluded |
-| accurate/5/scenario_2/A/cold/A | hwm_kib mean | 1124245 | 1126597 | 2352 | 0.20920706785442675 | stable withheld |
-| accurate/5/scenario_2/A/cold/A | rss_kib mean | 1124245 | 1126582 | 2337 | 0.20787283910535514 | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | hwm_kib mean | 1124247 | 1126598.8 | 2351.8000000000466 | 0.20918890599664011 | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | rss_kib mean | 1124247 | 1126583.8 | 2336.8000000000466 | 0.20785467962111942 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | hwm_kib mean | 1132344 | 1134237 | 1893 | 0.16717534600792691 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | rss_kib mean | 1132344 | 1134237 | 1893 | 0.16717534600792691 | stable withheld |
-| accurate/5/scenario_2/B/changed-context/A | hwm_kib mean | 1122534 | 1124194 | 1660 | 0.14787970787521804 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | rss_kib mean | 1122534 | 1124194 | 1660 | 0.14787970787521804 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | hwm_kib mean | 1122535.2 | 1124194 | 1658.8000000000466 | 0.14777264891114744 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | rss_kib mean | 1122535.2 | 1124194 | 1658.8000000000466 | 0.14777264891114744 | accuracy excluded |
-| accurate/5/scenario_2/B/cold/B | hwm_kib mean | 1121855 | 1123577 | 1722 | 0.1534957726265872 | stable withheld |
-| accurate/5/scenario_2/B/cold/B | rss_kib mean | 1121855 | 1123577 | 1722 | 0.1534957726265872 | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | hwm_kib mean | 1121858 | 1123582 | 1724 | 0.15367363784008314 | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | rss_kib mean | 1121858 | 1123582 | 1724 | 0.15367363784008314 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | hwm_kib mean | 1130293 | 1131603 | 1310 | 0.11589915181284853 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | rss_kib mean | 1130293 | 1131603 | 1310 | 0.11589915181284853 | stable withheld |
-| off/10/scenario_1/A/off-cold/A | hwm_kib mean | 757631 | 759341 | 1710 | 0.2257035416977394 | stable withheld |
-| off/10/scenario_1/A/off-cold/A | rss_kib mean | 757631 | 759341 | 1710 | 0.2257035416977394 | stable withheld |
-| off/10/scenario_1/A/off-hot/A | hwm_kib mean | 757634 | 759343 | 1709 | 0.22557065812780314 | stable withheld |
-| off/10/scenario_1/A/off-hot/A | rss_kib mean | 757634 | 759343 | 1709 | 0.22557065812780314 | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | hwm_kib mean | 758030 | 760222 | 2192 | 0.28917061330026517 | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | rss_kib mean | 758030 | 760222 | 2192 | 0.28917061330026517 | stable withheld |
-| off/5/scenario_1/A/off-cold/A | hwm_kib mean | 754772 | 759500 | 4728 | 0.62641433439502259 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-cold/A | rss_kib mean | 754772 | 759500 | 4728 | 0.62641433439502259 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-hot/A | hwm_kib mean | 754777 | 759502 | 4725 | 0.62601271633873312 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-hot/A | rss_kib mean | 754777 | 759502 | 4725 | 0.62601271633873312 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-new-query/N | hwm_kib mean | 755779 | 759927 | 4148 | 0.54883768932452481 | four-block descriptive eligible; no statistical proof |
-| off/5/scenario_1/A/off-new-query/N | rss_kib mean | 755779 | 759927 | 4148 | 0.54883768932452481 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/cold/A | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | characters mean | 2570 | 2570 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | encode_us mean | 3565 | 3783.75 | 218.75 | 6.1360448807854135 | stable withheld |
-| accurate/10/scenario_1/A/cold/A | forward_us mean | 1269272.5 | 1389001.25 | 119728.75 | 9.4328641012863663 | stable withheld |
-| accurate/10/scenario_1/A/cold/A | padded_tokens mean | 1282 | 1282 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/cold/A | tokens mean | 1262 | 1262 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | encode_us mean | 2774.75 | 2689.75 | -85 | -3.0633390395531128 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | forward_us mean | 1085384.75 | 1181129.25 | 95744.5 | 8.8212497918364896 | stable withheld |
-| accurate/10/scenario_1/A/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/cold/B | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | characters mean | 2570 | 2570 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | encode_us mean | 3892.75 | 3604.25 | -288.5 | -7.411213152655578 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | forward_us mean | 1184375.25 | 1253113.25 | 68738 | 5.803734922694475 | stable withheld |
-| accurate/10/scenario_1/B/cold/B | padded_tokens mean | 1282 | 1282 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/cold/B | tokens mean | 1262 | 1262 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | encode_us mean | 2641.5 | 2842.5 | 201 | 7.6093128904031797 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | forward_us mean | 1070228 | 1240879.5 | 170651.5 | 15.945340619008286 | stable withheld |
-| accurate/10/scenario_1/B/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/changed-context/B | batches mean | 1 | 5 | 4 | 400 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | characters mean | 55 | 1372 | 1317 | 2394.5454545454545 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | encode_us mean | 280.25 | 1301.75 | 1021.5 | 364.49598572702945 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | forward_us mean | 36111.25 | 637234 | 601122.75 | 1664.6412129184118 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | padded_tokens mean | 25 | 672 | 647 | 2588 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | scored mean | 1 | 20 | 19 | 1900 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-context/B | tokens mean | 25 | 653 | 628 | 2512 | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/A/cold/A | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/cold/A | characters mean | 2485 | 2485 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/cold/A | encode_us mean | 3609.5 | 3623.75 | 14.25 | 0.3947915223715196 | stable withheld |
-| accurate/10/scenario_2/A/cold/A | forward_us mean | 1174855.25 | 1080793.75 | -94061.5 | -8.0062203407611285 | stable withheld |
-| accurate/10/scenario_2/A/cold/A | padded_tokens mean | 1120 | 1120 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/cold/A | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/cold/A | tokens mean | 1090 | 1090 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | encode_us mean | 2763 | 2614.75 | -148.25 | -5.365544697792255 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | forward_us mean | 1174114.75 | 1082428.75 | -91686 | -7.808947123779852 | stable withheld |
-| accurate/10/scenario_2/A/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/A/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/changed-context/A | batches mean | 1 | 5 | 4 | 400 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | characters mean | 57 | 1374 | 1317 | 2310.5263157894738 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | encode_us mean | 240.5 | 1249.5 | 1009 | 419.54261954261955 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | forward_us mean | 46259.75 | 648269.75 | 602010 | 1301.3689006101417 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | padded_tokens mean | 37 | 684 | 647 | 1748.6486486486488 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | scored mean | 1 | 20 | 19 | 1900 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-context/A | tokens mean | 37 | 665 | 628 | 1697.2972972972973 | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/10/scenario_2/B/cold/B | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/cold/B | characters mean | 2483 | 2483 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/cold/B | encode_us mean | 3701.75 | 4166.25 | 464.5 | 12.548119132842574 | stable withheld |
-| accurate/10/scenario_2/B/cold/B | forward_us mean | 1112397.5 | 1032601.75 | -79795.75 | -7.1733125973404288 | stable withheld |
-| accurate/10/scenario_2/B/cold/B | padded_tokens mean | 1108 | 1108 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/cold/B | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/cold/B | tokens mean | 1078 | 1078 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | encode_us mean | 2782.5 | 2958.75 | 176.25 | 6.3342318059299192 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | forward_us mean | 1168882.75 | 1108815.75 | -60067 | -5.1388387757454712 | stable withheld |
-| accurate/10/scenario_2/B/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_2/B/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/cold/A | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | characters mean | 2570 | 2570 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | encode_us mean | 4216.75 | 3654 | -562.75 | -13.34558605561155 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | forward_us mean | 1228592.5 | 1272325.25 | 43732.75 | 3.5595813909005631 | stable withheld |
-| accurate/5/scenario_1/A/cold/A | padded_tokens mean | 1282 | 1282 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/cold/A | tokens mean | 1262 | 1262 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | encode_us mean | 3356.25 | 2882.5 | -473.75 | -14.115456238361267 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | forward_us mean | 1137987.25 | 1177384.5 | 39397.25 | 3.462011547141675 | stable withheld |
-| accurate/5/scenario_1/A/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/cold/B | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | characters mean | 2570 | 2570 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | encode_us mean | 3642 | 3583.25 | -58.75 | -1.6131246567819879 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | forward_us mean | 1175280.5 | 1226272.5 | 50992 | 4.3387089294853443 | stable withheld |
-| accurate/5/scenario_1/B/cold/B | padded_tokens mean | 1282 | 1282 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/cold/B | tokens mean | 1262 | 1262 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | encode_us mean | 2919.25 | 2864.25 | -55 | -1.8840455596471697 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | forward_us mean | 1202028.5 | 1210958.25 | 8929.75 | 0.74289003962884403 | stable withheld |
-| accurate/5/scenario_1/B/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/changed-context/B | batches mean | 1 | 5 | 4 | 400 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | characters mean | 55 | 1372 | 1317 | 2394.5454545454545 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | encode_us mean | 264.75 | 1297.75 | 1033 | 390.17941454202077 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | forward_us mean | 35564.5 | 636195.25 | 600630.75 | 1688.849133264913 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | padded_tokens mean | 25 | 672 | 647 | 2588 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | scored mean | 1 | 20 | 19 | 1900 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-context/B | tokens mean | 25 | 653 | 628 | 2512 | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/A/cold/A | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/cold/A | characters mean | 2485 | 2485 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/cold/A | encode_us mean | 5054.25 | 4249 | -805.25 | -15.932136320918039 | stable withheld |
-| accurate/5/scenario_2/A/cold/A | forward_us mean | 1120173.5 | 1123104 | 2930.5 | 0.26161125932723817 | stable withheld |
-| accurate/5/scenario_2/A/cold/A | padded_tokens mean | 1120 | 1120 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/cold/A | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/cold/A | tokens mean | 1090 | 1090 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | encode_us mean | 2783.5 | 3252.75 | 469.25 | 16.858271959762888 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | forward_us mean | 1165040.75 | 1219438.75 | 54398 | 4.6691929016216811 | stable withheld |
-| accurate/5/scenario_2/A/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/A/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/changed-context/A | batches mean | 1 | 5 | 4 | 400 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | characters mean | 57 | 1374 | 1317 | 2310.5263157894738 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | encode_us mean | 270.25 | 1398.5 | 1128.25 | 417.48381128584646 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | forward_us mean | 44330.25 | 626801 | 582470.75 | 1313.9351797023478 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | padded_tokens mean | 37 | 684 | 647 | 1748.6486486486488 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | scored mean | 1 | 20 | 19 | 1900 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-context/A | tokens mean | 37 | 665 | 628 | 1697.2972972972973 | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | accuracy excluded |
-| accurate/5/scenario_2/B/cold/B | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/cold/B | characters mean | 2483 | 2483 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/cold/B | encode_us mean | 3550.5 | 3666.5 | 116 | 3.2671454724686666 | stable withheld |
-| accurate/5/scenario_2/B/cold/B | forward_us mean | 1074296.25 | 1089122.75 | 14826.5 | 1.3801127947714609 | stable withheld |
-| accurate/5/scenario_2/B/cold/B | padded_tokens mean | 1108 | 1108 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/cold/B | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/cold/B | tokens mean | 1078 | 1078 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | encode_us mean | 2989.5 | 2770 | -219.5 | -7.3423649439705638 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | forward_us mean | 1101061.25 | 1129788.5 | 28727.25 | 2.6090510405302156 | stable withheld |
-| accurate/5/scenario_2/B/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_2/B/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | four-block descriptive eligible; no statistical proof |
-| off/10/scenario_1/A/off-cold/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-cold/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-cold/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-cold/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-cold/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-cold/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-cold/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/10/scenario_1/A/off-new-query/N | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-cold/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-hot/A | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | batches mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | characters mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | encode_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | forward_us mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | padded_tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | scored mean | 0 | 0 | 0 | N/A | stable withheld |
-| off/5/scenario_1/A/off-new-query/N | tokens mean | 0 | 0 | 0 | N/A | stable withheld |
-| accurate/5/scenario_1/A | controller_observed_native_wall_seconds  | 5.0536136364999997 | 5.0493405707500001 | -0.0042730657499996383 | -0.084554658455430545 | private-attested/descriptive |
-| accurate/5/scenario_1/A | engine_open_wall_us  | 71857 | 62931 | -8926 | -12.421893482889628 | private-attested/descriptive |
-| accurate/5/scenario_1/A | cumulative_user_seconds_through_last_search  | 8.9000000000000004 | 8.6074999999999999 | -0.29250000000000043 | -3.2865168539325889 | private-attested/descriptive |
-| accurate/5/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.66249999999999998 | 0.54249999999999998 | -0.12 | -18.113207547169811 | private-attested/descriptive |
-| accurate/5/scenario_1/A | native_sampled_peak_rss_kib  | 1135029 | 1136469 | 1440 | 0.12686900510912055 | private-attested/descriptive |
-| accurate/5/scenario_1/A | native_observed_hwm_kib  | 1135029 | 1136469 | 1440 | 0.12686900510912055 | private-attested/descriptive |
-| accurate/5/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27646 | 27603 | -43 | -0.15553787166317007 | private-attested/descriptive |
-| accurate/5/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_1/B | controller_observed_native_wall_seconds  | 5.0512129302500002 | 5.0477585347499998 | -0.0034543955000003734 | -0.068387445702658284 | private-attested/descriptive |
-| accurate/5/scenario_1/B | engine_open_wall_us  | 76844.25 | 64233.25 | -12611 | -16.411117292445432 | private-attested/descriptive |
-| accurate/5/scenario_1/B | cumulative_user_seconds_through_last_search  | 8.7874999999999996 | 8.5325000000000006 | -0.25499999999999901 | -2.9018492176386803 | private-attested/descriptive |
-| accurate/5/scenario_1/B | cumulative_system_seconds_through_last_search  | 0.53500000000000003 | 0.52249999999999996 | -0.012500000000000067 | -2.3364485981308536 | private-attested/descriptive |
-| accurate/5/scenario_1/B | native_sampled_peak_rss_kib  | 1135719 | 1134609 | -1110 | -0.097735443362310576 | private-attested/descriptive |
-| accurate/5/scenario_1/B | native_observed_hwm_kib  | 1135719 | 1134609 | -1110 | -0.097735443362310576 | private-attested/descriptive |
-| accurate/5/scenario_1/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27491 | 27599 | 108 | 0.3928558437306755 | private-attested/descriptive |
-| accurate/5/scenario_1/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_1/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_2/A | controller_observed_native_wall_seconds  | 5.0584097354999997 | 5.0569951520000007 | -0.0014145834999990115 | -0.027964984530047893 | private-attested/descriptive |
-| accurate/5/scenario_2/A | engine_open_wall_us  | 66197 | 64786.75 | -1410.25 | -2.1303835521247185 | private-attested/descriptive |
-| accurate/5/scenario_2/A | cumulative_user_seconds_through_last_search  | 8.5225000000000009 | 10.379999999999999 | 1.8574999999999982 | 21.795247873276598 | private-attested/descriptive |
-| accurate/5/scenario_2/A | cumulative_system_seconds_through_last_search  | 0.58499999999999996 | 0.60999999999999999 | 0.025000000000000022 | 4.2735042735042779 | private-attested/descriptive |
-| accurate/5/scenario_2/A | native_sampled_peak_rss_kib  | 1132344 | 1134237 | 1893 | 0.16717534600792691 | private-attested/descriptive |
-| accurate/5/scenario_2/A | native_observed_hwm_kib  | 1132344 | 1134237 | 1893 | 0.16717534600792691 | private-attested/descriptive |
-| accurate/5/scenario_2/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27568 | 27650 | 82 | 0.29744631456761461 | private-attested/descriptive |
-| accurate/5/scenario_2/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_2/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_2/B | controller_observed_native_wall_seconds  | 4.5560645239999999 | 5.0570859517500004 | 0.50102142775000047 | 10.996802725483096 | private-attested/descriptive |
-| accurate/5/scenario_2/B | engine_open_wall_us  | 69487.5 | 65799 | -3688.5 | -5.3081489476524553 | private-attested/descriptive |
-| accurate/5/scenario_2/B | cumulative_user_seconds_through_last_search  | 8.4725000000000001 | 10.199999999999999 | 1.7274999999999991 | 20.389495426379451 | private-attested/descriptive |
-| accurate/5/scenario_2/B | cumulative_system_seconds_through_last_search  | 0.52500000000000002 | 0.57000000000000006 | 0.04500000000000004 | 8.5714285714285783 | private-attested/descriptive |
-| accurate/5/scenario_2/B | native_sampled_peak_rss_kib  | 1130293 | 1131603 | 1310 | 0.11589915181284853 | private-attested/descriptive |
-| accurate/5/scenario_2/B | native_observed_hwm_kib  | 1130293 | 1131603 | 1310 | 0.11589915181284853 | private-attested/descriptive |
-| accurate/5/scenario_2/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27683 | 27523 | -160 | -0.57797204060253582 | private-attested/descriptive |
-| accurate/5/scenario_2/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/5/scenario_2/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_1/A | controller_observed_native_wall_seconds  | 4.7985760977499998 | 5.0524072504999999 | 0.25383115275000012 | 5.2897181909654156 | private-attested/descriptive |
-| accurate/10/scenario_1/A | engine_open_wall_us  | 70109.75 | 62904.75 | -7205 | -10.276744675312635 | private-attested/descriptive |
-| accurate/10/scenario_1/A | cumulative_user_seconds_through_last_search  | 8.9800000000000004 | 9.0274999999999999 | 0.047499999999999432 | 0.5289532293986573 | private-attested/descriptive |
-| accurate/10/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.55499999999999994 | 0.57750000000000001 | 0.022500000000000075 | 4.0540540540540677 | private-attested/descriptive |
-| accurate/10/scenario_1/A | native_sampled_peak_rss_kib  | 1139494 | 1135199 | -4295 | -0.3769216862923368 | private-attested/descriptive |
-| accurate/10/scenario_1/A | native_observed_hwm_kib  | 1139494 | 1135199 | -4295 | -0.3769216862923368 | private-attested/descriptive |
-| accurate/10/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27681 | 27679 | -2 | -0.0072251725009934613 | private-attested/descriptive |
-| accurate/10/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_1/B | controller_observed_native_wall_seconds  | 4.8033521634999996 | 5.0534619117500004 | 0.25010974825000076 | 5.2069833677936366 | private-attested/descriptive |
-| accurate/10/scenario_1/B | engine_open_wall_us  | 65124.5 | 71840.25 | 6715.75 | 10.312171302658754 | private-attested/descriptive |
-| accurate/10/scenario_1/B | cumulative_user_seconds_through_last_search  | 8.3724999999999987 | 9.0724999999999998 | 0.70000000000000107 | 8.3607046879665727 | private-attested/descriptive |
-| accurate/10/scenario_1/B | cumulative_system_seconds_through_last_search  | 0.5575 | 0.51000000000000001 | -0.047499999999999987 | -8.5201793721973065 | private-attested/descriptive |
-| accurate/10/scenario_1/B | native_sampled_peak_rss_kib  | 1136605 | 1136614 | 9 | 0.00079183181492251044 | private-attested/descriptive |
-| accurate/10/scenario_1/B | native_observed_hwm_kib  | 1136605 | 1136614 | 9 | 0.00079183181492251044 | private-attested/descriptive |
-| accurate/10/scenario_1/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27632 | 27648 | 16 | 0.057903879559930517 | private-attested/descriptive |
-| accurate/10/scenario_1/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_1/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_2/A | controller_observed_native_wall_seconds  | 4.8080865557500001 | 5.0601821637499995 | 0.25209560799999942 | 5.2431586885331294 | private-attested/descriptive |
-| accurate/10/scenario_2/A | engine_open_wall_us  | 65304 | 61788.5 | -3515.5 | -5.3832843317407812 | private-attested/descriptive |
-| accurate/10/scenario_2/A | cumulative_user_seconds_through_last_search  | 8.6724999999999994 | 10.059999999999999 | 1.3874999999999993 | 15.998846929950989 | private-attested/descriptive |
-| accurate/10/scenario_2/A | cumulative_system_seconds_through_last_search  | 0.54999999999999993 | 0.59999999999999998 | 0.050000000000000044 | 9.0909090909091006 | private-attested/descriptive |
-| accurate/10/scenario_2/A | native_sampled_peak_rss_kib  | 1135356 | 1133386 | -1970 | -0.1735138582083505 | private-attested/descriptive |
-| accurate/10/scenario_2/A | native_observed_hwm_kib  | 1135438 | 1133386 | -2052 | -0.1807232098978544 | private-attested/descriptive |
-| accurate/10/scenario_2/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27665 | 27665 | 0 | 0 | private-attested/descriptive |
-| accurate/10/scenario_2/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_2/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_2/B | controller_observed_native_wall_seconds  | 5.0534646494999995 | 5.0603852665 | 0.0069206170000004619 | 0.13694796501020745 | private-attested/descriptive |
-| accurate/10/scenario_2/B | engine_open_wall_us  | 71512.25 | 85343 | 13830.75 | 19.340392729916903 | private-attested/descriptive |
-| accurate/10/scenario_2/B | cumulative_user_seconds_through_last_search  | 8.3000000000000007 | 10.067499999999999 | 1.7674999999999983 | 21.295180722891544 | private-attested/descriptive |
-| accurate/10/scenario_2/B | cumulative_system_seconds_through_last_search  | 0.54000000000000004 | 0.64250000000000007 | 0.10250000000000004 | 18.981481481481488 | private-attested/descriptive |
-| accurate/10/scenario_2/B | native_sampled_peak_rss_kib  | 1132266 | 1134019 | 1753 | 0.1548222767441573 | private-attested/descriptive |
-| accurate/10/scenario_2/B | native_observed_hwm_kib  | 1132266 | 1134019 | 1753 | 0.1548222767441573 | private-attested/descriptive |
-| accurate/10/scenario_2/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27587 | 27677 | 90 | 0.32624062058215825 | private-attested/descriptive |
-| accurate/10/scenario_2/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_2/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| off/5/scenario_1/A | controller_observed_native_wall_seconds  | 2.0180951862500001 | 2.0164307142500002 | -0.0016644719999998614 | -0.082477378239663862 | private-attested/descriptive |
-| off/5/scenario_1/A | engine_open_wall_us  | 63348 | 67834.5 | 4486.5 | 7.0823072551619628 | private-attested/descriptive |
-| off/5/scenario_1/A | cumulative_user_seconds_through_last_search  | 1.22 | 1.2 | -0.020000000000000018 | -1.6393442622950836 | private-attested/descriptive |
-| off/5/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.245 | 0.28000000000000003 | 0.035000000000000031 | 14.285714285714299 | private-attested/descriptive |
-| off/5/scenario_1/A | native_sampled_peak_rss_kib  | 755779 | 759927 | 4148 | 0.54883768932452481 | private-attested/descriptive |
-| off/5/scenario_1/A | native_observed_hwm_kib  | 755779 | 759927 | 4148 | 0.54883768932452481 | private-attested/descriptive |
-| off/5/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27586 | 27586 | 0 | 0 | private-attested/descriptive |
-| off/5/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| off/5/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| off/10/scenario_1/A | controller_observed_native_wall_seconds  | 2.0248901827500001 | 2.0182261832499999 | -0.0066639995000001839 | -0.32910424262859611 | private-attested/descriptive |
-| off/10/scenario_1/A | engine_open_wall_us  | 69322.75 | 70614.5 | 1291.75 | 1.8633853965689475 | private-attested/descriptive |
-| off/10/scenario_1/A | cumulative_user_seconds_through_last_search  | 1.2549999999999999 | 1.23 | -0.024999999999999911 | -1.9920318725099533 | private-attested/descriptive |
-| off/10/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.27250000000000002 | 0.25750000000000001 | -0.015000000000000013 | -5.5045871559633071 | private-attested/descriptive |
-| off/10/scenario_1/A | native_sampled_peak_rss_kib  | 758030 | 760222 | 2192 | 0.28917061330026517 | private-attested/descriptive |
-| off/10/scenario_1/A | native_observed_hwm_kib  | 758030 | 760222 | 2192 | 0.28917061330026517 | private-attested/descriptive |
-| off/10/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27540 | 27692 | 152 | 0.55192447349310092 | private-attested/descriptive |
-| off/10/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| off/10/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| index/logical_bytes | logical_bytes  | 22028682 | 22028682 | 0 | 0 | private-attested/descriptive |
-| index/allocated_bytes | allocated_bytes  | 22106112 | N/A | N/A | N/A | private-attested/descriptive |
-| app_executable/logical_bytes | logical_bytes  | 16289008 | 16300208 | 11200 | 0.068758023815814931 | private-attested/descriptive |
-| app_executable/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| shared_model_runtime_assets/logical_bytes | logical_bytes  | 2415072587 | 2415072587 | 0 | 0 | private-attested/descriptive |
-| shared_model_runtime_assets/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | private-attested/descriptive |
-| temporary_clones/peak_allocated_bytes | peak_allocated_bytes  | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| Configuration | Metric | Before | After | Absolute difference | % change | Samples per arm | Eligibility |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 5/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_2/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_2/A | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_2/A | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_2/A | legacy_main_context_failure  | 4 | 0 | -4 | -100 | N/A | private-attested/descriptive |
+| 5/scenario_2/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_2/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 5/scenario_2/B | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_2/B | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 5/scenario_2/B | legacy_main_context_failure  | 4 | 0 | -4 | -100 | N/A | private-attested/descriptive |
+| 5/scenario_2/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_2/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_2/A | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_2/A | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_2/A | legacy_main_context_failure  | 4 | 0 | -4 | -100 | N/A | private-attested/descriptive |
+| 10/scenario_2/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_2/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
+| 10/scenario_2/B | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_2/B | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
+| 10/scenario_2/B | legacy_main_context_failure  | 4 | 0 | -4 | -100 | N/A | private-attested/descriptive |
+| 10/scenario_2/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-context/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-context/B | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-hot/B | quality_recall mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/initial-hot/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/initial-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-context/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-context/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/initial-hot/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/initial-hot/B | quality_recall mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/cold/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/cold/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/initial-hot/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/initial-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | quality_ndcg mean | 0.80516285021997969 | 0.80516285021997969 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | quality_recall mean | 0.80000000000000004 | 0.80000000000000004 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/cold/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/cold/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/initial-hot/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/initial-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | quality_ndcg mean | 0.80516285021997969 | 0.80516285021997969 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | quality_recall mean | 0.80000000000000004 | 0.80000000000000004 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-context/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-context/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-hot/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/initial-hot/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/initial-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-context/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-context/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/initial-hot/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/initial-hot/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | quality_ndcg mean | 0.55314647000814365 | 0.48522855511632257 | -0.067917914891821085 | -12.278468466195068 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/cold/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/cold/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/initial-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/initial-hot/A | quality_ndcg mean | 0.55314647000814365 | 0.55314647000814365 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/initial-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | quality_ndcg mean | 0.68435154752048555 | 0.68435154752048555 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | quality_recall mean | 0.59999999999999998 | 0.59999999999999998 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | quality_ndcg mean | 0.48522855511632257 | 0.55314647000814365 | 0.067917914891821085 | 13.997097692558365 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/cold/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/cold/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/initial-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/initial-hot/B | quality_ndcg mean | 0.48522855511632257 | 0.48522855511632257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/initial-hot/B | quality_recall mean | 0.40000000000000002 | 0.40000000000000002 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | quality_ndcg mean | 0.68435154752048555 | 0.68435154752048555 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | quality_recall mean | 0.59999999999999998 | 0.59999999999999998 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-cold/A | quality_ndcg mean | 0.92675823647141253 | 0.92675823647141253 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-cold/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-hot/A | quality_ndcg mean | 0.92675823647141253 | 0.92675823647141253 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-new-query/N | quality_ndcg mean | 0.8396538878217249 | 0.8396538878217249 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-cold/A | quality_ndcg mean | 0.787702056960637 | 0.787702056960637 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-cold/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-hot/A | quality_ndcg mean | 0.787702056960637 | 0.787702056960637 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-new-query/N | quality_ndcg mean | 0.70952720449102435 | 0.70952720449102435 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-new-query/N | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | wall_us p50 | 2925 | 3001 | 76 | 2.5982905982905984 | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | wall_us p95_descriptive | 3662.8999999999996 | 6466.6499999999987 | 2803.7499999999991 | 76.544541210516229 | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.002 | 0.0030000000000000001 | 0.001 | 50 | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | wall_us p50 | 2922 | 2848 | -74 | -2.5325119780971939 | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3836.5500000000002 | 5374.6500000000024 | 1538.1000000000022 | 40.090706494115864 | 20 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | cpu_system_seconds mean | 0.40749999999999997 | 0.4425 | 0.035000000000000031 | 8.588957055214733 | 4 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | cpu_user_seconds mean | 5.3925000000000001 | 5.4350000000000005 | 0.042500000000000426 | 0.78813166434864024 | 4 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | wall_us p50 | 2619473.5 | 2716576 | 97102.5 | 3.7069472166830471 | 4 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | wall_us p95_descriptive | 2748269.5499999998 | 2941912.6000000001 | 193643.05000000028 | 7.0459991815577299 | 4 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | cpu_user_seconds mean | 0.0015 | 0.0025000000000000001 | 0.001 | 66.666666666666671 | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | wall_us p50 | 3235.5 | 3063 | -172.5 | -5.3314789058878072 | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | wall_us p95_descriptive | 4461.8500000000013 | 5652.7000000000062 | 1190.8500000000049 | 26.689601846767701 | 20 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | cpu_system_seconds mean | 0.074999999999999997 | 0.072499999999999995 | -0.0025000000000000022 | -3.3333333333333366 | 4 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | cpu_user_seconds mean | 3.4775 | 3.4775 | 0 | 0 | 4 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | wall_us p50 | 1143498.5 | 1197042.5 | 53544 | 4.6824722551013407 | 4 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | wall_us p95_descriptive | 1181191.3500000001 | 1367954.3999999999 | 186763.04999999981 | 15.811413620663561 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | wall_us p50 | 2646.5 | 2897 | 250.5 | 9.46533156999811 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | wall_us p95_descriptive | 3002.0499999999997 | 2925.25 | -76.799999999999727 | -2.5582518612281517 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0025000000000000001 | -0.00050000000000000001 | -16.666666666666668 | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | wall_us p50 | 2637 | 2889 | 252 | 9.5563139931740615 | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3106.8000000000002 | 3660.7500000000005 | 553.95000000000027 | 17.830243337195835 | 20 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | cpu_system_seconds mean | 0.38500000000000001 | 0.34999999999999998 | -0.035000000000000031 | -9.0909090909090988 | 4 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | cpu_user_seconds mean | 4.9000000000000004 | 5.0824999999999996 | 0.18249999999999922 | 3.7244897959183509 | 4 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | wall_us p50 | 2429671 | 2565681.5 | 136010.5 | 5.5978978223800668 | 4 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | wall_us p95_descriptive | 2545695.25 | 2638118.2000000002 | 92422.950000000186 | 3.6305582924743325 | 4 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | cpu_system_seconds mean | 0.00050000000000000001 | 0.00050000000000000001 | 0 | 0 | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | cpu_user_seconds mean | 0.0015 | 0.00050000000000000001 | -0.001 | -66.666666666666671 | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | wall_us p50 | 2837 | 3087.5 | 250.5 | 8.829749735636236 | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | wall_us p95_descriptive | 4131.0500000000002 | 4422.9499999999998 | 291.89999999999964 | 7.0660001694484365 | 20 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | cpu_system_seconds mean | 0.095000000000000001 | 0.092499999999999999 | -0.0025000000000000022 | -2.6315789473684235 | 4 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | cpu_user_seconds mean | 3.3875000000000002 | 3.8700000000000001 | 0.48249999999999993 | 14.243542435424352 | 4 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | wall_us p50 | 1097679 | 1302421.5 | 204742.5 | 18.652310921498909 | 4 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | wall_us p95_descriptive | 1187945.95 | 1305819.25 | 117873.30000000005 | 9.9224463873966684 | 4 | stable withheld |
+| accurate/10/scenario_2/A/changed-context/B | cpu_system_seconds mean | 0.0074999999999999997 | 0.065000000000000002 | 0.057500000000000002 | 766.66666666666674 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | cpu_user_seconds mean | 0.082500000000000004 | 1.8999999999999999 | 1.8174999999999999 | 2203.030303030303 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | wall_us p50 | 38403 | 613060 | 574657 | 1496.3856990339295 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | wall_us p95_descriptive | 42970.900000000001 | 786973.84999999998 | 744002.94999999995 | 1731.4111410279979 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | cpu_user_seconds mean | 0.001 | 0.001 | 0 | 0 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | wall_us p50 | 2723 | 2606.5 | -116.5 | -4.2783694454645609 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | wall_us p95_descriptive | 3056.0500000000002 | 3086.4500000000003 | 30.400000000000091 | 0.99474812257653145 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/cold/A | cpu_system_seconds mean | 0.3725 | 0.38250000000000001 | 0.010000000000000009 | 2.6845637583892641 | 4 | stable withheld |
+| accurate/10/scenario_2/A/cold/A | cpu_user_seconds mean | 4.8100000000000005 | 4.6699999999999999 | -0.14000000000000057 | -2.9106029106029223 | 4 | stable withheld |
+| accurate/10/scenario_2/A/cold/A | wall_us p50 | 2591488 | 2371782.5 | -219705.5 | -8.4779670984391977 | 4 | stable withheld |
+| accurate/10/scenario_2/A/cold/A | wall_us p95_descriptive | 2658214.6499999999 | 2463648.3500000001 | -194566.29999999981 | -7.3194352457578935 | 4 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | cpu_user_seconds mean | 0.001 | 0.002 | 0.001 | 100 | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | wall_us p50 | 2977.5 | 2903.5 | -74 | -2.4853064651553316 | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | wall_us p95_descriptive | 4138.2000000000007 | 4556.6000000000004 | 418.39999999999964 | 10.110676139384262 | 20 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | cpu_system_seconds mean | 0.097500000000000003 | 0.095000000000000001 | -0.0025000000000000022 | -2.5641025641025661 | 4 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | cpu_user_seconds mean | 3.6800000000000002 | 3.3875000000000002 | -0.29249999999999998 | -7.9483695652173907 | 4 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | wall_us p50 | 1171720.5 | 1128744.5 | -42976 | -3.6677688919840525 | 4 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | wall_us p95_descriptive | 1338897 | 1221848.3500000001 | -117048.64999999991 | -8.7421698607136999 | 4 | stable withheld |
+| accurate/10/scenario_2/B/changed-context/A | cpu_system_seconds mean | 0.012500000000000001 | 0.067500000000000004 | 0.055000000000000007 | 440.00000000000006 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | cpu_user_seconds mean | 0.11 | 1.9424999999999999 | 1.8324999999999998 | 1665.9090909090905 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | wall_us p50 | 49322 | 623754 | 574432 | 1164.6567454685535 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | wall_us p95_descriptive | 51307.300000000003 | 742925.64999999991 | 691618.34999999986 | 1347.9920985902588 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0.001 | 0.00050000000000000001 | 100 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | cpu_user_seconds mean | 0.001 | 0.00050000000000000001 | -0.00050000000000000001 | -50 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | wall_us p50 | 2536.5 | 2825 | 288.5 | 11.373940469150405 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | wall_us p95_descriptive | 3387.5500000000002 | 4475.3500000000031 | 1087.8000000000029 | 32.111703148293095 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/cold/B | cpu_system_seconds mean | 0.38 | 0.39749999999999996 | 0.01749999999999996 | 4.6052631578947265 | 4 | stable withheld |
+| accurate/10/scenario_2/B/cold/B | cpu_user_seconds mean | 4.6299999999999999 | 4.5274999999999999 | -0.10250000000000004 | -2.2138228941684672 | 4 | stable withheld |
+| accurate/10/scenario_2/B/cold/B | wall_us p50 | 2405165 | 2404491 | -674 | -0.028023025447318581 | 4 | stable withheld |
+| accurate/10/scenario_2/B/cold/B | wall_us p95_descriptive | 2507085.1499999999 | 2436847.6499999999 | -70237.5 | -2.8015602102704809 | 4 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | cpu_user_seconds mean | 0.00050000000000000001 | 0.0030000000000000001 | 0.0025000000000000001 | 500 | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | wall_us p50 | 2767 | 2841.5 | 74.5 | 2.6924466931694977 | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | wall_us p95_descriptive | 4988.3500000000095 | 3520.6999999999998 | -1467.6500000000096 | -29.421552216664967 | 20 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | cpu_system_seconds mean | 0.074999999999999997 | 0.10249999999999999 | 0.027499999999999997 | 36.666666666666664 | 4 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | cpu_user_seconds mean | 3.4674999999999998 | 3.4824999999999999 | 0.015000000000000124 | 0.43258832011536047 | 4 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | wall_us p50 | 1210832 | 1119839.5 | -90992.5 | -7.5148740700609169 | 4 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | wall_us p95_descriptive | 1248526.8 | 1239923.3 | -8603.5 | -0.68909213642830891 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0.0050000000000000001 | 0 | -0.0050000000000000001 | -100 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | wall_us p50 | 2600.5 | 2630 | 29.5 | 1.1343972313016728 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | wall_us p95_descriptive | 2746.8000000000002 | 2696.5999999999999 | -50.200000000000273 | -1.8275811853793604 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.0025000000000000001 | 0.001 | -0.0015 | -60 | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | wall_us p50 | 2842.5 | 2643.5 | -199 | -7.0008795074758137 | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3208.3000000000002 | 3925.7500000000009 | 717.45000000000073 | 22.362310257768932 | 20 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | cpu_system_seconds mean | 0.51000000000000001 | 0.3775 | -0.13250000000000001 | -25.980392156862745 | 4 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | cpu_user_seconds mean | 5.2125000000000004 | 4.8849999999999998 | -0.32750000000000057 | -6.2829736211031282 | 4 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | wall_us p50 | 2566220 | 2567844.5 | 1624.5 | 0.063303224197457736 | 4 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | wall_us p95_descriptive | 2929494.75 | 2610038.2999999998 | -319456.45000000019 | -10.904830943970806 | 4 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | cpu_user_seconds mean | 0.002 | 0.002 | 0 | 0 | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | wall_us p50 | 2702.5 | 2827.5 | 125 | 4.6253469010175765 | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | wall_us p95_descriptive | 3569.4500000000016 | 3877.5500000000002 | 308.09999999999854 | 8.6315818963705446 | 20 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | cpu_system_seconds mean | 0.084999999999999992 | 0.10250000000000001 | 0.017500000000000016 | 20.588235294117666 | 4 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | cpu_user_seconds mean | 3.585 | 3.625 | 0.040000000000000036 | 1.1157601115760121 | 4 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | wall_us p50 | 1158097 | 1231911.5 | 73814.5 | 6.3737752537136352 | 4 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | wall_us p95_descriptive | 1229700.55 | 1345559.25 | 115858.69999999995 | 9.4217002667844589 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0.0050000000000000001 | 0.0025000000000000001 | 100 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | wall_us p50 | 3467 | 2746.5 | -720.5 | -20.781655610037497 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | wall_us p95_descriptive | 4759.5499999999993 | 2943.9499999999998 | -1815.5999999999995 | -38.146463426164232 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0015 | -0.0015 | -50 | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | wall_us p50 | 2804.5 | 2910 | 105.5 | 3.7618113745765736 | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3333.9000000000024 | 3665.3000000000002 | 331.39999999999782 | 9.9403101472748912 | 20 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | cpu_system_seconds mean | 0.36749999999999999 | 0.35750000000000004 | -0.0099999999999999534 | -2.7210884353741371 | 4 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | cpu_user_seconds mean | 4.9900000000000002 | 4.7699999999999996 | -0.22000000000000064 | -4.4088176352705535 | 4 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | wall_us p50 | 2464041 | 2545688 | 81647 | 3.3135406431954664 | 4 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | wall_us p95_descriptive | 2539766.6499999999 | 2610260.7999999998 | 70494.149999999907 | 2.7756152322104044 | 4 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | cpu_system_seconds mean | 0.001 | 0 | -0.001 | -100 | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | cpu_user_seconds mean | 0.0025000000000000001 | 0.002 | -0.00050000000000000001 | -20 | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | wall_us p50 | 3084.5 | 2856 | -228.5 | -7.4080077808396823 | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | wall_us p95_descriptive | 4343.5 | 4182.3000000000002 | -161.19999999999982 | -3.7112927362725872 | 20 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | cpu_system_seconds mean | 0.089999999999999997 | 0.097500000000000003 | 0.0075000000000000067 | 8.333333333333341 | 4 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | cpu_user_seconds mean | 3.6875 | 3.665 | -0.022499999999999964 | -0.61016949152542277 | 4 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | wall_us p50 | 1233704 | 1247222 | 13518 | 1.0957247443471043 | 4 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | wall_us p95_descriptive | 1309872.7 | 1326776.55 | 16903.850000000093 | 1.2904956336596749 | 4 | stable withheld |
+| accurate/5/scenario_2/A/changed-context/B | cpu_system_seconds mean | 0.01 | 0.050000000000000003 | 0.040000000000000001 | 400 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | cpu_user_seconds mean | 0.10000000000000001 | 1.95 | 1.8499999999999999 | 1850 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | wall_us p50 | 38303 | 647641 | 609338 | 1590.8362269273948 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | wall_us p95_descriptive | 41485.800000000003 | 732838.75 | 691352.94999999995 | 1666.4809404663763 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | cpu_user_seconds mean | 0.002 | 0.0015 | -0.00050000000000000001 | -25 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | wall_us p50 | 2607.5 | 2632 | 24.5 | 0.93959731543624159 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | wall_us p95_descriptive | 4393.5 | 2956.4000000000001 | -1437.0999999999999 | -32.709684761579609 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/cold/A | cpu_system_seconds mean | 0.4325 | 0.39000000000000001 | -0.042499999999999982 | -9.8265895953757187 | 4 | stable withheld |
+| accurate/5/scenario_2/A/cold/A | cpu_user_seconds mean | 4.7625000000000002 | 4.6325000000000003 | -0.12999999999999989 | -2.7296587926509162 | 4 | stable withheld |
+| accurate/5/scenario_2/A/cold/A | wall_us p50 | 2520089 | 2419818.5 | -100270.5 | -3.9788475724468459 | 4 | stable withheld |
+| accurate/5/scenario_2/A/cold/A | wall_us p95_descriptive | 2601536.4500000002 | 2464309.25 | -137227.20000000019 | -5.2748520974980062 | 4 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | cpu_user_seconds mean | 0.0035000000000000001 | 0.0015 | -0.002 | -57.142857142857146 | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | wall_us p50 | 3033 | 2926 | -107 | -3.5278602044180678 | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | wall_us p95_descriptive | 4383.5500000000002 | 3638.5500000000002 | -745 | -16.995357643918741 | 20 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | cpu_system_seconds mean | 0.074999999999999997 | 0.105 | 0.029999999999999999 | 40 | 4 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | cpu_user_seconds mean | 3.5750000000000002 | 3.7024999999999997 | 0.1274999999999995 | 3.5664335664335525 | 4 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | wall_us p50 | 1178986 | 1242835.5 | 63849.5 | 5.4156283450354801 | 4 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | wall_us p95_descriptive | 1288413 | 1387229.6499999999 | 98816.649999999907 | 7.669640868261955 | 4 | stable withheld |
+| accurate/5/scenario_2/B/changed-context/A | cpu_system_seconds mean | 0.0074999999999999997 | 0.037499999999999999 | 0.029999999999999999 | 400 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | cpu_user_seconds mean | 0.1275 | 1.9450000000000001 | 1.8175000000000001 | 1425.4901960784314 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | wall_us p50 | 47833.5 | 636322.5 | 588489 | 1230.2863056226286 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | wall_us p95_descriptive | 49338.800000000003 | 731140.19999999995 | 681801.39999999991 | 1381.8767379830879 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | cpu_user_seconds mean | 0.0015 | 0.001 | -0.00050000000000000001 | -33.333333333333336 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | wall_us p50 | 2604.5 | 2540 | -64.5 | -2.4764830101746975 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | wall_us p95_descriptive | 7140.1000000000004 | 2950.5500000000002 | -4189.5500000000002 | -58.676349070741303 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/cold/B | cpu_system_seconds mean | 0.38 | 0.37 | -0.010000000000000009 | -2.6315789473684235 | 4 | stable withheld |
+| accurate/5/scenario_2/B/cold/B | cpu_user_seconds mean | 4.7524999999999995 | 4.6524999999999999 | -0.099999999999999645 | -2.1041557075223496 | 4 | stable withheld |
+| accurate/5/scenario_2/B/cold/B | wall_us p50 | 2463177.5 | 2363576 | -99601.5 | -4.0436184562419886 | 4 | stable withheld |
+| accurate/5/scenario_2/B/cold/B | wall_us p95_descriptive | 2480386.9500000002 | 2486188 | 5801.0499999998137 | 0.23387681506709318 | 4 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | cpu_system_seconds mean | 0.001 | 0.001 | 0 | 0 | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | cpu_user_seconds mean | 0.0040000000000000001 | 0.001 | -0.0030000000000000001 | -75 | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | wall_us p50 | 2903.5 | 3238.5 | 335 | 11.537799207852592 | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | wall_us p95_descriptive | 3628.3500000000013 | 7021.6500000000005 | 3393.2999999999993 | 93.521848774236176 | 20 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | cpu_system_seconds mean | 0.070000000000000007 | 0.089999999999999997 | 0.01999999999999999 | 28.571428571428555 | 4 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | cpu_user_seconds mean | 3.4950000000000001 | 3.5125000000000002 | 0.017500000000000071 | 0.50071530758226235 | 4 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | wall_us p50 | 1198738 | 1162784.5 | -35953.5 | -2.9992792420028396 | 4 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | wall_us p95_descriptive | 1240697 | 1245789.55 | 5092.5500000000466 | 0.41045879856242473 | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | cpu_system_seconds mean | 0.2175 | 0.20999999999999999 | -0.0075000000000000067 | -3.4482758620689684 | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | cpu_user_seconds mean | 1.1625000000000001 | 1.1299999999999999 | -0.032500000000000195 | -2.7956989247311994 | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | wall_us p50 | 1324647 | 1316444.5 | -8202.5 | -0.61922157374757203 | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | wall_us p95_descriptive | 1395201.3 | 1331977.95 | -63223.350000000093 | -4.5314858866602323 | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | cpu_user_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | wall_us p50 | 3837.5 | 3766 | -71.5 | -1.8631921824104234 | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | wall_us p95_descriptive | 6413.0999999999985 | 4262 | -2151.0999999999985 | -33.542280644306167 | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | cpu_system_seconds mean | 0.0074999999999999997 | 0 | -0.0074999999999999997 | -100 | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | cpu_user_seconds mean | 0.067500000000000004 | 0.065000000000000002 | -0.0025000000000000022 | -3.7037037037037068 | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | wall_us p50 | 32464 | 33429.5 | 965.5 | 2.974063578117299 | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | wall_us p95_descriptive | 34821.599999999999 | 34619.949999999997 | -201.65000000000146 | -0.57909458497025257 | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | cpu_system_seconds mean | 0.20750000000000002 | 0.22750000000000001 | 0.01999999999999999 | 9.6385542168674654 | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | cpu_user_seconds mean | 1.125 | 1.1175000000000002 | -0.0074999999999998401 | -0.66666666666665242 | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | wall_us p50 | 1265814.5 | 1292733.5 | 26919 | 2.126614918694643 | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | wall_us p95_descriptive | 1378573.3499999999 | 1344493.55 | -34079.799999999814 | -2.4721063989812233 | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | cpu_user_seconds mean | 0.0025000000000000001 | 0.0025000000000000001 | 0 | 0 | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | wall_us p50 | 3765 | 3589.5 | -175.5 | -4.6613545816733071 | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | wall_us p95_descriptive | 4705.2999999999993 | 3700.9000000000001 | -1004.3999999999992 | -21.34614158502113 | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | cpu_system_seconds mean | 0.0050000000000000001 | 0.0074999999999999997 | 0.0024999999999999996 | 49.999999999999993 | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | cpu_user_seconds mean | 0.057500000000000002 | 0.052499999999999998 | -0.0050000000000000044 | -8.6956521739130501 | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | wall_us p50 | 31233 | 29819.5 | -1413.5 | -4.525661960106298 | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | wall_us p95_descriptive | 32373.75 | 35924.949999999997 | 3551.1999999999971 | 10.969381057183666 | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | hwm_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-context/B | rss_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-hot/B | hwm_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-hot/B | rss_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | hwm_kib mean | 1127315 | 1125860 | -1455 | -0.1290677406048886 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | rss_kib mean | 1127315 | 1125860 | -1455 | -0.1290677406048886 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/initial-hot/A | hwm_kib mean | 1127320.3999999999 | 1125865.6000000001 | -1454.7999999998137 | -0.12904938116970241 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/initial-hot/A | rss_kib mean | 1127320.3999999999 | 1125865.6000000001 | -1454.7999999998137 | -0.12904938116970241 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | hwm_kib mean | 1139494 | 1135199 | -4295 | -0.3769216862923368 | 4 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | rss_kib mean | 1139494 | 1135199 | -4295 | -0.3769216862923368 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | hwm_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | rss_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | hwm_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | rss_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | 20 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | hwm_kib mean | 1127534 | 1127726 | 192 | 0.017028311341387489 | 4 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | rss_kib mean | 1127534 | 1127726 | 192 | 0.017028311341387489 | 4 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | hwm_kib mean | 1127537 | 1127732.3999999999 | 195.39999999990687 | 0.017329808245752188 | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | rss_kib mean | 1127537 | 1127732.3999999999 | 195.39999999990687 | 0.017329808245752188 | 20 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | hwm_kib mean | 1136605 | 1136614 | 9 | 0.00079183181492251044 | 4 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | rss_kib mean | 1136605 | 1136614 | 9 | 0.00079183181492251044 | 4 | stable withheld |
+| accurate/10/scenario_2/A/changed-context/B | hwm_kib mean | 1125254 | 1125732 | 478 | 0.042479298007383225 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | rss_kib mean | 1125254 | 1125404 | 150 | 0.013330323642484274 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | hwm_kib mean | 1125254.8 | 1125732 | 477.19999999995343 | 0.042408172797836846 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | rss_kib mean | 1125254.8 | 1125404 | 149.19999999995343 | 0.013259219156403814 | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/cold/A | hwm_kib mean | 1124831 | 1125536 | 705 | 0.062676082006985934 | 4 | stable withheld |
+| accurate/10/scenario_2/A/cold/A | rss_kib mean | 1124831 | 1125536 | 705 | 0.062676082006985934 | 4 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | hwm_kib mean | 1124834 | 1125410.6000000001 | 576.60000000009313 | 0.051260897163500851 | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | rss_kib mean | 1124834 | 1124986.6000000001 | 152.60000000009313 | 0.013566446248965903 | 20 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | hwm_kib mean | 1135438 | 1133386 | -2052 | -0.1807232098978544 | 4 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | rss_kib mean | 1135356 | 1133386 | -1970 | -0.1735138582083505 | 4 | stable withheld |
+| accurate/10/scenario_2/B/changed-context/A | hwm_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | rss_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | hwm_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | rss_kib mean | 1124851 | 1126597 | 1746 | 0.15522055810058399 | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/cold/B | hwm_kib mean | 1124225 | 1125967 | 1742 | 0.15495118859658877 | 4 | stable withheld |
+| accurate/10/scenario_2/B/cold/B | rss_kib mean | 1124225 | 1125967 | 1742 | 0.15495118859658877 | 4 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | hwm_kib mean | 1124226.3999999999 | 1125972.6000000001 | 1746.2000000001863 | 0.15532458586635098 | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | rss_kib mean | 1124226.3999999999 | 1125972.6000000001 | 1746.2000000001863 | 0.15532458586635098 | 20 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | hwm_kib mean | 1132266 | 1134019 | 1753 | 0.1548222767441573 | 4 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | rss_kib mean | 1132266 | 1134019 | 1753 | 0.1548222767441573 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 20 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | hwm_kib mean | 1126254 | 1127430 | 1176 | 0.10441694324726039 | 4 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | rss_kib mean | 1126254 | 1127430 | 1176 | 0.10441694324726039 | 4 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | hwm_kib mean | 1126258.8 | 1127433.6000000001 | 1174.8000000000466 | 0.10430995078573828 | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | rss_kib mean | 1126258.8 | 1127433.6000000001 | 1174.8000000000466 | 0.10430995078573828 | 20 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | hwm_kib mean | 1135029 | 1136469 | 1440 | 0.12686900510912055 | 4 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | rss_kib mean | 1135029 | 1136469 | 1440 | 0.12686900510912055 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | hwm_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | rss_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | hwm_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | rss_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | 20 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | hwm_kib mean | 1125046 | 1125760 | 714 | 0.063464071691290841 | 4 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | rss_kib mean | 1125046 | 1125760 | 714 | 0.063464071691290841 | 4 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | hwm_kib mean | 1125055.3999999999 | 1125764.8 | 709.4000000001397 | 0.063054672685464178 | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | rss_kib mean | 1125055.3999999999 | 1125764.8 | 709.4000000001397 | 0.063054672685464178 | 20 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | hwm_kib mean | 1135719 | 1134609 | -1110 | -0.097735443362310576 | 4 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | rss_kib mean | 1135719 | 1134609 | -1110 | -0.097735443362310576 | 4 | stable withheld |
+| accurate/5/scenario_2/A/changed-context/B | hwm_kib mean | 1124651 | 1127017 | 2366 | 0.2103763745375232 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | rss_kib mean | 1124651 | 1127017 | 2366 | 0.2103763745375232 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | hwm_kib mean | 1124652.2 | 1127017 | 2364.8000000000466 | 0.21026945041320744 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | rss_kib mean | 1124652.2 | 1127017 | 2364.8000000000466 | 0.21026945041320744 | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/cold/A | hwm_kib mean | 1124245 | 1126597 | 2352 | 0.20920706785442675 | 4 | stable withheld |
+| accurate/5/scenario_2/A/cold/A | rss_kib mean | 1124245 | 1126582 | 2337 | 0.20787283910535514 | 4 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | hwm_kib mean | 1124247 | 1126598.8 | 2351.8000000000466 | 0.20918890599664011 | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | rss_kib mean | 1124247 | 1126583.8 | 2336.8000000000466 | 0.20785467962111942 | 20 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | hwm_kib mean | 1132344 | 1134237 | 1893 | 0.16717534600792691 | 4 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | rss_kib mean | 1132344 | 1134237 | 1893 | 0.16717534600792691 | 4 | stable withheld |
+| accurate/5/scenario_2/B/changed-context/A | hwm_kib mean | 1122534 | 1124194 | 1660 | 0.14787970787521804 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | rss_kib mean | 1122534 | 1124194 | 1660 | 0.14787970787521804 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | hwm_kib mean | 1122535.2 | 1124194 | 1658.8000000000466 | 0.14777264891114744 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | rss_kib mean | 1122535.2 | 1124194 | 1658.8000000000466 | 0.14777264891114744 | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/cold/B | hwm_kib mean | 1121855 | 1123577 | 1722 | 0.1534957726265872 | 4 | stable withheld |
+| accurate/5/scenario_2/B/cold/B | rss_kib mean | 1121855 | 1123577 | 1722 | 0.1534957726265872 | 4 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | hwm_kib mean | 1121858 | 1123582 | 1724 | 0.15367363784008314 | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | rss_kib mean | 1121858 | 1123582 | 1724 | 0.15367363784008314 | 20 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | hwm_kib mean | 1130293 | 1131603 | 1310 | 0.11589915181284853 | 4 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | rss_kib mean | 1130293 | 1131603 | 1310 | 0.11589915181284853 | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | hwm_kib mean | 757631 | 759341 | 1710 | 0.2257035416977394 | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | rss_kib mean | 757631 | 759341 | 1710 | 0.2257035416977394 | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | hwm_kib mean | 757634 | 759343 | 1709 | 0.22557065812780314 | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | rss_kib mean | 757634 | 759343 | 1709 | 0.22557065812780314 | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | hwm_kib mean | 758030 | 760222 | 2192 | 0.28917061330026517 | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | rss_kib mean | 758030 | 760222 | 2192 | 0.28917061330026517 | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | hwm_kib mean | 754772 | 759500 | 4728 | 0.62641433439502259 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-cold/A | rss_kib mean | 754772 | 759500 | 4728 | 0.62641433439502259 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-hot/A | hwm_kib mean | 754777 | 759502 | 4725 | 0.62601271633873312 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-hot/A | rss_kib mean | 754777 | 759502 | 4725 | 0.62601271633873312 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-new-query/N | hwm_kib mean | 755779 | 759927 | 4148 | 0.54883768932452481 | 4 | four-block descriptive eligible; no statistical proof |
+| off/5/scenario_1/A/off-new-query/N | rss_kib mean | 755779 | 759927 | 4148 | 0.54883768932452481 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | encode_us mean | 3565 | 3783.75 | 218.75 | 6.1360448807854135 | 4 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | forward_us mean | 1269272.5 | 1389001.25 | 119728.75 | 9.4328641012863663 | 4 | stable withheld |
+| accurate/10/scenario_1/A/cold/A | padded_tokens mean | 1282 | 1282 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/cold/A | tokens mean | 1262 | 1262 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | encode_us mean | 2774.75 | 2689.75 | -85 | -3.0633390395531128 | 4 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | forward_us mean | 1085384.75 | 1181129.25 | 95744.5 | 8.8212497918364896 | 4 | stable withheld |
+| accurate/10/scenario_1/A/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | encode_us mean | 3892.75 | 3604.25 | -288.5 | -7.411213152655578 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | forward_us mean | 1184375.25 | 1253113.25 | 68738 | 5.803734922694475 | 4 | stable withheld |
+| accurate/10/scenario_1/B/cold/B | padded_tokens mean | 1282 | 1282 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/cold/B | tokens mean | 1262 | 1262 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | encode_us mean | 2641.5 | 2842.5 | 201 | 7.6093128904031797 | 4 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | forward_us mean | 1070228 | 1240879.5 | 170651.5 | 15.945340619008286 | 4 | stable withheld |
+| accurate/10/scenario_1/B/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/changed-context/B | batches mean | 1 | 5 | 4 | 400 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | characters mean | 55 | 1372 | 1317 | 2394.5454545454545 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | encode_us mean | 280.25 | 1301.75 | 1021.5 | 364.49598572702945 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | forward_us mean | 36111.25 | 637234 | 601122.75 | 1664.6412129184118 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | padded_tokens mean | 25 | 672 | 647 | 2588 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | scored mean | 1 | 20 | 19 | 1900 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-context/B | tokens mean | 25 | 653 | 628 | 2512 | 4 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/A/cold/A | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/cold/A | characters mean | 2485 | 2485 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/cold/A | encode_us mean | 3609.5 | 3623.75 | 14.25 | 0.3947915223715196 | 4 | stable withheld |
+| accurate/10/scenario_2/A/cold/A | forward_us mean | 1174855.25 | 1080793.75 | -94061.5 | -8.0062203407611285 | 4 | stable withheld |
+| accurate/10/scenario_2/A/cold/A | padded_tokens mean | 1120 | 1120 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/cold/A | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/cold/A | tokens mean | 1090 | 1090 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | encode_us mean | 2763 | 2614.75 | -148.25 | -5.365544697792255 | 4 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | forward_us mean | 1174114.75 | 1082428.75 | -91686 | -7.808947123779852 | 4 | stable withheld |
+| accurate/10/scenario_2/A/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/A/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/changed-context/A | batches mean | 1 | 5 | 4 | 400 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | characters mean | 57 | 1374 | 1317 | 2310.5263157894738 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | encode_us mean | 240.5 | 1249.5 | 1009 | 419.54261954261955 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | forward_us mean | 46259.75 | 648269.75 | 602010 | 1301.3689006101417 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | padded_tokens mean | 37 | 684 | 647 | 1748.6486486486488 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | scored mean | 1 | 20 | 19 | 1900 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-context/A | tokens mean | 37 | 665 | 628 | 1697.2972972972973 | 4 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/10/scenario_2/B/cold/B | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/cold/B | characters mean | 2483 | 2483 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/cold/B | encode_us mean | 3701.75 | 4166.25 | 464.5 | 12.548119132842574 | 4 | stable withheld |
+| accurate/10/scenario_2/B/cold/B | forward_us mean | 1112397.5 | 1032601.75 | -79795.75 | -7.1733125973404288 | 4 | stable withheld |
+| accurate/10/scenario_2/B/cold/B | padded_tokens mean | 1108 | 1108 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/cold/B | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/cold/B | tokens mean | 1078 | 1078 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | encode_us mean | 2782.5 | 2958.75 | 176.25 | 6.3342318059299192 | 4 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | forward_us mean | 1168882.75 | 1108815.75 | -60067 | -5.1388387757454712 | 4 | stable withheld |
+| accurate/10/scenario_2/B/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_2/B/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | encode_us mean | 4216.75 | 3654 | -562.75 | -13.34558605561155 | 4 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | forward_us mean | 1228592.5 | 1272325.25 | 43732.75 | 3.5595813909005631 | 4 | stable withheld |
+| accurate/5/scenario_1/A/cold/A | padded_tokens mean | 1282 | 1282 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/cold/A | tokens mean | 1262 | 1262 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | encode_us mean | 3356.25 | 2882.5 | -473.75 | -14.115456238361267 | 4 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | forward_us mean | 1137987.25 | 1177384.5 | 39397.25 | 3.462011547141675 | 4 | stable withheld |
+| accurate/5/scenario_1/A/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | encode_us mean | 3642 | 3583.25 | -58.75 | -1.6131246567819879 | 4 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | forward_us mean | 1175280.5 | 1226272.5 | 50992 | 4.3387089294853443 | 4 | stable withheld |
+| accurate/5/scenario_1/B/cold/B | padded_tokens mean | 1282 | 1282 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/cold/B | tokens mean | 1262 | 1262 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | characters mean | 2855 | 2855 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | encode_us mean | 2919.25 | 2864.25 | -55 | -1.8840455596471697 | 4 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | forward_us mean | 1202028.5 | 1210958.25 | 8929.75 | 0.74289003962884403 | 4 | stable withheld |
+| accurate/5/scenario_1/B/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/changed-context/B | batches mean | 1 | 5 | 4 | 400 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | characters mean | 55 | 1372 | 1317 | 2394.5454545454545 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | encode_us mean | 264.75 | 1297.75 | 1033 | 390.17941454202077 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | forward_us mean | 35564.5 | 636195.25 | 600630.75 | 1688.849133264913 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | padded_tokens mean | 25 | 672 | 647 | 2588 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | scored mean | 1 | 20 | 19 | 1900 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-context/B | tokens mean | 25 | 653 | 628 | 2512 | 4 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/A/cold/A | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/cold/A | characters mean | 2485 | 2485 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/cold/A | encode_us mean | 5054.25 | 4249 | -805.25 | -15.932136320918039 | 4 | stable withheld |
+| accurate/5/scenario_2/A/cold/A | forward_us mean | 1120173.5 | 1123104 | 2930.5 | 0.26161125932723817 | 4 | stable withheld |
+| accurate/5/scenario_2/A/cold/A | padded_tokens mean | 1120 | 1120 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/cold/A | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/cold/A | tokens mean | 1090 | 1090 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/initial-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/initial-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | encode_us mean | 2783.5 | 3252.75 | 469.25 | 16.858271959762888 | 4 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | forward_us mean | 1165040.75 | 1219438.75 | 54398 | 4.6691929016216811 | 4 | stable withheld |
+| accurate/5/scenario_2/A/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/A/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/changed-context/A | batches mean | 1 | 5 | 4 | 400 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | characters mean | 57 | 1374 | 1317 | 2310.5263157894738 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | encode_us mean | 270.25 | 1398.5 | 1128.25 | 417.48381128584646 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | forward_us mean | 44330.25 | 626801 | 582470.75 | 1313.9351797023478 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | padded_tokens mean | 37 | 684 | 647 | 1748.6486486486488 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | scored mean | 1 | 20 | 19 | 1900 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-context/A | tokens mean | 37 | 665 | 628 | 1697.2972972972973 | 4 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | accuracy excluded |
+| accurate/5/scenario_2/B/cold/B | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/cold/B | characters mean | 2483 | 2483 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/cold/B | encode_us mean | 3550.5 | 3666.5 | 116 | 3.2671454724686666 | 4 | stable withheld |
+| accurate/5/scenario_2/B/cold/B | forward_us mean | 1074296.25 | 1089122.75 | 14826.5 | 1.3801127947714609 | 4 | stable withheld |
+| accurate/5/scenario_2/B/cold/B | padded_tokens mean | 1108 | 1108 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/cold/B | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/cold/B | tokens mean | 1078 | 1078 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/initial-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/initial-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | characters mean | 2734 | 2734 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | encode_us mean | 2989.5 | 2770 | -219.5 | -7.3423649439705638 | 4 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | forward_us mean | 1101061.25 | 1129788.5 | 28727.25 | 2.6090510405302156 | 4 | stable withheld |
+| accurate/5/scenario_2/B/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_2/B/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
+| off/10/scenario_1/A/off-cold/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-cold/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-hot/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/10/scenario_1/A/off-new-query/N | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-cold/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-hot/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| off/5/scenario_1/A/off-new-query/N | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
+| accurate/5/scenario_1/A | controller_observed_native_wall_seconds  | 5.0536136364999997 | 5.0493405707500001 | -0.0042730657499996383 | -0.084554658455430545 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | engine_open_wall_us  | 71857 | 62931 | -8926 | -12.421893482889628 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | cumulative_user_seconds_through_last_search  | 8.9000000000000004 | 8.6074999999999999 | -0.29250000000000043 | -3.2865168539325889 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.66249999999999998 | 0.54249999999999998 | -0.12 | -18.113207547169811 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | native_sampled_peak_rss_kib  | 1135029 | 1136469 | 1440 | 0.12686900510912055 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | native_observed_hwm_kib  | 1135029 | 1136469 | 1440 | 0.12686900510912055 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27646 | 27603 | -43 | -0.15553787166317007 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | controller_observed_native_wall_seconds  | 5.0512129302500002 | 5.0477585347499998 | -0.0034543955000003734 | -0.068387445702658284 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | engine_open_wall_us  | 76844.25 | 64233.25 | -12611 | -16.411117292445432 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | cumulative_user_seconds_through_last_search  | 8.7874999999999996 | 8.5325000000000006 | -0.25499999999999901 | -2.9018492176386803 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | cumulative_system_seconds_through_last_search  | 0.53500000000000003 | 0.52249999999999996 | -0.012500000000000067 | -2.3364485981308536 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | native_sampled_peak_rss_kib  | 1135719 | 1134609 | -1110 | -0.097735443362310576 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | native_observed_hwm_kib  | 1135719 | 1134609 | -1110 | -0.097735443362310576 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27491 | 27599 | 108 | 0.3928558437306755 | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_1/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | controller_observed_native_wall_seconds  | 5.0584097354999997 | 5.0569951520000007 | -0.0014145834999990115 | -0.027964984530047893 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | engine_open_wall_us  | 66197 | 64786.75 | -1410.25 | -2.1303835521247185 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | cumulative_user_seconds_through_last_search  | 8.5225000000000009 | 10.379999999999999 | 1.8574999999999982 | 21.795247873276598 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | cumulative_system_seconds_through_last_search  | 0.58499999999999996 | 0.60999999999999999 | 0.025000000000000022 | 4.2735042735042779 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | native_sampled_peak_rss_kib  | 1132344 | 1134237 | 1893 | 0.16717534600792691 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | native_observed_hwm_kib  | 1132344 | 1134237 | 1893 | 0.16717534600792691 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27568 | 27650 | 82 | 0.29744631456761461 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | controller_observed_native_wall_seconds  | 4.5560645239999999 | 5.0570859517500004 | 0.50102142775000047 | 10.996802725483096 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | engine_open_wall_us  | 69487.5 | 65799 | -3688.5 | -5.3081489476524553 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | cumulative_user_seconds_through_last_search  | 8.4725000000000001 | 10.199999999999999 | 1.7274999999999991 | 20.389495426379451 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | cumulative_system_seconds_through_last_search  | 0.52500000000000002 | 0.57000000000000006 | 0.04500000000000004 | 8.5714285714285783 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | native_sampled_peak_rss_kib  | 1130293 | 1131603 | 1310 | 0.11589915181284853 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | native_observed_hwm_kib  | 1130293 | 1131603 | 1310 | 0.11589915181284853 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27683 | 27523 | -160 | -0.57797204060253582 | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/5/scenario_2/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | controller_observed_native_wall_seconds  | 4.7985760977499998 | 5.0524072504999999 | 0.25383115275000012 | 5.2897181909654156 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | engine_open_wall_us  | 70109.75 | 62904.75 | -7205 | -10.276744675312635 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | cumulative_user_seconds_through_last_search  | 8.9800000000000004 | 9.0274999999999999 | 0.047499999999999432 | 0.5289532293986573 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.55499999999999994 | 0.57750000000000001 | 0.022500000000000075 | 4.0540540540540677 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | native_sampled_peak_rss_kib  | 1139494 | 1135199 | -4295 | -0.3769216862923368 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | native_observed_hwm_kib  | 1139494 | 1135199 | -4295 | -0.3769216862923368 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27681 | 27679 | -2 | -0.0072251725009934613 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | controller_observed_native_wall_seconds  | 4.8033521634999996 | 5.0534619117500004 | 0.25010974825000076 | 5.2069833677936366 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | engine_open_wall_us  | 65124.5 | 71840.25 | 6715.75 | 10.312171302658754 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | cumulative_user_seconds_through_last_search  | 8.3724999999999987 | 9.0724999999999998 | 0.70000000000000107 | 8.3607046879665727 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | cumulative_system_seconds_through_last_search  | 0.5575 | 0.51000000000000001 | -0.047499999999999987 | -8.5201793721973065 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | native_sampled_peak_rss_kib  | 1136605 | 1136614 | 9 | 0.00079183181492251044 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | native_observed_hwm_kib  | 1136605 | 1136614 | 9 | 0.00079183181492251044 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27632 | 27648 | 16 | 0.057903879559930517 | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_1/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | controller_observed_native_wall_seconds  | 4.8080865557500001 | 5.0601821637499995 | 0.25209560799999942 | 5.2431586885331294 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | engine_open_wall_us  | 65304 | 61788.5 | -3515.5 | -5.3832843317407812 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | cumulative_user_seconds_through_last_search  | 8.6724999999999994 | 10.059999999999999 | 1.3874999999999993 | 15.998846929950989 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | cumulative_system_seconds_through_last_search  | 0.54999999999999993 | 0.59999999999999998 | 0.050000000000000044 | 9.0909090909091006 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | native_sampled_peak_rss_kib  | 1135356 | 1133386 | -1970 | -0.1735138582083505 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | native_observed_hwm_kib  | 1135438 | 1133386 | -2052 | -0.1807232098978544 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27665 | 27665 | 0 | 0 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | controller_observed_native_wall_seconds  | 5.0534646494999995 | 5.0603852665 | 0.0069206170000004619 | 0.13694796501020745 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | engine_open_wall_us  | 71512.25 | 85343 | 13830.75 | 19.340392729916903 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | cumulative_user_seconds_through_last_search  | 8.3000000000000007 | 10.067499999999999 | 1.7674999999999983 | 21.295180722891544 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | cumulative_system_seconds_through_last_search  | 0.54000000000000004 | 0.64250000000000007 | 0.10250000000000004 | 18.981481481481488 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | native_sampled_peak_rss_kib  | 1132266 | 1134019 | 1753 | 0.1548222767441573 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | native_observed_hwm_kib  | 1132266 | 1134019 | 1753 | 0.1548222767441573 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | owned_pg_main_pid_sampled_peak_rss_kib  | 27587 | 27677 | 90 | 0.32624062058215825 | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| accurate/10/scenario_2/B | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | controller_observed_native_wall_seconds  | 2.0180951862500001 | 2.0164307142500002 | -0.0016644719999998614 | -0.082477378239663862 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | engine_open_wall_us  | 63348 | 67834.5 | 4486.5 | 7.0823072551619628 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | cumulative_user_seconds_through_last_search  | 1.22 | 1.2 | -0.020000000000000018 | -1.6393442622950836 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.245 | 0.28000000000000003 | 0.035000000000000031 | 14.285714285714299 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | native_sampled_peak_rss_kib  | 755779 | 759927 | 4148 | 0.54883768932452481 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | native_observed_hwm_kib  | 755779 | 759927 | 4148 | 0.54883768932452481 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27586 | 27586 | 0 | 0 | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| off/5/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | controller_observed_native_wall_seconds  | 2.0248901827500001 | 2.0182261832499999 | -0.0066639995000001839 | -0.32910424262859611 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | engine_open_wall_us  | 69322.75 | 70614.5 | 1291.75 | 1.8633853965689475 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | cumulative_user_seconds_through_last_search  | 1.2549999999999999 | 1.23 | -0.024999999999999911 | -1.9920318725099533 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | cumulative_system_seconds_through_last_search  | 0.27250000000000002 | 0.25750000000000001 | -0.015000000000000013 | -5.5045871559633071 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | native_sampled_peak_rss_kib  | 758030 | 760222 | 2192 | 0.28917061330026517 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | native_observed_hwm_kib  | 758030 | 760222 | 2192 | 0.28917061330026517 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | owned_pg_main_pid_sampled_peak_rss_kib  | 27540 | 27692 | 152 | 0.55192447349310092 | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | full_lifetime_cpu_seconds  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| off/10/scenario_1/A | total_service_memory_kib  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| index/logical_bytes | logical_bytes  | 22028682 | 22028682 | 0 | 0 | N/A | private-attested/descriptive |
+| index/allocated_bytes | allocated_bytes  | 22106112 | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| app_executable/logical_bytes | logical_bytes  | 16289008 | 16300208 | 11200 | 0.068758023815814931 | N/A | private-attested/descriptive |
+| app_executable/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| shared_model_runtime_assets/logical_bytes | logical_bytes  | 2415072587 | 2415072587 | 0 | 0 | N/A | private-attested/descriptive |
+| shared_model_runtime_assets/allocated_bytes | allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
+| temporary_clones/peak_allocated_bytes | peak_allocated_bytes  | N/A | N/A | N/A | N/A | N/A | private-attested/descriptive |
 
 | Configuration / metric | Four paired block statistics (before, after, delta, %) | Four main medians | Four stack medians | Arm span/median | Sign reversal |
 | --- | --- | --- | --- | --- | --- |
