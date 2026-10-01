@@ -46,6 +46,9 @@ def fixture_content(topic):
 def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
+# Independent experiment date for the dated evidence directory; later
+# retrospective inspections retain their separately recorded capture dates.
+assert type(provenance.get('date')) is str and provenance['date']=='2026-09-30', 'recorded experiment date differs'
 assert provenance['source_base']=='13ee710c9df865f1dac98dc77a8108e438ddc539'
 MAIN_REF_NOT_RUN = '315c10242ddf7a1cec3bccbf550a942320e09557'
 assert type(provenance.get('compared_main_ref_not_run')) is str and provenance['compared_main_ref_not_run']==MAIN_REF_NOT_RUN, 'prepared unrun main reference differs'
@@ -70,6 +73,8 @@ SHARED_MACHINE = 'exclusive model/build slot; shared file cache and reclaim pres
 LAUNCH_SETTINGS_PINS = {'baseline': '56ff2d0db433b43726412700f2b1758f380c6cae31dd8767950edc2aa9405f4f', 'scored': '2cbe0450735170c4d2b0ba49f227b89378f95ad301b4c1ec6474053d2aa3cd37'}
 ORIGINAL_LAUNCH_PINS = {'baseline': '72038565da7e2273384ee28a369df2a8eaf84f8eb4402eeb92b8b84f23af1f3d', 'scored': '33243aa7e35538e086352863f693250a535b5f0e6b66a62effe84af33c87ca65'}
 for name,record in provenance['redactions'].items():
+ if name.endswith('.log'):
+  assert type(record.get('scope')) is str and record['scope']=='trim empty trailing log line; no test result content change', 'original log formatting-only redaction scope differs'
  assert type(record.get('changed')) is bool and record['changed'] == (record['original_sha256'] != record['published_sha256']), 'redaction changed flag differs'
  assert record['original_sha256'] == ORIGINAL_REDACTION_PINS[name], 'original redaction binding differs'
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
