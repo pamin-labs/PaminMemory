@@ -1301,6 +1301,8 @@ row and paying startup once.
 
 Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score entries while preserving lifetime counters, so cached results from different targets or export scales are not mixed. Completed all-plan measurements use the normal plan lifetime; only incomplete/transient qualification keeps the five-minute retry interval.
 
+Cold calibration is coordinated in one per-user cache location across workspace model caches. If coordination is unavailable, disk choice reuse/publication is disabled. A validated accelerator winner can be reused for a short interval while transiently failed alternatives are retried; malformed or nonfinite saved reference fixtures are cache misses.
+
 Cold model reloads retain the earliest relevant execution-quarantine deadline.
 Selection over temporarily excluded targets remains provisional; a completed
 measurement can choose a new accelerator or CPU winner and clears temporary
