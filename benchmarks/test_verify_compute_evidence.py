@@ -204,6 +204,30 @@ class DeviceProofTests(unittest.TestCase):
                 with self.subTest(arm=entry["arm"], process=entry["process"], role=original["event"]), self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
                     self.check(proof, artifacts)
 
+    def test_resealed_valid_model_cannot_be_attributed_to_another_arm(self):
+        single = "gpahal/bge-m3-onnx-int8"
+        dual = "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
+        for index, entry in enumerate(self.proof):
+            if entry["arm"].startswith("main-"):
+                continue
+            proof = copy.deepcopy(self.proof)
+            lines = proof[index]["loaded_device_evidence"]
+            position = next(i for i, line in enumerate(lines) if "embedder loaded" in line)
+            source, wrong = (dual, single) if entry["arm"] == "dual-cpu" else (single, dual)
+            lines[position] = lines[position].replace(f'model="{source}"', f'model="{wrong}"')
+            with self.subTest(arm=entry["arm"], process=entry["process"]), self.assertRaisesRegex(AssertionError, "frozen arm metadata"):
+                self.check(proof, self.artifacts)
+
+    def test_resealed_reranker_metadata_cannot_change(self):
+        for index, entry in enumerate(self.proof):
+            for source, wrong in [('tier="accurate"', 'tier="fast"'), ('maximum_tokens=256', 'maximum_tokens=128')]:
+                proof = copy.deepcopy(self.proof)
+                lines = proof[index]["loaded_device_evidence"]
+                position = next(i for i, line in enumerate(lines) if "reranker loaded" in line)
+                lines[position] = lines[position].replace(source, wrong)
+                with self.subTest(arm=entry["arm"], process=entry["process"], source=source), self.assertRaisesRegex(AssertionError, "frozen arm metadata"):
+                    self.check(proof, self.artifacts)
+
     def test_coordinated_loaded_order_change_is_rejected(self):
         proof = copy.deepcopy(self.proof)
         artifacts = copy.deepcopy(self.artifacts)

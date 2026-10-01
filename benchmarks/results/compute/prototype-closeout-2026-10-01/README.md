@@ -109,9 +109,9 @@ run_cost() {
   test "$cost_block" -ge 0 && test "$cost_block" -le 2 || return 1
   cost_rows=/private/tmp/reproduced-cost-${cost_arm}-${cost_block}.jsonl
   if test "$cost_policy" = cpu; then
-    env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_DEVICE=cpu PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+    env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_DEVICE=cpu PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
   else
-    env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
+    env -u HF_HOME -u PAMIN_DEVICE -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_INFERENCE_THREADS PAMIN_EVAL_HOME=/private/tmp/pamin-dual-product-eval PAMIN_PROFILE="$cost_profile" MATCHED_COST_ROWS="$cost_rows" cargo test -p pamin-engine --test scratch_matched_costs matched_product_costs -- --exact --ignored --nocapture
   fi
 }
 # In each checkout install its matching source before using the corresponding rows.
@@ -131,10 +131,59 @@ run_cost new-auto-persist-hit 0f023be6a8d8d070a971f7e590ccccff2c3292bb accuracy 
 
 These are warm-search reproduction commands, not a new executed measurement or a complete build certificate. Establish a nonexpired persisted plan in a separate setup process before the persisted-hit blocks, then verify their retained events contain no calibration/rejection. Do not label expired quarantine or uncontrolled CoreML compilation as a controlled hit. Build first and freeze the executable before invoking the retained worker for process-resource columns; the commands above intentionally preserve the historical Cargo-based scratch entry point and exclude its compilation from reported query timers.
 
-The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Loaded events require a device from `cpu`, `cuda`, `coreml`, `directml`, or `npu`; unrelated events reject device fields. Loaded event/device pairs are independently compared with the published loaded-device summary, including order and count. They must also match independent frozen per-arm/process role/device sequences in the verifier, including the reversed load order in persisted-hit process 2. Historical main logs contain no embedder-loaded event; no missing event or physical ANE/GPU placement is inferred. This verifies the retained projection and its frozen premises, not completeness or correct classification against externally retained original logs. Each cost block's published manifest must equal its validated raw manifest, and all three `main-cpu` rankings must match the full baseline at every selected query `18*i`. Original source hashes are retained; original logs stay local.
+The frozen process-worker source records whole-process wall/user/system time, binary SHA and RSS, with its macOS runtime-library path declared explicitly. Use its four arguments `case-name frozen-executable profile policy` when reproducing those process columns; warm search columns come from the Rust rows. Provisioning/downloading is not part of the timed search. Native device/service memory remains unmeasured. Strictly redacted event streams underlying cache/device proof are retained under `logs/` and hashed/recounted by the verifier. Every original line is mapped to a fixed enum; paths, free text and content are excluded. Loaded events require a device from `cpu`, `cuda`, `coreml`, `directml`, or `npu`; unrelated events reject device fields. Loaded event/device pairs are independently compared with the published loaded-device summary, including order and count. Loaded summaries must identify the correct single/dual model for the arm and the accurate reranker with maximum_tokens=256; these values are independently pinned rather than accepted because two projections agree. Single-model summaries name a repository, not a separately logged revision. They must also match independent frozen per-arm/process role/device sequences in the verifier, including the reversed load order in persisted-hit process 2. Historical main logs contain no embedder-loaded event; no missing event or physical ANE/GPU placement is inferred. This verifies the retained projection and its frozen premises, not completeness or correct classification against externally retained original logs. Each cost block's published manifest must equal its validated raw manifest, and all three `main-cpu` rankings must match the full baseline at every selected query `18*i`. Original source hashes are retained; original logs stay local.
 
 The original `predeclared.json` is immutable. It specified independent question-level inference; the corrected cluster analysis was chosen after the results were observed. The new p-value supports an exploratory signal, not a preregistered acceptance claim. Confirm on an independent corpus before changing defaults.
 
+
+### Whole-process resource reproduction
+
+The original [public Python worker](https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/a8327acdbaecfa651ddd78a293df7dae43b223da/pamin-cost-worker.py) is separately pinned; it targets the retained macOS workspace and loader directory. Download and verify it before any workload:
+
+```sh
+curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/a8327acdbaecfa651ddd78a293df7dae43b223da/pamin-cost-worker.py -o /private/tmp/pamin-cost-worker.py
+printf '%s  %s\n' 677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c /private/tmp/pamin-cost-worker.py | shasum -a 256 -c -
+```
+
+In each of the three revision checkouts, install and verify its corresponding Rust source using the helper above. Build before timing and extract exactly that test executable from Cargo's structured output. The following example freezes the persisted checkout; use distinct `main` and `prototype` output names in their corresponding checkouts:
+
+```sh
+cost_harness_identity 0f023be6a8d8d070a971f7e590ccccff2c3292bb
+printf '%s  %s\n' "$cost_sha" "$cost_source" | shasum -a 256 -c -
+cargo test -p pamin-engine --test scratch_matched_costs --no-run --offline --locked --message-format=json > /private/tmp/cost-build.jsonl
+python3 - /private/tmp/cost-build.jsonl /private/tmp/pamin-cost-frozen-persisted <<'PYBUILD'
+import json, shutil, sys
+from pathlib import Path
+rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
+executables = [r["executable"] for r in rows if r.get("reason") == "compiler-artifact" and r.get("target", {}).get("name") == "scratch_matched_costs" and r.get("executable")]
+assert len(executables) == 1
+shutil.copy2(executables[0], sys.argv[2])
+PYBUILD
+```
+
+Retain the actual native build/runtime settings and hashes separately. The historical compiler flags and complete transitive build certificate are not reconstructed by this command. The worker sets `DYLD_LIBRARY_PATH=/private/tmp/pamin-cost-runtime`; provision that directory with the actual dynamic dependencies used by these frozen executables, including their selected Zvec dylib and any required ORT dylibs. Do not infer a library's identity from its filename or silently substitute a different runtime. Build, copying and provisioning finish before running the worker; the commands do not download models or initialize PostgreSQL.
+
+With all builds stopped, use fresh case names and existing completed indexes. The original worker clears reranker/intra-op overrides; the outer environment additionally clears graph/search overrides absent from that worker. Each invocation is a fresh Python/native process. For a new comparison rotate arm order across blocks; this fixed listing only specifies the seven source/profile/policy combinations:
+
+```sh
+while read -r arm binary profile policy; do
+  for block in 0 1 2; do
+    env -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION python3 /private/tmp/pamin-cost-worker.py "reproduced-$arm-$block" "$binary" "$profile" "$policy"
+  done
+done <<'ARMS'
+main-cpu /private/tmp/pamin-cost-frozen-main accuracy cpu
+main-auto /private/tmp/pamin-cost-frozen-main accuracy auto
+main-auto-repeat /private/tmp/pamin-cost-frozen-main accuracy auto
+new-cpu /private/tmp/pamin-cost-frozen-prototype accuracy cpu
+dual-cpu /private/tmp/pamin-cost-frozen-prototype dual_accuracy cpu
+new-auto /private/tmp/pamin-cost-frozen-prototype accuracy auto
+new-auto-persist-hit /private/tmp/pamin-cost-frozen-persisted accuracy auto
+ARMS
+```
+
+The worker writes `/private/tmp/pamin-cost-reproduced-ARM-BLOCK.jsonl`, a local diagnostic `.log` and `-process.json`. Existing row filenames abort through `create_new`; preserve historical files and choose a new case prefix for another rerun. Establish the nonexpired persisted plan in one unmeasured setup process before hit blocks and check the measured logs for zero calibration/rejection events. Keep raw diagnostic logs private.
+
+These commands are a reconstruction recipe, not new executed evidence. Historical shared-machine load and CoreML compilation warmth cannot be recreated or claimed controlled. The original worker's wall interval includes log setup, native startup/model warm/search and its post-run executable hashing; child user/system time excludes the Python wrapper/hash CPU and includes reaped helper children such as `ps`. Its maximum RSS is the child-resource high-water measure, not an aggregate of PostgreSQL, concurrent processes or accelerator services. Product-call timings and sampled native RSS remain in Rust rows. Other hosts require appropriate native loader settings and produce new measurements; native device/service memory, whole-system cost and exact historical build reproduction remain N/A.
 
 The focused verifier regression suite exercises retained cost rows and redacted events without invoking the 100,000-draw precision calculation, models or native helpers:
 

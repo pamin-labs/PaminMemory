@@ -180,13 +180,22 @@ def frozen_loaded_devices(arm, process):
     return FROZEN_LOADED_DEVICES[arm]
 
 
-def loaded_device_summary(line):
-    embedding = re.fullmatch(r'INFO pamin_index::embedding: embedder loaded model="(?:gpahal/bge-m3-onnx-int8|bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822\+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4)" device="([a-z]+)"', line)
-    reranking = re.fullmatch(r'INFO pamin_index::reranking: reranker loaded tier="accurate" device="([a-z]+)" maximum_tokens=256', line)
+def loaded_device_summary(line, arm):
+    embedding = re.fullmatch(r'INFO pamin_index::embedding: embedder loaded model="([^"]+)" device="([a-z]+)"', line)
+    reranking = re.fullmatch(r'INFO pamin_index::reranking: reranker loaded tier="([a-z]+)" device="([a-z]+)" maximum_tokens=([0-9]+)', line)
     assert embedding or reranking, "unknown loaded-device summary event"
-    match = embedding or reranking
-    assert match.group(1) in DEVICES, "unknown loaded-device summary device"
-    return ("embedder_loaded" if embedding else "reranker_loaded", match.group(1))
+    if embedding:
+        model, device = embedding.groups()
+        expected_model = ("bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
+                          if arm == "dual-cpu" else "gpahal/bge-m3-onnx-int8")
+        assert model == expected_model, "model differs from frozen arm metadata"
+        event = "embedder_loaded"
+    else:
+        tier, device, maximum_tokens = reranking.groups()
+        assert tier == "accurate" and maximum_tokens == "256", "reranker differs from frozen arm metadata"
+        event = "reranker_loaded"
+    assert device in DEVICES, "unknown loaded-device summary device"
+    return (event, device)
 
 
 def verify_device_proof():
@@ -211,7 +220,7 @@ def verify_device_proof():
             if event["event"] in LOADED_EVENTS:
                 assert type(event["device"]) is str and event["device"] in DEVICES, "unknown redacted device"
         loaded = [(event["event"], event["device"]) for event in events if event["event"] in LOADED_EVENTS]
-        assert loaded == [loaded_device_summary(line) for line in entry["loaded_device_evidence"]], "loaded-device summary differs from retained events"
+        assert loaded == [loaded_device_summary(line, entry["arm"]) for line in entry["loaded_device_evidence"]], "loaded-device summary differs from retained events"
         assert loaded == frozen_loaded_devices(entry["arm"], entry["process"]), "loaded devices differ from frozen arm/process premise"
         assert sum(event["event"] == "calibration" for event in events) == entry["calibration_lines"]
         assert sum(event["event"] == "candidate_rejected" for event in events) == entry["candidate_rejection_lines"]
