@@ -66,7 +66,15 @@ def hnsw_changed_logged_rss(repo):
     p=repo/HNSW/'raw.jsonl';rows=[json.loads(line) for line in p.read_text().splitlines()]
     rows[0]['process_after']['rss_status']=['VmHWM: 9999999 kB']
     p.write_text(''.join(json.dumps(row)+'\n' for row in rows))
-checks=[hnsw_extra_row,hnsw_wrong_raw_commit,hnsw_changed_logged_rss,uncensored_maintenance_cpu,wrong_cpu_resolution_bound,missing_binary,duplicate_arm,wrong_commit,wrong_path,wrong_bytes,runner,failed_seed,failed_conversion,wrong_role_graph,wrong_metadata,wrong_source_revision,wrong_external_data,changed_screen,shown_unstable,hnsw_screen,hnsw_predecessor_delta,hnsw_predecessor_percent,hnsw_main_delta,hnsw_main_percent,hnsw_stable_withheld,hnsw_missing_row]
+def hnsw_changed_provider_assignment(repo):
+    p=repo/HNSW/'raw.jsonl';rows=[json.loads(line) for line in p.read_text().splitlines()]
+    rows[0]['actual_providers']['embedding']['assigned_nodes']['CPUExecutionProvider']=1
+    p.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+def hnsw_changed_derived_cpu(repo):
+    p=repo/HNSW/'raw.jsonl';rows=[json.loads(line) for line in p.read_text().splitlines()]
+    rows[0]['cpu_user_seconds']=999.0
+    p.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+checks=[hnsw_changed_provider_assignment,hnsw_changed_derived_cpu,hnsw_extra_row,hnsw_wrong_raw_commit,hnsw_changed_logged_rss,uncensored_maintenance_cpu,wrong_cpu_resolution_bound,missing_binary,duplicate_arm,wrong_commit,wrong_path,wrong_bytes,runner,failed_seed,failed_conversion,wrong_role_graph,wrong_metadata,wrong_source_revision,wrong_external_data,changed_screen,shown_unstable,hnsw_screen,hnsw_predecessor_delta,hnsw_predecessor_percent,hnsw_main_delta,hnsw_main_percent,hnsw_stable_withheld,hnsw_missing_row]
 if __name__=='__main__':
     for rel in [DISK,HNSW]:
         result=execute(REPO,rel);assert result.returncode==0,result.stderr
@@ -81,6 +89,6 @@ if __name__=='__main__':
             change(repo);manifests(repo);result=execute(repo,HNSW if change.__name__.startswith('hnsw_') else DISK)
             assert result.returncode!=0,change.__name__+' corruption accepted'
             assert 'AssertionError' in result.stderr and 'manifest' not in result.stderr.split('AssertionError')[-1],change.__name__+' did not reach semantic guard: '+result.stderr
-            if change.__name__.startswith('hnsw_') and change not in [hnsw_screen,hnsw_extra_row,hnsw_wrong_raw_commit,hnsw_changed_logged_rss]:
+            if change.__name__.startswith('hnsw_') and change not in [hnsw_screen,hnsw_extra_row,hnsw_wrong_raw_commit,hnsw_changed_logged_rss,hnsw_changed_provider_assignment,hnsw_changed_derived_cpu]:
                 assert 'HNSW complete displayed rows disagree' in result.stderr,change.__name__+' did not reach exact table guard: '+result.stderr
     print(f'PASS: both positive archives and {len(checks)} refreshed-manifest semantic negatives; no Cargo/models/DB')
