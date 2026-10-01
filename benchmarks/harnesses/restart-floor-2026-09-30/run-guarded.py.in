@@ -184,11 +184,25 @@ def setup_rows(output,stage,documents):
     rows=[json.loads(line[len('RESTART_JSON '):]) for line in clean.splitlines() if line.startswith('RESTART_JSON ')]
     opened=[row for row in rows if row['phase']=='open']
     assert len(opened)==1, 'setup must execute restart_floor and emit exactly one open row'
+    assert type(documents) is int and documents>0, 'setup requested document count must be positive'
+    extra=opened[0].get('extra')
+    assert type(extra) is dict and 'documents' not in opened[0], 'native open count belongs only in extra.documents'
+    opened_documents=extra.get('documents')
+    assert type(opened_documents) is int and opened_documents>=0, 'native open document count must be a nonnegative integer'
+    summary={'phases':[row['phase'] for row in rows],'requested_documents':documents,'opened_documents':opened_documents}
     if stage=='bootstrap':
-        assert opened[0]['documents']==0 and any(line.startswith('COLLECTION_PATH ') for line in clean.splitlines()), 'bootstrap output missing empty collection'
+        assert opened_documents==0 and any(line.startswith('COLLECTION_PATH ') for line in clean.splitlines()), 'bootstrap output missing empty collection'
     else:
-        assert len([row for row in rows if row['phase']=='seed_complete'])==1, 'seed completion row missing'
-    return {'phases':[row['phase'] for row in rows],'requested_documents':documents}
+        assert opened_documents<=documents, 'seed opened more documents than requested'
+        completed=[row for row in rows if row['phase']=='seed_complete']
+        assert len(completed)==1, 'seed completion row missing'
+        completion=completed[0].get('extra')
+        assert type(completion) is dict and type(completion.get('completeness')) in {int,float} and completion['completeness']==1, 'seed completion must report full vector completeness'
+        # The retained harness emits final completeness/disk, not final count.
+        # Do not label the requested count as an observed completion count.
+        summary['seed_final_document_count']='N/A: seed_complete does not emit a final document count'
+    return summary
+
 def binary(arm,attestation):
     source='crates/pamin-engine/tests/scratch_restart_floor.rs'
     assert attestation['build_kind']=='restart-trial' and attestation['scratch_target']==source, 'restart setup/trials require restart helper build'
@@ -214,7 +228,8 @@ def main():
     trial=sub.add_parser('trials');trial.add_argument('--seed',type=Path,required=True)
     trial.add_argument('--fixture-manifest',type=Path,required=True,help='private complete expected manifest prepared separately before this run')
     trial.add_argument('--output',type=Path,required=True);trial.add_argument('--arm',action='append',required=True)
-    a=p.parse_args();assert not a.record.exists(), 'preserve previous configuration evidence'
+    a=p.parse_args();assert a.documents>0, 'requested document count must be positive'
+    assert not a.record.exists(), 'preserve previous configuration evidence'
     expected_models,model_bytes,model_prepared=MODEL['load'](a.model_manifest)
     assert not a.record.resolve().is_relative_to(Path(expected_models['root'])), 'record must be outside model cache'
     attestation=json.loads(a.attestation.read_text())
