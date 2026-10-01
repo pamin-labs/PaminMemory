@@ -1,12 +1,16 @@
 """Recompute every metric category from a complete new 80/880 run; never execute product code."""
 import json
+import hashlib
+import re
+import runpy
+from pathlib import Path
 import statistics
 import common as c
 import metrics
 import rows
 
 
-def report(packets):
+def report(packets, provider_binding=None):
     jobs = c.schedule()
     c.require(len(packets) == 80 and {p['job']['name'] for p in packets} == {j['name'] for j in jobs},
               'complete unique process matrix required')
@@ -39,7 +43,9 @@ def report(packets):
     c.require(len(observations) == 880, 'missing or extra product calls')
     classifications = rows.oracle_checks(results)
     eligible = {item['job']['name']: item['paired_speed_claim_eligible'] for item in classifications}
-    measured_metrics = metrics.metric_tables(observations, eligible)
+    measured_metrics = metrics.metric_tables(observations, eligible,
+        host_conditions={packet['job']['name']: packet.get('host_conditions') for packet in packets},
+        provider_binding=provider_binding)
     for metric in measured_metrics:
         config = metric['configuration']
         if config[4] in ['changed-context', 'changed-hot']:
@@ -142,11 +148,58 @@ def write_tables(path, result):
 
 
 def main():
-    complete = json.loads((c.ROOT / 'results/complete.json').read_text())
-    c.require(complete['complete'] and complete['processes'] == 80 and complete['calls'] == 880,
-              'incomplete run cannot produce a report')
-    packets = [json.loads((c.ROOT / 'results' / (job['name'] + '.json')).read_text()) for job in c.schedule()]
-    result = report(packets)
+    """Validate retained checkpoints in-process; never launch pg_config or product code."""
+    out = c.ROOT / 'results'
+    c.require(not out.is_symlink(), 'results symlink forbidden')
+    plan_path, complete_path = out / 'run-identity.json', out / 'complete.json'
+    c.require(not plan_path.is_symlink() and not complete_path.is_symlink(), 'receipt symlink forbidden')
+    # Bootstrap only the input hashes before loading any controller source.
+    # The shared strict parser then rejects duplicate keys in both receipts.
+    bootstrap = json.loads(plan_path.read_text())
+    expected_inputs = {'config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
+                       'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
+                       'run.py', 'rows.py', 'common.py', 'owned_postgres.py'}
+    c.require(set(bootstrap['inputs']) == expected_inputs, 'retained run input set differs')
+    for name, digest in bootstrap['inputs'].items():
+        path = c.ROOT / name
+        c.require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest) is not None
+                  and not path.is_symlink() and c.digest(path) == digest,
+                  'retained method/configuration input changed: ' + name)
+    controller = runpy.run_path(str(c.ROOT / 'run.py'))
+    read, canonical = controller['read_json'], controller['canonical']
+    plan, complete = read(plan_path), read(complete_path)
+    jobs = c.schedule()
+    c.require(set(plan) == {'schema', 'jobs', 'binaries', 'assets', 'inputs', 'seed_inventory',
+                          'postgres_installation', 'scope'}
+              and type(plan['schema']) is int and plan['schema'] == 1
+              and canonical(plan['jobs']) == canonical(jobs)
+              and plan['scope'] == 'new synthetic method checkpoints only; no historical numeric identity; interrupted attempts retained',
+              'retained run plan schema/schedule differs')
+    c.source_inputs() # Read-only materialized source/receipt comparison, no compiler.
+    c.require(canonical(plan['binaries']) == canonical(read(c.ROOT / 'build/binaries.json')),
+              'retained helper pins differ')
+    bound = {str((Path(c.CONFIG[pin['root']]) / pin['relative']).resolve()): pin
+             for pin in c.MANIFEST['assets']}
+    c.require(canonical(bound) == canonical(plan['assets']), 'retained asset plan differs')
+    identity = hashlib.sha256(canonical(plan).encode()).hexdigest()
+    c.require(set(complete) == {'complete', 'processes', 'calls', 'classifications', 'regenerated_fixture',
+                              'historical_numeric_identity_claimed', 'run_identity_sha256'}
+              and complete['complete'] is True and type(complete['processes']) is int and complete['processes'] == 80
+              and type(complete['calls']) is int and complete['calls'] == 880
+              and complete['regenerated_fixture'] is True and complete['historical_numeric_identity_claimed'] is False
+              and complete['run_identity_sha256'] == identity,
+              'complete receipt plan/cardinality differs')
+    gold = read(c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json')
+    results = controller['load_checkpoints'](out, jobs, identity, bound, gold, plan['postgres_installation'])
+    c.require(len(results) == 80 and sum(len(packet['rows']) for packet in results.values()) == 880,
+              'incomplete checkpoint matrix cannot produce a report')
+    classifications = rows.oracle_checks(results)
+    c.require(canonical(classifications) == canonical(complete['classifications']), 'complete oracle classifications differ')
+    packets = [results[controller['key'](job)] for job in jobs]
+    # Supplied only after every actual log's CPU node/graph/runtime gate passed.
+    provider_binding = {'device': 'cpu', 'execution_provider': 'CPUExecutionProvider',
+        'scope': 'retained actual per-process log assignment/graph/runtime bindings revalidated by run.checkpoint'}
+    result = report(packets, provider_binding=provider_binding)
     c.require(not (c.ROOT / 'tables.md').exists(), 'preserve prior report')
     c.save(c.ROOT / 'metrics.json', result)
     write_tables(c.ROOT / 'tables.md', result)
