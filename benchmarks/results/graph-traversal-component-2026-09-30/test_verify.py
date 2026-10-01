@@ -70,6 +70,16 @@ if __name__ == '__main__':
     if success.returncode:
         raise SystemExit(success.stderr)
     retained=json.loads((ROOT/'provenance.json').read_text())
+    for arm in ['baseline','scored']:
+        row=json.loads((ROOT/(arm+'.jsonl')).read_text())
+        weak_n=int(row['weak'][10:])
+        weak_content=f'orbital navigation calibration beacon archival report category {weak_n % 17} revision {weak_n}'
+        strong_content='orbital navigation calibration beacon'
+        for index in range(3):
+            opposite=strong_content if arm=='baseline' and index==0 else weak_content
+            for value in ['unrelated origin content',opposite,'',None,123,{'content':row['targets'][index]['seed']}]:
+                run_case('target seed '+arm+' '+str(index)+' '+repr(value),lambda r,arm=arm,index=index,value=value:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'][index].update(seed=value)),expected_error='target seed content differs from expected origin: '+arm)
+            run_case('missing target seed '+arm+' '+str(index),lambda r,arm=arm,index=index:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'][index].pop('seed')),expected_error='target seed content differs from expected origin: '+arm)
     for scope in ['Contemporaneous build-time SQL source attestation.', 'Historical rebuild verified the SQL sources.', '', None]:
         run_case('retrospective SQL scope '+str(scope),lambda r,scope=scope:mutate_json(r/'retrospective-sql-audit.json',lambda a:a.update(scope=scope)),expected_error='retrospective SQL audit scope differs')
     run_case('missing retrospective SQL scope',lambda r:mutate_json(r/'retrospective-sql-audit.json',lambda a:a.pop('scope')),expected_error='retrospective SQL audit scope differs')
