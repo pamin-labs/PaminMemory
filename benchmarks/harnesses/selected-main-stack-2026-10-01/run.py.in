@@ -57,7 +57,8 @@ def parse(text, job, bound, home=None):
     c.require(sorted(roles) == (['embedding', 'reranker'] if job['tier'] == 'accurate' else ['embedding']),
               'missing or duplicate model provider')
     for row in actual:
-        mapped = {line.split(maxsplit=5)[5] for line in row['loaded_libraries'] if len(line.split(maxsplit=5)) == 6}
+        mapped = {re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), line.split(maxsplit=5)[5])
+                  for line in row['loaded_libraries'] if len(line.split(maxsplit=5)) == 6}
         for root, name in [('native', 'libzvec_c_api.so'), ('ort', 'libonnxruntime.so.1.28.0')]:
             c.require(str((Path(c.CONFIG[root]) / name).resolve()) in mapped, 'actual runtime mapping differs')
     return opened[0], actual
@@ -142,6 +143,23 @@ def bind_postgres(actual, expected):
                   'PostgreSQL mapped library identity invalid')
 
 
+def common_postgres_runtime(packets):
+    """Common mapped file identities across jobs/resumes, without PID/addresses.
+
+    Installation-relative paths and external basenames have the capture scope of
+    owned_postgres.build_identity; this does not attest mapped inode identity.
+    """
+    expected = None
+    for packet in packets:
+        libraries = packet['postgres_build_identity']['mapped_libraries']
+        c.require(type(libraries) is list and libraries, 'PostgreSQL mapped libraries missing')
+        identity = sorted((entry['location'], entry['sha256'], entry['bytes']) for entry in libraries)
+        if expected is None:
+            expected = identity
+        c.require(identity == expected, 'cross-job PostgreSQL mapped runtime differs')
+    return expected
+
+
 def atomic_save(path, value):
     """Exclusive-slot publication; an interrupted temporary is never a checkpoint."""
     c.require(not path.exists() and not path.is_symlink(), 'preserve published checkpoint')
@@ -212,6 +230,7 @@ def load_checkpoints(out, jobs, identity, bound, gold, postgres_installation):
         path = out / name
         if path.exists():
             results[key(job)] = checkpoint(read_json(path), job, identity, bound, gold, out, postgres_installation)
+    common_postgres_runtime(results.values())
     for round_ in range(4):
         block = {k:v for k,v in results.items() if k[0] == round_}
         if len(block) == 20:
@@ -289,6 +308,7 @@ def main():
                       'host_conditions': {'before': conditions_before, 'after': c.guard(job['name'] + ':after')},
                       'postgres_disk': {'before': postgres_before, 'after': c.disk_sizes(home / 'postgres/data'),
                                         'scope': 'owned stopped data-directory regular files including local WAL; external symlinks and directory metadata excluded'}}
+            common_postgres_runtime([*results.values(), packet])
             pg.preflight(home)
             c.require(home.parent == out and (home / '.graph-disposable-clone').is_file(), 'cleanup boundary differs')
             shutil.rmtree(home)
@@ -304,6 +324,7 @@ def main():
             c.source_inputs()
         c.require(len(results) == 80 and sum(len(v['rows']) for v in results.values()) == 880, 'incomplete matrix')
         c.require(canonical(run_identity(jobs, binaries, c.assets(), seed)) == canonical(plan), 'run plan changed before completion')
+        common_postgres_runtime(results.values())
         classifications = rows.oracle_checks(results)
         complete = {'complete': True, 'processes': 80, 'calls': 880,
                'classifications': classifications, 'regenerated_fixture': True,
