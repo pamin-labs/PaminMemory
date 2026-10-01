@@ -44,7 +44,12 @@ for arm in ['main','predecessor','candidate']:
         upkeep=[r for r in rows if r['phase']=='maintenance']
         assert len(upkeep)==1 and upkeep[0]['extra']['optimize_completed_delta']==(arm!='candidate')
         warm=[r for r in rows if r['phase']=='search_warm']
-        assert len(warm)==24 and len({r['extra']['query_document'] for r in warm})==24
+        # Bind the exact ordered synthetic query schedule, not merely uniqueness.
+        # The archived harness uses the stopped seed's 18,000 documents.
+        n=18000
+        initial=[r['extra']['query_document'] for r in rows if r['phase'] in ['search_cold','search_warmup']]
+        assert initial==[0,n//2,n-1], 'HNSW exact ordered cold/warmup query schedule differs'
+        assert [r['extra']['query_document'] for r in warm]==[j*(n-2)//25+1 for j in range(1,25)], 'HNSW exact ordered warm query schedule differs'
         assert len([r for r in rows if r['phase']=='search_cold'])==1
         assert len([r for r in rows if r['phase']=='search_warmup'])==2
         new=next(r for r in rows if r['phase']=='new_write_search')
