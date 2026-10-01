@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Ownership gate for a newly materialized, exclusive synthetic reproduction."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -86,6 +87,64 @@ def show_data_directory(item,base):
     return str(item['data'])
 
 
+def file_digest(path):
+    digest=hashlib.sha256();size=0
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda:stream.read(1024*1024),b''):
+            digest.update(block);size+=len(block)
+    return {'bytes':size,'sha256':digest.hexdigest()}
+
+
+def installation_identity(item,base):
+    install=item['install'];files={}
+    for path in sorted(install.rglob('*')):
+        if path.is_dir() and not path.is_symlink():continue
+        resolved=path.resolve()
+        require(resolved.is_relative_to(install) and resolved.is_file(),'PostgreSQL installation entry escapes or is not a regular file')
+        entry=file_digest(resolved)
+        entry['kind']='symlink' if path.is_symlink() else 'regular_file'
+        if path.is_symlink():entry['target']=str(resolved.relative_to(install))
+        files[str(path.relative_to(install))]=entry
+    require(all(name in files for name in ['bin/postgres','bin/pg_ctl','bin/psql','bin/pg_config']), 'PostgreSQL build identity requires its executables and pg_config')
+    config={}
+    for option in ['version','configure','cc','cflags','ldflags','libs']:
+        result=subprocess.run([str(install/'bin/pg_config'),'--'+option],env=base,capture_output=True,text=True,timeout=5,check=True)
+        config[option]=result.stdout.strip()
+    require(config['version']=='PostgreSQL 17.6','PostgreSQL build configuration version differs')
+    payload={'files':files,'pg_config':config}
+    return dict(payload,installation_sha256=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest())
+
+
+def build_identity(item,base,expected,before):
+    require(identity(item)==expected,'PostgreSQL ownership changed before build identity capture')
+    after=installation_identity(item,base)
+    require(after==before,'PostgreSQL installation changed across launch')
+    proc=Path('/proc')/str(expected['pid'])
+    executable=file_digest(proc/'exe')
+    require(executable=={key:before['files']['bin/postgres'][key] for key in ['bytes','sha256']},'running PostgreSQL executable differs from copied installation')
+    executable['installation_file']='bin/postgres'
+    libraries=[];seen=set()
+    for line in (proc/'maps').read_text().splitlines():
+        parts=line.split(maxsplit=5)
+        if len(parts)!=6 or not parts[5].startswith('/'):continue
+        mapped=parts[5]
+        require(not mapped.endswith(' (deleted)'),'mapped PostgreSQL file deleted during identity capture')
+        path=Path(mapped)
+        if '.so' not in path.name or path in seen:continue
+        seen.add(path)
+        location='installation/'+str(path.relative_to(item['install'])) if path.is_relative_to(item['install']) else 'external/'+path.name
+        bound=file_digest(path)
+        if path.is_relative_to(item['install']):
+            entry=after['files'].get(str(path.relative_to(item['install'])))
+            require(entry is not None and bound=={key:entry[key] for key in ['bytes','sha256']},'mapped PostgreSQL installation library changed during capture')
+        libraries.append(dict(bound,location=location))
+    require(libraries,'PostgreSQL shared-library mappings absent')
+    require(identity(item)==expected,'PostgreSQL ownership changed during build identity capture')
+    return dict(after,scope='prospective owned PostgreSQL installation and mapped runtime; historical build identity N/A',
+                server_executable=executable,mapped_libraries=sorted(libraries,key=lambda entry:(entry['location'],entry['sha256'])),
+                mapped_libraries_scope='mapped file paths hashed during capture; external basenames retained; mapped library inode identity not attested')
+
+
 def start(home,base):
     item=preflight(home)
     options=['-p',str(item['record']['port']),'-h','127.0.0.1','-c','unix_socket_directories=']
@@ -94,6 +153,7 @@ def start(home,base):
     for executable in ['postgres','pg_ctl']:
         result=subprocess.run([str(item['install']/'bin'/executable),'--version'],env=base,capture_output=True,text=True,timeout=5,check=True)
         require(result.stdout.strip()==f'{executable} (PostgreSQL) 17.6','copied PostgreSQL executable version differs')
+    before=installation_identity(item,base)
     recorded=None
     try:
         subprocess.run(command,env=base,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=35,check=True)
@@ -109,7 +169,8 @@ def start(home,base):
             result=subprocess.run([str(item['install']/'bin/psql'),'-XAt','-v','ON_ERROR_STOP=1','-c',f'SHOW {key}'],env=client_environment(item,base),capture_output=True,text=True,timeout=5,check=True)
             settings[key]=result.stdout.strip()
         require(settings==NATIVE_SETTINGS,'actual PostgreSQL defaults differ from native frozen source settings')
-        return {'identity':recorded,'data_directory_verified_before_native_fixture':True,'native_settings':settings,'unix_socket_directories':''}
+        build=build_identity(item,base,recorded,before)
+        return {'postgres_build_identity':build,'identity':recorded,'data_directory_verified_before_native_fixture':True,'native_settings':settings,'unix_socket_directories':''}
     except BaseException as failure:
         try:stop_item(item,base,recorded)
         except BaseException as cleanup:
