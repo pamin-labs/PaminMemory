@@ -603,56 +603,77 @@ fn calibrated_with_references<T>(
     }
     references.replace(References::default());
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
-    let mut fastest = (Device::Cpu, vec![cpu()].into());
-    let mut fastest_elapsed = std::time::Duration::MAX;
     let mut transient_failure = false;
     let mut numerical_failure = false;
-    // Keep at most the CPU reference and one candidate resident. Drop every
-    // candidate before loading the next; reload the winner after calibration.
-    for (device, target) in plans {
-        let mut candidate = match load(device, target.clone(), false) {
-            Ok(model) => model,
-            Err(error) => {
-                numerical_failure |= matches!(error, IndexError::Numerical(_));
-                transient_failure |= !matches!(
-                    error,
-                    IndexError::Incompatible(_) | IndexError::Numerical(_)
-                );
-                tracing::warn!(device = device.name(), %error, "compute candidate unavailable");
+    let rounds = if plans.len() > 1 { 3 } else { 1 };
+    let mut observations: Vec<Vec<(std::time::Duration, bool)>> = vec![Vec::new(); plans.len()];
+    let mut quarantined = vec![false; plans.len()];
+    for round in 0..rounds {
+        for offset in 0..plans.len() {
+            let index = (round + offset) % plans.len();
+            if quarantined[index] {
                 continue;
             }
-        };
-        let before = evaluate(&mut reference, Device::Cpu)?;
-        let elapsed = match evaluate(&mut candidate, device) {
-            Ok(elapsed) => elapsed,
-            Err(error) => {
-                numerical_failure |= matches!(error, IndexError::Numerical(_));
-                transient_failure |= !matches!(
-                    error,
-                    IndexError::Incompatible(_) | IndexError::Numerical(_)
-                );
-                tracing::warn!(device = device.name(), %error, "compute candidate failed validation");
-                continue;
+            let (device, target) = plans[index].clone();
+            let mut candidate = match load(device, target, false) {
+                Ok(model) => model,
+                Err(error) => {
+                    numerical_failure |= matches!(error, IndexError::Numerical(_));
+                    quarantined[index] |= matches!(
+                        error,
+                        IndexError::Incompatible(_) | IndexError::Numerical(_)
+                    );
+                    transient_failure |= !quarantined[index];
+                    tracing::warn!(device=device.name(),%error,"compute candidate unavailable");
+                    continue;
+                }
+            };
+            let before = evaluate(&mut reference, Device::Cpu)?;
+            let elapsed = match evaluate(&mut candidate, device) {
+                Ok(elapsed) => elapsed,
+                Err(error) => {
+                    numerical_failure |= matches!(error, IndexError::Numerical(_));
+                    quarantined[index] |= matches!(
+                        error,
+                        IndexError::Incompatible(_) | IndexError::Numerical(_)
+                    );
+                    transient_failure |= !quarantined[index];
+                    tracing::warn!(device=device.name(),%error,"compute candidate failed validation");
+                    continue;
+                }
+            };
+            let after = evaluate(&mut reference, Device::Cpu)?;
+            let control = before.min(after);
+            if control.is_zero() {
+                return Err(IndexError::Engine(
+                    "compute calibration produced no duration".into(),
+                ));
             }
-        };
-        let after = evaluate(&mut reference, Device::Cpu)?;
-        // Require the candidate to beat both CPU controls, so a slower
-        // control under transient shared-host load cannot decide the winner.
-        let denominator = before.min(after).as_secs_f64();
-        if denominator <= 0.0 {
-            return Err(IndexError::Engine(
-                "compute calibration produced no duration".into(),
-            ));
+            observations[index].push((elapsed, elapsed < control));
+            tracing::info!(
+                round,
+                device = device.name(),
+                candidate_us = elapsed.as_micros(),
+                cpu_before_us = before.as_micros(),
+                cpu_after_us = after.as_micros(),
+                ratio_to_cpu = elapsed.as_secs_f64() / control.as_secs_f64(),
+                "complete model-call calibration"
+            );
         }
-        let ratio = elapsed.as_secs_f64() / denominator;
-        tracing::info!(
-            device = device.name(),
-            ratio_to_cpu = ratio,
-            "complete model-call calibration"
-        );
-        if ratio < 1.0 && elapsed < fastest_elapsed {
+    }
+    let mut fastest = (Device::Cpu, vec![cpu()].into());
+    let mut fastest_elapsed = std::time::Duration::MAX;
+    for (index, values) in observations.iter_mut().enumerate() {
+        // A complete rotated process-local comparison with a majority of
+        // wins over both adjacent CPU controls; rank by absolute median time.
+        if values.len() != rounds || values.iter().filter(|(_, wins)| *wins).count() <= rounds / 2 {
+            continue;
+        }
+        values.sort_by_key(|(elapsed, _)| *elapsed);
+        let elapsed = values[values.len() / 2].0;
+        if elapsed < fastest_elapsed {
             fastest_elapsed = elapsed;
-            fastest = (device, target);
+            fastest = plans[index].clone();
         }
     }
     let (device, target) = fastest;
@@ -1067,6 +1088,46 @@ mod tests {
         .unwrap();
         assert_eq!(device, Device::Cpu, "unvalidated replacement was returned");
         assert!(cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn candidate_order_is_rotated_before_a_winner_is_cached() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let cuda = Cell::new(0);
+        let dml = Cell::new(0);
+        let (_, device) = calibrated(
+            "fixture",
+            vec![
+                (Device::Cuda, vec![cpu()].into()),
+                (Device::DirectMl, vec![cpu()].into()),
+            ],
+            &cache,
+            |device, _, _| Ok(device),
+            |_, device| {
+                let ms = match device {
+                    Device::Cpu => 100,
+                    Device::Cuda => {
+                        cuda.set(cuda.get() + 1);
+                        6
+                    }
+                    _ => {
+                        let n = dml.get();
+                        dml.set(n + 1);
+                        if n == 0 { 1 } else { 9 }
+                    }
+                };
+                Ok(Duration::from_millis(ms))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            device,
+            Device::Cuda,
+            "one discovery-order fast interval decided the winner"
+        );
+        assert!(cuda.get() >= 3 && dml.get() >= 3);
     }
 
     #[test]
