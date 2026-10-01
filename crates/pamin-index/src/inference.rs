@@ -582,8 +582,10 @@ pub(crate) fn measured<T>(
     let cache = PLANS.get_or_init(Default::default);
     // Only hashes and fixed-fixture outputs reach disk; the full key can
     // contain paths/environment values and is never persisted or logged.
-    // An unidentified CUDA device cannot safely reuse another process's plan.
-    let disk = (!cuda || cuda_inventory.is_some())
+    // Opaque DirectML adapter ordinals and NPU ids do not establish stable
+    // physical hardware/driver identity across processes. Keep those plans
+    // process-local; candidate measurement/accelerator execution is unchanged.
+    let disk = persistence_supported(&plans, cuda_inventory.is_some())
         .then(|| plan_file(cache_dir, &key))
         .flatten();
     if !cache
@@ -740,6 +742,14 @@ fn file_lock(path: &Path) -> Option<std::fs::File> {
         .ok()?;
     lock.lock().ok()?;
     Some(lock)
+}
+
+fn persistence_supported(plans: &[(Device, Target)], cuda_identified: bool) -> bool {
+    plans.iter().all(|(device, _)| match device {
+        Device::Cpu | Device::CoreMl => true,
+        Device::Cuda => cuda_identified,
+        Device::DirectMl | Device::Npu => false,
+    })
 }
 
 fn cuda_identity() -> Option<String> {
@@ -1585,6 +1595,28 @@ mod tests {
         }
         drop(held);
         assert_eq!(worker.join().unwrap(), Device::Cuda);
+    }
+
+    #[test]
+    fn opaque_adapter_ids_do_not_enable_cross_process_plan_reuse() {
+        for device in [Device::DirectMl, Device::Npu] {
+            assert!(!persistence_supported(
+                &[(device, vec![cpu()].into())],
+                true
+            ));
+        }
+        assert!(!persistence_supported(
+            &[(Device::Cuda, vec![cpu()].into())],
+            false
+        ));
+        assert!(persistence_supported(
+            &[(Device::Cuda, vec![cpu()].into())],
+            true
+        ));
+        assert!(persistence_supported(
+            &[(Device::CoreMl, vec![cpu()].into())],
+            false
+        ));
     }
 
     #[test]
