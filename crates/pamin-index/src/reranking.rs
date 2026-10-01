@@ -973,7 +973,7 @@ impl Reranker {
 
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
-fn calibration_pairs<'a>(tier: Rerank, long: &'a str) -> Vec<(&'a str, &'a str)> {
+fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
     let mut pairs = ORDER_PAIRS.to_vec();
     if tier == Rerank::Accurate {
         pairs.extend(ORDER_PAIRS.repeat(3));
