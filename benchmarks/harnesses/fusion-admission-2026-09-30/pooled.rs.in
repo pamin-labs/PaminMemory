@@ -1,0 +1,129 @@
+//! Source-only preparation: no timing claims, no product changes or write calls.
+const CHANNEL_POOL: bool = true;
+use std::collections::BTreeMap;
+use pamin_core::{Channel, Fusion, Why};
+use pamin_engine::{Depths, Engine, SearchHit, rerankable};
+use pamin_index::{Access, Profile, Rerank, Segmenter, VectorIndex};
+use pamin_store::{Workspace, repository};
+use serde_json::{Value, json};
+
+fn rows(hits: &[SearchHit]) -> Vec<Value> {
+    hits.iter().enumerate().map(|(at, h)| json!({
+        "rank": at + 1, "topic": h.topic, "topic_id": h.result.topic,
+        "score": h.result.score, "why": h.result.why,
+        "content": h.state.content, "seed": h.seed,
+    })).collect()
+}
+fn shown(h: &SearchHit) -> String {
+    // Diagnostic text reconstruction only; ranking always uses Engine methods.
+    let mut text = format!("{}: {}", h.topic, h.state.content);
+    if let Some(seed) = &h.seed { text.push_str(". "); text.push_str(seed); }
+    text
+}
+fn rank(hits: &[SearchHit], topic: &str) -> Option<usize> {
+    hits.iter().position(|h| h.topic == topic).map(|at| at + 1)
+}
+fn channel_rows(hits: &[SearchHit]) -> BTreeMap<Channel, Vec<Value>> {
+    let mut channels: BTreeMap<Channel, Vec<(u32, Value)>> = BTreeMap::new();
+    for hit in hits {
+        for entry in &hit.result.why {
+            if let Why::Channel { channel, rank, score, contribution, .. } = entry {
+                channels.entry(*channel).or_default().push((*rank, json!({
+                    "rank": rank, "score": score, "topic": hit.topic,
+                    "topic_id": hit.result.topic, "contribution": contribution,
+                })));
+            }
+        }
+    }
+    channels.into_iter().map(|(channel, mut entries)| {
+        entries.sort_by_key(|(rank, _)| *rank);
+        // Same guard as tests/channels::replay: do not compact missing ranks.
+        for (at, (rank, _)) in entries.iter().enumerate() {
+            assert_eq!(*rank as usize, at + 1, "missing raw channel rank: {channel:?}");
+        }
+        (channel, entries.into_iter().map(|(_, row)| row).collect())
+    }).collect()
+}
+
+#[tokio::main]
+async fn main() {
+    let _ = tracing_subscriber::fmt().with_env_filter("pamin_index=info,pamin_engine=info").try_init();
+    assert_eq!(std::env::var("PAMIN_DEVICE").unwrap(), "cpu");
+    assert!(std::env::var_os("PAMIN_RERANK_DEPTH").is_none(), "default depth required");
+    let expected_documents: u64 = std::env::var("IDENTIFIER_DOCUMENTS").unwrap().parse().unwrap();
+    assert_eq!(expected_documents, 18_001, "paired trial uses matched 18001-document fixture");
+    let home = std::env::var("PAMIN_EVAL_HOME").unwrap();
+    // Must point at a disposable clone: Engine::open starts/migrates PostgreSQL,
+    // ensures the project, and runs reshape recovery even for ReadOnly access.
+    assert_ne!(home, "/workspace/scratch/restart-floor/seed-memory", "use a disposable seed clone");
+    assert_ne!(home, "/workspace/scratch/restart-floor/results-memory-v2/0-main", "never open reference directly");
+    let w = Workspace::at(&home);
+    let e = Engine::open(&w, "restart-floor", Profile::Accuracy, VectorIndex::Memory, Access::ReadOnly).await.unwrap();
+    assert_eq!(e.indexed_documents().unwrap(), expected_documents);
+    assert_eq!(repository::topic_count(e.database.pool(), e.project).await.unwrap(), expected_documents);
+    assert_eq!(repository::current_topic_ids(e.database.pool(), e.project).await.unwrap().len(), expected_documents as usize, "all snapshot topics must resolve; trace cannot expose dropped stale candidates");
+    if expected_documents == 18_001 {
+        assert!(repository::find_topic(e.database.pool(), e.project, "restart-proof").await.unwrap().is_some(), "matched trial snapshot must include restart-proof");
+    }
+    let segmenter = Segmenter::new();
+    let mut ids = vec![11519];
+    ids.extend((1..=24).map(|j| j * (18_000 - 2) / 25 + 1).filter(|id| *id != 11519));
+    for n in ids {
+        let target = format!("incident-{n}");
+        let query = format!("Deployment incident INC{n:07} rollback recovery plan");
+        let topic = repository::find_topic(e.database.pool(), e.project, &target).await.unwrap().expect("target ledger topic absent");
+        // Four channels * 50 yields <=200. This returns the full live union,
+        // before reranking, with original channel rank and score in every Why.
+        let fused = e.search_fused(&query, 200, Depths::default(), Fusion::default()).await.unwrap();
+        assert!(!fused.is_empty());
+        let channels = channel_rows(&fused);
+        let target_channels: Vec<Value> = [Channel::LexicalSegmented, Channel::LexicalNgram, Channel::Vector, Channel::Graph].into_iter().map(|channel| {
+            let entries = channels.get(&channel);
+            let target_row = entries.and_then(|rows| rows.iter().find(|row| row["topic"] == target));
+            json!({"channel": channel, "candidate_count": entries.map_or(0, Vec::len), "target": target_row})
+        }).collect();
+        let traces: Vec<&[Why]> = fused.iter().map(|h| h.result.why.as_slice()).collect();
+        let input_positions = rerankable(&traces, Rerank::Accurate);
+        assert_eq!(Rerank::Accurate.depth(), 30, "fixed default model-pair budget");
+        assert_eq!(input_positions.len(), 30, "pooling may not increase model pairs");
+        assert_eq!(input_positions.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 30);
+        assert!(channels.get(&Channel::Graph).is_none_or(Vec::is_empty), "fixture has no graph extras");
+        let should_enter = CHANNEL_POOL || ![5760, 11519, 15119].contains(&n);
+        assert_eq!(input_positions.iter().any(|at| fused[*at].result.topic == topic.id), should_enter, "per-query selection premise");
+        let inputs: Vec<Value> = input_positions.iter().map(|at| json!({
+            "fused_rank": at + 1, "topic": fused[*at].topic,
+            "document": shown(&fused[*at]),
+        })).collect();
+        // Actual shipped entry with limit10, then full result for final rank.
+        let product = e.search_reranked(&query, 10, Depths::default(), Rerank::Accurate).await.unwrap();
+        let final_all = e.search_reranked(&query, 200, Depths::default(), Rerank::Accurate).await.unwrap();
+        assert_eq!(product.iter().map(|h| &h.topic).collect::<Vec<_>>(), final_all.iter().take(10).map(|h| &h.topic).collect::<Vec<_>>(), "full-limit diagnostic changed product prefix");
+        assert_eq!(fused.len(), final_all.len());
+        let expected: std::collections::BTreeSet<_> = input_positions.iter().map(|at| fused[*at].result.topic).collect();
+        let actual: std::collections::BTreeSet<_> = final_all.iter().filter(|h| h.result.why.iter().any(|why| matches!(why, Why::Reranked { .. }))).map(|h| h.result.topic).collect();
+        assert_eq!(expected, actual, "reconstructed reranker input differs from actual trace");
+        let fused_rank = rank(&fused, &target);
+        let entered = expected.contains(&topic.id);
+        let final_rank = rank(&final_all, &target);
+        let stage = if fused_rank.is_none() { "recall_union_missing" }
+            else if !entered { "fusion_reranker_selection" }
+            else if final_rank.is_some_and(|rank| rank > 10) { "reranking_or_blend_outside_top10" }
+            else { "retrieved_top10" };
+        println!("IDENTIFIER_JSON {}", json!({
+            "query_document": n, "query": query, "target": target, "target_id": topic.id,
+            "expected_documents": expected_documents,
+            "kind": "paired_candidate_pool_product_accuracy", "channel_pool": CHANNEL_POOL, "shared_machine": true,
+            "segmented_query": segmenter.segment_for_index(&query),
+            "name_sequence": segmenter.name_sequence(&query),
+            "channel_depth": Depths::default().channel, "reranker_depth": Rerank::Accurate.depth(),
+            "channels_from_complete_trace": channels, "candidate_union_size": fused.len(),
+            "target_channels": target_channels,
+            "fused": rows(&fused), "reranker_inputs": inputs,
+            "product_top10": rows(&product), "final_all": rows(&final_all),
+            "target_fused_rank": fused_rank, "target_entered_reranker": entered,
+            "target_final_rank": final_rank, "gap_stage": stage,
+        }));
+    }
+    drop(e);
+    pamin_store::database::stop(&w).await.unwrap();
+}

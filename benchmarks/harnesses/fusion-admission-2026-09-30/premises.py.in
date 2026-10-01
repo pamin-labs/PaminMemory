@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Prospective identity guards and stopped-fixture manifest creation only."""
+import argparse,hashlib,json,os,platform,sys
+from datetime import datetime,timezone
+from pathlib import Path
+
+if sys.flags.optimize:
+    raise SystemExit('Premise guards require Python assertions; remove -O/PYTHONOPTIMIZE')
+
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda:stream.read(4*1024*1024),b''):h.update(chunk)
+    return h.hexdigest()
+
+def snapshot(reference,model_cache):
+    reference=reference.resolve()
+    assert not (reference/'postgres/data/postmaster.pid').exists(), 'fixture must be stopped'
+    assert (reference/'models').is_symlink() and (reference/'models').resolve()==model_cache.resolve()
+    entries={}
+    for path in sorted(reference.rglob('*')):
+        name=path.relative_to(reference).as_posix()
+        if path.is_symlink():
+            target=os.readlink(path)
+            assert name=='models' or path.resolve().is_relative_to(reference), 'unexpected external fixture symlink'
+            entries[name]={'kind':'symlink','target':target}
+        elif path.is_file():
+            entries[name]={'kind':'file','bytes':path.stat().st_size,'sha256':digest(path)}
+        elif path.is_dir():entries[name]={'kind':'directory'}
+        else:raise AssertionError('unsupported fixture entry: '+name)
+    assert any(p.startswith('postgres/data/') for p in entries)
+    assert any(p.startswith('index/') for p in entries)
+    encoded=json.dumps(entries,sort_keys=True,separators=(',',':')).encode()
+    return {'version':1,'entries':entries,'tree_sha256':hashlib.sha256(encoded).hexdigest()}
+
+def verify_snapshot(reference,model_cache,expected):
+    assert expected['version']==1
+    encoded=json.dumps(expected['entries'],sort_keys=True,separators=(',',':')).encode()
+    assert expected['tree_sha256']==hashlib.sha256(encoded).hexdigest(), 'malformed expected manifest'
+    actual=snapshot(reference,model_cache)
+    assert actual==expected, 'fixture contents differ from explicit expected manifest'
+    return {'version':1,'tree_sha256':actual['tree_sha256'],'entries':len(actual['entries']),
+            'files':sum(e['kind']=='file' for e in actual['entries'].values())}
+
+def tokenizer_assets(models,expected):
+    records=[]
+    for role,weights,_ in models:
+        repository=weights.parent if role=='embedding' else weights.parent.parent
+        assert set(expected[role])=={'tokenizer.json','config.json','special_tokens_map.json','tokenizer_config.json'}
+        for filename,sha in expected[role].items():
+            path=repository/filename;actual=digest(path)
+            assert actual==sha,(role,filename,'tokenizer/config identity mismatch')
+            records.append({'role':role,'asset':filename,'path':str(path),'sha256':actual})
+    return records
+
+def runtime_assets(expected):
+    records=[]
+    for record in expected:
+        path=Path(record['path'])
+        actual={'path':str(path),'sha256':digest(path),'bytes':path.stat().st_size}
+        assert actual==record, 'runtime library differs from pinned identity'
+        records.append(actual)
+    return records
+
+def mapped_runtime(text,expected,seen):
+    """Verify newly observed runtime mappings; hash each library once/arm."""
+    bypath={str(Path(x['path']).resolve()):x for x in expected}
+    for line in text.splitlines():
+        fields=line.split(None,5)
+        if len(fields)!=6:continue
+        path=fields[5]
+        if not (Path(path).name.startswith('libonnxruntime.so') or 'libzvec_c_api.so' in Path(path).name):continue
+        assert not path.endswith(' (deleted)'), 'mapped runtime was deleted'
+        canonical=str(Path(path).resolve())
+        assert canonical in bypath, 'unexpected mapped runtime library'
+        stat=Path(canonical).stat();major,minor=fields[3].split(':')
+        assert stat.st_ino==int(fields[4]) and stat.st_dev==os.makedev(int(major,16),int(minor,16)), 'runtime path no longer identifies mapped inode'
+        if canonical in seen:continue
+        expected_record=bypath[canonical]
+        assert digest(Path(canonical))==expected_record['sha256'] and stat.st_size==expected_record['bytes']
+        after=Path(canonical).stat()
+        assert (after.st_ino,after.st_dev)==(stat.st_ino,stat.st_dev), 'runtime replaced while hashing'
+        seen[canonical]={**expected_record,'mapped_path':path,'device':fields[3],'inode':int(fields[4])}
+    return seen
+
+def hardware():
+    def read(path):
+        p=Path(path)
+        return p.read_text().strip() if p.exists() else None
+    cpu=read('/proc/cpuinfo')
+    model=next((line.split(':',1)[1].strip() for line in (cpu or '').splitlines() if line.startswith('model name')),None)
+    uname=platform.uname()
+    return {'kernel':' '.join([uname.system,uname.release,uname.machine]),'cpu_model':model,
+            'cgroup_cpu_max':read('/sys/fs/cgroup/cpu.max'),
+            'cgroup_memory_max':read('/sys/fs/cgroup/memory.max'),
+            'logical_cpus':os.cpu_count(),
+            'affinity_cpus':len(os.sched_getaffinity(0)) if hasattr(os,'sched_getaffinity') else None}
+
+def main():
+    parser=argparse.ArgumentParser(description='Create an explicit private expected fixture manifest before a prospective pair')
+    parser.add_argument('--reference',type=Path,required=True)
+    parser.add_argument('--model-cache',type=Path,required=True)
+    parser.add_argument('--output',type=Path,required=True)
+    args=parser.parse_args()
+    assert not args.output.exists(), 'preserve expected manifest'
+    record={'recorded_utc':datetime.now(timezone.utc).isoformat(),
+            'scope':'explicit identity for a newly prepared stopped fixture; no retrospective historical identity claim',
+            'snapshot':snapshot(args.reference,args.model_cache)}
+    # Manifest includes credential-file hashes: keep it private; pair provenance
+    # publishes only the aggregate digest/counts, never this entries mapping.
+    descriptor=os.open(args.output,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(descriptor,'w') as stream:json.dump(record,stream,indent=2);stream.write('\n')
+
+if __name__=='__main__':main()

@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Frozen scratch test executables only. Seed must be cleanly stopped before snapshotting."""
+import argparse,json,os,pathlib,re,shutil,subprocess,time
+
+def cpu_provider_assignments(log_text):
+    """Assert the ORT graph assignment, not merely the requested CPU setting."""
+    identities={'embedding':'gpahal--bge-m3-onnx-int8',
+                'reranker':'onnx-community--bge-reranker-v2-m3-ONNX'}
+    found={}
+    stage='embedding_load'
+    decoder=json.JSONDecoder()
+    clean=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',log_text)
+    for line in clean.splitlines():
+        if line.startswith('RESTART_JSON '):
+            phase=json.loads(line[len('RESTART_JSON '):])['phase']
+            if phase=='write_and_memory_drain':stage='maintenance'
+            elif phase=='maintenance':stage='reranker_load'
+            elif phase=='search_cold':stage='search_loaded'
+        if 'ONNX graph execution-provider assignment' not in line:
+            continue
+        assert 'model_graph=' in line and 'assigned_nodes=' in line, 'provider assignment fields missing'
+        graph,_=decoder.raw_decode(line.split('model_graph=',1)[1])
+        nodes,_=decoder.raw_decode(line.split('assigned_nodes=',1)[1])
+        # Prepared ORT files have opaque digest names. The isolated harness loads
+        # its accuracy embedding during memory drain and reranker on first search.
+        roles=[role for role,identity in identities.items() if identity in graph]
+        if not roles:
+            assert '/prepared/' in graph, f'unrecognized scoring graph: {graph}'
+            assert stage in {'embedding_load','reranker_load'}, f'graph loaded in unexpected phase: {stage}'
+            roles=['embedding' if stage=='embedding_load' else 'reranker']
+        assert len(roles)==1
+        role=roles[0]
+        assert role not in found, f'multiple scoring graphs for {role}; investigate before reporting'
+        assert set(nodes)=={'CPUExecutionProvider'} and nodes['CPUExecutionProvider']>0, f'{role}: actual assignment is {nodes}'
+        found[role]={'model_graph':graph,'assigned_nodes':nodes,'role_identity':'repository path' if identities[role] in graph else 'isolated product load phase with configured accuracy model'}
+    assert set(found)==set(identities), f'CPU graph assignment evidence missing: {set(identities)-set(found)}'
+    return found
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('--seed',type=pathlib.Path,required=True)
+    p.add_argument('--output',type=pathlib.Path,required=True)
+    p.add_argument('--arm',action='append',required=True,help='name,commit,frozen-test-executable')
+    p.add_argument('--documents',type=int,required=True)
+    p.add_argument('--index',choices=['memory','disk'],required=True)
+    a=p.parse_args()
+    arms=[x.split(',',2) for x in a.arm]
+    assert len(arms)==3 and len({x[0] for x in arms})==3
+    assert not list(a.seed.glob('postgres/data/postmaster.pid')), 'stop seed PostgreSQL first'
+    markers=list(a.seed.glob('index/*/memories/.pamin-optimized-files'))
+    assert len(markers)==1, 'exactly one saved-floor marker required'
+    version,floor=markers[0].read_text().split()
+    assert version=='v1' and int(floor)>256, 'real optimized index too small'
+    assert (a.seed/'models').is_symlink(), 'share prepopulated model cache explicitly'
+    a.output.mkdir(parents=True,exist_ok=False)
+    env=os.environ.copy()
+    env.update(PAMIN_DEVICE='cpu',PAMIN_PROFILE='accuracy',FLOOR_MODE='trial',FLOOR_DOCUMENTS=str(a.documents),FLOOR_VECTOR_INDEX=a.index,
+               HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
+    ticks=os.sysconf('SC_CLK_TCK')
+    with (a.output/'raw.jsonl').open('w',buffering=1) as raw:
+        for rep in range(3):
+            for name,commit,binary in arms[rep:]+arms[:rep]:
+                home=a.output/f'{rep}-{name}'
+                shutil.copytree(a.seed,home,symlinks=True)
+                env['PAMIN_EVAL_HOME']=str(home.resolve())
+                log=a.output/f'{rep}-{name}.log'
+                began=time.monotonic()
+                with log.open('w') as out:
+                    result=subprocess.run([str(pathlib.Path(binary).resolve()),'--ignored','--exact','restart_floor','--nocapture'],env=env,stdout=out,stderr=subprocess.STDOUT)
+                    process_wall_seconds=time.monotonic()-began
+                assert result.returncode==0, f'arm {name} failed; inspect {log}'
+                log_text=log.read_text()
+                providers=cpu_provider_assignments(log_text)
+                rows=[]
+                for line in log_text.splitlines():
+                    if line.startswith('RESTART_JSON '):
+                        row=json.loads(line[len('RESTART_JSON '):]); row.update(arm=name,commit=commit,repetition=rep,index=a.index,cpu_scope='process threads only; PostgreSQL excluded',rss_scope='process only',clock_ticks_per_second=ticks,actual_providers=providers,conditions='new Engine process; warm OS/model file cache; isolated copied stopped DB/index')
+                        for key in ['user','system']:
+                            row[f'cpu_{key}_seconds']=None if row['phase']=='closed_index' else (row['process_after'][key+'_ticks']-row['process_before'][key+'_ticks'])/ticks
+                        raw.write(json.dumps(row)+'\n');rows.append(row)
+                phases={x['phase'] for x in rows}
+                assert {'open','write_and_memory_drain','durability_flush','maintenance','search_cold','search_warmup','search_warm','new_write_search','closed_index'}<=phases
+                new_write=next(x for x in rows if x['phase']=='new_write_search')
+                assert new_write['extra']['known_new_topic_retrieved'] and 'restart-proof' in new_write['extra']['topics']
+                closed=[x for x in rows if x['phase']=='closed_index']
+                assert len(closed)==1 and closed[0]['measurement_kind']=='diagnostic' and closed[0]['wall_ms'] is None
+                assert sum(x['phase']=='search_cold' for x in rows)==1
+                assert sum(x['phase']=='search_warmup' for x in rows)==2
+                warm=[x for x in rows if x['phase']=='search_warm']
+                assert len(warm)==24 and len({x['extra']['query_document'] for x in warm})==24
+                maintenance=next(x for x in rows if x['phase']=='maintenance')
+                actual=maintenance['extra']['optimize_completed_delta']
+                assert actual==(0 if name=='candidate' else 1), f'{name}: maintenance premise failed: {actual}'
+                raw.write(json.dumps({'arm':name,'repetition':rep,'phase':'process_total','wall_seconds':process_wall_seconds,'includes':'open/write/maintenance/search/shutdown','commit':commit})+'\n')
+                assert not list(home.glob('postgres/data/postmaster.pid')), 'trial left database running'
+if __name__=='__main__':main()

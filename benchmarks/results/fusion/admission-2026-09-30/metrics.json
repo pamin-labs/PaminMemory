@@ -1,0 +1,14 @@
+{
+  "Known-target recall@10": {
+    "before": 0.875,
+    "after": 1.0,
+    "absolute_difference": 0.125,
+    "percentage_change": 14.285714285714286
+  },
+  "Known-target MRR@10": {
+    "before": 0.8263888888888888,
+    "after": 0.9027777777777778,
+    "absolute_difference": 0.07638888888888895,
+    "percentage_change": 9.243697478991605
+  }
+}

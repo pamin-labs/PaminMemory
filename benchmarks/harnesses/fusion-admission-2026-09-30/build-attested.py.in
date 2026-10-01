@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Future scratch-only builds: capture input/output identities before any trial.
+
+This was not used for the historical pair and does not attest that pair.
+"""
+import hashlib,json,os,shutil,subprocess,sys
+from datetime import datetime,timezone
+from pathlib import Path
+
+if sys.flags.optimize:
+    raise SystemExit('Build guards require assertions; remove -O/PYTHONOPTIMIZE')
+
+ROOT=Path('/workspace/scratch/fusion-pool-prototype-tools')
+OUTPUT=ROOT/'build-attestation.json'
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def inputs(variant,helper):
+    # Frozen source-only snapshots; reject build directories inside inputs.
+    assert not (variant/'target').exists() and not (helper/'target').exists()
+    files={str(p.resolve()):digest(p) for p in variant.rglob('*') if p.is_file()}
+    for p in [helper/'Cargo.toml',helper/'Cargo.lock',*[f for f in (helper/'src').rglob('*') if f.is_file()]]:
+        files[str(p.resolve())]=digest(p)
+    return files
+
+def main():
+    assert not OUTPUT.exists(), 'refuse to overwrite an attestation'
+    assert not (ROOT/'binaries.json').exists(), 'preserve the historical binary manifest'
+    for arm in ['baseline','pooled']:
+        for path in [ROOT/'bin'/arm,ROOT/f'attested-build-{arm}.jsonl',ROOT/f'attested-build-{arm}.log']:
+            assert not path.exists(), 'preserve existing build/binary evidence'
+    sources=json.loads((ROOT/'variants/manifest.json').read_text())
+    env=os.environ.copy()
+    # Pin compilation inputs rather than inheriting a sweep/build shell.
+    bad=sorted(k for k in env if k.startswith('PAMIN_') or k in
+               ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER'])
+    if bad:raise SystemExit('Refusing inherited build/tuning overrides: '+', '.join(bad))
+    assert env.get('ORT_PREFER_DYNAMIC_LINK')=='1'
+    assert env.get('ORT_LIB_LOCATION'), 'set the documented ORT location'
+    result={'status':'prospective_build_inputs_and_outputs',
+            'recorded_utc':datetime.now(timezone.utc).isoformat(),
+            'rustc':subprocess.check_output(['rustc','+1.98.1','-Vv'],text=True),
+            'cargo':subprocess.check_output(['cargo','+1.98.1','-V'],text=True),
+            'build_environment':{k:env.get(k) for k in ['ORT_PREFER_DYNAMIC_LINK','ORT_LIB_LOCATION']},
+            'arms':{}}
+    binaries=[]
+    for arm in ['baseline','pooled']:
+        variant=sources['variants'][arm]
+        tree=Path(variant['path']).resolve();helper=Path(variant['helper_path']).resolve()
+        assert tree.is_relative_to(ROOT/'variants') and helper.is_relative_to(ROOT/'helpers')
+        for relative,expected in variant['overlaid_sha256'].items():assert digest(tree/relative)==expected
+        assert digest(helper/'src/main.rs')==variant['helper_source_sha256']
+        # Every local path dependency must resolve into this exact variant.
+        import tomllib
+        manifest=tomllib.loads((helper/'Cargo.toml').read_text())
+        for name,dep in manifest['dependencies'].items():
+            if isinstance(dep,dict) and 'path' in dep:
+                assert (helper/dep['path']).resolve()==tree/'crates'/name
+        before=inputs(tree,helper)
+        target=ROOT/'build-target'/arm
+        env['CARGO_TARGET_DIR']=str(target)
+        command=['cargo','+1.98.1','build','--release','--offline','--locked',
+                 '--message-format=json','--manifest-path',str(helper/'Cargo.toml')]
+        stdout=ROOT/f'attested-build-{arm}.jsonl';stderr=ROOT/f'attested-build-{arm}.log'
+        assert not stdout.exists() and not stderr.exists()
+        with stdout.open('w') as out,stderr.open('w') as err:
+            subprocess.run(command,cwd=helper,env=env,stdout=out,stderr=err,check=True)
+        assert inputs(tree,helper)==before, 'build changed frozen inputs'
+        artifacts=[r for line in stdout.read_text().splitlines() if line.startswith('{')
+                   for r in [json.loads(line)] if r.get('reason')=='compiler-artifact'
+                   and r['target']['name']=='identifier-diagnostic' and r.get('executable')]
+        assert len(artifacts)==1
+        artifact=artifacts[0];executable=Path(artifact['executable'])
+        assert executable.resolve().is_relative_to(target.resolve())
+        frozen=ROOT/'bin'/arm
+        assert not frozen.exists(), 'use new bin paths; preserve historical measured binaries'
+        frozen.parent.mkdir(exist_ok=True);shutil.copy2(executable,frozen)
+        record={'source_revision':sources['revision'],'variant_path':variant['path'],
+                'helper_path':variant['helper_path'],'inputs':before,'command':command,
+                'compiler_artifact':artifact,'build_stdout_sha256':digest(stdout),
+                'build_stderr_sha256':digest(stderr),'binary_sha256':digest(frozen),
+                'binary_bytes':frozen.stat().st_size}
+        assert record['binary_sha256']==digest(executable)
+        result['arms'][arm]=record
+        binaries.append({'arm':arm,'binary':str(frozen),'sha256':record['binary_sha256'],
+                         'bytes':record['binary_bytes'],'runtime':'ORT dynamic 1.28.0'})
+    # Publish only after both builds pass; this runner never invokes a model/DB.
+    assert not (ROOT/'binaries.json').exists(), 'preserve the historical binary manifest'
+    OUTPUT.write_text(json.dumps(result,indent=2)+'\n')
+    (ROOT/'binaries.json').write_text(json.dumps(binaries,indent=2)+'\n')
+
+if __name__=='__main__':main()

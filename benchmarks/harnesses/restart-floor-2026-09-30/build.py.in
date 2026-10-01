@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Sequential builds; never overlap this setup with a timed experiment."""
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+
+root = pathlib.Path('/workspace/scratch/restart-floor')
+env = os.environ.copy()
+env.update(RUSTUP_HOME='/workspace/.rustup', CARGO_HOME='/workspace/.cargo',
+           CARGO_TARGET_DIR='/workspace/PaminMemory/target', CARGO_BUILD_JOBS='4',
+           ORT_LIB_LOCATION='/workspace/.onnxruntime/onnxruntime-linux-x64-1.28.0/lib', ORT_PREFER_DYNAMIC_LINK='1')
+env['PATH'] = '/workspace/.cargo/bin:' + env['PATH']
+records = []
+for arm in ['main', 'predecessor', 'candidate']:
+    checkout = root / 'checkouts' / arm
+    target = checkout / 'crates/pamin-engine/tests/scratch_restart_floor.rs'
+    shutil.copyfile(root / 'harness.rs', target)
+    stdout = root / f'build-{arm}.jsonl'
+    stderr = root / f'build-{arm}.log'
+    print(f'BUILD_START {arm}', flush=True)
+    with stdout.open('w') as out, stderr.open('w') as err:
+        # A shared target can reuse path crates across worktrees with identical
+        # relative manifests and older checkout mtimes. Keep registry deps but
+        # rebuild every product crate for the selected source tree.
+        subprocess.run(['cargo', 'clean', '--release', '-p', 'pamin-core', '-p', 'pamin-store', '-p', 'pamin-index', '-p', 'pamin-engine'],
+                       cwd=checkout, env=env, stdout=err, stderr=err, check=True)
+        subprocess.run(['cargo', 'test', '-p', 'pamin-engine', '--test', 'scratch_restart_floor', '--no-run', '--release', '--message-format=json'],
+                       cwd=checkout, env=env, stdout=out, stderr=err, check=True)
+    artifacts = [json.loads(line) for line in stdout.read_text().splitlines() if line.startswith('{')]
+    executables = [x['executable'] for x in artifacts if x.get('reason') == 'compiler-artifact' and x.get('target', {}).get('name') == 'scratch_restart_floor' and x.get('executable')]
+    assert len(executables) == 1, executables
+    frozen = root / 'bin' / arm
+    shutil.copy2(executables[0], frozen)
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=checkout, text=True).strip()
+    records.append({'arm': arm, 'commit': commit, 'binary': str(frozen), 'sha256': hashlib.sha256(frozen.read_bytes()).hexdigest()})
+    print(f'BUILD_FROZEN {arm} {commit}', flush=True)
+(root / 'binaries.json').write_text(json.dumps(records, indent=2) + '\n')
