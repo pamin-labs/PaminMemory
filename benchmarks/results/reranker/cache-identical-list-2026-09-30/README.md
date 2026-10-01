@@ -21,9 +21,13 @@ python3 test_verify.py
 
 The verifier reads sanitized archives, checks file hashes, derives every row,
 checks source-declared f32 bits and gold ranks, recomputes costs and rejects
-invalid evidence. It never starts a build, database or model. Native fixtures
-and sanitized controller sources are archived as inert sources, not a
-portable runner. Original private logs and transformation hashes remain
+invalid evidence. It never starts a build, database or model. Product
+reranking/fusion source snapshots and fixture JSON remain public.
+Number-producing native probes and build/execution/database controllers were
+removed from the tracked archive after private byte-for-byte preservation; they
+remain scratch artifacts under the repository measurement policy. The public
+archive contains no native measurement runner. Original private logs and
+transformation hashes remain
 private; no credential record or complete private seed/clone manifest is
 included. Every public stdout was sanitized **before** gzip compression.
 
@@ -45,8 +49,15 @@ The memo was measured at `d0b6a14a4f317fea3c1e117f627289aad1b1c964`, binary
 Publication restacking and explanatory documentation edits do not alter those
 frozen inputs. The archived measured reranking source is the original source.
 
-All four product libraries and the declared helper were freshly compiled from
-Git-blob-checked source with Rust 1.98.1. Shared third-party artifacts were
+Historical build records report all four product libraries and the declared
+helper freshly compiled from Git-blob-checked workspace inputs with Rust 1.98.1.
+The compiled harness SHA remains its exact recorded historical identity; its
+source and the execution/build controllers are privately retained and are not
+publicly inspectable. The public verifier checks retained product source copies,
+recorded identities and raw evidence, without certifying a complete public
+source-to-binary artifact binding. Original retrieval input is byte-identical at
+both frozen commits; its immutable Git blob reference is retained in the receipt.
+Shared third-party artifacts were
 reused; their historical build provenance is unknown and they are **not**
 claimed freshly source-attested. Executed prepared models, tokenizer assets,
 external weights, native ORT 1.28/zvec libraries and ELF loader are hash-bound.
@@ -67,8 +78,8 @@ Accurate process has fresh A or B, five hot repeats, the other configuration,
 five hot repeats and a new query. A uses default Fusion; B disables only the
 supported ngram channel per call as a context control. All 36 complete stdout
 archives are retained, including regressions. Fresh native processes are evidenced
-by the archived controller's per-job `Popen` and separate raw records; native
-process PID/startticks were not retained, so these records do not directly attest
+by historical per-job controller `Popen` records and separate raw records; the
+controller source is privately retained. Native process PID/startticks were not retained, so these records do not directly attest
 that identity. Retained PID/startticks identify owned PostgreSQL servers.
 
 Fresh, history and hot fused inputs, raw logits, typed Why fields, limited
