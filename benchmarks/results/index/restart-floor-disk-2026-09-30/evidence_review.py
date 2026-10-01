@@ -27,6 +27,10 @@ def memory_status(snapshot):
     assert values['VmHWM']>=values['VmRSS'], 'RSS exceeds process high-water mark'
     return values
 
+def optimize_job_count(value,expected):
+    assert type(value) is int and value>=0, 'optimize job count must be a nonnegative integer (booleans refused)'
+    assert value==expected, 'arm optimize job count differs'
+
 def real_measurement(value, positive=False):
     assert type(value) in {int,float} and math.isfinite(value) and (value>0 if positive else value>=0), 'invalid real timing observation (booleans refused)'
 

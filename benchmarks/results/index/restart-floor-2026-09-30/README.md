@@ -79,3 +79,8 @@ Historical memory chronology qualification: the [recomputed receipt](hwm-review.
 CPU-counter verification checks nonnegative integer user/system cumulative ticks across every consecutive non-null before/after snapshot, including phase boundaries and missing-snapshot gaps. It does not add full-lifetime CPU coverage beyond the retained measurement scope.
 
 The standalone HNSW manifest directly authenticates the sibling Disk `provenance.json` and `provider-bindings.json` consumed for model-role/metadata binding; the Disk verifier need not run first. Consistent edits to those inputs still require changing the HNSW evidence manifest and are rejected against its retained hashes.
+
+Offline verification requires each maintenance optimize-job observation to be
+an actual nonnegative JSON integer, excluding booleans, before comparing the
+arm’s expected count. Matching raw/log values and refreshed derived summaries
+or manifests do not replace this type check. Historical raw values are unchanged.

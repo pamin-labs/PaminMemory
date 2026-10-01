@@ -47,7 +47,7 @@ for arm,commit in expected_commits.items():
         assert phases['open'][0]['extra']['documents']==18000
         maintenance=phases['maintenance'][0]
         assert maintenance['extra']['documents']==18001
-        assert maintenance['extra']['optimize_completed_delta']==(0 if arm=='candidate' else 1)
+        review.optimize_job_count(maintenance['extra']['optimize_completed_delta'],0 if arm=='candidate' else 1)
         complete=maintenance['extra']['completeness']
         assert complete==(struct.unpack('f',struct.pack('f',18000/18001))[0] if arm=='candidate' else 1.0), 'Disk arm maintenance completeness differs'
         assert phases['write_and_memory_drain'][0]['extra']=={'applied':1,'completed':2,'pending':1 if arm=='candidate' else 2}, 'Disk single-write drain premise differs'
