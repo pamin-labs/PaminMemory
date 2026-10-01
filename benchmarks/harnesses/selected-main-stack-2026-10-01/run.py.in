@@ -63,7 +63,7 @@ def native(home, env, binary, prefix):
         with Path(str(prefix) + '.log').open('x') as stream:
             process = subprocess.Popen([str(binary), '--ignored', '--exact', 'cache_product_limit_probe',
                                         '--nocapture', '--test-threads=1'], cwd=c.ROOT / 'main', env=env,
-                                       stdout=stream, stderr=subprocess.STDOUT)
+                                       stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
             while process.poll() is None:
                 c.guard()
                 pg.check(home, owned)
@@ -77,11 +77,12 @@ def native(home, env, binary, prefix):
         return {'native_wall_seconds': time.monotonic() - start, 'samples': samples,
                 'polling_seconds': 1, 'PG_start_stop_included': False}
     finally:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=10)
-        if owned is not None:
-            pg.stop(home, env, owned)
+        try:
+            if process is not None:
+                c.stop_group(process)
+        finally:
+            if owned is not None:
+                pg.stop(home, env, owned)
 
 
 def main():

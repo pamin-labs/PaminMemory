@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import time
 
@@ -91,10 +92,20 @@ def environment(home=None):
     return env
 
 
+def stop_group(process):
+    # Call only for Popen instances created here with start_new_session=True.
+    # Their PID is the new session/group ID, never a discovered or supplied PID.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=10)
+
+
 def monitored(command, cwd, env, prefix, limit=900):
     start = time.monotonic()
     with Path(str(prefix) + '.stdout').open('x') as out, Path(str(prefix) + '.stderr').open('x') as err:
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err)
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
         try:
             while process.poll() is None:
                 guard()
@@ -102,9 +113,7 @@ def monitored(command, cwd, env, prefix, limit=900):
                 time.sleep(1)
             require(process.returncode == 0, 'operation failed; preserve logs and workspace')
         finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=10)
+            stop_group(process)
 
 
 def schedule():
