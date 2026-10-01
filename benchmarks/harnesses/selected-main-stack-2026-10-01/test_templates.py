@@ -61,11 +61,12 @@ class Templates(unittest.TestCase):
             (node / 'cpu.max').write_text(quota)
         membership = self.work / 'membership'
         membership.write_text('0::/slice/pod\n')
+        (self.work / 'mountinfo').write_text(f'27 1 0:26 / {root} rw - cgroup2 cgroup rw\n')
         return root, leaf, membership
 
     def test_nested_ancestor_headroom_and_cpu_limits(self):
         root, leaf, membership = self.mock_cgroup()
-        value = self.common.cgroup_conditions(root, membership)
+        value = self.common.cgroup_conditions(root, membership, self.work / 'mountinfo')
         self.assertEqual(value['cgroup_path'], str(leaf))
         self.assertEqual(value['cgroup_memory_bytes'], 1024**3)
         self.assertEqual(value['effective_memory_headroom_bytes'], 1024**3)
@@ -80,7 +81,7 @@ class Templates(unittest.TestCase):
         self.assertEqual(retained['effective_cpu_quota_cores'], 2)
         self.assertIn('architecture', retained['host'])
         (root / 'slice/memory.current').write_text(str(2 * 1024**3))
-        value = self.common.cgroup_conditions(root, membership)
+        value = self.common.cgroup_conditions(root, membership, self.work / 'mountinfo')
         self.assertEqual(value['effective_memory_headroom_bytes'], 7 * 1024**3)
 
     def test_cgroup_path_escapes_and_symlinks_are_refused(self):
@@ -88,19 +89,19 @@ class Templates(unittest.TestCase):
         for escape in ['/../outside', '/slice/../../outside', 'relative']:
             membership.write_text('0::' + escape + '\n')
             with self.assertRaisesRegex(ValueError, 'path escape'):
-                self.common.cgroup_conditions(root, membership)
+                self.common.cgroup_conditions(root, membership, self.work / 'mountinfo')
         membership.write_text('0::/missing-leaf\n')
         with self.assertRaisesRegex(ValueError, 'effective cgroup missing'):
-            self.common.cgroup_conditions(root, membership)
+            self.common.cgroup_conditions(root, membership, self.work / 'mountinfo')
         outside = self.work / 'outside'; outside.mkdir()
         (root / 'escape').symlink_to(outside, target_is_directory=True)
         membership.write_text('0::/escape\n')
         with self.assertRaisesRegex(ValueError, 'path escape'):
-            self.common.cgroup_conditions(root, membership)
+            self.common.cgroup_conditions(root, membership, self.work / 'mountinfo')
         (root / 'alias').symlink_to(leaf, target_is_directory=True)
         membership.write_text('0::/alias\n')
         with self.assertRaisesRegex(ValueError, 'symlink'):
-            self.common.cgroup_conditions(root, membership)
+            self.common.cgroup_conditions(root, membership, self.work / 'mountinfo')
 
     def test_owned_pg_disk_counts_local_wal_and_excludes_external_links(self):
         data = self.work / 'postgres/data'; wal = data / 'pg_wal'; wal.mkdir(parents=True)
@@ -144,6 +145,8 @@ class Templates(unittest.TestCase):
                         return Mock(stdout='170005' if stage == 'version' else '170006')
                     return Mock(stdout='wrong setting')
                 with patch.object(self.pg, 'preflight', return_value=item), \
+                     patch.object(self.pg, 'installation_identity', return_value={'mock': 'build'}), \
+                     patch.object(self.pg, 'build_identity', return_value={'mock': 'authenticated build identity'}), \
                      patch.object(self.pg.subprocess, 'run', side_effect=execute), \
                      patch.object(self.pg, 'identity', side_effect=RuntimeError('unowned') if stage == 'identity' else None, return_value=owned), \
                      patch.object(self.pg, 'listening', return_value=True), \
@@ -377,6 +380,8 @@ class Templates(unittest.TestCase):
                 return Mock(stdout='')
             return Mock(stdout=self.pg.NATIVE_SETTINGS.get(command[-1].removeprefix('SHOW '), ''))
         with patch.object(self.pg, 'preflight', return_value=item), \
+                     patch.object(self.pg, 'installation_identity', return_value={'mock': 'build'}), \
+                     patch.object(self.pg, 'build_identity', return_value={'mock': 'authenticated build identity'}), \
              patch.object(self.pg.subprocess, 'run', side_effect=execute), \
              patch.object(self.pg, 'identity', return_value=owned), \
              patch.object(self.pg, 'listening', return_value=True), \
@@ -390,6 +395,8 @@ class Templates(unittest.TestCase):
                 return Mock(stdout='/var/run/postgresql')
             return execute(command, **kwargs)
         with patch.object(self.pg, 'preflight', return_value=item), \
+                     patch.object(self.pg, 'installation_identity', return_value={'mock': 'build'}), \
+                     patch.object(self.pg, 'build_identity', return_value={'mock': 'authenticated build identity'}), \
              patch.object(self.pg.subprocess, 'run', side_effect=wrong_effective), \
              patch.object(self.pg, 'identity', return_value=owned), \
              patch.object(self.pg, 'listening', return_value=True), \
