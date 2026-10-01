@@ -5,6 +5,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Run guards require assertions; remove -O/PYTHONOPTIMIZE')
 NATIVE=runpy.run_path(str(Path(__file__).with_name('native-guards.py.in')))
+STABLE=runpy.run_path(str(Path(__file__).with_name('stable-executables.py.in')))
 MODEL=runpy.run_path(str(Path(__file__).with_name('model-guards.py.in')))
 def verify_models(record):
     path=Path(record['model_manifest_path'])
@@ -117,17 +118,36 @@ def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record)
         record['native_after_arms'].append(dict(identity,arm=record['copies'][-1]['arm'],repetition=record['copies'][-1]['repetition'],recorded_utc=datetime.now(timezone.utc).isoformat()))
         write_record(record_path,record)
         return result
-    try:
+    sources={arm.split(',',2)[0]:Path(arm.split(',',2)[2]) for arm in arms}
+    original_run=runner.subprocess.run
+    def execute(command,**kwargs):
+        name=record['copies'][-1]['arm']
+        assert Path(command[0]).resolve()==sources[name].resolve(), 'unexpected trial executable'
+        entry=opened[name]
+        before=STABLE['verify'](entry)
+        command,options=STABLE['invocation'](command,entry,kwargs)
+        endpoint={'arm':name,'repetition':record['copies'][-1]['repetition'],'before':before,'executed_fd':command[0]}
+        record.setdefault('executed_binaries',[]).append(endpoint)
+        try:return original_run(command,**options)
+        finally:
+            try:endpoint['after']=STABLE['verify'](entry)
+            except BaseException as error:endpoint['failure_class']=type(error).__name__;raise
+            finally:write_record(record_path,record)
+    with STABLE['copies'](sources,record['arm_binary_identities'],record_path.parent,excluded=(seed,output)) as opened:
+      try:
+        runner.subprocess.run=execute
         runner.shutil.copytree=copytree;runner.cpu_provider_assignments=providers;sys.argv=argv
         os.environ.clear();os.environ.update(env)
         runner.main()
         assert len(record['native_after_arms'])==9, 'expected nine native endpoint checks'
+        assert len(record.get('executed_binaries',[]))==9, 'expected nine FD-bound trial executions'
         assert len(record['copies'])==9, 'expected exactly nine root fixture copies'
         assert len(record['models_after_arms'])==9, 'expected nine model endpoint checks'
         record['models_after_trials']=verify_models(record)
         record['fixture_after_trials']=verify_fixture(seed,expected)
         write_record(record_path,record)
-    finally:
+      finally:
+        runner.subprocess.run=original_run
         runner.shutil.copytree=original;runner.cpu_provider_assignments=original_provider;sys.argv=old_argv
         os.environ.clear();os.environ.update(old_env)
 def load_runner(path):
@@ -277,7 +297,15 @@ def main():
         record['models_before_launch']=verify_models(record);write_record(a.record,record)
         if a.mode=='setup':
             NATIVE['verify'](native)
-            result=subprocess.run(command,env=env,capture_output=True,text=True);record['returncode']=result.returncode
+            identity={'sha256':attestation['arms']['candidate']['binary_sha256'],'bytes':attestation['arms']['candidate']['binary_bytes']}
+            with STABLE['copies']({'candidate':executable},{'candidate':identity},a.record.parent,excluded) as opened:
+                entry=opened['candidate'];record['setup_binary_before']=STABLE['verify'](entry)
+                actual_command,options=STABLE['invocation'](command,entry)
+                record['setup_executed_fd']=actual_command[0]
+                try:result=subprocess.run(actual_command,env=env,capture_output=True,text=True,**options)
+                finally:
+                    record['setup_binary_after']=STABLE['verify'](entry);write_record(a.record,record)
+            record['returncode']=result.returncode
             sys.stdout.write(result.stdout);sys.stderr.write(result.stderr)
             assert result.returncode==0
             record['setup_output']=setup_rows(result.stdout,a.stage,a.documents)
