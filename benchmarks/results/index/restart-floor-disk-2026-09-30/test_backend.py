@@ -12,7 +12,9 @@ def corrupt(repo,mutation):
         if mutation=='duplicate':lines.insert(at,lines[at])
         elif mutation=='missing':lines.pop(at)
         elif mutation=='contradictory':lines[at]=lines[at].replace('will use synchronous pread();','will not use synchronous pread();')
-        else:lines.append('[ INFO diskann_file_reader.cc:99] DiskAnn: selected '+mutation+' async I/O backend; synchronous pread() disabled.')
+        else:
+            summary=next(i for i,line in enumerate(lines) if line.startswith('test result:'))
+            lines.insert(summary,'[ INFO diskann_file_reader.cc:99] DiskAnn: selected '+mutation+' async I/O backend; synchronous pread() disabled.')
         p.write_bytes(gzip.compress(('\n'.join(lines)+'\n').encode(),mtime=0))
 if __name__=='__main__':
     for mutation in [None,'duplicate','missing','contradictory','io_uring','libaio']:

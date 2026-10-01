@@ -39,7 +39,7 @@
     "benchmarks/results/index/restart-floor-2026-09-30/test_query_schedule.py": "78da849621259f5968b09ea443ab921b68504b68fb80bd0c9cafeebd86f09d32",
     "benchmarks/results/index/restart-floor-2026-09-30/timing-review.json": "a28b005cddaafa76fbc3e3c7d327e557c78214520c7e1ae2acde42235970509a",
     "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "ce8a8413177e2cc5e0f600d86b27e4a71a1b17d6d199b51576b5296b6a2c4655",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "c0a689754d690ac1d4303f982a6b84c5bdef043226140fe5a2b13780f9a67d23",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "94532bddbf176827424e33a87ad70fc36bdbaaa7199a9e20824b68aed9837b06",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/post-review-seed.json": "b174ca378307a5e8882de3eee0e7a51a317e6eb2adc80364d8ca3b669855ccde",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/README.md": "87945fda639ae03604bbf3e6d3ba7f705f29912be37ad88e56a4cc152af53110",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/audit.json.gz": "c57821376d0a0f69df48903985ece1b4402e6d43a434d3c7848f7ba1372fd8c8",
