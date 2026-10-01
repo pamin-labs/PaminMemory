@@ -638,8 +638,9 @@ fn plan_file(root: &Path, key: &str) -> Option<PathBuf> {
     let directory = root.join("compute-plans-v1");
     std::fs::create_dir_all(&directory).ok()?;
     let _lock = file_lock(&directory.join("plans.lock"))?;
-    prune_plans(&directory).ok()?;
-    Some(directory.join(format!("{}.json", fingerprint(key))))
+    let path = directory.join(format!("{}.json", fingerprint(key)));
+    prune_plans(&directory, Some(&path)).ok()?;
+    Some(path)
 }
 
 const MAX_DISK_PLANS: usize = 256;
@@ -650,12 +651,39 @@ fn plan_metadata_lock(path: &Path) -> Option<std::fs::File> {
 
 /// Call while holding plans.lock. One fixed metadata lock replaces per-key
 /// lock files; never unlink legacy locks, whose old inode may have waiters.
-fn prune_plans(directory: &Path) -> std::io::Result<()> {
+fn prune_plans(directory: &Path, preserve: Option<&Path>) -> std::io::Result<()> {
     let now = unix_seconds();
     let mut valid = Vec::new();
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "partial")
+            && let Some((hash, id)) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.split_once('.'))
+            && hash.len() == 64
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            && uuid::Uuid::parse_str(id).is_ok()
+        {
+            // Current writers hold plans.lock. Older writers may still hold
+            // their per-key lock; never remove a live legacy publication.
+            let legacy = directory.join(format!("{hash}.lock"));
+            let _legacy = if legacy.exists() {
+                let lock = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(legacy)?;
+                if lock.try_lock().is_err() {
+                    continue;
+                }
+                Some(lock)
+            } else {
+                None
+            };
+            std::fs::remove_file(path)?;
+            continue;
+        }
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
@@ -681,7 +709,11 @@ fn prune_plans(directory: &Path) -> std::io::Result<()> {
     }
     valid.sort();
     let excess = valid.len().saturating_sub(MAX_DISK_PLANS);
-    for (_, path) in valid.into_iter().take(excess) {
+    for (_, path) in valid
+        .into_iter()
+        .filter(|(_, path)| Some(path.as_path()) != preserve)
+        .take(excess)
+    {
         std::fs::remove_file(path)?;
     }
     Ok(())
@@ -768,7 +800,7 @@ fn remember_plan(
     if let Some(path) = disk {
         let _lock = plan_metadata_lock(path);
         if let Err(error) = write_plan(path, key, &plan)
-            .and_then(|()| prune_plans(path.parent().expect("plan directory")))
+            .and_then(|()| prune_plans(path.parent().expect("plan directory"), Some(path)))
         {
             tracing::debug!(%error, "compute-plan persistence unavailable");
         }
@@ -1715,6 +1747,69 @@ mod tests {
             plans <= MAX_DISK_PLANS,
             "queued publications exceeded the bound"
         );
+    }
+
+    #[test]
+    fn retention_preserves_a_new_short_quarantine_at_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("compute-plans-v1");
+        std::fs::create_dir(&dir).unwrap();
+        for i in 0..MAX_DISK_PLANS {
+            let key = format!("positive-{i}");
+            write_plan(
+                &dir.join(format!("{}.json", fingerprint(&key))),
+                &key,
+                &CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false),
+            )
+            .unwrap();
+        }
+        let path = dir.join(format!("{}.json", fingerprint("quarantine")));
+        remember_plan(
+            "quarantine",
+            Some(&path),
+            &std::sync::Mutex::default(),
+            CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), true),
+        );
+        assert!(read_plan(&path, "quarantine", &[]).is_some());
+        assert_eq!(
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "json"))
+                .count(),
+            MAX_DISK_PLANS
+        );
+    }
+
+    #[test]
+    fn abandoned_partials_are_retired_but_live_legacy_writes_are_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "partial-fixture").unwrap();
+        let dir = path.parent().unwrap();
+        let abandoned = path.with_extension(format!("{}.partial", uuid::Uuid::now_v7()));
+        let other = dir.join("unrelated.partial");
+        std::fs::write(&abandoned, b"interrupted").unwrap();
+        std::fs::write(&other, b"unrelated").unwrap();
+        let legacy = file_lock(&path.with_extension("lock")).unwrap();
+        {
+            let _lock = plan_metadata_lock(&path);
+            prune_plans(dir, None).unwrap();
+        }
+        assert!(
+            abandoned.exists(),
+            "deleted an in-flight legacy publication"
+        );
+        drop(legacy);
+        {
+            let _lock = plan_metadata_lock(&path);
+            prune_plans(dir, None).unwrap();
+        }
+        assert!(!abandoned.exists());
+        assert!(other.exists());
     }
 
     #[test]
