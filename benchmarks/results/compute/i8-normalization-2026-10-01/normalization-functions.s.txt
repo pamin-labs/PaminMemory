@@ -1,0 +1,295 @@
+_old:
+Lfunc_begin1:
+	.cfi_startproc
+	.cfi_personality 155, _rust_eh_personality
+	.cfi_lsda 16, Lexception1
+	sub	sp, sp, #64
+	.cfi_def_cfa_offset 64
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	.cfi_remember_state
+	mov	x21, x0
+	mov	x20, x8
+	bl	__RNvCs1njKG4L9aB3_7___rustc35___rust_no_alloc_shim_is_unstable_v2
+	mov	w0, #4096
+	mov	w1, #4
+	bl	__RNvCs1njKG4L9aB3_7___rustc12___rust_alloc
+	cbz	x0, LBB10_11
+	mov	x19, x0
+	mov	x8, #0
+Lloh64:
+	adrp	x9, lCPI10_0@PAGE
+Lloh65:
+	ldr	q0, [x9, lCPI10_0@PAGEOFF]
+Lloh66:
+	adrp	x9, lCPI10_1@PAGE
+Lloh67:
+	ldr	q1, [x9, lCPI10_1@PAGEOFF]
+Lloh68:
+	adrp	x9, lCPI10_2@PAGE
+Lloh69:
+	ldr	q2, [x9, lCPI10_2@PAGEOFF]
+Lloh70:
+	adrp	x9, lCPI10_3@PAGE
+Lloh71:
+	ldr	q3, [x9, lCPI10_3@PAGEOFF]
+LBB10_2:
+	ldr	q4, [x21], #16
+	tbl.16b	v5, { v4 }, v0
+	tbl.16b	v6, { v4 }, v1
+	tbl.16b	v7, { v4 }, v2
+	tbl.16b	v4, { v4 }, v3
+	scvtf.4s	v4, v4, #24
+	scvtf.4s	v7, v7, #24
+	scvtf.4s	v6, v6, #24
+	scvtf.4s	v5, v5, #24
+	add	x9, x19, x8
+	stp	q6, q5, [x9, #32]
+	stp	q4, q7, [x9]
+	add	x8, x8, #64
+	cmp	x8, #1, lsl #12
+	b.ne	LBB10_2
+	mov	x8, #0
+	movi.2s	v0, #128, lsl #24
+LBB10_4:
+	add	x9, x19, x8
+	ldp	q1, q2, [x9]
+	ldp	q3, q4, [x9, #32]
+	fmul.4s	v1, v1, v1
+	mov	s5, v1[3]
+	mov	s6, v1[2]
+	mov	s7, v1[1]
+	fmul.4s	v2, v2, v2
+	mov	s16, v2[3]
+	mov	s17, v2[2]
+	mov	s18, v2[1]
+	fmul.4s	v3, v3, v3
+	mov	s19, v3[3]
+	mov	s20, v3[2]
+	mov	s21, v3[1]
+	fmul.4s	v4, v4, v4
+	mov	s22, v4[3]
+	mov	s23, v4[2]
+	mov	s24, v4[1]
+	fadd	s0, s0, s1
+	fadd	s0, s0, s7
+	fadd	s0, s0, s6
+	fadd	s0, s0, s5
+	fadd	s0, s0, s2
+	fadd	s0, s0, s18
+	fadd	s0, s0, s17
+	fadd	s0, s0, s16
+	fadd	s0, s0, s3
+	fadd	s0, s0, s21
+	fadd	s0, s0, s20
+	fadd	s0, s0, s19
+	fadd	s0, s0, s4
+	fadd	s0, s0, s24
+	fadd	s0, s0, s23
+	fadd	s0, s0, s22
+	add	x8, x8, #64
+	cmp	x8, #1, lsl #12
+	b.ne	LBB10_4
+	fsqrt	s1, s0
+	str	s1, [sp, #12]
+	fcmp	s0, #0.0
+	b.eq	LBB10_9
+	mov	x8, #0
+	dup.4s	v0, v1[0]
+LBB10_7:
+	add	x9, x19, x8
+	ldp	q1, q2, [x9]
+	ldp	q3, q4, [x9, #32]
+	fdiv.4s	v1, v1, v0
+	fdiv.4s	v2, v2, v0
+	fdiv.4s	v3, v3, v0
+	fdiv.4s	v4, v4, v0
+	stp	q1, q2, [x9]
+	stp	q3, q4, [x9, #32]
+	add	x8, x8, #64
+	cmp	x8, #1, lsl #12
+	b.ne	LBB10_7
+	mov	w8, #1024
+	stp	x8, x19, [x20]
+	str	x8, [x20, #16]
+	.cfi_def_cfa wsp, 64
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	add	sp, sp, #64
+	.cfi_def_cfa_offset 0
+	.cfi_restore w30
+	.cfi_restore w29
+	.cfi_restore w19
+	.cfi_restore w20
+	.cfi_restore w21
+	.cfi_restore w22
+	ret
+LBB10_9:
+	.cfi_restore_state
+Ltmp6:
+	add	x0, sp, #12
+	bl	__RINvNtCs8Mbv00yxnRz_4core9panicking13assert_failedffECs9NEW09rF5m7_13normalization
+Ltmp7:
+	brk	#0x1
+LBB10_11:
+	mov	w0, #4
+	mov	w1, #4096
+	bl	__RNvNtCshxvaOLs88l5_5alloc7raw_vec12handle_error
+LBB10_12:
+Ltmp8:
+	mov	x20, x0
+	mov	x0, x19
+	mov	w1, #4096
+	mov	w2, #4
+	bl	__RNvCs1njKG4L9aB3_7___rustc14___rust_dealloc
+	mov	x0, x20
+	bl	__Unwind_Resume
+	.loh AdrpLdr	Lloh70, Lloh71
+	.loh AdrpAdrp	Lloh68, Lloh70
+	.loh AdrpLdr	Lloh68, Lloh69
+	.loh AdrpAdrp	Lloh66, Lloh68
+	.loh AdrpLdr	Lloh66, Lloh67
+	.loh AdrpAdrp	Lloh64, Lloh66
+	.loh AdrpLdr	Lloh64, Lloh65
+Lfunc_end1:
+	.cfi_endproc
+
+_new:
+	.cfi_startproc
+	sub	sp, sp, #64
+	.cfi_def_cfa_offset 64
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	.cfi_remember_state
+	mov	x20, x0
+	mov	x19, x8
+	add	x8, x0, #32
+	movi.2d	v0, #0000000000000000
+	mov	w9, #1024
+	movi.2d	v1, #0000000000000000
+	movi.2d	v2, #0000000000000000
+	movi.2d	v3, #0000000000000000
+LBB9_1:
+	ldp	q4, q5, [x8, #-32]
+	ldp	q6, q7, [x8], #64
+	sdot.4s	v0, v4, v4
+	sdot.4s	v1, v5, v5
+	sdot.4s	v2, v6, v6
+	sdot.4s	v3, v7, v7
+	subs	x9, x9, #64
+	b.ne	LBB9_1
+	add.4s	v0, v1, v0
+	add.4s	v1, v3, v2
+	add.4s	v0, v1, v0
+	addv.4s	s0, v0
+	str	s0, [sp, #12]
+	fmov	w21, s0
+	cbz	w21, LBB9_7
+	bl	__RNvCs1njKG4L9aB3_7___rustc35___rust_no_alloc_shim_is_unstable_v2
+	mov	w0, #4096
+	mov	w1, #4
+	bl	__RNvCs1njKG4L9aB3_7___rustc12___rust_alloc
+	cbz	x0, LBB9_8
+	mov	x8, #0
+	scvtf	s0, w21
+	fsqrt	s0, s0
+	dup.4s	v0, v0[0]
+Lloh52:
+	adrp	x9, lCPI9_0@PAGE
+Lloh53:
+	ldr	q1, [x9, lCPI9_0@PAGEOFF]
+Lloh54:
+	adrp	x9, lCPI9_1@PAGE
+Lloh55:
+	ldr	q2, [x9, lCPI9_1@PAGEOFF]
+Lloh56:
+	adrp	x9, lCPI9_2@PAGE
+Lloh57:
+	ldr	q3, [x9, lCPI9_2@PAGEOFF]
+Lloh58:
+	adrp	x9, lCPI9_3@PAGE
+Lloh59:
+	ldr	q4, [x9, lCPI9_3@PAGEOFF]
+LBB9_5:
+	ldr	q5, [x20], #16
+	tbl.16b	v6, { v5 }, v1
+	tbl.16b	v7, { v5 }, v2
+	tbl.16b	v16, { v5 }, v3
+	tbl.16b	v5, { v5 }, v4
+	scvtf.4s	v5, v5, #24
+	scvtf.4s	v16, v16, #24
+	scvtf.4s	v7, v7, #24
+	scvtf.4s	v6, v6, #24
+	fdiv.4s	v6, v6, v0
+	fdiv.4s	v7, v7, v0
+	fdiv.4s	v16, v16, v0
+	fdiv.4s	v5, v5, v0
+	add	x9, x0, x8
+	stp	q16, q5, [x9, #32]
+	stp	q6, q7, [x9]
+	add	x8, x8, #64
+	cmp	x8, #1, lsl #12
+	b.ne	LBB9_5
+	mov	w8, #1024
+	stp	x8, x0, [x19]
+	str	x8, [x19, #16]
+	.cfi_def_cfa wsp, 64
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	add	sp, sp, #64
+	.cfi_def_cfa_offset 0
+	.cfi_restore w30
+	.cfi_restore w29
+	.cfi_restore w19
+	.cfi_restore w20
+	.cfi_restore w21
+	.cfi_restore w22
+	ret
+LBB9_7:
+	.cfi_restore_state
+Lloh60:
+	adrp	x2, l_anon.f66abebaec3d1f73c3059fdb8733318a.6@PAGE
+Lloh61:
+	add	x2, x2, l_anon.f66abebaec3d1f73c3059fdb8733318a.6@PAGEOFF
+Lloh62:
+	adrp	x5, l_anon.f66abebaec3d1f73c3059fdb8733318a.7@PAGE
+Lloh63:
+	add	x5, x5, l_anon.f66abebaec3d1f73c3059fdb8733318a.7@PAGEOFF
+	add	x1, sp, #12
+	mov	w0, #1
+	mov	x3, #0
+	bl	__RINvNtCs8Mbv00yxnRz_4core9panicking13assert_failedllECs82bWklYMk3w_3std
+LBB9_8:
+	mov	w0, #4
+	mov	w1, #4096
+	bl	__RNvNtCshxvaOLs88l5_5alloc7raw_vec12handle_error
+	.loh AdrpLdr	Lloh58, Lloh59
+	.loh AdrpAdrp	Lloh56, Lloh58
+	.loh AdrpLdr	Lloh56, Lloh57
+	.loh AdrpAdrp	Lloh54, Lloh56
+	.loh AdrpLdr	Lloh54, Lloh55
+	.loh AdrpAdrp	Lloh52, Lloh54
+	.loh AdrpLdr	Lloh52, Lloh53
+	.loh AdrpAdd	Lloh62, Lloh63
+	.loh AdrpAdd	Lloh60, Lloh61
+	.cfi_endproc
