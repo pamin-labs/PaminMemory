@@ -1,0 +1,2337 @@
+{
+  "scope": "24-query synthetic diagnostic only; no latency/general accuracy inference",
+  "queries": 24,
+  "pairs_per_query_each_arm": 30,
+  "baseline_targets_top10": 21,
+  "pooled_targets_top10": 24,
+  "lost_targets": [],
+  "recovered_targets": [
+    "incident-11519",
+    "incident-5760",
+    "incident-15119"
+  ],
+  "changed_candidate_queries": 10,
+  "actual_provider_graphs": {
+    "baseline": [
+      {
+        "model_graph": "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+        "assigned_nodes": {
+          "CPUExecutionProvider": 1023
+        },
+        "graph_sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4"
+      },
+      {
+        "model_graph": "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+        "assigned_nodes": {
+          "CPUExecutionProvider": 295
+        },
+        "graph_sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164"
+      }
+    ],
+    "pooled": [
+      {
+        "model_graph": "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+        "assigned_nodes": {
+          "CPUExecutionProvider": 1023
+        },
+        "graph_sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4"
+      },
+      {
+        "model_graph": "${MODEL_CACHE}/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+        "assigned_nodes": {
+          "CPUExecutionProvider": 295
+        },
+        "graph_sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "query_document": 11519,
+      "query": "Deployment incident INC0011519 rollback recovery plan",
+      "target": "incident-11519",
+      "fused_rank": 35,
+      "baseline_final_rank": 35,
+      "pooled_final_rank": 3,
+      "baseline_entered": false,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.539854049682617,
+          "weight": 0.125
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.539854049682617,
+          "weight": 0.125
+        },
+        {
+          "kind": "reranked",
+          "score": 6.458774566650391
+        }
+      ],
+      "added_candidates": [
+        "incident-11519"
+      ],
+      "removed_candidates": [
+        "incident-1015"
+      ],
+      "baseline_top10": [
+        "incident-1519",
+        "incident-15190",
+        "incident-15119",
+        "incident-11915",
+        "incident-15195",
+        "incident-15019",
+        "incident-15519",
+        "incident-15219",
+        "incident-15199",
+        "incident-15192"
+      ],
+      "pooled_top10": [
+        "incident-1519",
+        "incident-15190",
+        "incident-11519",
+        "incident-11915",
+        "incident-15119",
+        "incident-15195",
+        "incident-15019",
+        "incident-15519",
+        "incident-15219",
+        "incident-15199"
+      ]
+    },
+    {
+      "query_document": 720,
+      "query": "Deployment incident INC0000720 rollback recovery plan",
+      "target": "incident-720",
+      "fused_rank": 3,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.009967601858079433,
+          "kind": "channel",
+          "rank": 2,
+          "score": 15.406219482421875,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.06537435203790665,
+          "kind": "channel",
+          "rank": 7,
+          "score": 0.7791241407394409,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.790704727172852
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.009967601858079433,
+          "kind": "channel",
+          "rank": 2,
+          "score": 15.406219482421875,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.06537435203790665,
+          "kind": "channel",
+          "rank": 7,
+          "score": 0.7791241407394409,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.790704727172852
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-720",
+        "incident-1720",
+        "incident-10720",
+        "incident-17720",
+        "incident-12720",
+        "incident-15720",
+        "incident-7201",
+        "incident-14720",
+        "incident-11720",
+        "incident-16720"
+      ],
+      "pooled_top10": [
+        "incident-720",
+        "incident-1720",
+        "incident-10720",
+        "incident-17720",
+        "incident-12720",
+        "incident-15720",
+        "incident-7201",
+        "incident-14720",
+        "incident-11720",
+        "incident-16720"
+      ]
+    },
+    {
+      "query_document": 1440,
+      "query": "Deployment incident INC0001440 rollback recovery plan",
+      "target": "incident-1440",
+      "fused_rank": 3,
+      "baseline_final_rank": 3,
+      "pooled_final_rank": 3,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.311080932617188,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.04241495952010155,
+          "kind": "channel",
+          "rank": 12,
+          "score": 0.7737237215042114,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.237985134124756
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.311080932617188,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.04241495952010155,
+          "kind": "channel",
+          "rank": 12,
+          "score": 0.7737237215042114,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.237985134124756
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-440",
+        "incident-10440",
+        "incident-1440",
+        "incident-14440",
+        "incident-4440",
+        "incident-13440",
+        "incident-11440",
+        "incident-14004",
+        "incident-15440",
+        "incident-16440"
+      ],
+      "pooled_top10": [
+        "incident-440",
+        "incident-10440",
+        "incident-1440",
+        "incident-14440",
+        "incident-4440",
+        "incident-13440",
+        "incident-11440",
+        "incident-14004",
+        "incident-15440",
+        "incident-16440"
+      ]
+    },
+    {
+      "query_document": 2160,
+      "query": "Deployment incident INC0002160 rollback recovery plan",
+      "target": "incident-2160",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.358280181884766,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7760749459266663,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.491586685180664
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.358280181884766,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7760749459266663,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.491586685180664
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-2160",
+        "incident-12160",
+        "incident-160",
+        "incident-14160",
+        "incident-4160",
+        "incident-15160",
+        "incident-16160",
+        "incident-9160",
+        "incident-5160",
+        "incident-7160"
+      ],
+      "pooled_top10": [
+        "incident-2160",
+        "incident-12160",
+        "incident-160",
+        "incident-14160",
+        "incident-4160",
+        "incident-15160",
+        "incident-16160",
+        "incident-9160",
+        "incident-5160",
+        "incident-7160"
+      ]
+    },
+    {
+      "query_document": 2880,
+      "query": "Deployment incident INC0002880 rollback recovery plan",
+      "target": "incident-2880",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.450679779052734,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7894535660743713,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.571683883666992
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.450679779052734,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7894535660743713,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.571683883666992
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-2880",
+        "incident-2808",
+        "incident-12880",
+        "incident-8280",
+        "incident-2878",
+        "incident-2885",
+        "incident-6280",
+        "incident-2858",
+        "incident-3280",
+        "incident-2828"
+      ],
+      "pooled_top10": [
+        "incident-2880",
+        "incident-2808",
+        "incident-12880",
+        "incident-8280",
+        "incident-2878",
+        "incident-2885",
+        "incident-6280",
+        "incident-2858",
+        "incident-3280",
+        "incident-2828"
+      ]
+    },
+    {
+      "query_document": 3600,
+      "query": "Deployment incident INC0003600 rollback recovery plan",
+      "target": "incident-3600",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.005282700527459383,
+          "kind": "channel",
+          "rank": 14,
+          "score": 12.040641784667969,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08580366522073746,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7766140103340149,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.6493239402771
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.005282700527459383,
+          "kind": "channel",
+          "rank": 14,
+          "score": 12.040641784667969,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08580366522073746,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7766140103340149,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.6493239402771
+        }
+      ],
+      "added_candidates": [
+        "incident-10360"
+      ],
+      "removed_candidates": [
+        "incident-3476"
+      ],
+      "baseline_top10": [
+        "incident-3600",
+        "incident-13600",
+        "incident-3006",
+        "incident-13606",
+        "incident-3166",
+        "incident-6600",
+        "incident-3462",
+        "incident-3960",
+        "incident-13960",
+        "incident-13200"
+      ],
+      "pooled_top10": [
+        "incident-3600",
+        "incident-13600",
+        "incident-3006",
+        "incident-13606",
+        "incident-3166",
+        "incident-3960",
+        "incident-6600",
+        "incident-3462",
+        "incident-13960",
+        "incident-13200"
+      ]
+    },
+    {
+      "query_document": 4320,
+      "query": "Deployment incident INC0004320 rollback recovery plan",
+      "target": "incident-4320",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.43218231201172,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08409292250871658,
+          "kind": "channel",
+          "rank": 3,
+          "score": 0.7862181663513184,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.4938483238220215
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.43218231201172,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08409292250871658,
+          "kind": "channel",
+          "rank": 3,
+          "score": 0.7862181663513184,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.4938483238220215
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-4320",
+        "incident-14320",
+        "incident-14420",
+        "incident-4720",
+        "incident-4020",
+        "incident-4420",
+        "incident-4620",
+        "incident-4820",
+        "incident-10420",
+        "incident-6320"
+      ],
+      "pooled_top10": [
+        "incident-4320",
+        "incident-14320",
+        "incident-14420",
+        "incident-4720",
+        "incident-4020",
+        "incident-4420",
+        "incident-4620",
+        "incident-4820",
+        "incident-10420",
+        "incident-6320"
+      ]
+    },
+    {
+      "query_document": 5040,
+      "query": "Deployment incident INC0005040 rollback recovery plan",
+      "target": "incident-5040",
+      "fused_rank": 2,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.00320983468554914,
+          "kind": "channel",
+          "rank": 28,
+          "score": 11.444380760192871,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.07410846650600433,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7746530771255493,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.459532260894775
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.00320983468554914,
+          "kind": "channel",
+          "rank": 28,
+          "score": 11.444380760192871,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.07410846650600433,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7746530771255493,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.459532260894775
+        }
+      ],
+      "added_candidates": [
+        "incident-14050"
+      ],
+      "removed_candidates": [
+        "incident-16040"
+      ],
+      "baseline_top10": [
+        "incident-5040",
+        "incident-15040",
+        "incident-40",
+        "incident-4050",
+        "incident-540",
+        "incident-1040",
+        "incident-10540",
+        "incident-10040",
+        "incident-3050",
+        "incident-2050"
+      ],
+      "pooled_top10": [
+        "incident-5040",
+        "incident-15040",
+        "incident-40",
+        "incident-4050",
+        "incident-540",
+        "incident-1040",
+        "incident-10540",
+        "incident-14050",
+        "incident-10040",
+        "incident-3050"
+      ]
+    },
+    {
+      "query_document": 5760,
+      "query": "Deployment incident INC0005760 rollback recovery plan",
+      "target": "incident-5760",
+      "fused_rank": 34,
+      "baseline_final_rank": 34,
+      "pooled_final_rank": 2,
+      "baseline_entered": false,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.00347137451172,
+          "weight": 0.125
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.00347137451172,
+          "weight": 0.125
+        },
+        {
+          "kind": "reranked",
+          "score": 6.390049457550049
+        }
+      ],
+      "added_candidates": [
+        "incident-5760"
+      ],
+      "removed_candidates": [
+        "incident-6053"
+      ],
+      "baseline_top10": [
+        "incident-7060",
+        "incident-7560",
+        "incident-17560",
+        "incident-5860",
+        "incident-1960",
+        "incident-7260",
+        "incident-17060",
+        "incident-7660",
+        "incident-5761",
+        "incident-7057"
+      ],
+      "pooled_top10": [
+        "incident-7060",
+        "incident-5760",
+        "incident-7560",
+        "incident-17560",
+        "incident-5860",
+        "incident-1960",
+        "incident-7260",
+        "incident-7660",
+        "incident-5761",
+        "incident-7057"
+      ]
+    },
+    {
+      "query_document": 6480,
+      "query": "Deployment incident INC0006480 rollback recovery plan",
+      "target": "incident-6480",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.35628890991211,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08273939788341522,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.777524471282959,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.15382719039917
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.35628890991211,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08273939788341522,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.777524471282959,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.15382719039917
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-6480",
+        "incident-6408",
+        "incident-1480",
+        "incident-6580",
+        "incident-6280",
+        "incident-4080",
+        "incident-6080",
+        "incident-10080",
+        "incident-16580",
+        "incident-6418"
+      ],
+      "pooled_top10": [
+        "incident-6480",
+        "incident-6408",
+        "incident-1480",
+        "incident-6580",
+        "incident-6280",
+        "incident-4080",
+        "incident-6080",
+        "incident-10080",
+        "incident-16580",
+        "incident-6418"
+      ]
+    },
+    {
+      "query_document": 7200,
+      "query": "Deployment incident INC0007200 rollback recovery plan",
+      "target": "incident-7200",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.005271373316645622,
+          "kind": "channel",
+          "rank": 16,
+          "score": 12.016923904418945,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.796106219291687,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.614917755126953
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.005271373316645622,
+          "kind": "channel",
+          "rank": 16,
+          "score": 12.016923904418945,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.796106219291687,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.614917755126953
+        }
+      ],
+      "added_candidates": [
+        "incident-10720"
+      ],
+      "removed_candidates": [
+        "incident-10200"
+      ],
+      "baseline_top10": [
+        "incident-7200",
+        "incident-7142",
+        "incident-7722",
+        "incident-7102",
+        "incident-17200",
+        "incident-7152",
+        "incident-7190",
+        "incident-7250",
+        "incident-7120",
+        "incident-7622"
+      ],
+      "pooled_top10": [
+        "incident-7200",
+        "incident-7722",
+        "incident-7142",
+        "incident-7102",
+        "incident-17200",
+        "incident-7152",
+        "incident-7190",
+        "incident-7250",
+        "incident-7120",
+        "incident-7622"
+      ]
+    },
+    {
+      "query_document": 7920,
+      "query": "Deployment incident INC0007920 rollback recovery plan",
+      "target": "incident-7920",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.369159698486328,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08794017881155014,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7994505167007446,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.493618965148926
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.197280406951904,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.369159698486328,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08794017881155014,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7994505167007446,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.493618965148926
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-7920",
+        "incident-17920",
+        "incident-7820",
+        "incident-9720",
+        "incident-6920",
+        "incident-7919",
+        "incident-7020",
+        "incident-920",
+        "incident-7620",
+        "incident-16920"
+      ],
+      "pooled_top10": [
+        "incident-7920",
+        "incident-17920",
+        "incident-7820",
+        "incident-9720",
+        "incident-6920",
+        "incident-7919",
+        "incident-7020",
+        "incident-920",
+        "incident-7620",
+        "incident-16920"
+      ]
+    },
+    {
+      "query_document": 8640,
+      "query": "Deployment incident INC0008640 rollback recovery plan",
+      "target": "incident-8640",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.189263343811035,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.34385108947754,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7912189364433289,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.394944667816162
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.189263343811035,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.34385108947754,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7912189364433289,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.394944667816162
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-8640",
+        "incident-8440",
+        "incident-840",
+        "incident-9840",
+        "incident-8040",
+        "incident-6840",
+        "incident-8940",
+        "incident-8140",
+        "incident-8540",
+        "incident-16840"
+      ],
+      "pooled_top10": [
+        "incident-8640",
+        "incident-8440",
+        "incident-840",
+        "incident-9840",
+        "incident-8040",
+        "incident-6840",
+        "incident-8940",
+        "incident-8140",
+        "incident-8540",
+        "incident-16840"
+      ]
+    },
+    {
+      "query_document": 9359,
+      "query": "Deployment incident INC0009359 rollback recovery plan",
+      "target": "incident-9359",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.189263343811035,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.36468505859375,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08030654489994049,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7815138101577759,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.70219612121582
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.189263343811035,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.36468505859375,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08030654489994049,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7815138101577759,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.70219612121582
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-9359",
+        "incident-359",
+        "incident-8359",
+        "incident-10359",
+        "incident-7359",
+        "incident-13359",
+        "incident-16359",
+        "incident-12359",
+        "incident-14359",
+        "incident-6359"
+      ],
+      "pooled_top10": [
+        "incident-9359",
+        "incident-359",
+        "incident-8359",
+        "incident-10359",
+        "incident-7359",
+        "incident-13359",
+        "incident-16359",
+        "incident-12359",
+        "incident-14359",
+        "incident-6359"
+      ]
+    },
+    {
+      "query_document": 10079,
+      "query": "Deployment incident INC0010079 rollback recovery plan",
+      "target": "incident-10079",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.005879011936485767,
+          "kind": "channel",
+          "rank": 13,
+          "score": 12.254456520080566,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7934768795967102,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.647872447967529
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.005879011936485767,
+          "kind": "channel",
+          "rank": 13,
+          "score": 12.254456520080566,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.7934768795967102,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.647872447967529
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-10079",
+        "incident-11079",
+        "incident-1079",
+        "incident-8079",
+        "incident-11979",
+        "incident-15079",
+        "incident-3079",
+        "incident-16079",
+        "incident-6079",
+        "incident-17079"
+      ],
+      "pooled_top10": [
+        "incident-10079",
+        "incident-11079",
+        "incident-1079",
+        "incident-8079",
+        "incident-11979",
+        "incident-15079",
+        "incident-3079",
+        "incident-16079",
+        "incident-6079",
+        "incident-17079"
+      ]
+    },
+    {
+      "query_document": 10799,
+      "query": "Deployment incident INC0010799 rollback recovery plan",
+      "target": "incident-10799",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.399253845214844,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.797250509262085,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.603672504425049
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.399253845214844,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.797250509262085,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.603672504425049
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-10799",
+        "incident-1079",
+        "incident-10790",
+        "incident-10792",
+        "incident-10999",
+        "incident-11079",
+        "incident-10579",
+        "incident-10795",
+        "incident-10771",
+        "incident-9799"
+      ],
+      "pooled_top10": [
+        "incident-10799",
+        "incident-1079",
+        "incident-10790",
+        "incident-10792",
+        "incident-10999",
+        "incident-11079",
+        "incident-10579",
+        "incident-10795",
+        "incident-10771",
+        "incident-9799"
+      ]
+    },
+    {
+      "query_document": 12239,
+      "query": "Deployment incident INC0012239 rollback recovery plan",
+      "target": "incident-12239",
+      "fused_rank": 3,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 6.933871746063232,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.008612056262791157,
+          "kind": "channel",
+          "rank": 3,
+          "score": 15.341132164001465,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.05794956907629967,
+          "kind": "channel",
+          "rank": 5,
+          "score": 0.7782020568847656,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.3315277099609375
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 6.933871746063232,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.008612056262791157,
+          "kind": "channel",
+          "rank": 3,
+          "score": 15.341132164001465,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.05794956907629967,
+          "kind": "channel",
+          "rank": 5,
+          "score": 0.7782020568847656,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.3966965675354
+        }
+      ],
+      "added_candidates": [
+        "incident-1239"
+      ],
+      "removed_candidates": [
+        "incident-12249"
+      ],
+      "baseline_top10": [
+        "incident-12239",
+        "incident-2239",
+        "incident-10239",
+        "incident-17239",
+        "incident-16239",
+        "incident-15239",
+        "incident-13239",
+        "incident-14239",
+        "incident-11239",
+        "incident-7239"
+      ],
+      "pooled_top10": [
+        "incident-12239",
+        "incident-2239",
+        "incident-10239",
+        "incident-13239",
+        "incident-16239",
+        "incident-14239",
+        "incident-15239",
+        "incident-11239",
+        "incident-17239",
+        "incident-9239"
+      ]
+    },
+    {
+      "query_document": 12959,
+      "query": "Deployment incident INC0012959 rollback recovery plan",
+      "target": "incident-12959",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 6.933871746063232,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.017162322998047,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08508752286434174,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7779905200004578,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.277650833129883
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 6.933871746063232,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.017162322998047,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.08508752286434174,
+          "kind": "channel",
+          "rank": 2,
+          "score": 0.7779905200004578,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.277650833129883
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-12959",
+        "incident-2959",
+        "incident-15959",
+        "incident-5929",
+        "incident-2859",
+        "incident-13059",
+        "incident-12956",
+        "incident-16959",
+        "incident-9959",
+        "incident-6959"
+      ],
+      "pooled_top10": [
+        "incident-12959",
+        "incident-2959",
+        "incident-15959",
+        "incident-5929",
+        "incident-2859",
+        "incident-13059",
+        "incident-12956",
+        "incident-16959",
+        "incident-9959",
+        "incident-6959"
+      ]
+    },
+    {
+      "query_document": 13679,
+      "query": "Deployment incident INC0013679 rollback recovery plan",
+      "target": "incident-13679",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.688369750976562,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.8153190016746521,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.638952255249023
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.688369750976562,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.8153190016746521,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.638952255249023
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-13679",
+        "incident-3679",
+        "incident-13689",
+        "incident-3698",
+        "incident-10679",
+        "incident-13698",
+        "incident-13685",
+        "incident-6679",
+        "incident-4679",
+        "incident-11679"
+      ],
+      "pooled_top10": [
+        "incident-13679",
+        "incident-3679",
+        "incident-13689",
+        "incident-3698",
+        "incident-10679",
+        "incident-13698",
+        "incident-13685",
+        "incident-6679",
+        "incident-4679",
+        "incident-11679"
+      ]
+    },
+    {
+      "query_document": 14399,
+      "query": "Deployment incident INC0014399 rollback recovery plan",
+      "target": "incident-14399",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.008885432034730911,
+          "kind": "channel",
+          "rank": 4,
+          "score": 15.52786636352539,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.07663558423519135,
+          "kind": "channel",
+          "rank": 4,
+          "score": 0.7924044728279114,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.252353668212891
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.008885432034730911,
+          "kind": "channel",
+          "rank": 4,
+          "score": 15.52786636352539,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.07663558423519135,
+          "kind": "channel",
+          "rank": 4,
+          "score": 0.7924044728279114,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.397670269012451
+        }
+      ],
+      "added_candidates": [
+        "incident-1439"
+      ],
+      "removed_candidates": [
+        "incident-3499"
+      ],
+      "baseline_top10": [
+        "incident-14399",
+        "incident-4399",
+        "incident-14199",
+        "incident-14099",
+        "incident-4199",
+        "incident-13999",
+        "incident-14699",
+        "incident-3499",
+        "incident-13499",
+        "incident-10399"
+      ],
+      "pooled_top10": [
+        "incident-14399",
+        "incident-4399",
+        "incident-14199",
+        "incident-4199",
+        "incident-14099",
+        "incident-13999",
+        "incident-14699",
+        "incident-13499",
+        "incident-10399",
+        "incident-14599"
+      ]
+    },
+    {
+      "query_document": 15119,
+      "query": "Deployment incident INC0015119 rollback recovery plan",
+      "target": "incident-15119",
+      "fused_rank": 37,
+      "baseline_final_rank": 37,
+      "pooled_final_rank": 1,
+      "baseline_entered": false,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011239484883844852,
+          "kind": "channel",
+          "rank": 2,
+          "score": 17.451812744140625,
+          "weight": 0.125
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011239484883844852,
+          "kind": "channel",
+          "rank": 2,
+          "score": 17.451812744140625,
+          "weight": 0.125
+        },
+        {
+          "kind": "reranked",
+          "score": 6.526192665100098
+        }
+      ],
+      "added_candidates": [
+        "incident-11519",
+        "incident-15119"
+      ],
+      "removed_candidates": [
+        "incident-2119",
+        "incident-8199"
+      ],
+      "baseline_top10": [
+        "incident-5119",
+        "incident-15192",
+        "incident-14190",
+        "incident-15219",
+        "incident-4919",
+        "incident-13119",
+        "incident-15199",
+        "incident-10419",
+        "incident-11999",
+        "incident-2119"
+      ],
+      "pooled_top10": [
+        "incident-15119",
+        "incident-5119",
+        "incident-14190",
+        "incident-15192",
+        "incident-15219",
+        "incident-4919",
+        "incident-13119",
+        "incident-15199",
+        "incident-10419",
+        "incident-11999"
+      ]
+    },
+    {
+      "query_document": 15839,
+      "query": "Deployment incident INC0015839 rollback recovery plan",
+      "target": "incident-15839",
+      "fused_rank": 2,
+      "baseline_final_rank": 2,
+      "pooled_final_rank": 2,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.33786964416504,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.057968150824308395,
+          "kind": "channel",
+          "rank": 3,
+          "score": 0.7912865281105042,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.590522289276123
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 17.33786964416504,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.057968150824308395,
+          "kind": "channel",
+          "rank": 3,
+          "score": 0.7912865281105042,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.590522289276123
+        }
+      ],
+      "added_candidates": [],
+      "removed_candidates": [],
+      "baseline_top10": [
+        "incident-5839",
+        "incident-15839",
+        "incident-16839",
+        "incident-10839",
+        "incident-8039",
+        "incident-14839",
+        "incident-6839",
+        "incident-4839",
+        "incident-15239",
+        "incident-13839"
+      ],
+      "pooled_top10": [
+        "incident-5839",
+        "incident-15839",
+        "incident-16839",
+        "incident-10839",
+        "incident-8039",
+        "incident-14839",
+        "incident-6839",
+        "incident-4839",
+        "incident-15239",
+        "incident-13839"
+      ]
+    },
+    {
+      "query_document": 16559,
+      "query": "Deployment incident INC0016559 rollback recovery plan",
+      "target": "incident-16559",
+      "fused_rank": 1,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.006616464350372553,
+          "kind": "channel",
+          "rank": 6,
+          "score": 13.95186710357666,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.795630693435669,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.928493976593018
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 7.087679386138916,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.006616464350372553,
+          "kind": "channel",
+          "rank": 6,
+          "score": 13.95186710357666,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.09090909361839294,
+          "kind": "channel",
+          "rank": 1,
+          "score": 0.795630693435669,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.7504987716674805
+        }
+      ],
+      "added_candidates": [
+        "incident-1659"
+      ],
+      "removed_candidates": [
+        "incident-12559"
+      ],
+      "baseline_top10": [
+        "incident-16559",
+        "incident-16549",
+        "incident-16459",
+        "incident-16579",
+        "incident-16564",
+        "incident-6559",
+        "incident-10559",
+        "incident-9559",
+        "incident-14559",
+        "incident-16565"
+      ],
+      "pooled_top10": [
+        "incident-16559",
+        "incident-16549",
+        "incident-16579",
+        "incident-16459",
+        "incident-10559",
+        "incident-16564",
+        "incident-6559",
+        "incident-9559",
+        "incident-16059",
+        "incident-16565"
+      ]
+    },
+    {
+      "query_document": 17279,
+      "query": "Deployment incident INC0017279 rollback recovery plan",
+      "target": "incident-17279",
+      "fused_rank": 2,
+      "baseline_final_rank": 1,
+      "pooled_final_rank": 1,
+      "baseline_entered": true,
+      "pooled_entered": true,
+      "baseline_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 6.607365608215332,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.009052669629454613,
+          "kind": "channel",
+          "rank": 4,
+          "score": 13.986885070800781,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.06414388120174408,
+          "kind": "channel",
+          "rank": 3,
+          "score": 0.7902224659919739,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.718647003173828
+        }
+      ],
+      "pooled_target_why": [
+        {
+          "channel": "lexical_segmented",
+          "contribution": 0.011363636702299118,
+          "kind": "channel",
+          "rank": 1,
+          "score": 6.607365608215332,
+          "weight": 0.125
+        },
+        {
+          "channel": "lexical_ngram",
+          "contribution": 0.009052669629454613,
+          "kind": "channel",
+          "rank": 4,
+          "score": 13.986885070800781,
+          "weight": 0.125
+        },
+        {
+          "channel": "vector",
+          "contribution": 0.06414388120174408,
+          "kind": "channel",
+          "rank": 3,
+          "score": 0.7902224659919739,
+          "weight": 1.0
+        },
+        {
+          "kind": "reranked",
+          "score": 6.718647003173828
+        }
+      ],
+      "added_candidates": [
+        "incident-7279"
+      ],
+      "removed_candidates": [
+        "incident-16179"
+      ],
+      "baseline_top10": [
+        "incident-17279",
+        "incident-17278",
+        "incident-10279",
+        "incident-16279",
+        "incident-17297",
+        "incident-12279",
+        "incident-17280",
+        "incident-14279",
+        "incident-13279",
+        "incident-15279"
+      ],
+      "pooled_top10": [
+        "incident-17279",
+        "incident-17278",
+        "incident-7279",
+        "incident-10279",
+        "incident-16279",
+        "incident-17297",
+        "incident-12279",
+        "incident-17280",
+        "incident-14279",
+        "incident-13279"
+      ]
+    }
+  ],
+  "pair_count_meaning": "pairs_per_query_each_arm counts selected/offered candidates per search; it is not a counter of fresh model computations, and the limit200 diagnostic may reuse score-cache entries"
+}

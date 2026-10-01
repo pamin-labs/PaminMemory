@@ -1,0 +1,27 @@
+{
+  "files": {
+    "benchmarks/harnesses/restart-floor-2026-09-30/README.md": "7c6c8a0ecb7fbe6eef0ea99063ab26d8de9416858b8eba087f8b7babf4afb7e5",
+    "benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
+    "benchmarks/harnesses/restart-floor-2026-09-30/build.py.in": "65338fc4e6d77cd0f0d5dbf75e111913f502aecbd9de4d35a4b05918940e940a",
+    "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
+    "benchmarks/harnesses/restart-floor-2026-09-30/legacy_schema.rs.in": "c815294086542340d998c346bfa2f3dc3dcddf27f82201746efd40a2df12fca3",
+    "benchmarks/harnesses/restart-floor-2026-09-30/provenance.py.in": "573ed5b1bf840b5ab3bc8964aad1679795758d11c8cbebdb292a663e10ee8d02",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
+    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "c1eb17e20ae8a6436973649c0f3e250ec08c61cca62eb584e115f794cb3b38be",
+    "benchmarks/results/index/restart-floor-2026-09-30/binaries.json": "54bb7087b7d8ad2059e4dc6379e13404c5f861ce1c001d5940bbfdf316dbd56f",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/0-candidate.log": "46d336d7e5744a4a82ecb1e0893f77eaa4595e2f61d2956e5649d8ca556f6949",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/0-main.log": "edce0e144c0d58a3e11ff3eb11c64b6754a69b431cd29f6336c39fa788ac6908",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/0-predecessor.log": "8fcc79ccb3f54c8171ce231eb298edcc826ead2733468b6e366c1480e5557ef7",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/1-candidate.log": "e8bbeb0c4ccf1872402095d50d5d58d3f5a2a4689565a124e388d54a41f524c1",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/1-main.log": "162eb4b65f5e634ea76da76a9d6084dd57b5bc42f17ed911b9489ddd2a3042f6",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/1-predecessor.log": "56d34cb99246d22c8605fbe5331da6595ebb2becbbcbd51145c6fb313aef7fe5",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/2-candidate.log": "c50478165704109cfe67597f37194a2bc5848957fbfd03f761203f4e334abad0",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/2-main.log": "529e4b6864cad493ff7c62c430ee90d689e9ec73252ba6973b3e7ead5c98dd8d",
+    "benchmarks/results/index/restart-floor-2026-09-30/logs/2-predecessor.log": "a20a70f710144fe79cb1d2cc297ab47e8d7765fff0144230c10db10c2c93dfc8",
+    "benchmarks/results/index/restart-floor-2026-09-30/provenance.json": "6dc977d5bb6a84d75c3b7198005019ed36c7e6e0c2dfb880941428420473d887",
+    "benchmarks/results/index/restart-floor-2026-09-30/raw.jsonl": "a2018bfb4f7eff6f893a30b3483df2293cd29c2b90d0b79dd34c22e532adb079",
+    "benchmarks/results/index/restart-floor-2026-09-30/summary.json": "f2af9584033fcc9dbdcf687512c10479b712b76789ea5ed41edc8e72adcddb57",
+    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "a54fc0192ebdb094e1561bd8c7a88f92675793a88ab33b669cf2ef14271054bf",
+    "benchmarks/results/index/restart-floor-2026-09-30/post-trial-assets.json": "22028e54cf1bc2c5f0747e0522fd1068458cfa4033ed385b1200589934d07c98"
+  }
+}

@@ -1,0 +1,134 @@
+//! Scratch integration target. Copy to ignored tests/scratch_restart_floor.rs.
+use std::{path::Path, time::Instant};
+use pamin_core::Validity;
+use pamin_engine::{Depths, Engine, Owed};
+use pamin_index::{Access, Profile, Rerank, VectorIndex};
+use pamin_store::Workspace;
+use serde_json::{json, Value};
+
+fn disk(path: &Path) -> (u64,u64,u64) {
+    use std::os::unix::fs::MetadataExt;
+    let mut total=(0,0,0);
+    for entry in std::fs::read_dir(path).expect("read disk tree") {
+        let entry=entry.unwrap(); let m=entry.metadata().unwrap();
+        if m.is_dir() { let x=disk(&entry.path()); total.0+=x.0; total.1+=x.1; total.2+=x.2; }
+        else { total.0+=1; total.1+=m.len(); total.2+=m.blocks()*512; }
+    } total
+}
+fn process() -> Value {
+    // Linux process clock includes all worker threads, excludes PostgreSQL/device services.
+    let s=std::fs::read_to_string("/proc/self/stat").unwrap();
+    let fields:Vec<_>=s.rsplit_once(')').unwrap().1.split_whitespace().collect();
+    let status=std::fs::read_to_string("/proc/self/status").unwrap();
+    json!({"user_ticks":fields[11].parse::<u64>().unwrap(), "system_ticks":fields[12].parse::<u64>().unwrap(),
+      "rss_status":status.lines().filter(|x|x.starts_with("VmRSS:")||x.starts_with("VmHWM:")).collect::<Vec<_>>()})
+}
+fn emit(phase:&str, wall_ms:f64, before:Value, after:Value, extra:Value) {
+    let row=json!({"phase":phase,"wall_ms":wall_ms,"process_before":before,"process_after":after,"extra":extra});
+    println!("RESTART_JSON {}",row);
+}
+async fn optimize_pending(e:&Engine)->i64 {
+    // V10 deletes settled rows; completed_at is not a durable execution counter.
+    sqlx::query_scalar("SELECT count(*) FROM index_jobs WHERE project_id=$1 AND job_type='optimize_index'")
+      .bind(e.project.0).fetch_one(e.database.pool()).await.unwrap()
+}
+fn content(n:usize)->String {
+    format!("Deployment incident INC{n:07} concerns service number {n}. The responsible team approved a rollback after its production health check failed. The recovery plan restores the previous release, verifies customer traffic, and records the root cause in the incident ledger.")
+}
+async fn query(e:&Engine,n:usize)->Vec<String> {
+    let before=e.reranked(Rerank::Accurate).unwrap_or_default();
+    let hits=e.search_reranked(&format!("Deployment incident INC{n:07} rollback recovery plan"),10,Depths::default(),Rerank::Accurate).await.unwrap();
+    let after=e.reranked(Rerank::Accurate).unwrap();
+    assert!(after.scored > before.scored);
+    assert_eq!(after.scored-before.scored,after.offered-before.offered,"reranker arm used cached scores");
+    assert!(!hits.is_empty(),"searching empty projection"); hits.into_iter().map(|h|h.topic).collect()
+}
+
+#[tokio::test(flavor="multi_thread")]
+#[ignore="explicit scratch measurement"]
+async fn restart_floor() {
+    let _=tracing_subscriber::fmt().with_env_filter("pamin_index=info,pamin_engine=info").try_init();
+    assert_eq!(std::env::var("PAMIN_DEVICE").unwrap(),"cpu");
+    let w=Workspace::at(std::env::var("PAMIN_EVAL_HOME").unwrap());
+    let mode=std::env::var("FLOOR_MODE").unwrap();
+    let n:usize=std::env::var("FLOOR_DOCUMENTS").unwrap().parse().unwrap();
+    let kind=VectorIndex::parse(&std::env::var("FLOOR_VECTOR_INDEX").unwrap()).unwrap();
+    let at=Instant::now(); let p=process();
+    let e=Engine::open(&w,"restart-floor",Profile::parse("accuracy").unwrap(),kind,Access::ReadWrite).await.unwrap();
+    emit("open",at.elapsed().as_secs_f64()*1000.,p,process(),json!({"documents":e.indexed_documents().unwrap()}));
+    let dir=w.index_dir(e.project);
+    if mode=="bootstrap" {
+        assert_eq!(e.indexed_documents().unwrap(),0);
+        println!("COLLECTION_PATH {}",dir.join("memories").display());
+        drop(e); pamin_store::database::stop(&w).await.unwrap(); return;
+    }
+    if mode=="seed" {
+        // Legacy 2,000-document schema was created by bootstrap + native helper.
+        for i in 0..n {
+            if pamin_store::repository::find_topic(e.database.pool(), e.project, &format!("incident-{i}")).await.unwrap().is_some() { continue; }
+            let (_,r)=e.remember(&format!("incident-{i}"),&content(i),Validity::ALWAYS).await.unwrap();
+            assert!(r.state.is_some(),"seed content held by filter");
+            if (i+1)%256==0 { let d=e.drain_cascade(Owed::Everything).await.unwrap(); assert_eq!(d.failed,0); println!("SEED_PROGRESS {}",i+1); }
+        }
+        let d=e.drain_cascade(Owed::Everything).await.unwrap(); assert_eq!(d.failed,0); assert_eq!(d.pending,0);
+        // Queue actual maintenance, preserving legacy segmentation (reindex would recreate).
+        pamin_store::jobs::enqueue(e.database.pool(),e.project,pamin_core::JobKind::OptimizeIndex,None).await.unwrap();
+        let d=e.drain_cascade(Owed::Everything).await.unwrap(); assert_eq!(d.failed,0); assert_eq!(d.pending,0);
+        assert_eq!(e.indexed_documents().unwrap(),n as u64);
+        emit("seed_complete",at.elapsed().as_secs_f64()*1000.,process(),process(),json!({"index_disk":disk(&dir),"completeness":e.vector_index_completeness().unwrap()}));
+        // Do not fake the >256 premise with inert files. Runner verifies saved floor.
+        for i in [0,n/2,n-1] { assert!(query(&e,i).await.contains(&format!("incident-{i}"))); }
+    } else {
+        assert_eq!(e.indexed_documents().unwrap(),n as u64);
+        assert!(disk(&dir).0>256,"seed is too small to test restart floor");
+        assert_eq!(optimize_pending(&e).await,0,"seed left optimize owed");
+        // No warm-up write/drain: it would consume the restart effect before timing.
+        let at=Instant::now(); let p=process();
+        let (_,r)=e.remember("restart-proof", "Restart proof records the operational policy: engineers verify the rollback procedure and production health checks before approving the next deployment.",Validity::ALWAYS).await.unwrap();
+        assert!(r.state.is_some());
+        let d=e.drain_cascade(Owed::WhatAMemoryNeeds).await.unwrap(); assert_eq!(d.failed,0);
+        emit("write_and_memory_drain",at.elapsed().as_secs_f64()*1000.,p,process(),json!({"completed":d.completed,"pending":d.pending,"applied":d.applied}));
+        // The resident server flushes applied writes and settles their held
+        // claims; Everything alone cannot claim those still-held rows.
+        let at=Instant::now(); let p=process();
+        let flushed=e.flush_what_is_applied().await.unwrap();
+        let flush_wall_ms=at.elapsed().as_secs_f64()*1000.; let flush_after=process();
+        assert_eq!(e.awaiting_durability(),0);
+        emit("durability_flush",flush_wall_ms,p,flush_after,json!({"flushed":flushed}));
+        let queued_optimize=optimize_pending(&e).await;
+        assert_eq!(pamin_store::jobs::pending(e.database.pool(),e.project).await.unwrap(),queued_optimize,"maintenance must be the only remaining work");
+        let at=Instant::now(); let p=process();
+        let did_maintain=e.maintain().await.unwrap();
+        let maintenance_wall_ms=at.elapsed().as_secs_f64()*1000.;
+        let maintenance_process_after=process();
+        assert_eq!(did_maintain,queued_optimize>0);
+        assert_eq!(optimize_pending(&e).await,0);
+        assert_eq!(pamin_store::jobs::pending(e.database.pool(),e.project).await.unwrap(),0,"maintenance left unfinished work");
+        emit("maintenance",maintenance_wall_ms,p,maintenance_process_after,json!({"optimize_completed_delta":queued_optimize,"optimize_count_method":"only Optimize rows owed before actual server maintain call; returned work flag agrees and all rows settled afterward","index_disk":disk(&dir),"documents":e.indexed_documents().unwrap(),"completeness":e.vector_index_completeness().unwrap()}));
+        for (phase, ids) in [
+            ("search_initial", vec![0,n/2,n-1]),
+            ("search_warm", (1..=24).map(|j| j*(n-2)/25+1).collect()),
+        ] {
+            for (position,i) in ids.into_iter().enumerate() {
+                let at=Instant::now(); let p=process(); let topics=query(&e,i).await;
+                let rank=topics.iter().position(|topic| topic == &format!("incident-{i}"));
+                let phase=if phase=="search_initial" { if position==0 {"search_cold"} else {"search_warmup"} } else {phase};
+                emit(phase,at.elapsed().as_secs_f64()*1000.,p,process(),json!({"query_document":i,"rank":rank.map(|v|v+1),"topics":topics}));
+            }
+        }
+        let at=Instant::now(); let p=process();
+        let hits=e.search_reranked("restart-proof operational policy engineers verify rollback procedure before approving next deployment",10,Depths::default(),Rerank::Accurate).await.unwrap();
+        let topics:Vec<_>=hits.into_iter().map(|hit|hit.topic).collect();
+        assert!(topics.iter().any(|topic|topic=="restart-proof"),"newly written vector was not retrievable after maintenance");
+        emit("new_write_search",at.elapsed().as_secs_f64()*1000.,p,process(),json!({"topics":topics,"known_new_topic_retrieved":true}));
+    }
+    drop(e);
+    pamin_store::database::stop(&w).await.unwrap();
+    if mode=="trial" {
+        // WAL/buffer cleanup can change bytes on close; this is disk evidence only.
+        println!("RESTART_JSON {}",json!({"phase":"closed_index","wall_ms":null,
+            "process_before":null,"process_after":null,
+            "measurement_kind":"diagnostic","timing_scope":"N/A: disk inspection after Engine close and PostgreSQL stop",
+            "extra":{"index_disk":disk(&dir)}}));
+    }
+}

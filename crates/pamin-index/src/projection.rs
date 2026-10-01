@@ -29,6 +29,40 @@ use crate::segmentation::Segmenter;
 
 const COLLECTION: &str = "memories";
 
+/// Kept inside the collection so deleting/rebuilding it also discards its floor.
+const OPTIMIZED_FILES: &str = ".pamin-optimized-files";
+
+fn count_files(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            if entry.file_name() == OPTIMIZED_FILES {
+                return 0;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => count_files(&entry.path()),
+                Ok(_) => 1,
+                Err(_) => 0,
+            }
+        })
+        .sum()
+}
+
+fn optimized_files_marker(dir: &Path) -> std::path::PathBuf {
+    dir.join(COLLECTION).join(OPTIMIZED_FILES)
+}
+
+fn saved_optimize_floor(dir: &Path) -> u64 {
+    std::fs::read_to_string(optimized_files_marker(dir))
+        .ok()
+        .and_then(|text| text.strip_prefix("v1 ")?.trim().parse::<u64>().ok())
+        .filter(|floor| *floor > 0 && *floor <= count_files(dir))
+        .unwrap_or(0)
+}
+
 /// The primary key field, and the only one any query here reads back.
 ///
 /// Every channel returns ranks -- the caller resolves what a topic stands for
@@ -160,7 +194,8 @@ pub trait Projection {
     fn file_count(&self) -> Result<u64>;
 
     /// How many files [`optimize`](Self::optimize) left the last time it ran
-    /// on this handle, or zero if it has not run on it. See [`is_fragmented`].
+    /// for this collection, or zero if no valid floor was saved. See
+    /// [`is_fragmented`].
     fn files_after_optimize(&self) -> u64;
 
     /// How many vector blocks flushes have left that no compaction has merged.
@@ -547,8 +582,8 @@ const MAX_FILES: u64 = 256;
 /// re-queued `optimize` 8 times in 60 ticks, about a second of processor time
 /// each under `memory`.
 ///
-/// Zero, for an index this process has not optimized, is the budget alone, so
-/// a reopened index is asked once and learns its floor from that.
+/// An index without a valid saved floor still uses the budget alone, so legacy
+/// indexes are asked once and learn their floor from that.
 pub fn is_fragmented(files: u64, floor: u64) -> bool {
     files
         > if floor > MAX_FILES {
@@ -1131,7 +1166,7 @@ impl ProjectionIndex {
             index,
             passage: PASSAGE,
             keys: KEYS,
-            optimized_files: AtomicU64::new(0),
+            optimized_files: AtomicU64::new(saved_optimize_floor(dir)),
         })
     }
 
@@ -1677,8 +1712,12 @@ impl Projection for ProjectionIndex {
     /// [`vector_index_completeness`](Self::vector_index_completeness) belongs.
     fn optimize(&self) -> Result<()> {
         self.collection.optimize()?;
-        self.optimized_files
-            .store(self.file_count()?, Ordering::Relaxed);
+        let marker = optimized_files_marker(&self.dir);
+        // Our metadata is not held open by zvec and does not spend its file
+        // budget; count_files excludes it from both the floor and the trigger.
+        let floor = self.file_count()?;
+        std::fs::write(marker, format!("v1 {floor}\n"))?;
+        self.optimized_files.store(floor, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1723,21 +1762,7 @@ impl Projection for ProjectionIndex {
     /// whether to schedule maintenance, and failing a write over it would be a
     /// worse answer than scheduling it a little late.
     fn file_count(&self) -> Result<u64> {
-        fn walk(dir: &std::path::Path) -> u64 {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return 0;
-            };
-            entries
-                .flatten()
-                .map(|entry| match entry.file_type() {
-                    Ok(kind) if kind.is_dir() => walk(&entry.path()),
-                    Ok(_) => 1,
-                    Err(_) => 0,
-                })
-                .sum()
-        }
-
-        Ok(walk(&self.dir))
+        Ok(count_files(&self.dir))
     }
 
     fn files_after_optimize(&self) -> u64 {
@@ -2063,12 +2088,15 @@ mod upkeep {
         assert!(!is_fragmented(2_317, 2_317), "nor is MIRACL's floor");
     }
 
-    /// Under the budget the floor changes nothing, and an index this process
-    /// has not optimized is held to the budget alone.
+    /// Under the budget the floor changes nothing, and an index with no valid
+    /// saved floor is held to the budget alone.
     #[test]
     fn below_the_budget_the_floor_changes_nothing() {
         assert!(!is_fragmented(256, 0));
-        assert!(is_fragmented(257, 0), "a reopened index is asked once");
+        assert!(
+            is_fragmented(257, 0),
+            "an index with no saved floor is asked once"
+        );
         assert!(!is_fragmented(256, 240));
         assert!(
             is_fragmented(257, 240),

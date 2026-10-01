@@ -1,0 +1,20 @@
+[
+  {
+    "arm": "baseline",
+    "binary": "${EXPERIMENT}/bin/baseline",
+    "sha256": "00fb2149198d091308d31fe24d57c1ca547a0ba7a114377099896da450b3f69e",
+    "bytes": 13541328,
+    "runtime": "ORT dynamic 1.28.0",
+    "source_manifest": "${EXPERIMENT}/variants/manifest.json",
+    "build_log": "${EXPERIMENT}/build-baseline.log"
+  },
+  {
+    "arm": "pooled",
+    "binary": "${EXPERIMENT}/bin/pooled",
+    "sha256": "f0c6eb2631571b6a8c5ddf652ffbb890e75eb1a7c3328e28206ebed6710d8f66",
+    "bytes": 13542864,
+    "runtime": "ORT dynamic 1.28.0",
+    "source_manifest": "${EXPERIMENT}/variants/manifest.json",
+    "build_log": "${EXPERIMENT}/build-pooled.log"
+  }
+]

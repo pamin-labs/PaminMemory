@@ -1,0 +1,19 @@
+//! Copy into ignored pamin-index/tests/scratch_legacy_schema.rs.
+#[test]
+#[ignore="changes only an explicitly supplied EMPTY scratch collection"]
+fn legacy_schema() {
+    let path=std::path::PathBuf::from(std::env::var("FLOOR_COLLECTION_PATH").unwrap());
+    assert!(path.starts_with("/workspace/scratch/restart-floor"),"only scratch fixture permitted");
+    assert_eq!(path.file_name().unwrap(),"memories");
+    let _=zvec_rust::initialize(None);
+    let collection=zvec_rust::Collection::open(path.to_str().unwrap(),None).unwrap();
+    assert_eq!(collection.stats().unwrap().doc_count,0,"refuse to delete nonempty fixture");
+    let mut schema=collection.schema().unwrap();
+    schema.set_max_doc_count_per_segment(2000).unwrap();
+    drop(collection);
+    // Preserve every field/index/quantization parameter and parent profile marker.
+    std::fs::remove_dir_all(&path).unwrap();
+    let collection=zvec_rust::Collection::create_and_open(path.to_str().unwrap(),&schema,None).unwrap();
+    assert_eq!(collection.stats().unwrap().doc_count,0);
+    assert_eq!(collection.schema().unwrap().max_doc_count_per_segment(),2000);
+}
