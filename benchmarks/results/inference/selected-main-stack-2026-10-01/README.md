@@ -39,7 +39,7 @@ It reads the supplied JSON and its adjacent pinned input-scope audit and prints 
 
 Accepted attempt B is distinct from a preserved failed attempt A: A made13 native calls but accepted none after its archive comparison failed; B ran a fresh complete matrix. The initial offline analyzer's historical-alias failure was repaired through exact retained link/role/hash binding without rerunning the product or weakening provider checks. Private references preserve both amendments and the independent review.
 
-The submodule references merged private InternalDocs PR24 at `0ed22fd96e99906dc6c26a6bdfa2bfa3c0460a8a`. The historical measurement evidence was preserved in merged PR22 at `8c64b3ea96bb1ef6c5a927c5735c375fad32c511`; the selected research summary, combined-stack live plan and archived evidence subtree have identical Git objects at both commits, verified when this pointer was updated. This checks those selected evidence paths, not the entire private repository. This public evidence contains only checked non-sensitive numeric summaries and an inert verifier.
+The submodule references merged private InternalDocs PR27 at `a29b50c8512cbe5054359b8f7e088f4fa54cfe9d`, including merged PR26. The original historical measurement evidence remains retained separately from subsequent validity and scope corrections. This public evidence contains only checked non-sensitive numeric summaries and an inert verifier.
 
 The [safe input-scope audit](input-scope-audit.json) binds the unchanged evidence
 bytes and attests these aggregate classifications from retained private ordered
