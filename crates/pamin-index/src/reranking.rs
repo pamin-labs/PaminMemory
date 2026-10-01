@@ -1470,6 +1470,111 @@ mod tests {
     }
 
     #[test]
+    fn complete_uncached_replacement_forwards_once_and_installs_only_its_plan() {
+        let old = [(1, 2), (2, 2)];
+        let old_keys = identities(&old);
+        let old_list = ListKey::of(&old_keys, (4, 2));
+        let mut scores = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        scores
+            .score(
+                planned(&old, 4, 2),
+                &old_keys,
+                |_| 2,
+                context,
+                Some(old_list),
+            )
+            .unwrap()
+            .commit(&mut scores, &mut work, &mut lengths, 0);
+        assert!(scores.replay(old_list, old.len()).is_some());
+        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|(id, _)| pair_key("replacement", &id.to_string()))
+            .collect();
+        let list = ListKey::of(&keys, (4, 2));
+        let mut forwards = 0;
+        let completed = scores
+            .score(
+                planned(&rows, 4, 2),
+                &keys,
+                |_| 2,
+                |batch| {
+                    forwards += 1;
+                    context(batch).map(|(values, us)| {
+                        (values.into_iter().map(|value| value + 1000.0).collect(), us)
+                    })
+                },
+                Some(list),
+            )
+            .unwrap();
+        assert_eq!((completed.hits, completed.misses, forwards), (0, 4, 2));
+        assert!(!scores.replaced(completed.hits));
+        assert!(scores.last.is_none() && scores.replay(old_list, old.len()).is_none());
+        let values = completed.commit(&mut scores, &mut work, &mut lengths, 0);
+        assert!(values.iter().all(|value| *value > 1000.0));
+        assert_eq!(scores.replay(list, rows.len()).unwrap().values, values);
+        assert_eq!(
+            (scores.hits, scores.misses, work.pairs, forwards),
+            (0, 6, 6, 2)
+        );
+    }
+
+    #[test]
+    fn failed_replacement_attempt_keeps_committed_cache_plan_and_counters() {
+        let old = [(1, 2), (2, 2)];
+        let old_keys = identities(&old);
+        let old_list = ListKey::of(&old_keys, (4, 2));
+        let mut scores = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        scores
+            .score(
+                planned(&old, 4, 2),
+                &old_keys,
+                |_| 2,
+                context,
+                Some(old_list),
+            )
+            .unwrap()
+            .commit(&mut scores, &mut work, &mut lengths, 0);
+        let before = scores.replay(old_list, old.len()).unwrap().values;
+        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|(id, _)| pair_key("replacement", &id.to_string()))
+            .collect();
+        let mut forwards = 0;
+        let failed = scores.score(
+            planned(&rows, 4, 2),
+            &keys,
+            |_| 2,
+            |batch| {
+                forwards += 1;
+                if forwards == 2 {
+                    return Err(IndexError::Engine("replacement second batch failed".into()));
+                }
+                context(batch)
+            },
+            Some(ListKey::of(&keys, (4, 2))),
+        );
+        assert!(failed.is_err());
+        assert_eq!(forwards, 2);
+        assert_eq!(scores.replay(old_list, old.len()).unwrap().values, before);
+        assert_eq!(
+            (
+                scores.hits,
+                scores.misses,
+                scores.remembered,
+                work.pairs,
+                lengths.total
+            ),
+            (0, 2, 2, 2, 4)
+        );
+    }
+
+    #[test]
     fn calibration_uses_short_fast_and_mixed_accurate_workloads() {
         let long = "long document ".repeat(512);
         let fast = super::calibration_pairs(super::Rerank::Fast, &long);
