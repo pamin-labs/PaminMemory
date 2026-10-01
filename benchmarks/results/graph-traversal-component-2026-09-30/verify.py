@@ -267,6 +267,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row.get('setup') == 'native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved', 'recorded native fixture setup differs'
  assert row['expected_scores'] == [.8,.5,.5]
  assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
+ assert type(row['weak_relevance']) is float and row['weak_relevance']=={'baseline': 0.3333333432674408, 'scored': 0.34375}[arm], 'retained weak relevance differs exactly'
  channels = {'lexical_segmented','lexical_ngram','vector'}
  fixture_topics = {'quartzanchor'} | {f'islandnode{n:04d}' for n in range(240)}
  for hit in row['non_graph']:

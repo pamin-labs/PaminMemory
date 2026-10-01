@@ -581,6 +581,8 @@ if __name__ == '__main__':
                 (root/(arm+'.usage.json')).write_text(json.dumps(row)+'\n');mutate_json(root/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['process_usage'].update(row))
                 if metric=='maximum_process_rss_kib':mutate_json(root/(arm+'.jsonl'),lambda raw:raw.update(process_lifetime_high_water_kib=row[metric]))
             run_case('coherent fabricated usage '+arm+'/'+metric,fabricated_usage,expected_error='retained complete process usage differs')
+    for arm in ['baseline','scored']:
+        run_case('nearby captured weak relevance '+arm,lambda r,arm=arm:mutate_json(r/(arm+'.jsonl'),lambda row:row.update(weak_relevance=row['weak_relevance']+5e-7)),expected_error='retained weak relevance differs exactly')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
