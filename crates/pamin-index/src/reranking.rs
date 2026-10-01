@@ -554,6 +554,11 @@ struct Scores {
 }
 
 impl Scores {
+    fn clear(&mut self) {
+        self.known.clear();
+        self.order.clear();
+    }
+
     fn key(query: &str, document: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -825,7 +830,7 @@ impl Reranker {
                 if replaced {
                     // CPU and accelerator exports may have different logit scales.
                     // Rescore the whole request; never mix old cached logits with new.
-                    self.scores = Scores::default();
+                    self.scores.clear();
                     continue;
                 }
                 let scored = self
@@ -1207,6 +1212,20 @@ mod tests {
             (total.batches, total.encode_us, total.forward_us),
             (1, 5, 7)
         );
+    }
+
+    #[test]
+    fn replacing_a_target_clears_scores_without_resetting_lifetime_counts() {
+        let mut scores = Scores::default();
+        scores.put(7, 0.75);
+        assert_eq!(scores.get(7), Some(0.75));
+        assert_eq!(scores.get(8), None);
+        let offered = scores.hits + scores.misses;
+        scores.clear();
+        assert_eq!(scores.hits + scores.misses, offered);
+        assert!(scores.known.is_empty() && scores.order.is_empty());
+        assert_eq!(scores.get(7), None);
+        assert_eq!(scores.hits + scores.misses, offered + 1);
     }
 
     #[test]
