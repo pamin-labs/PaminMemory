@@ -1,4 +1,4 @@
-# Persisted PQ in the current stopped Linux seed, 2026-09-30
+# Persisted PQ in the current stopped Linux seed
 
 The retained stopped restart-floor DiskANN seed has **512 persisted PQ chunks**
 although its requested schema says `pq_chunks: 0`. All 10 embedding index files
@@ -8,8 +8,11 @@ counts sum to 18,000. Every `diskann.pq_data` section has exactly
 FP16 dimensions per chunk and 256 centroids per chunk, storing uint8 codes.
 The stored-vector metadata has 1,026 dimensions following metric conversion.
 
-This is a prospective, read-only inspection of this current stopped seed,
-dated 2026-09-30. It does not verify the state of every historical trial copy,
+This is a prospective, read-only inspection of this current stopped seed from
+the original archive series labeled 2026-09-30. The inspection capture timestamp
+was not recorded; the public export was prepared 2026-10-01 UTC. The private
+summary's 2026-09-30 heading is an archive label, not a retained UTC capture
+record. This does not verify the state of every historical trial copy,
 the 50k synthetic requested-zero/requested-64 runs, macOS, other seeds or Flat
 blocks. It establishes no recall, latency, memory, source-build attestation,
 post-write visibility or performance improvement. Those metrics are **N/A**.
