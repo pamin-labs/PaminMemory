@@ -72,7 +72,7 @@ class AnalysisCheckpoints(unittest.TestCase):
             stack.enter_context(patch.object(self.rows,'hot_guard'))
             stack.enter_context(patch.object(self.rows,'oracle_checks',return_value=[]))
             report=stack.enter_context(patch.object(self.analyzer,'report',return_value={'calls':880}))
-            stack.enter_context(patch.object(self.analyzer,'write_tables'))
+            stack.enter_context(patch.object(self.analyzer,'write_tables',side_effect=lambda path,result:path.write_text('mock report\n')))
             forbidden=stack.enter_context(patch.object(self.pg,'installation_identity',side_effect=AssertionError('pg_config forbidden')))
             self.analyzer.main()
             forbidden.assert_not_called()
