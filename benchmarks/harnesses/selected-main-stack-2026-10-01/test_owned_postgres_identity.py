@@ -81,15 +81,19 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'escapes'):
             self.inventory()
 
-    def test_actual_running_executable_and_mapped_library_are_bound(self):
+    def test_actual_running_executable_and_escaped_mapped_library_are_bound(self):
+        library=self.install/'lib/library with space.so.5'
+        library.write_text('mock whitespace library')
         before=self.inventory();binary={key:before['files']['bin/postgres'][key] for key in ['bytes','sha256']}
-        maps='100-200 r-xp 0 00:00 1 '+str(self.install/'lib/libpq.so.5')+'\n'
+        encoded=str(library).replace(' ',r'\040')
+        maps='100-200 r-xp 0 00:00 1 '+encoded+'\n'
         original=pg.file_digest
         def digest(path):return dict(binary) if str(path)=='/proc/42/exe' else original(path)
         with patch.object(pg,'identity',return_value=self.expected),patch.object(pg,'installation_identity',return_value=before),patch.object(pg,'file_digest',side_effect=digest),patch.object(Path,'read_text',return_value=maps):
             receipt=pg.build_identity(self.item,{},self.expected,before)
         self.assertEqual(receipt['server_executable']['sha256'],binary['sha256'])
-        self.assertEqual(receipt['mapped_libraries'][0]['location'],'installation/lib/libpq.so.5')
+        self.assertEqual(receipt['mapped_libraries'][0]['location'],'installation/lib/library with space.so.5')
+        self.assertEqual(receipt['mapped_libraries'][0]['sha256'],hashlib.sha256(library.read_bytes()).hexdigest())
         self.assertIn('historical build identity N/A',receipt['scope'])
         self.assertIn('inode identity not attested',receipt['mapped_libraries_scope'])
 
