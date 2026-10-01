@@ -563,8 +563,16 @@ pub(crate) fn measured<T>(
             )
         })
         .collect();
+    let cuda = plans.iter().any(|(device, _)| *device == Device::Cuda);
+    let cuda_inventory = cuda.then(cuda_identity).flatten();
+    let cuda_settings = [
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_DEVICE_ORDER",
+        "NVIDIA_VISIBLE_DEVICES",
+    ]
+    .map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v1|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}",
+        "persistent-plan-v2|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         threads(),
         std::thread::available_parallelism(),
         ort::info(),
@@ -574,7 +582,10 @@ pub(crate) fn measured<T>(
     let cache = PLANS.get_or_init(Default::default);
     // Only hashes and fixed-fixture outputs reach disk; the full key can
     // contain paths/environment values and is never persisted or logged.
-    let disk = plan_file(cache_dir, &key);
+    // An unidentified CUDA device cannot safely reuse another process's plan.
+    let disk = (!cuda || cuda_inventory.is_some())
+        .then(|| plan_file(cache_dir, &key))
+        .flatten();
     // Avoid measuring different model calibrations against each other even
     // when separate CLI/server processes share this workspace cache.
     let _host_lock = disk.as_ref().and_then(|path| {
@@ -721,6 +732,33 @@ fn write_plan(path: &Path, key: &str, plan: &CachedPlan) -> std::io::Result<()> 
     })();
     let _ = std::fs::remove_file(pending);
     result
+}
+
+fn cuda_identity() -> Option<String> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=index,uuid,pci.bus_id,name,driver_version",
+            "--format=csv,noheader",
+        ])
+        .output()
+        .ok()?;
+    output.status.success().then_some(())?;
+    cuda_inventory(&output.stdout)
+}
+
+fn cuda_inventory(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    if text.is_empty()
+        || text.lines().any(|line| {
+            let fields: Vec<_> = line.split(',').map(str::trim).collect();
+            fields.len() != 5
+                || fields.iter().any(|field| field.is_empty())
+                || !fields[1].starts_with("GPU-")
+        })
+    {
+        return None;
+    }
+    Some(text.to_string())
 }
 
 fn host_identity() -> &'static str {
@@ -1361,6 +1399,16 @@ mod tests {
             Device::Cpu,
             "cached target bypassed its stored CPU output proof"
         );
+    }
+
+    #[test]
+    fn cuda_inventory_requires_device_ids_and_distinguishes_devices() {
+        let first = cuda_inventory(b"0, GPU-a, 0000:01:00.0, A100, 580.0\n").unwrap();
+        let second = cuda_inventory(b"0, GPU-b, 0000:02:00.0, A100, 580.0\n").unwrap();
+        assert_ne!(fingerprint(&first), fingerprint(&second));
+        assert!(cuda_inventory(b"").is_none());
+        assert!(cuda_inventory(b"0, N/A, 0000:01:00.0, A100, 580.0").is_none());
+        assert!(cuda_inventory(b"NVIDIA-SMI has failed").is_none());
     }
 
     #[test]
