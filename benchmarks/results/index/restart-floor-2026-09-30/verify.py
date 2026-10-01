@@ -76,6 +76,24 @@ assert len(memory_binaries)==3 and {b['arm'] for b in memory_binaries}=={'main',
 for b in memory_binaries:
     prior=next(p for p in disk_binaries if p['arm']==b['arm'])
     assert b['commit']==prior['commit'] and b['sha256']==prior['sha256'] and b['binary'].replace('${SCRATCH}','<SCRATCH>')==prior['binary'], 'HNSW arm-keyed executable binding'
+disk_root=root.with_name('restart-floor-disk-2026-09-30')
+disk_provenance=json.loads((disk_root/'provenance.json').read_text())
+provider_bindings=json.loads((disk_root/'provider-bindings.json').read_text())
+memory_provenance=json.loads((root/'provenance.json').read_text())
+memory_assets={e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>'):e for e in memory_provenance['model_assets']}
+disk_assets={e['path']:e for e in disk_provenance['source_assets']+disk_provenance['prepared_graphs_and_external_weights']}
+for path,entry in memory_assets.items():
+    assert path in disk_assets and all(entry[key]==disk_assets[path][key] for key in ['bytes','sha256']), 'HNSW recorded model inventory differs from retained role binding'
+for row in raw:
+    if row['phase']=='process_total':continue
+    for role,provider in row['actual_providers'].items():
+        prefix=f"${{EVAL_HOMES}}/{row['repetition']}-{row['arm']}/models/"
+        assert provider['model_graph'].startswith(prefix), 'HNSW provider process/model path differs'
+        normalized='<MODEL_CACHE>/'+provider['model_graph'].removeprefix(prefix)
+        binding=provider_bindings['roles'][role]
+        assert normalized==binding['prepared_graph'] and normalized in memory_assets and binding['source_graph'] in memory_assets, 'HNSW provider graph absent from retained model inventory'
+        mapped=dict(provider,model_graph=provider['model_graph'].replace('${EVAL_HOMES}/','<SCRATCH>/results-disk/',1))
+        review.provider_binding(mapped,role,disk_provenance,provider_bindings)
 expected_commits={b['arm']:b['commit'] for b in memory_binaries}
 assert all(r['commit']==expected_commits[r['arm']] for r in raw), 'HNSW raw commit differs from retained arm executable'
 timing_review=review.timing_review(summary,raw)
