@@ -1,6 +1,5 @@
 {
   "scope": "Current stopped Linux seed only; metadata excerpts omit graph, vector, codes and centroid values",
-  "inspection_date_utc": "2026-09-30",
   "vendor_source_commit": "1ab7975dfc2d2160054bafff614831b7099cd930",
   "native_library_sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
   "provenance_sha256": "31ddf3e7963978d767e57683d38ca9a331b256b0e69c15afb5cc086d9a5a14af",
@@ -47,12 +46,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/0/embedding.index.68.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -131,12 +130,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/1/embedding.index.68.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -215,12 +214,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/11/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -299,12 +298,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/14/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -383,12 +382,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/2/embedding.index.68.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -467,12 +466,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/21/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -551,12 +550,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/32/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -635,12 +634,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/43/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -719,12 +718,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/46/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -803,12 +802,12 @@
       },
       "seed_relative_path": "index/01a0f391-cd8e-7390-8b58-270ad9b70097/memories/8/embedding.index.4.proxima",
       "private_original_verification_receipt": {
-        "inspection_date_utc": "2026-09-30",
         "whole_file_sha256_matches_pretrial_provenance": true,
         "header_footer_table_crc_valid": true,
         "complete_disk_meta_crc_valid": true,
         "complete_pq_meta_crc_valid": true,
-        "independently_recomputable_from_public_excerpts": false
+        "independently_recomputable_from_public_excerpts": false,
+        "inspection_capture_timestamp_utc": null
       },
       "excerpts": {
         "container_header": {
@@ -849,5 +848,8 @@
         }
       }
     }
-  ]
+  ],
+  "archive_series_date": "2026-09-30",
+  "inspection_capture_timestamp_utc": null,
+  "public_export_date_utc": "2026-10-01"
 }
