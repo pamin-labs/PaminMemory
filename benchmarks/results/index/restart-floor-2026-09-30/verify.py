@@ -21,6 +21,8 @@ assert {(r['arm'],r['repetition']) for r in raw}=={(arm,rep) for arm in ['main',
 for arm in ['main','predecessor','candidate']:
     for rep in range(3):
         rows=[r for r in raw if r['arm']==arm and r['repetition']==rep]
+        expected_order=['open','write_and_memory_drain','durability_flush','maintenance','search_cold','search_warmup','search_warmup']+['search_warm']*24+['new_write_search','closed_index','process_total']
+        assert [r['phase'] for r in rows]==expected_order, 'HNSW product phase chronology differs'
         expected_phases=Counter({**{p:1 for p in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']},'search_warmup':2,'search_warm':24})
         assert Counter(r['phase'] for r in rows)==expected_phases, 'HNSW unexpected phase multiset'
         log=(root/'logs'/f'{rep}-{arm}.log').read_text()
@@ -43,6 +45,7 @@ for arm in ['main','predecessor','candidate']:
         logged=[json.loads(line.removeprefix('RESTART_JSON ')) for line in log.splitlines() if line.startswith('RESTART_JSON ')]
         unmatched=[r for r in rows if r['phase']!='process_total']
         assert len(logged)==len(unmatched), 'HNSW raw/log cardinality differs'
+        assert all(all(key in r and r[key]==value for key,value in observation.items()) for observation,r in zip(logged,unmatched)), 'HNSW native/raw chronology differs'
         for observation in logged:
             matches=[i for i,r in enumerate(unmatched) if all(key in r and r[key]==value for key,value in observation.items())]
             assert len(matches)==1, 'HNSW native log observation has no unique raw row'
@@ -104,6 +107,12 @@ disk_root=root.with_name('restart-floor-disk-2026-09-30')
 disk_provenance=json.loads((disk_root/'provenance.json').read_text())
 provider_bindings=json.loads((disk_root/'provider-bindings.json').read_text())
 memory_provenance=json.loads((root/'provenance.json').read_text())
+assert memory_provenance['seed_documents']==18000, 'HNSW seed corpus premise differs'
+seed_entries=memory_provenance['stopped_seed_index_files']
+assert len(seed_entries)==len({e['path'] for e in seed_entries})==271, 'HNSW stopped seed inventory differs'
+for suffix,content in [('/profile',b'gpahal/bge-m3-onnx-int8\ntopic\nmemory\nnamed\nreversed-keys'),('/.pamin-optimized-files',b'v1 271\n')]:
+    selected=[e for e in seed_entries if e['path'].endswith(suffix)]
+    assert len(selected)==1 and selected[0]['bytes']==len(content) and selected[0]['sha256']==hashlib.sha256(content).hexdigest(), 'HNSW seed profile/floor identity differs'
 memory_entries=memory_provenance['model_assets']
 assert len(memory_entries)==len({e['path'] for e in memory_entries})==7, 'HNSW duplicate/incomplete prehashed model inventory'
 memory_assets={e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>'):e for e in memory_entries}
