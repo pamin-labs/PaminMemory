@@ -1,0 +1,282 @@
+"""Recompute every metric category from a complete new 80/880 run; never execute product code."""
+import json
+import os
+import tempfile
+import hashlib
+import re
+import runpy
+from pathlib import Path
+import statistics
+import common as c
+import metrics
+import rows
+
+
+def paired_correctness(classifications):
+    """Count only complete main/stack pairs with equal actual input-change scope."""
+    groups={}
+    for item in classifications:
+        job=item['job']
+        key=(job['limit'],job['query_id'],job['sequence'][0])
+        block=groups.setdefault(key,{}).setdefault(job['round'],{})
+        c.require(job['source'] in ['main','stack'] and job['source'] not in block,
+                  'duplicate or unknown correctness pair arm')
+        c.require(type(item.get('changed_actual_reranker_inputs')) is bool, 'invalid actual input-change scope')
+        block[job['source']]=item
+    correctness,controls,excluded=[],[],[]
+    fields=['same_final_actual_inputs','same_final_raw_bits/order','all_changed_and_hot_exact',
+            'legacy_main_context_failure','retrieval_or_input_context_mismatch']
+    for (limit,qid,initial),blocks in sorted(groups.items()):
+        c.require(set(blocks)==set(range(4)) and all(set(pair)=={'main','stack'} for pair in blocks.values()),
+                  'complete four-block correctness pairs required')
+        paired=[]
+        for block,pair in sorted(blocks.items()):
+            scopes={arm:item['changed_actual_reranker_inputs'] for arm,item in pair.items()}
+            if scopes['main']!=scopes['stack']:
+                excluded.append({'limit':limit,'query_id':qid,'initial':initial,'block':block,
+                                 'actual_input_change_by_arm':scopes,
+                                 'reason':'unpaired actual input-change scope; excluded from correctness differences'})
+            else:
+                paired.append(pair)
+        for changed,target in [(True,correctness),(False,controls)]:
+            selected=[pair for pair in paired if pair['main']['changed_actual_reranker_inputs'] is changed]
+            if not selected:
+                continue
+            for field in fields:
+                counts={arm:sum(pair[arm][field] for pair in selected) for arm in ['main','stack']}
+                target.append({'configuration':f'limit{limit}/query{qid}/history{initial}/{len(selected)} paired blocks',
+                               'samples_per_arm':len(selected),'excluded_unpaired_blocks':len(blocks)-len(paired),
+                               'history_scope':'changed-input history' if changed else 'unchanged-input control',
+                               'metric':field,**metrics.difference(counts['main'],counts['stack'])})
+    return correctness,controls,excluded
+
+
+def report(packets, provider_binding=None):
+    jobs = c.schedule()
+    c.require(len(packets) == 80 and {p['job']['name'] for p in packets} == {j['name'] for j in jobs},
+              'complete unique process matrix required')
+    expected = {j['name']: j for j in jobs}
+    results, observations, lifetimes = {}, [], []
+    gold = json.loads((c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json').read_text())
+    for packet in packets:
+        job, actual = packet['job'], packet['rows']
+        c.require(job == expected[job['name']] and len(actual) == len(job['sequence'].split(',')),
+                  'process schedule or chronology differs')
+        validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+        c.require(validated == packet['validated'], 'retained validation differs from actual rows')
+        for old, new in zip(actual, actual[1:]):
+            rows.hot_guard(old, new, job['source'])
+        results[(job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])] = packet
+        observations.extend({'job': job, 'row': row, 'validated': valid, 'phase': c.phase(job, step)}
+                            for step, (row, valid) in enumerate(zip(actual, validated)))
+        last = actual[-1]['process_after']
+        samples = packet['usage']['samples']
+        peak = lambda role, key, extra: max([s[role][key] for s in samples] + extra, default=None)
+        lifetimes.append({'job': job,
+            'controller_observed_native_wall_seconds': packet['usage']['native_wall_seconds'],
+            'engine_open_wall_us': packet['opened']['wall_us'],
+            'cumulative_user_seconds_through_last_search': last['utime_ticks'] / rows.CLOCK_TICKS,
+            'cumulative_system_seconds_through_last_search': last['stime_ticks'] / rows.CLOCK_TICKS,
+            'native_sampled_peak_rss_kib': peak('native', 'VmRSS', [last['rss_kib']]),
+            'native_observed_hwm_kib': peak('native', 'VmHWM', [last['hwm_kib']]),
+            'owned_pg_main_pid_sampled_peak_rss_kib': peak('pg_main', 'VmRSS', []),
+            'full_lifetime_cpu_seconds': None, 'total_service_memory_kib': None})
+    c.require(len(observations) == 880, 'missing or extra product calls')
+    classifications = rows.oracle_checks(results)
+    eligible = {item['job']['name']: item['paired_speed_claim_eligible'] for item in classifications}
+    measured_metrics = metrics.metric_tables(observations, eligible,
+        host_conditions={packet['job']['name']: packet.get('host_conditions') for packet in packets},
+        provider_binding=provider_binding)
+    for metric in measured_metrics:
+        config = metric['configuration']
+        if config[4] in ['changed-context', 'changed-hot']:
+            scoped = [item for item in classifications if
+                      (item['job']['tier'], item['job']['limit'], item['job']['query_id'], item['job']['sequence'][0]) == tuple(config[:4])]
+            if scoped and not any(item['changed_actual_reranker_inputs'] for item in scoped):
+                metric['history_scope'] = 'unchanged-input control'
+    correctness,control_diagnostics,unpaired_history_scopes=paired_correctness(classifications)
+    process_metrics = []
+    groups = {(j['tier'], j['limit'], j['query_id'], j['sequence'][0]) for j in jobs}
+    for group in sorted(groups):
+        for key in lifetimes[0]:
+            if key == 'job':
+                continue
+            values = {arm: [r[key] for r in lifetimes if r['job']['source'] == arm
+                       and (r['job']['tier'], r['job']['limit'], r['job']['query_id'], r['job']['sequence'][0]) == group]
+                       for arm in ['main', 'stack']}
+            means = {arm: statistics.mean(v) if all(x is not None for x in v) else None
+                     for arm, v in values.items()}
+            process_metrics.append({'scope': '/'.join(map(str, group)), 'metric': key,
+                                    **metrics.difference(means['main'], means['stack']),
+                                    'speed_claim_eligible': False})
+    binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
+    disk = []
+    for key in ['index_before_bytes', 'index_after_bytes']:
+        values = {arm: statistics.mean(p[key] for p in packets if p['job']['source'] == arm)
+                  for arm in ['main', 'stack']}
+        disk.append({'metric': key, **metrics.difference(values['main'], values['stack'])})
+    for stage in ['before', 'after']:
+        for measure in ['logical_bytes', 'allocated_bytes']:
+            values = {arm: [p.get('postgres_disk', {}).get(stage, {}).get(measure)
+                           for p in packets if p['job']['source'] == arm] for arm in ['main', 'stack']}
+            means = {arm: statistics.mean(v) if all(type(x) is int and x >= 0 for x in v) else None
+                     for arm, v in values.items()}
+            disk.append({'metric': 'owned PG data/local WAL ' + stage + ' ' + measure,
+                         **metrics.difference(means['main'], means['stack'])})
+    asset_bytes = sum(pin['bytes'] for pin in c.MANIFEST['assets'])
+    disk += [{'metric': 'listed bound model/runtime assets logical bytes',
+              **metrics.difference(asset_bytes, asset_bytes)},
+             {'metric': 'integration-test helper executable logical bytes',
+              **metrics.difference(binaries['main']['bytes'], binaries['stack']['bytes'])},
+             {'metric': 'shipped product executable logical bytes; unmeasured',
+              **metrics.difference(None, None)}]
+    baseline = json.loads((c.ROOT / 'seed-receipt.json').read_text())
+    disk.append({'metric': 'index baseline allocated bytes; endpoint unavailable',
+                 **metrics.difference(baseline['index_allocated_bytes'], None)})
+    for key in ['historical full asset inventory parity', 'endpoint allocated bytes',
+                'temporary clone peak allocation', 'readonly full-payload immutability']:
+        disk.append({'metric': key, **metrics.difference(None, None)})
+    return {'complete': True, 'processes': 80, 'calls': 880, 'revisions': c.MANIFEST['revisions'],
+            'regenerated_fixture': True, 'historical_numeric_identity_claimed': False,
+            'correctness': correctness, 'control_diagnostics': control_diagnostics, 'classifications': classifications,
+            'unpaired_history_scopes': unpaired_history_scopes,
+            'metrics': measured_metrics,
+            'process_metrics': process_metrics, 'disk': disk,
+            'host_conditions': [{'job': p['job']['name'], 'endpoint': endpoint,
+                                 'conditions': p['host_conditions'].get(endpoint)
+                                 if type(p.get('host_conditions')) is dict else None}
+                                for p in packets for endpoint in ['before', 'after']],
+            'host_conditions_scope': 'Retained process before/after endpoints only, from completion-bound packets '
+                                     'revalidated by main; missing endpoints N/A. Startup/monitoring journal '
+                                     'is ancillary and not imported into reports; no continuous hardware proof.',
+            'postgres_build_identities': [{'job': p['job']['name'], 'identity': p.get('postgres_build_identity')} for p in packets],
+            'process_host_conditions': [{'job': p['job']['name'], 'conditions': p.get('host_conditions')} for p in packets],
+            'scope': 'CPU ReadOnly Engine search; four rotated independent process blocks; hot calls dependent; '
+                     'fresh process with prepared caches and preflight-warmed OS pages; shared machine; '
+                     'PG main PID separate, children/device/services unmeasured; zero CPU ticks resolution-censored; '
+                     'frozen executables are integration-test helpers, not shipped product binaries; product executable disk N/A; '
+                     'no historical UUID/index/binary identity, population p95 or universal quality claim.'}
+
+
+def write_tables(path, result):
+    value = lambda v: 'N/A' if v is None else str(v)
+    lines = ['# Regenerated synthetic experiment', '', result['scope'], '',
+             result.get('host_conditions_scope', 'Endpoint metadata; binding N/A for direct renderer fixtures.') + ' '
+             + str(len(result['host_conditions'])) + ' endpoint records. First endpoint: '
+             + json.dumps(result['host_conditions'][0] if result['host_conditions'] else None), '',
+             str(len(result.get('unpaired_history_scopes', []))) + ' paired blocks excluded from correctness differences for unequal actual input-change scope; denominators shown per row.', '',
+             '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Samples per arm | Eligibility |',
+             '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
+    for group in ['correctness', 'control_diagnostics', 'metrics', 'process_metrics', 'disk']:
+        for item in result[group]:
+            eligibility = ('unchanged-input control; not changed-input proof' if group == 'control_diagnostics' or item.get('history_scope') == 'unchanged-input control' else
+                           'accuracy excluded' if item.get('accuracy_eligible') is False else
+                           'different work' if item.get('same_successful_work') is False else
+                           'descriptive; stable withheld' if not item.get('stable_claim_eligible') else
+                           'descriptive four-block eligible')
+            lines.append('| ' + ' | '.join([value(item.get('configuration', item.get('scope', group))),
+                         item['metric'] + ' ' + item.get('statistic', '')] +
+                         [value(item[k]) for k in ['before', 'after', 'absolute_difference', 'percentage_change']]
+                         + [value(item.get('samples_per_arm')), eligibility]) + ' |')
+    path.write_text('\n'.join(lines) + '\n')
+
+
+def publish_reports(result):
+    """Resume exact matching partial outputs; two filenames are not atomic together.
+
+    Stage both payloads before publishing either. Individual complete files are
+    linked without replacing existing paths. Conflicting output is retained.
+    """
+    with tempfile.TemporaryDirectory(dir=c.ROOT, prefix='.analysis-report-') as directory:
+        staged = Path(directory)
+        c.save(staged / 'metrics.json', result)
+        write_tables(staged / 'tables.md', result)
+        expected = {name: (staged / name).read_bytes() for name in ['metrics.json', 'tables.md']}
+        def matches(path, data):
+            c.require(not path.is_symlink() and path.is_file() and path.read_bytes() == data,
+                      'conflicting existing report; preserve retained output: ' + path.name)
+        # Check both before writing any missing final path.
+        for name, data in expected.items():
+            target = c.ROOT / name
+            if os.path.lexists(target):
+                matches(target, data)
+        for name, data in expected.items():
+            source, target = staged / name, c.ROOT / name
+            if os.path.lexists(target):
+                matches(target, data)
+                continue
+            with source.open('rb') as stream:
+                os.fsync(stream.fileno())
+            try:
+                os.link(source, target) # Exclusive publication; never overwrite a raced-in file.
+            except FileExistsError:
+                matches(target, data)
+        descriptor = os.open(c.ROOT, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def main():
+    """Validate retained checkpoints in-process; never launch pg_config or product code."""
+    out = c.ROOT / 'results'
+    c.require(not out.is_symlink(), 'results symlink forbidden')
+    plan_path, complete_path = out / 'run-identity.json', out / 'complete.json'
+    c.require(not plan_path.is_symlink() and not complete_path.is_symlink(), 'receipt symlink forbidden')
+    # Bootstrap only the input hashes before loading any controller source.
+    # The shared strict parser then rejects duplicate keys in both receipts.
+    bootstrap = json.loads(plan_path.read_text())
+    expected_inputs = {'config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
+                       'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
+                       'run.py', 'rows.py', 'common.py', 'owned_postgres.py', 'analyze.py', 'metrics.py'}
+    c.require(set(bootstrap['inputs']) == expected_inputs, 'retained run input set differs')
+    for name, digest in bootstrap['inputs'].items():
+        path = c.ROOT / name
+        c.require(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest) is not None
+                  and not path.is_symlink() and c.digest(path) == digest,
+                  'retained method/configuration input changed: ' + name)
+    controller = runpy.run_path(str(c.ROOT / 'run.py'))
+    read, canonical = controller['read_json'], controller['canonical']
+    plan, complete = read(plan_path), read(complete_path)
+    jobs = c.schedule()
+    c.require(set(plan) == {'schema', 'jobs', 'binaries', 'assets', 'inputs', 'seed_inventory',
+                          'postgres_installation', 'scope'}
+              and type(plan['schema']) is int and plan['schema'] == 1
+              and canonical(plan['jobs']) == canonical(jobs)
+              and plan['scope'] == 'new synthetic method checkpoints only; no historical numeric identity; interrupted attempts retained',
+              'retained run plan schema/schedule differs')
+    c.source_inputs() # Read-only materialized source/receipt comparison, no compiler.
+    c.require(canonical(plan['binaries']) == canonical(read(c.ROOT / 'build/binaries.json')),
+              'retained helper pins differ')
+    bound = {str((Path(c.CONFIG[pin['root']]) / pin['relative']).resolve()): pin
+             for pin in c.MANIFEST['assets']}
+    c.require(canonical(bound) == canonical(plan['assets']), 'retained asset plan differs')
+    identity = hashlib.sha256(canonical(plan).encode()).hexdigest()
+    c.require(set(complete) == {'complete', 'processes', 'calls', 'classifications', 'regenerated_fixture',
+                              'historical_numeric_identity_claimed', 'run_identity_sha256',
+                              'packet_file_sha256', 'packet_binding_scope'}
+              and complete['complete'] is True and type(complete['processes']) is int and complete['processes'] == 80
+              and type(complete['calls']) is int and complete['calls'] == 880
+              and complete['regenerated_fixture'] is True and complete['historical_numeric_identity_claimed'] is False
+              and complete['run_identity_sha256'] == identity,
+              'complete receipt plan/cardinality differs')
+    controller['validate_complete_packets'](out, jobs, complete)
+    gold = read(c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json')
+    results = controller['load_checkpoints'](out, jobs, identity, bound, gold, plan['postgres_installation'])
+    c.require(len(results) == 80 and sum(len(packet['rows']) for packet in results.values()) == 880,
+              'incomplete checkpoint matrix cannot produce a report')
+    classifications = rows.oracle_checks(results)
+    c.require(canonical(classifications) == canonical(complete['classifications']), 'complete oracle classifications differ')
+    controller['validate_complete_packets'](out, jobs, complete, results)
+    packets = [results[controller['key'](job)] for job in jobs]
+    # Supplied only after every actual log's CPU node/graph/runtime gate passed.
+    provider_binding = {'device': 'cpu', 'execution_provider': 'CPUExecutionProvider',
+        'scope': 'retained actual per-process log assignment/graph/runtime bindings revalidated by run.checkpoint'}
+    result = report(packets, provider_binding=provider_binding)
+    result['completion_packet_binding_scope'] = controller['COMPLETE_PACKET_SCOPE']
+    publish_reports(result)
+
+
+if __name__ == '__main__':
+    main()

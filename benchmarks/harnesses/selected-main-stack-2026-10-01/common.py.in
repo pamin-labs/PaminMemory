@@ -1,0 +1,307 @@
+"""Local-only bindings and resource guards for materialized scratch controllers."""
+from datetime import datetime, timezone
+from fractions import Fraction
+import platform
+import re
+import stat
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parent
+MANIFEST = json.loads((ROOT / 'sources.json').read_text())
+CONFIG = json.loads((ROOT / 'config.json').read_text())
+RESERVE = 8 * 1024**3
+# Failed cleanup aborts this controller; retain Popen to prevent destructor reap.
+RETAINED_GROUPS = []
+
+
+def require(ok, why):
+    if not ok:
+        raise ValueError(why)
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024**2), b''):
+            value.update(block)
+    return value.hexdigest()
+
+
+def validate_binaries(binaries):
+    require(type(binaries) is dict and set(binaries)=={'main','stack','seed'}, 'frozen binary receipt arms differ')
+    for arm,pin in binaries.items():
+        require(type(pin) is dict and set(pin)=={'path','sha256','bytes','revision'}, 'frozen binary receipt schema differs')
+        require(type(pin['path']) is str and pin['path'] and Path(pin['path']).is_absolute(), 'invalid frozen binary path')
+        require(type(pin['sha256']) is str and re.fullmatch('[0-9a-f]{64}',pin['sha256']) is not None, 'invalid frozen binary digest')
+        require(type(pin['bytes']) is int and pin['bytes']>=0, 'invalid frozen binary size')
+        require(type(pin['revision']) is str and pin['revision']==MANIFEST['revisions']['main' if arm=='seed' else arm], 'frozen binary revision differs')
+        path=Path(pin['path'])
+        require(not path.is_symlink() and path.is_file(), 'frozen binary file missing or symlink')
+        require(path.stat().st_size==pin['bytes'], 'frozen binary size differs')
+        require(digest(path)==pin['sha256'], 'frozen binary changed')
+    return binaries
+
+
+def save(path, value):
+    with Path(path).open('x') as stream:
+        json.dump(value, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        stream.write('\n')
+
+
+def assets():
+    result = {}
+    for pin in MANIFEST['assets']:
+        path = Path(CONFIG[pin['root']]) / pin['relative']
+        require(path.is_file() and path.stat().st_size == pin['bytes']
+                and digest(path) == pin['sha256'], 'required offline asset differs: ' + pin['relative'])
+        result[str(path.resolve())] = pin
+    return result
+
+
+def source_inputs():
+    expected = json.loads((ROOT / 'source-receipts.json').read_text())
+    for arm, receipt in expected.items():
+        source = ROOT / arm
+        actual = {str(path.relative_to(source)): ({'link': str(path.readlink())} if path.is_symlink()
+                  else {'sha256': digest(path)}) for path in sorted(source.rglob('*'))
+                  if path.is_file() or path.is_symlink()}
+        require(actual == receipt, 'materialized compilation inputs changed: ' + arm)
+
+
+def logical(root):
+    return sum(p.stat().st_size for p in Path(root).rglob('*')
+               if p.is_file() and not p.is_symlink())
+
+
+def disk_sizes(root):
+    root = Path(root)
+    require(root.is_dir() and not root.is_symlink(), 'owned disk directory required')
+    logical_bytes = allocated_bytes = files = 0
+    for directory, children, names in os.walk(root, followlinks=False):
+        children[:] = [name for name in children if not (Path(directory) / name).is_symlink()]
+        for name in names:
+            path = Path(directory) / name
+            metadata = path.lstat()
+            if stat.S_ISREG(metadata.st_mode):
+                logical_bytes += metadata.st_size
+                allocated_bytes += metadata.st_blocks * 512
+                files += 1
+    return {'logical_bytes': logical_bytes, 'allocated_bytes': allocated_bytes, 'files': files}
+
+
+def cgroup_conditions(root=None, membership=Path('/proc/self/cgroup'), mountinfo=Path('/proc/self/mountinfo')):
+    lines = [line.split(':', 2)[2] for line in membership.read_text().splitlines() if line.startswith('0::')]
+    require(len(lines) == 1, 'one cgroup v2 membership required')
+    relative = lines[0]
+    require(relative.startswith('/') and not any(part in {'.', '..'} for part in relative.split('/')),
+            'cgroup membership path escape')
+    member = Path(relative)
+    candidates = []
+    for line in mountinfo.read_text().splitlines():
+        fields = line.split()
+        if '-' not in fields:
+            continue
+        separator = fields.index('-')
+        if separator + 1 >= len(fields) or fields[separator + 1] != 'cgroup2':
+            continue
+        require(separator >= 6, 'truncated cgroup2 mountinfo')
+        decode = lambda value: re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), value)
+        subtree, mounted = decode(fields[3]), decode(fields[4])
+        require(all(value.startswith('/') and not any(part in {'.', '..'} for part in value.split('/'))
+                    for value in [subtree, mounted]), 'cgroup mount path escape')
+        subtree, mounted = Path(subtree), Path(mounted)
+        if root is not None and mounted != Path(root):
+            continue
+        if member.is_relative_to(subtree):
+            candidates.append((subtree, mounted))
+    require(candidates, 'cgroup membership does not map to a visible cgroup2 mount')
+    # Prefer the broadest visible filesystem subtree so ancestor limits are included.
+    depth = min(len(subtree.parts) for subtree, mounted in candidates)
+    broadest = set((subtree, mounted) for subtree, mounted in candidates if len(subtree.parts) == depth)
+    conventional = [item for item in broadest if item[1] == Path('/sys/fs/cgroup')]
+    require(len(conventional) == 1 or len(broadest) == 1, 'ambiguous visible cgroup2 mounts')
+    subtree, mounted = conventional[0] if conventional else next(iter(broadest))
+    require(not mounted.is_symlink(), 'cgroup mount symlink forbidden')
+    root = mounted.resolve()
+    leaf = root / member.relative_to(subtree)
+    require(leaf.resolve().is_relative_to(root), 'cgroup membership path escape')
+    require(leaf.is_dir(), 'effective cgroup missing')
+    levels = []
+    node = leaf
+    while True:
+        require(not node.is_symlink(), 'cgroup membership symlink forbidden')
+        memory_max = (node / 'memory.max').read_text().strip() if (node / 'memory.max').exists() else 'max'
+        current = int((node / 'memory.current').read_text()) if (node / 'memory.current').exists() else None
+        maximum = None if memory_max == 'max' else int(memory_max)
+        require((maximum is None or maximum >= 0) and (current is None or current >= 0), 'invalid cgroup memory values')
+        require(maximum is None or current is not None, 'limited ancestor memory.current missing')
+        quota = (node / 'cpu.max').read_text().strip() if (node / 'cpu.max').exists() else 'max 100000'
+        amount, period = quota.split()
+        require(int(period) > 0 and (amount == 'max' or int(amount) > 0), 'invalid cgroup CPU quota')
+        levels.append({'path': str(node), 'memory_max_bytes': maximum, 'memory_current_bytes': current,
+                       'memory_headroom_bytes': None if maximum is None else maximum - current,
+                       'cpu_max': quota})
+        if node == root:
+            break
+        node = node.parent
+    require(levels[0]['memory_current_bytes'] is not None, 'effective cgroup memory.current required')
+    headrooms = [level['memory_headroom_bytes'] for level in levels if level['memory_headroom_bytes'] is not None]
+    ratios = [Fraction(int(level['cpu_max'].split()[0]), int(level['cpu_max'].split()[1]))
+              for level in levels if not level['cpu_max'].startswith('max ')]
+    return {'cgroup_path': str(leaf), 'mounted_cgroup_root': str(root), 'mounted_filesystem_subtree': str(subtree), 'membership_path': relative,
+            'scope': 'visible mounted cgroup v2 hierarchy only; invisible ancestor limits unknown',
+            'cgroup_ancestors': levels,
+            'cgroup_memory_bytes': levels[0]['memory_current_bytes'],
+            'effective_memory_headroom_bytes': min(headrooms) if headrooms else None,
+            'cpu_quota': levels[0]['cpu_max'], 'effective_cpu_quota_cores': float(min(ratios)) if ratios else None}
+
+
+def guard(phase='monitor'):
+    conditions = cgroup_conditions()
+    conditions.update(captured_at_utc=datetime.now(timezone.utc).isoformat(), controller_pid=os.getpid(),
+                      phase=phase, disk_free=shutil.disk_usage(ROOT).free,
+                      affinity=sorted(os.sched_getaffinity(0)), shared_machine=True,
+                      host={'architecture': platform.machine(), 'kernel': platform.release(),
+                            'cpu_model': next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
+                                               if line.startswith('model name')), None)})
+    # Append immutable observations from build/seed/run admission and monitoring.
+    with (ROOT / 'host-conditions.jsonl').open('a') as stream:
+        stream.write(json.dumps(conditions, allow_nan=False) + '\n')
+    require(conditions['disk_free'] >= RESERVE, 'keep 8 GiB disk reserve')
+    headroom = conditions['effective_memory_headroom_bytes']
+    require(headroom is None or headroom >= 2 * 1024**3, 'keep 2 GiB cgroup memory headroom')
+    return conditions
+
+
+def exclusive():
+    # All copies of this harness on the host share this cooperative lock.
+    lock = Path('/tmp/pamin-synthetic-measurement.lock').open('a')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    guard('admission')
+    return lock
+
+
+def environment(home=None):
+    env = {key: os.environ[key] for key in ['HOME', 'USER', 'TMPDIR'] if key in os.environ}
+    env.update(LANG='C.UTF-8', LC_ALL='C.UTF-8', PATH='/usr/local/bin:/usr/bin:/bin',
+               HF_HOME=CONFIG['models'], HF_HUB_CACHE=CONFIG['models'],
+               HUGGINGFACE_HUB_CACHE=CONFIG['models'], HF_HUB_OFFLINE='1',
+               HF_HUB_DISABLE_TELEMETRY='1',
+               LD_LIBRARY_PATH=CONFIG['native'] + ':' + CONFIG['ort'])
+    if home is not None:
+        env.update(PAMIN_DEVICE='cpu', PAMIN_PROFILE='accuracy', PAMIN_EVAL_HOME=str(home))
+    return env
+
+
+def exit_status(process):
+    # Observe without reaping: the leader's reserved PID also reserves its PGID.
+    # ChildProcessError means ownership was lost; callers must never signal it.
+    result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if result is None:
+        return None
+    return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
+
+
+def live_group_members(group):
+    members = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / 'stat').read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except PermissionError:
+            # hidepid may expose another UID's directory but deny its stat file.
+            # Never hide an inaccessible owned/unknown-UID process from cleanup.
+            try:
+                owner = entry.stat().st_uid
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            require(int(entry.name) != group and owner != os.geteuid(),
+                    'owned or same-UID process stat inaccessible; retain unreaped leader')
+            continue
+        fields = stat[stat.rfind(')') + 2:].split()
+        if int(fields[2]) == group and fields[0] not in {'Z', 'X'}:
+            try:
+                owner = entry.stat().st_uid
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            require(owner == os.geteuid(), 'owned process group UID differs')
+            members.append(int(entry.name))
+    return members
+
+
+def stop_group(process):
+    # Only new-session children launched below may enter this function. Prove
+    # the leader remains our unreaped child before signalling the reserved PGID.
+    exit_status(process)
+    try:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 10
+        while live_group_members(process.pid):
+            require(time.monotonic() < deadline,
+                    'owned process group did not drain; retain unreaped leader and failure evidence')
+            time.sleep(.1)
+        # Reap only after no live member remains. Zombies have already exited.
+        process.wait(timeout=10)
+    except BaseException:
+        RETAINED_GROUPS.append(process)
+        raise
+
+
+def monitored(command, cwd, env, prefix, limit=900):
+    start = time.monotonic()
+    with Path(str(prefix) + '.stdout').open('x') as out, Path(str(prefix) + '.stderr').open('x') as err:
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+        try:
+            code = exit_status(process)
+            while code is None:
+                guard()
+                require(time.monotonic() - start < limit, 'operation timeout')
+                time.sleep(1)
+                code = exit_status(process)
+            require(code == 0, 'operation failed; preserve logs and workspace')
+        finally:
+            stop_group(process)
+
+
+def schedule():
+    cells = [(limit, qid, 'accurate', initial) for limit in [5, 10]
+             for qid in [80, 101] for initial in ['A', 'B']]
+    cells += [(limit, 80, 'off', 'A') for limit in [5, 10]]
+    jobs = []
+    for round_, order in enumerate([['main', 'stack'], ['stack', 'main'],
+                                    ['stack', 'main'], ['main', 'stack']]):
+        offset = round_ % len(cells)
+        rotated = cells[offset:] + cells[:offset]
+        if round_ in [1, 3]:
+            rotated = list(reversed(rotated))
+        for source in order:
+            for limit, qid, tier, initial in rotated:
+                sequence = (','.join([initial] * 6 + [('B' if initial == 'A' else 'A')] * 6 + ['N'])
+                            if tier == 'accurate' else 'A,A,N')
+                jobs.append({'round': round_, 'source': source, 'limit': limit,
+                             'query_id': qid, 'tier': tier, 'sequence': sequence,
+                             'name': f'r{round_}-{source}-l{limit}-q{qid}-{tier}-{initial}'})
+    require(len(jobs) == 80 and sum(len(j['sequence'].split(',')) for j in jobs) == 880,
+            'complete 80/880 schedule required')
+    return jobs
+
+
+def phase(job, step):
+    if job['tier'] == 'off':
+        return ['off-cold', 'off-hot', 'off-new-query'][step]
+    return ('cold' if step == 0 else 'initial-hot' if step < 6 else
+            'changed-context' if step == 6 else 'changed-hot' if step < 12 else 'new-query')

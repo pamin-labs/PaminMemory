@@ -1,0 +1,158 @@
+"""Shared original quantile, delta, eligibility and per-call metric definitions."""
+import math,statistics
+def require(ok, why):
+    if not ok: raise ValueError(why)
+def percentile(values,p):
+    values=sorted(values)
+    require(bool(values),'empty metric')
+    position=(len(values)-1)*p
+    low=math.floor(position);high=math.ceil(position)
+    return values[low]+(values[high]-values[low])*(position-low)
+
+
+def difference(before,after):
+    if before is None or after is None:return {'before':before,'after':after,'absolute_difference':None,'percentage_change':None}
+    return {'before':before,'after':after,'absolute_difference':after-before,
+            'percentage_change':100*(after-before)/before if before else None}
+
+
+def stability(changes, eligible, same_work, arm_block_medians):
+    require(len(changes)==4,'four independent blocks required')
+    require(set(arm_block_medians)=={'main','stack'} and all(len(v)==4 for v in arm_block_medians.values()),'both arms require four block medians')
+    median_deltas=[after-before for before,after in zip(arm_block_medians['main'],arm_block_medians['stack'])]
+    metric_sign_flip=min(changes)<0<max(changes)
+    median_sign_flip=min(median_deltas)<0<max(median_deltas)
+    sign_flip=metric_sign_flip or median_sign_flip
+    spread=max(changes)-min(changes)
+    arm_spreads={}
+    for arm,values in arm_block_medians.items():
+        require(all(isinstance(v,(int,float)) and math.isfinite(v) and v>=0 for v in values),'nonnegative finite block medians required')
+        median=statistics.median(values)
+        arm_spreads[arm]=(max(values)-min(values))/median if median else None
+    arm_stable=all(v is not None and v<=0.10 for v in arm_spreads.values())
+    return {'four_block_percentage_changes':changes,'sign_flip':sign_flip,
+            'paired_block_median_absolute_deltas':median_deltas,'paired_block_median_sign_flip':median_sign_flip,
+            'reported_metric_block_sign_flip':metric_sign_flip,
+            'spread_percentage_points':spread,'arm_four_block_medians':arm_block_medians,
+            'arm_span_over_median':arm_spreads,
+            'stable_claim_eligible':eligible and same_work and not sign_flip and arm_stable and spread<=10,
+            'interpretation':'descriptive four-block comparison only; no population p95 or platform-wide speed claim'}
+
+
+COST_METRICS={'wall_us','cpu_user_seconds','cpu_system_seconds','encode_us','forward_us','rss_kib','hwm_kib'}
+HOST_COMPARISON_SCOPE=('timing and RSS/HWM cost comparisons using selected fixed endpoint observations and revalidated provider binding only; '
+                       'not continuous hardware/quota/provider equality, physical-host identity or absence of interference')
+
+
+def fixed_host_projection(conditions):
+    require(type(conditions) is dict, 'host conditions missing')
+    hardware=conditions.get('host')
+    require(type(hardware) is dict and all(type(hardware.get(k)) is str and hardware[k]
+            for k in ['architecture','kernel','cpu_model']), 'host hardware fields missing')
+    affinity=conditions.get('affinity')
+    require(type(affinity) is list and affinity and all(type(v) is int and v>=0 for v in affinity)
+            and len(set(affinity))==len(affinity), 'host affinity missing or invalid')
+    require('effective_cpu_quota_cores' in conditions, 'effective CPU quota missing')
+    quota=conditions['effective_cpu_quota_cores']
+    require(quota is None or (type(quota) in (int,float) and math.isfinite(quota) and quota>0), 'invalid effective CPU quota')
+    ancestors=conditions.get('cgroup_ancestors')
+    require(type(ancestors) is list and ancestors, 'visible memory/CPU limits missing')
+    limits=[]
+    for ancestor in ancestors:
+        require(type(ancestor) is dict and type(ancestor.get('path')) is str and ancestor['path']
+                and 'memory_max_bytes' in ancestor, 'visible memory limit missing')
+        maximum=ancestor['memory_max_bytes']
+        require(maximum is None or (type(maximum) is int and maximum>=0), 'invalid memory limit')
+        raw=ancestor.get('cpu_max')
+        require(type(raw) is str and len(raw.split())==2, 'visible CPU limit missing')
+        amount,period=raw.split()
+        require(period.isdigit() and int(period)>0 and (amount=='max' or (amount.isdigit() and int(amount)>0)), 'invalid CPU limit')
+        limits.append((ancestor['path'],maximum,amount,int(period)))
+    require(len({value[0] for value in limits})==len(limits), 'duplicate visible cgroup path')
+    return (tuple(hardware[k] for k in ['architecture','kernel','cpu_model']),tuple(sorted(affinity)),quota,tuple(sorted(limits)))
+
+
+def cost_environment(items,host_conditions=None,provider_binding=None):
+    result={'cost_environment_eligible':False,'cost_environment_scope':HOST_COMPARISON_SCOPE}
+    expected={'device','execution_provider','scope'}
+    if not (type(provider_binding) is dict and set(provider_binding)==expected
+            and all(type(v) is str and v for v in provider_binding.values())
+            and provider_binding['device']=='cpu' and provider_binding['execution_provider']=='CPUExecutionProvider'):
+        return {**result,'cost_environment_reason':'revalidated actual device/provider binding missing'}
+    if type(host_conditions) is not dict:
+        return {**result,'cost_environment_reason':'job host conditions missing'}
+    projections=[]
+    try:
+        for name in sorted({o['job']['name'] for o in items}):
+            conditions=host_conditions.get(name)
+            require(type(conditions) is dict, 'job host conditions missing')
+            before=fixed_host_projection(conditions.get('before'))
+            after=fixed_host_projection(conditions.get('after'))
+            require(before==after, 'fixed host conditions changed within job')
+            projections.append(before)
+        require(projections and all(value==projections[0] for value in projections),
+                'fixed host conditions differ across paired arms or blocks')
+    except ValueError as failure:
+        return {**result,'cost_environment_reason':str(failure)}
+    return {**result,'cost_environment_eligible':True,
+            'cost_environment_reason':'fixed recorded endpoints match across jobs, paired arms and blocks',
+            'cost_provider_binding':dict(provider_binding)}
+
+
+def same_preceding_work(items):
+    """Compare recorded cumulative successful work and allocation-shape counters.
+
+    Counter equality is an endpoint premise, not proof of identical operation order.
+    Missing raw before snapshots cannot qualify a new-query cost comparison.
+    """
+    keys=['offered','scored','characters','tokens','padded_tokens','batches',
+          'maximum_tokens','remembered','longest']
+    values={source:[] for source in ['main','stack']}
+    for item in items:
+        before=item['row'].get('before')
+        if not (type(before) is dict and all(type(before.get(k)) is int and before[k]>=0 for k in keys)):
+            return False
+        values[item['job']['source']].append((item['job']['round'],tuple(before[k] for k in keys)))
+    return (all(len(v)==4 and len({block for block,_ in v})==4 for v in values.values())
+            and sorted(values['main'])==sorted(values['stack']))
+
+
+def metric_tables(observations,eligibility,host_conditions=None,provider_binding=None):
+    groups={}
+    for o in observations:
+        j=o['job'];config=o['row']['arm']
+        group=(j['tier'],j['limit'],j['query_id'],j['sequence'][0],o['phase'],config)
+        groups.setdefault(group,[]).append(o)
+    result=[]
+    for group,items in sorted(groups.items()):
+        environment=cost_environment(items,host_conditions,provider_binding)
+        eligible=all(eligibility.get(o['job']['name'],True) for o in items) if group[4] in ['changed-context','changed-hot'] else True
+        works={s:[{k:o['validated']['actual_delta'][k] for k in ['offered','scored','characters','tokens','padded_tokens','batches']} for o in items if o['job']['source']==s] for s in ['main','stack']}
+        same_work=works['main']==works['stack']
+        prior_work_matches=same_preceding_work(items) if group[4] in ['new-query','off-new-query'] else True
+        definitions=[(f'quality_{k}',lambda o,k=k:o['validated']['quality_at_actual_limit'][k]) for k in ['recall','mrr','ndcg']]
+        definitions += [('wall_us',lambda o:o['row']['wall_us']),('cpu_user_seconds',lambda o:o['validated']['cpu_user_seconds']),('cpu_system_seconds',lambda o:o['validated']['cpu_system_seconds']),('rss_kib',lambda o:o['row']['process_after']['rss_kib']),('hwm_kib',lambda o:o['row']['process_after']['hwm_kib'])]
+        definitions += [(k,lambda o,k=k:o['validated']['actual_delta'][k]) for k in ['scored','characters','tokens','padded_tokens','batches','encode_us','forward_us']]
+        for metric,extract in definitions:
+            for statistic,p in [('p50',0.5),('p95_descriptive',0.95)] if metric=='wall_us' else [('mean',None)]:
+                reduce=lambda values:percentile(values,p) if p is not None else statistics.mean(values)
+                arm_values={s:reduce([extract(o) for o in items if o['job']['source']==s]) for s in ['main','stack']}
+                changes=[]
+                arm_medians={s:[] for s in ['main','stack']}
+                for round_ in range(4):
+                    block={s:reduce([extract(o) for o in items if o['job']['source']==s and o['job']['round']==round_]) for s in ['main','stack']}
+                    for s in ['main','stack']:
+                        arm_medians[s].append(statistics.median([extract(o) for o in items if o['job']['source']==s and o['job']['round']==round_]))
+                    change=difference(block['main'],block['stack'])['percentage_change']
+                    changes.append(change)
+                comparison_work=same_work and (prior_work_matches if metric in COST_METRICS else True)
+                evidence=stability(changes,eligible,comparison_work,arm_medians) if all(c is not None for c in changes) else {'stable_claim_eligible':False,'four_block_percentage_changes':changes,'arm_four_block_medians':arm_medians,'reason':'zero baseline percentage undefined'}
+                if metric in COST_METRICS:
+                    evidence['stable_claim_eligible']=evidence['stable_claim_eligible'] and environment['cost_environment_eligible']
+                result.append({'configuration':list(group),'metric':metric,'statistic':statistic,'samples_per_arm':len(items)//2,
+                               'accuracy_eligible':eligible,'same_successful_work':comparison_work,
+                               'preceding_work_scope':'new-query costs also require equal cumulative before-work/allocation-shape counters; endpoint equality only'
+                                   if group[4] in ['new-query','off-new-query'] else 'per-call successful work',**difference(arm_values['main'],arm_values['stack']),**evidence,**environment})
+    return result
+
+

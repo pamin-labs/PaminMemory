@@ -1,0 +1,382 @@
+"""Run the fixed 80/880 synthetic method with bound, atomically published checkpoints.
+
+Only checkpoints produced by this controller/plan can resume; old unbound runs
+fail closed. Incomplete clones/logs and interrupted publication temporaries are
+retained, never checkpoints. Resume requires the cooperative exclusive slot and
+stopped retained PostgreSQL clones; it does not certify absence of unrelated
+machine activity or retroactively attest historical observations. Seed/input
+identity is checked again before publishing complete, not protected from all
+unrelated filesystem mutation by the cooperative lock.
+"""
+import argparse
+import hashlib
+import os
+import tempfile
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+import common as c
+import owned_postgres as pg
+import rows
+
+
+def records(text, marker):
+    return [json.loads(line.split(marker, 1)[1]) for line in text.splitlines() if marker in line]
+
+
+def parse(text, job, bound, home=None):
+    c.require(len(re.findall(r'test result: ok\. 1 passed; 0 failed;', text)) == 1
+              and not any(word in text for word in ['panicked at', 'test result: FAILED',
+                                                    'failed to close collection']), 'native helper did not complete successfully')
+    opened, graph, actual = [records(text, marker) for marker in
+                            ['CACHE_ENGINE_OPEN ', 'CACHE_ENGINE_GRAPH ', 'CACHE_ENGINE_ROW ']]
+    c.require(len(opened) == len(graph) == 1 and opened[0]['documents'] == 230
+              and opened[0]['coverage'] == 0.0 and graph[0] == [['mentions', 11]], 'fixture premise differs')
+    c.require(len(actual) == len(job['sequence'].split(',')), 'missing or extra timed calls')
+    roles = []
+    decoder = json.JSONDecoder()
+    for line in text.splitlines():
+        if 'ONNX graph execution-provider assignment' not in line:
+            continue
+        graph_path = decoder.raw_decode(line.split('model_graph=', 1)[1])[0]
+        nodes = decoder.raw_decode(line.split('assigned_nodes=', 1)[1])[0]
+        graph_file = Path(graph_path)
+        if home is not None and graph_file.is_relative_to(home / 'models'):
+            relative = graph_file.relative_to(home / 'models')
+            c.require('..' not in relative.parts, 'provider clone path escape')
+            graph_file = Path(c.CONFIG['models']) / relative
+        path = str(graph_file.resolve())
+        role = next((name for name, pin in c.MANIFEST['roles'].items()
+                     if path == str((Path(c.CONFIG['models']) / pin['relative']).resolve())), None)
+        c.require(role is not None and nodes == {'CPUExecutionProvider': c.MANIFEST['roles'][role]['nodes']}
+                  and path in bound and c.digest(path) == bound[path]['sha256'], 'actual provider/graph binding differs')
+        roles.append(role)
+    c.require(sorted(roles) == (['embedding', 'reranker'] if job['tier'] == 'accurate' else ['embedding']),
+              'missing or duplicate model provider')
+    for row in actual:
+        mapped = {re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), line.split(maxsplit=5)[5])
+                  for line in row['loaded_libraries'] if len(line.split(maxsplit=5)) == 6}
+        expected = {str((Path(c.CONFIG[root]) / name).resolve())
+                    for root, name in [('native', 'libzvec_c_api.so'), ('ort', 'libonnxruntime.so.1.28.0')]}
+        relevant = {path for path in mapped if Path(path).name.startswith(('libonnxruntime', 'libzvec'))}
+        c.require(relevant == expected, 'actual runtime mapping differs; unexpected or missing ORT/Zvec identity')
+    return opened[0], actual
+
+
+def status(pid):
+    text = (Path('/proc') / str(pid) / 'status').read_text()
+    fields = {line.split(':', 1)[0]: line.split(':', 1)[1] for line in text.splitlines() if ':' in line}
+    if not all(key in fields for key in ['VmRSS', 'VmHWM']):
+        # An unreaped exited process retains status but loses these memory fields.
+        raise FileNotFoundError('process memory fields unavailable after exit')
+    return {key: int(fields[key].split()[0]) for key in ['VmRSS', 'VmHWM']}
+
+
+def native(home, env, binary, prefix):
+    owned = None
+    start = time.monotonic()
+    samples = []
+    process = None
+    try:
+        started = pg.start(home, env)
+        owned = started['identity']
+        postgres_build_identity = started['postgres_build_identity']
+        start = time.monotonic()
+        with Path(str(prefix) + '.log').open('x') as stream:
+            process = subprocess.Popen([str(binary), '--ignored', '--exact', 'cache_product_limit_probe',
+                                        '--nocapture', '--test-threads=1'], cwd=c.ROOT / 'main', env=env,
+                                       stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+            code = c.exit_status(process)
+            while code is None:
+                c.guard()
+                pg.check(home, owned)
+                c.require(time.monotonic() - start < 900, 'native process timeout')
+                try:
+                    samples.append({'native': status(process.pid), 'pg_main': status(owned['pid'])})
+                except FileNotFoundError:
+                    pass
+                time.sleep(1)
+                code = c.exit_status(process)
+            c.require(code == 0, 'native process failed; retain clone and logs')
+        return {'native_wall_seconds': time.monotonic() - start, 'samples': samples,
+                'polling_seconds': 1, 'PG_start_stop_included': False,
+                'postgres_build_identity': postgres_build_identity}
+    finally:
+        try:
+            if process is not None:
+                c.stop_group(process)
+        finally:
+            if owned is not None:
+                pg.stop(home, env, owned)
+
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
+
+
+
+def decode_json(text):
+    def unique(pairs):
+        value = {}
+        for name, item in pairs:
+            c.require(name not in value, 'duplicate checkpoint JSON field')
+            value[name] = item
+        return value
+    return json.loads(text, object_pairs_hook=unique)
+
+
+def read_json(path):
+    return decode_json(path.read_text())
+
+
+def bind_postgres(actual, expected):
+    c.require(all(canonical(actual[name]) == canonical(expected[name])
+                  for name in ['files', 'pg_config', 'installation_sha256']), 'checkpoint PostgreSQL installation differs')
+    c.require(actual['scope'] == 'prospective owned PostgreSQL installation and mapped runtime; historical build identity N/A',
+              'PostgreSQL build identity scope differs')
+    executable = expected['files']['bin/postgres']
+    c.require(actual['server_executable'] == dict(bytes=executable['bytes'], sha256=executable['sha256'], installation_file='bin/postgres'),
+              'PostgreSQL server executable binding differs')
+    c.require(type(actual['mapped_libraries']) is list and actual['mapped_libraries'], 'PostgreSQL mapped libraries missing')
+    for library in actual['mapped_libraries']:
+        c.require(type(library['bytes']) is int and library['bytes'] >= 0
+                  and re.fullmatch('[0-9a-f]{64}', library['sha256']) is not None
+                  and library['location'].startswith(('installation/', 'external/')),
+                  'PostgreSQL mapped library identity invalid')
+
+
+def common_postgres_runtime(packets):
+    """Common mapped file identities across jobs/resumes, without PID/addresses.
+
+    Installation-relative paths and external basenames have the capture scope of
+    owned_postgres.build_identity; this does not attest mapped inode identity.
+    """
+    expected = None
+    for packet in packets:
+        libraries = packet['postgres_build_identity']['mapped_libraries']
+        c.require(type(libraries) is list and libraries, 'PostgreSQL mapped libraries missing')
+        identity = sorted((entry['location'], entry['sha256'], entry['bytes']) for entry in libraries)
+        if expected is None:
+            expected = identity
+        c.require(identity == expected, 'cross-job PostgreSQL mapped runtime differs')
+    return expected
+
+
+def atomic_save(path, value):
+    """Exclusive-slot publication; an interrupted temporary is never a checkpoint."""
+    c.require(not path.exists() and not path.is_symlink(), 'preserve published checkpoint')
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix=path.name+'.', suffix='.pending', delete=False) as stream:
+        json.dump(value, stream, ensure_ascii=False, allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+        temporary = Path(stream.name)
+    os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def run_identity(jobs, binaries, bound, seed):
+    c.validate_binaries(binaries)
+    files = ['config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
+             'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
+             'run.py', 'rows.py', 'common.py', 'owned_postgres.py', 'analyze.py', 'metrics.py']
+    inventory = {}
+    for directory, children, names in os.walk(seed, followlinks=False):
+        for name in children + names:
+            path = Path(directory) / name
+            if path.is_symlink():
+                inventory[str(path.relative_to(seed))] = {'link': str(path.readlink())}
+            elif path.is_file():
+                inventory[str(path.relative_to(seed))] = {'sha256': c.digest(path), 'bytes': path.stat().st_size}
+    return {'schema': 1, 'jobs': jobs, 'binaries': binaries, 'assets': bound,
+            'inputs': {name: c.digest(c.ROOT / name) for name in files}, 'seed_inventory': inventory,
+            'postgres_installation': pg.installation_identity(pg.layout(seed), c.environment(seed)),
+            'scope': 'new synthetic method checkpoints only; no historical numeric identity; interrupted attempts retained'}
+
+
+def key(job):
+    return (job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])
+
+
+def checkpoint(packet, job, identity, bound, gold, out, postgres_installation):
+    pin = packet['checkpoint']
+    c.require(type(pin['attempt']) is int and pin['attempt'] >= 0, 'invalid checkpoint attempt')
+    prefix = out / (job['name'] + '-attempt' + str(pin['attempt']))
+    c.require(canonical(packet['job']) == canonical(job) and pin['identity_sha256'] == identity,
+              'checkpoint plan/job identity differs')
+    c.require(pin['packet_sha256'] == hashlib.sha256(canonical({k:v for k,v in packet.items() if k!='checkpoint'}).encode()).hexdigest(),
+              'checkpoint packet hash differs')
+    log = Path(str(prefix) + '.log')
+    c.require(not log.is_symlink() and c.digest(log) == pin['log_sha256'], 'checkpoint log differs')
+    opened, actual = parse(log.read_text(), job, bound, Path(str(prefix) + '-home'))
+    c.require(opened == packet['opened'] and canonical(actual) == canonical(packet['rows']), 'checkpoint native evidence differs')
+    validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+    c.require(canonical(validated) == canonical(packet['validated']), 'checkpoint validation differs')
+    c.require(packet['postgres_build_identity'] == packet['usage']['postgres_build_identity'], 'checkpoint PostgreSQL identity differs')
+    bind_postgres(packet['postgres_build_identity'], postgres_installation)
+    for old, new in zip(actual, actual[1:]):
+        rows.hot_guard(old, new, job['source'])
+    return packet
+
+
+COMPLETE_PACKET_SCOPE=('completion-time exact packet file digests, rechecked before reporting; '
+                       'mutable local endpoint receipt, not independent authenticity or continuous immutability proof')
+
+
+def packet_file_digests(out, jobs, packets=None):
+    expected = {job['name'] for job in jobs}
+    c.require(len(expected) == len(jobs), 'duplicate completion packet jobs')
+    result = {}
+    for job in jobs:
+        path = out / (job['name'] + '.json')
+        c.require(path.is_file() and not path.is_symlink(), 'completion packet regular file required')
+        data = path.read_bytes()
+        if packets is not None:
+            c.require(canonical(decode_json(data)) == canonical(packets[key(job)]),
+                      'completion packet differs from validated in-memory checkpoint')
+        result[job['name']] = hashlib.sha256(data).hexdigest()
+    return result
+
+
+def validate_complete_packets(out, jobs, complete, packets=None):
+    c.require(type(complete) is dict, 'complete packet binding object required')
+    hashes = complete.get('packet_file_sha256')
+    c.require(type(hashes) is dict and set(hashes) == {job['name'] for job in jobs}
+              and all(type(value) is str and re.fullmatch('[0-9a-f]{64}', value) is not None
+                      for value in hashes.values())
+              and complete.get('packet_binding_scope') == COMPLETE_PACKET_SCOPE,
+              'complete packet binding missing or invalid; legacy completion cannot be upgraded')
+    c.require(packet_file_digests(out, jobs, packets) == hashes, 'complete packet file digest differs')
+
+
+def load_checkpoints(out, jobs, identity, bound, gold, postgres_installation):
+    expected = {job['name'] + '.json': job for job in jobs}
+    c.require(not out.is_symlink(), 'results symlink forbidden')
+    for path in out.glob('*.json'):
+        c.require(path.name in expected or path.name in {'run-identity.json', 'complete.json'}, 'unknown checkpoint file')
+        c.require(not path.is_symlink(), 'checkpoint symlink forbidden')
+    complete_path = out / 'complete.json'
+    if complete_path.exists():
+        validate_complete_packets(out, jobs, read_json(complete_path))
+    results = {}
+    for name, job in expected.items():
+        path = out / name
+        if path.exists():
+            results[key(job)] = checkpoint(read_json(path), job, identity, bound, gold, out, postgres_installation)
+    if complete_path.exists():
+        validate_complete_packets(out, jobs, read_json(complete_path), results)
+    common_postgres_runtime(results.values())
+    for round_ in range(4):
+        block = {k:v for k,v in results.items() if k[0] == round_}
+        if len(block) == 20:
+            rows.oracle_checks(block)
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--exclusive', action='store_true')
+    args = parser.parse_args()
+    jobs = c.schedule()
+    if not args.execute:
+        print(json.dumps({'processes': len(jobs), 'timed_calls': 880, 'schedule': jobs}))
+        return
+    c.require(args.exclusive, 'exclusive slot required; no other builds or model experiments')
+    with c.exclusive():
+        c.source_inputs()
+        bound = c.assets()
+        binaries = c.validate_binaries(read_json(c.ROOT / 'build/binaries.json'))
+        seed = c.ROOT / 'seed'
+        pg.preflight(seed)
+        out = c.ROOT / 'results'
+        out.mkdir(exist_ok=True)
+        c.require(not out.is_symlink(), 'results symlink forbidden')
+        plan = run_identity(jobs, binaries, bound, seed)
+        plan_path = out / 'run-identity.json'
+        if plan_path.exists():
+            c.require(not plan_path.is_symlink() and canonical(read_json(plan_path)) == canonical(plan), 'resume plan identity differs')
+        else:
+            c.require(not any(out.iterdir()), 'unbound existing results cannot resume')
+            atomic_save(plan_path, plan)
+        identity = hashlib.sha256(canonical(plan).encode()).hexdigest()
+        gold = json.loads((c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json').read_text())
+        results = load_checkpoints(out, jobs, identity, bound, gold, plan['postgres_installation'])
+        rows.shown_source_identity(c.ROOT / 'main', c.ROOT / 'stack')
+        for job in jobs:
+            if key(job) in results:
+                continue
+            c.source_inputs()
+            conditions_before = c.guard(job['name'] + ':before')
+            binary = Path(binaries[job['source']]['path'])
+            c.require(c.digest(binary) == binaries[job['source']]['sha256'], 'frozen binary changed')
+            for retained in out.glob(job['name'] + '-attempt*-home'):
+                c.require(not retained.is_symlink() and retained.is_dir(), 'retained attempt home boundary differs')
+                pg.preflight(retained)
+            attempt = 0
+            while any(out.glob(job['name'] + '-attempt' + str(attempt) + '*')):
+                attempt += 1
+            prefix = out / (job['name'] + '-attempt' + str(attempt))
+            home = Path(str(prefix) + '-home')
+            shutil.copytree(seed, home, symlinks=True)
+            record = json.loads((home / 'server.json').read_text())
+            record['installation_dir'] = str(home / 'postgres/install/17.6.0')
+            (home / 'server.json').write_text(json.dumps(record))
+            before = c.logical(home / 'index')
+            # Fresh clone endpoint before any owned PostgreSQL startup.
+            postgres_before = c.disk_sizes(home / 'postgres/data')
+            env = c.environment(home)
+            env.update(CACHE_RETURN_LIMIT=str(job['limit']), CACHE_QUERY_ID=str(job['query_id']),
+                       CACHE_TIER=job['tier'], CACHE_SEQUENCE=job['sequence'])
+            usage = native(home, env, binary, prefix)
+            bind_postgres(usage['postgres_build_identity'], plan['postgres_installation'])
+            opened, actual = parse(Path(str(prefix) + '.log').read_text(), job, bound, home)
+            validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+            for old, new in zip(actual, actual[1:]):
+                rows.hot_guard(old, new, job['source'])
+            # native() has already stopped the owned PostgreSQL server.
+            packet = {'postgres_build_identity': usage['postgres_build_identity'], 'job': job, 'rows': actual, 'validated': validated, 'opened': opened, 'usage': usage,
+                      'index_before_bytes': before, 'index_after_bytes': c.logical(home / 'index'),
+                      'full_payload_immutability_attestation': None,
+                      'host_conditions': {'before': conditions_before, 'after': c.guard(job['name'] + ':after')},
+                      'postgres_disk': {'before': postgres_before, 'after': c.disk_sizes(home / 'postgres/data'),
+                                        'scope': 'owned stopped data-directory regular files including local WAL; external symlinks and directory metadata excluded'}}
+            common_postgres_runtime([*results.values(), packet])
+            pg.preflight(home)
+            c.require(home.parent == out and (home / '.graph-disposable-clone').is_file(), 'cleanup boundary differs')
+            shutil.rmtree(home)
+            packet['checkpoint'] = {'attempt': attempt, 'identity_sha256': identity,
+                'log_sha256': c.digest(Path(str(prefix) + '.log')),
+                'packet_sha256': hashlib.sha256(canonical(packet).encode()).hexdigest()}
+            atomic_save(out / (job['name'] + '.json'), packet)
+            results[key(job)] = packet
+            round_records = {k:v for k,v in results.items() if k[0] == job['round']}
+            if len(round_records) == 20:
+                rows.oracle_checks(round_records)
+            c.assets()
+            c.source_inputs()
+        c.require(len(results) == 80 and sum(len(v['rows']) for v in results.values()) == 880, 'incomplete matrix')
+        c.require(canonical(run_identity(jobs, binaries, c.assets(), seed)) == canonical(plan), 'run plan changed before completion')
+        common_postgres_runtime(results.values())
+        classifications = rows.oracle_checks(results)
+        complete = {'complete': True, 'processes': 80, 'calls': 880,
+               'classifications': classifications, 'regenerated_fixture': True,
+               'historical_numeric_identity_claimed': False, 'run_identity_sha256': identity,
+               'packet_file_sha256': packet_file_digests(out, jobs, results),
+               'packet_binding_scope': COMPLETE_PACKET_SCOPE}
+        complete_path = out / 'complete.json'
+        if complete_path.exists():
+            c.require(canonical(read_json(complete_path)) == canonical(complete), 'completion receipt differs')
+        else:
+            atomic_save(complete_path, complete)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,122 @@
+"""Build and freeze new helper executables; never overwrite either measured source."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import common as c
+
+
+def cargo_config_snapshot(checkouts, cargo_home):
+    # Same searched-path rule as the prospective restart-floor controller;
+    # that full controller is not imported because its module loads other guards.
+    locations = {cargo_home / name for name in ['config', 'config.toml']}
+    for checkout in checkouts:
+        canonical = checkout.resolve(strict=True)
+        c.require(checkout.is_absolute() and checkout == canonical, 'canonical Cargo checkout required')
+        for ancestor in [checkout, *checkout.parents]:
+            locations.update(ancestor / '.cargo' / name for name in ['config', 'config.toml'])
+    result = {str(path): {'absent': not os.path.lexists(path)} for path in sorted(locations)}
+    c.require(all(row['absent'] for row in result.values()), 'Cargo configuration refused in searched paths')
+    return result
+
+
+def isolated_build_homes():
+    cache = Path(os.environ.get('CARGO_HOME', str(Path(os.environ.get('HOME', str(Path.home()))) / '.cargo'))).resolve(strict=True)
+    c.require((cache / 'registry').is_dir(), 'offline prerequisite registry cache required')
+    home, cargo = c.ROOT / 'build-home', c.ROOT / 'build-cargo-home'
+    for path in [home, cargo]:
+        c.require(not os.path.lexists(path), 'owned build home already exists; retain prior build')
+    cargo_config_snapshot([c.ROOT / 'main', c.ROOT / 'stack'], cargo)
+    home.mkdir(mode=0o700)
+    cargo.mkdir(mode=0o700)
+    # Never copy/link config, credentials, installed tools or inherited HOME.
+    for name in ['registry', 'git']:
+        if (cache / name).is_dir():
+            (cargo / name).symlink_to((cache / name).resolve(), target_is_directory=True)
+    return home, cargo
+
+
+def build_environment():
+    env = c.environment()
+    home, cargo = isolated_build_homes()
+    env.update(HOME=str(home), CARGO_HOME=str(cargo))
+    env.update(RUSTC=c.CONFIG['rustc'], RUSTDOC=c.CONFIG['rustdoc'],
+               CARGO_BUILD_JOBS='4', CARGO_INCREMENTAL='0',
+               CARGO_TARGET_DIR=str(c.ROOT / 'target'),
+               ZVEC_LIB_DIR=c.CONFIG['native'], ZVEC_AUTO_BUILD='0',
+               ORT_LIB_LOCATION=c.CONFIG['ort'], ORT_PREFER_DYNAMIC_LINK='1',
+               LIBRARY_PATH=c.CONFIG['native'] + ':' + c.CONFIG['ort'],
+               RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
+               CARGO_ENCODED_RUSTFLAGS='', CARGO_ENCODED_RUSTDOCFLAGS='')
+    # Runtime/toolchain cache may remain external; no inherited Cargo config or credentials.
+    if 'RUSTUP_HOME' in os.environ:
+        env['RUSTUP_HOME'] = os.environ['RUSTUP_HOME']
+    return env
+
+
+def toolchain_versions():
+    versions = {}
+    for tool in ['cargo', 'rustc', 'rustdoc']:
+        reported = subprocess.check_output([c.CONFIG[tool], '--version'], text=True)
+        fields = reported.split()
+        c.require(len(fields) >= 2 and fields[0] == tool
+                  and fields[1] == c.MANIFEST['toolchain'], 'pinned toolchain required')
+        versions[tool] = {'version': fields[1], 'reported': reported}
+    return versions
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--exclusive', action='store_true')
+    args = parser.parse_args()
+    if not args.execute:
+        print('Plan: offline locked release builds of both actual probes and main-only seed helper.')
+        return
+    c.require(args.exclusive, 'claim the exclusive measurement slot before building')
+    with c.exclusive():
+        c.source_inputs()
+        c.assets()
+        versions = toolchain_versions()
+        out = c.ROOT / 'build'
+        out.mkdir()
+        c.save(out / 'toolchain.json', versions)
+        env = build_environment()
+        checkouts = [c.ROOT / 'main', c.ROOT / 'stack']
+        cargo_home = Path(env['CARGO_HOME'])
+        config_paths = cargo_config_snapshot(checkouts, cargo_home)
+        cache_roots = {name: str((cargo_home / name).resolve()) for name in ['registry', 'git']
+                       if (cargo_home / name).is_dir()}
+        c.save(out / 'cargo-config.json', {'searched_paths': config_paths, 'cache_roots': cache_roots,
+               'scope': 'owned config-free Cargo/HOME; registry/git cache links only; no credential/config copy; '
+                        'offline prerequisite cache contents not independently attested; endpoint config/link checks'})
+        binaries = {}
+        for arm, target in [('main', 'scratch_cache_product_limits'),
+                            ('stack', 'scratch_cache_product_limits'),
+                            ('main', 'scratch_synthetic_seed')]:
+            name = 'seed' if target.endswith('seed') else arm
+            command = [c.CONFIG['cargo'], 'test', '--release', '--offline', '--locked',
+                       '-p', 'pamin-engine', '--test', target, '--no-run', '--message-format=json']
+            c.require(cargo_config_snapshot(checkouts, cargo_home) == config_paths, 'Cargo configuration paths changed')
+            c.monitored(command, c.ROOT / arm, env, out / name)
+            c.require(cargo_config_snapshot(checkouts, cargo_home) == config_paths, 'Cargo configuration paths changed')
+            c.require({key: str((cargo_home / key).resolve()) for key in cache_roots} == cache_roots, 'Cargo cache bindings changed')
+            artifacts = [json.loads(line) for line in (out / (name + '.stdout')).read_text().splitlines()
+                         if line.startswith('{')]
+            executables = [a['executable'] for a in artifacts if a.get('reason') == 'compiler-artifact'
+                           and a['target']['name'] == target and a.get('executable')]
+            c.require(len(executables) == 1, 'unique actual Cargo helper artifact required')
+            frozen = out / (name + '-frozen')
+            shutil.copy2(executables[0], frozen)
+            binaries[name] = {'path': str(frozen), 'sha256': c.digest(frozen),
+                              'bytes': frozen.stat().st_size,
+                              'revision': c.MANIFEST['revisions'][arm]}
+        c.save(out / 'binaries.json', binaries)
+        c.source_inputs()
+        c.assets()
+
+
+if __name__ == '__main__':
+    main()
