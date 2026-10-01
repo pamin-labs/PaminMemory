@@ -16,7 +16,20 @@ provenance=load('provenance.json');comparison=load('comparison.json')
 assert provenance['source_base']=='13ee710c9df865f1dac98dc77a8108e438ddc539'
 assert provenance['scope'].startswith('native search_fused component')
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
+ORIGINAL_REDACTION_PINS = {'baseline.jsonl': '302e70b2463379af148eaf8c3ced4f4d3606c1fc865af1b1bc38d1d69597929e',
+ 'baseline.log': '6f5b1350ed22fcf72dbc0a38dddd65ea99dace15f875298b0ae15becb077e025',
+ 'baseline.trace.jsonl': '5936b7d0cea61761299147254a2af812cadfc74d3fa126abf33b95ab3a5d6236',
+ 'baseline.usage.json': '7f675ce48907b49028a49dc8d3b531ec54a89b2fde695e024700bf70a0b3ac37',
+ 'scored.jsonl': '149ca7521684db7a8a621c5b8283841456ad9c08b1d9a5283a55d1ee6928a0fa',
+ 'scored.log': '59b0ae1975940198f03ec6ce7a8cb0ae9efc11c3752c2a097bf1e7046a7385be',
+ 'scored.trace.jsonl': '6efe6ec43b56afafd8fe5db7cf158eab5c5808c4bae28b6282ac1ee59f16287c',
+ 'scored.usage.json': 'e273d12d107522410ea3af260c4092e55b8c152a772576c7d0438d6bd5ee3d15'}
+assert provenance['toolchain'] == {'rustc': 'rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n', 'cargo': 'cargo 1.98.1 (797e8a9bc 2026-08-05)\nrelease: 1.98.1\ncommit-hash: 797e8a9bca276c1c9f9f738d2a20f484fa4eea9d\ncommit-date: 2026-08-05\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.4 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)\nssl: OpenSSL 3.6.3 9 Jun 2026\nos: Debian 13.0.0 (trixie) [64-bit]\n', 'build_flags': {'profile': 'release', 'jobs': 2, 'offline': True, 'locked': True, 'incremental': False, 'rustflags': None, 'encoded_rustflags': None, 'wrappers': None, 'native_link': 'explicit dynamic ORT1.28.0', 'inherited_product_knobs': 'cleared'}, 'runtime_product_settings': {'profile': 'accuracy', 'device': 'cpu', 'channel_depth': 50, 'graph_depth': 2, 'reranker': 'not called; component scope', 'rayon_omp_environment_threads': 4, 'pamin_inference_threads': None, 'ort_threads': 'product available_parallelism default; not directly recorded'}}, 'recorded toolchain/settings differ'
+SHARED_MACHINE = 'exclusive model/build slot; shared file cache and reclaim pressure; non-timing component reproduction'
+LAUNCH_SETTINGS_PINS = {'baseline': '56ff2d0db433b43726412700f2b1758f380c6cae31dd8767950edc2aa9405f4f', 'scored': '2cbe0450735170c4d2b0ba49f227b89378f95ad301b4c1ec6474053d2aa3cd37'}
+ORIGINAL_LAUNCH_PINS = {'baseline': '72038565da7e2273384ee28a369df2a8eaf84f8eb4402eeb92b8b84f23af1f3d', 'scored': '33243aa7e35538e086352863f693250a535b5f0e6b66a62effe84af33c87ca65'}
 for name,record in provenance['redactions'].items():
+ assert record['original_sha256'] == ORIGINAL_REDACTION_PINS[name], 'original redaction binding differs'
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
 EXPECTED_FILES = {'source/multihop.rs.in', 'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
 assert {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()} == EXPECTED_FILES, 'required file inventory differs'
@@ -134,11 +147,20 @@ rows = {}
 for arm,weak_rank in [('baseline',23),('scored',22)]:
  row=load(f'{arm}.jsonl');record=arm_records[arm];rows[arm]=row
  launch = record['launch_binding']
- assert re.fullmatch('[0-9a-f]{64}', launch['original_launch_sha256'])
+ assert launch['original_launch_sha256'] == ORIGINAL_LAUNCH_PINS[arm]
  assert launch['command'] == ['${FROZEN_BINARY}','scratch_scored_graph_finite_fixture','--exact','--ignored','--nocapture','--test-threads=1']
  assert launch['GRAPH_OUT'] == '${RESULTS}/'+arm+'.jsonl' and launch['GRAPH_TRACE'] == '${RESULTS}/'+arm+'.trace.jsonl'
- assert launch['effective_product_settings'] == {'PAMIN_PROFILE':'accuracy','PAMIN_DEVICE':'cpu','GRAPH_ARM':arm,'GRAPH_CLK_TCK':'100'}
+ settings=launch['effective_product_settings']
+ assert settings['PAMIN_PROFILE']=='accuracy' and settings['PAMIN_DEVICE']=='cpu' and settings['GRAPH_ARM']==arm and settings['GRAPH_CLK_TCK']=='100'
+ assert settings['GRAPH_SHARED_MACHINE']==SHARED_MACHINE
+ assert settings['PAMIN_EVAL_HOME']=='${WORKSPACES}/'+arm
+ assert settings['GRAPH_OUT']==launch['GRAPH_OUT'] and settings['GRAPH_TRACE']==launch['GRAPH_TRACE']
+ assert hashlib.sha256(json.dumps(settings,sort_keys=True,separators=(',',':')).encode()).hexdigest()==LAUNCH_SETTINGS_PINS[arm], 'complete normalized launch projection differs'
 
+ assert len(row['graph_process_cpu_user_system_seconds'])==2
+ for value in [row['elapsed_ms'],row['early_stop']['elapsed_ms'],row['process_lifetime_high_water_kib'],*row['graph_process_cpu_user_system_seconds']]:
+  assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid raw elapsed/CPU/RSS'
+ assert row['shared_machine'] == SHARED_MACHINE, 'retained interference declaration differs'
  assert row['query'] == 'quartzanchor orbital navigation calibration beacon', 'native fixture query differs'
  assert row['record']=='fixture' and row['arm']==arm and row['documents']==241
  assert row['expected_scores'] == [.8,.5,.5]
@@ -187,8 +209,16 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert set(mapped) == {'${ORT_LIB}/libonnxruntime.so.1.28.0'}
  assert record['asset_hashes_before'] == record['asset_hashes_after'] == ASSET_PINS
  assert record['process_usage'] == load(f'{arm}.usage.json')
+ usage=record['process_usage']
+ assert set(usage)=={'wall_seconds','user_seconds','system_seconds','maximum_process_rss_kib','exit_status','scope'}
+ for metric in ['wall_seconds','user_seconds','system_seconds','maximum_process_rss_kib']:
+  value=usage[metric]
+  assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid duration/RSS: '+metric
+ assert usage['maximum_process_rss_kib']==row['process_lifetime_high_water_kib'], 'raw and process usage RSS differ'
+ assert usage['scope']=='Linux wait4 of native test process; setup included, independent services excluded'
 
- hits={h['topic']:h for h in row['targets']};assert len(hits)==3
+ assert len(row['targets'])==3 and len({h['topic'] for h in row['targets']})==3, 'exactly three unique target records required'
+ hits={h['topic']:h for h in row['targets']};assert set(hits)==set(row['target_labels'])
  values=[score(hits[name]) for name in row['target_labels']]
  expected=[row['weak_relevance'],.1,.05] if arm=='baseline' else [.8,.5,.5]
  assert all(close(a,b) for a,b in zip(values,expected))
@@ -205,7 +235,11 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  if arm=='scored':
   assert close(score({'why':early['why']}),.5)
   trace=path({'why':early['why']});assert trace['from']==row['strong'] and trace['via']==early['via'] and trace['hops']==2
+  assert trace['asserted_from']==early['via'] and trace['asserted_to']==early['target']
+ else:assert early['why'] is None, 'absent early-stop target must have no evidence'
  fresh=record['fresh_compiler_artifacts'];assert all(r['fresh'] is False for r in fresh)
+ assert len(fresh)==6 and len({r['target'] for r in fresh})==6, 'exactly six fresh target records required'
+ assert all(r['source']==('crates/pamin-engine/tests/'+r['target']+'.rs' if r['target'].startswith('scratch_') else 'crates/'+r['target'].replace('_','-')+'/src/lib.rs') for r in fresh)
  assert {r['target'] for r in fresh}=={'pamin_core','pamin_store','pamin_index','pamin_engine','scratch_scored_fixture','scratch_scored_multihop'}
  assert record['asset_hashes_before']==record['asset_hashes_after']
  assert record['resources']['oom_before']==record['resources']['oom_after']==0
@@ -227,6 +261,7 @@ for i, case in enumerate(['cross_origin','later_hop','same_hop']):
  before, after = values
  computed.append({'case':case,'baseline':before,'scored':after,'expected':rows['scored']['expected_scores'][i], 'absolute_delta':after-before,'percent_change':100*(after-before)/before})
 early = {'case':'early_stop','baseline':None,'scored':score({'why':rows['scored']['early_stop']['why']}),'expected':rows['scored']['early_stop']['expected_score'],'absolute_delta':None,'percent_change':None}
+assert comparison['scope'] == 'native Engine component fixture; fresh UUID projects may change tie orders; no timing claim', 'component comparison scope differs'
 assert comparison['invariants'] == computed
 assert comparison['early_stop'] == early
 assert comparison['cross_arm_non_graph_identical'] == (rows['baseline']['non_graph'] == rows['scored']['non_graph']) is False
@@ -239,6 +274,8 @@ for label, values in zip(labels, computed+[early]):
  percent = 'N/A' if values['percent_change'] is None else f"+{values['percent_change']:.6f}%"
  lines.append(f"| {label} | {before} | {values['scored']:.8f} | {values['expected']:g} | {delta} | {percent} |")
 readme = (ROOT/'README.md').read_text()
+assert 'PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu' in readme, 'concrete reproduction workspace binding missing'
+assert '--test scratch_scored_fixture --test scratch_scored_multihop' in readme, 'reproduction must compile both retained targets'
 start = readme.index('| Controlled case |')
 stop = readme.index('\n\n', start)
 assert readme[start:stop].splitlines() == ['| Controlled case | Disabled arm | Scored arm | Explicit oracle | Absolute score change | Score change |','| --- | ---: | ---: | ---: | ---: | ---: |'] + lines, 'displayed score table differs from raw evidence'
