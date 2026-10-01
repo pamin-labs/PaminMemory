@@ -605,6 +605,11 @@ pub(crate) fn measured<T>(
         .filter(|(device, _)| runtime_available(cache_dir, *device))
         .collect();
     if plans.is_empty() {
+        let directory = cache_dir.join("compute-plans-v1");
+        if directory.is_dir() {
+            let _lock = file_lock(&directory.join("plans.lock"));
+            let _ = prune_plans(&directory, None);
+        }
         let mut load = load;
         return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
     }
@@ -654,8 +659,9 @@ pub(crate) fn measured<T>(
     // Opaque DirectML adapter ordinals and NPU ids do not establish stable
     // physical hardware/driver identity across processes. Keep those plans
     // process-local; candidate measurement/accelerator execution is unchanged.
+    let location = plan_file(cache_dir, &key);
     let disk = persistence_supported(&plans, cuda_inventory.is_some())
-        .then(|| plan_file(cache_dir, &key))
+        .then(|| location.clone())
         .flatten();
     if !cache
         .lock()
@@ -676,7 +682,10 @@ pub(crate) fn measured<T>(
         plans,
         cache,
         references,
-        disk.as_deref(),
+        PlanFiles {
+            record: disk.as_deref(),
+            directory: location.as_deref().and_then(Path::parent),
+        },
         load,
         evaluate,
     )
@@ -957,18 +966,35 @@ fn host_identity() -> &'static str {
     })
 }
 
+#[derive(Clone, Copy, Default)]
+struct PlanFiles<'a> {
+    record: Option<&'a Path>,
+    directory: Option<&'a Path>,
+}
+
+impl<'a> PlanFiles<'a> {
+    #[cfg(test)]
+    fn for_record(path: &'a Path) -> Self {
+        Self {
+            record: Some(path),
+            directory: path.parent(),
+        }
+    }
+}
+
 fn calibrated_with_references<T>(
     key: &str,
     plans: Vec<(Device, Target)>,
     cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
     references: &std::cell::RefCell<References>,
-    disk: Option<&Path>,
+    files: PlanFiles<'_>,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
     if plans.is_empty() {
         return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
     }
+    let disk = files.record;
     // Serialize only actual calibration misses. Cached loading and output
     // validation may fetch/compile a model and must not hold either global lock.
     static CALIBRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -979,16 +1005,24 @@ fn calibrated_with_references<T>(
             .get(key)
             .cloned()
             .filter(fresh_plan);
-        if let Some(plan) = remembered {
+        if let Some(mut plan) = remembered {
             let device = plan.device;
-            references.replace(plan.references);
-            match load(device, plan.target, true).and_then(|mut model| {
+            references.replace(std::mem::take(&mut plan.references));
+            match load(device, plan.target.clone(), true).and_then(|mut model| {
                 if device != Device::Cpu {
                     evaluate(&mut model, device)?;
                 }
                 Ok(model)
             }) {
-                Ok(model) => return Ok((model, device)),
+                Ok(model) => {
+                    if let Some(path) = disk
+                        && !path.exists()
+                    {
+                        plan.references = references.borrow().clone();
+                        remember_plan(key, disk, cache, plan);
+                    }
+                    return Ok((model, device));
+                }
                 Err(error) => {
                     tracing::warn!(%error, "cached compute plan failed; recalibrating");
                     cache
@@ -1003,7 +1037,9 @@ fn calibrated_with_references<T>(
             }
         }
         let calibration = CALIBRATION.lock().expect("compute calibration poisoned");
-        let host_lock = disk.and_then(|path| file_lock(&path.parent()?.join("calibration.lock")));
+        let host_lock = files
+            .directory
+            .and_then(|directory| file_lock(&directory.join("calibration.lock")));
         // A different caller/process may have populated the plan while we waited.
         if cache
             .lock()
@@ -1149,7 +1185,7 @@ fn calibrated<T>(
         plans,
         cache,
         &std::cell::RefCell::default(),
-        None,
+        PlanFiles::default(),
         load,
         evaluate,
     )
@@ -1634,7 +1670,7 @@ mod tests {
             vec![(Device::Cuda, vec![cpu()].into())],
             &cache,
             &references,
-            None,
+            PlanFiles::default(),
             |device, _, _| Ok(if device == Device::Cpu { 1.0 } else { 9.0 }),
             |actual, device| {
                 let mut proof = references.borrow_mut();
@@ -1675,7 +1711,7 @@ mod tests {
                 vec![(Device::Cuda, vec![cpu()].into())],
                 &cache,
                 &std::cell::RefCell::default(),
-                Some(&path),
+                PlanFiles::for_record(&path),
                 |device, _, cached| {
                     assert!(cached);
                     Ok(device)
@@ -1691,6 +1727,78 @@ mod tests {
     }
 
     #[test]
+    fn a_validated_ram_hit_republishes_a_retired_disk_record() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "retired").unwrap();
+        let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
+            "retired".into(),
+            CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false).with_references(References {
+                scores: Some(vec![1.0]),
+                ..Default::default()
+            }),
+        )]));
+        calibrated_with_references(
+            "retired",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            &std::cell::RefCell::default(),
+            PlanFiles::for_record(&path),
+            |_, _, cached| {
+                assert!(cached);
+                Ok(())
+            },
+            |_, _| unreachable!("cached CPU should not recalibrate"),
+        )
+        .unwrap();
+        assert_eq!(
+            read_plan(&path, "retired", &[]).unwrap().references.scores,
+            Some(vec![1.0])
+        );
+    }
+
+    #[test]
+    fn nonpersistent_plans_still_hold_the_host_calibration_transaction() {
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "opaque").unwrap();
+        let dir = path.parent().unwrap();
+        let mut checked = false;
+        calibrated_with_references(
+            "opaque",
+            vec![(Device::Npu, vec![cpu()].into())],
+            &std::sync::Mutex::default(),
+            &std::cell::RefCell::default(),
+            PlanFiles {
+                record: None,
+                directory: Some(dir),
+            },
+            |device, _, _| {
+                if !checked {
+                    let other = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(dir.join("calibration.lock"))
+                        .unwrap();
+                    assert!(
+                        other.try_lock().is_err(),
+                        "disabled persistence also disabled calibration coordination"
+                    );
+                    checked = true;
+                }
+                Ok(device)
+            },
+            |_, device| {
+                Ok(std::time::Duration::from_millis(if device == Device::Cpu {
+                    10
+                } else {
+                    1
+                }))
+            },
+        )
+        .unwrap();
+        assert!(!path.exists(), "opaque plan was persisted");
+    }
+
+    #[test]
     fn cold_calibration_publishes_before_releasing_the_host_lock() {
         use std::time::Duration;
         let root = tempfile::tempdir().unwrap();
@@ -1702,7 +1810,7 @@ mod tests {
             plans.clone(),
             &cache,
             &std::cell::RefCell::default(),
-            Some(&path),
+            PlanFiles::for_record(&path),
             |device, _, _| Ok(device),
             |_, device| {
                 Ok(Duration::from_millis(if device == Device::Cpu {
@@ -1723,7 +1831,7 @@ mod tests {
             plans,
             &std::sync::Mutex::default(),
             &std::cell::RefCell::default(),
-            Some(&path),
+            PlanFiles::for_record(&path),
             |device, _, cached| {
                 assert!(cached, "waiting process repeated calibration");
                 Ok(device)
@@ -1749,7 +1857,7 @@ mod tests {
                 vec![(Device::Cuda, vec![cpu()].into())],
                 &std::sync::Mutex::default(),
                 &std::cell::RefCell::default(),
-                Some(&worker_path),
+                PlanFiles::for_record(&worker_path),
                 |device, _, cached| {
                     assert!(cached, "miss ignored the newly published plan");
                     Ok(device)
