@@ -37,8 +37,10 @@ class FutureRunnerTests(unittest.TestCase):
         for role,name in [('ort','libonnxruntime.so.1.28.0'),('zvec','libzvec_c_api.so')]:
             path=self.root/name;path.write_text('synthetic '+role);self.paths[role]=path
         self.pins={role:hashlib.sha256(path.read_bytes()).hexdigest() for role,path in self.paths.items()}
+        self.environment=patch.dict(runner.os.environ,{'GRAPH_OUT':str(self.root/'result.jsonl')})
+        self.environment.start()
 
-    def tearDown(self):self.temp.cleanup()
+    def tearDown(self):self.environment.stop();self.temp.cleanup()
 
     def test_small_fixture_disk_budget(self):
         required=resource_gate()['required_disk_bytes']
@@ -64,6 +66,7 @@ class FutureRunnerTests(unittest.TestCase):
             report=runner.capture(['mock native'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
         self.assertEqual(report['user_seconds'],2.5);self.assertEqual(report['system_seconds'],.5)
         self.assertEqual(report['maximum_process_rss_kib'],4096);self.assertEqual(report['exit_status'],0)
+        self.assertEqual(launch.call_args.kwargs['env']['GRAPH_OUT'],str(self.root/'result.jsonl'))
         self.assertTrue(launch.call_args.kwargs['start_new_session']);wait.assert_called_once_with(42,0);kill.assert_called_once()
         self.assertEqual(json.loads((self.root/'mapped').read_text())['libraries'],mapped)
         self.assertTrue((self.root/'log').exists())
@@ -95,6 +98,29 @@ class FutureRunnerTests(unittest.TestCase):
             wait.assert_not_called()
         self.assertTrue((self.root/'log').exists());self.assertFalse((self.root/'usage').exists())
         self.assertIn(process,runner.RETAINED_PROCESSES)
+
+    def test_existing_graph_result_and_dangling_link_are_preserved(self):
+        result=self.root/'result.jsonl'
+        for kind in ['file','directory','dangling_link']:
+            if kind=='file':result.write_text('existing native evidence')
+            elif kind=='directory':result.mkdir()
+            else:result.symlink_to(self.root/'absent target')
+            with patch.object(runner,'PINS',self.pins),patch.object(runner.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(RuntimeError,'outputs must be fresh'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+                launch.assert_not_called()
+            self.assertFalse((self.root/'log').exists());self.assertFalse((self.root/'usage').exists());self.assertFalse((self.root/'mapped').exists())
+            if kind=='file':self.assertEqual(result.read_text(),'existing native evidence');result.unlink()
+            elif kind=='directory':result.rmdir()
+            else:self.assertTrue(result.is_symlink());self.assertFalse(result.exists());result.unlink()
+
+    def test_graph_result_alias_and_missing_contract_are_rejected(self):
+        for target in ['log','usage','mapped']:
+            with patch.dict(runner.os.environ,{'GRAPH_OUT':str(self.root/target)}),patch.object(runner.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(RuntimeError,'output paths must be distinct'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+                launch.assert_not_called()
+        with patch.dict(runner.os.environ,{},clear=True),patch.object(runner.subprocess,'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError,'GRAPH_OUT result path required'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+            launch.assert_not_called()
 
     def test_existing_output_is_never_overwritten(self):
         (self.root/'log').write_text('existing user data')
