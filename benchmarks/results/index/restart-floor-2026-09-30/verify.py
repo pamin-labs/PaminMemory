@@ -36,6 +36,7 @@ for arm in ['main','predecessor','candidate']:
             if row['phase']=='process_total':
                 assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'HNSW invalid process elapsed'
                 continue
+            review.measurement_annotations(row)
             assert row['wall_ms'] is None if row['phase']=='closed_index' else math.isfinite(row['wall_ms']) and row['wall_ms']>=0, 'HNSW invalid phase clock'
             for snapshot in [row['process_before'],row['process_after']]:
                 if snapshot is not None:

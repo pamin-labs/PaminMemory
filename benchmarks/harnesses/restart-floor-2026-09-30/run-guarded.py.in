@@ -15,10 +15,11 @@ def controlled_environment(parent):
     inherited=sorted(key for key in parent if key.startswith('PAMIN_'))
     assert not inherited, 'refuse inherited PAMIN tuning: '+', '.join(inherited)
     assert not {'HF_HOME','HF_HUB_CACHE'} & parent.keys(), 'refuse inherited hub-cache location overrides'
+    assert 'TOKIO_WORKER_THREADS' not in parent, 'refuse inherited Tokio worker concurrency'
     # Clear setup controls too; every relevant field is explicit below.
     env={key:value for key,value in parent.items() if not key.startswith('FLOOR_')}
     env.update(PAMIN_DEVICE='cpu',PAMIN_PROFILE='accuracy',PAMIN_INFERENCE_THREADS='4',
-               HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
+               TOKIO_WORKER_THREADS='4',HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
     return env
 def digest(path):
     h=hashlib.sha256()
@@ -259,7 +260,7 @@ def main():
             'scope':'prospective setup/trial configuration only; historical inherited tuning remains unknown',
             'build_attestation_sha256':digest(a.attestation),'command':command,
             'model_manifest_path':str(a.model_manifest.resolve()),'model_manifest_sha256':hashlib.sha256(model_bytes).hexdigest(),'model_prepared_utc':model_prepared,
-            'controlled_environment':{key:env[key] for key in ['PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_INFERENCE_THREADS','PAMIN_EVAL_HOME','FLOOR_MODE','FLOOR_DOCUMENTS','FLOOR_VECTOR_INDEX','HF_HUB_OFFLINE','HF_HUB_DISABLE_TELEMETRY'] if key in env},
+            'controlled_environment':{key:env[key] for key in ['PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_INFERENCE_THREADS','TOKIO_WORKER_THREADS','PAMIN_EVAL_HOME','FLOOR_MODE','FLOOR_DOCUMENTS','FLOOR_VECTOR_INDEX','HF_HUB_OFFLINE','HF_HUB_DISABLE_TELEMETRY'] if key in env},
             'inherited_pamin_overrides':{},'native_loader_inputs':native,'loader_environment':{'LD_LIBRARY_PATH':env['LD_LIBRARY_PATH'],'removed_inherited_loader_variable_names':sorted(key for key in os.environ if key.startswith('LD_') or key=='GLIBC_TUNABLES')},'status':'prepared'}
     descriptor=os.open(a.record,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     with os.fdopen(descriptor,'w') as stream:json.dump(record,stream,indent=2);stream.write('\n')

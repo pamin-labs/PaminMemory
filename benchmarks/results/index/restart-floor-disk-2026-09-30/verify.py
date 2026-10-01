@@ -59,6 +59,7 @@ for arm,commit in expected_commits.items():
             if row['phase']=='process_total':
                 assert math.isfinite(row['wall_seconds']) and row['wall_seconds']>0, 'Disk invalid process elapsed'
             if row['phase']!='process_total':
+                review.measurement_annotations(row)
                 assert row['wall_ms'] is None if row['phase']=='closed_index' else math.isfinite(row['wall_ms']) and row['wall_ms']>=0, 'Disk invalid phase clock'
                 for snapshot in [row['process_before'],row['process_after']]:
                     if snapshot is not None:

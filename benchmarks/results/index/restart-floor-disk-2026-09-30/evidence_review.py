@@ -3,6 +3,14 @@ import re
 import hashlib,json,statistics
 from pathlib import PurePosixPath
 
+def measurement_annotations(row):
+    """Bind runner-added scopes and native disk observations before arithmetic."""
+    assert row.get('cpu_scope')=='process threads only; PostgreSQL excluded', 'CPU measurement scope differs from historical runner'
+    assert row.get('rss_scope')=='process only', 'RSS measurement scope differs from historical runner'
+    if row['phase'] in {'maintenance','closed_index'}:
+        usage=row['extra'].get('index_disk')
+        assert type(usage) is list and len(usage)==3 and all(type(v) is int and v>=0 for v in usage), 'index_disk must contain three nonnegative integers (booleans refused)'
+
 def memory_status(snapshot):
     """Require the complete /proc status observations before any RSS arithmetic."""
     status=snapshot.get('rss_status')

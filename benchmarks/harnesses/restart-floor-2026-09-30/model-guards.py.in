@@ -34,7 +34,8 @@ def validate_plan(plan):
     assert plan['models'], 'no selected models'
     seen=set()
     for model in plan['models']:
-        assert model['name'] not in seen;seen.add(model['name'])
+        assert model['name'] in {'embedding','reranker'} and model['name'] not in seen, 'current model plan supports one common selection per role; arm-specific graph unions are unsupported'
+        seen.add(model['name'])
         assert set(model['assets'])==ROLES and all(model['assets'].values()), 'complete source/tokenizer/graph/weights/metadata role map required'
         names=[name for role in ROLES for name in model['assets'][role]]
         assert len(names)==len(set(names)), 'asset roles must be unambiguous'
