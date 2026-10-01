@@ -1226,6 +1226,8 @@ fn inventory_with_permit(
         .name("cuda-inventory".into())
         .spawn(move || {
             let Some(mut child) = command.spawn().ok() else {
+                // No child exists: release admission before waking the caller.
+                drop(permit);
                 let _ = send.send(None);
                 return;
             };
@@ -1981,15 +1983,10 @@ mod tests {
             inventory_with_permit(command, std::time::Duration::from_secs(3), permit).is_none()
         );
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
-        // The failed worker relinquishes admission too.
-        for _ in 0..100 {
-            if let Some(permit) = InventoryPermit::acquire(busy.clone()) {
-                drop(permit);
-                return;
-            }
-            std::thread::yield_now();
-        }
-        panic!("spawn failure retained inventory admission");
+        assert!(
+            InventoryPermit::acquire(busy).is_some(),
+            "spawn failure retained inventory admission"
+        );
     }
 
     #[test]
