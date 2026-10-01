@@ -249,6 +249,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert len(row['graph_process_cpu_user_system_seconds'])==2
  for value in [row['elapsed_ms'],row['early_stop']['elapsed_ms'],row['process_lifetime_high_water_kib'],*row['graph_process_cpu_user_system_seconds']]:
   assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid raw elapsed/CPU/RSS'
+ assert type(row['process_lifetime_high_water_kib']) is int, 'raw RSS must be integer KiB excluding bool'
  assert row['shared_machine'] == SHARED_MACHINE, 'retained interference declaration differs'
  assert row['query'] == 'quartzanchor orbital navigation calibration beacon', 'native fixture query differs'
  assert row['record']=='fixture' and row['arm']==arm and row['documents']==241
@@ -330,6 +331,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  for metric in ['wall_seconds','user_seconds','system_seconds','maximum_process_rss_kib']:
   value=usage[metric]
   assert type(value) in {int,float} and math.isfinite(value) and value>=0, 'invalid duration/RSS: '+metric
+ assert type(usage['maximum_process_rss_kib']) is int, 'wait4 RSS must be integer KiB excluding bool'
  assert type(usage['exit_status']) is int and usage['exit_status']==0, 'process exit status must be integer zero'
  assert usage['maximum_process_rss_kib']==row['process_lifetime_high_water_kib'], 'raw and process usage RSS differ'
  assert math.isfinite(test_duration) and 0<=test_duration<=usage['wall_seconds'], 'fixture test duration exceeds whole-process wall time'
