@@ -410,6 +410,14 @@ if __name__ == '__main__':
                 path=root/script;path.write_text(path.read_text()+'\n# '+marker+'\n')
             run_case('published script private marker '+script+'/'+marker.split(':')[0],leaked_script,expected_error='private path/credential/session marker: '+script)
     run_case('modified privacy pattern',lambda root:(root/'verify.py').write_text((root/'verify.py').read_text().replace('Bearer\\s+','Bearer\\s*')),expected_error='approved private-marker pattern differs')
+    for source,label in [('retrospective-sql-audit.json','SQL'),('platform-observation.json','platform'),('provenance.json','multihop')]:
+        for value in ['2026-09-30T:+00:00','2026-09-30T99:99:99+00:00','2026-09-30T23:02:04.562272+00:00',None,True]:
+            def timestamp(root,source=source,value=value):
+                def change(item):
+                    target=item['retrospective_multihop_source'] if source=='provenance.json' else item
+                    target['captured_at_utc']=value
+                mutate_json(root/source,change)
+            run_case('capture timestamp '+source+'/'+repr(value),timestamp,expected_error='retained '+label+' capture timestamp differs')
     round12_interval_channel_cases()
     round10_native_type_cases()
     complete_non_graph_cases()
