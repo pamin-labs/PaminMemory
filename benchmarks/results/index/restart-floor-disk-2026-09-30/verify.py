@@ -38,6 +38,8 @@ for arm,commit in expected_commits.items():
         phases={phase:[r for r in rows if r['phase']==phase] for phase in {r['phase'] for r in rows}}
         for phase in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']:assert len(phases[phase])==1,(arm,rep,phase)
         assert Counter(r['phase'] for r in rows)==Counter({**{p:1 for p in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']},'search_warmup':2,'search_warm':24}), (arm,rep,'unexpected phase multiset')
+        initial=[r for r in rows if r['phase'] in ['search_cold','search_warmup']]
+        assert [r['phase'] for r in initial]==['search_cold','search_warmup','search_warmup'] and [r['extra']['query_document'] for r in initial]==[0,9000,17999], 'Disk exact ordered cold/warmup query schedule differs'
         assert [r['extra']['query_document'] for r in phases['search_warm']]==expected_queries, 'query workload differs from fixed order'
         assert phases['open'][0]['extra']['documents']==18000
         maintenance=phases['maintenance'][0]
