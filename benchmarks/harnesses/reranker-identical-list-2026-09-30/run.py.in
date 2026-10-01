@@ -22,7 +22,7 @@ def main():
     with c.exclusive():
         c.source_inputs()
         bound = c.assets()
-        binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
+        binaries = c.validate_binaries(json.loads((c.ROOT / 'build/binaries.json').read_text()))
         seed = c.ROOT / 'seed'
         pg.preflight(seed)
         out = c.ROOT / 'results'
