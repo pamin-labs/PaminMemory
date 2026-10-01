@@ -38,12 +38,12 @@ def negative_cpu(row):
     row['process_before']['user_ticks']=row['process_after']['user_ticks']+1;row['cpu_user_seconds']=-0.01
 
 if __name__=='__main__':
-    checks=[('open',extra('documents',18001),None,'open document count'),('maintenance',extra('documents',18000),None,'post-write document count'),('maintenance',extra('completeness',1.0),['candidate'],'arm maintenance completeness'),('maintenance',extra('completeness',0.5),['main','predecessor'],'arm maintenance completeness'),('write_and_memory_drain',extra('applied',2),None,'single-write drain premise'),('durability_flush',extra('flushed',0),None,'durability flush premise'),('search_cold',negative_cpu,None,'negative CPU delta'),('search_warm',extra('rank',10),None,'query hit/rank premise')]
+    checks=[('open',extra('documents',18001),None,'HNSW open document count'),('maintenance',extra('documents',18000),None,'HNSW post-write document count'),('maintenance',extra('completeness',1.0),['candidate'],'HNSW arm maintenance completeness'),('maintenance',extra('completeness',0.5),['main','predecessor'],'HNSW arm maintenance completeness'),('write_and_memory_drain',extra('applied',2),None,'HNSW single-write drain premise'),('durability_flush',extra('flushed',0),None,'HNSW durability flush premise'),('search_cold',negative_cpu,None,'invalid real timing observation'),('search_warm',extra('rank',10),None,'HNSW query hit/rank premise')]
     for check in [None,*checks]:
         with tempfile.TemporaryDirectory(prefix='hnsw-product-premise-') as td:
             repo=Path(td);t.copy_archive(repo)
             if check:mutate(repo,*check[:3])
             t.reseal(repo);result=t.execute(repo)
-            if check:assert result.returncode!=0 and 'HNSW '+check[3] in result.stderr,result.stderr
+            if check:assert result.returncode!=0 and check[3] in result.stderr,result.stderr
             else:assert result.returncode==0,result.stderr
     print('PASS: HNSW positive and 8 matching raw/log, regenerated summary/table, resealed premise negatives')
