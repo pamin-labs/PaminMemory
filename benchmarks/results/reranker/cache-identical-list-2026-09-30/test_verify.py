@@ -96,6 +96,9 @@ def main():
  ('external weights unbound',lambda r:delete_asset(r,'ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data')),
  ('tokenizer unbound',lambda r:delete_asset(r,'6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json')),
  ('model asset roles incomplete',lambda r:edit_json(r,'receipt.json',lambda p:p['asset_roles']['accurate'].__setitem__('external_weights',[]))),
+ ('public source scope strengthened',lambda r:edit_json(r,'receipt.json',lambda p:p['public_source_scope_qualification'].__setitem__('native_harness_binding_scope','Complete publicly inspectable source-to-binary attestation'))),
+ ('immutable retrieval Git reference false',lambda r:edit_json(r,'receipt.json',lambda p:p['public_source_scope_qualification']['original_retrieval_input'].__setitem__('git_blob_sha1','0'*40))),
+ ('historical native harness identity false',lambda r:edit_json(r,'receipt.json',lambda p:p['source_bindings'][0].__setitem__('native_harness_sha256','0'*64))),
  ('frozen source identity false',lambda r:edit_json(r,'receipt.json',lambda p:p['source_bindings'][0].__setitem__('measured_commit','0'*40))),
  ('frozen binary identity false',lambda r:edit_json(r,'receipt.json',lambda p:p['source_bindings'][0].__setitem__('binary_sha256','0'*64))),
  ('changed proxima size false',lambda r:edit_json(r,'receipt.json',lambda p:p['processes'][0]['index']['changed_files'][0].__setitem__('after_bytes',1))),
@@ -125,5 +128,5 @@ def main():
   result=subprocess.run([sys.executable,flag,str(ROOT/'verify.py')],capture_output=True,text=True)
   if result.returncode==0 or 'refuses' not in result.stderr:raise SystemExit('FAIL optimized Python accepted')
   print('PASS rejected',flag)
- print('PASS positive +32semantic/1hash/2optimized negatives; no native/model/PG/build executed')
+ print('PASS positive +35semantic/1hash/2optimized negatives; no native/model/PG/build executed')
 if __name__=='__main__':main()

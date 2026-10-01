@@ -20,6 +20,9 @@ PASS rejected runtime library unbound — mandatory native libraries unbound
 PASS rejected external weights unbound — mandatory graph/weights/tokenizer coverage
 PASS rejected tokenizer unbound — mandatory graph/weights/tokenizer coverage
 PASS rejected model asset roles incomplete — complete executed model asset roles
+PASS rejected public source scope strengthened — exact public/private source qualification and immutable Git references
+PASS rejected immutable retrieval Git reference false — exact public/private source qualification and immutable Git references
+PASS rejected historical native harness identity false — exact historical native harness identity
 PASS rejected frozen source identity false — exact frozen source/binary identity
 PASS rejected frozen binary identity false — exact frozen source/binary identity
 PASS rejected changed proxima size false — four changed file sizes
@@ -34,4 +37,4 @@ PASS rejected memory cost fabricated — paired process memory derivation
 PASS checksum corruption
 PASS rejected -O
 PASS rejected -OO
-PASS positive +32semantic/1hash/2optimized negatives; no native/model/PG/build executed
+PASS positive +35semantic/1hash/2optimized negatives; no native/model/PG/build executed
