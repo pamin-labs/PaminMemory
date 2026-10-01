@@ -124,7 +124,9 @@ review.historical_hardware(memory_provenance,(root/'README.md').read_text())
 assert memory_provenance['seed_documents']==18000, 'HNSW seed corpus premise differs'
 seed_entries=memory_provenance['stopped_seed_index_files']
 assert len(seed_entries)==len({e['path'] for e in seed_entries})==271, 'HNSW stopped seed inventory differs'
-for entry in seed_entries:review.seed_file_identity(entry)
+for entry in seed_entries:
+    review.seed_file_identity(entry)
+    review.seed_file_path(entry,'${SCRATCH}/seed-memory/index')
 for suffix,content in [('/profile',b'gpahal/bge-m3-onnx-int8\ntopic\nmemory\nnamed\nreversed-keys'),('/.pamin-optimized-files',b'v1 271\n')]:
     selected=[e for e in seed_entries if e['path'].endswith(suffix)]
     assert len(selected)==1 and selected[0]['bytes']==len(content) and selected[0]['sha256']==hashlib.sha256(content).hexdigest(), 'HNSW seed profile/floor identity differs'

@@ -217,8 +217,7 @@ def seed_endpoint(provenance, record):
     seed=PurePosixPath('<SCRATCH>/seed-disk')
     for entry in entries:
         seed_file_identity(entry)
-        path=PurePosixPath(entry['path'])
-        assert str(path)==entry['path'] and '..' not in path.parts and path.is_relative_to(seed) and path!=seed and path.name not in {'server.json','postmaster.pid','.pgpass','pgpass'}, 'seed inventory path outside recorded stopped-seed scope'
+        seed_file_path(entry,seed,{'server.json','postmaster.pid','.pgpass','pgpass'})
     inventory={entry['path']:[entry['bytes'],entry['sha256']] for entry in entries}
     assert len(inventory)==len(entries)
     encoded=json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()
@@ -276,3 +275,9 @@ def seed_file_identity(entry):
 
 def topic_strings(topics,kind='query'):
     assert type(topics) is list and all(type(topic) is str for topic in topics), kind+' topics must be an actual list of strings'
+
+
+def seed_file_path(entry,seed,excluded=()):
+    seed=PurePosixPath(seed)
+    path=PurePosixPath(entry['path'])
+    assert str(path)==entry['path'] and '..' not in path.parts and path.is_relative_to(seed) and path!=seed and path.name not in excluded, 'seed inventory path outside recorded stopped-seed scope'
