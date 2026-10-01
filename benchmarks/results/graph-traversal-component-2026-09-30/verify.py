@@ -18,12 +18,12 @@ assert provenance['scope'].startswith('native search_fused component')
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 for name,record in provenance['redactions'].items():
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
-EXPECTED_FILES = {'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
+EXPECTED_FILES = {'source/multihop.rs.in', 'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
 assert {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()} == EXPECTED_FILES, 'required file inventory differs'
 assert set(provenance['archive_files']) == EXPECTED_FILES - {'provenance.json'}, 'hash inventory differs'
 for name, digest in provenance['archive_files'].items():
  assert sha(ROOT/name) == digest, f'archive hash differs: {name}'
-assert set(provenance['source_files']) == {'fixture.rs.in','graph_trace.rs.in','experimental-traversal.patch','prepare.py'}
+assert set(provenance['source_files']) == {'fixture.rs.in','multihop.rs.in','graph_trace.rs.in','experimental-traversal.patch','prepare.py'}
 assert set(provenance['redactions']) == {f'{a}.{e}' for a in ['baseline','scored'] for e in ['jsonl','log','trace.jsonl','usage.json']}
 ASSET_PINS = {'${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json': '68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a',
  '${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx': {'expected_transition': 'present '
@@ -121,6 +121,14 @@ for arm, record in arm_records.items():
 assert {name for name in SOURCE_PATHS if arm_records['baseline']['source_hashes'][name] != arm_records['scored']['source_hashes'][name]} == {'crates/pamin-engine/src/engine.rs'}, 'cross-arm source relationship differs'
 assert sha(ROOT/'source/fixture.rs.in') == '0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1', 'exact measured fixture differs'
 assert 'let query = \"quartzanchor orbital navigation calibration beacon\";' in (ROOT/'source/fixture.rs.in').read_text()
+retrospective = provenance['retrospective_multihop_source']
+assert retrospective['scope'] == 'retrospective equality of preserved baseline/scored scratch source copies; original build-time source byte attestation N/A: omitted from the 52-entry source maps'
+assert re.fullmatch(r'2026-10-01T[0-9:.]+\+00:00', retrospective['captured_at_utc'])
+assert retrospective['source'] == 'crates/pamin-engine/tests/scratch_scored_multihop.rs'
+assert retrospective['published_file'] == 'source/multihop.rs.in'
+assert retrospective['sha256'] == sha(ROOT/retrospective['published_file']) == '70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00'
+assert retrospective['bytes'] == (ROOT/retrospective['published_file']).stat().st_size
+assert retrospective['arm_source_sha256'] == {arm:retrospective['sha256'] for arm in ['baseline','scored']}
 rows = {}
 
 for arm,weak_rank in [('baseline',23),('scored',22)]:

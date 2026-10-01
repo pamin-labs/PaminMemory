@@ -11,6 +11,7 @@ from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--source',required=True,type=Path);p.add_argument('--out',required=True,type=Path);a=p.parse_args()
 source=a.source.resolve();out=a.out.resolve();assert not out.exists() and source not in out.parents
 artifact=Path(__file__).parent
+assert hashlib.sha256((artifact/'multihop.rs.in').read_bytes()).hexdigest() == '70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00', 'preserved multihop source differs'
 switch='const USE_SCORED_GRAPH_RECALL: bool = false;'
 engine=(source/'crates/pamin-engine/src/engine.rs').read_text();assert engine.count(switch)==1
 assert 'seed_relevance(&named, lists, options.k)' in engine and 'k: fusion.k()' in engine
@@ -21,6 +22,6 @@ for arm in ['baseline','scored']:
  manifest=target/'crates/pamin-engine/Cargo.toml';manifest.write_text(manifest.read_text()+'\n# Scratch-only runtime evidence binding.\nort = { workspace = true }\n')
  lock=target/'Cargo.lock';text=lock.read_text();start=text.index('name = "pamin-engine"');end=text.index('\n[[package]]',start);block=text[start:end]
  if '\n "ort",' not in block:lock.write_text(text[:start]+block.replace(' "pamin-core",',' "ort",\n "pamin-core",',1)+text[end:])
- tests=target/'crates/pamin-engine/tests';shutil.copyfile(artifact/'fixture.rs.in',tests/'scratch_scored_fixture.rs');(tests/'graph_trace').mkdir();shutil.copyfile(artifact/'graph_trace.rs.in',tests/'graph_trace/mod.rs')
+ tests=target/'crates/pamin-engine/tests';shutil.copyfile(artifact/'fixture.rs.in',tests/'scratch_scored_fixture.rs');shutil.copyfile(artifact/'multihop.rs.in',tests/'scratch_scored_multihop.rs');(tests/'graph_trace').mkdir();shutil.copyfile(artifact/'graph_trace.rs.in',tests/'graph_trace/mod.rs')
  files={str(f.relative_to(out)):hashlib.sha256(f.read_bytes()).hexdigest() for f in out.rglob('*') if f.is_file()}
 (out/'prepared-source-hashes.json').write_text(json.dumps(files,indent=2)+'\n')
