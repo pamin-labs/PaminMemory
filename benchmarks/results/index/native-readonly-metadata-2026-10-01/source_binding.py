@@ -58,6 +58,7 @@ def check_git(binding, repository=None):
 
     The public commit is addressed by its exact object ID, never by a tag alias.
     Replacement refs and inherited Git overrides cannot redirect these reads.
+    Lazy fetching is disabled: missing promisor objects never start a fetch.
     The historical local commit is deliberately never consulted.
     """
     validate(binding)
@@ -66,7 +67,7 @@ def check_git(binding, repository=None):
         return None
     repository = ROOT.parents[3] if repository is None else Path(repository)
     env = {key:value for key,value in os.environ.items() if not key.startswith('GIT_')}
-    env.update(GIT_NO_REPLACE_OBJECTS='1', GIT_CONFIG_NOSYSTEM='1',
+    env.update(GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1', GIT_CONFIG_NOSYSTEM='1',
                GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_COUNT='0')
 
     def read(*args):

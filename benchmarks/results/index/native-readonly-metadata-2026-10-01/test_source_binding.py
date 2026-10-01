@@ -55,12 +55,13 @@ class PublicSourceBinding(unittest.TestCase):
             self.assertIn('--no-replace-objects', command)
             self.assertIn('--literal-pathspecs', command)
             self.assertEqual(kwargs['env']['GIT_NO_REPLACE_OBJECTS'], '1')
+            self.assertEqual(kwargs['env']['GIT_NO_LAZY_FETCH'], '1')
             self.assertEqual(kwargs['env']['GIT_CONFIG_COUNT'], '0')
             self.assertNotIn('GIT_REPLACE_REF_BASE', kwargs['env'])
             self.assertNotIn('GIT_DIR', kwargs['env'])
             self.assertNotIn(source_binding.HISTORICAL_LOCAL_COMMIT, command)
             return actual_run(command, **kwargs)
-        with patch.dict('os.environ', {'GIT_REPLACE_REF_BASE':'refs/evil', 'GIT_CONFIG_COUNT':'1', 'GIT_CONFIG_KEY_0':'core.fsmonitor', 'GIT_CONFIG_VALUE_0':'unsafe-hook', 'GIT_DIR':'/unrelated'}):
+        with patch.dict('os.environ', {'GIT_REPLACE_REF_BASE':'refs/evil', 'GIT_CONFIG_COUNT':'1', 'GIT_CONFIG_KEY_0':'core.fsmonitor', 'GIT_CONFIG_VALUE_0':'unsafe-hook', 'GIT_DIR':'/unrelated', 'GIT_NO_LAZY_FETCH':'0'}):
             with patch.object(source_binding.subprocess, 'run', side_effect=guarded):
                 result = source_binding.check_git(self.binding)
         self.assertTrue(calls)
@@ -70,6 +71,30 @@ class PublicSourceBinding(unittest.TestCase):
     def test_unavailable_objects_reported(self):
         with patch.object(source_binding.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout=b'', stderr=b'unavailable')):
             self.assertIsNone(source_binding.check_git(self.binding))
+
+    def test_missing_promisor_objects_never_enable_lazy_fetch(self):
+        for missing in ['commit', 'blob']:
+            with self.subTest(missing=missing):
+                calls = []
+                responses = iter([SimpleNamespace(returncode=128, stdout=b'', stderr=b'missing promisor object')]
+                                 if missing == 'commit' else
+                                 [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                                  SimpleNamespace(returncode=0, stdout=self.first_tree_entry()),
+                                  SimpleNamespace(returncode=128, stdout=b'', stderr=b'missing promisor object')])
+                def promisor_read(command, **kwargs):
+                    calls.append(command)
+                    self.assertEqual(kwargs['env'].get('GIT_NO_LAZY_FETCH'), '1',
+                                     'missing promisor object would trigger implicit fetching')
+                    return next(responses)
+                with patch.dict('os.environ', {'GIT_NO_LAZY_FETCH': '0'}):
+                    with patch.object(source_binding.shutil, 'which', return_value='git'):
+                        with patch.object(source_binding.subprocess, 'run', side_effect=promisor_read):
+                            if missing == 'commit':
+                                self.assertIsNone(source_binding.check_git(self.binding))
+                            else:
+                                with self.assertRaisesRegex(ValueError, '^public Git source bytes/SHA mismatch$'):
+                                    source_binding.check_git(self.binding)
+                self.assertEqual(len(calls), 1 if missing == 'commit' else 3)
 
     def test_empty_git_repository_reports_unavailable(self):
         git = source_binding.shutil.which('git')
