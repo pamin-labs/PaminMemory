@@ -1,6 +1,6 @@
 {
   "files": {
-    "benchmarks/harnesses/restart-floor-2026-09-30/README.md": "6e0e4b9faacae87c162b8d8d74b17e93a0ac0fec0be18d7f699738f673b059d4",
+    "benchmarks/harnesses/restart-floor-2026-09-30/README.md": "3427b669de5e70020202a488ec147bdac9e3c3a8399995fcf27bf0d950a4b971",
     "benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
     "benchmarks/harnesses/restart-floor-2026-09-30/build.py.in": "65338fc4e6d77cd0f0d5dbf75e111913f502aecbd9de4d35a4b05918940e940a",
     "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
@@ -21,10 +21,10 @@
     "benchmarks/results/index/restart-floor-2026-09-30/provenance.json": "6dc977d5bb6a84d75c3b7198005019ed36c7e6e0c2dfb880941428420473d887",
     "benchmarks/results/index/restart-floor-2026-09-30/raw.jsonl": "a2018bfb4f7eff6f893a30b3483df2293cd29c2b90d0b79dd34c22e532adb079",
     "benchmarks/results/index/restart-floor-2026-09-30/summary.json": "f2af9584033fcc9dbdcf687512c10479b712b76789ea5ed41edc8e72adcddb57",
-    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "57dcbedcd67786ad8d1cddc198ef987c78c6b8f7cdadfb9bb1584a59de3ac388",
+    "benchmarks/results/index/restart-floor-2026-09-30/verify.py": "f80a78655faa6cd2c6dbd005631468e36de55f2c07484d121ccb2b75c07f5fba",
     "benchmarks/results/index/restart-floor-2026-09-30/post-trial-assets.json": "22028e54cf1bc2c5f0747e0522fd1068458cfa4033ed385b1200589934d07c98",
     "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "ae40f8b60416114e2b98b16d4492d363c00d5368b3c8ae3658f9da71c0b42716",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "d109702c4d02e662159d733d27c582d6923c96c7441fa1cd8814f126895a24d1",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "493951c03ba64f2aa561927d1d9e11cd620acf128a57f7e79428f3b61126197f",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/main-build.log.gz": "be03df91e6f8b31e9afae655d95bd2565ccb3f303c3250422c6a4896d1296de2",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/candidate-clean.log.gz": "fae72774688673c12bf2474f8f0be67c3d5fe2318e439f36ba0e82701c1c4c77",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/candidate-build.log.gz": "de728c9f18ed941202222744b3761aea1976139ce8056391577cf4fb140d7a9c",
@@ -47,10 +47,13 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "96d727b6770ee7c9351c14980eb92df604e54c16c4e79faa262975f0d241aafa",
     "benchmarks/results/index/restart-floor-2026-09-30/timing-review.json": "a28b005cddaafa76fbc3e3c7d327e557c78214520c7e1ae2acde42235970509a",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/post-review-seed.json": "b174ca378307a5e8882de3eee0e7a51a317e6eb2adc80364d8ca3b669855ccde",
-    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "6c8f1ea42318f0a2547d8771ff2718acb83d065901f3b22201edac3fa82deece",
-    "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "3010513b6d2899c0226c81f2fa63a3f25dafb7f3c88d85ce4036807d29bfd18a",
-    "benchmarks/harnesses/restart-floor-2026-09-30/native-build-guards-README.md": "b95e6a7f36301a69ecb065313d3e67426cab540e872387bce7a142568affb593",
+    "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "fa8e5a7fa00e5f0a3577ba6d3dfabfc7979eb09709a52129f05d2f09f1ebdbc9",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "04fd2997bf108809a33022740fa5c4893f24a8f17553e87b266c7346a1362cb6",
+    "benchmarks/harnesses/restart-floor-2026-09-30/native-build-guards-README.md": "1f9a85bef39962d0a91fc695ad031f08907744cf2133cc971a528a3ad7f024b8",
     "benchmarks/harnesses/restart-floor-2026-09-30/native-guards.py.in": "59097df945a6084996adc7147f7e9ef7c5eb228d00c4fd1e707585a791bc8309",
-    "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "28c0b5d6427d738d5b154ae60c7655da4adefbb07df740a41258421003364f85"
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "28c0b5d6427d738d5b154ae60c7655da4adefbb07df740a41258421003364f85",
+    "benchmarks/harnesses/restart-floor-2026-09-30/model-guards.py.in": "576841b390742c82f37dae4e47770fc017acb8e254fb64103a12793c042518e4",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "112e42ada0e3d687ab0435bd9c4d31e4168c9fab2897674d3719ef87d1e47c97",
+    "benchmarks/harnesses/restart-floor-2026-09-30/model-guards-README.md": "59dc906286ddd09dd854e90e9ab4b443fcc2f0c1b88ca91e9050243bcddeb8f6"
   }
 }
