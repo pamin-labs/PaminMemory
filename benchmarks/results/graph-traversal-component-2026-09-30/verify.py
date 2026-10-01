@@ -20,6 +20,7 @@ def graph_only_evidence(hit):
  assert len(graph)==1, 'reached target must have exactly one graph-channel record'
  paths=[w for w in why if w.get('kind')=='path']
  assert len(paths)==1, 'reached target must have exactly one path record'
+ assert set(paths[0])=={'kind','from','via','hops','edge','derivation','asserted_from','asserted_to'}, 'retained Why::Path field set differs'
  assert paths[0].get('edge')=='related_to' and paths[0].get('derivation')=='deterministic', 'controlled path edge/derivation differs'
  assert type(paths[0].get('hops')) is int and paths[0]['hops']>0, 'path hop count must be a positive integer'
  assert len(why)==2, 'graph-only target complete Why must contain only graph and path records'
