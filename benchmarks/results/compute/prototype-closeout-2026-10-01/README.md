@@ -78,6 +78,7 @@ The [frozen scratch sources](https://gist.github.com/JasonXuDeveloper/24e8f310ed
 ```sh
 # Use a fresh shell for this block so cleanup also runs on failure/interruption.
 set -eu
+test "$(git rev-parse HEAD)" = 0f023be6a8d8d070a971f7e590ccccff2c3292bb
 scratch=crates/pamin-engine/tests/scratch_matched_costs.rs
 rm -f "$scratch"
 trap 'rm -f "$scratch"' EXIT HUP INT TERM
@@ -121,6 +122,11 @@ The worker is Python, so it needs no native build. Fetch the retained source and
 
 ```sh
 curl -fsSL https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/a8327acdbaecfa651ddd78a293df7dae43b223da/pamin-cost-worker.py -o /private/tmp/pamin-cost-worker.py
+python3 - /private/tmp/pamin-cost-worker.py <<'PYWORKER'
+import hashlib, sys
+from pathlib import Path
+assert hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == "677f12a00f42563ada52368f69b7e088fa67d07aab7f8f99905328d5fb4e5d6c"
+PYWORKER
 python3 -m py_compile /private/tmp/pamin-cost-worker.py
 ```
 
@@ -148,16 +154,27 @@ assert hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest() == sys.argv[2]
 PYSHA
   export CARGO_TARGET_DIR=/private/tmp/pamin-cost-reproduction-target
   cargo test -p pamin-engine --test scratch_matched_costs --no-run --message-format=json > /private/tmp/cost-build.jsonl
-  python3 - /private/tmp/cost-build.jsonl "$5" <<'PYBUILD'
-import json, shutil, sys
+  python3 - /private/tmp/cost-build.jsonl "$5" /private/tmp/pamin-cost-runtime <<'PYBUILD'
+import hashlib, json, shutil, sys
 from pathlib import Path
 rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
 executables = [r["executable"] for r in rows if r.get("reason") == "compiler-artifact" and r.get("target", {}).get("name") == "scratch_matched_costs" and r.get("executable")]
 assert len(executables) == 1
+paths = [p.removeprefix("native=") for r in rows if r.get("reason") == "build-script-executed" and "zvec-rust-sys" in r.get("package_id", "") for p in r.get("linked_paths", []) if p.startswith("native=")]
+libraries = [Path(p) / "libzvec_c_api.dylib" for p in paths if (Path(p) / "libzvec_c_api.dylib").is_file()]
+assert libraries, "no resolved macOS zvec library in Cargo build-script output"
+hashes = {hashlib.sha256(p.read_bytes()).hexdigest() for p in libraries}
+assert len(hashes) == 1, "ambiguous zvec linked-library identity"
+source = libraries[0]; sha = next(iter(hashes))
+runtime = Path(sys.argv[3]); runtime.mkdir(parents=True, exist_ok=True)
+loaded = runtime / source.name
+if loaded.exists():
+    assert hashlib.sha256(loaded.read_bytes()).hexdigest() == sha, "runtime directory contains a different zvec library"
+else:
+    shutil.copy2(source, loaded)
 shutil.copy2(executables[0], sys.argv[2])
+Path(sys.argv[2] + ".zvec.json").write_text(json.dumps({"sha256": sha, "resolved_source": str(source), "runtime_path": str(loaded)}, indent=2))
 PYBUILD
-  mkdir -p /private/tmp/pamin-cost-runtime
-  find "$CARGO_TARGET_DIR/debug" -name libzvec_c_api.dylib -type f -exec cp {} /private/tmp/pamin-cost-runtime/ \;
 )
 build_cost_binary /private/tmp/pamin-cost-src-main 315c10242ddf7a1cec3bccbf550a942320e09557 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/b1054c02a237de3f8ecb8e7252fbc562526d6311/pamin-main-cost-harness.rs 253a1546bba55ff9bb3733c60a790d489565729b37edd259b8a6e6b8cfd373cc /private/tmp/pamin-cost-frozen-main
 build_cost_binary /private/tmp/pamin-cost-src-prototype 503bd9ee61a4d9fc6e7a9e16ae4d9a0537494f27 https://gist.githubusercontent.com/JasonXuDeveloper/24e8f310edc69ed9259c1f2ab658398f/raw/451f9cd328dbaa636be72909291b5a9dd97419c7/pamin-new-cost-harness-reconstructed.rs b2f170bd06e488311ec4c1b75d8ded4bb1a56e728ac12802fa47f7d346eccee8 /private/tmp/pamin-cost-frozen-prototype
@@ -168,7 +185,8 @@ With all builds stopped, these are the seven per-arm invocations; each runs thre
 
 ```sh
 python3 - <<'PYRUN'
-import os, subprocess, sys
+import hashlib, json, os, subprocess, sys
+from pathlib import Path
 arms = [
     ("main-cpu", "main", "accuracy", "cpu"),
     ("main-auto", "main", "accuracy", "auto"),
@@ -185,6 +203,8 @@ for key in ("PAMIN_SEARCH_EFFORT", "PAMIN_PREPARED", "PAMIN_FUSED_ATTENTION"):
 for block in range(3):
     offset = 2 * block
     for arm, binary, profile, policy in arms[offset:] + arms[:offset]:
+        receipt = json.loads(Path(f"/private/tmp/pamin-cost-frozen-{binary}.zvec.json").read_text())
+        assert hashlib.sha256(Path(receipt["runtime_path"]).read_bytes()).hexdigest() == receipt["sha256"]
         subprocess.run([
             sys.executable, "/private/tmp/pamin-cost-worker.py", f"reproduced-{arm}-{block}",
             f"/private/tmp/pamin-cost-frozen-{binary}", profile, policy,
@@ -195,3 +215,5 @@ PYRUN
 Each invocation writes `/private/tmp/pamin-cost-reproduced-ARM-BLOCK.jsonl` (warm product rows), `.log` (local-only diagnostic log) and `-process.json` (whole-process wall/user/system, binary SHA and maximum RSS). For persisted-hit, first establish a nonexpired plan using one unmeasured persisted setup process and check measured logs have zero calibration/rejection events. Do not publish raw logs: only the strictly whitelisted structured load events are public evidence. These commands target the retained macOS environment; other hosts need their native runtime-library setup and produce new measurements.
 
 Reproduction outputs use a `reproduced-` prefix to avoid replacing the original local cost logs/rows. The source checkouts and shared reproduction target can be removed after retaining the new outputs and frozen executable hashes; historical public rows stay unchanged.
+
+Each frozen executable has a `.zvec.json` receipt from Cargo’s actual `zvec-rust-sys` native link paths, including override/sibling/vendor selections. The worker loop verifies the runtime-library SHA before each process. Conflicting runtime files or differing linked copies fail closed. These receipts belong to the new reproduction, not a retroactive assertion about unrecorded historical library bytes.
