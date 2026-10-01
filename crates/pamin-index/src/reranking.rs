@@ -766,23 +766,22 @@ impl Reranker {
             return Ok(Vec::new());
         }
 
-        let tier = self.tier;
-        let cache = &self.cache_dir;
-        crate::inference::revalidate_cached_model(
-            &mut self.model,
-            &mut self.device,
-            &mut self.scores,
-            || load_model(tier, cache),
-        );
-
         let keys: Vec<u64> = documents
             .iter()
             .map(|document| Scores::key(query, document))
             .collect();
         loop {
+            let revalidating = crate::inference::runtime_due(&self.model);
             let mut scores: Vec<Option<f32>> = keys
                 .iter()
-                .map(|key| self.scores.get(*key))
+                .map(|key| {
+                    if revalidating {
+                        self.scores.misses += 1;
+                        None
+                    } else {
+                        self.scores.get(*key)
+                    }
+                })
                 .collect::<Vec<_>>();
 
             // Only what has not been scored before goes through the model,
@@ -831,7 +830,9 @@ impl Reranker {
                     // CPU and accelerator exports may have different logit scales.
                     // Rescore the whole request; never mix old cached logits with new.
                     self.scores.clear();
-                    continue;
+                    if unscored.len() != documents.len() {
+                        continue;
+                    }
                 }
                 let scored = self
                     .work
