@@ -15,6 +15,10 @@ LINEAR = struct.Struct('<IIQIIIII28s')
 NAMES = {'IndexVersion', 'flat.linear_meta', 'IndexMeta', 'flat.linear_list_head', 'flat.features1'}
 
 
+# Identity receipts only: omitted whole-file payloads are never verified here.
+WHOLE_FILE_SHA256 = {'pure-open': {'embedding.index.2.proxima': ('781e78bad2994332a4fc3614d4d323c5517acfd8e329e941713fa2a92fb79522', 'd9d326f771e174fa829bfe1fec4deb7dabce204937ca8fb702bcc4f45f2f1a67'), 'embedding.index.4.proxima': ('47db1851ed2c2838236b5a144043fc357b73da2c599e438ba91092886ae863bc', 'be169c527efc44c19438835785dbd7448b50235930e23a96eda7e62dd351cf22'), 'embedding.index.6.proxima': ('30959a1299958d26835d004560f7f4b70eca40b020bb9c17759f4ce7ede3d849', '44c714a9a4315da19cf9289861a638d88a82476faffd12908e673d4436d59d71'), 'embedding.index.8.proxima': ('2bb0ea85ce32144e60e82089e619406d0c6fb4d582b470cbec32d57e434c7c35', 'afa255490e3dade9e0ce2b341e728efe5dfe69f371a55bc1a28c7a738d8fe8be')}, 'vector': {'embedding.index.2.proxima': ('781e78bad2994332a4fc3614d4d323c5517acfd8e329e941713fa2a92fb79522', '4e5a3e98656d2ac4a0ee6847bf224383a1e3f49a03bd80a72a61f664ba352ef1'), 'embedding.index.4.proxima': ('47db1851ed2c2838236b5a144043fc357b73da2c599e438ba91092886ae863bc', 'c6816c8d5febcee0fd51be3878061780834b09f214c9777762660e4bb620e2ec'), 'embedding.index.6.proxima': ('30959a1299958d26835d004560f7f4b70eca40b020bb9c17759f4ce7ede3d849', 'e55c616663934b6f3f31427a67acbe2cc80720d0a42c496e1ec048164e950488'), 'embedding.index.8.proxima': ('2bb0ea85ce32144e60e82089e619406d0c6fb4d582b470cbec32d57e434c7c35', '656c7ee3bc65805e1ec5edd3ae250cacbaaf9808aedd6e53743d0d9fa9c0e60d')}}
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -118,6 +122,9 @@ def verify(evidence, check_logs=True, logs=None):
         require([f['label'] for f in run['files']] == [f'embedding.index.{i}.proxima' for i in [2,4,6,8]], 'file set')
         counts = []
         for file in run['files']:
+            recorded_hashes = (file['whole_file_sha256_before'], file['whole_file_sha256_after'])
+            require(all(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None for value in recorded_hashes), 'whole-file identity format')
+            require(recorded_hashes == WHOLE_FILE_SHA256[run['arm']][file['label']], 'whole-file identity receipt binding')
             require(file['file_size_before'] == file['file_size_after'] == 5234688, 'file size')
             old = decode(file['excerpts']['before'], file['file_size_before'])
             new = decode(file['excerpts']['after'], file['file_size_after'])
