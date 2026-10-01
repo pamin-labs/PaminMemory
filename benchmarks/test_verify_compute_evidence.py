@@ -175,6 +175,49 @@ class DeviceProofTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "loaded-device summary differs"):
             self.check(self.proof, artifacts)
 
+    def test_coordinated_coreml_relabeling_is_rejected_after_resealing(self):
+        proof = copy.deepcopy(self.proof)
+        artifacts = copy.deepcopy(self.artifacts)
+        changed = 0
+        for entry in proof:
+            for event in artifacts[entry["event_artifact"]]["events"]:
+                if event.get("device") == "coreml":
+                    event["device"] = "cuda"
+                    changed += 1
+            entry["loaded_device_evidence"] = [line.replace('device="coreml"', 'device="cuda"')
+                                                for line in entry["loaded_device_evidence"]]
+        self.assertEqual(changed, 12, "counterexample must change every retained CoreML loaded event")
+        with self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
+            self.check(proof, artifacts)
+
+    def test_every_frozen_loaded_role_is_independently_pinned(self):
+        for index, entry in enumerate(self.proof):
+            name = entry["event_artifact"]
+            loaded = [e for e in self.artifacts[name]["events"] if e["event"] in verifier.LOADED_EVENTS]
+            for position, original in enumerate(loaded):
+                proof = copy.deepcopy(self.proof)
+                artifacts = copy.deepcopy(self.artifacts)
+                event = [e for e in artifacts[name]["events"] if e["event"] in verifier.LOADED_EVENTS][position]
+                event["device"] = "cuda"
+                proof[index]["loaded_device_evidence"][position] = proof[index]["loaded_device_evidence"][position].replace(
+                    f'device="{original["device"]}"', 'device="cuda"')
+                with self.subTest(arm=entry["arm"], process=entry["process"], role=original["event"]), self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
+                    self.check(proof, artifacts)
+
+    def test_coordinated_loaded_order_change_is_rejected(self):
+        proof = copy.deepcopy(self.proof)
+        artifacts = copy.deepcopy(self.artifacts)
+        index = next(i for i, p in enumerate(proof) if p["arm"] == "new-auto-persist-hit" and p["process"] == 2)
+        events = artifacts[proof[index]["event_artifact"]]["events"]
+        positions = [i for i, event in enumerate(events) if event["event"] in verifier.LOADED_EVENTS]
+        self.assertEqual(len(positions), 2)
+        first, second = positions
+        events[first]["event"], events[second]["event"] = events[second]["event"], events[first]["event"]
+        events[first]["device"], events[second]["device"] = events[second]["device"], events[first]["device"]
+        proof[index]["loaded_device_evidence"].reverse()
+        with self.assertRaisesRegex(AssertionError, "frozen arm/process premise"):
+            self.check(proof, artifacts)
+
 
 if __name__ == "__main__":
     unittest.main()
