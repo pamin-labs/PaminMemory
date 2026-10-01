@@ -22,7 +22,9 @@ def main():
     args=parser.parse_args()
     seed=Path('/workspace/scratch/restart-floor/seed-disk').resolve()
     assert not args.log.resolve().is_relative_to(seed), 'conversion log must be outside measured seed'
+    assert not args.attestation.resolve().is_relative_to(seed), 'conversion attestation must be outside measured seed'
     attestation=json.loads(args.attestation.read_text())
+    assert not Path(attestation['arms']['candidate']['binary']).resolve().is_relative_to(seed), 'conversion executable must be outside measured seed'
     binary=verified_binary(attestation);native=attestation['native_loader_inputs']
     BUILD['NATIVE']['verify'](native)
     env={key:value for key,value in os.environ.items() if not key.startswith('FLOOR_')}
