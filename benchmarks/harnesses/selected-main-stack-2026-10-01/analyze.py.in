@@ -71,6 +71,14 @@ def report(packets):
         values = {arm: statistics.mean(p[key] for p in packets if p['job']['source'] == arm)
                   for arm in ['main', 'stack']}
         disk.append({'metric': key, **metrics.difference(values['main'], values['stack'])})
+    for stage in ['before', 'after']:
+        for measure in ['logical_bytes', 'allocated_bytes']:
+            values = {arm: [p.get('postgres_disk', {}).get(stage, {}).get(measure)
+                           for p in packets if p['job']['source'] == arm] for arm in ['main', 'stack']}
+            means = {arm: statistics.mean(v) if all(type(x) is int and x >= 0 for x in v) else None
+                     for arm, v in values.items()}
+            disk.append({'metric': 'owned PG data/local WAL ' + stage + ' ' + measure,
+                         **metrics.difference(means['main'], means['stack'])})
     asset_bytes = sum(pin['bytes'] for pin in c.MANIFEST['assets'])
     disk += [{'metric': 'listed bound model/runtime assets logical bytes',
               **metrics.difference(asset_bytes, asset_bytes)},
@@ -87,6 +95,8 @@ def report(packets):
             'correctness': correctness, 'classifications': classifications,
             'metrics': metrics.metric_tables(observations, eligible),
             'process_metrics': process_metrics, 'disk': disk,
+            'host_conditions': [json.loads(line) for line in (c.ROOT / 'host-conditions.jsonl').read_text().splitlines()],
+            'process_host_conditions': [{'job': p['job']['name'], 'conditions': p.get('host_conditions')} for p in packets],
             'scope': 'CPU ReadOnly Engine search; four rotated independent process blocks; hot calls dependent; '
                      'fresh process with prepared caches and preflight-warmed OS pages; shared machine; '
                      'PG main PID separate, children/device/services unmeasured; zero CPU ticks resolution-censored; '
@@ -96,8 +106,10 @@ def report(packets):
 def write_tables(path, result):
     value = lambda v: 'N/A' if v is None else str(v)
     lines = ['# Regenerated synthetic experiment', '', result['scope'], '',
-             '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Eligibility |',
-             '| --- | --- | ---: | ---: | ---: | ---: | --- |']
+             'Actual admission/monitoring host conditions are retained in metrics.json and host-conditions.jsonl; '
+             + str(len(result['host_conditions'])) + ' observations. First observation: ' + json.dumps(result['host_conditions'][0]), '',
+             '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Samples per arm | Eligibility |',
+             '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
     for group in ['correctness', 'metrics', 'process_metrics', 'disk']:
         for item in result[group]:
             eligibility = ('accuracy excluded' if item.get('accuracy_eligible') is False else
@@ -107,7 +119,7 @@ def write_tables(path, result):
             lines.append('| ' + ' | '.join([value(item.get('configuration', item.get('scope', group))),
                          item['metric'] + ' ' + item.get('statistic', '')] +
                          [value(item[k]) for k in ['before', 'after', 'absolute_difference', 'percentage_change']]
-                         + [eligibility]) + ' |')
+                         + [value(item.get('samples_per_arm')), eligibility]) + ' |')
     path.write_text('\n'.join(lines) + '\n')
 
 

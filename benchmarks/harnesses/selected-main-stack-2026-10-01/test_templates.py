@@ -41,10 +41,76 @@ class Templates(unittest.TestCase):
         (self.work / 'main/crates/pamin-engine/tests/corpus/queries.json').write_text('[]')
         (self.work / 'build').mkdir()
         (self.work / 'build/binaries.json').write_text(json.dumps({'main': {'bytes': 10}, 'stack': {'bytes': 12}}))
+        (self.work / 'host-conditions.jsonl').write_text(json.dumps({'cpu_quota': '400000 100000', 'affinity': [0, 1, 2, 3], 'fixture': True}) + '\n')
         (self.work / 'seed-receipt.json').write_text(json.dumps({'index_allocated_bytes': 4096}))
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def mock_cgroup(self):
+        root = self.work / 'cgroup'
+        leaf = root / 'slice/pod'
+        leaf.mkdir(parents=True)
+        for node, maximum, current, quota in [(root, 'max', 9, 'max 100000'),
+                (root / 'slice', 12 * 1024**3, 11 * 1024**3, '200000 100000'),
+                (leaf, 8 * 1024**3, 1024**3, '500000 100000')]:
+            (node / 'memory.max').write_text(str(maximum))
+            (node / 'memory.current').write_text(str(current))
+            (node / 'cpu.max').write_text(quota)
+        membership = self.work / 'membership'
+        membership.write_text('0::/slice/pod\n')
+        return root, leaf, membership
+
+    def test_nested_ancestor_headroom_and_cpu_limits(self):
+        root, leaf, membership = self.mock_cgroup()
+        value = self.common.cgroup_conditions(root, membership)
+        self.assertEqual(value['cgroup_path'], str(leaf))
+        self.assertEqual(value['cgroup_memory_bytes'], 1024**3)
+        self.assertEqual(value['effective_memory_headroom_bytes'], 1024**3)
+        self.assertEqual(value['effective_cpu_quota_cores'], 2)
+        with patch.object(self.common, 'cgroup_conditions', return_value=value), \
+             patch.object(self.common.shutil, 'disk_usage', return_value=Mock(free=self.common.RESERVE + 1)):
+            with self.assertRaisesRegex(ValueError, '2 GiB'):
+                self.common.guard('nested-fixture')
+        # Failure still retains the observation rather than losing conditions.
+        retained = json.loads((self.work / 'host-conditions.jsonl').read_text().splitlines()[-1])
+        self.assertEqual(retained['phase'], 'nested-fixture')
+        self.assertEqual(retained['effective_cpu_quota_cores'], 2)
+        self.assertIn('architecture', retained['host'])
+        (root / 'slice/memory.current').write_text(str(2 * 1024**3))
+        value = self.common.cgroup_conditions(root, membership)
+        self.assertEqual(value['effective_memory_headroom_bytes'], 7 * 1024**3)
+
+    def test_cgroup_path_escapes_and_symlinks_are_refused(self):
+        root, leaf, membership = self.mock_cgroup()
+        for escape in ['/../outside', '/slice/../../outside', 'relative']:
+            membership.write_text('0::' + escape + '\n')
+            with self.assertRaisesRegex(ValueError, 'path escape'):
+                self.common.cgroup_conditions(root, membership)
+        membership.write_text('0::/missing-leaf\n')
+        with self.assertRaisesRegex(ValueError, 'effective cgroup missing'):
+            self.common.cgroup_conditions(root, membership)
+        outside = self.work / 'outside'; outside.mkdir()
+        (root / 'escape').symlink_to(outside, target_is_directory=True)
+        membership.write_text('0::/escape\n')
+        with self.assertRaisesRegex(ValueError, 'path escape'):
+            self.common.cgroup_conditions(root, membership)
+        (root / 'alias').symlink_to(leaf, target_is_directory=True)
+        membership.write_text('0::/alias\n')
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.common.cgroup_conditions(root, membership)
+
+    def test_owned_pg_disk_counts_local_wal_and_excludes_external_links(self):
+        data = self.work / 'postgres/data'; wal = data / 'pg_wal'; wal.mkdir(parents=True)
+        (data / 'base-file').write_bytes(b'base')
+        (wal / 'wal-file').write_bytes(b'wal')
+        outside = self.work / 'unowned'; outside.mkdir(); (outside / 'ignored').write_bytes(b'external')
+        (data / 'external').symlink_to(outside, target_is_directory=True)
+        (data / 'linked-file').symlink_to(outside / 'ignored')
+        value = self.common.disk_sizes(data)
+        self.assertEqual(value['logical_bytes'], 7)
+        self.assertEqual(value['files'], 2)
+        self.assertEqual(value['allocated_bytes'], sum(p.stat().st_blocks * 512 for p in [data/'base-file', wal/'wal-file']))
 
     def test_post_start_faults_always_attempt_verified_cleanup(self):
         import subprocess
@@ -251,7 +317,9 @@ class Templates(unittest.TestCase):
                        'process_after': snapshots} for arm in job['sequence'].split(',')]
             packets.append({'job': job, 'rows': actual, 'validated': [valid] * len(actual),
                             'opened': {'wall_us': 123}, 'usage': {'native_wall_seconds': 1, 'samples': []},
-                            'index_before_bytes': 1000, 'index_after_bytes': 1000})
+                            'index_before_bytes': 1000, 'index_after_bytes': 1000,
+                            'postgres_disk': {stage: {'logical_bytes': 100, 'allocated_bytes': 4096}
+                                              for stage in ['before', 'after']}})
         classifications = [{'job': packet['job'], 'paired_speed_claim_eligible': False,
                             'same_final_actual_inputs': True, 'same_final_raw_bits/order': False,
                             'all_changed_and_hot_exact': False, 'legacy_main_context_failure': True,
@@ -262,6 +330,10 @@ class Templates(unittest.TestCase):
              patch.object(self.rows, 'oracle_checks', return_value=classifications):
             result = self.analyzer.report(packets)
             self.assertEqual(result['calls'], 880)
+            self.assertEqual(result['host_conditions'][0]['cpu_quota'], '400000 100000')
+            pg_rows = [r for r in result['disk'] if r['metric'].startswith('owned PG')]
+            self.assertEqual(len(pg_rows), 4)
+            self.assertTrue(all(r['before'] is not None for r in pg_rows))
             self.assertEqual(len(result['correctness']), 40)
             categories = {row['metric'] for row in result['metrics']}
             self.assertTrue({'wall_us', 'quality_ndcg', 'rss_kib', 'cpu_user_seconds', 'forward_us'} <= categories)

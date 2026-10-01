@@ -47,3 +47,31 @@ The selected build recipe sets `ZVEC_LIB_DIR` to the pinned native-library direc
 Build, seed, and native helper processes start in new owned process groups. Cleanup terminates live members of those groups even if the leader has already exited; a descendant that creates another session is outside this group check. PostgreSQL is stopped separately after ownership verification. PostgreSQL startup failures (including SQL/version/settings assertions) and seed failures attempt a bounded stop only after verifying the actual PID, executable, UID, data directory and port. Seed cleanup works before `server.json` exists. If ownership cannot be proved, cleanup refuses to signal an unknown process and reports the failure. Failed clones and logs remain available for inspection. These guards are covered by synthetic fault tests; native execution remains unverified.
 
 Exit observation uses Linux `waitid(WNOWAIT)`: the owned leader remains unreaped until group cleanup, reserving its PID/group ID against reuse. Cleanup waits at most ten seconds for live group members to exit before reaping the leader; an already-reaped leader refuses any signal, and a lingering member causes explicit failure with retained evidence. Zombies count as exited, not live work. No subsequent job or successful completion receipt is produced after cleanup failure.
+
+The controller resolves its cgroup v2 membership and checks every visible
+ancestor's memory limit against that ancestor's own usage; effective CPU quota
+is the minimum quota/period across the same hierarchy, with affinity retained
+separately. Admission and monitoring append actual host hardware, kernel,
+affinity, quota, memory scope/headroom and disk reserve observations to
+`host-conditions.jsonl`. New `metrics.json` retains this journal and each
+process's before/after conditions; `tables.md` identifies the retained record.
+These are new-run conditions, not reconstructed historical hardware.
+
+Before deleting a successful stopped clone, the packet captures owned
+PostgreSQL data-directory regular-file logical and allocated bytes, including
+local `pg_wal`, before and after the trial. Allocated bytes use `st_blocks * 512`;
+external symlink targets and directory metadata are excluded. Reports compare
+mean clone endpoint sizes by source. Missing older packet measurements remain
+`N/A`; these are endpoint file sizes, not peak allocation or write cost.
+
+Cgroup accounting covers only the mounted Linux cgroup v2 hierarchy visible to
+the controller. A membership path that cannot be mapped to an existing leaf
+fails closed; limits of invisible ancestors are unknown and are not claimed
+as included. Memory headroom is conservatively `memory.max - memory.current`
+at every visible limited ancestor, with no `inactive_file` reclaim credit.
+It is not an available-memory estimate and can reject a host under file-cache
+reclaim pressure. These controller changes have only synthetic source-level
+validation; no native reproduction or current-host admission was run.
+The PostgreSQL before endpoint is the fresh seed clone before server startup;
+the after endpoint is measured after the native process and owned PG stop,
+before deletion.
