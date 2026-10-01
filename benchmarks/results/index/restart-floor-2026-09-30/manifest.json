@@ -2,7 +2,7 @@
   "files": {
     "benchmarks/harnesses/restart-floor-2026-09-30/README.md": "3427b669de5e70020202a488ec147bdac9e3c3a8399995fcf27bf0d950a4b971",
     "benchmarks/harnesses/restart-floor-2026-09-30/analyze.py.in": "e3f94d84778784f00794afa9ad6738713d85be8fda83d1235edbf75c09c58e7a",
-    "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "53d046ba3067f2fcd63fa880801baf0a9d8ede23758cc6134c5dd411651f3fc4",
+    "benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in": "ab7d82e20dd8d49f18eeb9c621b98bb0daa63c76ecebcf6e422ed8b6df85b97e",
     "benchmarks/harnesses/restart-floor-2026-09-30/build.py.in": "65338fc4e6d77cd0f0d5dbf75e111913f502aecbd9de4d35a4b05918940e940a",
     "benchmarks/harnesses/restart-floor-2026-09-30/fixture-guards-README.md": "fa8e5a7fa00e5f0a3577ba6d3dfabfc7979eb09709a52129f05d2f09f1ebdbc9",
     "benchmarks/harnesses/restart-floor-2026-09-30/harness.rs.in": "6e355b71ad8c283def61bafb7c8d6770345e33319346aa42f4dba6b763b5f8ca",
@@ -17,7 +17,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "aef80ca69e6ba7794e065bca05769720f756256f9f75c1e7dea62b8d51f67a6b",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "9db0c2c27c339a34f18332c940101fa746d627e181e8c548bd1ef8b15f621177",
-    "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "b67785633695d3ae8dc6932179618519fd7870da85bd1b202d46cdbbabdf623f",
+    "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "f379544b0a62ae78a5146342f87d536b636954eb7df10aed221babf2d1f67860",
     "benchmarks/results/index/restart-floor-2026-09-30/README.md": "c0a4380fb46b8caacc2f5fd9c25a308c7eed2553b571bf55b0c9cdfbd8d8b437",
     "benchmarks/results/index/restart-floor-2026-09-30/binaries.json": "54bb7087b7d8ad2059e4dc6379e13404c5f861ce1c001d5940bbfdf316dbd56f",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-candidate.log": "46d336d7e5744a4a82ecb1e0893f77eaa4595e2f61d2956e5649d8ca556f6949",
@@ -59,6 +59,6 @@
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/predecessor-build.jsonl.gz": "b14d701c471010b3d5638ae5c66544ccc7f12ea490835c97bbc7ee1aad6d3078",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/predecessor-build.log.gz": "eacf230c0717277a297f8db56e6e4d2a648bb46e645684474872bccd0220c26e",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/predecessor-clean.log.gz": "1441e50551d340ae2add3681d697a2314364bf4340f7398a180728f999b5dbf2",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py": "5cb12fdfeba9dc0bac4fb576416d808e18fa7f0f823a5e85741ac192312aa46d"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py": "9a40ad945179d3c16e96e44e295541d34d527b66ecc65ad98ceedce8112f6d26"
   }
 }

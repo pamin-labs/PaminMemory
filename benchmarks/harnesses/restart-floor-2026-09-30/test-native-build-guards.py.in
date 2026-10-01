@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fake artifact/loader guards only. No Cargo, native loading, models or database."""
-import json,os,runpy,sys,tempfile
+import hashlib,json,os,runpy,subprocess,sys,tempfile
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Negative guard checks require assertions; remove -O/PYTHONOPTIMIZE')
 sys.dont_write_bytecode=True
@@ -74,13 +74,15 @@ with tempfile.TemporaryDirectory() as directory:
     for name,data in tracked.items():(checkout/name).write_bytes(data)
     def fake_git(checkout,*args):
         if args[0]=='rev-parse':return b'fake-commit\n'
-        if args[0] in {'status','diff'}:return b''
+        if args[0] in {'status','diff','for-each-ref'}:return b''
         if args[0]=='ls-tree':return b''.join(('100644 blob '+name+'\t'+name+'\0').encode() for name in tracked)
         if args[0]=='ls-files':return (scratch+'\0').encode()
         raise AssertionError(args)
     class FakeSubprocess:
         @staticmethod
-        def check_output(*args,**kwargs):return b''.join(name.encode()+b' blob '+str(len(data)).encode()+b'\n'+data+b'\n' for name,data in tracked.items())
+        def check_output(*args,**kwargs):
+            assert kwargs['env']['GIT_NO_REPLACE_OBJECTS']=='1'
+            return b''.join(name.encode()+b' blob '+str(len(data)).encode()+b'\n'+data+b'\n' for name,data in tracked.items())
     globals_=build['inputs'].__globals__;old_git=globals_['git'];old_subprocess=globals_['subprocess']
     try:
         globals_['git']=fake_git;globals_['subprocess']=FakeSubprocess
@@ -108,3 +110,52 @@ for key in ['CC_KNOWN_WRAPPER_CUSTOM','CC_SHELL_ESCAPED_FLAGS','CC_FORCE_DISABLE
     refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
 build['reject_overrides']({'PATH':'unchanged','HOME':'unchanged','TERM':'dumb'})
 print('passed Cargo config absence, conversion template/source/executable binding, every dependency/product/helper fresh check, private target containment, loader file/link/inventory/absence mutations, loader scrub, native/compiler overrides; no build or native execution')
+
+# Real replacement objects in a disposable Git repository: no root refs mutate.
+retrospective=runpy.run_path(str(root.parents[1]/'results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'))
+with tempfile.TemporaryDirectory() as directory:
+    checkout=Path(directory)
+    env=dict(os.environ,GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull)
+    env.pop('GIT_NO_REPLACE_OBJECTS',None);env.pop('GIT_REPLACE_REF_BASE',None)
+    def local_git(*args):
+        return subprocess.check_output(['git',*args],cwd=checkout,env=env,stderr=subprocess.PIPE)
+    local_git('init','-q');local_git('config','user.name','Guard Fixture');local_git('config','user.email','fixture@example.invalid')
+    for name,data in {'Cargo.toml':b'original manifest','Cargo.lock':b'original lock'}.items():(checkout/name).write_bytes(data)
+    local_git('add','.');local_git('commit','-qm','original');original=local_git('rev-parse','HEAD').decode().strip()
+    original_blob=local_git('rev-parse',original+':Cargo.toml').decode().strip()
+    (checkout/'Cargo.toml').write_bytes(b'replacement manifest');local_git('add','.');local_git('commit','-qm','replacement')
+    replacement=local_git('rev-parse','HEAD').decode().strip();replacement_blob=local_git('rev-parse',replacement+':Cargo.toml').decode().strip()
+    local_git('checkout','--detach','-q',original)
+    good=build['inputs'](checkout,original,{})
+    assert good['Cargo.toml']['sha256']==hashlib.sha256(b'original manifest').hexdigest()
+    assert retrospective['source_inputs'](checkout,original)['Cargo.toml']['sha256']==good['Cargo.toml']['sha256']
+    def replacement_refused(operation):
+        try:operation()
+        except AssertionError as error:
+            assert 'Git replacement refs refused before source attestation' in str(error)
+            return
+        raise AssertionError('replacement source attestation accepted')
+    # Prove the review's attack rather than inventing a replacement-shaped ref.
+    local_git('replace',original,replacement)
+    assert local_git('rev-parse','HEAD').decode().strip()==original
+    assert local_git('show',original+':Cargo.toml')==b'replacement manifest'
+    assert build['git'](checkout,'show',original+':Cargo.toml')==b'original manifest'
+    replacement_refused(lambda:build['inputs'](checkout,original,{}))
+    replacement_refused(lambda:retrospective['source_inputs'](checkout,original))
+    local_git('replace','-d',original)
+    local_git('replace',original_blob,replacement_blob)
+    assert local_git('cat-file','blob',original_blob)==b'replacement manifest'
+    assert build['git'](checkout,'cat-file','blob',original_blob)==b'original manifest'
+    replacement_refused(lambda:build['inputs'](checkout,original,{}))
+    replacement_refused(lambda:retrospective['source_inputs'](checkout,original))
+    local_git('replace','-d',original_blob)
+    assert build['inputs'](checkout,original,{})==good
+    # An inherited zero flag must never enable replacements for guarded reads.
+    old=os.environ.get('GIT_NO_REPLACE_OBJECTS')
+    try:
+        os.environ['GIT_NO_REPLACE_OBJECTS']='0'
+        assert build['git_environment']()['GIT_NO_REPLACE_OBJECTS']=='1'
+    finally:
+        if old is None:os.environ.pop('GIT_NO_REPLACE_OBJECTS',None)
+        else:os.environ['GIT_NO_REPLACE_OBJECTS']=old
+print('passed real commit/blob replacement attacks, original-object reads and before-attestation ref rejection in both guards; disposable Git only, no build/native execution')
