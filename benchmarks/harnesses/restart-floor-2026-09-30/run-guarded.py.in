@@ -238,6 +238,7 @@ def main():
     native=attestation['native_loader_inputs']
     env=NATIVE['environment'](env,native)
     if a.mode=='setup':
+        assert not a.record.resolve().is_relative_to(a.home.resolve()), 'private setup record must be outside measured home'
         executable=binary(a.arm,attestation)
         assert (a.home/'models').is_symlink() and (a.home/'models').resolve(strict=True)==Path(expected_models['root']), 'setup must use the attested model cache'
         assert not a.model_manifest.resolve().is_relative_to(a.home.resolve()), 'model manifest must be external to setup home'
