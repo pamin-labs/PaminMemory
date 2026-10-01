@@ -1,0 +1,7 @@
+# Retained product and data inputs
+
+These files are input evidence, not an executable measurement package. `product/baseline/engine.rs` and `product/pooled/engine.rs` preserve the actual source overlays; their only difference is the candidate-pool toggle. Shared `lib.rs` and `candidate_pool.rs` are kept once. Their original identities remain in [sources.json](../sources.json). None of these files launches an acceptance run.
+
+The two public corpus JSON files are retained for portable gold/score checks and bound to the exact Git blobs at `13ee710c9df865f1dac98dc77a8108e438ddc539`. [git-inputs.json](../git-inputs.json) identifies the unchanged sibling modules, Cargo manifests/lockfile and product cascade/reshape inputs by revision/path/blob/size/SHA-256. Public source links permit inspection without fetching or running anything during verification.
+
+The measurement-only targets, controllers and statistics printing driver were removed from the tracked tree after byte-verified private preservation. [removed-harness-inventory.json](../removed-harness-inventory.json) retains their historical identities. No public launch or executable reconstruction recipe remains. The reported target digest is a historical identity only; target source-to-binary attestation and exact public measurement reproduction are unmet. [family-input.json](../family-input.json) contains only aligned numeric inputs, checked by the invariant verifier against retained rows and the declared family design. No inference, build or database operation is performed by archive verification.

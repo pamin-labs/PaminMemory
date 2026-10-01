@@ -1,5 +1,5 @@
 {
-  "scope": "CPU INT8 native handwritten157-query diagnostic; Why establishes offered IDs/available scores including cache, not fresh computation count",
+  "scope": "Historical observed CPU INT8 handwritten157-query diagnostic only; not a validated quality benchmark or shipped-default certification",
   "source_revision": "13ee710c9df865f1dac98dc77a8108e438ddc539",
   "binaries": [
     {
@@ -124,9 +124,25 @@
       "bytes": 0
     }
   },
-  "configuration_scope": "historical inherited tuning variables were not completely captured; default-shipped configuration and source-to-binary attestation not fully certified; interpret as observed matching fused/provider/budget diagnostic",
+  "configuration_scope": "Profile::Accuracy and Rerank::Accurate requested; complete inherited effective tuning and CPU model/ISA/topology UNKNOWN; exact public execution reproduction and source-to-binary attestation not established",
   "config_audit_file": "config-audit-limit.json",
   "historical_config_limit": "historical-config-limit.md",
   "controller_parser_repair": "First measure baseline test completed157rows successfully; controller falsely missed libtest-prefixed graph marker and aborted. Explicit resume revalidated completed seed/baseline logs and asset/source hashes without rerunning; then ran pooled. Prior controller failure and failedseed logs retained.",
-  "attestation_scope": "Accepted build JSON proves clean rebuilt product crates and test artifacts; source/binary hashes retained, but no full prospective build/runtime tuning attestation. Independent strict future runner required for certification."
+  "attestation_scope": "Accepted build JSON proves clean rebuilt product crates and test artifacts; source/binary hashes retained, but no full prospective build/runtime tuning attestation. Independent strict future runner required for certification.",
+  "publication_scope": {
+    "kind": "historical_observed_cpu_diagnostic",
+    "entry_point": "Engine::search_reranked",
+    "requested_profile": "accuracy",
+    "requested_reranker": "accurate",
+    "observed_provider": "CPUExecutionProvider",
+    "hardware_model_isa_topology": "UNKNOWN",
+    "complete_effective_tuning": "UNKNOWN",
+    "calibration_acceptance": "not established",
+    "validated_quality_benchmark": false,
+    "shipped_default_certification": false,
+    "public_measurement_runner": false,
+    "public_execution_reproducible": false,
+    "source_to_binary_attestation": "not established",
+    "compiled_target_digest": "historically reported identity only; target source privately retained; not publicly inspectable"
+  }
 }
