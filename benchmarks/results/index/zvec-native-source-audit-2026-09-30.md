@@ -43,12 +43,14 @@ has GitHub-reported archive digest
 This audit did not download that archive or establish its contained library's
 identity against the Linux runtime.
 
-The retained disk setup records `pq_chunks: 0` using the schema getter
-`zvec_index_params_get_diskann_pq_chunk_num`. It does not report the builder's
-effective chunk count or native PQ sections. Stored-document bit equality
-also does not establish graph-navigation equivalence or vector recall.
-The vendor source makes automatic PQ plausible for this runtime; effective
-native introspection is still needed to establish it.
+The retained disk setup records requested `pq_chunks: 0` using the schema
+getter `zvec_index_params_get_diskann_pq_chunk_num`. A separate
+[offline persisted-header inspection](stopped-seed-pq-2026-09-30/README.md)
+finds 512 effective chunks in all 10 files of the current stopped 18,000-document
+Linux seed. Public excerpts support layout/count arithmetic; full-file SHA256
+and complete metadata CRC verification remain private receipts. This closes
+the effective-PQ question for that current seed only. Stored-document bit
+equality does not establish graph-navigation equivalence or vector recall.
 
 Historical requested-zero and requested-64 arms remain observations of those
 requested settings. They do not establish a comparison of PQ disabled versus
