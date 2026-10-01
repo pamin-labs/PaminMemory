@@ -73,11 +73,14 @@ class PublicSourceBinding(unittest.TestCase):
             self.assertIsNone(source_binding.check_git(self.binding))
 
     def test_missing_promisor_objects_never_enable_lazy_fetch(self):
-        for missing in ['commit', 'blob']:
+        for missing in ['commit', 'tree', 'blob']:
             with self.subTest(missing=missing):
                 calls = []
                 responses = iter([SimpleNamespace(returncode=128, stdout=b'', stderr=b'missing promisor object')]
                                  if missing == 'commit' else
+                                 [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                                  SimpleNamespace(returncode=128, stdout=b'', stderr=b'missing promisor tree')]
+                                 if missing == 'tree' else
                                  [SimpleNamespace(returncode=0, stdout=b'commit\n'),
                                   SimpleNamespace(returncode=0, stdout=self.first_tree_entry()),
                                   SimpleNamespace(returncode=128, stdout=b'', stderr=b'missing promisor object')])
@@ -90,7 +93,7 @@ class PublicSourceBinding(unittest.TestCase):
                     with patch.object(source_binding.shutil, 'which', return_value='git'):
                         with patch.object(source_binding.subprocess, 'run', side_effect=promisor_read):
                             self.assertIsNone(source_binding.check_git(self.binding))
-                self.assertEqual(len(calls), 1 if missing == 'commit' else 3)
+                self.assertEqual(len(calls), {'commit': 1, 'tree': 2, 'blob': 3}[missing])
 
     def test_empty_git_repository_reports_unavailable(self):
         git = source_binding.shutil.which('git')
@@ -111,11 +114,10 @@ class PublicSourceBinding(unittest.TestCase):
             with patch.object(source_binding.subprocess, 'run', side_effect=responses):
                 return source_binding.check_git(self.binding)
 
-    def test_missing_tree_after_available_commit_refused(self):
+    def test_missing_tree_after_available_commit_unavailable(self):
         responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
                      SimpleNamespace(returncode=1, stdout=b'')]
-        with self.assertRaisesRegex(ValueError, 'source tree read'):
-            self.check_mock_git(responses)
+        self.assertIsNone(self.check_mock_git(responses))
 
     def test_missing_blob_after_available_commit_unavailable(self):
         responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
@@ -137,11 +139,13 @@ class PublicSourceBinding(unittest.TestCase):
             self.check_mock_git(responses)
 
     def test_git_tree_alias_refused(self):
-        entry = self.first_tree_entry().replace(self.binding['files'][0]['git_blob'].encode(), b'refs/heads/main')
-        responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
-                     SimpleNamespace(returncode=0, stdout=entry)]
-        with self.assertRaisesRegex(ValueError, 'mode/path/blob mismatch'):
-            self.check_mock_git(responses)
+        alias = self.first_tree_entry().replace(self.binding['files'][0]['git_blob'].encode(), b'refs/heads/main')
+        for entry in [alias, b'', self.first_tree_entry().replace(b'100644 blob', b'100755 blob')]:
+            with self.subTest(entry=entry):
+                responses = [SimpleNamespace(returncode=0, stdout=b'commit\n'),
+                             SimpleNamespace(returncode=0, stdout=entry)]
+                with self.assertRaisesRegex(ValueError, '^public Git mode/path/blob mismatch$'):
+                    self.check_mock_git(responses)
 
 
 if __name__ == '__main__':
