@@ -752,61 +752,64 @@ impl Reranker {
         // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
         // XQuAD-R quality and beat its CoreML FP32 export on every paired
         // search. Accurate still uses the shared CoreML-first policy.
-        let (model, device) =
-            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
-                (
-                    session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
-                    Device::Cpu,
-                )
-            } else {
-                let references = std::cell::RefCell::new(crate::inference::References::default());
-                crate::inference::measured(
-                    &format!(
-                        "reranker-v1:{}:{}:{}:{}:{}",
-                        tier.name(),
-                        repository.identity(cache_dir),
-                        max_tokens(),
-                        batch(),
-                        batch_tokens()
-                    ),
-                    &references,
-                    session,
-                    |model, _device| {
-                        let mut reference = references.borrow_mut();
-                        let long = "harbour migration rollback policy ".repeat(max_tokens());
-                        let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
-                        let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
-                        if longest != max_tokens() {
-                            return Err(IndexError::Engine(
-                                "maximum-token fixture did not reach the configured limit".into(),
-                            ));
-                        }
+        let (model, device) = if cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            && tier == Rerank::Fast
+        {
+            (
+                session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
+                Device::Cpu,
+            )
+        } else {
+            let references = std::cell::RefCell::new(crate::inference::References::default());
+            crate::inference::measured(
+                &format!(
+                    "reranker-v2:{}:{}:{}:{}:{}",
+                    tier.name(),
+                    repository.identity(cache_dir),
+                    max_tokens(),
+                    batch(),
+                    batch_tokens()
+                ),
+                &references,
+                session,
+                |model, _device| {
+                    let mut reference = references.borrow_mut();
+                    let long = "harbour migration rollback policy ".repeat(max_tokens());
+                    let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
+                    let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
+                    if longest != max_tokens() {
+                        return Err(IndexError::Engine(
+                            "maximum-token fixture did not reach the configured limit".into(),
+                        ));
+                    }
+                    let values = score(model, encoded, batch_tokens(), batch())?.0;
+                    if values.len() != 1 || !values[0].is_finite() {
+                        return Err(IndexError::Numerical(
+                            "maximum-token reranker fixture returned invalid output".into(),
+                        ));
+                    }
+                    crate::inference::time_calls(|| {
+                        let repetitions = if tier == Rerank::Fast { 1 } else { 8 };
+                        let pairs = ORDER_PAIRS.repeat(repetitions);
+                        let encoded = model.encode(pairs)?;
                         let values = score(model, encoded, batch_tokens(), batch())?.0;
-                        if values.len() != 1 || !values[0].is_finite() {
+                        if values.len() != 4 * repetitions || !values.iter().all(|v| v.is_finite())
+                        {
                             return Err(IndexError::Numerical(
-                                "maximum-token reranker fixture returned invalid output".into(),
+                                "reranker calibration returned invalid scores".into(),
                             ));
                         }
-                        crate::inference::time_calls(|| {
-                            let pairs = ORDER_PAIRS.repeat(8);
-                            let encoded = model.encode(pairs)?;
-                            let values = score(model, encoded, batch_tokens(), batch())?.0;
-                            if values.len() != 32 || !values.iter().all(|v| v.is_finite()) {
-                                return Err(IndexError::Numerical(
-                                    "reranker calibration returned invalid scores".into(),
-                                ));
+                        match &reference.scores {
+                            None => reference.scores = Some(values),
+                            Some(reference) => {
+                                check_accelerator_ordering(&reference[..4], &values[..4])?
                             }
-                            match &reference.scores {
-                                None => reference.scores = Some(values),
-                                Some(reference) => {
-                                    check_accelerator_ordering(&reference[..4], &values[..4])?
-                                }
-                            }
-                            Ok(())
-                        })
-                    },
-                )?
-            };
+                        }
+                        Ok(())
+                    })
+                },
+            )?
+        };
         tracing::info!(
             tier = tier.name(),
             device = device.name(),
