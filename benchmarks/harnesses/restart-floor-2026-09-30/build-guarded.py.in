@@ -6,6 +6,7 @@ from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Build guards require assertions; remove -O/PYTHONOPTIMIZE')
 
 TARGET='crates/pamin-engine/tests/scratch_restart_floor.rs'
+CONVERSION_TARGET='crates/pamin-index/tests/scratch_disk_schema.rs'
 PRODUCTS={'pamin-core','pamin-store','pamin-index','pamin-engine'}
 NATIVE=runpy.run_path(str(Path(__file__).with_name('native-guards.py.in')))
 MIN_DISK=12*1024**3
@@ -59,7 +60,7 @@ def digest(path):
     return h.hexdigest()
 def git(checkout,*args):
     return subprocess.check_output(['git',*args],cwd=checkout)
-def inputs(checkout,commit,allowed):
+def inputs(checkout,commit,allowed,scratch_target=TARGET):
     assert git(checkout,'rev-parse','HEAD').decode().strip()==commit
     assert not git(checkout,'status','--porcelain','--untracked-files=no'), 'tracked changes refused'
     assert not git(checkout,'diff','--cached','--name-only',commit), 'index differs from expected commit'
@@ -76,7 +77,7 @@ def inputs(checkout,commit,allowed):
         assert header[:2]==[oid.encode(),b'blob']
         size=int(header[2]);content=blobs[end+1:end+1+size];offset=end+size+2
         expected[name]={'bytes':size,'sha256':hashlib.sha256(content).hexdigest()}
-    assert TARGET not in tracked, 'scratch target must remain untracked'
+    assert scratch_target not in tracked, 'scratch target must remain untracked'
     extra=set()
     for options in [[],['--ignored']]:
         extra.update(git(checkout,'ls-files','--others',*options,'--exclude-standard','-z').decode().split('\0')[:-1])
@@ -100,7 +101,7 @@ def inputs(checkout,commit,allowed):
         if name in tracked:assert result[name]==expected[name], 'tracked regular file differs from HEAD git blob'
     assert 'Cargo.lock' in result and 'Cargo.toml' in result
     return result
-def fresh_artifacts(records,checkout,target):
+def fresh_artifacts(records,checkout,target,products=PRODUCTS,test_name='scratch_restart_floor',scratch_target=TARGET):
     all_artifacts=[x for x in records if x.get('reason')=='compiler-artifact']
     assert all_artifacts
     for artifact in all_artifacts:
@@ -108,28 +109,41 @@ def fresh_artifacts(records,checkout,target):
         filenames=artifact['filenames']+([artifact['executable']] if artifact.get('executable') else [])
         for filename in filenames:
             assert Path(filename).resolve().is_relative_to(target.resolve()), 'artifact outside new private target'
-    selected=[x for x in records if x.get('reason')=='compiler-artifact' and x.get('target',{}).get('name','').replace('_','-') in PRODUCTS|{'scratch-restart-floor'}]
-    assert {x['target']['name'].replace('_','-') for x in selected}==PRODUCTS|{'scratch-restart-floor'}
+    selected=[x for x in records if x.get('reason')=='compiler-artifact' and x.get('target',{}).get('name','').replace('_','-') in products|{test_name.replace('_','-')}]
+    assert {x['target']['name'].replace('_','-') for x in selected}==products|{test_name.replace('_','-')}
     for x in selected:
         assert x['fresh'] is False, 'product/helper reused'
         assert Path(x['manifest_path']).resolve().is_relative_to(checkout.resolve()), 'product compiled from another checkout'
-    tests=[x for x in selected if x['target']['name']=='scratch_restart_floor' and x.get('executable')]
-    assert len(tests)==1 and any(x.get('reason')=='build-finished' and x['success'] is True for x in records)
+    tests=[x for x in selected if x['target']['name']==test_name and x.get('executable')]
+    assert len(tests)==1, 'exactly one scratch executable required'
+    assert Path(tests[0]['target']['src_path']).resolve()==(checkout/scratch_target).resolve(), 'scratch artifact source path differs'
+    assert any(x.get('reason')=='build-finished' and x['success'] is True for x in records)
     return all_artifacts,Path(tests[0]['executable'])
+def validate_harness(plan,scratch_target,conversion_only):
+    harness=Path(plan['harness']);assert digest(harness)==plan['harness_sha256']
+    if conversion_only:
+        assert plan['harness_sha256']==digest(Path(__file__).with_name('disk_schema_guarded.rs.in')), 'only the reviewed guarded conversion template is allowed'
+    # Only this exact ignored integration-test file is allowed; no directory
+    # exclusions that could hide a modified dependency or other build input.
+    for arm in plan['arms'].values():
+        assert arm['allowed_untracked']=={scratch_target:plan['harness_sha256']}
+    return harness
 def main():
     env,tools=build_environment(os.environ) # refuse overrides before copying/writing
     parser=argparse.ArgumentParser(description='New source-attested restart builds; never historical certification')
+    parser.add_argument('--conversion-only',action='store_true',help='build only the source-bound candidate disk-schema setup helper')
     parser.add_argument('--plan',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args();plan=json.loads(args.plan.read_text())
     assert not args.output.exists(), 'preserve all prior outputs'
-    assert set(plan['arms'])=={'main','predecessor','candidate'}
-    harness=Path(plan['harness']);assert digest(harness)==plan['harness_sha256']
-    # Only this exact ignored integration-test file is allowed; no directory
-    # exclusions that could hide a modified dependency or other build input.
+    assert set(plan['arms'])==({'candidate'} if args.conversion_only else {'main','predecessor','candidate'})
+    scratch_target=CONVERSION_TARGET if args.conversion_only else TARGET
+    test_name='scratch_disk_schema' if args.conversion_only else 'scratch_restart_floor'
+    package='pamin-index' if args.conversion_only else 'pamin-engine'
+    products={'pamin-core','pamin-index'} if args.conversion_only else PRODUCTS
+    harness=validate_harness(plan,scratch_target,args.conversion_only)
     for arm in plan['arms'].values():
-        assert arm['allowed_untracked']=={TARGET:plan['harness_sha256']}
-        inputs(Path(arm['checkout']),arm['commit'],arm['allowed_untracked'])
+        inputs(Path(arm['checkout']),arm['commit'],arm['allowed_untracked'],scratch_target)
     checkouts=[Path(arm['checkout']) for arm in plan['arms'].values()]
     configs=cargo_config_snapshot(checkouts,CARGO_HOME)
     assert args.output.parent.is_dir()
@@ -148,13 +162,14 @@ def main():
     target_root=args.output/'targets';target_root.mkdir(mode=0o700)
     audit={'recorded_utc':datetime.now(timezone.utc).isoformat(),
            'scope':'prospective build-time inputs/outputs only; no historical binary binding',
+           'build_kind':'disk-schema-conversion' if args.conversion_only else 'restart-trial','scratch_target':scratch_target,
            'plan_sha256':digest(args.plan),'harness_sha256':digest(harness),
            'toolchain':rustc_version,'rustdoc':rustdoc_version,'cargo':cargo_version,'tools_before':tool_before,
            'cargo_config_search':configs,'cargo_config_policy':'both config spellings absent at canonical checkout and all ancestors and fixed CARGO_HOME; endpoint checks only; offline registry/cache unchanged and not content-attested',
            'inherited_compiler_cargo_overrides':{},'native_loader_inputs':native,'resource_preflight':resource_before,
            'target_scope':'new empty per-arm target; all emitted compiler artifacts fresh:false; prebuilt declared native libraries remain pinned external inputs; Cargo registry/system build tools are not fully content-attested',
            'build_environment':{key:env.get(key) for key in ['RUSTUP_HOME','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','ORT_LIB_LOCATION','ORT_PREFER_DYNAMIC_LINK','ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','LD_LIBRARY_PATH','RUSTC','RUSTDOC','RUSTFLAGS','RUSTDOCFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_ENCODED_RUSTDOCFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']},'arms':{}}
-    for name in ['main','predecessor','candidate']:
+    for name in (['candidate'] if args.conversion_only else ['main','predecessor','candidate']):
         arm=plan['arms'][name];checkout=Path(arm['checkout'])
         resources=resource_preflight(args.output)
         target=target_root/name;target.mkdir(mode=0o700)
@@ -162,22 +177,22 @@ def main():
         env['CARGO_TARGET_DIR']=str(target.resolve())
         NATIVE['verify'](native)
         verify_cargo_configs(configs,checkouts,CARGO_HOME)
-        shutil.copyfile(harness,checkout/TARGET)
-        before=inputs(checkout,arm['commit'],arm['allowed_untracked'])
+        shutil.copyfile(harness,checkout/scratch_target)
+        before=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target)
         assert tool_identities(tools)==tool_before
-        command=[str(tools['cargo']),'test','-p','pamin-engine','--test','scratch_restart_floor','--no-run','--release','--offline','--locked','--message-format=json']
+        command=[str(tools['cargo']),'test','-p',package,'--test',test_name,'--no-run','--release','--offline','--locked','--message-format=json']
         outpath=args.output/f'{name}.jsonl';errpath=args.output/f'{name}.log'
         with outpath.open('w') as out,errpath.open('w') as err:
             subprocess.run(command,cwd=checkout,env=env,stdout=out,stderr=err,check=True)
         verify_cargo_configs(configs,checkouts,CARGO_HOME)
-        after=inputs(checkout,arm['commit'],arm['allowed_untracked']);assert before==after
+        after=inputs(checkout,arm['commit'],arm['allowed_untracked'],scratch_target);assert before==after
         tool_after=tool_identities(tools);assert tool_after==tool_before
         NATIVE['verify'](native)
         records=[json.loads(line) for line in outpath.read_text().splitlines() if line.startswith('{')]
-        selected,executable=fresh_artifacts(records,checkout,target)
-        frozen=args.output/name;shutil.copy2(executable,frozen)
+        selected,executable=fresh_artifacts(records,checkout,target,products,test_name,scratch_target)
+        frozen=args.output/('disk-schema' if args.conversion_only else name);shutil.copy2(executable,frozen)
         assert digest(frozen)==digest(executable)
-        audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'inputs_before':before,'inputs_after':after,
+        audit['arms'][name]={'commit':arm['commit'],'checkout':str(checkout),'scratch_source':scratch_target,'scratch_sha256':before[scratch_target]['sha256'],'inputs_before':before,'inputs_after':after,
                             'command':command,'target_directory':str(target.resolve()),'target_initially_empty':True,'resource_preflight':resources,'build_script_records':[x for x in records if x.get('reason')=='build-script-executed'],'compiler_artifacts':selected,'stdout_sha256':digest(outpath),'stderr_sha256':digest(errpath),
                             'binary':str(frozen.resolve()),'binary_sha256':digest(frozen),'binary_bytes':frozen.stat().st_size,'tools_after':tool_after}
         (args.output/'build-attestation.json').write_text(json.dumps(audit,indent=2)+'\n')
