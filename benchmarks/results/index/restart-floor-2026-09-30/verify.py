@@ -15,6 +15,10 @@ runner_path=repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in'
 runner_loader=importlib.machinery.SourceFileLoader('archived_hnsw_runner',str(runner_path))
 runner_spec=importlib.util.spec_from_loader(runner_loader.name,runner_loader)
 runner=importlib.util.module_from_spec(runner_spec);runner_loader.exec_module(runner)
+review_path=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py'
+review_loader=importlib.machinery.SourceFileLoader('restart_evidence_review',str(review_path))
+review_spec=importlib.util.spec_from_loader(review_loader.name,review_loader)
+review=importlib.util.module_from_spec(review_spec);review_loader.exec_module(review)
 raw=[json.loads(line) for line in (root/'raw.jsonl').read_text().splitlines()]
 assert len([r for r in raw if r['phase']=='process_total'])==9
 assert {(r['arm'],r['repetition']) for r in raw}=={(arm,rep) for arm in ['main','predecessor','candidate'] for rep in range(3)}, 'HNSW unexpected arm/repetition'
@@ -26,7 +30,7 @@ for arm in ['main','predecessor','candidate']:
         expected_phases=Counter({**{p:1 for p in ['open','write_and_memory_drain','durability_flush','maintenance','search_cold','new_write_search','closed_index','process_total']},'search_warmup':2,'search_warm':24})
         assert Counter(r['phase'] for r in rows)==expected_phases, 'HNSW unexpected phase multiset'
         log=(root/'logs'/f'{rep}-{arm}.log').read_text()
-        assert 'test result: ok. 1 passed;' in log, 'HNSW unsuccessful retained process log'
+        review.successful_test_log(log)
         observed_providers=runner.cpu_provider_assignments(log)
         for row in rows:
             if row['phase']=='process_total':
@@ -92,10 +96,6 @@ spec=importlib.util.spec_from_loader(loader.name,loader)
 module=importlib.util.module_from_spec(spec);loader.exec_module(module)
 summary=module.summarize(raw)
 assert summary==json.loads((root/'summary.json').read_text())
-review_path=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py'
-review_loader=importlib.machinery.SourceFileLoader('restart_evidence_review',str(review_path))
-review_spec=importlib.util.spec_from_loader(review_loader.name,review_loader)
-review=importlib.util.module_from_spec(review_spec);review_loader.exec_module(review)
 review.runner_binding(repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in',json.loads((root/'provenance.json').read_text()))
 memory_binaries=json.loads((root/'binaries.json').read_text())
 disk_binaries=json.loads((root.with_name('restart-floor-disk-2026-09-30')/'binaries.json').read_text())

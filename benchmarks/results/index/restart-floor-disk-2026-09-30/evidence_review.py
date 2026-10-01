@@ -111,3 +111,9 @@ def disk_backend(log):
     diagnostics=[line for line in log.splitlines() if re.search(r'io_uring|libaio|pread\(\)|async I/O|I/O backend|diskann_file_reader\.cc',line,re.I)]
     prefix=r"\[ WARN \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ diskann_file_reader\.cc:57\] "
     assert len(diagnostics)==1 and re.fullmatch(prefix+re.escape(PREAD_FALLBACK),diagnostics[0]), 'Disk native backend diagnostic must be exactly one synchronous pread fallback without conflicting backend evidence'
+
+def successful_test_log(log):
+    lines=[line for line in log.splitlines() if line.strip()]
+    summaries=[line for line in lines if 'test result:' in line]
+    pattern=r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(?:\.[0-9]+)?s'
+    assert len(summaries)==1 and re.fullmatch(pattern,summaries[0]) and lines[-1]==summaries[0], 'retained test log must end with exactly one complete successful one-test summary (zero filtered)'
