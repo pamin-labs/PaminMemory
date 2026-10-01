@@ -131,6 +131,22 @@ class ResumeAndOff(unittest.TestCase):
             bad['checkpoint']['packet_sha256']=hashlib.sha256(self.run.canonical({k:v for k,v in bad.items() if k!='checkpoint'}).encode()).hexdigest()
             with self.assertRaisesRegex(ValueError,'validation differs'):self.run.checkpoint(bad,job,'identity',{},[],out,identity)
 
+    def test_off_cross_source_cold_and_new_all_hit_views(self):
+        rows=self.baseline('rows','rows.py');results={}
+        hit={'rank':1,'topic_id':'id','topic':'topic','state':{'content':'text'},'seed':None,'why':[{'kind':'channel','score':1.0,'weight':1.0,'contribution':1.0}],'score_bits':1065353216,'reranked_bits':[]}
+        for round_ in range(4):
+            for limit in [5,10]:
+                for source in ['main','stack']:
+                    job={'round':round_,'source':source,'limit':limit,'query_id':80,'tier':'off','sequence':'A,A,N'}
+                    actual=[{kind:[copy.deepcopy(hit)] for kind in ['limited','complete','fused']} for step in range(3)]
+                    results[(round_,source,limit,80,'off','A')]={'job':job,'rows':actual}
+        self.assertEqual(rows.oracle_checks(results),[])
+        for step in [0,2]:
+            for kind in ['limited','complete','fused']:
+                bad=copy.deepcopy(results);bad[(0,'stack',5,80,'off','A')]['rows'][step][kind][0]['state']['content']='changed retrieval'
+                if BEFORE:self.assertEqual(rows.oracle_checks(bad),[])
+                else:
+                    with self.assertRaisesRegex(AssertionError,'Off cold/new cross-source'):rows.oracle_checks(bad)
 
 
 if __name__=='__main__':unittest.main()

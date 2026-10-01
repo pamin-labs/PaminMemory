@@ -115,7 +115,12 @@ def oracle_checks(results):
     classifications=[]
     for jobkey,record in results.items():
         job=record['job'];observations=record['rows']
-        if job['tier']=='off':continue
+        if job['tier']=='off':
+            other='stack' if job['source']=='main' else 'main'
+            paired=results[(job['round'],other,job['limit'],job['query_id'],'off',job['sequence'][0])]['rows']
+            for step in [0,2]:
+                assert all(typed_hits(observations[step][kind])==typed_hits(paired[step][kind]) for kind in ['limited','complete','fused']),'Off cold/new cross-source limited/complete/fused parity failed'
+            continue
         initial=job['sequence'][0];final='B' if initial=='A' else 'A'
         fresh_key=(job['round'],job['source'],job['limit'],job['query_id'],'accurate',final)
         fresh=results[fresh_key]['rows'][0];history=observations[6]
