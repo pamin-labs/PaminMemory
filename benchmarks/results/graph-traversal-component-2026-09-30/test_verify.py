@@ -81,6 +81,22 @@ if __name__ == '__main__':
         for key in ['reclaim_pressure','estimated_headroom_bytes','oom_before']:
             value=1 if key=='reclaim_pressure' else False if key=='oom_before' else float(recorded[key])
             run_case('resource-pressure strict type '+arm+' '+key,lambda r,arm=arm,key=key,value=value:mutate_json(r/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm)['resources'].update({key:value})),expected_error='resource-pressure record types differ')
+        for index in range(3+(arm=='scored')):
+            for evidence_kind in ['graph','path']:
+                for mutation in ['duplicate','missing']:
+                    def contradictory_why(r,arm=arm,index=index,evidence_kind=evidence_kind,mutation=mutation):
+                        def change(row):
+                            why=row['targets'][index]['why'] if index<3 else row['early_stop']['why']
+                            matches=[w for w in why if w.get('kind')=='path'] if evidence_kind=='path' else [w for w in why if w.get('kind')=='channel' and w.get('channel')=='graph']
+                            assert len(matches)==1
+                            if mutation=='missing':why.remove(matches[0])
+                            else:
+                                duplicate=copy.deepcopy(matches[0])
+                                if evidence_kind=='graph':duplicate['score']=999
+                                else:duplicate['asserted_to']='contradictory-target'
+                                why.append(duplicate)
+                        mutate_json(r/(arm+'.jsonl'),change)
+                    run_case(mutation+' '+evidence_kind+' Why '+arm+' target '+str(index),contradictory_why,expected_error='exactly one '+('graph-channel' if evidence_kind=='graph' else 'path')+' record')
     for name in retained['redactions']:
         run_case('original redaction digest '+name, lambda r,name=name: mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(original_sha256='0'*64)))
     for arm in ['baseline','scored']:
