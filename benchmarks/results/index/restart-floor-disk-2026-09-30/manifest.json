@@ -18,7 +18,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "aef80ca69e6ba7794e065bca05769720f756256f9f75c1e7dea62b8d51f67a6b",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "9db0c2c27c339a34f18332c940101fa746d627e181e8c548bd1ef8b15f621177",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "f379544b0a62ae78a5146342f87d536b636954eb7df10aed221babf2d1f67860",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "b22869555aecf40733ee9001ffb178934c355726689eb2da9b41be74efa3a403",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/README.md": "a1e775de26b28fca143392207e11549d0059ad91912de496481b3f851171ee9c",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/binaries.json": "48c7c274ba590e5317502b9e9f6f7663c38b4cf8b7bdfac277e5e586d87b9f03",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/episode-elapsed.json": "7224b831d0a80fdad6a942421d77641afdc68e716cc6e79e748b833d6a42a3a2",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/evidence_review.py": "94532bddbf176827424e33a87ad70fc36bdbaaa7199a9e20824b68aed9837b06",
