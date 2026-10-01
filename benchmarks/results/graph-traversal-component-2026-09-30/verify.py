@@ -30,6 +30,9 @@ MAIN_REF_NOT_RUN = '315c10242ddf7a1cec3bccbf550a942320e09557'
 assert type(provenance.get('compared_main_ref_not_run')) is str and provenance['compared_main_ref_not_run']==MAIN_REF_NOT_RUN, 'prepared unrun main reference differs'
 assert type(provenance.get('mapped_library_identity_scope')) is str and provenance['mapped_library_identity_scope']=='mapped paths and pinned file digests; no inode identity captured', 'mapped-library identity limitation differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
+# Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
+# at reviewed commit a7eccf37096bbc1f9c6bdf670ba718459d05ff22.
+assert sha(ROOT/'source/experimental-traversal.patch') == '9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba', 'recorded traversal patch differs'
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
 ORIGINAL_REDACTION_PINS = {'baseline.jsonl': '302e70b2463379af148eaf8c3ced4f4d3606c1fc865af1b1bc38d1d69597929e',
  'baseline.log': '6f5b1350ed22fcf72dbc0a38dddd65ea99dace15f875298b0ae15becb077e025',

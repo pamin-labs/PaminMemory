@@ -69,6 +69,8 @@ if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    run_case('non-patch traversal replacement with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text('not a patch\n'),expected_error='recorded traversal patch differs')
+    run_case('changed traversal patch with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text((r/'source/experimental-traversal.patch').read_text()+'\n# changed\n'),expected_error='recorded traversal patch differs')
     retained=json.loads((ROOT/'provenance.json').read_text())
     main_ref='315c10242ddf7a1cec3bccbf550a942320e09557'
     for ref in ['0'*40, retained['source_base'], 'nonexistent', '', None, True, [main_ref]]:
