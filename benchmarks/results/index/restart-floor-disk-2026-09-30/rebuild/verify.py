@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only retrospective binding; requires local Git objects for the three revisions."""
-import ast,gzip,hashlib,json,subprocess,sys
+import ast,gzip,hashlib,json,os,subprocess,sys
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Rebuild verification requires assertions; remove -O/PYTHONOPTIMIZE')
 sys.dont_write_bytecode=True
@@ -34,10 +34,13 @@ def compiler(value,checkout):
     assert any(r.get('reason')=='build-finished' and r['success'] is True for r in rows)
     return selected
 def source_inputs(repo,commit):
-    tree=subprocess.check_output(['git','ls-tree','-r','-z',commit],cwd=repo)
+    env=dict(os.environ,GIT_NO_REPLACE_OBJECTS='1')
+    namespaces={'refs/replace',os.environ.get('GIT_REPLACE_REF_BASE','refs/replace').rstrip('/')}
+    assert not subprocess.check_output(['git','for-each-ref','--format=%(refname)',*sorted(namespaces)],cwd=repo,env=env), 'Git replacement refs refused before source attestation'
+    tree=subprocess.check_output(['git','ls-tree','-r','-z',commit],cwd=repo,env=env)
     entries=[entry.split(b'\t',1) for entry in tree.split(b'\0') if entry]
     header=[a.split() for a,b in entries]
-    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=repo,input=b'\n'.join(h[2] for h in header if h[0]!=b'160000')+b'\n')
+    blobs=subprocess.check_output(['git','cat-file','--batch'],cwd=repo,env=env,input=b'\n'.join(h[2] for h in header if h[0]!=b'160000')+b'\n')
     offset=0;result={}
     for (meta,name),h in zip(entries,header):
         mode,kind,oid=h;name=name.decode()
