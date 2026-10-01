@@ -95,6 +95,49 @@ class Templates(unittest.TestCase):
             stop.assert_not_called()
             launch.assert_not_called()
 
+    def test_timeout_terminates_entire_new_owned_group(self):
+        import signal
+        process = Mock(pid=1234)
+        process.poll.return_value = None
+        # Model an owned leader plus compiler/helper descendants and an unrelated group.
+        groups = {1234: {1234, 1235, 1236}, 9999: {9999}}
+        def terminate(group, sig):
+            self.assertEqual(sig, signal.SIGKILL)
+            groups.pop(group)
+        with patch.object(self.common.subprocess, 'Popen', return_value=process) as launch, \
+             patch.object(self.common, 'guard'), \
+             patch.object(self.common.os, 'killpg', side_effect=terminate):
+            with self.assertRaisesRegex(ValueError, 'timeout'):
+                self.common.monitored(['mock helper'], self.work, {}, self.work / 'fault', limit=0)
+            self.assertTrue(launch.call_args.kwargs['start_new_session'])
+            process.wait.assert_called_once_with(timeout=10)
+        self.assertEqual(groups, {9999: {9999}})
+        self.assertTrue((self.work / 'fault.stdout').exists())
+        self.assertTrue((self.work / 'fault.stderr').exists())
+
+    def test_exited_parent_still_cleans_descendant_group(self):
+        import signal
+        process = Mock(pid=1234, returncode=1)
+        process.poll.return_value = 1
+        with patch.object(self.common.subprocess, 'Popen', return_value=process), \
+             patch.object(self.common.os, 'killpg') as terminate:
+            with self.assertRaisesRegex(ValueError, 'operation failed'):
+                self.common.monitored(['mock compiler'], self.work, {}, self.work / 'failed')
+            terminate.assert_called_once_with(1234, signal.SIGKILL)
+
+    def test_native_group_cleanup_error_still_stops_owned_pg(self):
+        owned = {'pid': 42}
+        process = Mock(pid=1234, returncode=1)
+        process.poll.return_value = 1
+        with patch.object(self.pg, 'start', return_value={'identity': owned}), \
+             patch.object(self.run.subprocess, 'Popen', return_value=process) as launch, \
+             patch.object(self.common, 'stop_group', side_effect=RuntimeError('group wait failed')), \
+             patch.object(self.pg, 'stop') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'group wait failed'):
+                self.run.native(self.work, {}, 'unused', self.work / 'failed-native')
+            self.assertTrue(launch.call_args.kwargs['start_new_session'])
+            stop.assert_called_once_with(self.work, {}, owned)
+
     def test_probe_is_identical_to_measured_source(self):
         manifest = json.loads((ROOT / 'sources.json').read_text())
         self.assertEqual(hashlib.sha256((ROOT / 'probe.rs.in').read_bytes()).hexdigest(), manifest['probe_sha256'])
