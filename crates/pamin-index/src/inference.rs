@@ -863,9 +863,12 @@ pub(crate) fn measured<T: RuntimeModel>(
     // physical hardware/driver identity across processes. Keep those plans
     // process-local; candidate measurement/accelerator execution is unchanged.
     let location = plan_file(cache_dir, &key);
-    let disk = (executable.is_some() && persistence_supported(&plans, cuda_inventory.is_some()))
-        .then(|| location.clone())
-        .flatten();
+    let coordination = host_calibration_directory();
+    let disk = (executable.is_some()
+        && coordination_supported(coordination.as_deref())
+        && persistence_supported(&plans, cuda_inventory.is_some()))
+    .then(|| location.clone())
+    .flatten();
     if !cache
         .lock()
         .expect("compute-plan cache poisoned")
@@ -887,7 +890,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         references,
         PlanFiles {
             record: disk.as_deref(),
-            directory: location.as_deref().and_then(Path::parent),
+            directory: coordination.as_deref(),
         },
         load,
         evaluate,
@@ -1036,6 +1039,58 @@ fn prune_plans(directory: &Path, preserve: Option<&Path>) -> std::io::Result<()>
     Ok(())
 }
 
+fn valid_references(references: &References) -> bool {
+    fn matrix(values: &Option<Vec<Vec<f32>>>) -> bool {
+        values.as_ref().is_none_or(|rows| {
+            !rows.is_empty()
+                && rows.len() <= 64
+                && !rows[0].is_empty()
+                && rows[0].len() <= 65536
+                && rows
+                    .iter()
+                    .all(|row| row.len() == rows[0].len() && row.iter().all(|v| v.is_finite()))
+        })
+    }
+    matrix(&references.vectors)
+        && matrix(&references.queries)
+        && references.scores.as_ref().is_none_or(|scores| {
+            (4..=64).contains(&scores.len()) && scores.iter().all(|v| v.is_finite())
+        })
+}
+
+fn host_calibration_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let cache = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+    #[cfg(target_os = "macos")]
+    let cache = PathBuf::from(std::env::var_os("HOME")?).join("Library/Caches");
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    let directory = cache.join("pamin-inference");
+    std::fs::create_dir_all(&directory).ok()?;
+    Some(directory)
+}
+
+fn coordination_supported(directory: Option<&Path>) -> bool {
+    let Some(directory) = directory else {
+        return false;
+    };
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("calibration.lock"))
+    else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) | Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1048,7 +1103,10 @@ fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<Cache
     }
     let saved: DiskPlan = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let now = unix_seconds();
-    if saved.fingerprint != fingerprint(key) || saved.expires <= now || saved.expires > now + 86400
+    if saved.fingerprint != fingerprint(key)
+        || saved.expires <= now
+        || saved.expires > now + 86400
+        || !valid_references(&saved.references)
     {
         return None;
     }
@@ -1350,7 +1408,11 @@ fn calibrated_with_references<T>(
     if plans.is_empty() {
         return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
     }
-    let disk = files.record;
+    let mut disk = if coordination_supported(files.directory) {
+        files.record
+    } else {
+        None
+    };
     // Serialize only actual calibration misses. Cached loading and output
     // validation may fetch/compile a model and must not hold either global lock.
     static CALIBRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1396,6 +1458,9 @@ fn calibrated_with_references<T>(
         let host_lock = files
             .directory
             .and_then(|directory| file_lock(&directory.join("calibration.lock")));
+        if host_lock.is_none() {
+            disk = None; // Never publish/reuse cross-process timing without coordination.
+        }
         // A different caller/process may have populated the plan while we waited.
         if cache
             .lock()
@@ -1510,15 +1575,15 @@ fn calibrated_with_references<T>(
         Ok(model)
     }) {
         Ok(model) => {
-            if !transient_failure {
-                remember_plan(
-                    key,
-                    disk,
-                    cache,
-                    CachedPlan::fresh(device, target, numerical_failure)
-                        .with_references(references.borrow().clone()),
-                );
-            }
+            // A validated winner remains useful when another target is down.
+            // Reuse it, but revisit failed alternatives at the short deadline.
+            remember_plan(
+                key,
+                disk,
+                cache,
+                CachedPlan::fresh(device, target, numerical_failure || transient_failure)
+                    .with_references(references.borrow().clone()),
+            );
             Ok((model, device))
         }
         Err(error) => {
@@ -2005,6 +2070,124 @@ mod tests {
     }
 
     #[test]
+    fn valid_winner_is_reused_when_another_candidate_is_transiently_down() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let cache = std::sync::Mutex::default();
+        let failed_loads = Cell::new(0);
+        let plans = vec![
+            (Device::Cuda, vec![cpu()].into()),
+            (Device::CoreMl, vec![cpu()].into()),
+        ];
+        for _ in 0..2 {
+            let (_, chosen) = calibrated(
+                "mixed-provider-winner",
+                plans.clone(),
+                &cache,
+                |device, _, _| {
+                    if device == Device::Cuda {
+                        failed_loads.set(failed_loads.get() + 1);
+                        Err(IndexError::Engine("driver unavailable".into()))
+                    } else {
+                        Ok(device)
+                    }
+                },
+                |_, device| {
+                    Ok(Duration::from_millis(if device == Device::Cpu {
+                        10
+                    } else {
+                        1
+                    }))
+                },
+            )
+            .unwrap();
+            assert_eq!(chosen, Device::CoreMl);
+        }
+        assert_eq!(
+            failed_loads.get(),
+            3,
+            "idle reload repeated full calibration"
+        );
+        let saved = cache.lock().unwrap();
+        assert!(
+            saved["mixed-provider-winner"]
+                .revalidate
+                .unwrap()
+                .saturating_duration_since(std::time::Instant::now())
+                <= RUNTIME_RETRY
+        );
+    }
+
+    #[test]
+    fn malformed_reference_shapes_are_cache_misses() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("plan.json");
+        let key = "reranker-shape-control";
+        let mut plan = CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false);
+        for count in [0, 1, 2, 3, 65] {
+            plan.references.scores = Some(vec![0.0; count]);
+            write_plan(&path, key, &plan).unwrap();
+            assert!(read_plan(&path, key, &[]).is_none());
+        }
+        plan.references.scores = Some(vec![0.0; 4]);
+        write_plan(&path, key, &plan).unwrap();
+        assert!(read_plan(&path, key, &[]).is_some());
+        plan.references.vectors = Some(vec![vec![1.0], vec![1.0, 2.0]]);
+        write_plan(&path, key, &plan).unwrap();
+        assert!(read_plan(&path, key, &[]).is_none());
+    }
+
+    #[test]
+    fn unavailable_coordination_disables_disk_choices() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let not_directory = root.path().join("file");
+        std::fs::write(&not_directory, b"fixture").unwrap();
+        let record = root.path().join("plan.json");
+        assert!(!coordination_supported(Some(&not_directory)));
+        assert!(!coordination_supported(None));
+        let cache = std::sync::Mutex::default();
+        let references = std::cell::RefCell::default();
+        calibrated_with_references(
+            "uncoordinated",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            &references,
+            PlanFiles {
+                record: Some(&record),
+                directory: Some(&not_directory),
+            },
+            |device, _, _| Ok(device),
+            |_, device| {
+                Ok(Duration::from_millis(if device == Device::Cpu {
+                    10
+                } else {
+                    1
+                }))
+            },
+        )
+        .unwrap();
+        assert!(!record.exists());
+    }
+
+    #[test]
+    fn workspaces_share_one_user_calibration_directory() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        assert_ne!(first.path(), second.path());
+        let lock_a = host_calibration_directory()
+            .unwrap()
+            .join("calibration.lock");
+        let lock_b = host_calibration_directory()
+            .unwrap()
+            .join("calibration.lock");
+        assert_eq!(
+            lock_a, lock_b,
+            "workspace model cache must not partition host timing coordination"
+        );
+    }
+
+    #[test]
     fn one_accelerator_must_win_multiple_interleaved_rounds() {
         use std::cell::Cell;
         use std::time::Duration;
@@ -2337,7 +2520,7 @@ mod tests {
     fn a_cached_accelerator_session_reuses_cpu_reference_outputs() {
         use std::time::Duration;
         let saved = References {
-            scores: Some(vec![1.0]),
+            scores: Some(vec![1.0; 4]),
             ..Default::default()
         };
         let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
@@ -2413,7 +2596,7 @@ mod tests {
         let cache = std::sync::Mutex::new(std::collections::HashMap::from([(
             "retired".into(),
             CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false).with_references(References {
-                scores: Some(vec![1.0]),
+                scores: Some(vec![1.0; 4]),
                 ..Default::default()
             }),
         )]));
@@ -2432,7 +2615,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             read_plan(&path, "retired", &[]).unwrap().references.scores,
-            Some(vec![1.0])
+            Some(vec![1.0; 4])
         );
     }
 
