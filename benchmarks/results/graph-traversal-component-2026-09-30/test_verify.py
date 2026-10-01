@@ -65,6 +65,18 @@ def reject_optimized_prepare(label, flags=(), optimize_env=None):
         print(f'PASS: rejected prepare {label} before writes')
 
 
+def complete_graph_record_cases():
+    for arm in ['baseline','scored']:
+        for index in range(4 if arm=='scored' else 3):
+            for field,value,error in [('rank',999,'retained graph rank differs'),('rank',True,'retained graph rank differs'),('weight',-10,'retained graph weight differs'),('contribution',999,'retained graph contribution differs'),('score',True,'invalid graph numeric field')]:
+                def mutate(root,arm=arm,index=index,field=field,value=value):
+                    def change(row):
+                        why=row['targets'][index]['why'] if index<3 else row['early_stop']['why']
+                        next(w for w in why if w.get('channel')=='graph')[field]=value
+                    mutate_json(root/(arm+'.jsonl'),change)
+                run_case('complete graph '+arm+'/'+str(index)+'/'+field+'/'+str(value),mutate,expected_error=error)
+
+
 def round7_graph_only_cases():
     for arm in ['baseline', 'scored']:
         for index in range(4 if arm == 'scored' else 3):
@@ -320,6 +332,7 @@ if __name__ == '__main__':
                                 why.append(duplicate)
                         mutate_json(r/(arm+'.jsonl'),change)
                     run_case(mutation+' '+evidence_kind+' Why '+arm+' target '+str(index),contradictory_why,expected_error='exactly one '+('graph-channel' if evidence_kind=='graph' else 'path')+' record')
+    complete_graph_record_cases()
     for name in retained['redactions']:
         run_case('original redaction digest '+name, lambda r,name=name: mutate_json(r/'provenance.json',lambda p:p['redactions'][name].update(original_sha256='0'*64)))
     for arm in ['baseline','scored']:
