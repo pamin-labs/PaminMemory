@@ -77,7 +77,8 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/test-attestation-paths.py.in": "fd91ae3dadc24bb111d35803f9a2add2d990f42e01ca91c9bade4a60d36ca3c2",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-git-environment-guards.py.in": "30ca2fbfed5013ad57076bb01ac2bc2c81f14d89e870df0a2919f863c42ce50f",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_summary_qualification.py": "e75fe5dc18d1852d38610dce9b9972e851786f05f9e54d4d766c9a1fd0bc42e5",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_cpu_counter_chronology.py": "999197ae30cd70c269c94710c3ac3e34bfd911d9d0c5699ed2da7aa870b1de54"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_cpu_counter_chronology.py": "999197ae30cd70c269c94710c3ac3e34bfd911d9d0c5699ed2da7aa870b1de54",
+    "benchmarks/results/index/restart-floor-2026-09-30/test_cross_archive_bindings.py": "bc1a0644f00b47e86f995384ff2ff11b08e546e16ba20018108f28e62b99c351"
   },
   "scope": "DiskANN complete9-process archive; inert helper/calculator; credential-free sanitized retained evidence"
 }

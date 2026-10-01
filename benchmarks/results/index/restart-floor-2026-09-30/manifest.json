@@ -18,7 +18,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "eb147925ef717c0f10a293a8adb68da734113bcd4763bdf834977c39b0c5ad0e",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "2f99346841d374876b6c705aca9cb303ffb9b065b9351d242d5ef6684b485c25",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-native-build-guards.py.in": "4234fb671ccc61408d79f5f24915c46e575011a6af8557b9d457adf8dcff0184",
-    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "22d24832e2253dd5940070dc50ecde6cbce38aa49be4398c8e9d2c7fee34e229",
+    "benchmarks/results/index/restart-floor-2026-09-30/README.md": "f1fc22ed151f79a1497faa096313819cb7611923f5f89bb8c15454d39c8f2a99",
     "benchmarks/results/index/restart-floor-2026-09-30/binaries.json": "54bb7087b7d8ad2059e4dc6379e13404c5f861ce1c001d5940bbfdf316dbd56f",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-candidate.log": "46d336d7e5744a4a82ecb1e0893f77eaa4595e2f61d2956e5649d8ca556f6949",
     "benchmarks/results/index/restart-floor-2026-09-30/logs/0-main.log": "edce0e144c0d58a3e11ff3eb11c64b6754a69b431cd29f6336c39fa788ac6908",
@@ -67,6 +67,9 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/test-attestation-paths.py.in": "fd91ae3dadc24bb111d35803f9a2add2d990f42e01ca91c9bade4a60d36ca3c2",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-git-environment-guards.py.in": "30ca2fbfed5013ad57076bb01ac2bc2c81f14d89e870df0a2919f863c42ce50f",
     "benchmarks/results/index/restart-floor-disk-2026-09-30/test_summary_qualification.py": "e75fe5dc18d1852d38610dce9b9972e851786f05f9e54d4d766c9a1fd0bc42e5",
-    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_cpu_counter_chronology.py": "999197ae30cd70c269c94710c3ac3e34bfd911d9d0c5699ed2da7aa870b1de54"
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/test_cpu_counter_chronology.py": "999197ae30cd70c269c94710c3ac3e34bfd911d9d0c5699ed2da7aa870b1de54",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/provenance.json": "5e356b2c2647d03257c341fc72934e61b626280b4663cc4efa0999ecfca97c0a",
+    "benchmarks/results/index/restart-floor-disk-2026-09-30/provider-bindings.json": "653b8187cefdcd8c88524c6fb5be59b6a6a7b7baccd997b11d1eaf64129ebe09",
+    "benchmarks/results/index/restart-floor-2026-09-30/test_cross_archive_bindings.py": "bc1a0644f00b47e86f995384ff2ff11b08e546e16ba20018108f28e62b99c351"
   }
 }
