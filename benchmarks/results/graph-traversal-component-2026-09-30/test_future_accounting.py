@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import sys
+sys.dont_write_bytecode = True
 import unittest
 from unittest.mock import Mock,patch
 

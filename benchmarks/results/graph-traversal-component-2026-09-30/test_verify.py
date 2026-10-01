@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+# The archive has an exact file inventory: imports must never write caches.
+sys.dont_write_bytecode = True
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
