@@ -770,6 +770,7 @@ impl Reranker {
                     batch(),
                     batch_tokens()
                 ),
+                cache_dir,
                 &references,
                 session,
                 |model, _device| {

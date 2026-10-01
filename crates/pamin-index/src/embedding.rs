@@ -227,6 +227,7 @@ impl Embedder {
         };
         let (model, device) = crate::inference::measured(
             &identity,
+            cache_dir,
             &references,
             |device, target, _validated| load_on(profile, cache_dir, device, target),
             |model, device| {
@@ -663,6 +664,7 @@ fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::
             "complementary-query-v2:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
             repository.identity(cache)
         ),
+        cache,
         &references,
         |device, target, _validated| load(device, target),
         |model, _device| {
