@@ -578,6 +578,7 @@ fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Inst
     );
 }
 
+#[cfg(test)]
 fn runtime_available(cache_dir: &Path, namespace: &str, target: &str) -> bool {
     let root = cache_dir
         .canonicalize()
@@ -590,35 +591,60 @@ fn runtime_available(cache_dir: &Path, namespace: &str, target: &str) -> bool {
         .is_none_or(|until| *until <= std::time::Instant::now())
 }
 
+struct RuntimeSnapshot {
+    blocked: Option<(std::time::Instant, String)>,
+    unavailable: std::collections::HashSet<String>,
+}
+
+fn runtime_snapshot(
+    cache_dir: &Path,
+    namespace: &str,
+    discovered: &[String],
+    now: std::time::Instant,
+) -> RuntimeSnapshot {
+    let root = cache_dir
+        .canonicalize()
+        .unwrap_or_else(|_| cache_dir.to_path_buf());
+    let failures = runtime_failures()
+        .lock()
+        .expect("runtime quarantine poisoned");
+    let mut unavailable = std::collections::HashSet::new();
+    let mut blocked = None;
+    for ((path, scope, target), until) in failures.iter() {
+        if path != &root || scope != namespace {
+            continue;
+        }
+        if *until > now {
+            unavailable.insert(target.clone());
+        }
+        let deadline = if *until > now {
+            *until
+        } else if !discovered.contains(target) {
+            now + RUNTIME_RETRY
+        } else {
+            continue;
+        };
+        if blocked
+            .as_ref()
+            .is_none_or(|(earliest, _)| deadline < *earliest)
+        {
+            blocked = Some((deadline, target.clone()));
+        }
+    }
+    RuntimeSnapshot {
+        blocked,
+        unavailable,
+    }
+}
+
+#[cfg(test)]
 fn runtime_retry(
     cache_dir: &Path,
     namespace: &str,
     discovered: &[String],
     now: std::time::Instant,
 ) -> Option<(std::time::Instant, String)> {
-    let root = cache_dir
-        .canonicalize()
-        .unwrap_or_else(|_| cache_dir.to_path_buf());
-    runtime_failures()
-        .lock()
-        .expect("runtime quarantine poisoned")
-        .iter()
-        .filter(|((path, scope, target), until)| {
-            path == &root && scope == namespace && (**until > now || !discovered.contains(target))
-        })
-        .min_by_key(|(_, until)| **until)
-        .map(|((_, _, target), until)| {
-            // A reset NPU can remain absent past quarantine expiry. Continue
-            // bounded rediscovery until it participates in full qualification.
-            (
-                if *until > now {
-                    *until
-                } else {
-                    now + RUNTIME_RETRY
-                },
-                target.clone(),
-            )
-        })
+    runtime_snapshot(cache_dir, namespace, discovered, now).blocked
 }
 
 /// Expired fallbacks must reach a real model call even when the request is
@@ -641,24 +667,37 @@ pub(crate) fn retry_model<T: RuntimeModel, R>(
     operation: impl FnMut(&mut T, Device) -> Result<R>,
     reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<(R, bool)> {
-    retry_model_at(
+    retry_model_with_clock(
         model,
         device,
         cache_dir,
-        std::time::Instant::now(),
+        std::time::Instant::now,
         operation,
         reload,
     )
 }
 
+#[cfg(test)]
 fn retry_model_at<T: RuntimeModel, R>(
     model: &mut T,
     device: &mut Device,
     cache_dir: &Path,
     now: std::time::Instant,
+    operation: impl FnMut(&mut T, Device) -> Result<R>,
+    reload: impl FnMut() -> Result<(T, Device)>,
+) -> Result<(R, bool)> {
+    retry_model_with_clock(model, device, cache_dir, || now, operation, reload)
+}
+
+fn retry_model_with_clock<T: RuntimeModel, R>(
+    model: &mut T,
+    device: &mut Device,
+    cache_dir: &Path,
+    mut clock: impl FnMut() -> std::time::Instant,
     mut operation: impl FnMut(&mut T, Device) -> Result<R>,
     mut reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<(R, bool)> {
+    let now = clock();
     let revalidating = needs_revalidation_at(model, now);
     let mut failed_devices = Vec::new();
     let mut replacement = None;
@@ -667,6 +706,7 @@ fn retry_model_at<T: RuntimeModel, R>(
         match reload() {
             Ok(selected) => replacement = Some(selected),
             Err(error) => {
+                model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
                 tracing::warn!(%error, "revalidation load failed; retaining healthy fallback")
             }
         }
@@ -701,6 +741,7 @@ fn retry_model_at<T: RuntimeModel, R>(
                 }
                 tracing::warn!(device=selected.name(), %error, "accelerator execution failed; qualifying remaining plans");
                 failed_devices.push(target);
+                let now = clock();
                 quarantine_runtime(cache_dir, active.runtime_plan(), now);
                 if model.runtime_plan().restore_target.is_none() {
                     model.runtime_plan_mut().restore_target = Some(failed_devices[0].clone());
@@ -710,6 +751,7 @@ fn retry_model_at<T: RuntimeModel, R>(
                 let (mut active, selected) = match reload() {
                     Ok(plan) => plan,
                     Err(_) if revalidating => {
+                        model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
                         return operation(model, *device).map(|result| (result, false));
                     }
                     Err(error) => return Err(error),
@@ -720,7 +762,10 @@ fn retry_model_at<T: RuntimeModel, R>(
                     }
                     return Err(error.context("recovery selected the failing provider"));
                 }
-                active.runtime_plan_mut().retry_at = model.runtime_plan().retry_at;
+                active.runtime_plan_mut().retry_at = earlier_deadline(
+                    active.runtime_plan().retry_at,
+                    model.runtime_plan().retry_at,
+                );
                 active.runtime_plan_mut().restore_target =
                     model.runtime_plan().restore_target.clone();
                 replacement = Some((active, selected));
@@ -783,12 +828,13 @@ pub(crate) fn measured<T: RuntimeModel>(
         .iter()
         .map(|(device, target)| target_identity(*device, target))
         .collect();
-    let blocked = runtime_retry(
+    let snapshot = runtime_snapshot(
         cache_dir,
         &namespace,
         &target_ids,
         std::time::Instant::now(),
     );
+    let blocked = snapshot.blocked;
     let load = |device, target: Target, validated| -> Result<T> {
         let target_id = target_identity(device, &target);
         let mut model = load(device, target, validated)?;
@@ -803,7 +849,9 @@ pub(crate) fn measured<T: RuntimeModel>(
     let plans: Vec<_> = discovered
         .into_iter()
         .filter(|(device, target)| {
-            runtime_available(cache_dir, &namespace, &target_identity(*device, target))
+            !snapshot
+                .unavailable
+                .contains(&target_identity(*device, target))
         })
         .collect();
     if plans.is_empty() {
@@ -848,7 +896,7 @@ pub(crate) fn measured<T: RuntimeModel>(
     ]
     .map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v5|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         env!("PAMIN_INFERENCE_BUILD"),
         threads(),
         std::thread::available_parallelism(),
@@ -883,7 +931,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             .expect("compute-plan cache poisoned")
             .insert(key.clone(), plan);
     }
-    let (mut model, device) = calibrated_with_references(
+    let (mut model, device, deadline) = calibrated_with_references(
         &key,
         plans,
         cache,
@@ -895,42 +943,27 @@ pub(crate) fn measured<T: RuntimeModel>(
         load,
         evaluate,
     )?;
-    // A remembered plan means qualification completed. Transient failures do
-    // not publish one; they must retry, even if CPU itself loaded successfully.
-    let remembered = cache
-        .lock()
-        .expect("compute-plan cache poisoned")
-        .get(&key)
-        .filter(|plan| fresh_plan(plan))
-        .map(|plan| plan.revalidate);
-    let complete = remembered.is_some();
-    finish_runtime_selection(
-        model.runtime_plan_mut(),
-        blocked,
-        complete,
-        std::time::Instant::now(),
-    );
-    if complete && model.runtime_plan().restore_target.is_none() {
-        model.runtime_plan_mut().retry_at = remembered.flatten();
-    }
+    finish_runtime_selection(model.runtime_plan_mut(), blocked, deadline);
     Ok((model, device))
+}
+
+fn earlier_deadline(
+    a: Option<std::time::Instant>,
+    b: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 fn finish_runtime_selection(
     plan: &mut RuntimePlan,
     blocked: Option<(std::time::Instant, String)>,
-    complete: bool,
-    now: std::time::Instant,
+    deadline: Option<std::time::Instant>,
 ) {
-    if let Some((until, target)) = blocked {
-        plan.retry_at = Some(until);
-        plan.restore_target = Some(target);
-    } else if !complete {
-        plan.retry_at = Some(now + RUNTIME_RETRY);
-    } else {
-        plan.retry_at = None;
-        plan.restore_target = None;
-    }
+    plan.retry_at = earlier_deadline(deadline, blocked.as_ref().map(|(at, _)| *at));
+    plan.restore_target = blocked.map(|(_, target)| target);
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1404,9 +1437,10 @@ fn calibrated_with_references<T>(
     files: PlanFiles<'_>,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
-) -> Result<(T, Device)> {
+) -> Result<(T, Device, Option<std::time::Instant>)> {
     if plans.is_empty() {
-        return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
+        return load(Device::Cpu, vec![cpu()].into(), false)
+            .map(|model| (model, Device::Cpu, None));
     }
     let mut disk = if coordination_supported(files.directory) {
         files.record
@@ -1425,6 +1459,7 @@ fn calibrated_with_references<T>(
             .filter(fresh_plan);
         if let Some(mut plan) = remembered {
             let device = plan.device;
+            let deadline = plan.revalidate;
             references.replace(std::mem::take(&mut plan.references));
             match load(device, plan.target.clone(), true).and_then(|mut model| {
                 if device != Device::Cpu {
@@ -1439,7 +1474,7 @@ fn calibrated_with_references<T>(
                         plan.references = references.borrow().clone();
                         remember_plan(key, disk, cache, plan);
                     }
-                    return Ok((model, device));
+                    return Ok((model, device, deadline));
                 }
                 Err(error) => {
                     tracing::warn!(%error, "cached compute plan failed; recalibrating");
@@ -1559,16 +1594,16 @@ fn calibrated_with_references<T>(
     }
     let (device, target) = fastest;
     if device == Device::Cpu {
-        if !transient_failure {
-            remember_plan(
-                key,
-                disk,
-                cache,
-                CachedPlan::fresh(device, target, numerical_failure)
-                    .with_references(references.borrow().clone()),
-            );
-        }
-        return Ok((reference, device));
+        let deadline = if !transient_failure {
+            let plan = CachedPlan::fresh(device, target, numerical_failure)
+                .with_references(references.borrow().clone());
+            let deadline = plan.revalidate;
+            remember_plan(key, disk, cache, plan);
+            deadline
+        } else {
+            Some(std::time::Instant::now() + RUNTIME_RETRY)
+        };
+        return Ok((reference, device, deadline));
     }
     match load(device, target.clone(), true).and_then(|mut model| {
         evaluate(&mut model, device)?;
@@ -1577,18 +1612,19 @@ fn calibrated_with_references<T>(
         Ok(model) => {
             // A validated winner remains useful when another target is down.
             // Reuse it, but revisit failed alternatives at the short deadline.
-            remember_plan(
-                key,
-                disk,
-                cache,
-                CachedPlan::fresh(device, target, numerical_failure || transient_failure)
-                    .with_references(references.borrow().clone()),
-            );
-            Ok((model, device))
+            let plan = CachedPlan::fresh(device, target, numerical_failure || transient_failure)
+                .with_references(references.borrow().clone());
+            let deadline = plan.revalidate;
+            remember_plan(key, disk, cache, plan);
+            Ok((model, device, deadline))
         }
         Err(error) => {
             tracing::warn!(%error, "calibrated winner failed to reload; using optimized CPU");
-            Ok((reference, Device::Cpu))
+            Ok((
+                reference,
+                Device::Cpu,
+                Some(std::time::Instant::now() + RUNTIME_RETRY),
+            ))
         }
     }
 }
@@ -1610,6 +1646,7 @@ fn calibrated<T>(
         load,
         evaluate,
     )
+    .map(|(model, device, _)| (model, device))
 }
 
 /// Three uncached calls after a warm call. The callback includes tokenizer,
@@ -1968,18 +2005,18 @@ mod tests {
         let blocked = runtime_retry(root.path(), &failed.plan.namespace, &[], now).unwrap();
         assert_eq!(blocked, (now + RUNTIME_RETRY, "npu:first:1".into()));
         let mut cpu = RuntimeFixture::new(0, "cpu");
-        finish_runtime_selection(&mut cpu.plan, Some(blocked), true, now);
+        finish_runtime_selection(&mut cpu.plan, Some(blocked), None);
         assert_eq!(cpu.plan.retry_at, Some(now + RUNTIME_RETRY));
         assert_eq!(cpu.plan.restore_target.as_deref(), Some("npu:first:1"));
         // Once every available plan has been remeasured, CPU (or another
         // target) can legitimately be the new winner, without endless retry.
         for target in ["cpu", "cuda", "npu:second:2"] {
             cpu.plan.target = target.into();
-            finish_runtime_selection(&mut cpu.plan, None, true, now + RUNTIME_RETRY);
+            finish_runtime_selection(&mut cpu.plan, None, None);
             assert!(cpu.plan.retry_at.is_none());
             assert!(cpu.plan.restore_target.is_none());
         }
-        finish_runtime_selection(&mut cpu.plan, None, false, now);
+        finish_runtime_selection(&mut cpu.plan, None, Some(now + RUNTIME_RETRY));
         assert_eq!(cpu.plan.retry_at, Some(now + RUNTIME_RETRY));
     }
 
@@ -1993,7 +2030,7 @@ mod tests {
         let blocked = runtime_retry(root.path(), &failed.plan.namespace, &[], later).unwrap();
         assert_eq!(blocked, (later + RUNTIME_RETRY, "npu:reset:1".into()));
         let mut model = RuntimeFixture::new(0, "cpu");
-        finish_runtime_selection(&mut model.plan, Some(blocked), true, later);
+        finish_runtime_selection(&mut model.plan, Some(blocked), None);
         assert_eq!(model.plan.retry_at, Some(later + RUNTIME_RETRY));
         assert!(
             runtime_retry(
@@ -2025,7 +2062,11 @@ mod tests {
                 || {
                     loads += 1;
                     let mut candidate = RuntimeFixture::new(1, "cpu");
-                    finish_runtime_selection(&mut candidate.plan, None, step == 1, at);
+                    finish_runtime_selection(
+                        &mut candidate.plan,
+                        None,
+                        (step != 1).then_some(at + RUNTIME_RETRY),
+                    );
                     Ok((candidate, Device::Cpu))
                 },
             )
@@ -2184,6 +2225,107 @@ mod tests {
         assert_eq!(
             lock_a, lock_b,
             "workspace model cache must not partition host timing coordination"
+        );
+    }
+
+    #[test]
+    fn selected_validity_does_not_follow_another_callers_cache_update() {
+        use std::time::Duration;
+        let now = std::time::Instant::now();
+        let deadline = now + Duration::from_secs(60);
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let key = "owned-validity";
+        let mut original = CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false);
+        original.revalidate = Some(deadline);
+        cache.lock().unwrap().insert(key.into(), original);
+        let references = std::cell::RefCell::default();
+        let (_, device, selected_deadline) = calibrated_with_references(
+            key,
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            &references,
+            PlanFiles::default(),
+            |device, _, _| {
+                cache.lock().unwrap().insert(
+                    key.into(),
+                    CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false),
+                );
+                Ok(device)
+            },
+            |_, _| Ok(Duration::from_millis(1)),
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cuda);
+        assert_eq!(selected_deadline, Some(deadline));
+        let mut model = RuntimeFixture::new(0, "cuda");
+        finish_runtime_selection(
+            &mut model.plan,
+            Some((now + RUNTIME_RETRY, "npu".into())),
+            selected_deadline,
+        );
+        assert_eq!(model.plan.retry_at, Some(deadline));
+    }
+
+    #[test]
+    fn quarantine_snapshot_selects_effective_deadlines_and_is_immutable() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let missing = RuntimeFixture::new(0, "npu:missing");
+        let live = RuntimeFixture::new(0, "cuda");
+        quarantine_runtime(root.path(), &missing.plan, now - RUNTIME_RETRY * 2);
+        quarantine_runtime(
+            root.path(),
+            &live.plan,
+            now - std::time::Duration::from_secs(240),
+        );
+        let snapshot = runtime_snapshot(root.path(), &live.plan.namespace, &["cuda".into()], now);
+        assert_eq!(
+            snapshot.blocked.unwrap(),
+            (now + std::time::Duration::from_secs(60), "cuda".into())
+        );
+        assert!(snapshot.unavailable.contains("cuda"));
+        let empty = runtime_snapshot(root.path(), "other-scope", &[], now);
+        let mut concurrent = RuntimeFixture::new(0, "new-target");
+        concurrent.plan.namespace = "other-scope".into();
+        quarantine_runtime(root.path(), &concurrent.plan, now);
+        assert!(empty.blocked.is_none() && empty.unavailable.is_empty());
+        let after = runtime_snapshot(root.path(), "other-scope", &[], now);
+        assert!(after.blocked.is_some() && after.unavailable.contains("new-target"));
+    }
+
+    #[test]
+    fn slow_failed_operation_starts_quarantine_at_observation_time() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = std::time::Instant::now();
+        let observed = entry + RUNTIME_RETRY * 2;
+        let clock = std::cell::Cell::new(entry);
+        let mut model = RuntimeFixture::new(0, "cuda");
+        let namespace = model.plan.namespace.clone();
+        let mut device = Device::Cuda;
+        let (answer, _) = retry_model_with_clock(
+            &mut model,
+            &mut device,
+            root.path(),
+            || clock.get(),
+            |_, device| {
+                if device == Device::Cuda {
+                    clock.set(observed);
+                    Err(IndexError::Engine("slow driver failure".into()))
+                } else {
+                    Ok(42)
+                }
+            },
+            || Ok((RuntimeFixture::new(0, "cpu"), Device::Cpu)),
+        )
+        .unwrap();
+        assert_eq!(answer, 42);
+        assert_eq!(model.plan.retry_at, Some(observed + RUNTIME_RETRY));
+        assert_eq!(
+            runtime_snapshot(root.path(), &namespace, &["cuda".into()], observed)
+                .blocked
+                .unwrap()
+                .0,
+            observed + RUNTIME_RETRY
         );
     }
 
@@ -2528,7 +2670,7 @@ mod tests {
             CachedPlan::fresh(Device::Cuda, vec![cpu()].into(), false).with_references(saved),
         )]));
         let references = std::cell::RefCell::default();
-        let (_, device) = calibrated_with_references(
+        let (_, device, _) = calibrated_with_references(
             "fixture",
             vec![(Device::Cuda, vec![cpu()].into())],
             &cache,
@@ -2581,7 +2723,7 @@ mod tests {
                 },
                 |_, _| Ok(Duration::from_millis(1)),
             );
-            sent.send(result.map(|(_, device)| device)).unwrap();
+            sent.send(result.map(|(_, device, _)| device)).unwrap();
         });
         let result = received.recv_timeout(Duration::from_secs(2));
         drop(held);
@@ -2668,7 +2810,7 @@ mod tests {
         let path = plan_file(root.path(), "publication").unwrap();
         let cache = std::sync::Mutex::default();
         let plans = vec![(Device::Cuda, vec![cpu()].into())];
-        let (_, device) = calibrated_with_references(
+        let (_, device, _) = calibrated_with_references(
             "publication",
             plans.clone(),
             &cache,
@@ -2689,7 +2831,7 @@ mod tests {
         let _host = file_lock(&path.parent().unwrap().join("calibration.lock")).unwrap();
         assert!(read_plan(&path, "publication", &plans).is_some());
         drop(_host);
-        let (_, second) = calibrated_with_references(
+        let (_, second, _) = calibrated_with_references(
             "publication",
             plans,
             &std::sync::Mutex::default(),
