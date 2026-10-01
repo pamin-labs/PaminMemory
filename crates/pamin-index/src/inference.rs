@@ -524,6 +524,72 @@ impl CachedPlan {
 /// Calibrate complete model-call fixtures, then reuse the validated target
 /// through idle reloads. This is a bounded workload choice, not a claim about
 /// every query shape or an accelerator's internal hardware placement.
+fn runtime_failures()
+-> &'static std::sync::Mutex<std::collections::HashMap<(PathBuf, Device), std::time::Instant>> {
+    static FAILED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(PathBuf, Device), std::time::Instant>>,
+    > = std::sync::OnceLock::new();
+    FAILED.get_or_init(Default::default)
+}
+
+fn quarantine_runtime(cache_dir: &Path, device: Device) {
+    let root = cache_dir
+        .canonicalize()
+        .unwrap_or_else(|_| cache_dir.to_path_buf());
+    runtime_failures()
+        .lock()
+        .expect("runtime quarantine poisoned")
+        .insert(
+            (root, device),
+            std::time::Instant::now() + std::time::Duration::from_secs(300),
+        );
+}
+
+fn runtime_available(cache_dir: &Path, device: Device) -> bool {
+    let root = cache_dir
+        .canonicalize()
+        .unwrap_or_else(|_| cache_dir.to_path_buf());
+    let mut failed = runtime_failures()
+        .lock()
+        .expect("runtime quarantine poisoned");
+    failed.retain(|_, until| *until > std::time::Instant::now());
+    !failed.contains_key(&(root, device))
+}
+
+/// Retry the complete owned-result operation on a newly qualified model.
+/// Nothing is committed by the caller until this returns successfully.
+pub(crate) fn retry_model<T, R>(
+    model: &mut T,
+    device: &mut Device,
+    cache_dir: &Path,
+    mut operation: impl FnMut(&mut T, Device) -> Result<R>,
+    mut reload: impl FnMut() -> Result<(T, Device)>,
+) -> Result<R> {
+    let mut retries = None;
+    loop {
+        match operation(model, *device) {
+            Ok(result) => return Ok(result),
+            Err(error) if *device == Device::Cpu => return Err(error),
+            Err(error) => {
+                tracing::warn!(device=device.name(), %error, "accelerator execution failed; qualifying remaining plans");
+                let remaining = retries.get_or_insert_with(|| accelerators().len() + 1);
+                if *remaining == 0 {
+                    return Err(error);
+                }
+                *remaining -= 1;
+                let failed = *device;
+                quarantine_runtime(cache_dir, failed);
+                let (replacement, selected) = reload()?;
+                if selected == failed {
+                    return Err(error.context("recovery selected the failing provider"));
+                }
+                *model = replacement;
+                *device = selected;
+            }
+        }
+    }
+}
+
 pub(crate) fn measured<T>(
     identity: &str,
     cache_dir: &Path,
@@ -534,7 +600,10 @@ pub(crate) fn measured<T>(
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static PLANS: OnceLock<Mutex<HashMap<String, CachedPlan>>> = OnceLock::new();
-    let plans = accelerators();
+    let plans: Vec<_> = accelerators()
+        .into_iter()
+        .filter(|(device, _)| runtime_available(cache_dir, *device))
+        .collect();
     if plans.is_empty() {
         let mut load = load;
         return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
@@ -1191,6 +1260,33 @@ fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn execution_failure_reloads_a_qualified_remaining_device_and_retries() {
+        let root = tempfile::tempdir().unwrap();
+        let mut model = 0;
+        let mut device = Device::Npu;
+        let result = retry_model(
+            &mut model,
+            &mut device,
+            root.path(),
+            |model, device| {
+                if device == Device::Npu {
+                    Err(IndexError::Engine("device reset on real shape".into()))
+                } else {
+                    Ok(*model + 1)
+                }
+            },
+            || {
+                assert!(!runtime_available(root.path(), Device::Npu));
+                Ok((41, Device::Cpu))
+            },
+        )
+        .unwrap();
+        assert_eq!(result, 42);
+        assert_eq!(device, Device::Cpu);
+        assert_eq!(model, 41);
+    }
 
     #[test]
     fn one_accelerator_must_win_multiple_interleaved_rounds() {
