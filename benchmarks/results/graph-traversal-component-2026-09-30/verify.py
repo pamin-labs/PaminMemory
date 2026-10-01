@@ -419,6 +419,7 @@ readme = (ROOT/'README.md').read_text()
 COMPONENT_DISCLAIMER='This is a component invariant check. It does not establish retrieval quality,\nlatency, memory or disk improvements for the product. Both arms created their\nown UUID projects, and some non-graph tie orders differed between them. The\nwithin-arm candidate, rank and raw-score premises remained unchanged across\nsetup and graph-query phases.'
 assert readme.split('\n\n')[2]==COMPONENT_DISCLAIMER, 'opening component-only disclaimer differs'
 FRONTIER_LIMITATION='The unresolved 2,000-position frontier cap remains approximate; its stress test\nwas compiled but not run.'
+assert re.findall(r'The source base is `([^`]+)`\.',readme)==[provenance['source_base']], 'README source base differs from pinned provenance'
 assert readme.count(FRONTIER_LIMITATION)==1, 'README compiled-but-unrun frontier-stress limitation differs'
 HISTORICAL_ZVEC_README='The provisioned Zvec file was hashed before and after, but its actual loaded\nmapping was not captured: historical loaded-Zvec identity is **N/A**.'
 assert readme.count(HISTORICAL_ZVEC_README)==1, 'README historical loaded zvec N/A limitation differs'
