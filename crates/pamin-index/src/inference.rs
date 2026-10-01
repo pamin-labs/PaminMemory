@@ -779,11 +779,68 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
 // to the actual executable once per process, covering those effective builds.
 fn executable_identity() -> Option<&'static str> {
     static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    IDENTITY
-        .get_or_init(|| executable_hash(&std::env::current_exe().ok()?))
-        .as_deref()
+    IDENTITY.get_or_init(mapped_image_identity).as_deref()
 }
 
+fn mapped_image_identity() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        return executable_hash(Path::new("/proc/self/exe")).map(|hash| format!("elf:{hash}"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn _dyld_get_image_header(index: u32) -> *const u8;
+        }
+        // SAFETY: dyld's index-zero header belongs to the running executable,
+        // remains mapped for this process, and carries trusted load commands.
+        let commands = unsafe {
+            let header = _dyld_get_image_header(0);
+            if header.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(header, 32);
+            if u32::from_ne_bytes(bytes[..4].try_into().ok()?) != 0xfeedfacf {
+                return None;
+            }
+            let size = u32::from_ne_bytes(bytes[20..24].try_into().ok()?) as usize;
+            if size > 1_048_576 {
+                return None;
+            }
+            std::slice::from_raw_parts(header.add(32), size)
+        };
+        let uuid = mach_uuid(commands)?;
+        return Some(format!(
+            "macho:{}",
+            uuid.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        ));
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    } // Existing opaque Windows providers remain process-local.
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn mach_uuid(commands: &[u8]) -> Option<[u8; 16]> {
+    let mut offset = 0;
+    while offset < commands.len() {
+        let header = commands.get(offset..offset.checked_add(8)?)?;
+        let command = u32::from_ne_bytes(header[..4].try_into().ok()?);
+        let size = u32::from_ne_bytes(header[4..8].try_into().ok()?) as usize;
+        if size < 8 {
+            return None;
+        }
+        let data = commands.get(offset..offset.checked_add(size)?)?;
+        if command == 0x1b && size == 24 {
+            return data[8..24].try_into().ok();
+        }
+        offset += size;
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn executable_hash(path: &Path) -> Option<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -2327,6 +2384,22 @@ mod tests {
                 .0,
             observed + RUNTIME_RETRY
         );
+    }
+
+    #[test]
+    fn mapped_macho_uuid_is_not_a_mutable_executable_path() {
+        let mut commands = Vec::new();
+        commands.extend_from_slice(&0x1bu32.to_ne_bytes());
+        commands.extend_from_slice(&24u32.to_ne_bytes());
+        commands.extend_from_slice(&[17; 16]);
+        assert_eq!(mach_uuid(&commands), Some([17; 16]));
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("installed-binary");
+        std::fs::write(&path, b"replacement executable").unwrap();
+        assert_eq!(mach_uuid(&commands), Some([17; 16]));
+        assert!(mach_uuid(&commands[..20]).is_none());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(mapped_image_identity().is_some());
     }
 
     #[test]
