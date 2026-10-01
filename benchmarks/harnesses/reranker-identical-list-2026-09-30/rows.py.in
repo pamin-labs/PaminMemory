@@ -1,0 +1,133 @@
+"""Actual row/input/oracle validation; no product pipeline implementation."""
+import copy,hashlib,json,math,os,struct,sys
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Assertions required')
+KEYS=['offered','scored','characters','tokens','padded_tokens','batches','encode_us','forward_us']
+STATS=KEYS+['maximum_tokens','remembered','longest']
+CLOCK_TICKS=os.sysconf('SC_CLK_TCK')
+SHOWN_SHA='0f41a3520f91b4cc242bb643d72e676305aae5fb4b326c5ec13621b2f95d4b9b'
+
+def shown_source_identity(main_source,memo_source):
+    receipts={}
+    for name,root in [('main',main_source),('stack',memo_source)]:
+        path=Path(root)/'crates/pamin-engine/src/engine.rs';text=path.read_text();start=text.index('fn shown(topic:');end=text.index('\n}',start)+2
+        actual=text[start:end].encode();assert hashlib.sha256(actual).hexdigest()==SHOWN_SHA,'selected source shown formatter differs'
+        receipts[name]={'source_path':str(path),'function_sha256':SHOWN_SHA,'function_utf8_hex':actual.hex()}
+    return {'source_bound_derived_actual_inputs':receipts,'direct_model_input_instrumentation':False,'derivation_scope':'actual frozen helper topic/state.content/seed rows and selected ordered positions, common source formatter; no reconstructed retrieval/reranking pipeline'}
+
+def typed_hits(hits):
+    data=copy.deepcopy(hits)
+    for position,hit in enumerate(data,1):
+        assert hit['rank']==position,'one-based actual hit ranks differ'
+        bits=[];fused=0.0
+        for why in hit['why']:
+            fields=['score','weight','contribution'] if why['kind']=='channel' else ['score'] if why['kind']=='reranked' else []
+            if why['kind']=='channel':
+                contribution=struct.unpack('<f',struct.pack('<f',why['contribution']))[0]
+                fused=struct.unpack('<f',struct.pack('<f',fused+contribution))[0]
+            for name in fields:
+                if why[name] is not None:
+                    assert isinstance(why[name],(int,float)) and math.isfinite(why[name]),'nonfinite source-declared f32'
+                    value=struct.unpack('<I',struct.pack('<f',why[name]))[0]
+                    if why['kind']=='reranked':bits.append(value)
+                    why[name]={'declared_f32_bits':value}
+        assert bits==hit['reranked_bits'],'actual Why/reranker raw bits differ'
+        assert struct.unpack('<I',struct.pack('<f',fused))[0]==hit['score_bits'],'actual Why/fusion f32 bits differ'
+    return json.dumps(data,sort_keys=True,ensure_ascii=False,allow_nan=False)
+
+def delta(row,start='before',end='after'):
+    for snapshot in [row[start],row[end]]:assert set(snapshot)==set(STATS) and all(type(v) is int and v>=0 for v in snapshot.values()), 'invalid work counter'
+    result={k:row[end][k]-row[start][k] for k in KEYS}
+    assert min(result.values())>=0,'negative successful work delta'
+    assert result['scored']<=result['offered'] and result['tokens']<=result['padded_tokens'] and result['batches']<=result['scored'],'incoherent offered/scored/token/padding/batch work'
+    if result['scored']==0:assert all(result[k]==0 for k in ['characters','tokens','padded_tokens','batches','forward_us']),'successful scoring cost without scored pairs'
+    else:assert result['characters']>0 and result['tokens']>0 and result['batches']>0,'scored pairs without successful input/batch work'
+    return result
+
+def shown(hit):
+    assert isinstance(hit['topic'],str) and isinstance(hit['state']['content'],str) and (hit['seed'] is None or isinstance(hit['seed'],str)), 'shown input schema differs'
+    text=hit['topic']+': '+hit['state']['content']
+    if hit['seed'] is not None:text+='. '+hit['seed']
+    return text
+
+def selected_pairs(row):
+    selected=row['selected_fused_positions'];assert len(selected)==len(set(selected)) and all(type(p) is int and 0<=p<len(row['fused']) for p in selected), 'selected position invalid'
+    query=row['query'].encode();result=[]
+    for position in selected:
+        hit=row['fused'][position];document=shown(hit).encode()
+        result.append({'topic_id':hit['topic_id'],'query_utf8_hex':query.hex(),'document_utf8_hex':document.hex(),'pair_sha256':hashlib.sha256(len(query).to_bytes(8,'little')+query+len(document).to_bytes(8,'little')+document).hexdigest()})
+    return result
+
+def quality(hits,relevant):
+    expected=set(relevant);assert expected and len(expected)==len(relevant),'duplicate/empty gold topics'
+    assert len({h['topic'] for h in hits})==len(hits),'duplicate returned gold topic'
+    ranks=[i+1 for i,h in enumerate(hits) if h['topic'] in expected]
+    dcg=sum(1/math.log2(r+1) for r in ranks);ideal=sum(1/math.log2(i+2) for i in range(min(len(hits),len(expected))))
+    return {'recall':len(ranks)/len(expected),'mrr':1/ranks[0] if ranks else 0.0,'ndcg':dcg/ideal if ideal else 0.0}
+
+def validate(row,job,step,gold):
+    config=job['sequence'].split(',')[step];qid=job['query_id']+1 if config=='N' else job['query_id']
+    assert row['step']==step and row['arm']==config and row['query_id']==qid and row['tier']==job['tier'] and row['return_limit']==job['limit'], 'actual matrix/phase chronology differs'
+    assert row['query']==gold[qid]['query'] and row['documents']==230 and row['coverage']==0.0, 'actual corpus/query/coverage differs'
+    assert type(row['wall_us']) is int and row['wall_us']>=0,'invalid product wall clock'
+    for key in ['limited','complete','fused']:
+        hits=row[key];assert len(hits)<=230 and len({h['topic_id'] for h in hits})==len(hits) and len({h['topic'] for h in hits})==len(hits),'duplicate/oversized actual hits'
+        assert [h['rank'] for h in hits]==list(range(1,len(hits)+1)), 'actual hit rank differs'
+        assert all(type(h['score_bits']) is int and 0<=h['score_bits']<2**32 for h in hits),'invalid exposed f32 bits'
+        assert all(all(type(v) is int and 0<=v<2**32 for v in h['reranked_bits']) for h in hits),'invalid reranker f32 bits'
+    assert all(typed_hits(row[key]) for key in ['limited','complete','fused'])
+    assert len(row['complete'])==len(row['fused']) and {h['topic_id'] for h in row['complete']}=={h['topic_id'] for h in row['fused']},'complete/fused permutation differs'
+    original={h['topic_id']:h for h in row['fused']}
+    for hit in row['complete']:
+        fused_hit=original[hit['topic_id']]
+        assert all(hit[key]==fused_hit[key] for key in ['topic_id','topic','state','seed','score_bits']),'complete/fused result provenance differs'
+        without_rerank=[why for why in hit['why'] if why['kind']!='reranked']
+        assert without_rerank==fused_hit['why'],'complete/fused Why provenance differs'
+    assert len(row['limited'])==job['limit'] and typed_hits(row['limited'])==typed_hits(row['complete'][:job['limit']]), 'limited/full postblend prefix differs'
+    assert row['diagnostic_before']==row['after'],'unrecorded work before diagnostic'
+    for clock in ['utime_ticks','stime_ticks']:
+        assert type(row['process_before'][clock]) is int and type(row['process_after'][clock]) is int and 0<=row['process_before'][clock]<=row['process_after'][clock], 'negative process CPU counter/delta'
+    for process in [row['process_before'],row['process_after']]:assert 0<=process['rss_kib']<=process['hwm_kib'], 'process RSS/HWM premise differs'
+    work=delta(row);diagnostic=delta(row,'diagnostic_before','diagnostic_after');pairs=selected_pairs(row)
+    visible=len(pairs)>=2 and row['selected_fused_positions'][0]<job['limit']
+    assert row['can_be_seen']==visible,'actual rerank visibility differs'
+    assert sum(any(w.get('kind')=='channel' and w.get('channel')=='vector' for w in h['why']) for h in row['fused'])==50,'actual vector budget differs'
+    if job['tier']=='off':assert not pairs and all(work[k]==diagnostic[k]==0 for k in KEYS),'Off actual model work present'
+    else:
+        assert visible and len(pairs)==work['offered']==diagnostic['offered']==30 and row['after']['maximum_tokens']==256,'actual offered/model budget differs'
+        scored=[h for h in row['complete'] if h['reranked_bits']]
+        assert len(scored)==30 and {h['topic_id'] for h in scored}=={p['topic_id'] for p in pairs} and all(len(h['reranked_bits'])==1 for h in scored),'raw score/selected ID binding differs'
+        if step==0 or config=='N':assert work['scored']==30 and work['batches']>0, 'fresh/new search did not score offered rows'
+        assert all(diagnostic[k]==0 for k in ['scored','characters','tokens','padded_tokens','batches','forward_us']), 'same-context diagnostic unexpectedly forwarded'
+        if job['source']=='stack':assert diagnostic['encode_us']==0,'memo same-context diagnostic encoded'
+    return {'actual_delta':work,'diagnostic_delta':diagnostic,'selected_actual_pairs':pairs,'quality_at_actual_limit':quality(row['limited'],gold[qid]['relevant']),'cpu_user_seconds':(row['process_after']['utime_ticks']-row['process_before']['utime_ticks'])/CLOCK_TICKS,'cpu_system_seconds':(row['process_after']['stime_ticks']-row['process_before']['stime_ticks'])/CLOCK_TICKS,'cpu_resolution_seconds':1/CLOCK_TICKS,'zero_tick_scope':'resolution-censored zero observation; not zero cost'}
+
+def hot_guard(previous,row,source):
+    assert previous['diagnostic_after']==row['before'],'unrecorded reranker work between product calls'
+    if previous['arm']==row['arm'] and previous['query_id']==row['query_id']:
+        assert row['fused']==previous['fused'] and row['complete']==previous['complete'] and row['limited']==previous['limited'],'identical-hot input/bits/order drift'
+        work=delta(row);assert all(work[k]==0 for k in ['scored','characters','tokens','padded_tokens','batches','forward_us']), 'hot scoring work present'
+        if source=='stack':assert work['encode_us']==0,'memo identical hot encoded'
+        # The memo skips encoding; the complete-batch predecessor may still encode.
+
+def oracle_checks(results):
+    classifications=[]
+    for jobkey,record in results.items():
+        job=record['job'];observations=record['rows']
+        if job['tier']=='off':continue
+        initial=job['sequence'][0];final='B' if initial=='A' else 'A'
+        fresh_key=(job['round'],job['source'],job['limit'],job['query_id'],'accurate',final)
+        fresh=results[fresh_key]['rows'][0];history=observations[6]
+        same_input=selected_pairs(history)==selected_pairs(fresh) and typed_hits(history['fused'])==typed_hits(fresh['fused'])
+        exact=same_input and typed_hits(history['complete'])==typed_hits(fresh['complete']) and typed_hits(history['limited'])==typed_hits(fresh['limited'])
+        assert exact,'stack changed-history differs from fresh same-final config oracle'
+        all_hot_exact=all(selected_pairs(row)==selected_pairs(fresh) and typed_hits(row['fused'])==typed_hits(fresh['fused']) and typed_hits(row['complete'])==typed_hits(fresh['complete']) and typed_hits(row['limited'])==typed_hits(fresh['limited']) for row in observations[6:12])
+        assert all_hot_exact,'stack changed-hot group differs from fresh same-final config oracle'
+        classifications.append({'job':job,'same_final_actual_inputs':same_input,'same_final_raw_bits/order':exact,'legacy_main_context_failure':job['source']=='main' and same_input and not exact,'retrieval_or_input_context_mismatch':not same_input,'changed_and_hot_steps':list(range(6,12)),'all_changed_and_hot_exact':all_hot_exact,'paired_speed_claim_eligible':exact and all_hot_exact,'changed_selected_ids':selected_pairs(observations[0])!=selected_pairs(history),'measured_changed_scored':delta(history)['scored']})
+        assert (selected_pairs(observations[0])!=selected_pairs(history))==(job['query_id']==101),'changed-shortlist fixture premise differs'
+        assert delta(history)['scored']==(20 if job['query_id']==101 else 0),'changed-context work premise differs'
+        other='stack' if job['source']=='main' else 'main';paired=results[(job['round'],other,job['limit'],job['query_id'],'accurate',initial)]['rows']
+        for step in [0,6,12]:
+            assert selected_pairs(observations[step])==selected_pairs(paired[step]) and typed_hits(observations[step]['fused'])==typed_hits(paired[step]['fused']) and typed_hits(observations[step]['complete'])==typed_hits(paired[step]['complete']) and typed_hits(observations[step]['limited'])==typed_hits(paired[step]['limited']),'fresh/changed/new cross-source bits/input parity failed'
+            assert all(delta(observations[step])[k]==delta(paired[step])[k] for k in ['offered','scored','characters','tokens','padded_tokens','batches']),'cross-source successful work differs'
+    return classifications

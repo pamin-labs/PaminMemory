@@ -1,0 +1,82 @@
+"""Report newly generated PR216 rows; never build or execute product code."""
+import json
+import math
+import statistics
+import common as c
+import rows
+
+
+def percentile(values, fraction):
+    values = sorted(values)
+    index = (len(values) - 1) * fraction
+    low = math.floor(index)
+    high = math.ceil(index)
+    return values[low] + (values[high] - values[low]) * (index - low)
+
+
+def report(packets, gold):
+    jobs = {job['name']: job for job in c.schedule()}
+    c.require(len(packets) == 36 and {p['job']['name'] for p in packets} == set(jobs),
+              'complete unique PR216 process matrix')
+    results, groups, processes = {}, {}, []
+    calls = 0
+    for packet in packets:
+        job, actual = packet['job'], packet['rows']
+        c.require(job == jobs[job['name']] and len(actual) == len(job['sequence'].split(',')),
+                  'requested schedule differs')
+        validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+        c.require(validated == packet['validated'], 'recorded row validation differs')
+        for old, new in zip(actual, actual[1:]):
+            rows.hot_guard(old, new, job['source'])
+        key = (job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])
+        results[key] = packet
+        calls += len(actual)
+        for step, (row, valid) in enumerate(zip(actual, validated)):
+            phase = c.phase(job, step)
+            group = (job['tier'], job['limit'], job['query_id'], row['arm'], phase)
+            groups.setdefault(group, {}).setdefault(job['source'], []).append((job, row, valid))
+        last = actual[-1]['process_after']
+        processes.append({'job': job, 'launch_to_exit_observation_wall_seconds': packet['usage']['native_wall_seconds'],
+                          'engine_open_wall_us': packet['opened']['wall_us'],
+                          'cumulative_user_seconds_through_last_search': last['utime_ticks'] / rows.CLOCK_TICKS,
+                          'cumulative_system_seconds_through_last_search': last['stime_ticks'] / rows.CLOCK_TICKS,
+                          'full_lifetime_cpu_seconds': None, 'rss_hwm_includes_outside_clock_diagnostics': True,
+                          'sampled_native_and_pg_main_memory': packet['usage']['samples'],
+                          'index_before_bytes': packet['index_before_bytes'],
+                          'index_after_bytes': packet['index_after_bytes'], 'payload_immutability': None})
+        processes[-1]['host_conditions'] = packet['host_conditions']
+        processes[-1]['postgres_disk'] = packet['postgres_disk']
+    c.require(calls == 428, 'incomplete timed-call matrix')
+    classifications = rows.oracle_checks(results)
+    table = []
+    for group, arms in sorted(groups.items()):
+        c.require(set(arms) == {'main', 'stack'}, 'unpaired metric group')
+        metrics = {'wall_p50_us': lambda xs: statistics.median(r['wall_us'] for _, r, _ in xs),
+                   'wall_p95_descriptive_us': lambda xs: percentile([r['wall_us'] for _, r, _ in xs], .95)}
+        for field in ['rss_kib', 'hwm_kib']:
+            metrics[field] = lambda xs, field=field: statistics.median(r['process_after'][field] for _, r, _ in xs)
+        for field in ['cpu_user_seconds', 'cpu_system_seconds']:
+            metrics[field] = lambda xs, field=field: statistics.mean(v[field] for _, _, v in xs)
+        for field in rows.KEYS:
+            metrics[field] = lambda xs, field=field: sum(v['actual_delta'][field] for _, _, v in xs)
+        for field in ['recall', 'mrr', 'ndcg']:
+            metrics[field] = lambda xs, field=field: statistics.mean(v['quality_at_actual_limit'][field] for _, _, v in xs)
+        for metric, calculate in metrics.items():
+            before, after = calculate(arms['main']), calculate(arms['stack'])
+            table.append({'configuration': list(group), 'metric': metric, 'before': before, 'after': after,
+                          'absolute_difference': after - before,
+                          'percentage_change': 100 * (after - before) / before if before else None,
+                          'samples_per_arm': {arm: len(value) for arm, value in arms.items()},
+                          'independent_processes_per_arm': {arm: len({j['name'] for j, _, _ in value}) for arm, value in arms.items()},
+                          'cpu_percentage_claimed': False, 'stable_or_population_speed_claimed': False})
+    return {'processes': 36, 'calls': 428, 'revisions': c.MANIFEST['revisions'], 'metrics': table,
+            'processes_detail': processes, 'classifications': classifications,
+            'source_labels': {'main': 'baseline', 'stack': 'memo'},
+            'historical_numeric_identity_claimed': False, 'regenerated_fixture': True,
+            'scope': 'Two serial rounds plus four Off processes; dependent hot samples, not stable population p95; CPU zero ticks censored; no hardware/corpus generalization.'}
+
+
+if __name__ == '__main__':
+    packets = [json.loads((c.ROOT / 'results' / (j['name'] + '.json')).read_text()) for j in c.schedule()]
+    gold = json.loads((c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json').read_text())
+    c.save(c.ROOT / 'metrics.json', report(packets, gold))

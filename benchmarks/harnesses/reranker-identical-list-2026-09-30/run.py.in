@@ -1,0 +1,77 @@
+"""Generate the original 36/428 PR216 method; no native execution without flags."""
+import argparse
+import json
+from pathlib import Path
+import shutil
+import common as c
+import owned_postgres as pg
+import rows
+from shared_run import native, parse
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--exclusive', action='store_true')
+    args = parser.parse_args()
+    jobs = c.schedule()
+    if not args.execute:
+        print(json.dumps({'processes': 36, 'timed_calls': 428, 'schedule': jobs}))
+        return
+    c.require(args.exclusive, 'exclusive slot required; exclude other builds/model experiments')
+    with c.exclusive():
+        c.source_inputs()
+        bound = c.assets()
+        binaries = json.loads((c.ROOT / 'build/binaries.json').read_text())
+        seed = c.ROOT / 'seed'
+        pg.preflight(seed)
+        out = c.ROOT / 'results'
+        out.mkdir()
+        gold = json.loads((c.ROOT / 'main/crates/pamin-engine/tests/corpus/queries.json').read_text())
+        results = {}
+        rows.shown_source_identity(c.ROOT / 'main', c.ROOT / 'stack')
+        for job in jobs:
+            c.source_inputs()
+            conditions_before = c.guard(job['name'] + ':before')
+            binary = Path(binaries[job['source']]['path'])
+            c.require(c.digest(binary) == binaries[job['source']]['sha256'], 'frozen binary changed')
+            home = out / (job['name'] + '-home')
+            shutil.copytree(seed, home, symlinks=True)
+            record = json.loads((home / 'server.json').read_text())
+            record['installation_dir'] = str(home / 'postgres/install/17.6.0')
+            (home / 'server.json').write_text(json.dumps(record))
+            before = c.logical(home / 'index')
+            postgres_before = c.disk_sizes(home / 'postgres/data')
+            env = c.environment(home)
+            env.update(CACHE_RETURN_LIMIT=str(job['limit']), CACHE_QUERY_ID=str(job['query_id']),
+                       CACHE_TIER=job['tier'], CACHE_SEQUENCE=job['sequence'])
+            usage = native(home, env, binary, out / job['name'])
+            opened, actual = parse((out / (job['name'] + '.log')).read_text(), job, bound)
+            validated = [rows.validate(row, job, step, gold) for step, row in enumerate(actual)]
+            for old, new in zip(actual, actual[1:]):
+                rows.hot_guard(old, new, job['source'])
+            packet = {'job': job, 'rows': actual, 'validated': validated, 'opened': opened,
+                      'usage': usage, 'index_before_bytes': before,
+                      'index_after_bytes': c.logical(home / 'index'),
+                      'full_payload_immutability_attestation': None,
+                      'host_conditions': {'before': conditions_before, 'after': c.guard(job['name'] + ':after')},
+                      'postgres_disk': {'before': postgres_before, 'after': c.disk_sizes(home / 'postgres/data'),
+                                        'scope': 'owned stopped data-directory regular files including local WAL; external symlinks/directory metadata excluded'}}
+            c.save(out / (job['name'] + '.json'), packet)
+            key = (job['round'], job['source'], job['limit'], job['query_id'], job['tier'], job['sequence'][0])
+            results[key] = packet
+            pg.preflight(home)
+            c.require(home.parent == out and (home / '.graph-disposable-clone').is_file(), 'clone cleanup boundary')
+            shutil.rmtree(home)
+            c.assets()
+            c.source_inputs()
+        c.require(len(results) == 36 and sum(len(p['rows']) for p in results.values()) == 428,
+                  'incomplete PR216 matrix')
+        classifications = rows.oracle_checks(results)
+        c.save(out / 'complete.json', {'complete': True, 'processes': 36, 'calls': 428,
+               'classifications': classifications, 'source_labels': {'main': 'baseline', 'stack': 'memo'},
+               'regenerated_fixture': True, 'historical_numeric_identity_claimed': False})
+
+
+if __name__ == '__main__':
+    main()
