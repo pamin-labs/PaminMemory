@@ -734,7 +734,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         ort::info(),
         threads()
     );
-    let mut load = |device, target: Target, validated| -> Result<T> {
+    let load = |device, target: Target, validated| -> Result<T> {
         let target_id = target_identity(device, &target);
         let mut model = load(device, target, validated)?;
         *model.runtime_plan_mut() = RuntimePlan {
