@@ -88,6 +88,7 @@ ASSET_PINS = {'${MODEL_CACHE}/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84
  '${ORT_LIB}/libonnxruntime.so.1.28.0': '1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab',
  '${ZVEC_LIB}/libzvec_c_api.so': '58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a'}
 BINARY_PINS = {'baseline': '485cbd023d9e5c8b1b4cdd3f94419199fe634a1a66a9d67d44dd90b7a1facdd1', 'scored': 'ac308a0b9438eb897d1601d185583026d2f07b1a268b47b7b1082e56daf72bd0'}
+BINARY_BYTES_PINS = {'baseline': 15330992, 'scored': 15331248}
 PAYLOAD_MAP_DIGESTS = {'baseline': 'b2cba4a77820f63e0ea869b5099f631705aae850dee17e6a2a4d287e29c4397b', 'scored': 'b2cba4a77820f63e0ea869b5099f631705aae850dee17e6a2a4d287e29c4397b'}
 CURRENT_PLATFORM_PINS = {'cpu_model': 'AMD EPYC 9V74 80-Core Processor', 'kernel': '6.18.44', 'architecture': 'x86_64', 'cpu_quota': '400000 100000', 'cpu_affinity': [0, 1, 2, 3, 4], 'memory_max_bytes': 17179869184}
 SQL_MAP_DIGEST = '6264b33b89775579e92b4d903a16b1fed165942498d5f2b3acc024b38e834513'
@@ -97,6 +98,7 @@ assert inventory_scope['original_status'] == 'partial: migration SQL omitted'
 assert inventory_scope['original_sql_build_attestation'] == 'N/A: not captured'
 assert inventory_scope['retrospective_sql_audit'] == 'retrospective-sql-audit.json'
 audit = load('retrospective-sql-audit.json')
+assert audit.get('scope') == 'Retrospective read-only inspection of preserved original binaries and frozen SQL sources; no historical rebuild or runtime execution. This is not a build-time source attestation.', 'retrospective SQL audit scope differs'
 assert audit['source_base'] == provenance['source_base']
 assert audit['original_build_sql_attestation'] == 'N/A: SQL omitted from the original 52-entry pre/post-build inventory'
 assert re.fullmatch(r'2026-09-30T[0-9:.]+\+00:00', audit['captured_at_utc'])
@@ -112,6 +114,7 @@ for name, source in sql_sources.items():
 assert set(audit['arms']) == {'baseline','scored'}
 for arm, binary in audit['arms'].items():
  assert binary['binary_sha256'] == BINARY_PINS[arm]
+ assert type(binary.get('binary_bytes')) is int and binary['binary_bytes'] == BINARY_BYTES_PINS[arm], 'retained binary byte length differs: '+arm
  assert set(binary['migration_payloads']) == set(sql_sources)
  assert hashlib.sha256(json.dumps(binary['migration_payloads'],sort_keys=True,separators=(',',':')).encode()).hexdigest() == PAYLOAD_MAP_DIGESTS[arm], 'retrospective payload capture differs'
  for name, payload in binary['migration_payloads'].items():
