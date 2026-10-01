@@ -11,6 +11,43 @@ import unittest
 import verify
 
 
+class CRC32CInvariants(unittest.TestCase):
+    def setUp(self):
+        verify._crc32c_cached.cache_clear()
+
+    def tearDown(self):
+        verify._crc32c_cached.cache_clear()
+
+    def test_raw_castagnoli_known_vector(self):
+        self.assertEqual(verify.crc32c(b''), 0)
+        self.assertEqual(verify.crc32c(b'123456789'), 0x58e3fa20)
+
+    def test_distinct_inputs_with_identical_bytes_reuse_crc(self):
+        data = b'x' * 512
+        self.assertEqual(verify.crc32c(data), verify.crc32c(bytearray(data)))
+        info = verify._crc32c_cached.cache_info()
+        self.assertEqual((info.misses, info.hits), (1, 1))
+
+    def test_mutating_same_buffer_recomputes_crc(self):
+        data = bytearray(512)
+        before = verify.crc32c(data)
+        data[-1] = 1
+        after = verify.crc32c(data)
+        self.assertNotEqual(before, after)
+        self.assertEqual(after, verify._crc32c_scalar(data))
+        self.assertEqual(verify._crc32c_cached.cache_info().misses, 2)
+
+    def test_cache_entry_and_input_size_bounds(self):
+        for byte in range(3):
+            verify.crc32c(bytes([byte]) * 512)
+        self.assertEqual(verify._crc32c_cached.cache_info().currsize, 2)
+        before = verify._crc32c_cached.cache_info()
+        with patch.object(verify, '_MAX_CACHED_CRC_BYTES', 512):
+            data = b'x' * 513
+            self.assertEqual(verify.crc32c(data), verify._crc32c_scalar(data))
+        self.assertEqual(verify._crc32c_cached.cache_info(), before)
+
+
 class MetadataInvariants(unittest.TestCase):
     def setUp(self):
         self.evidence = verify.source_binding.load_json(verify.ROOT/'evidence.json')
