@@ -265,7 +265,7 @@ def round8_cases():
     readme=(ROOT/'README.md').read_text()
     blocks=re.findall(r'```sh\n(.*?)```',readme,re.S)
     build=next(block for block in blocks if 'CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0' in block)
-    for original,replacement in [('unset RUSTUP_TOOLCHAIN','unset'),('TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu','TOOLCHAIN=stable'),('cd "$ARMS/$ARM"','cd "."')]:
+    for original,replacement in [('unset RUSTUP_TOOLCHAIN','unset'),('TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu','TOOLCHAIN=stable'),('cd "$ARMS/$ARM"','cd "."'),('ARMS=$(cd "$ARMS" && pwd -P)','ARMS="$ARMS"')]:
         def changed_selector(root,original=original,replacement=replacement):
             path=root/'README.md';text=path.read_text();assert original in text;path.write_text(text.replace(original,replacement,1))
         run_case('toolchain recipe selector '+original,changed_selector,expected_error='pinned native-library build environment missing or changed')
@@ -297,6 +297,16 @@ def round8_cases():
             assert args[position+1]==str(manifest) and manifest.is_file(), 'build recipe must select generated arm manifest'
             assert [args[i+1] for i,value in enumerate(args[:-1]) if value=='--test']==['scratch_scored_fixture','scratch_scored_multihop']
             print('PASS: inert build selects pinned toolchain, '+arm+' generated manifest/CWD and clears seven compiler selectors/flags/wrappers')
+        absolute_arms=Path(env['ARMS'])
+        env['ARMS']=os.path.relpath(absolute_arms,ROOT)
+        for arm in ['baseline','scored']:
+            env['ARM']=arm
+            result=subprocess.run(['sh','-c',build],cwd=ROOT,env=env,capture_output=True,text=True)
+            assert result.returncode==0,result.stderr
+            captured=json.loads(result.stdout);manifest=absolute_arms/arm/'Cargo.toml'
+            args=captured['__argv__'];position=args.index('--manifest-path')
+            assert args[position+1]==str(manifest) and captured['__cwd__']==str(manifest.parent), 'relative ARMS must canonicalize before child cd'
+            print('PASS: inert build canonicalizes relative ARMS for '+arm+' manifest/CWD')
         for name in ['rustc','cargo']:
             wrong=dict(env,**{'STUB_VERSION_'+name:'wrong recorded version'})
             result=subprocess.run(['sh','-c',build],cwd=ROOT,env=wrong,capture_output=True,text=True)

@@ -178,6 +178,7 @@ unset RUSTUP_TOOLCHAIN RUSTC RUSTDOC
 TOOLCHAIN=1.98.1-x86_64-unknown-linux-gnu
 test "$(rustc +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["rustc"], end="")')"
 test "$(cargo +"$TOOLCHAIN" -Vv)" = "$(python3 -c 'import json; print(json.load(open("provenance.json"))["toolchain"]["cargo"], end="")')"
+ARMS=$(cd "$ARMS" && pwd -P)
 cd "$ARMS/$ARM"
 env -u ORT_LIB_PATH -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
 -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER \
@@ -196,7 +197,8 @@ variables reproduce the selected native link/runtime path; they are not a
 complete transitive source-to-build certificate. Run this complete subshell from the evidence directory. It clears inherited
 Rust toolchain/compiler selectors, explicitly selects `1.98.1-x86_64-unknown-linux-gnu`,
 and checks both complete verbose versions against the pinned provenance before
-changing to the generated arm workspace. The explicit manifest and child working
+canonicalizing `$ARMS` and changing to the generated arm workspace. Relative
+`ARMS` values are resolved from the initial evidence directory. The explicit manifest and child working
 directory both select `$ARMS/$ARM`. Set `ARM` to `baseline` or `scored`
 before each build. The command selects the same two-target compilation scope. It does not select or run the multihop stress test. Copy the fixture executable before any later
 clean/build. Use a prepared
