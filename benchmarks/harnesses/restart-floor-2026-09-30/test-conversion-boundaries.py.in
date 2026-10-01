@@ -1,0 +1,18 @@
+"""Pure fake-byte/ownership mocks; no product, compiler or native process."""
+import hashlib,json,os,runpy,sys,tempfile,unittest
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+ROOT=Path(__file__).resolve().parent
+conversion=runpy.run_path(str(ROOT/'run-conversion-guarded.py.in'))
+class Guards(unittest.TestCase):
+ def test_conversion_boundaries_before_content_reads(self):
+   seed=Path('/workspace/scratch/restart-floor/seed-disk');g=conversion['main'].__globals__
+   for attestation,binary,reason in [(seed/'attestation.json','/external/fake','attestation'),(Path('/external/attestation.json'),str(seed/'binary'),'executable')]:
+    reads=[]
+    def read(path,*args,**kwargs):
+     reads.append(path);return json.dumps({'arms':{'candidate':{'binary':binary}}})
+    with patch.object(Path,'read_text',read),patch.dict(g,{'verified_binary':lambda a:self.fail('binary content read')}),patch.object(sys,'argv',['conversion','--attestation',str(attestation),'--log','/external/log']):
+     with self.assertRaisesRegex(AssertionError,'conversion '+reason+' must be outside measured seed'):conversion['main']()
+    self.assertEqual(reads,[] if reason=='attestation' else [attestation])
+if __name__=='__main__':unittest.main()
