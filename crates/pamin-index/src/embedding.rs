@@ -163,6 +163,7 @@ pub struct Encoded {
 
 /// Turns text into vectors.
 pub struct Embedder {
+    cache_dir: std::path::PathBuf,
     model: Box<Encoder>,
     profile: Profile,
     device: crate::inference::Device,
@@ -181,90 +182,7 @@ impl Embedder {
     /// binary by an order of magnitude, and a user who never searches should
     /// not pay for it.
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
-        std::fs::create_dir_all(cache_dir)?;
-        let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-            Repository::open_at(
-                cache_dir,
-                JOINT_REPOSITORY,
-                if profile == Profile::DualAccuracy {
-                    "2b34e84df040034d4b9eabb62383a87c18955822"
-                } else {
-                    "main"
-                },
-            )?
-        } else {
-            let model = profile.model();
-            let info = TextEmbedding::get_model_info(&model)
-                .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-            Repository::open(cache_dir, &info.model_code)?
-        };
-        let identity = format!(
-            "embedding-query-v3:{}:{}",
-            profile.model_id(),
-            repository.identity(cache_dir)
-        );
-        let references = std::cell::RefCell::new(crate::inference::References::default());
-        let long = "migration ".repeat(600);
-        let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
-        {
-            vec![
-                "deployment rollback".into(),
-                "数据库迁移失败后如何回滚？".into(),
-                long,
-            ]
-        } else {
-            // The accelerator's actual batch cap and token limit: large
-            // cascade/reindex inputs are split into these validated chunks.
-            (0..8)
-                .map(|i| {
-                    if i % 2 == 0 {
-                        long.clone()
-                    } else {
-                        "数据库迁移失败后如何回滚？".into()
-                    }
-                })
-                .collect()
-        };
-        let (model, device) = crate::inference::measured(
-            &identity,
-            cache_dir,
-            &references,
-            |device, target, _validated| load_on(profile, cache_dir, device, target),
-            |model, device| {
-                let mut reference = references.borrow_mut();
-                // Reject an already incompatible short query before compiling
-                // or allocating the much larger maximum-token/batch shape.
-                let elapsed = crate::inference::time_calls(|| {
-                    let mut vectors = Vec::new();
-                    for query in ["deployment rollback", "数据库迁移失败后如何回滚？"]
-                    {
-                        let input = match profile.prefixes() {
-                            Some((prefix, _)) => format!("{prefix}{query}"),
-                            None => query.to_string(),
-                        };
-                        vectors.extend(profile_vectors(profile, model, device, vec![input])?);
-                    }
-                    check_vectors(
-                        vectors,
-                        &mut reference.queries,
-                        profile.dimensions() as usize,
-                    )
-                })?;
-                let vectors = profile_vectors(profile, model, device, fixtures.clone())?;
-                check_vectors(
-                    vectors,
-                    &mut reference.vectors,
-                    profile.dimensions() as usize,
-                )?;
-                Ok(elapsed)
-            },
-        )?;
-
-        if device == crate::inference::Device::Cpu
-            && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
-        {
-            crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
-        }
+        let (model, device) = primary_model(profile, cache_dir)?;
         let secondary = if profile == Profile::DualAccuracy {
             let (model, device) = complementary(cache_dir)?;
             Some((Box::new(model), device))
@@ -277,6 +195,7 @@ impl Embedder {
             "embedder loaded"
         );
         Ok(Self {
+            cache_dir: cache_dir.to_path_buf(),
             model: Box::new(model),
             profile,
             device,
@@ -326,11 +245,7 @@ impl Embedder {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }?;
-        let secondary = self
-            .secondary
-            .as_mut()
-            .map(|(model, _)| complementary_vector(model, text))
-            .transpose()?;
+        let secondary = self.secondary_vector(text)?;
         let encoded = Encoded { primary, secondary };
         self.remembered.put(text, &encoded);
         Ok(encoded)
@@ -338,11 +253,7 @@ impl Embedder {
 
     pub fn encode_passage(&mut self, text: &str) -> Result<Encoded> {
         let primary = self.embed_passage(text)?;
-        let secondary = self
-            .secondary
-            .as_mut()
-            .map(|(model, _)| complementary_vector(model, text))
-            .transpose()?;
+        let secondary = self.secondary_vector(text)?;
         Ok(Encoded { primary, secondary })
     }
 
@@ -352,11 +263,7 @@ impl Embedder {
             .into_iter()
             .zip(texts)
             .map(|(primary, text)| {
-                let secondary = self
-                    .secondary
-                    .as_mut()
-                    .map(|(model, _)| complementary_vector(model, text))
-                    .transpose()?;
+                let secondary = self.secondary_vector(text)?;
                 Ok(Encoded { primary, secondary })
             })
             .collect()
@@ -419,15 +326,127 @@ impl Embedder {
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        profile_vectors(self.profile, &mut self.model, self.device, texts)
+        let profile = self.profile;
+        let cache = &self.cache_dir;
+        crate::inference::retry_model(
+            &mut self.model,
+            &mut self.device,
+            cache,
+            |model, device| profile_vectors(profile, model, device, &texts),
+            || primary_model(profile, cache).map(|(model, device)| (Box::new(model), device)),
+        )
     }
+
+    fn secondary_vector(&mut self, text: &str) -> Result<Option<Vec<f32>>> {
+        let Some((model, device)) = &mut self.secondary else {
+            return Ok(None);
+        };
+        let cache = &self.cache_dir;
+        crate::inference::retry_model(
+            model,
+            device,
+            cache,
+            |model, _| complementary_vector(model, text),
+            || complementary(cache).map(|(model, device)| (Box::new(model), device)),
+        )
+        .map(Some)
+    }
+}
+
+fn primary_model(
+    profile: Profile,
+    cache_dir: &std::path::Path,
+) -> Result<(Encoder, crate::inference::Device)> {
+    std::fs::create_dir_all(cache_dir)?;
+    let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+        Repository::open_at(
+            cache_dir,
+            JOINT_REPOSITORY,
+            if profile == Profile::DualAccuracy {
+                "2b34e84df040034d4b9eabb62383a87c18955822"
+            } else {
+                "main"
+            },
+        )?
+    } else {
+        let model = profile.model();
+        let info = TextEmbedding::get_model_info(&model)
+            .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
+        Repository::open(cache_dir, &info.model_code)?
+    };
+    let identity = format!(
+        "embedding-query-v3:{}:{}",
+        profile.model_id(),
+        repository.identity(cache_dir)
+    );
+    let references = std::cell::RefCell::new(crate::inference::References::default());
+    let long = "migration ".repeat(600);
+    let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+        vec![
+            "deployment rollback".into(),
+            "数据库迁移失败后如何回滚？".into(),
+            long,
+        ]
+    } else {
+        // The accelerator's actual batch cap and token limit: large
+        // cascade/reindex inputs are split into these validated chunks.
+        (0..8)
+            .map(|i| {
+                if i % 2 == 0 {
+                    long.clone()
+                } else {
+                    "数据库迁移失败后如何回滚？".into()
+                }
+            })
+            .collect()
+    };
+    let (model, device) = crate::inference::measured(
+        &identity,
+        cache_dir,
+        &references,
+        |device, target, _validated| load_on(profile, cache_dir, device, target),
+        |model, device| {
+            let mut reference = references.borrow_mut();
+            // Reject an already incompatible short query before compiling
+            // or allocating the much larger maximum-token/batch shape.
+            let elapsed = crate::inference::time_calls(|| {
+                let mut vectors = Vec::new();
+                for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
+                    let input = match profile.prefixes() {
+                        Some((prefix, _)) => format!("{prefix}{query}"),
+                        None => query.to_string(),
+                    };
+                    vectors.extend(profile_vectors(profile, model, device, &[input])?);
+                }
+                check_vectors(
+                    vectors,
+                    &mut reference.queries,
+                    profile.dimensions() as usize,
+                )
+            })?;
+            let vectors = profile_vectors(profile, model, device, &fixtures)?;
+            check_vectors(
+                vectors,
+                &mut reference.vectors,
+                profile.dimensions() as usize,
+            )?;
+            Ok(elapsed)
+        },
+    )?;
+
+    if device == crate::inference::Device::Cpu
+        && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
+    {
+        crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
+    }
+    Ok((model, device))
 }
 
 fn profile_vectors(
     profile: Profile,
     model: &mut Encoder,
     device: crate::inference::Device,
-    texts: Vec<String>,
+    texts: &[String],
 ) -> Result<Vec<Vec<f32>>> {
     match profile {
         Profile::Accuracy | Profile::DualAccuracy => {
@@ -435,7 +454,7 @@ fn profile_vectors(
         }
         _ => e5_vectors(
             model,
-            &texts,
+            texts,
             if device == crate::inference::Device::Cpu {
                 256
             } else {
@@ -880,6 +899,7 @@ mod tests {
                 joint_session(&repository, &weights, &cache, device, vec![provider]).unwrap()
             };
             let mut embedder = Embedder {
+                cache_dir: cache.clone(),
                 model: Box::new(model),
                 profile: Profile::Accuracy,
                 device,
@@ -903,6 +923,7 @@ mod tests {
             .unwrap();
         let model = Encoder::from_session(session, &repository, JOINT_MAX_TOKENS).unwrap();
         let mut control = Embedder {
+            cache_dir: cache.clone(),
             model: Box::new(model),
             profile: Profile::Accuracy,
             device: crate::inference::Device::Cpu,

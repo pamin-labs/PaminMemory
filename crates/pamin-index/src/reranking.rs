@@ -224,7 +224,7 @@
 //! divide the gain differently -- is now the MIRACL section above. It does
 //! divide it differently, and not in the direction the caveat guessed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -617,6 +617,7 @@ pub struct Ranked {
 
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
+    cache_dir: PathBuf,
     model: Encoder,
     tier: Rerank,
     device: Device,
@@ -711,112 +712,10 @@ impl Reranker {
     /// directory of weights rather than two.
     pub fn load(tier: Rerank, cache_dir: &Path) -> Result<Self> {
         debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
-        std::fs::create_dir_all(cache_dir)?;
-
-        let repository = Repository::open(cache_dir, tier.repository())?;
-
-        let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-            let weights = repository.file(cache_dir, tier.onnx(device));
-            let model = || match device {
-                // The file the hub serves is copied onto the heap whole; on
-                // the CPU, the prepared copy is mapped instead -- see
-                // `crate::prepared` for what that saves -- and the download
-                // removed once the copy has loaded.
-                Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                Device::CoreMl if tier == Rerank::Accurate => {
-                    let source = repository.get(tier.onnx(device))?;
-                    crate::native::prepare(&source, cache_dir)
-                }
-                _ => repository.get(tier.onnx(device)),
-            };
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
-                Encoder::load_fixed_coreml(model, &repository, max_tokens())
-            } else {
-                Encoder::load(model, &repository, max_tokens(), providers)
-            };
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            let loaded = Encoder::load(model, &repository, max_tokens(), providers);
-            let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
-            // The shared calibration compares actual candidate scores with
-            // the already resident product CPU reference. Do not allocate a
-            // third FP16 CPU session while both plans are live.
-            encoder.require_accelerator(device)?;
-            if device == Device::Cpu {
-                crate::prepared::release(&weights, cache_dir);
-            }
-            Ok(encoder)
-        };
-
-        // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
-        // XQuAD-R quality and beat its CoreML FP32 export on every paired
-        // search. Accurate still uses the shared CoreML-first policy.
-        let (model, device) =
-            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
-                (
-                    session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
-                    Device::Cpu,
-                )
-            } else {
-                let references = std::cell::RefCell::new(crate::inference::References::default());
-                crate::inference::measured(
-                    &format!(
-                        "reranker-v3:{}:{}:{}:{}:{}",
-                        tier.name(),
-                        repository.identity(cache_dir),
-                        max_tokens(),
-                        batch(),
-                        batch_tokens()
-                    ),
-                    cache_dir,
-                    &references,
-                    session,
-                    |model, _device| {
-                        let mut reference = references.borrow_mut();
-                        let long = "harbour migration rollback policy ".repeat(max_tokens());
-                        let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
-                        let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
-                        if longest != max_tokens() {
-                            return Err(IndexError::Engine(
-                                "maximum-token fixture did not reach the configured limit".into(),
-                            ));
-                        }
-                        let values = score(model, encoded, batch_tokens(), batch())?.0;
-                        if values.len() != 1 || !values[0].is_finite() {
-                            return Err(IndexError::Numerical(
-                                "maximum-token reranker fixture returned invalid output".into(),
-                            ));
-                        }
-                        crate::inference::time_calls(|| {
-                            let pairs = calibration_pairs(tier, &long);
-                            let count = pairs.len();
-                            let encoded = model.encode(pairs)?;
-                            let values = score(model, encoded, batch_tokens(), batch())?.0;
-                            if values.len() != count || !values.iter().all(|v| v.is_finite()) {
-                                return Err(IndexError::Numerical(
-                                    "reranker calibration returned invalid scores".into(),
-                                ));
-                            }
-                            match &reference.scores {
-                                None => reference.scores = Some(values),
-                                Some(reference) => {
-                                    check_accelerator_ordering(&reference[..4], &values[..4])?
-                                }
-                            }
-                            Ok(())
-                        })
-                    },
-                )?
-            };
-        tracing::info!(
-            tier = tier.name(),
-            device = device.name(),
-            maximum_tokens = model.maximum_tokens(),
-            "reranker loaded"
-        );
+        let (model, device) = load_model(tier, cache_dir)?;
 
         Ok(Self {
+            cache_dir: cache_dir.to_path_buf(),
             model,
             tier,
             device,
@@ -892,17 +791,36 @@ impl Reranker {
                 .iter()
                 .map(|position| (query, documents[*position]))
                 .collect();
-            let encoding = Instant::now();
-            let encodings = self.model.encode(pairs).map_err(reranking)?;
-            let encode_us = encoding.elapsed().as_micros() as u64;
-            let tokens = encodings
-                .iter()
-                .map(|encoding| encoding.len() as u64)
-                .sum::<u64>();
-            let attempt = score(&mut self.model, encodings, batch_tokens(), batch());
+            let previous = self.device;
+            let tier = self.tier;
+            let cache = &self.cache_dir;
+            let (tokens, encode_us, attempt) = crate::inference::retry_model(
+                &mut self.model,
+                &mut self.device,
+                cache,
+                |model, _| {
+                    let encoding = Instant::now();
+                    let encodings = model.encode(pairs.clone())?;
+                    let encode_us = encoding.elapsed().as_micros() as u64;
+                    let tokens = encodings
+                        .iter()
+                        .map(|encoding| encoding.len() as u64)
+                        .sum::<u64>();
+                    let completed = score(model, encodings, batch_tokens(), batch())?;
+                    Ok((tokens, encode_us, completed))
+                },
+                || load_model(tier, cache),
+            )
+            .map_err(reranking)?;
+            if self.device != previous {
+                // CPU and accelerator exports may have different logit scales.
+                // Rescore the whole request; never mix old cached logits with new.
+                self.scores = Scores::default();
+                return self.rank(query, documents);
+            }
             let scored = self
                 .work
-                .commit(unscored.len(), tokens, encode_us, attempt)
+                .commit(unscored.len(), tokens, encode_us, Ok(attempt))
                 .map_err(reranking)?;
             self.lengths.total += characters;
             self.lengths.longest = self.lengths.longest.max(longest);
@@ -973,6 +891,115 @@ impl Reranker {
 
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
+fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
+    std::fs::create_dir_all(cache_dir)?;
+
+    let repository = Repository::open(cache_dir, tier.repository())?;
+
+    let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
+        let weights = repository.file(cache_dir, tier.onnx(device));
+        let model = || match device {
+            // The file the hub serves is copied onto the heap whole; on
+            // the CPU, the prepared copy is mapped instead -- see
+            // `crate::prepared` for what that saves -- and the download
+            // removed once the copy has loaded.
+            Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Device::CoreMl if tier == Rerank::Accurate => {
+                let source = repository.get(tier.onnx(device))?;
+                crate::native::prepare(&source, cache_dir)
+            }
+            _ => repository.get(tier.onnx(device)),
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
+            Encoder::load_fixed_coreml(model, &repository, max_tokens())
+        } else {
+            Encoder::load(model, &repository, max_tokens(), providers)
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let loaded = Encoder::load(model, &repository, max_tokens(), providers);
+        let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
+        // The shared calibration compares actual candidate scores with
+        // the already resident product CPU reference. Do not allocate a
+        // third FP16 CPU session while both plans are live.
+        encoder.require_accelerator(device)?;
+        if device == Device::Cpu {
+            crate::prepared::release(&weights, cache_dir);
+        }
+        Ok(encoder)
+    };
+
+    // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
+    // XQuAD-R quality and beat its CoreML FP32 export on every paired
+    // search. Accurate still uses the shared CoreML-first policy.
+    let (model, device) =
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
+            (
+                session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
+                Device::Cpu,
+            )
+        } else {
+            let references = std::cell::RefCell::new(crate::inference::References::default());
+            crate::inference::measured(
+                &format!(
+                    "reranker-v3:{}:{}:{}:{}:{}",
+                    tier.name(),
+                    repository.identity(cache_dir),
+                    max_tokens(),
+                    batch(),
+                    batch_tokens()
+                ),
+                cache_dir,
+                &references,
+                session,
+                |model, _device| {
+                    let mut reference = references.borrow_mut();
+                    let long = "harbour migration rollback policy ".repeat(max_tokens());
+                    let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
+                    let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
+                    if longest != max_tokens() {
+                        return Err(IndexError::Engine(
+                            "maximum-token fixture did not reach the configured limit".into(),
+                        ));
+                    }
+                    let values = score(model, encoded, batch_tokens(), batch())?.0;
+                    if values.len() != 1 || !values[0].is_finite() {
+                        return Err(IndexError::Numerical(
+                            "maximum-token reranker fixture returned invalid output".into(),
+                        ));
+                    }
+                    crate::inference::time_calls(|| {
+                        let pairs = calibration_pairs(tier, &long);
+                        let count = pairs.len();
+                        let encoded = model.encode(pairs)?;
+                        let values = score(model, encoded, batch_tokens(), batch())?.0;
+                        if values.len() != count || !values.iter().all(|v| v.is_finite()) {
+                            return Err(IndexError::Numerical(
+                                "reranker calibration returned invalid scores".into(),
+                            ));
+                        }
+                        match &reference.scores {
+                            None => reference.scores = Some(values),
+                            Some(reference) => {
+                                check_accelerator_ordering(&reference[..4], &values[..4])?
+                            }
+                        }
+                        Ok(())
+                    })
+                },
+            )?
+        };
+    tracing::info!(
+        tier = tier.name(),
+        device = device.name(),
+        maximum_tokens = model.maximum_tokens(),
+        "reranker loaded"
+    );
+
+    Ok((model, device))
+}
+
 fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
     let mut pairs = ORDER_PAIRS.to_vec();
     if tier == Rerank::Accurate {
