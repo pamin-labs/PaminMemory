@@ -19,7 +19,7 @@ Before is selected main `315c10242ddf7a1cec3bccbf550a942320e09557`; after is mea
 | Shipped product executable logical bytes | N/A | N/A | N/A | N/A |
 | Total service/device memory; lifetime CPU; temporary peak allocation | N/A | N/A | N/A | N/A |
 
-Actual boundary: CPU ReadOnly `Engine::search_reranked`, 230-document Flat index, accuracy profile, Accurate limits5/10 with two primary synthetic scenarios and two context histories, plus Off controls. Four independent rotated process blocks per cell. Accurate hot quantiles pool five dependent calls per process (20 per arm); Off hot quantiles pool one call per process (four per arm). Each detailed metric row prints its sample count. Do not treat 20 hot calls as 20 independent backend repetitions. All 46 p50 and 46 descriptive p95 wall groups withhold stable eligibility because of per-arm variability, paired sign changes or paired-percentage spread; incorrect-output/different-work comparisons are additionally ineligible.
+Actual boundary: CPU ReadOnly mixed `Engine::search_reranked` (496 A/N calls) and `Engine::search_reranked_with` (384 Accurate B-context calls with explicit fusion), 230-document Flat index, accuracy profile, Accurate limits5/10 with two primary synthetic scenarios and two context histories, plus Off controls. Four independent rotated process blocks per cell. Accurate hot quantiles pool five dependent calls per process (20 per arm); Off hot quantiles pool one call per process (four per arm). Each detailed metric row prints its sample count. Do not treat 20 hot calls as 20 independent backend repetitions. All 46 p50 and 46 descriptive p95 wall groups withhold stable eligibility because of per-arm variability, paired sign changes or paired-percentage spread; incorrect-output/different-work comparisons are additionally ineligible.
 
 Both sources already use INT8 prepared BGE-M3 and Accurate exports with FP32 outputs. Model revisions are `2b34e84df040034d4b9eabb62383a87c18955822` and `6f5ff65298512715a1e669753bc754d2bc8f367b`; actual ORT1.28.0 CPU node assignments are embedding1023 and reranker295. AMD EPYC9V74 shared Linux host, four-CPU quota and five eligible logical CPUs. Inference thread environment was unset; effective intra-op count and during-query frequency are unmeasured. First search uses a fresh process/session, while hash preflight warmed OS pages and prepared model caches already existed. This is not disk-cold loading or Apple device evidence.
 
@@ -54,3 +54,12 @@ They include the measurement scaffold and different source-root strings. The
 verifier relabels them as helper artifacts and adds a product executable N/A row;
 no product binary was built or measured to correct this scope. Original raw
 observations and their arithmetic remain unchanged.
+
+The unchanged historical `conditions.entrypoint` label names only
+`Engine.search_reranked`. The byte-exact [measured probe](../../../harnesses/selected-main-stack-2026-10-01/probe.rs.in) routes all A/N timed calls through that method and B timed calls through
+`Engine.search_reranked_with`. Each of 64 Accurate processes has six B calls
+(384 total); the other 496 of 880 calls use the standard method. The verifier
+derives this mixed condition from validated per-call context chronology and
+prints the corrected boundary. Full-result diagnostics use the explicit fusion
+method outside timing. This annotation correction leaves the original evidence,
+input-scope audit, numerical rows and measured probe bytes unchanged.

@@ -1,5 +1,6 @@
 Sanitized table arithmetic only. Correctness, quality, source/runtime and payload attestations require retained private evidence.
 Input-scope audit is private-attested: 16 paired history cells changed model bytes; 16 were unchanged-input controls. Controls are excluded from changed-input correctness/speed proof.
+Timed boundary is mixed: 496 calls use Engine.search_reranked (A/N); 384 Accurate B-context calls use Engine.search_reranked_with (explicit fusion). The legacy blanket entrypoint label remains recorded metadata, not the corrected execution condition. Full-result diagnostics are outside timing.
 Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.
 Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.
 Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.

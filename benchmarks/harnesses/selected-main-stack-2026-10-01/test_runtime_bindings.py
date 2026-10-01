@@ -71,5 +71,28 @@ class RuntimeBindings(unittest.TestCase):
                         self.run.parse(text.replace('libzvec_c_api.so', 'other.so'), job, bound)
 
 
+class PublicEntryPoints(unittest.TestCase):
+    def test_historical_boundary_is_mixed_without_changing_evidence(self):
+        public = fixtures.ROOT.parents[1] / 'results/inference/selected-main-stack-2026-10-01'
+        verifier = fixtures.load('public_entrypoint_verifier', public / 'verify.py')
+        data = json.loads((public / 'evidence.json').read_text())
+        original = copy.deepcopy(data)
+        audit = json.loads((public / 'input-scope-audit.json').read_text())
+        result = verifier.tables(data, audit)
+        self.assertEqual(data, original)
+        self.assertEqual(result['conditions']['timed_entrypoint_calls'],
+                         {'Engine.search_reranked': 496, 'Engine.search_reranked_with': 384})
+        self.assertEqual(result['conditions']['recorded_entrypoint'], 'Engine.search_reranked')
+        self.assertEqual(result['conditions']['entrypoint'],
+                         'mixed Engine.search_reranked and Engine.search_reranked_with')
+        self.assertIn('384 Accurate B-context calls', verifier.markdown(result))
+        wrong = copy.deepcopy(data)
+        wrong['processes'][0]['calls'][0]['context'] = 'B' if wrong['processes'][0]['calls'][0]['context'] != 'B' else 'A'
+        with self.assertRaisesRegex(ValueError, 'mixed timed entrypoint counts differ'):
+            verifier.execution_conditions(wrong)
+        with self.assertRaisesRegex(ValueError, 'phase/context chronology'):
+            verifier.validate(wrong)
+
+
 if __name__ == '__main__':
     unittest.main()
