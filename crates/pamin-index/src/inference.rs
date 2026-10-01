@@ -562,7 +562,6 @@ fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Inst
     let mut failures = runtime_failures()
         .lock()
         .expect("runtime quarantine poisoned");
-    failures.retain(|_, until| *until > now);
     // Bound metadata even if many distinct failed exports are loaded.
     if failures.len() >= MAX_DISK_PLANS {
         let oldest = failures
@@ -583,26 +582,43 @@ fn runtime_available(cache_dir: &Path, namespace: &str, target: &str) -> bool {
     let root = cache_dir
         .canonicalize()
         .unwrap_or_else(|_| cache_dir.to_path_buf());
-    let mut failed = runtime_failures()
+    let failed = runtime_failures()
         .lock()
         .expect("runtime quarantine poisoned");
-    let now = std::time::Instant::now();
-    failed.retain(|_, until| *until > now);
-    !failed.contains_key(&(root, namespace.into(), target.into()))
+    failed
+        .get(&(root, namespace.into(), target.into()))
+        .is_none_or(|until| *until <= std::time::Instant::now())
 }
 
-fn runtime_retry(cache_dir: &Path, namespace: &str) -> Option<(std::time::Instant, String)> {
+fn runtime_retry(
+    cache_dir: &Path,
+    namespace: &str,
+    discovered: &[String],
+    now: std::time::Instant,
+) -> Option<(std::time::Instant, String)> {
     let root = cache_dir
         .canonicalize()
         .unwrap_or_else(|_| cache_dir.to_path_buf());
-    let now = std::time::Instant::now();
     runtime_failures()
         .lock()
         .expect("runtime quarantine poisoned")
         .iter()
-        .filter(|((path, scope, _), until)| path == &root && scope == namespace && **until > now)
+        .filter(|((path, scope, target), until)| {
+            path == &root && scope == namespace && (**until > now || !discovered.contains(target))
+        })
         .min_by_key(|(_, until)| **until)
-        .map(|((_, _, target), until)| (*until, target.clone()))
+        .map(|((_, _, target), until)| {
+            // A reset NPU can remain absent past quarantine expiry. Continue
+            // bounded rediscovery until it participates in full qualification.
+            (
+                if *until > now {
+                    *until
+                } else {
+                    now + RUNTIME_RETRY
+                },
+                target.clone(),
+            )
+        })
 }
 
 /// Expired fallbacks must reach a real model call even when the request is
@@ -762,7 +778,17 @@ pub(crate) fn measured<T: RuntimeModel>(
         ort::info(),
         threads()
     );
-    let blocked = runtime_retry(cache_dir, &namespace);
+    let discovered = accelerators();
+    let target_ids: Vec<_> = discovered
+        .iter()
+        .map(|(device, target)| target_identity(*device, target))
+        .collect();
+    let blocked = runtime_retry(
+        cache_dir,
+        &namespace,
+        &target_ids,
+        std::time::Instant::now(),
+    );
     let load = |device, target: Target, validated| -> Result<T> {
         let target_id = target_identity(device, &target);
         let mut model = load(device, target, validated)?;
@@ -774,7 +800,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         };
         Ok(model)
     };
-    let plans: Vec<_> = accelerators()
+    let plans: Vec<_> = discovered
         .into_iter()
         .filter(|(device, target)| {
             runtime_available(cache_dir, &namespace, &target_identity(*device, target))
@@ -1872,7 +1898,7 @@ mod tests {
         let now = std::time::Instant::now();
         let failed = RuntimeFixture::new(0, "npu:first:1");
         quarantine_runtime(root.path(), &failed.plan, now);
-        let blocked = runtime_retry(root.path(), &failed.plan.namespace).unwrap();
+        let blocked = runtime_retry(root.path(), &failed.plan.namespace, &[], now).unwrap();
         assert_eq!(blocked, (now + RUNTIME_RETRY, "npu:first:1".into()));
         let mut cpu = RuntimeFixture::new(0, "cpu");
         finish_runtime_selection(&mut cpu.plan, Some(blocked), true, now);
@@ -1888,6 +1914,29 @@ mod tests {
         }
         finish_runtime_selection(&mut cpu.plan, None, false, now);
         assert_eq!(cpu.plan.retry_at, Some(now + RUNTIME_RETRY));
+    }
+
+    #[test]
+    fn missing_target_keeps_rediscovery_after_its_quarantine_expires() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let failed = RuntimeFixture::new(0, "npu:reset:1");
+        quarantine_runtime(root.path(), &failed.plan, now);
+        let later = now + RUNTIME_RETRY * 2;
+        let blocked = runtime_retry(root.path(), &failed.plan.namespace, &[], later).unwrap();
+        assert_eq!(blocked, (later + RUNTIME_RETRY, "npu:reset:1".into()));
+        let mut model = RuntimeFixture::new(0, "cpu");
+        finish_runtime_selection(&mut model.plan, Some(blocked), true, later);
+        assert_eq!(model.plan.retry_at, Some(later + RUNTIME_RETRY));
+        assert!(
+            runtime_retry(
+                root.path(),
+                &failed.plan.namespace,
+                &["npu:reset:1".into()],
+                later
+            )
+            .is_none()
+        );
     }
 
     #[test]
