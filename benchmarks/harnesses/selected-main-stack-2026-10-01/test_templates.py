@@ -548,7 +548,8 @@ class Templates(unittest.TestCase):
              patch.object(self.rows, 'oracle_checks', return_value=classifications):
             result = self.analyzer.report(packets)
             self.assertEqual(result['calls'], 880)
-            self.assertEqual(result['host_conditions'][0]['cpu_quota'], '400000 100000')
+            self.assertIsNone(result['host_conditions'][0]['conditions'])
+            self.assertIn('missing endpoints N/A', result['host_conditions_scope'])
             pg_rows = [r for r in result['disk'] if r['metric'].startswith('owned PG')]
             self.assertEqual(len(pg_rows), 4)
             self.assertTrue(all(r['before'] is not None for r in pg_rows))

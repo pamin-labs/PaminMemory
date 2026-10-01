@@ -118,7 +118,13 @@ def report(packets, provider_binding=None):
             'correctness': correctness, 'control_diagnostics': control_diagnostics, 'classifications': classifications,
             'metrics': measured_metrics,
             'process_metrics': process_metrics, 'disk': disk,
-            'host_conditions': [json.loads(line) for line in (c.ROOT / 'host-conditions.jsonl').read_text().splitlines()],
+            'host_conditions': [{'job': p['job']['name'], 'endpoint': endpoint,
+                                 'conditions': p['host_conditions'].get(endpoint)
+                                 if type(p.get('host_conditions')) is dict else None}
+                                for p in packets for endpoint in ['before', 'after']],
+            'host_conditions_scope': 'Retained process before/after endpoints only, from completion-bound packets '
+                                     'revalidated by main; missing endpoints N/A. Startup/monitoring journal '
+                                     'is ancillary and not imported into reports; no continuous hardware proof.',
             'postgres_build_identities': [{'job': p['job']['name'], 'identity': p.get('postgres_build_identity')} for p in packets],
             'process_host_conditions': [{'job': p['job']['name'], 'conditions': p.get('host_conditions')} for p in packets],
             'scope': 'CPU ReadOnly Engine search; four rotated independent process blocks; hot calls dependent; '
@@ -131,8 +137,9 @@ def report(packets, provider_binding=None):
 def write_tables(path, result):
     value = lambda v: 'N/A' if v is None else str(v)
     lines = ['# Regenerated synthetic experiment', '', result['scope'], '',
-             'Actual admission/monitoring host conditions are retained in metrics.json and host-conditions.jsonl; '
-             + str(len(result['host_conditions'])) + ' observations. First observation: ' + json.dumps(result['host_conditions'][0]), '',
+             result.get('host_conditions_scope', 'Endpoint metadata; binding N/A for direct renderer fixtures.') + ' '
+             + str(len(result['host_conditions'])) + ' endpoint records. First endpoint: '
+             + json.dumps(result['host_conditions'][0] if result['host_conditions'] else None), '',
              '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Samples per arm | Eligibility |',
              '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
     for group in ['correctness', 'control_diagnostics', 'metrics', 'process_metrics', 'disk']:
