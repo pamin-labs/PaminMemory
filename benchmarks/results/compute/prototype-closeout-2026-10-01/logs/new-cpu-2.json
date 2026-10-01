@@ -29,12 +29,15 @@
     {
       "line": 6,
       "event": "reranker_loaded",
-      "device": "cpu"
+      "device": "cpu",
+      "tier": "accurate",
+      "maximum_tokens": 256
     },
     {
       "line": 7,
       "event": "embedder_loaded",
-      "device": "cpu"
+      "device": "cpu",
+      "model": "gpahal/bge-m3-onnx-int8"
     },
     {
       "line": 8,

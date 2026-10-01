@@ -144,8 +144,8 @@ def verify_costs(baseline_queries):
             assert len(queries) == 66 and len({r["id"] for r in queries}) == 66
             assert block["manifest"] == manifest, "raw and summary manifests differ"
             assert raw[0]["documents"] == 13014 and all(r["ranked"] for r in queries)
-            if name == "main-cpu":
-                assert [q["ranked"] for q in queries] == [baseline_queries[18 * i]["ranked"] for i in range(66)], "main CPU ranking differs from full baseline"
+            if name in {"main-cpu", "new-cpu"}:
+                assert [q["ranked"] for q in queries] == [baseline_queries[18 * i]["ranked"] for i in range(66)], "default CPU ranking differs from full baseline"
             work = [r for r in raw if r["kind"] == "work"]
             assert len(work) == 1 and work[0]["new_scores"] > 0 and work[0]["offered"] > 0
             values = sorted(r["seconds"] * 1000 for r in queries)
@@ -159,43 +159,6 @@ def verify_costs(baseline_queries):
 
 DEVICES = {"cpu", "cuda", "coreml", "directml", "npu"}
 LOADED_EVENTS = {"embedder_loaded", "reranker_loaded"}
-
-# Independent frozen premises, not derived from mutable proof summaries.
-# Historical main logs contain only the reranker-loaded event; do not invent
-# an embedder event where none was retained. These name EPs, not physical ANE/GPU.
-FROZEN_LOADED_DEVICES = {
-    "main-cpu": [("reranker_loaded", "cpu")],
-    "new-cpu": [("reranker_loaded", "cpu"), ("embedder_loaded", "cpu")],
-    "dual-cpu": [("reranker_loaded", "cpu"), ("embedder_loaded", "cpu")],
-    "main-auto": [("reranker_loaded", "coreml")],
-    "new-auto": [("embedder_loaded", "cpu"), ("reranker_loaded", "coreml")],
-    "main-auto-repeat": [("reranker_loaded", "coreml")],
-    "new-auto-persist-hit": [("embedder_loaded", "cpu"), ("reranker_loaded", "coreml")],
-}
-
-
-def frozen_loaded_devices(arm, process):
-    if (arm, process) == ("new-auto-persist-hit", 2):
-        return [("reranker_loaded", "coreml"), ("embedder_loaded", "cpu")]
-    return FROZEN_LOADED_DEVICES[arm]
-
-
-def loaded_device_summary(line, arm):
-    embedding = re.fullmatch(r'INFO pamin_index::embedding: embedder loaded model="([^"]+)" device="([a-z]+)"', line)
-    reranking = re.fullmatch(r'INFO pamin_index::reranking: reranker loaded tier="([a-z]+)" device="([a-z]+)" maximum_tokens=([0-9]+)', line)
-    assert embedding or reranking, "unknown loaded-device summary event"
-    if embedding:
-        model, device = embedding.groups()
-        expected_model = ("bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
-                          if arm == "dual-cpu" else "gpahal/bge-m3-onnx-int8")
-        assert model == expected_model, "model differs from frozen arm metadata"
-        event = "embedder_loaded"
-    else:
-        tier, device, maximum_tokens = reranking.groups()
-        assert tier == "accurate" and maximum_tokens == "256", "reranker differs from frozen arm metadata"
-        event = "reranker_loaded"
-    assert device in DEVICES, "unknown loaded-device summary device"
-    return (event, device)
 
 
 def verify_device_proof():
@@ -217,15 +180,32 @@ def verify_device_proof():
         events = log["events"]
         assert [event["line"] for event in events] == list(range(len(events)))
         allowed = {"other", "calibration", "candidate_rejected", "embedder_loaded", "reranker_loaded"}
+        single_model = "gpahal/bge-m3-onnx-int8"
+        dual_model = "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
         for event in events:
-            assert event["event"] in allowed and type(event["line"]) is int, "invalid redacted event"
-            fields = {"line", "event", "device"} if event["event"] in LOADED_EVENTS else {"line", "event"}
-            assert set(event) == fields, "device belongs only to loaded events"
-            if event["event"] in LOADED_EVENTS:
+            kind = event["event"]
+            assert kind in allowed and type(event["line"]) is int, "invalid redacted event"
+            fields = {"line", "event"}
+            if kind in LOADED_EVENTS:
+                fields.add("device")
                 assert type(event["device"]) is str and event["device"] in DEVICES, "unknown redacted device"
-        loaded = [(event["event"], event["device"]) for event in events if event["event"] in LOADED_EVENTS]
-        assert loaded == [loaded_device_summary(line, entry["arm"]) for line in entry["loaded_device_evidence"]], "loaded-device summary differs from retained events"
-        assert loaded == frozen_loaded_devices(entry["arm"], entry["process"]), "loaded devices differ from frozen arm/process premise"
+                if kind == "embedder_loaded":
+                    fields.add("model")
+                    assert event["model"] == (dual_model if entry["arm"] == "dual-cpu" else single_model), "wrong measured model"
+                else:
+                    fields.update({"tier", "maximum_tokens"})
+                    assert event["tier"] == "accurate" and type(event["maximum_tokens"]) is int and event["maximum_tokens"] == 256, "wrong measured reranker settings"
+            assert set(event) == fields, "device belongs only to loaded events"
+        loaded = [{k: v for k, v in event.items() if k != "line"} for event in events if event["event"] in LOADED_EVENTS]
+        assert loaded == entry["loaded_device_events"], "loaded-device summary differs from retained events"
+        arm = entry["arm"]
+        device = "cpu" if arm.endswith("cpu") else "coreml"
+        expected_loaded = [{"event": "reranker_loaded", "device": device, "tier": "accurate", "maximum_tokens": 256}]
+        if not arm.startswith("main-"):
+            embedding = {"event": "embedder_loaded", "device": "cpu", "model": dual_model if arm == "dual-cpu" else single_model}
+            embedder_first = arm == "new-auto" or (arm == "new-auto-persist-hit" and entry["process"] != 2)
+            expected_loaded.insert(0 if embedder_first else 1, embedding)
+        assert loaded == expected_loaded, "loaded devices do not match the measured arm"
         assert sum(event["event"] == "calibration" for event in events) == entry["calibration_lines"]
         assert sum(event["event"] == "candidate_rejected" for event in events) == entry["candidate_rejection_lines"]
         if entry["arm"] == "new-auto-persist-hit":

@@ -49,7 +49,9 @@
     {
       "line": 11,
       "event": "reranker_loaded",
-      "device": "coreml"
+      "device": "coreml",
+      "tier": "accurate",
+      "maximum_tokens": 256
     },
     {
       "line": 12,
