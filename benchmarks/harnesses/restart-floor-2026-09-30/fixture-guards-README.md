@@ -65,3 +65,8 @@ the retained allocated-byte observations cannot exclude starting-copy effects.
 Version1 manifests must be prepared again for prospective runs. The attestation
 is read once: the parsed document and recorded SHA-256 use the same byte buffer,
 so a concurrent pathname replacement cannot identify a different document.
+
+The prospective trial output must resolve outside the entire stopped source
+seed, including through symlink ancestors. This check precedes reading models,
+creating records or invoking the archived runner, so the runner cannot first
+create output/raw evidence inside the source fixture.
