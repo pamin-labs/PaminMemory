@@ -1,0 +1,57 @@
+{
+  "format": "readonly-metadata-verifier-cost-v1",
+  "before_crc_revision": "775de8a2d0e81a80239df4a0279600da7df68ec0",
+  "after_crc_revision": "e2e4c4bc6fd0630f49f2d2a94fc80b358ebb1d5c",
+  "before_verify_sha256": "b39c28b8b0365c84f0f7f09e641eb1fe96fe2ad0ce1233baabb0a66a74acc79e",
+  "after_inputs_sha256": {
+    "verify.py": "53ecab1f12b9da9289ff7523664e6db3d0d1918fb718db6d9d526032d19df6c3",
+    "source_binding.py": "89db7afe8c52f6b51e79e5353c083d09c421a55075345f8e7dd4d0ea3c3f6343",
+    "evidence.json": "87eee27a582ab572086d34f22af24b033c5043952a9956686574043614cc207c",
+    "public-source-binding.json": "d619f9b1954a3d0c78e57a77d981e51ba1a8ecda126a57282257175abf7ad0b0",
+    "pure-open.log": "a65771d312b73bce3751bb7ffc03a817b008784a5e39b273c299fbed2f3bb0c9",
+    "vector.log": "8aa40c88921c56b8d9bb48d8aacbbcaca17e74e8b3a7749c14d99749bec76ca0"
+  },
+  "scope": "One recorded observation per before/cold-after/warm-after case on a shared Linux host, same16retained metadata excerpts. No SDK/database/model/product call. Timers cover verify(evidence), including metadata parsing/validation, log checks and canonical evidence digest; exclude interpreter startup/imports, input loading and Git source-byte verification. Future probes produce new observations, not identical timings. No statistical latency/speedup or product-search claim.",
+  "before": {
+    "wall_seconds": 2.1530451889993856,
+    "process_cpu_seconds": 2.152929824,
+    "scalar_table_bytes": 16839680,
+    "scalar_table_scans": 16
+  },
+  "after_cold": {
+    "wall_seconds": 0.7168125139869517,
+    "process_cpu_seconds": 0.716466029,
+    "table_cache_misses": 1,
+    "table_cache_hits": 15,
+    "scalar_table_bytes": 1052480
+  },
+  "after_warm": {
+    "wall_seconds": 0.5892966489918763,
+    "process_cpu_seconds": 0.589027994,
+    "table_cache_misses": 0,
+    "table_cache_hits": 16,
+    "scalar_table_bytes": 0
+  },
+  "table_identity": {
+    "excerpts": 16,
+    "bytes_each": 1052480,
+    "distinct_complete_payloads": 1,
+    "sha256": "fcfab93bd3a47ad3e3ae6a76ae3e408bfbc88ca7cfb779ead5b36ccc614d82ea"
+  },
+  "memory": {
+    "before_retained_cache_payload_bound_bytes": 0,
+    "after_retained_cache_payload_bound_bytes": 4194304,
+    "additional_object_overhead": "lookup table, Python/cache objects; not measured",
+    "process_rss": "N/A not measured"
+  },
+  "scan_scope": "Scalar table-byte counts cover only byte visits in the Python CRC recurrence for large tables. They exclude header/footer CRCs, reconstruction/copying, byte-key hashing/equality scans, metadata comparisons, log/canonical SHA hashing and all other memory traffic; they are not total bytes transferred.",
+  "full_suite_scan_audit": {
+    "tests": 69,
+    "large_scalar_calls": 17,
+    "large_scalar_bytes": 8424450,
+    "distinct_large_scalar_contents": 13,
+    "original_table_scalar_scans": 2,
+    "scope": "instrumented full test process including deliberate cache eviction tests and rehashed mutations; unchanged original table is not rescanned per excerpt"
+  },
+  "measurement_precision": "Full clock-derived float values retained; shared-host single observations, not repeated distributions."
+}
