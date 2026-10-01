@@ -37,7 +37,7 @@ class FutureRunnerTests(unittest.TestCase):
         for role,name in [('ort','libonnxruntime.so.1.28.0'),('zvec','libzvec_c_api.so')]:
             path=self.root/name;path.write_text('synthetic '+role);self.paths[role]=path
         self.pins={role:hashlib.sha256(path.read_bytes()).hexdigest() for role,path in self.paths.items()}
-        self.environment=patch.dict(runner.os.environ,{'GRAPH_OUT':str(self.root/'result.jsonl')})
+        self.environment=patch.dict(runner.os.environ,{'GRAPH_OUT':str(self.root/'result.jsonl'),'GRAPH_TRACE':str(self.root/'trace.jsonl')})
         self.environment.start()
 
     def tearDown(self):self.environment.stop();self.temp.cleanup()
@@ -121,6 +121,27 @@ class FutureRunnerTests(unittest.TestCase):
         with patch.dict(runner.os.environ,{},clear=True),patch.object(runner.subprocess,'Popen') as launch:
             with self.assertRaisesRegex(RuntimeError,'GRAPH_OUT result path required'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
             launch.assert_not_called()
+
+    def test_trace_contract_is_required_distinct_and_fresh(self):
+        for target in ['result.jsonl','log','usage','mapped']:
+            with patch.dict(runner.os.environ,{'GRAPH_TRACE':str(self.root/target)}),patch.object(runner.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(RuntimeError,'output paths must be distinct'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+                launch.assert_not_called()
+        trace=self.root/'trace.jsonl'
+        for kind in ['file','directory','dangling_link']:
+            if kind=='file':trace.write_text('preserved trace')
+            elif kind=='directory':trace.mkdir()
+            else:trace.symlink_to(self.root/'absent target')
+            with patch.object(runner.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(RuntimeError,'outputs must be fresh'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+                launch.assert_not_called()
+            if kind=='file':self.assertEqual(trace.read_text(),'preserved trace');trace.unlink()
+            elif kind=='directory':trace.rmdir()
+            else:self.assertTrue(trace.is_symlink());trace.unlink()
+        with patch.dict(runner.os.environ,{'GRAPH_OUT':str(self.root/'result.jsonl')},clear=True),patch.object(runner.subprocess,'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError,'GRAPH_TRACE trace path required'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+            launch.assert_not_called()
+        self.assertFalse((self.root/'log').exists())
 
     def test_existing_output_is_never_overwritten(self):
         (self.root/'log').write_text('existing user data')
