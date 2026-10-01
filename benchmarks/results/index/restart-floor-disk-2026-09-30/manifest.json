@@ -13,7 +13,7 @@
     "benchmarks/harnesses/restart-floor-2026-09-30/native-build-guards-README.md": "4f926e1eac224117802460bcb1128e80ae9fae2a8f61d6cbd1433dfa349320a5",
     "benchmarks/harnesses/restart-floor-2026-09-30/native-guards.py.in": "59097df945a6084996adc7147f7e9ef7c5eb228d00c4fd1e707585a791bc8309",
     "benchmarks/harnesses/restart-floor-2026-09-30/run-conversion-guarded.py.in": "ad3d458ad609a12cf8de42438104a7d50feadbd1807372d6a425329c0e2cf425",
-    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "43f872d074959e74bf7996abd044ac645872070400f551e29ceea710a575d8bb",
+    "benchmarks/harnesses/restart-floor-2026-09-30/run-guarded.py.in": "6319a246440949deb2b33e00966266ff44b7f31ade012aaae0b5ff4e72f1ad2c",
     "benchmarks/harnesses/restart-floor-2026-09-30/run.py.in": "e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-fixture-guards.py.in": "4f8f595c7c021d3f8ee96fab6d8d533ab87adf9764d000b9ea1b33599527e9f0",
     "benchmarks/harnesses/restart-floor-2026-09-30/test-model-guards.py.in": "72a7e00b15516753f9c44636e4f2f471e2cb327da2f178822c4b95394ca374d9",

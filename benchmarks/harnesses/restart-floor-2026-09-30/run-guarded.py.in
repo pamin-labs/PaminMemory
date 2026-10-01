@@ -29,6 +29,9 @@ def digest(path):
     with path.open('rb') as stream:
         for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
     return h.hexdigest()
+def read_attestation(path):
+    raw=path.read_bytes()
+    return json.loads(raw),hashlib.sha256(raw).hexdigest()
 def fixture_digest(entries,models):
     return hashlib.sha256(json.dumps({'version':1,'models_target':models,'entries':entries},sort_keys=True,separators=(',',':')).encode()).hexdigest()
 def fixture_snapshot(seed,models):
@@ -258,7 +261,7 @@ def main():
     assert not a.record.exists(), 'preserve previous configuration evidence'
     expected_models,model_bytes,model_prepared=MODEL['load'](a.model_manifest)
     assert not a.record.resolve().is_relative_to(Path(expected_models['root'])), 'record must be outside model cache'
-    attestation=json.loads(a.attestation.read_text())
+    attestation,attestation_sha256=read_attestation(a.attestation)
     assert attestation['scope']=='prospective build-time inputs/outputs only; no historical binary binding'
     native=attestation['native_loader_inputs']
     env=NATIVE['environment'](env,native)
@@ -286,7 +289,7 @@ def main():
         for arm in a.arm:command+=['--arm',arm]
     record={'recorded_utc':datetime.now(timezone.utc).isoformat(),
             'scope':'prospective setup/trial configuration only; historical inherited tuning remains unknown',
-            'build_attestation_sha256':digest(a.attestation),'command':command,
+            'build_attestation_sha256':attestation_sha256,'command':command,
             'model_manifest_path':str(a.model_manifest.resolve()),'model_manifest_sha256':hashlib.sha256(model_bytes).hexdigest(),'model_prepared_utc':model_prepared,
             'controlled_environment':{key:env[key] for key in ['PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_INFERENCE_THREADS','TOKIO_WORKER_THREADS','TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS','PAMIN_EVAL_HOME','FLOOR_MODE','FLOOR_DOCUMENTS','FLOOR_VECTOR_INDEX','HF_HUB_OFFLINE','HF_HUB_DISABLE_TELEMETRY'] if key in env},
             'inherited_pamin_overrides':{},'native_loader_inputs':native,'loader_environment':{'LD_LIBRARY_PATH':env['LD_LIBRARY_PATH'],'removed_inherited_loader_variable_names':sorted(key for key in os.environ if key.startswith('LD_') or key=='GLIBC_TUNABLES')},'status':'prepared'}
