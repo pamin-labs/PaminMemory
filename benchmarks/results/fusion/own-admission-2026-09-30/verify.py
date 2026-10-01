@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Read-only evidence verification; no models, databases, binaries or compilers."""
-import ast
 from collections import Counter
 import gzip
 import hashlib
@@ -16,6 +15,15 @@ if sys.flags.optimize or os.environ.get('PYTHONOPTIMIZE'):
 
 GROUPS = {'monolingual': 62, 'cross_lingual': 43, 'lexical': 32, 'relational': 20}
 METRICS = ('ndcg10', 'recall10', 'recall50')
+
+PUBLICATION_SCOPE = {'kind': 'historical_observed_cpu_diagnostic', 'entry_point': 'Engine::search_reranked', 'requested_profile': 'accuracy', 'requested_reranker': 'accurate', 'observed_provider': 'CPUExecutionProvider', 'hardware_model_isa_topology': 'UNKNOWN', 'complete_effective_tuning': 'UNKNOWN', 'calibration_acceptance': 'not established', 'validated_quality_benchmark': False, 'shipped_default_certification': False, 'public_measurement_runner': False, 'public_execution_reproducible': False, 'source_to_binary_attestation': 'not established', 'compiled_target_digest': 'historically reported identity only; target source privately retained; not publicly inspectable'}
+FAMILY_DESIGN = '12 fixed group-metric cells; shared query-ID sign flips; zero outside each group; 10000 deterministic Monte Carlo draws; not exhaustive enumeration'
+FAMILY_CELLS = tuple((group, metric) for group in ('cross_lingual', 'monolingual', 'lexical', 'relational') for metric in METRICS)
+HISTORICAL_TARGET_SHA = '69f2f02d8fd3b66c50406899c99bddf425c5095b5e4ac1cb95bacdc6387e4119'
+GIT_INPUTS_SHA = '3db13eeb9b8038773036e0f19ac52f1fad2232e1e996aa0cdc72e321cc282652'
+REMOVED_INVENTORY_SHA = 'aee91b6bf52fe430e398007a4d9606da332fd48b43c8a6482cf5b7601d61729b'
+CORRECTED_DERIVED_ORIGINALS_SHA = 'd2390b325320fa68d28ad9fe3d7c78859249fd9371b396817f0cbca072761195'
+PRODUCT_SOURCES_SHA = '42d9301433e23c9e31c8bf2c73bd610a873baed1364bd3825b6b51afb3fb380c'
 
 
 def require(condition, message):
@@ -137,7 +145,7 @@ def family_p(settings):
 
 def verify(root, check_hashes=True):
     repo = root.parents[3]
-    harness = repo/'benchmarks/harnesses/fusion-own-admission-2026-09-30'
+    inputs = root/'inputs'
     if check_hashes:
         manifest = load(root/'manifest.json')
         for relative, digest in manifest['files'].items():
@@ -161,31 +169,51 @@ def verify(root, check_hashes=True):
     require(provenance['source_revision'] == '13ee710c9df865f1dac98dc77a8108e438ddc539', 'source revision')
     require('UNKNOWN' in read(root/'historical-config-limit.md').decode(), 'historical knobs UNKNOWN')
     require(provenance['assets_before'] == provenance['assets_after'], 'assets before/after')
+    corrected_originals = load(root/'sanitization.json')['corrected_derived_records']
+    require(hashlib.sha256(json.dumps(corrected_originals, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == CORRECTED_DERIVED_ORIGINALS_SHA, 'historical derived metadata identities')
+    require(load(root/'scope.json') == PUBLICATION_SCOPE, 'historical publication/default scope')
+    require(provenance.get('publication_scope') == PUBLICATION_SCOPE, 'provenance publication/default scope')
+    require(provenance['scope'] == 'Historical observed CPU INT8 handwritten157-query diagnostic only; not a validated quality benchmark or shipped-default certification', 'provenance diagnostic scope')
+    require(provenance['configuration_scope'] == 'Profile::Accuracy and Rerank::Accurate requested; complete inherited effective tuning and CPU model/ISA/topology UNKNOWN; exact public execution reproduction and source-to-binary attestation not established', 'provenance historical configuration scope')
+    for filename, digest, label in [('git-inputs.json', GIT_INPUTS_SHA, 'pinned Git input references'), ('removed-harness-inventory.json', REMOVED_INVENTORY_SHA, 'removed harness inventory'), ('sources.json', PRODUCT_SOURCES_SHA, 'product source identity records')]:
+        require(hashlib.sha256(read(root/filename)).hexdigest() == digest, label)
+    git_inputs = load(root/'git-inputs.json')
+    require(git_inputs['revision'] == provenance['source_revision'], 'immutable Git revision')
+    for entry in git_inputs['files']:
+        if 'retained_data' in entry:
+            data = read(root/entry['retained_data'])
+            require(len(data) == entry['bytes'] and hashlib.sha256(data).hexdigest() == entry['sha256'], 'pinned Git fixture bytes')
+            blob = b'blob '+str(len(data)).encode()+b'\0'+data
+            require(hashlib.sha1(blob).hexdigest() == entry['git_blob'], 'pinned Git fixture blob')
+    require(not (repo/'benchmarks/harnesses/fusion-own-admission-2026-09-30').exists(), 'removed measurement harness reintroduced')
+    for entry in load(root/'removed-harness-inventory.json')['files']:
+        require(not (repo/entry['path']).exists(), 'removed measurement harness reintroduced')
     summary = load(root/'summary.json.gz')
+    require(summary.get('publication_scope') == PUBLICATION_SCOPE, 'summary publication/default scope')
     require(summary['queries'] == 157 and summary['changed_candidate_queries'] == 29, 'summary counts')
-    queries = load(harness/'tests/corpus/queries.json')
-    memories = load(harness/'tests/corpus/memories.json')
+    queries = load(inputs/'corpus/queries.json')
+    memories = load(inputs/'corpus/memories.json')
     require(len(queries) == 157 and len(memories) == 230, 'fixture counts')
     for name in ('memories.json', 'queries.json'):
-        require(hashlib.sha256((harness/'tests/corpus'/name).read_bytes()).hexdigest() == provenance['dataset_files'][name], 'native fixture hash')
+        require(hashlib.sha256((inputs/'corpus'/name).read_bytes()).hexdigest() == provenance['dataset_files'][name], 'native fixture hash')
     sources = load(root/'sources.json')
     require(sources['revision'] == provenance['source_revision'], 'frozen source revision')
     for arm, metadata in sources['variants'].items():
         require(metadata['channel_pool'] == (arm == 'pooled'), 'source selection mode')
         for relative, digest in metadata['overlaid_sha256'].items():
-            path = harness/arm/'src'/(Path(relative).name+'.in')
+            name = Path(relative).name
+            path = inputs/'product'/(arm if name == 'engine.rs' else 'shared')/name
             require(hashlib.sha256(read(path)).hexdigest() == digest, 'frozen overlaid source identity')
     binary_records = load(root/'binaries.json')
     require(binary_records == provenance['binaries'], 'retained binary identities')
     for arm in ('baseline', 'pooled'):
-        engine = read(harness/arm/'src/engine.rs.in').decode()
+        engine = read(inputs/'product'/arm/'engine.rs').decode()
         require('const GRAPH_SHOWN_FROM: f32 = 0.5;' in engine and 'const GRAPH_SHOWN_AT_MOST: usize = 30;' in engine, 'native graph policy')
         require('const EXPERIMENTAL_CHANNEL_POOL: bool = '+str(arm == 'pooled').lower()+';' in engine, 'frozen arm toggle')
-    a = read(harness/'baseline/src/engine.rs.in').decode()
-    b = read(harness/'pooled/src/engine.rs.in').decode()
+    a = read(inputs/'product/baseline/engine.rs').decode()
+    b = read(inputs/'product/pooled/engine.rs').decode()
     require(a.replace('const EXPERIMENTAL_CHANNEL_POOL: bool = false;', 'const EXPERIMENTAL_CHANNEL_POOL: bool = true;') == b, 'only arm source difference')
-    harness_sha = hashlib.sha256(read(harness/'tests/scratch_pool_retrieval.rs.in')).hexdigest()
-    require(all(record['source_sha256'] == harness_sha for record in binary_records), 'test-source identities')
+    require(all(record['source_sha256'] == HISTORICAL_TARGET_SHA for record in binary_records), 'historically reported target-source identities')
     arms = {}
     expected_identity = None
     for arm in ('seed', 'baseline', 'pooled'):
@@ -280,9 +308,13 @@ def verify(root, check_hashes=True):
             require(set(record.values()) == {'N/A'}, 'unmeasured costs N/A')
     stats = load(root/'native-statistics.json')['cells']
     require(len(stats) == 12 and len({(c['group'], c['metric']) for c in stats}) == 12, '12 statistical cells')
-    source = read(harness/'native-statistics.rs.in').decode()
-    matched = re.search(r'let settings: Vec<Vec<f64>> = vec!\[(.*)\];\nlet family', source, re.S)
-    settings = ast.literal_eval('['+matched.group(1).replace('vec!', '')+']')
+    family_input = load(root/'family-input.json')
+    require(family_input['design'] == FAMILY_DESIGN, 'declared family design')
+    require(family_input['query_ids'] == list(range(157)), 'family query-ID order')
+    require(tuple((cell['group'], cell['metric']) for cell in stats) == FAMILY_CELLS, 'native statistical cell order')
+    require(tuple((cell['group'], cell['metric']) for cell in family_input['cells']) == FAMILY_CELLS, 'family input cell order')
+    settings = [cell['differences'] for cell in family_input['cells']]
+    require(all(len(values) == 157 and all(type(v) in (int, float) and math.isfinite(v) for v in values) for values in settings), 'finite family input matrix')
     expected_settings = [[row['pooled_'+cell['metric']]-row['baseline_'+cell['metric']] if row['group'] == cell['group'] else 0 for row in summary['rows']] for cell in stats]
     require(settings == expected_settings, 'native 157-ID family input alignment')
     family = family_p(settings)
@@ -294,7 +326,7 @@ def verify(root, check_hashes=True):
         close(cell['raw_p'], paired_p(differences), 'native Monte Carlo raw p')
         close(cell['family_p'], family[at], 'native Monte Carlo family p')
     require(marker(read(root/'native-statistics.log').decode(), 'STAT_JSON') == stats, 'raw native statistics records')
-    return 'Verified 314 actual Engine traces, 157 paired IDs, identical fused lists,30–31 selected candidates, coverage0, raw CPU nodes1023/295, independent metrics and12 native Monte Carlo cells. Historical tuning UNKNOWN; no build attestation or adoption.'
+    return 'Verified 314 actual Engine traces, 157 paired IDs, identical fused lists,30–31 selected candidates, coverage0, raw CPU nodes1023/295, independent metrics and12 native Monte Carlo cells. Historical tuning/hardware UNKNOWN; runner private, public execution reproduction unmet; no validated quality/default claim.'
 
 
 if __name__ == '__main__':

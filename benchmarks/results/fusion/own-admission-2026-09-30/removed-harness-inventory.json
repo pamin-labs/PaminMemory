@@ -1,0 +1,165 @@
+{
+  "scope": "Removed tracked measurement package; originals preserved privately with byte verification before removal; not a public executable reconstruction",
+  "files": [
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/README.md",
+      "bytes": 2974,
+      "sha256": "e61acfe798f80a9950f6b2f9c04a3fa7ce443646ae6eddb29657ed0c0745c737"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline-Cargo.lock.gz",
+      "bytes": 24082,
+      "sha256": "a5108927dc40a7278c2f123a1bfe8bb391db9fd1c16b368eaad426e3efa4d4b5"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline/Cargo.toml.in",
+      "bytes": 1346,
+      "sha256": "749e8cc88ea59ccb91be4e49c45a2796bc05bf623e54dc90b32e14b849b07d7d"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline/src/candidate_pool.rs.in",
+      "bytes": 5663,
+      "sha256": "32c3feecfc9a9f33e113c5b4f54f856371454870985a32178529e445991e14e1"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline/src/cascade.rs.in",
+      "bytes": 32500,
+      "sha256": "a5ba901daf2d9402e25b2f64c10ad170d6745b0160e21e2c6d49e96daf718828"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline/src/engine.rs.in",
+      "bytes": 138315,
+      "sha256": "aac959ede9d68a7b550c9b6611758de3de6fe14ecee6f4c6446ebb2ae7ac40d2"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline/src/lib.rs.in",
+      "bytes": 639,
+      "sha256": "638794c1c969414dd96a6ee021f0f039995f1cb1bf3b0c39da9dc5b9d3ad727c"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/baseline/src/reshape.rs.in",
+      "bytes": 3630,
+      "sha256": "425cc1e6b6787677ef0f1e1dbd6740348a793a59e7b9e477dde7e8ee48fa5005"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/candidate-toggle.patch.gz",
+      "bytes": 340,
+      "sha256": "ba0580ba40249aa1fb428e501c909e8308100f6efd6a0cef35fbdba99991bdb0"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/historical-before-parser-repair.py.in.gz",
+      "bytes": 3857,
+      "sha256": "184a5545a1bd3af2dc7260583599057a08386936684aa0ee9016eb35d07eb443"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/historical-run-own.py.in.gz",
+      "bytes": 4071,
+      "sha256": "ee0555716f5ee356493b5fa58cfe7c30850ffcbd733db7068cf97539c09c30bc"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/initial-failed-harness.rs.in",
+      "bytes": 50175,
+      "sha256": "e1d76ae65f20bd714868b181624817777325bd40eae84af10d77d0fa8fe3c7ee"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/native-statistics.rs.in",
+      "bytes": 18836,
+      "sha256": "66722e2b3558f5c6936cadd4641dd1a2de041ff637b1d49e364b152c1dded82c"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled-Cargo.lock.gz",
+      "bytes": 24082,
+      "sha256": "a5108927dc40a7278c2f123a1bfe8bb391db9fd1c16b368eaad426e3efa4d4b5"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled/Cargo.toml.in",
+      "bytes": 1346,
+      "sha256": "749e8cc88ea59ccb91be4e49c45a2796bc05bf623e54dc90b32e14b849b07d7d"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled/src/candidate_pool.rs.in",
+      "bytes": 5663,
+      "sha256": "32c3feecfc9a9f33e113c5b4f54f856371454870985a32178529e445991e14e1"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled/src/cascade.rs.in",
+      "bytes": 32500,
+      "sha256": "a5ba901daf2d9402e25b2f64c10ad170d6745b0160e21e2c6d49e96daf718828"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled/src/engine.rs.in",
+      "bytes": 138314,
+      "sha256": "c200cc1069f044fbf1a559e99a2b06c6972094b3c63b71bfd042944bacb9c016"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled/src/lib.rs.in",
+      "bytes": 639,
+      "sha256": "638794c1c969414dd96a6ee021f0f039995f1cb1bf3b0c39da9dc5b9d3ad727c"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/pooled/src/reshape.rs.in",
+      "bytes": 3630,
+      "sha256": "425cc1e6b6787677ef0f1e1dbd6740348a793a59e7b9e477dde7e8ee48fa5005"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/channels/mod.rs.in",
+      "bytes": 44374,
+      "sha256": "d0aecef871eb16740860a518faf5efc4d67c5fa277f5010d7da30ab0a4db4e1e"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/cold/mod.rs.in",
+      "bytes": 17511,
+      "sha256": "0cabc3c9cf641ee464820243944afa1b3451b8f5b6ffe66b94fc8c8779383721"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/corpus/memories.json",
+      "bytes": 39589,
+      "sha256": "67473f12f4f504e9e0ec4f605218cbc9d5fbd01265deadfbc2b7f4982808fd70"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/corpus/queries.json",
+      "bytes": 25721,
+      "sha256": "0662914901425b03c2f95667f68eede6caad1392ba367a2c8d5856efa1ed4faf"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/features/mod.rs.in",
+      "bytes": 14481,
+      "sha256": "c66c6e9ebd644e4261b3b80ff984dc7d8070deb8ed439007e25b7f6380a0ae54"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/harness/mod.rs.in",
+      "bytes": 3142,
+      "sha256": "923246f094436890e52232b00a8f2d10f74bf0a7e9bf1ca9cb86f0ea41dbbaab"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/reranking/mod.rs.in",
+      "bytes": 25354,
+      "sha256": "22ce4b1fc7da8b8146e96884cc63cdbb49bf136f72d09010bd14f0dbad301a56"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/reranking/router.rs.in",
+      "bytes": 16208,
+      "sha256": "39cc653aa9746e09ebf6f9f9645a7194735cf617e6ee1a300ca7da09c77e1fd6"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/scoring/mod.rs.in",
+      "bytes": 11599,
+      "sha256": "2e0fa849405d093c98db6aac9c7cb267c6f0af5427002a5ce4edf70e8ee5515a"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/scratch_pool_retrieval.rs.in",
+      "bytes": 51692,
+      "sha256": "69f2f02d8fd3b66c50406899c99bddf425c5095b5e4ac1cb95bacdc6387e4119"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/tests/statistics/mod.rs.in",
+      "bytes": 32819,
+      "sha256": "958150d26e32019a90ff9cfb2a4005e0b9adcc348c313294161b1694607902b9"
+    },
+    {
+      "path": "benchmarks/harnesses/fusion-own-admission-2026-09-30/workspace-Cargo.toml.in",
+      "bytes": 4420,
+      "sha256": "986e728a929f2294b48df88da4b7ba92dc44b785534f5f6f7022109d4e92d769"
+    }
+  ]
+}

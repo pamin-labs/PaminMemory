@@ -68,7 +68,26 @@ def remove_score(rows):
     rows[0]['top10'] = rows[0]['complete'][:10]
 
 
+def reintroduce_controller(target):
+    path = target.parents[3]/harness_relative/'historical-run-own.py.in.gz'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'controller')
+
+
 fixtures = [
+    ('historical derived identity drift', change_json('sanitization.json', lambda value: next(iter(value['corrected_derived_records']['original_records'].values())).update(original_sha256='0'*64)), 'historical derived metadata identities'),
+    ('default certification drift', change_json('scope.json', lambda value: value.update(shipped_default_certification=True)), 'historical publication/default scope'),
+    ('provenance certification drift', change_json('provenance.json', lambda value: value['publication_scope'].update(validated_quality_benchmark=True)), 'provenance publication/default scope'),
+    ('provenance description drift', change_json('provenance.json', lambda value: value.update(scope='validated default product benchmark')), 'provenance diagnostic scope'),
+    ('historical settings drift', change_json('provenance.json', lambda value: value.update(configuration_scope='complete shipped defaults')), 'provenance historical configuration scope'),
+    ('summary certification drift', change_json('summary.json.gz', lambda value: value['publication_scope'].update(public_execution_reproducible=True)), 'summary publication/default scope'),
+    ('immutable Git reference drift', change_json('git-inputs.json', lambda value: value.update(revision='0'*40)), 'pinned Git input references'),
+    ('public corpus drift', change_json('inputs/corpus/queries.json', lambda value: value[0].update(query='invented')), 'pinned Git fixture bytes'),
+    ('family design drift', change_json('family-input.json', lambda value: value.update(design='independent row signs')), 'declared family design'),
+    ('family input drift', change_json('family-input.json', lambda value: value['cells'][0]['differences'].__setitem__(0, 1)), 'native 157-ID family input alignment'),
+    ('family query order drift', change_json('family-input.json', lambda value: value['query_ids'].__setitem__(1, 0)), 'family query-ID order'),
+    ('removed inventory drift', change_json('removed-harness-inventory.json', lambda value: value['files'].pop()), 'removed harness inventory'),
+    ('controller reintroduced', reintroduce_controller, 'removed measurement harness reintroduced'),
     ('paired ID duplication', rows_mutation(lambda rows: rows[1].update(query_id=0)), 'paired query IDs'),
     ('native gold drift', rows_mutation(lambda rows: rows[0]['relevant'].append('invented_gold')), 'native fixture pairing'),
     ('offered budget drift', rows_mutation(lambda rows: rows[0].update(offered_candidates=31)), 'native offered30–31 counts'),
@@ -89,8 +108,9 @@ with tempfile.TemporaryDirectory(prefix='pamin-own-evidence-') as temporary:
     copy_repo = Path(temporary)
     copy_root = copy_repo/relative
     copy_harness = copy_repo/harness_relative
-    shutil.copytree(repo/harness_relative, copy_harness)
     for label, mutate, expected in fixtures:
+        if copy_harness.exists():
+            shutil.rmtree(copy_harness)
         if copy_root.exists():
             shutil.rmtree(copy_root)
         shutil.copytree(root, copy_root)
@@ -117,4 +137,4 @@ for program in ('verify.py', 'negative-fixtures.py'):
         command = [sys.executable]+(['-O'] if optimized else [])+[str(root/program)]
         result = subprocess.run(command, capture_output=True, text=True, env=environment)
         verifier.require(result.returncode != 0 and ('refuses' in result.stderr), program+' optimization refusal')
-print('Rejected14semantic corruptions,1archive hash corruption and4optimized-Python launches; temporary copies only.')
+print(f'Rejected{len(fixtures)}semantic corruptions,1archive hash corruption and4optimized-Python launches; temporary copies only.')
