@@ -1,0 +1,36 @@
+"""Disposable corrupt loose objects only; no real repository object is mutated."""
+import hashlib,os,runpy,subprocess,sys,tempfile,zlib
+from pathlib import Path
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent
+build=runpy.run_path(str(root/'build-guarded.py.in'))
+retrospective=runpy.run_path(str(root.parents[1]/'results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'))
+with tempfile.TemporaryDirectory(prefix='git-canonical-fixture-') as directory:
+    repo=Path(directory);env=dict(os.environ,GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull)
+    def git(*args):return subprocess.check_output(['git',*args],cwd=repo,env=env,stderr=subprocess.PIPE)
+    git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
+    for name,data in [('Cargo.toml',b'original manifest'),('Cargo.lock',b'original lock')]: (repo/name).write_bytes(data)
+    git('add','.');git('commit','-qm','fixture');commit=git('rev-parse','HEAD').decode().strip()
+    expected=build['inputs'](repo,commit,{})
+    assert expected['Cargo.toml']['sha256']==hashlib.sha256(b'original manifest').hexdigest()
+    assert retrospective['source_inputs'](repo,commit)['Cargo.toml']['sha256']==expected['Cargo.toml']['sha256']
+    for kind,oid in [('commit',commit),('tree',git('rev-parse','HEAD^{tree}').decode().strip()),('blob',git('rev-parse','HEAD:Cargo.toml').decode().strip())]:
+        path=repo/'.git/objects'/oid[:2]/oid[2:];original=path.read_bytes();path.chmod(0o600);decoded=zlib.decompress(original);header,content=decoded.split(b'\0',1)
+        # Commit/tree mutations preserve valid object syntax; blob attack changes
+        # both returned source bytes and matching worktree under assume-unchanged.
+        changed=content+b'\n' if kind=='commit' else content.replace(b'Cargo.lock',b'Cargo.lack') if kind=='tree' else b'corrupt manifest'
+        path.write_bytes(zlib.compress(kind.encode()+b' '+str(len(changed)).encode()+b'\0'+changed))
+        if kind=='blob':
+            (repo/'Cargo.toml').write_bytes(changed);git('update-index','--assume-unchanged','Cargo.toml')
+            assert git('cat-file','blob',oid)==changed
+        operations=[lambda:build['OBJECTS']['snapshot'](repo,commit,build['git_environment']()),lambda:retrospective['source_inputs'](repo,commit)]
+        if kind=='blob':operations.append(lambda:build['inputs'](repo,commit,{}))
+        for operation in operations:
+            try:operation()
+            except AssertionError as error:assert 'canonical hash mismatch' in str(error),str(error)
+            else:raise AssertionError('corrupt '+kind+' accepted')
+        path.write_bytes(original)
+        if kind=='blob':
+            (repo/'Cargo.toml').write_bytes(content);git('update-index','--no-assume-unchanged','Cargo.toml')
+        assert build['inputs'](repo,commit,{})==expected
+print('PASS: canonical commit/tree/blob hashes rejected in prospective/retrospective guards; pristine cache phase revalidated; disposable Git only')

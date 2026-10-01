@@ -83,13 +83,14 @@ with tempfile.TemporaryDirectory() as directory:
         def check_output(*args,**kwargs):
             assert kwargs['env']['GIT_NO_REPLACE_OBJECTS']=='1'
             return b''.join(name.encode()+b' blob '+str(len(data)).encode()+b'\n'+data+b'\n' for name,data in tracked.items())
-    globals_=build['inputs'].__globals__;old_git=globals_['git'];old_subprocess=globals_['subprocess']
+    globals_=build['inputs'].__globals__;old_git=globals_['git'];old_subprocess=globals_['subprocess'];old_objects=globals_['OBJECTS']
     try:
         globals_['git']=fake_git;globals_['subprocess']=FakeSubprocess
+        globals_['OBJECTS']={'snapshot':lambda *args:{name:('100644',name,data) for name,data in tracked.items()}}
         result=build['inputs'](checkout,'fake-commit',allowed,scratch);assert result[scratch]['sha256']==sha
         path.write_bytes(b'changed source');refuse(lambda:build['inputs'](checkout,'fake-commit',allowed,scratch));path.write_bytes(template.read_bytes())
         (checkout/'Cargo.toml').write_bytes(b'dirty HEAD source');refuse(lambda:build['inputs'](checkout,'fake-commit',allowed,scratch))
-    finally:globals_['git']=old_git;globals_['subprocess']=old_subprocess
+    finally:globals_['git']=old_git;globals_['subprocess']=old_subprocess;globals_['OBJECTS']=old_objects
 conversion_runner=runpy.run_path(str(root/'run-conversion-guarded.py.in'))
 with tempfile.TemporaryDirectory() as directory:
     binary=Path(directory)/'disk-schema';binary.write_bytes(b'fake executable, never launched')

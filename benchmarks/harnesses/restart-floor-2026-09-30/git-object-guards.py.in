@@ -1,0 +1,60 @@
+"""Canonical hashes for one selected commit's source snapshot, not its history."""
+import hashlib,re,subprocess
+
+
+def objects(repo, oids, env):
+    oids=list(dict.fromkeys(oids))
+    assert oids and all(re.fullmatch(r'[0-9a-f]{40}', oid) for oid in oids), 'invalid source object identity'
+    raw=subprocess.check_output(['git','cat-file','--batch'],cwd=repo,env=env,
+                                input=('\n'.join(oids)+'\n').encode())
+    result={};offset=0
+    for oid in oids:
+        end=raw.index(b'\n',offset);header=raw[offset:end].split()
+        assert len(header)==3 and header[0]==oid.encode(), 'source object missing or ambiguous'
+        kind=header[1];size=int(header[2]);start=end+1;content=raw[start:start+size]
+        assert size>=0 and len(content)==size and raw[start+size:start+size+1]==b'\n', 'truncated source object'
+        canonical=kind+b' '+str(size).encode()+b'\0'+content
+        assert hashlib.sha1(canonical).hexdigest()==oid, 'Git object canonical hash mismatch'
+        result[oid]=(kind,content);offset=start+size+1
+    assert offset==len(raw), 'extra source object response'
+    return result
+
+
+def tree_entries(content):
+    entries=[];offset=0;names=set()
+    while offset<len(content):
+        space=content.index(b' ',offset);nul=content.index(b'\0',space)
+        mode=content[offset:space].decode();name=content[space+1:nul].decode()
+        assert mode in {'40000','100644','100755','120000','160000'}, 'unsupported source tree mode'
+        assert name and name not in {'.','..'} and '/' not in name and name not in names, 'invalid/duplicate source tree entry'
+        oid=content[nul+1:nul+21];assert len(oid)==20, 'truncated source tree identity'
+        names.add(name);entries.append((mode,name,oid.hex()));offset=nul+21
+    return entries
+
+
+def snapshot(repo, commit, env):
+    kind,content=objects(repo,[commit],env)[commit]
+    assert kind==b'commit', 'selected source identity is not a commit'
+    match=re.match(rb'tree ([0-9a-f]{40})\n',content)
+    assert match, 'selected commit root tree absent'
+    pending=[('',match[1].decode())];tracked={};blobs={}
+    while pending:
+        batch=objects(repo,[oid for _,oid in pending],env);next_level=[]
+        for prefix,oid in pending:
+            kind,content=batch[oid];assert kind==b'tree', 'selected source subtree is not a tree'
+            for mode,name,child in tree_entries(content):
+                path=prefix+name
+                if mode=='40000':next_level.append((path+'/',child))
+                else:
+                    assert path not in tracked, 'duplicate source path'
+                    tracked[path]=(mode,child)
+                    if mode!='160000':blobs[child]=None
+        pending=next_level
+    if blobs:
+        for oid,(kind,content) in objects(repo,blobs,env).items():
+            assert kind==b'blob', 'selected source file is not a blob'
+            blobs[oid]=content
+    # Gitlinks are external repositories; selected commit parents are history,
+    # neither is a compile-time source object in this bounded snapshot.
+    return {path:(mode,oid,None if mode=='160000' else blobs[oid])
+            for path,(mode,oid) in tracked.items()}
