@@ -350,6 +350,14 @@ if __name__ == '__main__':
     run_case('non-patch traversal replacement with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text('not a patch\n'),expected_error='recorded traversal patch differs')
     run_case('changed traversal patch with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text((r/'source/experimental-traversal.patch').read_text()+'\n# changed\n'),expected_error='recorded traversal patch differs')
     for arm in ['baseline','scored']:
+        wall=json.loads((ROOT/(arm+'.usage.json')).read_text())['wall_seconds']
+        for duration in ['9999','9'*400,format(wall+.01,'.8f')]:
+            def changed_duration(root,arm=arm,duration=duration):
+                import re
+                log=root/(arm+'.log');text,count=re.subn(r'finished in [0-9]+(?:\.[0-9]+)?s','finished in '+duration+'s',log.read_text())
+                assert count==1;log.write_text(text)
+            run_case('log duration beyond process wall '+arm+'/'+duration[:20],changed_duration,expected_error='fixture test duration exceeds whole-process wall time')
+    for arm in ['baseline','scored']:
         for label,extra,error in [
             ('extra failed test','test additional_case ... FAILED\n','complete fixture test markers differ'),
             ('duplicate success test','test scratch_scored_graph_finite_fixture ... ok\n','complete fixture test markers differ'),
