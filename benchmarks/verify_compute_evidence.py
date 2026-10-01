@@ -160,6 +160,25 @@ def verify_costs(baseline_queries):
 DEVICES = {"cpu", "cuda", "coreml", "directml", "npu"}
 LOADED_EVENTS = {"embedder_loaded", "reranker_loaded"}
 
+# Independent frozen premises, not derived from mutable proof summaries.
+# Historical main logs contain only the reranker-loaded event; do not invent
+# an embedder event where none was retained. These name EPs, not physical ANE/GPU.
+FROZEN_LOADED_DEVICES = {
+    "main-cpu": [("reranker_loaded", "cpu")],
+    "new-cpu": [("reranker_loaded", "cpu"), ("embedder_loaded", "cpu")],
+    "dual-cpu": [("reranker_loaded", "cpu"), ("embedder_loaded", "cpu")],
+    "main-auto": [("reranker_loaded", "coreml")],
+    "new-auto": [("embedder_loaded", "cpu"), ("reranker_loaded", "coreml")],
+    "main-auto-repeat": [("reranker_loaded", "coreml")],
+    "new-auto-persist-hit": [("embedder_loaded", "cpu"), ("reranker_loaded", "coreml")],
+}
+
+
+def frozen_loaded_devices(arm, process):
+    if (arm, process) == ("new-auto-persist-hit", 2):
+        return [("reranker_loaded", "coreml"), ("embedder_loaded", "cpu")]
+    return FROZEN_LOADED_DEVICES[arm]
+
 
 def loaded_device_summary(line):
     embedding = re.fullmatch(r'INFO pamin_index::embedding: embedder loaded model="(?:gpahal/bge-m3-onnx-int8|bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822\+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4)" device="([a-z]+)"', line)
@@ -193,6 +212,7 @@ def verify_device_proof():
                 assert type(event["device"]) is str and event["device"] in DEVICES, "unknown redacted device"
         loaded = [(event["event"], event["device"]) for event in events if event["event"] in LOADED_EVENTS]
         assert loaded == [loaded_device_summary(line) for line in entry["loaded_device_evidence"]], "loaded-device summary differs from retained events"
+        assert loaded == frozen_loaded_devices(entry["arm"], entry["process"]), "loaded devices differ from frozen arm/process premise"
         assert sum(event["event"] == "calibration" for event in events) == entry["calibration_lines"]
         assert sum(event["event"] == "candidate_rejected" for event in events) == entry["candidate_rejection_lines"]
         if entry["arm"] == "new-auto-persist-hit":
