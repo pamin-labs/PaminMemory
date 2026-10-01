@@ -281,3 +281,6 @@ def seed_file_path(entry,seed,excluded=()):
     seed=PurePosixPath(seed)
     path=PurePosixPath(entry['path'])
     assert str(path)==entry['path'] and '..' not in path.parts and path.is_relative_to(seed) and path!=seed and path.name not in excluded, 'seed inventory path outside recorded stopped-seed scope'
+
+def full_process_scope(row):
+    assert row.get('includes')=='open/write/maintenance/search/shutdown', 'full-process includes scope differs from historical runner'
