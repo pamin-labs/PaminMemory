@@ -394,6 +394,8 @@ for label, values in zip(labels, computed+[early]):
  percent = 'N/A' if values['percent_change'] is None else f"+{values['percent_change']:.6f}%"
  lines.append(f"| {label} | {before} | {values['scored']:.8f} | {values['expected']:g} | {delta} | {percent} |")
 readme = (ROOT/'README.md').read_text()
+HISTORICAL_ZVEC_README='The provisioned Zvec file was hashed before and after, but its actual loaded\nmapping was not captured: historical loaded-Zvec identity is **N/A**.'
+assert readme.count(HISTORICAL_ZVEC_README)==1, 'README historical loaded zvec N/A limitation differs'
 build_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if 'cargo test -p pamin-engine' in block]
 assert len(build_commands)==1, 'exact native-library build reproduction command required'
 assert hashlib.sha256(build_commands[0].encode()).hexdigest()==BUILD_RECIPE_SHA256, 'pinned native-library build environment missing or changed: complete approved recipe differs'
