@@ -565,22 +565,21 @@ pub(crate) fn retry_model<T, R>(
     mut operation: impl FnMut(&mut T, Device) -> Result<R>,
     mut reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<R> {
-    let mut retries = None;
+    let mut failed_devices = Vec::new();
     loop {
         match operation(model, *device) {
             Ok(result) => return Ok(result),
             Err(error) if *device == Device::Cpu => return Err(error),
             Err(error) => {
                 tracing::warn!(device=device.name(), %error, "accelerator execution failed; qualifying remaining plans");
-                let remaining = retries.get_or_insert_with(|| accelerators().len() + 1);
-                if *remaining == 0 {
+                let failed = *device;
+                if failed_devices.contains(&failed) {
                     return Err(error);
                 }
-                *remaining -= 1;
-                let failed = *device;
+                failed_devices.push(failed);
                 quarantine_runtime(cache_dir, failed);
                 let (replacement, selected) = reload()?;
-                if selected == failed {
+                if failed_devices.contains(&selected) {
                     return Err(error.context("recovery selected the failing provider"));
                 }
                 *model = replacement;
@@ -1353,6 +1352,36 @@ fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn runtime_recovery_keeps_gpu_before_cpu_and_retries_whole_results() {
+        let root = tempfile::tempdir().unwrap();
+        let mut model = Device::Npu;
+        let mut device = Device::Npu;
+        let mut alternatives = [Device::Cuda, Device::Cpu].into_iter();
+        let mut attempts = Vec::new();
+        let result = retry_model(
+            &mut model,
+            &mut device,
+            root.path(),
+            |_, device| {
+                attempts.push(device);
+                if device == Device::Cpu {
+                    Ok(vec![1.0, 2.0])
+                } else {
+                    Err(IndexError::Engine("failure after a partial batch".into()))
+                }
+            },
+            || {
+                let selected = alternatives.next().unwrap();
+                Ok((selected, selected))
+            },
+        )
+        .unwrap();
+        assert_eq!(attempts, [Device::Npu, Device::Cuda, Device::Cpu]);
+        assert_eq!(result, [1.0, 2.0]);
+        assert_eq!(device, Device::Cpu);
+    }
 
     #[test]
     fn execution_failure_reloads_a_qualified_remaining_device_and_retries() {
