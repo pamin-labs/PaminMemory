@@ -53,6 +53,7 @@ def case(kind='normal',copies=9):
             if copies==10:sequence.append((3,arms[0].split(',',2)))
             for index,(rep,(name,_,_)) in enumerate(sequence[:copies]):
                 shutil.copytree(seed,output/f'{rep}-{name}',symlinks=True)
+                runner.subprocess.run([str(executable)],env={})
                 if kind=='native_change':library.write_bytes(b'changed native bytes')
                 if kind=='model_graph_change':(models/'prepared/model.onnx').write_bytes(b'changed during arm')
                 if kind=='model_weight_change':(models/'prepared/model.onnx.data').write_bytes(b'changed during arm')
@@ -67,7 +68,12 @@ def case(kind='normal',copies=9):
             if kind=='swapped_roles':actual['embedding'],actual['reranker']=actual['reranker'],actual['embedding']
             if kind=='non_cpu':actual['embedding']['assigned_nodes']={'CUDAExecutionProvider':1}
             return actual
-        runner=types.SimpleNamespace(shutil=shutil,main=fake_main,cpu_provider_assignments=provider)
+        def launch(command,**kwargs):
+            assert command[0].startswith('/proc/self/fd/')
+            fd=int(command[0].rsplit('/',1)[1]);assert fd in kwargs['pass_fds']
+            assert os.pread(fd,100,0)==b'never executed'
+            return types.SimpleNamespace(returncode=0)
+        runner=types.SimpleNamespace(shutil=shutil,main=fake_main,cpu_provider_assignments=provider,subprocess=types.SimpleNamespace(run=launch))
         try:
             shutil.copytree=altered_copy;guard.load_runner=lambda path:runner
             os.environ.clear();os.environ.update({key:value for key,value in original_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE'}})

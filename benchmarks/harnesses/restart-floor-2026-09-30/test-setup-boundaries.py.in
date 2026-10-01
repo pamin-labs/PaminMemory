@@ -11,6 +11,8 @@ def load(name):
  module={'__file__':str(path),'__name__':'fixture'};exec(compile(code,str(path),'exec'),module);return module
 with tempfile.TemporaryDirectory() as directory:
  parent=Path(directory);attestation=parent/'attestation.json';attestation.write_text(json.dumps({'native_loader_inputs':{},'scope':'prospective build-time inputs/outputs only; no historical binary binding','arms':{name:{'commit':name+'-commit'} for name in ['main','predecessor','candidate']}}))
+ executable=parent/'fake-binary';executable.write_bytes(b'attested fake bytes')
+ data=json.loads(attestation.read_text());data['arms']['candidate'].update(binary=str(executable),binary_sha256=__import__('hashlib').sha256(executable.read_bytes()).hexdigest(),binary_bytes=executable.stat().st_size);attestation.write_text(json.dumps(data))
  conversion=load('run-conversion-guarded.py.in');g=conversion['main'].__globals__;seed=Path('/workspace/scratch/restart-floor/seed-disk');alias=parent/'seed-alias';alias.symlink_to(seed,target_is_directory=True)
  opens=[];launches=[];original_open=Path.open
  for log in [seed/'conversion.log',seed/'index/project/conversion.log',alias/'index/project/conversion.log',parent/'external.log']:

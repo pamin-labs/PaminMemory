@@ -3,6 +3,7 @@
 import argparse,json,os,runpy,subprocess,sys
 from pathlib import Path
 if sys.flags.optimize:raise SystemExit('Conversion guards require assertions; remove -O/PYTHONOPTIMIZE')
+STABLE=runpy.run_path(str(Path(__file__).with_name('stable-executables.py.in')))
 BUILD=runpy.run_path(str(Path(__file__).with_name('build-guarded.py.in')))
 def verified_binary(attestation):
     assert attestation['build_kind']=='disk-schema-conversion'
@@ -30,9 +31,13 @@ def main():
     env={key:value for key,value in os.environ.items() if not key.startswith('FLOOR_')}
     env=BUILD['NATIVE']['environment'](env,native)
     env['FLOOR_DISK_HOME']='/workspace/scratch/restart-floor/seed-disk'
-    with args.log.open('x') as log:
-        try:subprocess.run([str(binary),'--ignored','--exact','disk_schema','--nocapture'],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+    identity={'sha256':attestation['arms']['candidate']['binary_sha256'],'bytes':attestation['arms']['candidate']['binary_bytes']}
+    with STABLE['copies']({'candidate':binary},{'candidate':identity},args.log.parent,excluded=(seed,)) as copies,args.log.open('x') as log:
+        entry=copies['candidate'];STABLE['verify'](entry)
+        command,options=STABLE['invocation']([str(binary),'--ignored','--exact','disk_schema','--nocapture'],entry)
+        try:subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,check=True,**options)
         finally:
+            STABLE['verify'](entry)
             BUILD['NATIVE']['verify'](native)
             verified_binary(attestation)
 if __name__=='__main__':main()

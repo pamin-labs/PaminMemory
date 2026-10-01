@@ -47,3 +47,7 @@ Prospective bootstrap and seed setup require the attested `candidate` arm and
 its candidate commit. Conversion logs must resolve outside the entire measured
 stopped seed, including paths through symlink ancestors, before any log is opened.
 These controls do not add missing historical setup attestations.
+
+Prospective setup and every trial now copy each attested executable into an external mode-0700 temporary directory, set copies to mode 0500, open them read-only, and invoke `/proc/self/fd/<fd>` with Python `pass_fds`. Byte count, SHA-256, device and inode endpoints identify the opened file actually supplied to each direct invocation even if a pathname is replaced. The private setup/trial record retains the endpoints and actual FD command; FD numbers themselves are local, ephemeral labels. Copies and descriptors are released on success and failure. The historical `run.py.in` and accepted archives remain byte-identical. The prospective wrapper's trial elapsed interval includes executable endpoint hashing/recording; its timings are not interchangeable with the historical unwrapped interval. These checks do not certify every intervening instant or exclude same-user writes to an opened inode between endpoints.
+
+Conversion attestations, original executables, logs and private executable copies must resolve outside the fixed measured Disk seed before reads or launch. `test-execution-binding.py.in` uses only tiny fake bytes and mocked invocations, including path replacement, in-place mutation, failure cleanup and conversion seed-boundary rejection.
