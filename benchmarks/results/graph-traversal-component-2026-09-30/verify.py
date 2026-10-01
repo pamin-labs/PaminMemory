@@ -330,6 +330,12 @@ for label, values in zip(labels, computed+[early]):
  percent = 'N/A' if values['percent_change'] is None else f"+{values['percent_change']:.6f}%"
  lines.append(f"| {label} | {before} | {values['scored']:.8f} | {values['expected']:g} | {delta} | {percent} |")
 readme = (ROOT/'README.md').read_text()
+build_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if 'cargo test -p pamin-engine' in block]
+assert len(build_commands)==1, 'exact native-library build reproduction command required'
+for setting in ['env -u ORT_LIB_PATH','ORT_LIB_LOCATION="$ORT_LIB"','ORT_PREFER_DYNAMIC_LINK=1','ZVEC_LIB_DIR="$ZVEC_LIB"','ZVEC_AUTO_BUILD=0','LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"']:
+ assert setting in build_commands[0], 'pinned native-library build environment missing or changed: '+setting
+runtime_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if '"$BINARY" scratch_scored_graph_finite_fixture' in block]
+assert len(runtime_commands)==1 and 'LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"' in runtime_commands[0], 'pinned native-library runtime loader environment missing or changed'
 assert re.findall(r'The recorded local main ref was `([^`]+)`;',readme)==[MAIN_REF_NOT_RUN], 'README prepared main reference differs'
 assert readme.count(f'The recorded local main ref was `{MAIN_REF_NOT_RUN}`;\nthat separate main arm was prepared but was not executed here.')==1, 'README prepared main execution limitation differs'
 assert 'PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu' in readme, 'concrete reproduction workspace binding missing'

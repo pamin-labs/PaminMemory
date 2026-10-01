@@ -118,10 +118,38 @@ def round7_weak_window_cases():
                  expected_error='weak origin must be first eligible topic in recorded fixture seed window')
 
 
+def round7_native_environment_cases():
+    build_settings = ['env -u ORT_LIB_PATH', 'ORT_LIB_LOCATION="$ORT_LIB"', 'ORT_PREFER_DYNAMIC_LINK=1',
+                      'ZVEC_LIB_DIR="$ZVEC_LIB"', 'ZVEC_AUTO_BUILD=0',
+                      'LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"']
+    for setting in build_settings:
+        for replacement in ['', setting.replace('=', '=_wrong_', 1) if '=' in setting else 'env -u WRONG_PATH']:
+            def change_build(root, setting=setting, replacement=replacement):
+                path = root / 'README.md'
+                text = path.read_text()
+                start = text.index('\nenv -u ORT_LIB_PATH')
+                end = text.index('```', start)
+                path.write_text(text[:start] + text[start:end].replace(setting, replacement, 1) + text[end:])
+            run_case('native build setting ' + setting + ' -> ' + repr(replacement), change_build,
+                     expected_error='pinned native-library build environment missing or changed')
+    for replacement in ['', 'LD_LIBRARY_PATH="$ORT_LIB"']:
+        def change_runtime(root, replacement=replacement):
+            path = root / 'README.md'
+            text = path.read_text()
+            prefix, command = text.split('LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"', 1)
+            path.write_text(prefix + 'LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"' +
+                            command.replace('LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB"', replacement, 1))
+        run_case('native runtime loader setting -> ' + repr(replacement), change_runtime,
+                 expected_error='pinned native-library runtime loader environment missing or changed')
+
+
 if __name__ == '__main__':
     success = subprocess.run([sys.executable, str(ROOT / 'verify.py')], capture_output=True, text=True)
     if success.returncode:
         raise SystemExit(success.stderr)
+    if '--round7-native-env-only' in sys.argv:
+        round7_native_environment_cases()
+        raise SystemExit(0)
     if '--round7-weak-only' in sys.argv:
         round7_weak_window_cases()
         raise SystemExit(0)
@@ -129,6 +157,7 @@ if __name__ == '__main__':
     if '--round7-graph-only' in sys.argv:
         raise SystemExit(0)
     round7_weak_window_cases()
+    round7_native_environment_cases()
     run_case('non-patch traversal replacement with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text('not a patch\n'),expected_error='recorded traversal patch differs')
     run_case('changed traversal patch with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text((r/'source/experimental-traversal.patch').read_text()+'\n# changed\n'),expected_error='recorded traversal patch differs')
     for arm in ['baseline','scored']:
