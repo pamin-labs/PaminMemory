@@ -553,6 +553,18 @@ if __name__ == '__main__':
         mutate_json(r/'baseline.jsonl',lambda row:row['early_stop'].update(why=scored['early_stop']['why']))
     run_case('evidence on absent early-stop result',absent_evidence)
     for arm in ['baseline','scored']:
+        original=json.loads((ROOT/(arm+'.usage.json')).read_text())['maximum_process_rss_kib']
+        for value in [original+.5,float(original),True,False]:
+            def matched_rss(root,arm=arm,value=value):
+                mutate_json(root/(arm+'.jsonl'),lambda row:row.update(process_lifetime_high_water_kib=value))
+                mutate_json(root/(arm+'.usage.json'),lambda row:row.update(maximum_process_rss_kib=value))
+                mutate_json(root/'provenance.json',lambda p:next(record for record in p['arms'] if record['arm']==arm)['process_usage'].update(maximum_process_rss_kib=value))
+            run_case('matched noninteger RSS '+arm+'/'+repr(value),matched_rss,expected_error=None if type(value) is bool else 'raw RSS must be integer KiB')
+        def usage_rss_float(root,arm=arm,original=original):
+            mutate_json(root/(arm+'.usage.json'),lambda row:row.update(maximum_process_rss_kib=float(original)))
+            mutate_json(root/'provenance.json',lambda p:next(record for record in p['arms'] if record['arm']==arm)['process_usage'].update(maximum_process_rss_kib=float(original)))
+        run_case('wait4 float integer value RSS '+arm,usage_rss_float,expected_error='wait4 RSS must be integer KiB')
+    for arm in ['baseline','scored']:
         def duplicate_target(r,arm=arm):
             def change(row):
                 duplicate=copy.deepcopy(row['targets'][0]);next(w for w in duplicate['why'] if w['kind']=='path')['from']='fabricatedseed'
