@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST = json.loads((ROOT / 'sources.json').read_text())
 CONFIG = json.loads((ROOT / 'config.json').read_text())
 RESERVE = 8 * 1024**3
+# Failed cleanup aborts this controller; retain Popen to prevent destructor reap.
+RETAINED_GROUPS = []
 
 
 def require(ok, why):
@@ -92,14 +94,49 @@ def environment(home=None):
     return env
 
 
+def exit_status(process):
+    # Observe without reaping: the leader's reserved PID also reserves its PGID.
+    # ChildProcessError means ownership was lost; callers must never signal it.
+    result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if result is None:
+        return None
+    return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
+
+
+def live_group_members(group):
+    members = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / 'stat').read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        fields = stat[stat.rfind(')') + 2:].split()
+        if int(fields[2]) == group and fields[0] not in {'Z', 'X'}:
+            members.append(int(entry.name))
+    return members
+
+
 def stop_group(process):
-    # Call only for Popen instances created here with start_new_session=True.
-    # Their PID is the new session/group ID, never a discovered or supplied PID.
+    # Only new-session children launched below may enter this function. Prove
+    # the leader remains our unreaped child before signalling the reserved PGID.
+    exit_status(process)
     try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait(timeout=10)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 10
+        while live_group_members(process.pid):
+            require(time.monotonic() < deadline,
+                    'owned process group did not drain; retain unreaped leader and failure evidence')
+            time.sleep(.1)
+        # Reap only after no live member remains. Zombies have already exited.
+        process.wait(timeout=10)
+    except BaseException:
+        RETAINED_GROUPS.append(process)
+        raise
 
 
 def monitored(command, cwd, env, prefix, limit=900):
@@ -107,11 +144,13 @@ def monitored(command, cwd, env, prefix, limit=900):
     with Path(str(prefix) + '.stdout').open('x') as out, Path(str(prefix) + '.stderr').open('x') as err:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
         try:
-            while process.poll() is None:
+            code = exit_status(process)
+            while code is None:
                 guard()
                 require(time.monotonic() - start < limit, 'operation timeout')
                 time.sleep(1)
-            require(process.returncode == 0, 'operation failed; preserve logs and workspace')
+                code = exit_status(process)
+            require(code == 0, 'operation failed; preserve logs and workspace')
         finally:
             stop_group(process)
 

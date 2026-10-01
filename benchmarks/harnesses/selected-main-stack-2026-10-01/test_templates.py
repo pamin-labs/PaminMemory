@@ -106,6 +106,8 @@ class Templates(unittest.TestCase):
             groups.pop(group)
         with patch.object(self.common.subprocess, 'Popen', return_value=process) as launch, \
              patch.object(self.common, 'guard'), \
+             patch.object(self.common, 'exit_status', return_value=None), \
+             patch.object(self.common, 'live_group_members', return_value=[]), \
              patch.object(self.common.os, 'killpg', side_effect=terminate):
             with self.assertRaisesRegex(ValueError, 'timeout'):
                 self.common.monitored(['mock helper'], self.work, {}, self.work / 'fault', limit=0)
@@ -120,6 +122,8 @@ class Templates(unittest.TestCase):
         process = Mock(pid=1234, returncode=1)
         process.poll.return_value = 1
         with patch.object(self.common.subprocess, 'Popen', return_value=process), \
+             patch.object(self.common, 'exit_status', return_value=1), \
+             patch.object(self.common, 'live_group_members', return_value=[]), \
              patch.object(self.common.os, 'killpg') as terminate:
             with self.assertRaisesRegex(ValueError, 'operation failed'):
                 self.common.monitored(['mock compiler'], self.work, {}, self.work / 'failed')
@@ -131,12 +135,49 @@ class Templates(unittest.TestCase):
         process.poll.return_value = 1
         with patch.object(self.pg, 'start', return_value={'identity': owned}), \
              patch.object(self.run.subprocess, 'Popen', return_value=process) as launch, \
+             patch.object(self.common, 'exit_status', return_value=1), \
              patch.object(self.common, 'stop_group', side_effect=RuntimeError('group wait failed')), \
              patch.object(self.pg, 'stop') as stop:
             with self.assertRaisesRegex(RuntimeError, 'group wait failed'):
                 self.run.native(self.work, {}, 'unused', self.work / 'failed-native')
             self.assertTrue(launch.call_args.kwargs['start_new_session'])
             stop.assert_called_once_with(self.work, {}, owned)
+
+    def test_reaped_leader_pid_reuse_refuses_any_group_signal(self):
+        process = Mock(pid=1234)
+        with patch.object(self.common.os, 'waitid', side_effect=ChildProcessError('already reaped')), \
+             patch.object(self.common.os, 'killpg') as signal_group:
+            with self.assertRaises(ChildProcessError):
+                self.common.stop_group(process)
+            signal_group.assert_not_called()
+            process.wait.assert_not_called()
+
+    def test_group_drain_precedes_final_reap(self):
+        process = Mock(pid=1234)
+        events = []
+        def members(group):
+            events.append('scan')
+            return [1235] if events.count('scan') == 1 else []
+        process.wait.side_effect = lambda **kwargs: events.append('reap')
+        with patch.object(self.common.os, 'waitid', return_value=Mock(si_status=0, si_code=self.common.os.CLD_EXITED)) as observe, \
+             patch.object(self.common.os, 'killpg', side_effect=lambda *args: events.append('signal')), \
+             patch.object(self.common, 'live_group_members', side_effect=members), \
+             patch.object(self.common.time, 'sleep'):
+            self.common.stop_group(process)
+        self.assertEqual(events, ['signal', 'scan', 'scan', 'reap'])
+        self.assertTrue(observe.call_args.args[2] & self.common.os.WNOWAIT)
+
+    def test_lingering_descendant_fails_boundedly_without_reaping(self):
+        process = Mock(pid=1234)
+        with patch.object(self.common, 'exit_status', return_value=0), \
+             patch.object(self.common.os, 'killpg') as signal_group, \
+             patch.object(self.common, 'live_group_members', return_value=[1235]), \
+             patch.object(self.common.time, 'monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(ValueError, 'did not drain'):
+                self.common.stop_group(process)
+            signal_group.assert_called_once()
+            process.wait.assert_not_called()
+            self.assertIn(process, self.common.RETAINED_GROUPS)
 
     def test_bound_native_build_environment_excludes_ort_override(self):
         module = load('reproduction_build', self.work / 'build.py')

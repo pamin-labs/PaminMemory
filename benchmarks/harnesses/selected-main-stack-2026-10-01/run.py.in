@@ -64,7 +64,8 @@ def native(home, env, binary, prefix):
             process = subprocess.Popen([str(binary), '--ignored', '--exact', 'cache_product_limit_probe',
                                         '--nocapture', '--test-threads=1'], cwd=c.ROOT / 'main', env=env,
                                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
-            while process.poll() is None:
+            code = c.exit_status(process)
+            while code is None:
                 c.guard()
                 pg.check(home, owned)
                 c.require(time.monotonic() - start < 900, 'native process timeout')
@@ -73,7 +74,8 @@ def native(home, env, binary, prefix):
                 except FileNotFoundError:
                     pass
                 time.sleep(1)
-            c.require(process.returncode == 0, 'native process failed; retain clone and logs')
+                code = c.exit_status(process)
+            c.require(code == 0, 'native process failed; retain clone and logs')
         return {'native_wall_seconds': time.monotonic() - start, 'samples': samples,
                 'polling_seconds': 1, 'PG_start_stop_included': False}
     finally:
