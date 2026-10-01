@@ -104,18 +104,23 @@ measured. The full 69-test scan audit in the receipt includes changed tables and
 deliberate cache tests; it is separate from these three timed observations.
 
 To produce new observations later, use the read-only
-[probe](probe_verifier_cost.py) from this directory. The before comparator requires
-commit `775de8a2d0e81a80239df4a0279600da7df68ec0` already present in a local Git
-repository; no remote fetch is promised or attempted. Current input/source bytes
-must match the recorded pins. This procedure does not reproduce the exact timing
-values and does not run the invariant suite or any product benchmark:
+[probe](probe_verifier_cost.py) from this directory. Its exact before-comparator
+source is now retained as [before-verify.py.in](before-verify.py.in), checked
+against the original SHA256 in the receipt before evaluation. The recorded
+`775de8a2d0e81a80239df4a0279600da7df68ec0` revision remains provenance; no Git
+object, ref, remote fetch or download is required for this component procedure.
+Current prospective source/input pins are listed separately from the unchanged
+historical measured-source identities. The missing-tree Git availability fix
+is outside the timed metadata path. This procedure produces new timings, not
+identical historical values, and does not run the invariant suite or product work:
 
 ```sh
 python3 -B probe_verifier_cost.py
-python3 -B probe_verifier_cost.py --execute --repository /local/existing/repository
+python3 -B probe_verifier_cost.py --execute
 ```
 
 The first command only prints the plan. The second opts in to before, cold-after
 and warm-after metadata verification in one process. No new observation was run
 while adding this receipt/procedure; the numbers above retain the prior
 verifier-only observations.
+
