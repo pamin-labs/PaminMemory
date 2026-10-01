@@ -26,6 +26,8 @@ def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
 assert provenance['source_base']=='13ee710c9df865f1dac98dc77a8108e438ddc539'
+MAIN_REF_NOT_RUN = '315c10242ddf7a1cec3bccbf550a942320e09557'
+assert type(provenance.get('compared_main_ref_not_run')) is str and provenance['compared_main_ref_not_run']==MAIN_REF_NOT_RUN, 'prepared unrun main reference differs'
 assert type(provenance.get('mapped_library_identity_scope')) is str and provenance['mapped_library_identity_scope']=='mapped paths and pinned file digests; no inode identity captured', 'mapped-library identity limitation differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
 for name,expected in provenance['source_files'].items():assert sha(ROOT/'source'/name)==expected
@@ -314,6 +316,8 @@ for label, values in zip(labels, computed+[early]):
  percent = 'N/A' if values['percent_change'] is None else f"+{values['percent_change']:.6f}%"
  lines.append(f"| {label} | {before} | {values['scored']:.8f} | {values['expected']:g} | {delta} | {percent} |")
 readme = (ROOT/'README.md').read_text()
+assert re.findall(r'The recorded local main ref was `([^`]+)`;',readme)==[MAIN_REF_NOT_RUN], 'README prepared main reference differs'
+assert readme.count(f'The recorded local main ref was `{MAIN_REF_NOT_RUN}`;\nthat separate main arm was prepared but was not executed here.')==1, 'README prepared main execution limitation differs'
 assert 'PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu' in readme, 'concrete reproduction workspace binding missing'
 assert '--test scratch_scored_fixture --test scratch_scored_multihop' in readme, 'reproduction must compile both retained targets'
 start = readme.index('| Controlled case |')

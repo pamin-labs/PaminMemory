@@ -70,6 +70,23 @@ if __name__ == '__main__':
     if success.returncode:
         raise SystemExit(success.stderr)
     retained=json.loads((ROOT/'provenance.json').read_text())
+    main_ref='315c10242ddf7a1cec3bccbf550a942320e09557'
+    for ref in ['0'*40, retained['source_base'], 'nonexistent', '', None, True, [main_ref]]:
+        run_case('prepared unrun main reference '+repr(ref),lambda r,ref=ref:mutate_json(r/'provenance.json',lambda p:p.update(compared_main_ref_not_run=ref)),expected_error='prepared unrun main reference differs')
+    run_case('missing prepared unrun main reference',lambda r:mutate_json(r/'provenance.json',lambda p:p.pop('compared_main_ref_not_run')),expected_error='prepared unrun main reference differs')
+    def matched_unrun_reference(r):
+        mutate_json(r/'provenance.json',lambda p:p.update(compared_main_ref_not_run='0'*40))
+        p=r/'README.md';p.write_text(p.read_text().replace(main_ref,'0'*40))
+    run_case('matched fabricated unrun main reference and README',matched_unrun_reference,expected_error='prepared unrun main reference differs')
+    for label,change,error in [
+        ('different SHA',lambda text:text.replace(main_ref,'0'*40),'README prepared main reference differs'),
+        ('missing reference',lambda text:text.replace('The recorded local main ref was `'+main_ref+'`;','No main reference retained.'),'README prepared main reference differs'),
+        ('contradictory second reference',lambda text:text+'\nThe recorded local main ref was `'+('0'*40)+'`;\n','README prepared main reference differs'),
+        ('executed arm claim',lambda text:text.replace('that separate main arm was prepared but was not executed here.','that separate main arm was prepared and executed here.'),'README prepared main execution limitation differs'),
+        ('missing non-execution limitation',lambda text:text.replace('that separate main arm was prepared but was not executed here.','that separate main arm was prepared.'),'README prepared main execution limitation differs')]:
+        def mutate_readme(r,change=change):
+            p=r/'README.md';p.write_text(change(p.read_text()))
+        run_case('README prepared main '+label,mutate_readme,expected_error=error)
     for scope in ['mapped inode identity captured and verified', 'mapped paths and pinned file digests', '', None, True, 0, ['mapped paths and pinned file digests; no inode identity captured']]:
         run_case('mapped-library identity scope '+repr(scope),lambda r,scope=scope:mutate_json(r/'provenance.json',lambda p:p.update(mapped_library_identity_scope=scope)),expected_error='mapped-library identity limitation differs')
     run_case('missing mapped-library identity scope',lambda r:mutate_json(r/'provenance.json',lambda p:p.pop('mapped_library_identity_scope')),expected_error='mapped-library identity limitation differs')
