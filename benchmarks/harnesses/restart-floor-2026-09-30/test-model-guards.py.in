@@ -125,8 +125,75 @@ with tempfile.TemporaryDirectory() as directory:
             data=json.loads(private.read_text());assert data['status']==('finished' if kind=='normal' else 'failed') and len(calls)==1
             assert '_expected_models' not in data and 'entries' not in data['models_before_launch'] and stat.S_IMODE(private.stat().st_mode)==0o600
             (models/'prepared/key/model.onnx.data').write_bytes(b'tiny fake asset');manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+        # Provider text uses the retained native log syntax; the real frozen
+        # parser is loaded by main. No fake provider reader or model execution.
+        seed_plan=copy.deepcopy(plan)
+        embedding=seed_plan['models'][0]
+        reranker=copy.deepcopy(embedding);reranker['name']='reranker'
+        for selected,directory in [(embedding,'prepared/seed-embedding'),(reranker,'prepared/seed-reranker')]:
+            (models/directory).mkdir()
+            for name in ['model.onnx','attention.onnx','model.onnx.data']:(models/directory/name).write_bytes(b'fake seed model')
+            selected['asset_directories']=['revision',directory]
+            selected['assets']['prepared_graph']=[directory+'/model.onnx',directory+'/attention.onnx']
+            selected['assets']['external_weights']=[directory+'/model.onnx.data']
+            selected['graph_external_weights']={name:selected['assets']['external_weights'] for name in selected['assets']['prepared_graph']}
+            selected['load_graph']=directory+'/attention.onnx'
+        seed_plan['models'].append(reranker)
+        seed_expected=model['prepare'](models,seed_plan);manifest.write_text(json.dumps(seed_expected))
+        def assignment(graph,nodes):
+            return '2026-09-30T20:08:18.958166Z  INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph='+json.dumps(str(graph))+' assigned_nodes='+json.dumps(nodes)+'\n'
+        for kind in ['seed_normal','seed_reverse_load','seed_empty','seed_missing','seed_swapped_roles','seed_inventory_graph','seed_non_cpu','seed_zero_tests']:
+            private=root/(kind+'.json');calls=[]
+            embed_graph=models/embedding['load_graph'];rerank_graph=models/reranker['load_graph']
+            first=assignment(embed_graph,{'CPUExecutionProvider':1023})
+            second=assignment(rerank_graph,{'CPUExecutionProvider':295})
+            if kind=='seed_empty':first=second=''
+            elif kind=='seed_missing':second=''
+            elif kind=='seed_inventory_graph':first=assignment(models/'prepared/seed-embedding/model.onnx',{'CPUExecutionProvider':1023})
+            elif kind=='seed_non_cpu':first=assignment(embed_graph,{'CUDAExecutionProvider':1023})
+            bad=copy.deepcopy(seed_expected)
+            if kind=='seed_swapped_roles':
+                # Role attribution is independently explicit in repository paths;
+                # exchange the plan roles while preserving its valid asset maps.
+                bad['model']['plan']['models'][0]['name']='reranker'
+                bad['model']['plan']['models'][1]['name']='embedding'
+                bad['manifest_sha256']=model['identity'](bad['model'])
+                embedding_dir=models/'prepared/seed-embedding';reranker_dir=models/'prepared/seed-reranker'
+                embed_repo=embedding_dir/'models--gpahal--bge-m3-onnx-int8.onnx'
+                rerank_repo=reranker_dir/'models--onnx-community--bge-reranker-v2-m3-ONNX.onnx'
+                embed_repo.write_bytes(b'fake seed model');rerank_repo.write_bytes(b'fake seed model')
+                for selected,path in zip(bad['model']['plan']['models'],[embed_repo,rerank_repo]):
+                    name=str(path.relative_to(models));selected['assets']['prepared_graph'].append(name);selected['graph_external_weights'][name]=selected['assets']['external_weights'];selected['load_graph']=name
+                bad=model['prepare'](models,bad['model']['plan'])
+                first=assignment(embed_repo,{'CPUExecutionProvider':1023});second=assignment(rerank_repo,{'CPUExecutionProvider':295})
+            manifest.write_text(json.dumps(bad))
+            opening='RESTART_JSON {"phase":"open","extra":{"documents":0}}\n'
+            completed='RESTART_JSON {"phase":"seed_complete","extra":{"completeness":1.0}}\n'
+            # Fresh seed loads embedding while ingesting; a resumed seed may
+            # load both models after seed_complete, with reranker first.
+            output=opening+first+completed+second
+            if kind=='seed_reverse_load':output=opening+completed+second+first
+            if kind=='seed_zero_tests':output='running 0 tests\n'
+            def fake_seed_run(command,env,**kwargs):
+                calls.append(command);assert env['FLOOR_MODE']=='seed'
+                return types.SimpleNamespace(returncode=0,stdout=output,stderr='')
+            subprocess.run=fake_seed_run
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'fake,fake,{executable}','--stage','seed']
+            good=kind in ['seed_normal','seed_reverse_load']
+            if good:guard['main']()
+            else:refuse(guard['main'])
+            data=json.loads(private.read_text());assert data['status']==('finished' if good else 'failed') and len(calls)==1
+            if good:
+                assert set(data['setup_actual_providers'])=={'embedding','reranker'}
+                assert data['setup_actual_providers']['embedding']['model_graph']==str(embed_graph)
+                assert 'seed load order not inferred' in data['setup_actual_providers']['embedding']['role_identity']
+                assert 'native_after_setup' in data and 'models_after_setup' in data
+            else:
+                assert 'setup_actual_providers' not in data and 'native_after_setup' not in data and 'models_after_setup' not in data
+            if kind=='seed_swapped_roles':embed_repo.unlink();rerank_repo.unlink()
+        manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
         source.write_bytes(b'changed before setup');private=root/'prelaunch.json';sys.argv[sys.argv.index('--record')+1]=str(private);calls.clear();refuse(guard['main']);assert not calls and not private.exists()
     finally:subprocess.run=previous_run;sys.argv=previous_argv;os.environ.clear();os.environ.update(previous_env)
 for name in ['model-guards.py.in','run-guarded.py.in','test-model-guards.py.in','test-fixture-guards.py.in','test-native-build-guards.py.in']:
     result=subprocess.run([sys.executable,'-O',str(here/name)],capture_output=True,text=True);assert result.returncode!=0 and 'remove -O' in result.stderr
-print('passed every asset role mutation, graph selection/inventory, safe/unsafe links, explicit source release/provenance, private immutable manifest, setup pre/post/failure and -O rejection; no real model/trial executed')
+print('passed every asset role mutation, graph selection/inventory, safe/unsafe links, explicit source release/provenance, private immutable manifest, bootstrap/seed pre/post/failure, real parser seed role/graph/provider checks with both load orders, and -O rejection; no real model/trial executed')

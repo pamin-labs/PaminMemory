@@ -146,6 +146,39 @@ def verify_provider_graphs(providers,expected):
         assert graph.resolve(strict=True)==(root/models[role]['load_graph']).resolve(strict=True), 'actual role graph differs from declared load_graph'
         nodes=provider['assigned_nodes']
         assert set(nodes)=={'CPUExecutionProvider'} and type(nodes['CPUExecutionProvider']) is int and nodes['CPUExecutionProvider']>0, 'actual CPU assignment missing'
+def seed_provider_assignments(log_text,expected,reader):
+    """Seed warming can load both roles concurrently; never infer their order.
+
+    Opaque prepared paths get their role from the separately pinned inventory.
+    Only the parser input receives a repository-role tag; the returned evidence
+    retains the actual logged path, which must match that role's load_graph.
+    """
+    identities={'embedding':'gpahal--bge-m3-onnx-int8','reranker':'onnx-community--bge-reranker-v2-m3-ONNX'}
+    models={model['name']:model for model in expected['plan']['models']}
+    assert set(models)==set(identities), 'seed requires embedding and reranker model roles'
+    root=Path(expected['root']);decoder=json.JSONDecoder();lines=[];actual={}
+    clean=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',log_text)
+    for line in clean.splitlines():
+        if 'ONNX graph execution-provider assignment' not in line:continue
+        assert 'model_graph=' in line and 'assigned_nodes=' in line, 'seed provider assignment fields missing'
+        value=line.split('model_graph=',1)[1];graph,length=decoder.raw_decode(value)
+        graph_path=Path(graph);assert graph_path.is_absolute(), 'seed actual graph must be absolute'
+        roles=[role for role,identity in identities.items() if identity in graph]
+        attributed=graph
+        if not roles:
+            roles=[role for role,model in models.items() if any(graph_path.resolve(strict=True)==(root/name).resolve(strict=True) for name in model['assets']['prepared_graph'])]
+            assert len(roles)==1, 'opaque seed graph needs one declared model role'
+            attributed=graph+'/'+identities[roles[0]]
+        assert len(roles)==1, 'seed graph has ambiguous repository role'
+        assert attributed not in actual, 'duplicate seed graph assignment'
+        actual[attributed]=(graph,not any(identity in graph for identity in identities.values()))
+        lines.append(line.replace('model_graph='+value[:length],'model_graph='+json.dumps(attributed),1))
+    providers=reader('\n'.join(lines))
+    for provider in providers.values():
+        graph,from_inventory=actual[provider['model_graph']];provider['model_graph']=graph
+        if from_inventory:provider['role_identity']='separately declared prepared graph role; seed load order not inferred'
+    verify_provider_graphs(providers,expected)
+    return providers
 def setup_rows(output,stage,documents):
     clean=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',output)
     rows=[json.loads(line[len('RESTART_JSON '):]) for line in clean.splitlines() if line.startswith('RESTART_JSON ')]
@@ -222,10 +255,13 @@ def main():
             NATIVE['verify'](native)
             result=subprocess.run(command,env=env,capture_output=True,text=True);record['returncode']=result.returncode
             sys.stdout.write(result.stdout);sys.stderr.write(result.stderr)
-            record['native_after_setup']=NATIVE['verify'](native)
-            record['models_after_setup']=verify_models(record)
             assert result.returncode==0
             record['setup_output']=setup_rows(result.stdout,a.stage,a.documents)
+            if a.stage=='seed':
+                runner=load_runner(Path(__file__).with_name('run.py.in'))
+                record['setup_actual_providers']=seed_provider_assignments(result.stdout+'\n'+result.stderr,expected_models,runner.cpu_provider_assignments)
+            record['native_after_setup']=NATIVE['verify'](native)
+            record['models_after_setup']=verify_models(record)
         else:
             record.update(fixture_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),fixture_prepared_utc=fixture_manifest['recorded_utc'])
             record['arm_binary_identities']={arm.split(',',2)[0]:{key:attestation['arms'][arm.split(',',2)[0]][source] for key,source in [('commit','commit'),('sha256','binary_sha256'),('bytes','binary_bytes')]} for arm in a.arm}
