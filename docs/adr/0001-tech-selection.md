@@ -1548,7 +1548,7 @@ the same `search_reranked` entry point. Cross-language nDCG@10 was 0.7218 →
 detectable gain (`p = 0.1638`). The current reranker shrinks the old Greek
 nDCG loss but does not remove its recall loss. Under the accuracy-first rule,
 there is no general XQuAD-R gain to offset this preselected weakness, so the
-experimental profile was removed without spending another full rebuild on
+then-experimental standalone PPLX replacement profile was removed without spending another full rebuild on
 MuSiQue. Its older MuSiQue gain was measured under a different rerank path and
 is not claimed for this one.
 
@@ -1633,7 +1633,10 @@ search. It was taken on the shared four-core machine at a load average of 17 to
 three alternating rounds, one model per fresh process, which agree to within
 1.5 MiB.
 
-**Combining the two models was measured, and it is not proposed.** It used the
+**Historical combined-fusion experiment: measured and not proposed as a default.**
+The later opt-in two-field `dual_accuracy` experiment is a distinct, fixed-budget
+configuration; see *Prototype follow-up evidence (2026-10-01)*. It does not
+reverse the default decision or establish a fitted sparse weight. It used the
 same replay as the section above, with its MuSiQue caveat, under rules written
 before any combined result. Every arm keeps the two BM25 channels at 0.125 and
 the graph at 0.30:
@@ -3269,3 +3272,5 @@ Full XQuAD-R, MIRACL-Swahili and a shared 50k memory index found no accuracy or 
 Dual-vector accuracy remains opt-in. At a fixed semantic depth and total vector vote budget, paired CPU XQuAD-R cross-language nDCG@10 improves 0.726706 → 0.734442, while recall@50 falls 0.903193 → 0.883109. This is a ranking/coverage tradeoff; do not promote the default on one corpus. Dual also adds sampled process RSS and projection bytes. The [complete comparison](../../benchmarks/results/compute/prototype-closeout-2026-10-01/README.md) retains raw rows, exact frozen revisions, corrected percentile definitions, independent process costs and provenance limits.
 
 Cached automatic search in the retained blocks is at main parity. Source BGE CoreML conformance is still unresolved; native Windows NPU has implementation/compile evidence, not measured hardware performance. Later calibration-policy fixes were not included in those frozen timings. CPU work uses optimized ORT kernels/SIMD where supported; exact integer pooled-vector normalization has a [separate kernel diagnostic](../../benchmarks/results/compute/i8-normalization-2026-10-01/README.md), which must not be reported as search speedup. Keep accuracy, latency, memory and disk priorities, and remeasure the actual entry point when changing default plans.
+
+The 2026-10-01 cluster inference is a post-hoc correction of a question-independence error, not preregistered confirmatory acceptance. Keep the original declaration, report the corrected exploratory evidence and require an independent-corpus check before default promotion.
