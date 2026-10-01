@@ -9,7 +9,7 @@ loader=importlib.machinery.SourceFileLoader('measurement_review',str(ROOT/'evide
 spec=importlib.util.spec_from_loader(loader.name,loader);review=importlib.util.module_from_spec(spec);loader.exec_module(review)
 
 def row(phase='maintenance'):
-    return {'phase':phase,'cpu_scope':'process threads only; PostgreSQL excluded','rss_scope':'process only','extra':{'index_disk':[1,100,512]}}
+    return {'conditions':'new Engine process; warm OS/model file cache; isolated copied stopped DB/index','phase':phase,'cpu_scope':'process threads only; PostgreSQL excluded','rss_scope':'process only','extra':{'index_disk':[1,100,512]}}
 
 class PureGuards(unittest.TestCase):
     def test_disk_before_arithmetic(self):

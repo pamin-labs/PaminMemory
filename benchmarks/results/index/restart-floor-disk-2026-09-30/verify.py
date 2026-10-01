@@ -82,7 +82,7 @@ for arm,commit in expected_commits.items():
         assert len(warm[(arm,rep)])==24 and all(len(topics)==len(set(topics))==10 for topics in warm[(arm,rep)].values()), 'Disk ordered top10 topics must be unique'
         for row in phases['search_warm']:
             rank=next((i+1 for i,topic in enumerate(row['extra']['topics']) if topic==f'incident-{row["extra"]["query_document"]}'),None)
-            assert rank==row['extra']['rank']
+            review.historical_rank(row['extra']['rank'],rank)
         log=gzip.decompress((root/'logs'/f'{rep}-{arm}.log.gz').read_bytes()).decode()
         review.successful_test_log(log)
         review.disk_backend(log)

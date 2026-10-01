@@ -84,3 +84,12 @@ Offline verification requires each maintenance optimize-job observation to be
 an actual nonnegative JSON integer, excluding booleans, before comparing the
 arm’s expected count. Matching raw/log values and refreshed derived summaries
 or manifests do not replace this type check. Historical raw values are unchanged.
+
+Verification binds the exact retained warm-cache/isolated-stopped-copy row
+annotation and requires query ranks to be null or actual positive integers,
+excluding booleans, before comparing them with returned positions. These checks
+validate declared historical evidence, not independent runtime cache isolation.
+
+The hardware check binds the retained kernel, CPU model, cgroup CPU quota and
+memory-limit annotations to the published configuration; it does not independently
+attest historical hardware.
