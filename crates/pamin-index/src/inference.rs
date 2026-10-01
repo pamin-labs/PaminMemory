@@ -867,7 +867,7 @@ fn calibrated_with_references<T>(
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut transient_failure = false;
     let mut numerical_failure = false;
-    let rounds = if plans.len() > 1 { 3 } else { 1 };
+    let rounds = 3;
     let mut observations: Vec<Vec<(std::time::Duration, bool)>> = vec![Vec::new(); plans.len()];
     let mut quarantined = vec![false; plans.len()];
     for round in 0..rounds {
@@ -1094,6 +1094,37 @@ fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn one_accelerator_must_win_multiple_interleaved_rounds() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let attempts = Cell::new(0);
+        let cache = std::sync::Mutex::default();
+        let (_, selected) = calibrated(
+            "single-accelerator",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            |device, _, _| Ok(device),
+            |_, device| {
+                let millis = if device == Device::Cpu {
+                    10
+                } else {
+                    let round = attempts.get();
+                    attempts.set(round + 1);
+                    if round == 0 { 1 } else { 20 }
+                };
+                Ok(Duration::from_millis(millis))
+            },
+        )
+        .unwrap();
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(
+            selected,
+            Device::Cpu,
+            "one lucky accelerator interval selected a cached plan"
+        );
+    }
 
     #[test]
     fn calibrated_plan_chooses_time_not_discovery_and_reuses_validation() {
@@ -1337,7 +1368,7 @@ mod tests {
                 Ok((device, loads.get()))
             },
             |model, device| {
-                if device == Device::Cuda && model.1 > 1 {
+                if device == Device::Cuda && model.1 > 3 {
                     Err(IndexError::Numerical("replacement lazy failure".into()))
                 } else {
                     Ok(Duration::from_millis(if device == Device::Cpu {
