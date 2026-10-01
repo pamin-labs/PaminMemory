@@ -225,7 +225,7 @@ def seed_endpoint(provenance, record):
     assert record['canonical_inventory_sha256']==hashlib.sha256(encoded).hexdigest()
     assert record['file_count']==len(entries)
     assert record['total_bytes']==sum(entry['bytes'] for entry in entries)
-    assert record['matches_pretrial_inventory'] and record['seed_postgresql_stopped'] and record['metadata_stable_during_capture']
+    assert all(record[key] is True for key in ['matches_pretrial_inventory','seed_postgresql_stopped','metadata_stable_during_capture']), 'seed endpoint flags must be exactly true'
     assert record['seed_models_symlink_target']==provenance['seed_models_symlink_target']=='<MODEL_CACHE>'
     assert record['historical_per_copy_attested'] is False
     assert record['started_utc'] and record['finished_utc'] and record['started_utc']<=record['finished_utc']
