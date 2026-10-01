@@ -107,3 +107,26 @@ integration-test helpers. Their logical byte row includes the probe/scaffold and
 source-root strings; it describes helper artifacts only. The shipped CLI/server
 executable disk size is unmeasured and reported as N/A. No helper size delta
 establishes a product executable disk change.
+
+### Checkpoint and service identity scope
+
+The 80-process controller now atomically publishes completed packets after owned
+cleanup. Resuming revalidates the plan, retained logs, job chronology, row/hot
+checks and PostgreSQL bindings, loads completed jobs and runs only incomplete
+jobs. Unbound old result directories, changed plans and corrupt checkpoints fail
+closed. Incomplete attempt directories remain available; their PostgreSQL state
+must pass preflight before a new attempt. The cooperative lock and exclusive-slot
+condition cannot certify unrelated surviving native descendants after a lost
+controller. Resume fixtures are mocked; interruption/recovery with actual native
+processes remains unverified.
+
+The plan and each prospective process packet retain the PostgreSQL installation
+file inventory/configuration digest, actual server executable digest and mapped
+library file digests. The report keeps per-job build identities. Historical
+PostgreSQL build identity is N/A; version text alone does not establish equality.
+Mapped library inode identity is unmeasured. `pg_config` configuration flags may
+contain local build paths; generated receipts stay local until publication review.
+
+Off cold/new-query controls must agree across sources on limited, complete and
+fused results before the comparison is accepted. Equal zero model work alone
+does not establish like-for-like retrieval.
