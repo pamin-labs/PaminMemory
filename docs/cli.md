@@ -24,7 +24,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
 | | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
-| | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible ONNX Runtime plugin EP libraries; unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
+| | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible NPU plugin EP libraries; only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
@@ -163,7 +163,7 @@ not a measure of unique APFS allocation; the actual free-space change may
 differ.
 
 The `accurate` reranker calibrates viable shared accelerator plans against optimized CPU:
-CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, and DirectML on Windows.
+Eligible registered NPU devices are considered first, followed by CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, or DirectML on Windows, with optimized CPU/SIMD subgraph fallback. The qualified fastest complete-call plan wins; provider order alone does not determine it.
 The `fast` tier does the same except on Apple silicon, where its measured ARM
 INT8 CPU export is both faster and no less accurate on the complete XQuAD-R
 comparison than its CoreML FP32 export. Provider selection is logged when a
@@ -178,8 +178,7 @@ retrieval certification. With automatic dispatch, a bounded complete model-call
 query fixture compares viable plans against interleaved optimized-CPU controls.
 Maximum batch/length conformance is checked separately from singleton query
 timing, so bulk ingest throughput does not decide the search plan. Its
-validated winner is cached for process-local idle reloads using the model
-snapshot, device inventory and runtime settings. This estimates the fastest
+validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day; numerical rejects are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
 plan for that fixture; it is not universal per-query autotuning. E5 accelerator
 batches are capped at eight (CPU retains 256), including maximum-token startup
 fixtures, so a 64/256-passage request is split into those bounded shapes.
@@ -1299,3 +1298,5 @@ row and paying startup once.
 ### Experimental dual-space profile
 
 `dual_accuracy` uses pinned BGE-M3 INT8 plus a pinned complementary PPLX 0.6B singleton/int8-pooled encoding. It is opt-in; the default remains `accuracy`. Its marker identity is distinct, so changing to it requires `reindex`. Both vectors are written atomically, retained during same-profile rebuild/reshape, and included in recall. The two streams split the existing semantic candidate/vote budget equally; adding a model does not silently double either budget. Full product precision and resource comparisons are required before considering it a default.
+
+Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure temporarily quarantines the failing accelerator for the workspace, requalifies the remaining GPU/optimized CPU plans and retries the complete operation. Reranker backend changes invalidate old score-cache entries so different export scales are not mixed.
