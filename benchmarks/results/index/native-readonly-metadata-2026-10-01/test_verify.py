@@ -38,17 +38,22 @@ class MetadataInvariants(unittest.TestCase):
     def test_rehashed_wrong_format(self):
         self.reject(lambda e:self.rewrite(e, 'header_hex', {2:3}))
 
-    def test_crc_refreshed_wrong_magic_all_excerpts(self):
-        changed = copy.deepcopy(self.evidence)
-        for run in changed['runs']:
-            for file in run['files']:
-                for excerpt in file['excerpts'].values():
-                    values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
-                    values[4] = 0; values[0] = 0
-                    values[0] = verify.crc32c(verify.HEADER.pack(*values))
-                    excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
-        with self.assertRaisesRegex(ValueError, 'wrong format/revision'):
-            verify.verify(changed, check_logs=False)
+    def test_crc_refreshed_wrong_magic_each_file_both_phases(self):
+        pins = list(verify.HEADER_MAGIC.values())
+        for run_index in range(2):
+            for file_index in range(4):
+                # Zero and another file's legitimate identity must both fail.
+                for magic in [0, pins[(file_index+1) % 4]]:
+                    with self.subTest(arm=run_index, file=file_index, magic=magic):
+                        changed = copy.deepcopy(self.evidence)
+                        file = changed['runs'][run_index]['files'][file_index]
+                        for excerpt in file['excerpts'].values():
+                            values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                            values[4] = magic; values[0] = 0
+                            values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                            excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+                        with self.assertRaisesRegex(ValueError, 'header magic identity receipt binding'):
+                            verify.verify(changed, check_logs=False)
 
     def test_wrong_linear_header_meta_extent_all_excerpts(self):
         # Both phases agree and the 64-vector counts remain unchanged.

@@ -16,6 +16,17 @@ SEGMENT = struct.Struct('<IIQQQ')
 LINEAR = struct.Struct('<IIQIIIII28s')
 NAMES = {'IndexVersion', 'flat.linear_meta', 'IndexMeta', 'flat.linear_list_head', 'flat.features1'}
 
+# SetupMetaHeader assigns magic using std::random_device(), not a format constant.
+# Per-file identities from the original publication, commit
+# 444b8e7771f76351a7ec5b2f9c4a276505d39d22, evidence.json blob
+# 98786c984cb13a517599c9b575618c05e48f7e4e; identical in both arms/phases.
+HEADER_MAGIC = {
+    'embedding.index.2.proxima': 625105687,
+    'embedding.index.4.proxima': 3208367440,
+    'embedding.index.6.proxima': 1854750413,
+    'embedding.index.8.proxima': 2318598652,
+}
+
 
 # Identity receipts only: omitted whole-file payloads are never verified here.
 WHOLE_FILE_SHA256 = {'pure-open': {'embedding.index.2.proxima': ('781e78bad2994332a4fc3614d4d323c5517acfd8e329e941713fa2a92fb79522', 'd9d326f771e174fa829bfe1fec4deb7dabce204937ca8fb702bcc4f45f2f1a67'), 'embedding.index.4.proxima': ('47db1851ed2c2838236b5a144043fc357b73da2c599e438ba91092886ae863bc', 'be169c527efc44c19438835785dbd7448b50235930e23a96eda7e62dd351cf22'), 'embedding.index.6.proxima': ('30959a1299958d26835d004560f7f4b70eca40b020bb9c17759f4ce7ede3d849', '44c714a9a4315da19cf9289861a638d88a82476faffd12908e673d4436d59d71'), 'embedding.index.8.proxima': ('2bb0ea85ce32144e60e82089e619406d0c6fb4d582b470cbec32d57e434c7c35', 'afa255490e3dade9e0ce2b341e728efe5dfe69f371a55bc1a28c7a738d8fe8be')}, 'vector': {'embedding.index.2.proxima': ('781e78bad2994332a4fc3614d4d323c5517acfd8e329e941713fa2a92fb79522', '4e5a3e98656d2ac4a0ee6847bf224383a1e3f49a03bd80a72a61f664ba352ef1'), 'embedding.index.4.proxima': ('47db1851ed2c2838236b5a144043fc357b73da2c599e438ba91092886ae863bc', 'c6816c8d5febcee0fd51be3878061780834b09f214c9777762660e4bb620e2ec'), 'embedding.index.6.proxima': ('30959a1299958d26835d004560f7f4b70eca40b020bb9c17759f4ce7ede3d849', 'e55c616663934b6f3f31427a67acbe2cc80720d0a42c496e1ec048164e950488'), 'embedding.index.8.proxima': ('2bb0ea85ce32144e60e82089e619406d0c6fb4d582b470cbec32d57e434c7c35', '656c7ee3bc65805e1ec5edd3ae250cacbaaf9808aedd6e53743d0d9fa9c0e60d')}}
@@ -40,14 +51,15 @@ def crc32c(data):
 
 
 
-def decode(excerpt, file_size):
+def decode(excerpt, file_size, expected_magic):
     require(set(excerpt) == {'header_hex', 'footer_hex', 'table_size', 'table_nonzero_runs', 'streamer_and_linear_header_hex'}, 'phase excerpt schema/scope')
     header = bytes.fromhex(excerpt['header_hex'])
     footer = bytes.fromhex(excerpt['footer_hex'])
     linear = bytes.fromhex(excerpt['streamer_and_linear_header_hex'])
     require(len(header) == 64 and len(footer) == 128 and len(linear) == 128, 'metadata extent')
     h, f = HEADER.unpack(header), FOOTER.unpack(footer)
-    require(h[2] == 2 and h[3] == 0 and h[4] == 625105687 and h[5:7] == (64, 128), 'wrong format/revision')
+    require(h[2] == 2 and h[3] == 0 and h[5:7] == (64, 128), 'wrong format/revision')
+    require(h[4] == expected_magic, 'header magic identity receipt binding')
     require(crc32c(b'\0'*4 + header[4:]) == h[0], 'header CRC')
     require(crc32c(b'\0'*4 + footer[4:]) == f[0], 'footer CRC')
     require(f[3] == 5 and f[4] == excerpt['table_size'] and f[4] <= 2**21, 'table bounds')
@@ -133,8 +145,8 @@ def verify(evidence, check_logs=True, logs=None):
             require(all(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None for value in recorded_hashes), 'whole-file identity format')
             require(recorded_hashes == WHOLE_FILE_SHA256[run['arm']][file['label']], 'whole-file identity receipt binding')
             require(file['file_size_before'] == file['file_size_after'] == 5234688, 'file size')
-            old = decode(file['excerpts']['before'], file['file_size_before'])
-            new = decode(file['excerpts']['after'], file['file_size_after'])
+            old = decode(file['excerpts']['before'], file['file_size_before'], HEADER_MAGIC[file['label']])
+            new = decode(file['excerpts']['after'], file['file_size_after'], HEADER_MAGIC[file['label']])
             require(old['allowed'] == new['allowed'] == file['allowed_full_field_ranges'], 'allowed mask range')
             require(old['count'] == new['count'], 'count changed')
             counts.append(old['count'])
