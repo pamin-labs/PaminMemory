@@ -266,13 +266,23 @@ def round8_cases():
     rust_keys=['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER']
     with tempfile.TemporaryDirectory(prefix='graph-recipe-inert-') as temp:
         stub=Path(temp)/'cargo'
-        stub.write_text('#!'+sys.executable+'\nimport json,os\nprint(json.dumps(dict(os.environ)))\n');stub.chmod(0o700)
+        stub.write_text('#!'+sys.executable+'\nimport json,os,sys\nresult=dict(os.environ);result["__argv__"]=sys.argv[1:];print(json.dumps(result))\n');stub.chmod(0o700)
         env=os.environ.copy();env.update({key:'must-be-cleared' for key in rust_keys})
-        env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB='/retained-ort',ZVEC_LIB='/retained-zvec')
-        result=subprocess.run(['sh','-c',build],env=env,capture_output=True,text=True)
-        assert result.returncode==0,result.stderr
-        assert not set(rust_keys).intersection(json.loads(result.stdout)), 'build recipe inherited flags/wrappers'
-        print('PASS: inert build command clears all four Rust flags/wrappers')
+        env.update(PATH=temp+os.pathsep+env['PATH'],ORT_LIB='/retained-ort',ZVEC_LIB='/retained-zvec',ARMS=str(Path(temp)/'prepared arms'))
+        for arm in ['baseline','scored']:
+            manifest=Path(env['ARMS'])/arm/'Cargo.toml'
+            manifest.parent.mkdir(parents=True);manifest.write_text('# synthetic '+arm+' manifest\n')
+            env['ARM']=arm
+            # Run from the evidence directory, where real Cargo would otherwise
+            # discover the enclosing repository. Only the Python stand-in runs.
+            result=subprocess.run(['sh','-c',build],cwd=ROOT,env=env,capture_output=True,text=True)
+            assert result.returncode==0,result.stderr
+            captured=json.loads(result.stdout)
+            assert not set(rust_keys).intersection(captured), 'build recipe inherited flags/wrappers'
+            args=captured['__argv__'];position=args.index('--manifest-path')
+            assert args[position+1]==str(manifest) and manifest.is_file(), 'build recipe must select generated arm manifest'
+            assert [args[i+1] for i,value in enumerate(args[:-1]) if value=='--test']==['scratch_scored_fixture','scratch_scored_multihop']
+            print('PASS: inert build selects '+arm+' generated manifest and clears four Rust flags/wrappers')
     launch=next(block for block in blocks if '"$BINARY" scratch_scored_graph_finite_fixture' in block)
     code=shlex.split(launch[launch.index('python3 -c '):].replace('\\\n',' '))[2]
     env=os.environ.copy();env.update(PAMIN_EVAL_HOME='/retained-workspace',PAMIN_PROFILE='accuracy',PAMIN_DEVICE='cpu',PAMIN_PREPARED='off',PAMIN_FUSED_ATTENTION='off',PAMIN_INFERENCE_THREADS='999',PAMIN_FUTURE_KNOB='unexpected')
@@ -418,6 +428,7 @@ if __name__ == '__main__':
                     target['captured_at_utc']=value
                 mutate_json(root/source,change)
             run_case('capture timestamp '+source+'/'+repr(value),timestamp,expected_error='retained '+label+' capture timestamp differs')
+    run_case('missing generated arm manifest flag',lambda root:(root/'README.md').write_text((root/'README.md').read_text().replace('  --manifest-path "$ARMS/$ARM/Cargo.toml" \\\n','')),expected_error='complete approved recipe differs')
     round12_interval_channel_cases()
     round10_native_type_cases()
     complete_non_graph_cases()

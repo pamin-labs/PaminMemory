@@ -177,14 +177,16 @@ ORT_LIB_LOCATION="$ORT_LIB" ORT_PREFER_DYNAMIC_LINK=1 \
 ZVEC_LIB_DIR="$ZVEC_LIB" ZVEC_AUTO_BUILD=0 \
 LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB" \
 CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo test -p pamin-engine \
+  --manifest-path "$ARMS/$ARM/Cargo.toml" \
   --test scratch_scored_fixture --test scratch_scored_multihop \
   --no-run --release --offline --locked --message-format=json
 ```
 
 The build and launch both use the pinned dynamic-library directories. These
 variables reproduce the selected native link/runtime path; they are not a
-complete transitive source-to-build certificate. The command selects the same
-two-target compilation scope. It does not select or run the multihop stress test. Copy the fixture executable before any later
+complete transitive source-to-build certificate. The explicit manifest selects the generated `$ARMS/$ARM` workspace, even when
+the shell remains in the evidence directory. Set `ARM` to `baseline` or `scored`
+before each build. The command selects the same two-target compilation scope. It does not select or run the multihop stress test. Copy the fixture executable before any later
 clean/build. Use a prepared
 workspace and pinned native runtime/model assets; clear inherited `PAMIN_*`
 knobs, set `PAMIN_PROFILE=accuracy` and `PAMIN_DEVICE=cpu`, and run each copied
