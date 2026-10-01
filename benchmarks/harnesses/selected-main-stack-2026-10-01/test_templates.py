@@ -188,9 +188,48 @@ class Templates(unittest.TestCase):
             for record in unchanged.values():
                 for row in record['rows']:
                     row['fused'][0]['state']['content'] = 'identical document'
-            with self.assertRaisesRegex(AssertionError, 'changed-history.*input'):
+            with self.assertRaisesRegex(AssertionError, 'no changed-input history'):
                 self.rows.oracle_checks(unchanged)
             self.assertTrue(all(c['changed_actual_reranker_inputs'] for c in classifications))
+            mixed = dict(results)
+            for key, record in unchanged.items():
+                control = copy.deepcopy(record)
+                control['job']['query_id'] = 101
+                mixed[(key[0], key[1], key[2], 101, key[4], key[5])] = control
+            classified = self.rows.oracle_checks(mixed)
+            controls = [c for c in classified if not c['changed_actual_reranker_inputs']]
+            self.assertEqual(len(controls), 4)
+            self.assertTrue(all(not c['paired_speed_claim_eligible'] for c in controls))
+            self.assertTrue(all(c['history_scope'] == 'unchanged-input control' for c in controls))
+
+    def test_public_input_scope_audit_excludes_controls_and_binds_evidence(self):
+        import copy
+        public = ROOT.parents[1] / 'results/inference/selected-main-stack-2026-10-01'
+        verifier = load('scope_verifier', public / 'verify.py')
+        data = json.loads((public / 'evidence.json').read_text())
+        audit = json.loads((public / 'input-scope-audit.json').read_text())
+        result = verifier.tables(data, audit)
+        self.assertEqual(len(result['correctness']), 20)
+        self.assertEqual(len(result['control_diagnostics']), 20)
+        controls = [r for r in result['metrics'] if r['history_scope'] == 'unchanged-input control']
+        self.assertTrue(controls)
+        self.assertTrue(all(not r['accuracy_eligible'] and not r['stable_claim_eligible'] for r in controls))
+        self.assertEqual(sum(r['before'] for r in result['correctness'] if r['metric'] == 'legacy_main_context_failure'), 16)
+        self.assertEqual(sum(r['after'] for r in result['correctness'] if r['metric'] == 'legacy_main_context_failure'), 0)
+        no_audit = verifier.tables(data)
+        self.assertFalse(no_audit['correctness'])
+        self.assertTrue(all(not r['accuracy_eligible'] for r in no_audit['metrics']
+                            if r['configuration'][4] in ['changed-context', 'changed-hot']))
+        for field, value in [('scenario_changed_inputs', {'scenario_1': True, 'scenario_2': True}),
+                             ('schema_version', True), ('unknown', 1)]:
+            bad = copy.deepcopy(audit)
+            bad[field] = value
+            with self.assertRaisesRegex(ValueError, 'audit identity'):
+                verifier.tables(data, bad)
+        changed = copy.deepcopy(data)
+        changed['processes'][0]['calls'][0]['wall_us'] += 1
+        with self.assertRaisesRegex(ValueError, 'audit evidence binding'):
+            verifier.tables(changed, audit)
 
     def test_native_zombie_memory_race_skips_sample_and_stops_owned_pg(self):
         owned = {'pid': 42}
@@ -395,7 +434,8 @@ class Templates(unittest.TestCase):
         classifications = [{'job': packet['job'], 'paired_speed_claim_eligible': False,
                             'same_final_actual_inputs': True, 'same_final_raw_bits/order': False,
                             'all_changed_and_hot_exact': False, 'legacy_main_context_failure': True,
-                            'retrieval_or_input_context_mismatch': False}
+                            'retrieval_or_input_context_mismatch': False,
+                            'changed_actual_reranker_inputs': packet['job']['query_id'] == 101}
                            for packet in packets if packet['job']['tier'] == 'accurate']
         with patch.object(self.rows, 'validate', return_value=valid), \
              patch.object(self.rows, 'hot_guard'), \
@@ -406,7 +446,8 @@ class Templates(unittest.TestCase):
             pg_rows = [r for r in result['disk'] if r['metric'].startswith('owned PG')]
             self.assertEqual(len(pg_rows), 4)
             self.assertTrue(all(r['before'] is not None for r in pg_rows))
-            self.assertEqual(len(result['correctness']), 40)
+            self.assertEqual(len(result['correctness']), 20)
+            self.assertEqual(len(result['control_diagnostics']), 20)
             categories = {row['metric'] for row in result['metrics']}
             self.assertTrue({'wall_us', 'quality_ndcg', 'rss_kib', 'cpu_user_seconds', 'forward_us'} <= categories)
             changed = [r for r in result['metrics'] if r['configuration'][4] == 'changed-hot']

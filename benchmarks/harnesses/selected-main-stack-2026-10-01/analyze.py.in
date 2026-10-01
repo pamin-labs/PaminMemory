@@ -39,18 +39,31 @@ def report(packets):
     c.require(len(observations) == 880, 'missing or extra product calls')
     classifications = rows.oracle_checks(results)
     eligible = {item['job']['name']: item['paired_speed_claim_eligible'] for item in classifications}
-    correctness = []
+    measured_metrics = metrics.metric_tables(observations, eligible)
+    for metric in measured_metrics:
+        config = metric['configuration']
+        if config[4] in ['changed-context', 'changed-hot']:
+            scoped = [item for item in classifications if
+                      (item['job']['tier'], item['job']['limit'], item['job']['query_id'], item['job']['sequence'][0]) == tuple(config[:4])]
+            if scoped and not any(item['changed_actual_reranker_inputs'] for item in scoped):
+                metric['history_scope'] = 'unchanged-input control'
+    correctness, control_diagnostics = [], []
     for limit in [5, 10]:
         for qid in [80, 101]:
             for initial in ['A', 'B']:
                 for key in ['same_final_actual_inputs', 'same_final_raw_bits/order', 'all_changed_and_hot_exact',
                             'legacy_main_context_failure', 'retrieval_or_input_context_mismatch']:
-                    counts = {arm: sum(item[key] for item in classifications
-                              if item['job']['source'] == arm and item['job']['limit'] == limit
-                              and item['job']['query_id'] == qid and item['job']['sequence'][0] == initial)
-                              for arm in ['main', 'stack']}
-                    correctness.append({'configuration': f'limit{limit}/query{qid}/history{initial}/4 blocks',
-                                        'metric': key, **metrics.difference(counts['main'], counts['stack'])})
+                    items = [item for item in classifications if item['job']['limit'] == limit
+                             and item['job']['query_id'] == qid and item['job']['sequence'][0] == initial]
+                    for changed, target in [(True, correctness), (False, control_diagnostics)]:
+                        selected = [item for item in items if item['changed_actual_reranker_inputs'] is changed]
+                        if not selected:
+                            continue
+                        counts = {arm: sum(item[key] for item in selected if item['job']['source'] == arm)
+                                  for arm in ['main', 'stack']}
+                        target.append({'configuration': f'limit{limit}/query{qid}/history{initial}/4 blocks',
+                                       'history_scope': 'changed-input history' if changed else 'unchanged-input control',
+                                       'metric': key, **metrics.difference(counts['main'], counts['stack'])})
     process_metrics = []
     groups = {(j['tier'], j['limit'], j['query_id'], j['sequence'][0]) for j in jobs}
     for group in sorted(groups):
@@ -92,8 +105,8 @@ def report(packets):
         disk.append({'metric': key, **metrics.difference(None, None)})
     return {'complete': True, 'processes': 80, 'calls': 880, 'revisions': c.MANIFEST['revisions'],
             'regenerated_fixture': True, 'historical_numeric_identity_claimed': False,
-            'correctness': correctness, 'classifications': classifications,
-            'metrics': metrics.metric_tables(observations, eligible),
+            'correctness': correctness, 'control_diagnostics': control_diagnostics, 'classifications': classifications,
+            'metrics': measured_metrics,
             'process_metrics': process_metrics, 'disk': disk,
             'host_conditions': [json.loads(line) for line in (c.ROOT / 'host-conditions.jsonl').read_text().splitlines()],
             'process_host_conditions': [{'job': p['job']['name'], 'conditions': p.get('host_conditions')} for p in packets],
@@ -110,9 +123,10 @@ def write_tables(path, result):
              + str(len(result['host_conditions'])) + ' observations. First observation: ' + json.dumps(result['host_conditions'][0]), '',
              '| Configuration | Metric | Before | After | Absolute difference | Percentage change | Samples per arm | Eligibility |',
              '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
-    for group in ['correctness', 'metrics', 'process_metrics', 'disk']:
+    for group in ['correctness', 'control_diagnostics', 'metrics', 'process_metrics', 'disk']:
         for item in result[group]:
-            eligibility = ('accuracy excluded' if item.get('accuracy_eligible') is False else
+            eligibility = ('unchanged-input control; not changed-input proof' if group == 'control_diagnostics' or item.get('history_scope') == 'unchanged-input control' else
+                           'accuracy excluded' if item.get('accuracy_eligible') is False else
                            'different work' if item.get('same_successful_work') is False else
                            'descriptive; stable withheld' if not item.get('stable_claim_eligible') else
                            'descriptive four-block eligible')

@@ -1,20 +1,11 @@
 Sanitized table arithmetic only. Correctness, quality, source/runtime and payload attestations require retained private evidence.
+Input-scope audit is private-attested: 16 paired history cells changed model bytes; 16 were unchanged-input controls. Controls are excluded from changed-input correctness/speed proof.
 Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.
 Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.
 Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.
 
 | Configuration | Metric | Before | After | Absolute difference | % change | Samples per arm | Eligibility |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 5/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 5/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 5/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 5/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 5/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
 | 5/scenario_2/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
 | 5/scenario_2/A | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
 | 5/scenario_2/A | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
@@ -25,16 +16,6 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | 5/scenario_2/B | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
 | 5/scenario_2/B | legacy_main_context_failure  | 4 | 0 | -4 | -100 | N/A | private-attested/descriptive |
 | 5/scenario_2/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 10/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 10/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 10/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
-| 10/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| 10/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
 | 10/scenario_2/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | private-attested/descriptive |
 | 10/scenario_2/A | same_final_raw_bits_and_order  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
 | 10/scenario_2/A | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
@@ -45,12 +26,32 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | 10/scenario_2/B | all_changed_and_hot_exact  | 0 | 4 | 4 | N/A | N/A | private-attested/descriptive |
 | 10/scenario_2/B | legacy_main_context_failure  | 4 | 0 | -4 | -100 | N/A | private-attested/descriptive |
 | 10/scenario_2/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | private-attested/descriptive |
-| accurate/10/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | quality_recall mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| 5/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 5/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/A | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/A | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/A | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/A | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/A | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/B | same_final_actual_inputs  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/B | same_final_raw_bits_and_order  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/B | all_changed_and_hot_exact  | 4 | 4 | 0 | 0 | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/B | legacy_main_context_failure  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| 10/scenario_1/B | retrieval_or_input_context_mismatch  | 0 | 0 | 0 | N/A | N/A | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | quality_recall mean | 1 | 1 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | quality_recall mean | 1 | 1 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/cold/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/cold/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
@@ -60,12 +61,12 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_1/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | quality_recall mean | 1 | 1 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | quality_recall mean | 1 | 1 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/B/cold/B | quality_ndcg mean | 0.9550236580992475 | 0.9550236580992475 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/B/cold/B | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
@@ -105,12 +106,12 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_2/B/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_2/B/new-query/N | quality_ndcg mean | 0.80516285021997969 | 0.80516285021997969 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_2/B/new-query/N | quality_recall mean | 0.80000000000000004 | 0.80000000000000004 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-hot/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/A/changed-context/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/A/cold/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/cold/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/cold/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
@@ -120,12 +121,12 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/5/scenario_1/A/new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/new-query/N | quality_ndcg mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/new-query/N | quality_recall mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/5/scenario_1/B/changed-context/A | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | quality_mrr mean | 1 | 1 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/B/cold/B | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/B/cold/B | quality_ndcg mean | 0.83187246372888257 | 0.83187246372888257 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/B/cold/B | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
@@ -183,14 +184,14 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | off/5/scenario_1/A/off-new-query/N | quality_mrr mean | 1 | 1 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | off/5/scenario_1/A/off-new-query/N | quality_ndcg mean | 0.70952720449102435 | 0.70952720449102435 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | off/5/scenario_1/A/off-new-query/N | quality_recall mean | 0.75 | 0.75 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | wall_us p50 | 2925 | 3001 | 76 | 2.5982905982905984 | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | wall_us p95_descriptive | 3662.8999999999996 | 6466.6499999999987 | 2803.7499999999991 | 76.544541210516229 | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.002 | 0.0030000000000000001 | 0.001 | 50 | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | wall_us p50 | 2922 | 2848 | -74 | -2.5325119780971939 | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3836.5500000000002 | 5374.6500000000024 | 1538.1000000000022 | 40.090706494115864 | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | wall_us p50 | 2925 | 3001 | 76 | 2.5982905982905984 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | wall_us p95_descriptive | 3662.8999999999996 | 6466.6499999999987 | 2803.7499999999991 | 76.544541210516229 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.002 | 0.0030000000000000001 | 0.001 | 50 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | wall_us p50 | 2922 | 2848 | -74 | -2.5325119780971939 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3836.5500000000002 | 5374.6500000000024 | 1538.1000000000022 | 40.090706494115864 | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/A/cold/A | cpu_system_seconds mean | 0.40749999999999997 | 0.4425 | 0.035000000000000031 | 8.588957055214733 | 4 | stable withheld |
 | accurate/10/scenario_1/A/cold/A | cpu_user_seconds mean | 5.3925000000000001 | 5.4350000000000005 | 0.042500000000000426 | 0.78813166434864024 | 4 | stable withheld |
 | accurate/10/scenario_1/A/cold/A | wall_us p50 | 2619473.5 | 2716576 | 97102.5 | 3.7069472166830471 | 4 | stable withheld |
@@ -203,14 +204,14 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_1/A/new-query/N | cpu_user_seconds mean | 3.4775 | 3.4775 | 0 | 0 | 4 | stable withheld |
 | accurate/10/scenario_1/A/new-query/N | wall_us p50 | 1143498.5 | 1197042.5 | 53544 | 4.6824722551013407 | 4 | stable withheld |
 | accurate/10/scenario_1/A/new-query/N | wall_us p95_descriptive | 1181191.3500000001 | 1367954.3999999999 | 186763.04999999981 | 15.811413620663561 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | wall_us p50 | 2646.5 | 2897 | 250.5 | 9.46533156999811 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | wall_us p95_descriptive | 3002.0499999999997 | 2925.25 | -76.799999999999727 | -2.5582518612281517 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0025000000000000001 | -0.00050000000000000001 | -16.666666666666668 | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | wall_us p50 | 2637 | 2889 | 252 | 9.5563139931740615 | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3106.8000000000002 | 3660.7500000000005 | 553.95000000000027 | 17.830243337195835 | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0 | -0.0025000000000000001 | -100 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | wall_us p50 | 2646.5 | 2897 | 250.5 | 9.46533156999811 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | wall_us p95_descriptive | 3002.0499999999997 | 2925.25 | -76.799999999999727 | -2.5582518612281517 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0.00050000000000000001 | 0 | -0.00050000000000000001 | -100 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0025000000000000001 | -0.00050000000000000001 | -16.666666666666668 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | wall_us p50 | 2637 | 2889 | 252 | 9.5563139931740615 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3106.8000000000002 | 3660.7500000000005 | 553.95000000000027 | 17.830243337195835 | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/B/cold/B | cpu_system_seconds mean | 0.38500000000000001 | 0.34999999999999998 | -0.035000000000000031 | -9.0909090909090988 | 4 | stable withheld |
 | accurate/10/scenario_1/B/cold/B | cpu_user_seconds mean | 4.9000000000000004 | 5.0824999999999996 | 0.18249999999999922 | 3.7244897959183509 | 4 | stable withheld |
 | accurate/10/scenario_1/B/cold/B | wall_us p50 | 2429671 | 2565681.5 | 136010.5 | 5.5978978223800668 | 4 | stable withheld |
@@ -263,14 +264,14 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_2/B/new-query/N | cpu_user_seconds mean | 3.4674999999999998 | 3.4824999999999999 | 0.015000000000000124 | 0.43258832011536047 | 4 | stable withheld |
 | accurate/10/scenario_2/B/new-query/N | wall_us p50 | 1210832 | 1119839.5 | -90992.5 | -7.5148740700609169 | 4 | stable withheld |
 | accurate/10/scenario_2/B/new-query/N | wall_us p95_descriptive | 1248526.8 | 1239923.3 | -8603.5 | -0.68909213642830891 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0.0050000000000000001 | 0 | -0.0050000000000000001 | -100 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | wall_us p50 | 2600.5 | 2630 | 29.5 | 1.1343972313016728 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | wall_us p95_descriptive | 2746.8000000000002 | 2696.5999999999999 | -50.200000000000273 | -1.8275811853793604 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.0025000000000000001 | 0.001 | -0.0015 | -60 | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | wall_us p50 | 2842.5 | 2643.5 | -199 | -7.0008795074758137 | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3208.3000000000002 | 3925.7500000000009 | 717.45000000000073 | 22.362310257768932 | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | cpu_system_seconds mean | 0 | 0.0050000000000000001 | 0.0050000000000000001 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | cpu_user_seconds mean | 0.0050000000000000001 | 0 | -0.0050000000000000001 | -100 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | wall_us p50 | 2600.5 | 2630 | 29.5 | 1.1343972313016728 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | wall_us p95_descriptive | 2746.8000000000002 | 2696.5999999999999 | -50.200000000000273 | -1.8275811853793604 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | cpu_user_seconds mean | 0.0025000000000000001 | 0.001 | -0.0015 | -60 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | wall_us p50 | 2842.5 | 2643.5 | -199 | -7.0008795074758137 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | wall_us p95_descriptive | 3208.3000000000002 | 3925.7500000000009 | 717.45000000000073 | 22.362310257768932 | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/A/cold/A | cpu_system_seconds mean | 0.51000000000000001 | 0.3775 | -0.13250000000000001 | -25.980392156862745 | 4 | stable withheld |
 | accurate/5/scenario_1/A/cold/A | cpu_user_seconds mean | 5.2125000000000004 | 4.8849999999999998 | -0.32750000000000057 | -6.2829736211031282 | 4 | stable withheld |
 | accurate/5/scenario_1/A/cold/A | wall_us p50 | 2566220 | 2567844.5 | 1624.5 | 0.063303224197457736 | 4 | stable withheld |
@@ -283,14 +284,14 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/5/scenario_1/A/new-query/N | cpu_user_seconds mean | 3.585 | 3.625 | 0.040000000000000036 | 1.1157601115760121 | 4 | stable withheld |
 | accurate/5/scenario_1/A/new-query/N | wall_us p50 | 1158097 | 1231911.5 | 73814.5 | 6.3737752537136352 | 4 | stable withheld |
 | accurate/5/scenario_1/A/new-query/N | wall_us p95_descriptive | 1229700.55 | 1345559.25 | 115858.69999999995 | 9.4217002667844589 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0.0050000000000000001 | 0.0025000000000000001 | 100 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | wall_us p50 | 3467 | 2746.5 | -720.5 | -20.781655610037497 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | wall_us p95_descriptive | 4759.5499999999993 | 2943.9499999999998 | -1815.5999999999995 | -38.146463426164232 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0015 | -0.0015 | -50 | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | wall_us p50 | 2804.5 | 2910 | 105.5 | 3.7618113745765736 | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3333.9000000000024 | 3665.3000000000002 | 331.39999999999782 | 9.9403101472748912 | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | cpu_system_seconds mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | cpu_user_seconds mean | 0.0025000000000000001 | 0.0050000000000000001 | 0.0025000000000000001 | 100 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | wall_us p50 | 3467 | 2746.5 | -720.5 | -20.781655610037497 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | wall_us p95_descriptive | 4759.5499999999993 | 2943.9499999999998 | -1815.5999999999995 | -38.146463426164232 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | cpu_system_seconds mean | 0 | 0.00050000000000000001 | 0.00050000000000000001 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | cpu_user_seconds mean | 0.0030000000000000001 | 0.0015 | -0.0015 | -50 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | wall_us p50 | 2804.5 | 2910 | 105.5 | 3.7618113745765736 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | wall_us p95_descriptive | 3333.9000000000024 | 3665.3000000000002 | 331.39999999999782 | 9.9403101472748912 | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/B/cold/B | cpu_system_seconds mean | 0.36749999999999999 | 0.35750000000000004 | -0.0099999999999999534 | -2.7210884353741371 | 4 | stable withheld |
 | accurate/5/scenario_1/B/cold/B | cpu_user_seconds mean | 4.9900000000000002 | 4.7699999999999996 | -0.22000000000000064 | -4.4088176352705535 | 4 | stable withheld |
 | accurate/5/scenario_1/B/cold/B | wall_us p50 | 2464041 | 2545688 | 81647 | 3.3135406431954664 | 4 | stable withheld |
@@ -367,20 +368,20 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | off/5/scenario_1/A/off-new-query/N | cpu_user_seconds mean | 0.057500000000000002 | 0.052499999999999998 | -0.0050000000000000044 | -8.6956521739130501 | 4 | stable withheld |
 | off/5/scenario_1/A/off-new-query/N | wall_us p50 | 31233 | 29819.5 | -1413.5 | -4.525661960106298 | 4 | stable withheld |
 | off/5/scenario_1/A/off-new-query/N | wall_us p95_descriptive | 32373.75 | 35924.949999999997 | 3551.1999999999971 | 10.969381057183666 | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | hwm_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | rss_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | hwm_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | 20 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-hot/B | rss_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | 20 | four-block descriptive eligible; no statistical proof |
+| accurate/10/scenario_1/A/changed-context/B | hwm_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | rss_kib mean | 1127324 | 1125867 | -1457 | -0.12924412147705538 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | hwm_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | rss_kib mean | 1127326.6000000001 | 1125867 | -1459.6000000000931 | -0.129474457535207 | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/A/cold/A | hwm_kib mean | 1127315 | 1125860 | -1455 | -0.1290677406048886 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/cold/A | rss_kib mean | 1127315 | 1125860 | -1455 | -0.1290677406048886 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/initial-hot/A | hwm_kib mean | 1127320.3999999999 | 1125865.6000000001 | -1454.7999999998137 | -0.12904938116970241 | 20 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/initial-hot/A | rss_kib mean | 1127320.3999999999 | 1125865.6000000001 | -1454.7999999998137 | -0.12904938116970241 | 20 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/new-query/N | hwm_kib mean | 1139494 | 1135199 | -4295 | -0.3769216862923368 | 4 | stable withheld |
 | accurate/10/scenario_1/A/new-query/N | rss_kib mean | 1139494 | 1135199 | -4295 | -0.3769216862923368 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | hwm_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | rss_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | hwm_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | rss_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | hwm_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | rss_kib mean | 1127540 | 1127734 | 194 | 0.017205598027564432 | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | hwm_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | rss_kib mean | 1127541.2 | 1127739.6000000001 | 198.4000000001397 | 0.017595809359351101 | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/B/cold/B | hwm_kib mean | 1127534 | 1127726 | 192 | 0.017028311341387489 | 4 | stable withheld |
 | accurate/10/scenario_1/B/cold/B | rss_kib mean | 1127534 | 1127726 | 192 | 0.017028311341387489 | 4 | stable withheld |
 | accurate/10/scenario_1/B/initial-hot/B | hwm_kib mean | 1127537 | 1127732.3999999999 | 195.39999999990687 | 0.017329808245752188 | 20 | stable withheld |
@@ -407,20 +408,20 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_2/B/initial-hot/B | rss_kib mean | 1124226.3999999999 | 1125972.6000000001 | 1746.2000000001863 | 0.15532458586635098 | 20 | stable withheld |
 | accurate/10/scenario_2/B/new-query/N | hwm_kib mean | 1132266 | 1134019 | 1753 | 0.1548222767441573 | 4 | stable withheld |
 | accurate/10/scenario_2/B/new-query/N | rss_kib mean | 1132266 | 1134019 | 1753 | 0.1548222767441573 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | hwm_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | rss_kib mean | 1126259 | 1127434 | 1175 | 0.1043276901671818 | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/A/cold/A | hwm_kib mean | 1126254 | 1127430 | 1176 | 0.10441694324726039 | 4 | stable withheld |
 | accurate/5/scenario_1/A/cold/A | rss_kib mean | 1126254 | 1127430 | 1176 | 0.10441694324726039 | 4 | stable withheld |
 | accurate/5/scenario_1/A/initial-hot/A | hwm_kib mean | 1126258.8 | 1127433.6000000001 | 1174.8000000000466 | 0.10430995078573828 | 20 | stable withheld |
 | accurate/5/scenario_1/A/initial-hot/A | rss_kib mean | 1126258.8 | 1127433.6000000001 | 1174.8000000000466 | 0.10430995078573828 | 20 | stable withheld |
 | accurate/5/scenario_1/A/new-query/N | hwm_kib mean | 1135029 | 1136469 | 1440 | 0.12686900510912055 | 4 | stable withheld |
 | accurate/5/scenario_1/A/new-query/N | rss_kib mean | 1135029 | 1136469 | 1440 | 0.12686900510912055 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | hwm_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | rss_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | hwm_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | rss_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | hwm_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | rss_kib mean | 1125059 | 1125766 | 707 | 0.062841148775308678 | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | hwm_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | rss_kib mean | 1125059.3999999999 | 1125766 | 706.60000000009313 | 0.062805572754655731 | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/B/cold/B | hwm_kib mean | 1125046 | 1125760 | 714 | 0.063464071691290841 | 4 | stable withheld |
 | accurate/5/scenario_1/B/cold/B | rss_kib mean | 1125046 | 1125760 | 714 | 0.063464071691290841 | 4 | stable withheld |
 | accurate/5/scenario_1/B/initial-hot/B | hwm_kib mean | 1125055.3999999999 | 1125764.8 | 709.4000000001397 | 0.063054672685464178 | 20 | stable withheld |
@@ -459,20 +460,20 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | off/5/scenario_1/A/off-hot/A | rss_kib mean | 754777 | 759502 | 4725 | 0.62601271633873312 | 4 | four-block descriptive eligible; no statistical proof |
 | off/5/scenario_1/A/off-new-query/N | hwm_kib mean | 755779 | 759927 | 4148 | 0.54883768932452481 | 4 | four-block descriptive eligible; no statistical proof |
 | off/5/scenario_1/A/off-new-query/N | rss_kib mean | 755779 | 759927 | 4148 | 0.54883768932452481 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/A/cold/A | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/cold/A | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/cold/A | encode_us mean | 3565 | 3783.75 | 218.75 | 6.1360448807854135 | 4 | stable withheld |
@@ -494,20 +495,20 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_1/A/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/A/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/10/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/10/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/10/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/10/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
 | accurate/10/scenario_1/B/cold/B | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/B/cold/B | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_1/B/cold/B | encode_us mean | 3892.75 | 3604.25 | -288.5 | -7.411213152655578 | 4 | four-block descriptive eligible; no statistical proof |
@@ -599,20 +600,20 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/10/scenario_2/B/new-query/N | padded_tokens mean | 1212 | 1212 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_2/B/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/10/scenario_2/B/new-query/N | tokens mean | 1181 | 1181 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/A/changed-context/B | batches mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | characters mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | encode_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | forward_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | scored mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-context/B | tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | batches mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | characters mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | encode_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | forward_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | scored mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/A/changed-hot/B | tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/A/cold/A | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/cold/A | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/cold/A | encode_us mean | 4216.75 | 3654 | -562.75 | -13.34558605561155 | 4 | stable withheld |
@@ -634,20 +635,20 @@ Same logical index size does not imply no writes. Allowed readonly metadata writ
 | accurate/5/scenario_1/A/new-query/N | padded_tokens mean | 1276 | 1276 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/new-query/N | scored mean | 30 | 30 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/A/new-query/N | tokens mean | 1238 | 1238 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
-| accurate/5/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | 4 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
-| accurate/5/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | stable withheld |
+| accurate/5/scenario_1/B/changed-context/A | batches mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | characters mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | encode_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | forward_us mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | padded_tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | scored mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-context/A | tokens mean | 0 | 0 | 0 | N/A | 4 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | batches mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | characters mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | encode_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | forward_us mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | padded_tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | scored mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
+| accurate/5/scenario_1/B/changed-hot/A | tokens mean | 0 | 0 | 0 | N/A | 20 | unchanged-input control; not changed-input proof |
 | accurate/5/scenario_1/B/cold/B | batches mean | 8 | 8 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/B/cold/B | characters mean | 2570 | 2570 | 0 | 0 | 4 | four-block descriptive eligible; no statistical proof |
 | accurate/5/scenario_1/B/cold/B | encode_us mean | 3642 | 3583.25 | -58.75 | -1.6131246567819879 | 4 | stable withheld |
