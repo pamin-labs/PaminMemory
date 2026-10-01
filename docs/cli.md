@@ -1300,3 +1300,10 @@ row and paying startup once.
 `dual_accuracy` uses pinned BGE-M3 INT8 plus a pinned complementary PPLX 0.6B singleton/int8-pooled encoding. It is opt-in; the default remains `accuracy`. Its marker identity is distinct, so changing to it requires `reindex`. Both vectors are written atomically, retained during same-profile rebuild/reshape, and included in recall. The two streams split the existing semantic candidate/vote budget equally; adding a model does not silently double either budget. Full product precision and resource comparisons are required before considering it a default.
 
 Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score caches, so cached results from different targets or export scales are not mixed.
+
+Cold model reloads retain the earliest relevant execution-quarantine deadline.
+Selection over temporarily excluded targets remains provisional; a completed
+measurement can choose a new accelerator or CPU winner and clears temporary
+recovery state. Transient or numerical qualification failures retain a bounded
+retry interval; configured exclusions and incompatible plans do not by
+themselves require repeated selection.

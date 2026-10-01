@@ -579,16 +579,51 @@ fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Inst
     );
 }
 
-fn runtime_available(cache_dir: &Path, namespace: &str, target: &str) -> bool {
+fn runtime_quarantines(
+    cache_dir: &Path,
+    namespace: &str,
+) -> std::collections::HashMap<String, std::time::Instant> {
     let root = cache_dir
         .canonicalize()
         .unwrap_or_else(|_| cache_dir.to_path_buf());
+    let now = std::time::Instant::now();
     let mut failed = runtime_failures()
         .lock()
         .expect("runtime quarantine poisoned");
-    let now = std::time::Instant::now();
     failed.retain(|_, until| *until > now);
-    !failed.contains_key(&(root, namespace.into(), target.into()))
+    failed
+        .iter()
+        .filter(|((path, scope, _), _)| path == &root && scope == namespace)
+        .map(|((_, _, target), until)| (target.clone(), *until))
+        .collect()
+}
+
+#[cfg(test)]
+fn runtime_available(cache_dir: &Path, namespace: &str, target: &str) -> bool {
+    !runtime_quarantines(cache_dir, namespace).contains_key(target)
+}
+
+fn earliest_quarantine(
+    quarantines: &std::collections::HashMap<String, std::time::Instant>,
+    targets: impl IntoIterator<Item = String>,
+) -> Option<(String, std::time::Instant)> {
+    targets
+        .into_iter()
+        .filter_map(|target| quarantines.get(&target).map(|until| (target, *until)))
+        .min_by_key(|(_, until)| *until)
+}
+
+fn qualify_runtime_plan(
+    plan: &mut RuntimePlan,
+    blocked: Option<(String, std::time::Instant)>,
+    retry: Option<std::time::Instant>,
+) {
+    plan.retry_at = match (&blocked, retry) {
+        (Some((_, until)), Some(retry)) => Some((*until).min(retry)),
+        (Some((_, until)), None) => Some(*until),
+        (None, retry) => retry,
+    };
+    plan.restore_target = blocked.map(|(target, _)| target);
 }
 
 /// Check before a result-cache lookup, so even a busy all-hit resident model
@@ -636,15 +671,9 @@ fn revalidate_model_at<T: RuntimeModel>(
     // retry on every hit and does not discard a still-usable fallback model.
     model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
     match reload() {
-        Ok((mut replacement, selected)) => {
-            let restoring = model.runtime_plan().restore_target.as_deref();
-            let still_fallback = selected == Device::Cpu
-                || restoring.is_some_and(|target| target != replacement.runtime_plan().target);
-            if still_fallback {
-                replacement.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
-                replacement.runtime_plan_mut().restore_target =
-                    model.runtime_plan().restore_target.clone();
-            }
+        Ok((replacement, selected)) => {
+            // The selector owns qualification status: a complete new winner
+            // ends recovery even when it differs from the historical target.
             *model = replacement;
             *device = selected;
             true
@@ -699,13 +728,10 @@ pub(crate) fn retry_model<T: RuntimeModel, R>(
                 model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
                 // Drop the failed replacement before another expensive load.
                 drop(replacement.take());
-                let (mut active, selected) = reload()?;
+                let (active, selected) = reload()?;
                 if failed_devices.contains(&active.runtime_plan().target) {
                     return Err(error.context("recovery selected the failing provider"));
                 }
-                active.runtime_plan_mut().retry_at = model.runtime_plan().retry_at;
-                active.runtime_plan_mut().restore_target =
-                    model.runtime_plan().restore_target.clone();
                 replacement = Some((active, selected));
             }
         }
@@ -745,11 +771,17 @@ pub(crate) fn measured<T: RuntimeModel>(
         };
         Ok(model)
     };
-    let plans: Vec<_> = accelerators()
+    let quarantines = runtime_quarantines(cache_dir, &namespace);
+    let candidates = accelerators();
+    let blocked = earliest_quarantine(
+        &quarantines,
+        candidates
+            .iter()
+            .map(|(device, target)| target_identity(*device, target)),
+    );
+    let plans: Vec<_> = candidates
         .into_iter()
-        .filter(|(device, target)| {
-            runtime_available(cache_dir, &namespace, &target_identity(*device, target))
-        })
+        .filter(|(device, target)| !quarantines.contains_key(&target_identity(*device, target)))
         .collect();
     if plans.is_empty() {
         let directory = cache_dir.join("compute-plans-v1");
@@ -758,7 +790,10 @@ pub(crate) fn measured<T: RuntimeModel>(
             let _ = prune_plans(&directory, None);
         }
         let mut load = load;
-        return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
+        return load(Device::Cpu, vec![cpu()].into(), false).map(|mut model| {
+            qualify_runtime_plan(model.runtime_plan_mut(), blocked, None);
+            (model, Device::Cpu)
+        });
     }
     let signature: Vec<_> = plans
         .iter()
@@ -825,6 +860,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             .expect("compute-plan cache poisoned")
             .insert(key.clone(), plan);
     }
+    let retry = std::cell::Cell::new(None);
     calibrated_with_references(
         &key,
         plans,
@@ -833,10 +869,15 @@ pub(crate) fn measured<T: RuntimeModel>(
         PlanFiles {
             record: disk.as_deref(),
             directory: location.as_deref().and_then(Path::parent),
+            retry: Some(&retry),
         },
         load,
         evaluate,
     )
+    .map(|(mut model, device)| {
+        qualify_runtime_plan(model.runtime_plan_mut(), blocked, retry.get());
+        (model, device)
+    })
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1234,14 +1275,27 @@ fn host_identity() -> &'static str {
 struct PlanFiles<'a> {
     record: Option<&'a Path>,
     directory: Option<&'a Path>,
+    retry: Option<&'a std::cell::Cell<Option<std::time::Instant>>>,
 }
 
 impl<'a> PlanFiles<'a> {
+    fn reused(self, deadline: Option<std::time::Instant>) {
+        if let Some(retry) = self.retry {
+            let now = std::time::Instant::now();
+            // Numerical rejects have five-minute lifetimes. A normal plan
+            // nearing its one-day expiry also deserves one fresh selection.
+            retry.set(
+                deadline.filter(|until| until.saturating_duration_since(now) <= RUNTIME_RETRY),
+            );
+        }
+    }
+
     #[cfg(test)]
     fn for_record(path: &'a Path) -> Self {
         Self {
             record: Some(path),
             directory: path.parent(),
+            retry: None,
         }
     }
 }
@@ -1279,6 +1333,7 @@ fn calibrated_with_references<T>(
                 Ok(model)
             }) {
                 Ok(model) => {
+                    files.reused(plan.revalidate);
                     if let Some(path) = disk
                         && !path.exists()
                     {
@@ -1400,6 +1455,12 @@ fn calibrated_with_references<T>(
             fastest = plans[index].clone();
         }
     }
+    if let Some(retry) = files.retry {
+        retry.set(
+            (transient_failure || numerical_failure)
+                .then(|| std::time::Instant::now() + RUNTIME_RETRY),
+        );
+    }
     let (device, target) = fastest;
     if device == Device::Cpu {
         if !transient_failure {
@@ -1431,6 +1492,9 @@ fn calibrated_with_references<T>(
         }
         Err(error) => {
             tracing::warn!(%error, "calibrated winner failed to reload; using optimized CPU");
+            if let Some(retry) = files.retry {
+                retry.set(Some(std::time::Instant::now() + RUNTIME_RETRY));
+            }
             Ok((reference, Device::Cpu))
         }
     }
@@ -1608,7 +1672,16 @@ mod tests {
             },
             || {
                 let selected = alternatives.next().unwrap();
-                Ok((RuntimeFixture::new(1, selected.name()), selected))
+                let mut replacement = RuntimeFixture::new(1, selected.name());
+                qualify_runtime_plan(
+                    &mut replacement.plan,
+                    Some((
+                        "npu:first:1".into(),
+                        std::time::Instant::now() + RUNTIME_RETRY,
+                    )),
+                    None,
+                );
+                Ok((replacement, selected))
             },
         )
         .unwrap();
@@ -1805,7 +1878,15 @@ mod tests {
                 at,
                 || {
                     loads += 1;
-                    Ok((RuntimeFixture::new(1, target), selected))
+                    let mut replacement = RuntimeFixture::new(1, target);
+                    if step < 2 {
+                        qualify_runtime_plan(
+                            &mut replacement.plan,
+                            Some(("npu:first:1".into(), at + RUNTIME_RETRY)),
+                            None,
+                        );
+                    }
+                    Ok((replacement, selected))
                 }
             ));
             assert!(
@@ -1831,6 +1912,169 @@ mod tests {
         }
         assert_eq!(loads, 3);
         assert_eq!(device, Device::Npu);
+        assert!(model.plan.restore_target.is_none());
+    }
+
+    #[test]
+    fn cold_fallback_retains_quarantine_expiry_and_completed_winners_clear_it() {
+        let now = std::time::Instant::now();
+        for (selected, target) in [(Device::Cpu, "cpu"), (Device::Cuda, "cuda")] {
+            let mut model = RuntimeFixture::new(0, target);
+            qualify_runtime_plan(&mut model.plan, Some(("npu:first:1".into(), now)), None);
+            assert_eq!(model.plan.retry_at, Some(now));
+            assert_eq!(model.plan.restore_target.as_deref(), Some("npu:first:1"));
+            let mut device = selected;
+            let mut cache = vec![17.0];
+            assert!(revalidate_cached_model_at(
+                &mut model,
+                &mut device,
+                &mut cache,
+                now,
+                || {
+                    let mut winner = RuntimeFixture::new(1, target);
+                    qualify_runtime_plan(&mut winner.plan, None, None);
+                    Ok((winner, selected))
+                }
+            ));
+            assert!(cache.is_empty());
+            assert!(model.plan.retry_at.is_none());
+            assert!(model.plan.restore_target.is_none());
+            cache.push(23.0);
+            assert!(!revalidate_cached_model_at(
+                &mut model,
+                &mut device,
+                &mut cache,
+                now + RUNTIME_RETRY,
+                || unreachable!()
+            ));
+            assert_eq!(cache, [23.0]);
+        }
+    }
+
+    #[test]
+    fn cold_selection_uses_only_relevant_targets_and_earliest_expiry() {
+        let now = std::time::Instant::now();
+        let quarantines = std::collections::HashMap::from([
+            ("unrelated".into(), now),
+            ("npu:first:1".into(), now + RUNTIME_RETRY),
+            ("cuda".into(), now + RUNTIME_RETRY * 2),
+        ]);
+        assert_eq!(
+            earliest_quarantine(&quarantines, ["cuda".into(), "npu:first:1".into()]),
+            Some(("npu:first:1".into(), now + RUNTIME_RETRY))
+        );
+        assert!(earliest_quarantine(&quarantines, ["npu:other:2".into()]).is_none());
+        assert!(
+            earliest_quarantine(&quarantines, []).is_none(),
+            "configured CPU-only selection is complete"
+        );
+    }
+
+    #[test]
+    fn completed_calibration_can_select_cpu_or_cuda_without_retry() {
+        for candidate_ms in [50, 150] {
+            let retry = std::cell::Cell::new(None);
+            let (_, selected) = calibrated_with_references(
+                "complete-selection-fixture",
+                vec![(Device::Cuda, vec![cpu()].into())],
+                &std::sync::Mutex::default(),
+                &std::cell::RefCell::default(),
+                PlanFiles {
+                    retry: Some(&retry),
+                    ..Default::default()
+                },
+                |device, _, _| Ok(device),
+                |_, device| {
+                    Ok(std::time::Duration::from_millis(if device == Device::Cpu {
+                        100
+                    } else {
+                        candidate_ms
+                    }))
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                selected,
+                if candidate_ms < 100 {
+                    Device::Cuda
+                } else {
+                    Device::Cpu
+                }
+            );
+            assert!(
+                retry.get().is_none(),
+                "completed selection must end provisional recovery"
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_plans_are_complete_but_transient_and_numerical_plans_retry() {
+        for failure in ["incompatible", "transient", "numerical"] {
+            let retry = std::cell::Cell::new(None);
+            let (_, selected) = calibrated_with_references(
+                "selection-failure-fixture",
+                vec![(Device::Cuda, vec![cpu()].into())],
+                &std::sync::Mutex::default(),
+                &std::cell::RefCell::default(),
+                PlanFiles {
+                    retry: Some(&retry),
+                    ..Default::default()
+                },
+                |device, _, _| Ok(device),
+                |_, device| {
+                    if device == Device::Cpu {
+                        return Ok(std::time::Duration::from_millis(100));
+                    }
+                    Err(match failure {
+                        "incompatible" => IndexError::Incompatible("unsupported fixture".into()),
+                        "numerical" => IndexError::Numerical("ordering fixture".into()),
+                        _ => IndexError::Engine("temporary fixture failure".into()),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(selected, Device::Cpu);
+            assert_eq!(retry.get().is_some(), failure != "incompatible");
+        }
+        let retry = std::cell::Cell::new(None);
+        let result = calibrated_with_references(
+            "invalid-cpu-reference-fixture",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &std::sync::Mutex::default(),
+            &std::cell::RefCell::default(),
+            PlanFiles {
+                retry: Some(&retry),
+                ..Default::default()
+            },
+            |device, _, _| Ok(device),
+            |_, _| Err(IndexError::Numerical("invalid CPU control".into())),
+        );
+        assert!(
+            result.is_err(),
+            "invalid CPU reference must never publish a model"
+        );
+        assert!(retry.get().is_none());
+    }
+
+    #[test]
+    fn quarantine_and_calibration_use_earliest_pending_expiry() {
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "cpu");
+        qualify_runtime_plan(
+            &mut model.plan,
+            Some(("npu:first:1".into(), now + RUNTIME_RETRY)),
+            Some(now),
+        );
+        assert_eq!(model.plan.retry_at, Some(now));
+        qualify_runtime_plan(
+            &mut model.plan,
+            Some(("npu:first:1".into(), now)),
+            Some(now + RUNTIME_RETRY),
+        );
+        assert_eq!(model.plan.retry_at, Some(now));
+        qualify_runtime_plan(&mut model.plan, None, Some(now + RUNTIME_RETRY));
+        assert_eq!(model.plan.retry_at, Some(now + RUNTIME_RETRY));
         assert!(model.plan.restore_target.is_none());
     }
 
@@ -2306,6 +2550,7 @@ mod tests {
             PlanFiles {
                 record: None,
                 directory: Some(dir),
+                retry: None,
             },
             |device, _, _| {
                 if !checked {
