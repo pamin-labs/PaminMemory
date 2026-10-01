@@ -71,6 +71,19 @@ if __name__ == '__main__':
         raise SystemExit(success.stderr)
     run_case('non-patch traversal replacement with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text('not a patch\n'),expected_error='recorded traversal patch differs')
     run_case('changed traversal patch with refreshed hashes',lambda r:(r/'source/experimental-traversal.patch').write_text((r/'source/experimental-traversal.patch').read_text()+'\n# changed\n'),expected_error='recorded traversal patch differs')
+    for arm in ['baseline','scored']:
+        for label,extra,error in [
+            ('extra failed test','test additional_case ... FAILED\n','complete fixture test markers differ'),
+            ('duplicate success test','test scratch_scored_graph_finite_fixture ... ok\n','complete fixture test markers differ'),
+            ('extra failed summary','test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.00s\n','complete fixture result summary differs'),
+            ('extra success summary','test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.00s\n','complete fixture result summary differs'),
+            ('failure section','failures:\n    extra_case\n','fixture result must be the final log line'),
+            ('panic marker','thread fixture panicked at error\n','fixture result must be the final log line')]:
+            run_case(label+' '+arm,lambda r,arm=arm,extra=extra:(r/(arm+'.log')).write_text((r/(arm+'.log')).read_text()+extra),expected_error=error)
+        def failed_before_summary(r,arm=arm):
+            p=r/(arm+'.log');s=p.read_text();p.write_text(s.replace('test result:', 'failures:\n    bad_case\n\ntest result:'))
+        run_case('failure section before final success '+arm,failed_before_summary,expected_error='fixture log contains a failure marker')
+        run_case('wrong filtered count '+arm,lambda r,arm=arm:(r/(arm+'.log')).write_text((r/(arm+'.log')).read_text().replace('1 filtered out','0 filtered out')),expected_error='complete fixture result summary differs')
     retained=json.loads((ROOT/'provenance.json').read_text())
     main_ref='315c10242ddf7a1cec3bccbf550a942320e09557'
     for ref in ['0'*40, retained['source_base'], 'nonexistent', '', None, True, [main_ref]]:
