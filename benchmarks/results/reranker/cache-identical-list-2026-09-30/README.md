@@ -23,11 +23,15 @@ The verifier reads sanitized archives, checks file hashes, derives every row,
 checks source-declared f32 bits and gold ranks, recomputes costs and rejects
 invalid evidence. It never starts a build, database or model. Product
 reranking/fusion source snapshots and fixture JSON remain public.
-Number-producing native probes and build/execution/database controllers were
-removed from the tracked archive after private byte-for-byte preservation; they
-remain scratch artifacts under the repository measurement policy. The public
-archive contains no native measurement runner. Original private logs and
-transformation hashes remain
+The archive's arithmetic verifier is complemented by the separate
+[reproduction package](../../../harnesses/reranker-identical-list-2026-09-30/README.md).
+It retains the exact original native probe and selected frozen compilation
+inputs, plus commands using an explicitly supplied, hash-bound public shared
+controller dependency. A bare checkout of this PR does not automatically contain
+that dependency. It can generate a new 36-process/428-call experiment;
+PR228's separate 80-process/880-call experiment is not substituted for this one.
+Templates become measurement controllers only in a fresh scratch export, under
+the repository measurement policy. Original private logs and transformation hashes remain
 private; no credential record or complete private seed/clone manifest is
 included. Every public stdout was sanitized **before** gzip compression.
 
@@ -51,9 +55,12 @@ frozen inputs. The archived measured reranking source is the original source.
 
 Historical build records report all four product libraries and the declared
 helper freshly compiled from Git-blob-checked workspace inputs with Rust 1.98.1.
-The compiled harness SHA remains its exact recorded historical identity; its
-source and the execution/build controllers are privately retained and are not
-publicly inspectable. The public verifier checks retained product source copies,
+The compiled harness SHA remains its exact recorded historical identity. The
+original native probe is now publicly inspectable in the reproduction package;
+original private execution/build/database controllers remain privately retained.
+The new shared sanitized controllers are prospective reproduction tooling, not
+byte-exact reconstructions of those historical controllers or proof of the
+historical binaries. The public verifier checks retained product source copies,
 recorded identities and raw evidence, without certifying a complete public
 source-to-binary artifact binding. Original retrieval input is byte-identical at
 both frozen commits; its immutable Git blob reference is retained in the receipt.
