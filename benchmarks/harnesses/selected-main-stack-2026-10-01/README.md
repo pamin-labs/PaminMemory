@@ -101,3 +101,9 @@ build. `build/cargo-config.json` records absent search paths and cache bindings,
 not credential values. Existing RUSTUP/toolchain assets remain prerequisites;
 cache contents are not independently content-attested, and endpoint checks do
 not prevent concurrent mutation. No Cargo build was performed for these tests.
+
+Frozen binaries produced by this package are `scratch_cache_product_limits`
+integration-test helpers. Their logical byte row includes the probe/scaffold and
+source-root strings; it describes helper artifacts only. The shipped CLI/server
+executable disk size is unmeasured and reported as N/A. No helper size delta
+establishes a product executable disk change.

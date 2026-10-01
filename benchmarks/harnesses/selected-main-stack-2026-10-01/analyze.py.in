@@ -95,8 +95,10 @@ def report(packets):
     asset_bytes = sum(pin['bytes'] for pin in c.MANIFEST['assets'])
     disk += [{'metric': 'listed bound model/runtime assets logical bytes',
               **metrics.difference(asset_bytes, asset_bytes)},
-             {'metric': 'app executable logical bytes',
-              **metrics.difference(binaries['main']['bytes'], binaries['stack']['bytes'])}]
+             {'metric': 'integration-test helper executable logical bytes',
+              **metrics.difference(binaries['main']['bytes'], binaries['stack']['bytes'])},
+             {'metric': 'shipped product executable logical bytes; unmeasured',
+              **metrics.difference(None, None)}]
     baseline = json.loads((c.ROOT / 'seed-receipt.json').read_text())
     disk.append({'metric': 'index baseline allocated bytes; endpoint unavailable',
                  **metrics.difference(baseline['index_allocated_bytes'], None)})
@@ -109,10 +111,12 @@ def report(packets):
             'metrics': measured_metrics,
             'process_metrics': process_metrics, 'disk': disk,
             'host_conditions': [json.loads(line) for line in (c.ROOT / 'host-conditions.jsonl').read_text().splitlines()],
+            'postgres_build_identities': [{'job': p['job']['name'], 'identity': p.get('postgres_build_identity')} for p in packets],
             'process_host_conditions': [{'job': p['job']['name'], 'conditions': p.get('host_conditions')} for p in packets],
             'scope': 'CPU ReadOnly Engine search; four rotated independent process blocks; hot calls dependent; '
                      'fresh process with prepared caches and preflight-warmed OS pages; shared machine; '
                      'PG main PID separate, children/device/services unmeasured; zero CPU ticks resolution-censored; '
+                     'frozen executables are integration-test helpers, not shipped product binaries; product executable disk N/A; '
                      'no historical UUID/index/binary identity, population p95 or universal quality claim.'}
 
 
