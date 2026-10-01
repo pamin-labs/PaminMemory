@@ -151,13 +151,17 @@ def owned_scratch(checkout,target,harness):
                 assert not path.is_symlink() and (actual.st_dev,actual.st_ino)==(identity.st_dev,identity.st_ino), 'owned scratch target replaced; preserve replacement'
                 path.unlink()
 
+def read_plan(path):
+    raw=path.read_bytes()
+    return json.loads(raw),hashlib.sha256(raw).hexdigest()
+
 def main():
     env,tools=build_environment(os.environ) # refuse overrides before copying/writing
     parser=argparse.ArgumentParser(description='New source-attested restart builds; never historical certification')
     parser.add_argument('--conversion-only',action='store_true',help='build only the source-bound candidate disk-schema setup helper')
     parser.add_argument('--plan',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();plan=json.loads(args.plan.read_text())
+    args=parser.parse_args();plan,plan_sha256=read_plan(args.plan)
     assert not args.output.exists(), 'preserve all prior outputs'
     assert set(plan['arms'])==({'candidate'} if args.conversion_only else {'main','predecessor','candidate'})
     scratch_target=CONVERSION_TARGET if args.conversion_only else TARGET
@@ -186,7 +190,7 @@ def main():
     audit={'recorded_utc':datetime.now(timezone.utc).isoformat(),
            'scope':'prospective build-time inputs/outputs only; no historical binary binding',
            'build_kind':'disk-schema-conversion' if args.conversion_only else 'restart-trial','scratch_target':scratch_target,
-           'plan_sha256':digest(args.plan),'harness_sha256':digest(harness),
+           'plan_sha256':plan_sha256,'harness_sha256':digest(harness),
            'toolchain':rustc_version,'rustdoc':rustdoc_version,'cargo':cargo_version,'tools_before':tool_before,
            'cargo_config_search':configs,'cargo_config_policy':'both config spellings absent at canonical checkout and all ancestors and fixed CARGO_HOME; endpoint checks only; offline registry/cache unchanged and not content-attested',
            'inherited_compiler_cargo_overrides':{},'native_loader_inputs':native,'resource_preflight':resource_before,
