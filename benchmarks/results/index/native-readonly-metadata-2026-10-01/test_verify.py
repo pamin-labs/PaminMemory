@@ -2,6 +2,10 @@
 import copy
 import hashlib
 import json
+import re
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 import unittest
 
 import verify
@@ -9,12 +13,12 @@ import verify
 
 class MetadataInvariants(unittest.TestCase):
     def setUp(self):
-        self.evidence = json.loads((verify.ROOT/'evidence.json').read_text())
+        self.evidence = verify.source_binding.load_json(verify.ROOT/'evidence.json')
 
-    def reject(self, mutation):
+    def reject(self, mutation, expected_error):
         changed = copy.deepcopy(self.evidence)
         mutation(changed)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, '^' + re.escape(expected_error) + '$'):
             verify.verify(changed, check_logs=False)
 
     def rewrite(self, evidence, section, fields):
@@ -28,6 +32,33 @@ class MetadataInvariants(unittest.TestCase):
 
     def test_valid(self):
         self.assertTrue(verify.verify(self.evidence))
+
+    def test_duplicate_evidence_members_rejected_before_hashing(self):
+        for field, first in [('storage_type', 'VectorFp32'), ('read_only', False)]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                text = json.dumps(self.evidence)
+                original = json.dumps(field) + ': ' + json.dumps('VectorFp16' if field == 'storage_type' else True)
+                duplicate = json.dumps(field) + ': ' + json.dumps(first) + ', ' + original
+                self.assertIn(original, text)
+                (root/'evidence.json').write_text(text.replace(original, duplicate, 1))
+                with patch.object(verify, 'ROOT', root):
+                    with self.assertRaisesRegex(ValueError, '^duplicate JSON member: ' + field + '$'):
+                        verify.main()
+
+    def test_duplicate_manifest_members_rejected_before_hashing(self):
+        binding = verify.source_binding.load_json(verify.ROOT/'public-source-binding.json')
+        for field in ['scope', 'sha256']:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root/'evidence.json').write_text(json.dumps(self.evidence))
+                text = json.dumps(binding)
+                prefix = json.dumps(field) + ': '
+                self.assertIn(prefix, text)
+                (root/'public-source-binding.json').write_text(text.replace(prefix, prefix + '"conflicting earlier claim", ' + prefix, 1))
+                with patch.object(verify, 'ROOT', root):
+                    with self.assertRaisesRegex(ValueError, '^duplicate JSON member: ' + field + '$'):
+                        verify.main()
 
     def test_crc_refreshed_unchecked_header_field_all_excerpts(self):
         changed = copy.deepcopy(self.evidence)
@@ -75,10 +106,10 @@ class MetadataInvariants(unittest.TestCase):
         def mutate(e):
             x = e['runs'][0]['files'][0]['excerpts']['after']
             x['footer_hex'] = '00'*4 + x['footer_hex'][8:]
-        self.reject(mutate)
+        self.reject(mutate, 'footer CRC')
 
     def test_rehashed_wrong_format(self):
-        self.reject(lambda e:self.rewrite(e, 'header_hex', {2:3}))
+        self.reject(lambda e:self.rewrite(e, 'header_hex', {2:3}), 'wrong format/revision')
 
     def test_crc_refreshed_wrong_magic_each_file_both_phases(self):
         pins = list(verify.HEADER_MAGIC.values())
@@ -114,16 +145,16 @@ class MetadataInvariants(unittest.TestCase):
                     verify.verify(changed, check_logs=False)
 
     def test_rehashed_table_bounds(self):
-        self.reject(lambda e:self.rewrite(e, 'footer_hex', {4:2**30}))
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {4:2**30}), 'table bounds')
 
     def test_rehashed_file_bounds(self):
-        self.reject(lambda e:self.rewrite(e, 'footer_hex', {6:2**30}))
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {6:2**30}), 'file bounds or chained format')
 
     def test_rehashed_chained_format(self):
-        self.reject(lambda e:self.rewrite(e, 'footer_hex', {len(verify.FOOTER.unpack(bytes(128)))-2:64}))
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {len(verify.FOOTER.unpack(bytes(128)))-2:64}), 'file bounds or chained format')
 
     def test_wrong_declared_storage_type(self):
-        self.reject(lambda e:e.update(storage_type='VectorFp32'))
+        self.reject(lambda e:e.update(storage_type='VectorFp32'), 'declared storage/count')
 
     def test_wrong_linear_count(self):
         def mutate(e):
@@ -131,19 +162,19 @@ class MetadataInvariants(unittest.TestCase):
             data = bytearray.fromhex(x['streamer_and_linear_header_hex'])
             data[68:72] = (65).to_bytes(4,'little')
             x['streamer_and_linear_header_hex'] = data.hex()
-        self.reject(mutate)
+        self.reject(mutate, 'linear count/type')
 
     def test_unallowed_metadata_byte_with_valid_footer_crc(self):
-        self.reject(lambda e:self.rewrite(e, 'footer_hex', {8:1}))
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {8:1}), 'unallowed metadata byte')
 
     def test_allowed_mask_range_expansion(self):
-        self.reject(lambda e:e['runs'][0]['files'][0]['allowed_full_field_ranges'][0].__setitem__(1,1052592))
+        self.reject(lambda e:e['runs'][0]['files'][0]['allowed_full_field_ranges'][0].__setitem__(1,1052592), 'allowed mask range')
 
     def test_late_phase_fabrication(self):
-        self.reject(lambda e:e['runs'][1]['phase_delta_file_counts'].update(vector_queried=4))
+        self.reject(lambda e:e['runs'][1]['phase_delta_file_counts'].update(vector_queried=4), 'late phase fabrication')
 
     def test_native_binding(self):
-        self.reject(lambda e:e.update(native_sha256='0'*64))
+        self.reject(lambda e:e.update(native_sha256='0'*64), 'native/helper binding')
 
     def test_rehashed_wrong_segment_type(self):
         def mutate(e):
@@ -160,52 +191,52 @@ class MetadataInvariants(unittest.TestCase):
                     runs.append([start, table[start:i].hex()]); start = None
             x['table_nonzero_runs'] = runs
             self.rewrite(e, 'footer_hex', {1:verify.crc32c(table)})
-        self.reject(mutate)
+        self.reject(mutate, 'wrong segment type/name')
 
     def test_helper_source_binding(self):
-        self.reject(lambda e:e.update(helper_source_sha256='0'*64))
+        self.reject(lambda e:e.update(helper_source_sha256='0'*64), 'helper/control binding')
 
     def test_controller_binding(self):
-        self.reject(lambda e:e.update(controller_sha256='0'*64))
+        self.reject(lambda e:e.update(controller_sha256='0'*64), 'helper/control binding')
 
     def test_changed_runtime_receipt(self):
-        self.reject(lambda e:e['runtime_assets']['libzvec_c_api.so'].update(sha256='0'*64))
+        self.reject(lambda e:e['runtime_assets']['libzvec_c_api.so'].update(sha256='0'*64), 'source/runtime receipt binding')
 
     def test_changed_source_receipt(self):
-        self.reject(lambda e:next(iter(e['source_files'].values())).update(sha256='0'*64))
+        self.reject(lambda e:next(iter(e['source_files'].values())).update(sha256='0'*64), 'source/runtime receipt binding')
 
     def test_broadened_public_proof_scope(self):
-        self.reject(lambda e:e['runs'][0]['private_full_byte_verification'].update(scope='public full payload proof'))
+        self.reject(lambda e:e['runs'][0]['private_full_byte_verification'].update(scope='public full payload proof'), 'private receipt scope')
 
     def test_broadened_component_scope(self):
-        self.reject(lambda e:e['runs'][0]['environment'].update(inference='Engine/model'))
+        self.reject(lambda e:e['runs'][0]['environment'].update(inference='Engine/model'), 'component environment/scope')
 
     def test_changed_run_start(self):
-        self.reject(lambda e:e['runs'][0].update(started_utc='2026-10-01T01:02:05.865611+00:00'))
+        self.reject(lambda e:e['runs'][0].update(started_utc='2026-10-01T01:02:05.865611+00:00'), 'run start receipt')
 
     def test_changed_observation_receipt(self):
-        self.reject(lambda e:e['runs'][0]['snapshot_observation_utc'].update(opened='2026-10-01T01:02:06.233628+00:00'))
+        self.reject(lambda e:e['runs'][0]['snapshot_observation_utc'].update(opened='2026-10-01T01:02:06.233628+00:00'), 'observation receipt binding')
 
-    def reject_rehashed_log(self, arm, replace):
+    def reject_rehashed_log(self, arm, replace, expected_error):
         changed = copy.deepcopy(self.evidence)
         logs = {r['arm']:(verify.ROOT/(r['arm']+'.log')).read_text() for r in changed['runs']}
         logs[arm] = replace(logs[arm])
         row = next(r for r in changed['runs'] if r['arm'] == arm)
         row['log_sha256'] = hashlib.sha256(logs[arm].encode()).hexdigest()
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, '^' + re.escape(expected_error) + '$'):
             verify.verify(changed, logs=logs)
 
     def test_rehashed_log_false_read_only_getter(self):
-        self.reject_rehashed_log('vector', lambda log:log.replace('read_only=true','read_only=false'))
+        self.reject_rehashed_log('vector', lambda log:log.replace('read_only=true','read_only=false'), 'ordered probe events')
 
     def test_rehashed_log_duplicate_option_getter(self):
-        self.reject_rehashed_log('pure-open', lambda log:log+'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n')
+        self.reject_rehashed_log('pure-open', lambda log:log+'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n', 'ordered probe events')
 
     def test_rehashed_log_duplicate_hits(self):
-        self.reject_rehashed_log('vector', lambda log:log+'PROBE_HITS 50\n')
+        self.reject_rehashed_log('vector', lambda log:log+'PROBE_HITS 50\n', 'ordered probe events')
 
     def test_rehashed_log_pure_open_hits(self):
-        self.reject_rehashed_log('pure-open', lambda log:log+'PROBE_HITS 50\n')
+        self.reject_rehashed_log('pure-open', lambda log:log+'PROBE_HITS 50\n', 'ordered probe events')
 
     def change_table_entries(self, evidence, mutations):
         # Mutate both phases consistently, then refresh table and footer CRCs.
@@ -230,19 +261,19 @@ class MetadataInvariants(unittest.TestCase):
             excerpt['footer_hex'] = verify.FOOTER.pack(*values).hex()
 
     def test_rehashed_padding_overflow_both_phases(self):
-        self.reject(lambda e:self.change_table_entries(e,{0:{4:2**63}}))
+        self.reject(lambda e:self.change_table_entries(e,{0:{4:2**63}}), 'segment data/padding bounds')
 
     def test_rehashed_segment_overlap_both_phases(self):
-        self.reject(lambda e:self.change_table_entries(e,{1:{2:4095}}))
+        self.reject(lambda e:self.change_table_entries(e,{1:{2:4095}}), 'segment append overlap/gap/order')
 
     def test_rehashed_segment_gap_both_phases(self):
-        self.reject(lambda e:self.change_table_entries(e,{1:{2:4097}}))
+        self.reject(lambda e:self.change_table_entries(e,{1:{2:4097}}), 'segment append overlap/gap/order')
 
     def test_rehashed_aggregate_padding_gap_both_phases(self):
-        self.reject(lambda e:self.change_table_entries(e,{4:{4:0}}))
+        self.reject(lambda e:self.change_table_entries(e,{4:{4:0}}), 'segment set/aggregate extent')
 
     def test_rehashed_segment_reordering_both_phases(self):
-        self.reject(lambda e:self.change_table_entries(e,{0:{2:4096},1:{2:0}}))
+        self.reject(lambda e:self.change_table_entries(e,{0:{2:4096},1:{2:0}}), 'segment append overlap/gap/order')
 
     def test_all_whole_file_identity_receipts_bound(self):
         # Mutate every one of the sixteen receipts; metadata CRCs stay valid.
@@ -264,19 +295,19 @@ class MetadataInvariants(unittest.TestCase):
                     verify.verify(changed, check_logs=False)
 
     def test_rehashed_log_concatenated_failed_summary(self):
-        self.reject_rehashed_log('vector', lambda log:log+'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n')
+        self.reject_rehashed_log('vector', lambda log:log+'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n', 'single positive test completion')
 
     def test_rehashed_log_duplicate_positive_summary(self):
-        self.reject_rehashed_log('pure-open', lambda log:log+'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s\n')
+        self.reject_rehashed_log('pure-open', lambda log:log+'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s\n', 'single positive test completion')
 
     def test_rehashed_log_concatenated_zero_test_summary(self):
-        self.reject_rehashed_log('vector', lambda log:log+'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n')
+        self.reject_rehashed_log('vector', lambda log:log+'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n', 'single positive test completion')
 
     def test_rehashed_log_nonzero_ignored_count(self):
-        self.reject_rehashed_log('pure-open', lambda log:log.replace('0 ignored','1 ignored'))
+        self.reject_rehashed_log('pure-open', lambda log:log.replace('0 ignored','1 ignored'), 'single positive test completion')
 
     def test_rehashed_log_missing_summary(self):
-        self.reject_rehashed_log('vector', lambda log:'\n'.join(line for line in log.splitlines() if not line.startswith('test result:')))
+        self.reject_rehashed_log('vector', lambda log:'\n'.join(line for line in log.splitlines() if not line.startswith('test result:')), 'single positive test completion')
 
     def test_crc_refreshed_unsupported_revision_both_phases(self):
         def mutate(e):
@@ -286,40 +317,40 @@ class MetadataInvariants(unittest.TestCase):
                 values[3] = 1; values[0] = 0
                 values[0] = verify.crc32c(verify.HEADER.pack(*values))
                 excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
-        self.reject(mutate)
+        self.reject(mutate, 'wrong format/revision')
 
     def test_rehashed_options_after_open(self):
         option = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n'
         for arm in ['pure-open', 'vector']:
             with self.subTest(arm=arm):
-                self.reject_rehashed_log(arm, lambda log:log.replace(option,'').replace('PROBE_STAGE opened\n','PROBE_STAGE opened\n'+option))
+                self.reject_rehashed_log(arm, lambda log:log.replace(option,'').replace('PROBE_STAGE opened\n','PROBE_STAGE opened\n'+option), 'ordered probe events')
 
     def test_rehashed_options_after_drop(self):
         option = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n'
-        self.reject_rehashed_log('vector', lambda log:log.replace(option,'').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\n'+option))
+        self.reject_rehashed_log('vector', lambda log:log.replace(option,'').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\n'+option), 'ordered probe events')
 
     def test_rehashed_hits_after_drop(self):
-        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\nPROBE_HITS 50\n'))
+        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\nPROBE_HITS 50\n'), 'ordered probe events')
 
     def test_rehashed_hits_before_preparation(self):
-        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE vector_prepared\n','PROBE_HITS 50\nPROBE_STAGE vector_prepared\n'))
+        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE vector_prepared\n','PROBE_HITS 50\nPROBE_STAGE vector_prepared\n'), 'ordered probe events')
 
     def test_unverified_file_claim(self):
         for arm in range(2):
             for index in range(4):
                 with self.subTest(arm=arm, file=index):
-                    self.reject(lambda e:e['runs'][arm]['files'][index].update(public_full_payload_verified=True))
+                    self.reject(lambda e:e['runs'][arm]['files'][index].update(public_full_payload_verified=True), 'file schema/scope')
 
     def test_unverified_excerpts_claim(self):
-        self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'].update(public_full_payload_verified=True))
+        self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'].update(public_full_payload_verified=True), 'excerpts schema/scope')
 
     def test_unverified_phase_excerpt_claim(self):
         for phase in ['before', 'after']:
             with self.subTest(phase=phase):
-                self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'][phase].update(public_full_payload_verified=True))
+                self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'][phase].update(public_full_payload_verified=True), 'phase excerpt schema/scope')
 
     def test_source_binding(self):
-        self.reject(lambda e:e.update(vendor_commit='0'*40))
+        self.reject(lambda e:e.update(vendor_commit='0'*40), 'source binding')
 
 
 if __name__ == '__main__':

@@ -19,6 +19,17 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def load_json(path):
+    """Reject duplicate members at every depth before schema/digest checks."""
+    def unique(pairs):
+        value = {}
+        for key, member in pairs:
+            require(key not in value, 'duplicate JSON member: ' + key)
+            value[key] = member
+        return value
+    return json.loads(Path(path).read_text(), object_pairs_hook=unique)
+
+
 def validate(binding):
     require(set(binding) == {'format', 'historical_local_source_commit', 'historical_source_public', 'public_equivalent_commit', 'public_reference', 'scope', 'files', 'tracked_cargo_config_paths', 'private_build_receipt', 'reconstructs_historical_helper_binary', 'public_tag', 'public_tree_url', 'public_tag_url', 'public_commit_url'}, 'source binding schema/scope')
     require(binding['format'] == 'public-equivalent-production-inputs-v1', 'source binding format')
