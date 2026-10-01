@@ -37,3 +37,8 @@ The prospective runner rejects every inherited `MALLOC_*` variable and
 values, before setup or trial work. It uses the default allocator environment.
 Historical allocator tuning was not retained and remains unknown; this guard
 does not certify the historical memory or timing conditions.
+
+Every resolved attested arm executable must be outside setup home and, for
+trials, outside both seed and output roots. This includes paths through symlink
+ancestors. Validation runs before writing records, copying fixtures or launching
+setup/trials, so build artifacts cannot enter measured index-disk accounting.

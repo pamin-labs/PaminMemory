@@ -1,0 +1,39 @@
+"""Attested fake bytes and mocked preflight only; never execute the artifact."""
+import json,os,runpy,subprocess,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent;source=root/'run-guarded.py.in';before='--before' in sys.argv
+if before:
+ code=subprocess.check_output(['git','show','86428fad398c0a8fc17691e91fa0cea7a36f0253:'+str(source.relative_to(root.parents[2]))],cwd=root,text=True)
+ guard={'__file__':str(source),'__name__':'fixture'};exec(compile(code,str(source),'exec'),guard)
+else:guard=runpy.run_path(str(source))
+g=guard['main'].__globals__;original=guard['binary'];source_name='crates/pamin-engine/tests/scratch_restart_floor.rs'
+with tempfile.TemporaryDirectory() as directory:
+ parent=Path(directory);home=parent/'home';seed=parent/'seed';output=parent/'output';models=parent/'models';models.mkdir()
+ for target in [home,seed]:target.mkdir()
+ (home/'models').symlink_to(models,target_is_directory=True)
+ checked=0
+ for mode,roots in [('setup',[home]),('trials',[seed,output])]:
+  for target in roots:
+   target.mkdir(exist_ok=True);alias=parent/(target.name+'-alias');alias.symlink_to(target,target_is_directory=True)
+   for executable in [target/'binary',target/'index/project/binary',alias/'index/binary']:
+    executable.parent.mkdir(parents=True,exist_ok=True);executable.write_bytes(b'attested fake artifact')
+    entry={'commit':'fake','binary':str(executable),'binary_sha256':guard['digest'](executable),'binary_bytes':executable.stat().st_size,'scratch_source':source_name,'scratch_sha256':'source','checkout':str(parent),'inputs_before':{source_name:{'sha256':'source'}},'inputs_after':{source_name:{'sha256':'source'}},'compiler_artifacts':[{'target':{'name':'scratch_restart_floor','src_path':str(parent/source_name)},'executable':str(executable),'fresh':False}]}
+    attestation=parent/'build.json';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':{},'build_kind':'restart-trial','scratch_target':source_name,'harness_sha256':'source','arms':{name:entry for name in ['fake','main','predecessor','candidate']}}))
+    stages=['bootstrap','seed'] if mode=='setup' else [None]
+    for stage in stages:
+     record=parent/'record.json';arm=f'fake,fake,{executable}';args=['guard','--attestation',str(attestation),'--model-manifest',str(parent/'models.json'),'--record',str(record),'--documents','1','--index','memory',mode]
+     args+=['--home',str(home),'--arm',arm,'--stage',stage] if mode=='setup' else ['--seed',str(seed),'--output',str(output),'--fixture-manifest',str(parent/'fixture.json')]+[item for name in ['main','predecessor','candidate'] for item in ['--arm',f'{name},fake,{executable}']]
+     def binary_boundary(*args):original(*args);raise RuntimeError('artifact accepted')
+     with patch.dict(os.environ,{},clear=True),patch.dict(g,{'MODEL':{'load':lambda p:({'root':str(models)},b'{}','fixture')},'NATIVE':{'environment':lambda env,native:env},'binary':binary_boundary}),patch.object(sys,'argv',args):
+      try:guard['main']()
+      except AssertionError as error:assert not before and 'arm executable must be outside measured home/seed/output' in str(error),str(error)
+      except RuntimeError as error:assert before and str(error)=='artifact accepted',str(error)
+      else:raise AssertionError('preflight did not reject or reach mock boundary')
+     assert not record.exists();checked+=1
+ # External executable is still valid; resolved symlink paths are checked above.
+ external=parent/'external';external.write_bytes(b'attested fake artifact');entry.update(binary=str(external),binary_sha256=guard['digest'](external),binary_bytes=external.stat().st_size)
+ att=json.loads(attestation.read_text());att['arms']['fake']=entry
+ assert original(f'fake,fake,{external}',att,*(() if before else ([home,seed,output],)))==external
+print(('BEFORE: accepted ' if before else 'PASS: rejected ')+str(checked)+' direct/index/symlink-ancestor fixture executables before record/copy/launch; external artifact accepted')

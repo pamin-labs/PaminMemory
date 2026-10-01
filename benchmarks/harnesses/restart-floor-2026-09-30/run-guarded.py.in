@@ -206,10 +206,11 @@ def setup_rows(output,stage,documents):
         summary['seed_final_document_count']='N/A: seed_complete does not emit a final document count'
     return summary
 
-def binary(arm,attestation):
+def binary(arm,attestation,excluded=()):
     source='crates/pamin-engine/tests/scratch_restart_floor.rs'
     assert attestation['build_kind']=='restart-trial' and attestation['scratch_target']==source, 'restart setup/trials require restart helper build'
     name,commit,path=arm.split(',',2);entry=attestation['arms'][name];path=Path(path).resolve()
+    assert all(not path.is_relative_to(root.resolve()) for root in excluded), 'arm executable must be outside measured home/seed/output'
     assert entry['scratch_source']==source and entry['scratch_sha256']==attestation['harness_sha256']
     assert entry['inputs_before'][source]==entry['inputs_after'][source] and entry['inputs_before'][source]['sha256']==attestation['harness_sha256'], 'restart helper source binding missing'
     helpers=[x for x in entry['compiler_artifacts'] if x['target']['name']=='scratch_restart_floor' and x.get('executable')]
@@ -243,14 +244,14 @@ def main():
     env=NATIVE['environment'](env,native)
     if a.mode=='setup':
         assert not a.record.resolve().is_relative_to(a.home.resolve()), 'private setup record must be outside measured home'
-        executable=binary(a.arm,attestation)
+        executable=binary(a.arm,attestation,excluded)
         assert (a.home/'models').is_symlink() and (a.home/'models').resolve(strict=True)==Path(expected_models['root']), 'setup must use the attested model cache'
         assert not a.model_manifest.resolve().is_relative_to(a.home.resolve()), 'model manifest must be external to setup home'
         env.update(PAMIN_EVAL_HOME=str(a.home.resolve()),FLOOR_MODE=a.stage,FLOOR_DOCUMENTS=str(a.documents),FLOOR_VECTOR_INDEX=a.index)
         command=[str(executable),'--ignored','--exact','restart_floor','--nocapture']
     else:
         assert len(a.arm)==3 and {x.split(',',1)[0] for x in a.arm}=={'main','predecessor','candidate'}
-        for arm in a.arm:binary(arm,attestation)
+        for arm in a.arm:binary(arm,attestation,excluded)
         assert not a.output.exists()
         assert not a.model_manifest.resolve().is_relative_to(a.seed.resolve()) and not a.model_manifest.resolve().is_relative_to(a.output.resolve()), 'model manifest must be external to source/copies'
         assert not a.fixture_manifest.resolve().is_relative_to(a.seed.resolve()) and not a.fixture_manifest.resolve().is_relative_to(a.output.resolve()), 'expected manifest must be external to source/copies'
