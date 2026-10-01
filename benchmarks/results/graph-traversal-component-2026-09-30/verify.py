@@ -21,6 +21,20 @@ def graph_only_evidence(hit):
  assert paths[0].get('edge')=='related_to' and paths[0].get('derivation')=='deterministic', 'controlled path edge/derivation differs'
  assert len(why)==2, 'graph-only target complete Why must contain only graph and path records'
  return graph[0],paths[0]
+# Frozen native Why values from the reviewed 2026-09-30 capture, not values
+# supplied by the mutable comparison/manifest. UUID-dependent ranks apply
+# only to these retained runs, not to independently seeded reproductions.
+GRAPH_RECORD_PINS = {
+ 'baseline': [(4,0.020202022045850754),(6,0.01772727258503437),(7,0.01719697006046772)],
+ 'scored': [(1,0.025151517242193222),(4,0.02196969836950302),(7,0.02196969836950302),(8,0.01613636501133442)]}
+def validate_graph_record(hit,arm,index):
+ graph,_=graph_only_evidence(hit)
+ assert set(graph)=={'kind','channel','rank','score','weight','contribution'}, 'graph channel fields differ'
+ assert type(graph['rank']) is int and graph['rank']==GRAPH_RECORD_PINS[arm][index][0], 'retained graph rank differs'
+ for key in ['score','weight','contribution']:
+  assert type(graph[key]) in {int,float} and math.isfinite(graph[key]), 'invalid graph numeric field'
+ assert graph['weight']==0.30000001192092896, 'retained graph weight differs'
+ assert graph['contribution']==GRAPH_RECORD_PINS[arm][index][1], 'retained graph contribution differs'
 def score(hit):return graph_only_evidence(hit)[0]['score']
 def path(hit):return graph_only_evidence(hit)[1]
 def fixture_content(topic):
@@ -288,6 +302,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  hits={h['topic']:h for h in row['targets']};assert set(hits)==set(row['target_labels'])
  for i,name in enumerate(row['target_labels']):
   origin=row['weak'] if arm=='baseline' and i==0 else row['strong']
+  validate_graph_record(hits[name],arm,i)
   assert hits[name].get('seed') == fixture_content(origin), 'target seed content differs from expected origin: '+arm+' '+name
  values=[score(hits[name]) for name in row['target_labels']]
  expected=[row['weak_relevance'],.1,.05] if arm=='baseline' else [.8,.5,.5]
@@ -303,6 +318,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  early=row['early_stop'];assert early['decoys']==60 and close(early['expected_score'],.5)
  assert early['reached']==(arm=='scored')
  if arm=='scored':
+  validate_graph_record({'why':early['why']},arm,3)
   assert close(score({'why':early['why']}),.5)
   trace=path({'why':early['why']});assert trace['from']==row['strong'] and trace['via']==early['via'] and trace['hops']==2
   assert trace['asserted_from']==early['via'] and trace['asserted_to']==early['target']
