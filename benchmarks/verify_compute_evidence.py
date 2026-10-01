@@ -24,6 +24,7 @@ def verify_cluster_inference(queries, scored, precision):
 
     expected = json.loads((ROOT / "cluster-inference.json").read_text())
     assert precision["inference_scope"] == expected, "published inference scope diverged"
+    assert expected["queries"] == len(queries) == 1190, "published query count differs from raw rows"
     clusters = collections.defaultdict(list)
     for index, query in enumerate(queries):
         # Sentence keys are language:paragraph:sentence; languages have
