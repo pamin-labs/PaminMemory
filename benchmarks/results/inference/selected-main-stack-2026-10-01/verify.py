@@ -1,9 +1,11 @@
 """Inert public verifier: sanitized arithmetic, not proof of private execution.
 
-Import only defines functions/constants. CLI reads one local JSON file and
+Import only defines functions/constants. CLI reads local evidence and its optional adjacent pinned input-scope audit and
 prints tables; no mutation, environment, network, subprocess or product code.
 """
 import argparse
+import hashlib
+from pathlib import Path
 import json
 import math
 import statistics
@@ -158,14 +160,26 @@ def stability(changes,eligible,same_work,medians):
             'stable_claim_eligible':bool(eligible and same_work and meaningful and not sign_flip and all(v is not None and v<=.10 for v in spans.values()) and spread<=10)}
 
 
-def tables(data):
-    validate(data);groups={};processes=data['processes'];rows=[]
+AUDIT_CANONICAL_SHA256='75a3a959a8ff6af9dad69d6e8271bce7e6766be43b171db342cb8052dbc2f3a8'
+
+
+def input_scope(data, audit):
+    if audit is None:
+        return {} # No input-change attestation: no changed-input eligibility.
+    encoded=lambda v:json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+    require(hashlib.sha256(encoded(audit)).hexdigest()==AUDIT_CANONICAL_SHA256, 'input audit identity differs')
+    require(hashlib.sha256(encoded(data)).hexdigest()==audit['evidence_canonical_sha256'], 'input audit evidence binding differs')
+    return audit['scenario_changed_inputs']
+
+
+def tables(data, audit=None):
+    validate(data);scopes=input_scope(data,audit);groups={};processes=data['processes'];rows=[]
     for p in processes:
         for c in p['calls']:
             group=(p['tier'],p['limit'],p['scenario'],p['initial_context'],c['phase'].replace('_','-'),c['context'])
             groups.setdefault(group,[]).append((p,c))
     for group,items in sorted(groups.items()):
-        eligible=all(p['correctness']['same_final_raw_bits_and_order'] and p['correctness']['all_changed_and_hot_exact'] for p,c in items) if group[4] in ('changed-context','changed-hot') else True
+        eligible=bool(scopes.get(group[2],False)) and all(p['correctness']['same_final_raw_bits_and_order'] and p['correctness']['all_changed_and_hot_exact'] for p,c in items) if group[4] in ('changed-context','changed-hot') else True
         ordered={s:sorted([(p['block'],c['step'],c['work']) for p,c in items if p['arm']==s],key=lambda v:v[:2]) for s in ('main','stack')}
         same_work=all([tuple(w[k] for k in WORK[:6]) for _,_,w in ordered[s]]==[tuple(w[k] for k in WORK[:6]) for _,_,w in ordered['main']] for s in ('main','stack'))
         definitions=[('quality_'+k,lambda c,k=k:c['quality'][k]) for k in ('recall','mrr','ndcg')]
@@ -180,37 +194,41 @@ def tables(data):
                     blockvalues={s:[extract(c) for p,c in items if p['arm']==s and p['block']==block] for s in ('main','stack')}
                     for s,v in blockvalues.items():medians[s].append(statistics.median(v))
                     result=delta(reduce(blockvalues['main']),reduce(blockvalues['stack']));blocks.append(result);changes.append(result['percentage_change'])
-                rows.append({'configuration':list(group),'metric':metric,'statistic':statistic,'samples_per_arm':len(items)//2,'accuracy_eligible':eligible,'same_successful_work':same_work,
+                rows.append({'configuration':list(group),'metric':metric,'statistic':statistic,'samples_per_arm':len(items)//2,'accuracy_eligible':eligible,'history_scope':('changed-input history' if scopes.get(group[2],False) else 'unchanged-input control' if group[2] in scopes else 'input-change scope unproven') if group[4] in ('changed-context','changed-hot') else 'other phase','same_successful_work':same_work,
                              **delta(values['main'],values['stack']),**stability(changes,eligible,same_work,medians),'four_block_statistics':blocks})
-    correctness=[]
+    correctness=[];control_diagnostics=[]
     for limit in (5,10):
         for scenario in ('scenario_1','scenario_2'):
             for initial in ('A','B'):
                 items=[p for p in processes if p['tier']=='accurate' and (p['limit'],p['scenario'],p['initial_context'])==(limit,scenario,initial)]
                 for key in CORRECT[:5]:
                     counts={s:sum(p['correctness'][key] for p in items if p['arm']==s) for s in ('main','stack')}
-                    correctness.append({'configuration':[limit,scenario,initial],'metric':key,**delta(counts['main'],counts['stack'])})
+                    target=correctness if scopes.get(scenario,False) else control_diagnostics
+                    target.append({'history_scope':'changed-input history' if scopes.get(scenario,False) else 'unchanged-input control' if scenario in scopes else 'input-change scope unproven','configuration':[limit,scenario,initial],'metric':key,**delta(counts['main'],counts['stack'])})
     costs=[]
     for group in sorted({(p['tier'],p['limit'],p['scenario'],p['initial_context']) for p in processes}):
         for key in COST:
             values={s:[p['cost'][key] for p in processes if p['arm']==s and (p['tier'],p['limit'],p['scenario'],p['initial_context'])==group] for s in ('main','stack')}
             means={s:statistics.mean(v) if all(x is not None for x in v) else None for s,v in values.items()}
             costs.append({'configuration':list(group),'metric':key,**delta(means['main'],means['stack'])})
-    return {'correctness':correctness,'metrics':rows,'process_metrics':costs,'disk':[{'configuration':[d['scope'],d['measure']],'metric':d['measure'],**delta(d['before'],d['after'])} for d in data['disk']]}
+    return {'input_audit_present':audit is not None,'correctness':correctness,'control_diagnostics':control_diagnostics,'metrics':rows,'process_metrics':costs,'disk':[{'configuration':[d['scope'],d['measure']],'metric':d['measure'],**delta(d['before'],d['after'])} for d in data['disk']]}
 
 
 def markdown(result):
     def fmt(v):return 'N/A' if v is None else format(v,'.17g') if type(v) in (float,int) else str(v)
     lines=['Sanitized table arithmetic only. Correctness, quality, source/runtime and payload attestations require retained private evidence.',
+           ('Input-scope audit is private-attested: 16 paired history cells changed model bytes; 16 were unchanged-input controls. Controls are excluded from changed-input correctness/speed proof.' if result['input_audit_present'] else 'Input-change audit unavailable; changed-input correctness and speed eligibility withheld.'),
            'Four independent process blocks. Accurate hot quantiles pool 20 dependent calls, five per block; Off hot quantiles pool four calls, one per block. Samples per arm are printed for every metric row. CPU zero ticks are resolution-censored.',
            'Native wall has approximately 1Hz exit polling. Cumulative CPU excludes final diagnostic and teardown. RSS/HWM excludes PG; total service N/A.',
            'Same logical index size does not imply no writes. Allowed readonly metadata writes are private-attested.',
            '', '| Configuration | Metric | Before | After | Absolute difference | % change | Samples per arm | Eligibility |', '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |']
     metrics=sorted(result['metrics'],key=lambda r:(0 if r['metric'].startswith('quality') else 1 if r['metric'] in ('wall_us','cpu_user_seconds','cpu_system_seconds') else 2 if r['metric'] in ('rss_kib','hwm_kib') else 3,str(r['configuration']),r['metric']))
-    for r in result['correctness']+metrics+result['process_metrics']+result['disk']:
+    for r in result['correctness']+result['control_diagnostics']+metrics+result['process_metrics']+result['disk']:
         reason='private-attested/descriptive'
         if 'accuracy_eligible' in r:
             reason='accuracy excluded' if not r['accuracy_eligible'] else 'different recomputation work' if not r['same_successful_work'] else 'stable withheld' if not r['stable_claim_eligible'] else 'four-block descriptive eligible; no statistical proof'
+        if r.get('history_scope') in ('unchanged-input control','input-change scope unproven'):
+            reason=r['history_scope']+'; not changed-input proof'
         lines.append('| '+' | '.join(['/'.join(map(str,r['configuration'])),r['metric']+' '+r.get('statistic','')]+[fmt(r[k]) for k in ('before','after','absolute_difference','percentage_change')]+[str(r.get('samples_per_arm', 'N/A')),reason])+' |')
     lines += ['', '| Configuration / metric | Four paired block statistics (before, after, delta, %) | Four main medians | Four stack medians | Arm span/median | Sign reversal |', '| --- | --- | --- | --- | --- | --- |']
     for r in metrics:
@@ -222,7 +240,11 @@ def markdown(result):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('evidence');args=parser.parse_args()
     with open(args.evidence,encoding='utf-8') as stream:data=strict_json(stream.read())
-    print(markdown(tables(data)),end='')
+    audit_path=Path(args.evidence).with_name('input-scope-audit.json')
+    audit=strict_json(audit_path.read_text()) if audit_path.is_file() else None
+    if audit is not None:
+        require(hashlib.sha256(Path(args.evidence).read_bytes()).hexdigest()==audit['evidence_sha256'], 'input audit exact evidence bytes differ')
+    print(markdown(tables(data,audit)),end='')
 
 
 if __name__=='__main__':main()

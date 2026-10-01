@@ -76,9 +76,12 @@ The PostgreSQL before endpoint is the fresh seed clone before server startup;
 the after endpoint is measured after the native process and owned PG stop,
 before deletion.
 
-Each Accurate history arm must change the ordered actual query/document bytes
-passed to the reranker; changed topic identifiers alone are insufficient. An
-unchanged-input arm fails before a complete correctness report can be emitted.
+Each Accurate history arm is classified by whether the ordered actual
+query/document bytes passed to the reranker change; changed topic identifiers
+alone are insufficient. Unchanged-input histories remain diagnostic controls
+and are excluded from changed-input correctness and speed eligibility. Every
+source/limit/initial-history comparison must include at least one genuinely
+changed-input history, or the report fails rather than claiming such coverage.
 Memory sampling skips unavailable `/proc` fields during process exit, without
 substituting zero RSS/HWM. Builds require an exact tool version token and retain
 the complete reported cargo/rustc/rustdoc versions in `build/toolchain.json`.
