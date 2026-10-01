@@ -1183,6 +1183,7 @@ fn inventory_with_permit(
         .ok()?
 }
 
+#[cfg(any(unix, test))]
 fn cuda_inventory(bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?.trim();
     if text.is_empty()
