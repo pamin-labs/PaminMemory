@@ -153,7 +153,7 @@ To reproduce, create a scratch source copy at the recorded base, apply
 and run:
 
 ```sh
-python3 source/prepare.py --source "$SOURCE" --out "$ARMS"
+python3 source/prepare-future.py --source "$SOURCE" --out "$ARMS"
 ```
 
 Build both generated integration targets with the installed pinned Rust/Cargo
@@ -198,6 +198,17 @@ CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 cargo +"$TOOLCHAIN" test -p pamin-engine 
   --no-run --release --offline --locked --message-format=json
 )
 ```
+
+The future preparation installs the separately pinned
+[source/fixture-future.rs.in](source/fixture-future.rs.in) rather than replacing
+the captured fixture. Its disabled arm asserts the weak shared-origin path,
+the direct 0.1 longer-target path, the low-via 0.05 same-hop path, and absence
+of the two-hop early-stop target. A UUID/runtime ordering that returns repaired
+outcomes for the disabled arm now fails its prospective premise.
+The historical `fixture.rs.in`, `prepare.py`, raw rows and compiled-source
+identities remain unchanged. These prospective native baseline assertions have
+not been compiled or run: **N/A**, benchmarks remain deferred. Source/mock
+checks validate installation and expected rejection, not fresh native outcomes.
 
 The build guard rejects Cargo `config` and `config.toml` files in the selected
 Cargo home and generated-arm ancestor directories, including dangling symlinks.

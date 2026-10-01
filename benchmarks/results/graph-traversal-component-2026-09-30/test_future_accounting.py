@@ -3,6 +3,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import re
 from pathlib import Path
 import shutil
 import tempfile
@@ -142,6 +143,22 @@ class FutureRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'GRAPH_TRACE trace path required'):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
             launch.assert_not_called()
         self.assertFalse((self.root/'log').exists())
+
+    def test_source_derived_disabled_outcomes_reject_repaired_results(self):
+        text=(ROOT/'source/fixture-future.rs.in').read_text()
+        branch=re.search(r'if enabled \{.*?\} else \{(.*?)\n    \}\n    let targets',text,re.S).group(1)
+        calls=re.findall(r'assert_path\(&hits, &(shared|longer|samehop)\.name, ([^,]+), ([^,]+), ([12]), ([^)]+)\);',branch)
+        self.assertEqual(len(calls),3)
+        expected=[('shared','&weak_hit.topic','&weak_hit.topic','1','weak_relevance'),('longer','strong','strong','1','0.1'),('samehop','strong','&low.name','2','0.05')]
+        self.assertEqual(calls,expected)
+        def accepts(scores):
+            return all(abs(scores[name]-(1/3 if score=='weak_relevance' else float(score)))<1e-6 for name,origin,via,hops,score in calls)
+        self.assertTrue(accepts({'shared':1/3,'longer':.1,'samehop':.05}))
+        for target,repaired in [('shared',.8),('longer',.5),('samehop',.5)]:
+            rows={'shared':1/3,'longer':.1,'samehop':.05};rows[target]=repaired
+            self.assertFalse(accepts(rows),'repaired disabled outcome accepted by source-derived score assertions')
+        self.assertIn('assert!(early_hit.is_none(), "disabled arm no longer reproduces missing two-hop target");',text)
+        self.assertNotIn('} else {\n        assert_path(&hits', (ROOT/'source/fixture.rs.in').read_text())
 
     def test_existing_output_is_never_overwritten(self):
         (self.root/'log').write_text('existing user data')

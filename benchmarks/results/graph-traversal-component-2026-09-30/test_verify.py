@@ -610,6 +610,9 @@ if __name__ == '__main__':
                     else:row[metric]=[.01,.01] if metric=='graph_process_cpu_user_system_seconds' else 0
                 mutate_json(root/(arm+'.jsonl'),alter)
             run_case('fabricated altered interval '+arm+'/'+metric,zero_interval,expected_error='retained graph intervals differ exactly')
+    run_case('prospective fixture guard removed',lambda r:(r/'source/fixture-future.rs.in').write_text((r/'source/fixture-future.rs.in').read_text().replace('assert!(early_hit.is_none()', 'assert!(early_hit.is_some()')),expected_error='future accounting source bytes differ')
+    run_case('prospective preparation reverted',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('python3 source/prepare-future.py','python3 source/prepare.py')),expected_error='prospective fixture preparation binding differs')
+    run_case('prospective native executed overclaim',lambda r:(r/'README.md').write_text((r/'README.md').read_text().replace('not been compiled or run: **N/A**, benchmarks remain deferred.','been compiled and run: native baseline validated.')),expected_error='prospective native execution limitation differs')
     run_case('comparison scope',lambda r:mutate_json(r/'comparison.json',lambda c:c.update(scope='validated product accuracy and speed improvement')))
     for arm in ['baseline','scored']:
         for reached in [0,1,0.0,1.0,None,'false','true',[],{}]:
@@ -701,6 +704,16 @@ if __name__ == '__main__':
                 expected=hashlib.sha256((ROOT/'source'/artifact).read_bytes()).hexdigest()
                 assert prepared[relative]==hashlib.sha256((out/relative).read_bytes()).hexdigest()==expected
         print('PASS: preparation retains and hashes both exact scratch target sources')
+        future_out=Path(temp)/'future prepared'
+        result=subprocess.run([sys.executable,str(ROOT/'source/prepare-future.py'),'--source',str(source),'--out',str(future_out)],capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        future_hashes=json.loads((future_out/'prepared-source-hashes.json').read_text())
+        for arm in ['baseline','scored']:
+            name=arm+'/crates/pamin-engine/tests/scratch_scored_fixture.rs'
+            assert (future_out/name).read_bytes()==(ROOT/'source/fixture-future.rs.in').read_bytes()
+            assert future_hashes[name]==hashlib.sha256((ROOT/'source/fixture-future.rs.in').read_bytes()).hexdigest()
+            assert (future_out/arm/'crates/pamin-engine/tests/scratch_scored_multihop.rs').read_bytes()==(ROOT/'source/multihop.rs.in').read_bytes()
+        print('PASS: prospective preparation installs and hashes separately pinned guarded fixture for both arms')
     with tempfile.TemporaryDirectory(prefix='graph-prepare-source-negative-') as temp:
         root=Path(temp)/'archive';shutil.copytree(ROOT,root)
         (root/'source/multihop.rs.in').write_text('changed source')
