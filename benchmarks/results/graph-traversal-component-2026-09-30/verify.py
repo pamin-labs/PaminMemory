@@ -16,6 +16,12 @@ def path(hit):
  evidence=[w for w in hit['why'] if w.get('kind')=='path']
  assert len(evidence)==1, 'reached target must have exactly one path record'
  return evidence[0]
+def fixture_content(topic):
+ # Exact content formula in the hash-pinned measured fixture, indexed by origin.
+ if topic=='quartzanchor':return 'orbital navigation calibration beacon'
+ assert re.fullmatch(r'islandnode[0-9]{4}',topic) and 0 <= int(topic[10:]) < 240, 'invalid fixture origin topic'
+ n=int(topic[10:])
+ return f'orbital navigation calibration beacon archival report category {n % 17} revision {n}'
 def load(name):return json.loads((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
@@ -249,6 +255,9 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
 
  assert len(row['targets'])==3 and len({h['topic'] for h in row['targets']})==3, 'exactly three unique target records required'
  hits={h['topic']:h for h in row['targets']};assert set(hits)==set(row['target_labels'])
+ for i,name in enumerate(row['target_labels']):
+  origin=row['weak'] if arm=='baseline' and i==0 else row['strong']
+  assert hits[name].get('seed') == fixture_content(origin), 'target seed content differs from expected origin: '+arm+' '+name
  values=[score(hits[name]) for name in row['target_labels']]
  expected=[row['weak_relevance'],.1,.05] if arm=='baseline' else [.8,.5,.5]
  assert all(close(a,b) for a,b in zip(values,expected))
