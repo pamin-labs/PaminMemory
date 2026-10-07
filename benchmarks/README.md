@@ -104,6 +104,12 @@ and nowhere else. A default install is not the same as the system, and
 measuring a competitor with part of it disabled is not a measurement of that
 competitor.
 
+The same channel has a second half-disabled trap: mem0's Qdrant store
+lazy-imports `fastembed` to encode the BM25 sparse vector it stores beside
+the dense one, and without it every write and every query falls back to
+dense-only, again logged once and nowhere else (`pip install "mem0ai[extras]"`).
+`Mem0.ingest` asserts both before trusting a run.
+
 ## Where you run this changes which numbers mean anything
 
 Half of what this reports is a property of the memory systems and travels
