@@ -19,6 +19,7 @@ import math
 import random
 
 NAME = "longmemeval"
+RETRIEVAL_ONLY = True
 DEFAULT_PATH = "/tmp/bench/lme/data/longmemeval_s_cleaned.json"
 
 
@@ -74,6 +75,20 @@ def turns_of(entry):
     return out
 
 
+def questions(entry, per_unit=None, seed=None):
+    """One question per haystack; `per_unit` and `seed` are the shared shape.
+
+    `run.py` resumes per question and scores through `score`/`label`, so the
+    fields those two read (`answer_session_ids`, `question_type`) travel with
+    the question rather than staying on the now-unreachable whole entry.
+    """
+    return [(entry["question_id"], {
+        "question": entry["question"],
+        "question_type": entry["question_type"],
+        "answer_session_ids": entry["answer_session_ids"],
+    }, None)]
+
+
 def sessions_of(passages):
     """Session-level ranking: a session ranks where its best turn ranked."""
     ranked, seen = [], set()
@@ -101,8 +116,8 @@ def recall_all(ranked, gold, k):
     return 1.0 if gold and gold.issubset(set(ranked[:k])) else 0.0
 
 
-def score(entry, ranked_sessions):
-    gold = set(entry["answer_session_ids"])
+def score(qa, ranked_sessions):
+    gold = set(qa["answer_session_ids"])
     return {
         "recall_all@5": recall_all(ranked_sessions, gold, 5),
         "ndcg_any@5": ndcg_any(ranked_sessions, gold, 5),
@@ -111,5 +126,5 @@ def score(entry, ranked_sessions):
     }
 
 
-def label(entry):
-    return entry["question_type"]
+def label(qa):
+    return qa["question_type"]

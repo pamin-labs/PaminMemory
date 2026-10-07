@@ -214,33 +214,31 @@ def measure(dataset, arm, entry, args, cost, where, name, unit, done):
     Skips the questions already in `done`, so a unit interrupted partway
     through is finished rather than abandoned.
     """
-    if dataset.NAME == "longmemeval":
-        # Session-level retrieval needs the identity of what came back, not
-        # its text, and only an arm that stores the original turns can give
-        # that. An arm that stores rewritten facts -- mem0 extracts them, so
-        # its memories belong to no turn -- cannot be scored this way at all,
-        # and says so rather than being scored against a mapping invented
-        # here.
-        if (name, unit, None) in done:
-            return
-        if not hasattr(arm, "recall_ids"):
-            raise SystemExit(
-                f"{name} stores rewritten memories rather than the turns it was "
-                f"given, so it cannot be scored on session-level retrieval; run "
-                f"it on a dataset whose metric reads answers instead")
-        started = time.time()
-        ids = arm.recall_ids(entry["question"])
-        elapsed = time.time() - started
-        ranked = dataset.sessions_of(ids)
-        yield {"arm": name, "unit": unit, "machine": where, "mode": args.mode,
-               "label": dataset.label(entry), "recall_seconds": round(elapsed, 3),
-               "retrieved": len(ids), "metrics": dataset.score(entry, ranked), **cost}
-        return
+    retrieval_only = getattr(dataset, "RETRIEVAL_ONLY", False)
+    if retrieval_only and not hasattr(arm, "recall_ids"):
+        # Retrieval needs the identity of what came back, not its text, and
+        # only an arm that stores the original turns can give that. An arm
+        # that stores rewritten facts -- mem0 extracts them, so its memories
+        # belong to no turn -- cannot be scored this way at all, and says so
+        # rather than being scored against a mapping invented here.
+        raise SystemExit(
+            f"{name} stores rewritten memories rather than the turns it was "
+            f"given, so it cannot be scored on {dataset.NAME}'s retrieval "
+            f"metric; run it on a dataset whose metric reads answers instead")
 
     for qid, qa, reference in dataset.questions(entry, args.questions):
         if (name, unit, qid) in done:
             continue
         started = time.time()
+        if retrieval_only:
+            ids = arm.recall_ids(qa["question"])
+            elapsed = time.time() - started
+            ranked = dataset.sessions_of(ids)
+            yield {"arm": name, "unit": unit, "question_id": qid, "machine": where,
+                   "mode": args.mode, "label": dataset.label(qa),
+                   "recall_seconds": round(elapsed, 3), "retrieved": len(ids),
+                   "metrics": dataset.score(qa, ranked), **cost}
+            continue
         passages = arm.recall(qa["question"])
         elapsed = time.time() - started
         prompt = dataset.READER.format(
