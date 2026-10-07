@@ -445,6 +445,23 @@ class Mem0:
                 "mem0's lemmatiser is a passthrough, so its keyword channel is "
                 "off; install mem0ai[nlp] before measuring mem0")
 
+    # The other half of the same hybrid channel: `qdrant.py` lazy-imports
+    # `fastembed` to encode the BM25 sparse vector it stores beside the dense
+    # one, and without it falls back to a sentinel that turns sparse search
+    # off for every write and every query -- logged once, at import time, on
+    # a line this harness would never see. Same story as the lemmatiser:
+    # measuring a competitor with half its retrieval disabled is not a
+    # measurement of that competitor.
+    @staticmethod
+    def _assert_bm25_encoder():
+        try:
+            import fastembed  # noqa: F401
+        except ImportError:
+            raise RuntimeError(
+                "fastembed is not installed, so mem0's BM25 sparse channel is "
+                "off (qdrant.py's own log line: \"BM25 keyword search "
+                "disabled\"); install mem0ai[extras] before measuring mem0")
+
     # Each conversation gets its own qdrant collection, and the directory
     # holding them is emptied before each one so that `store_mb` is that
     # conversation's own bytes rather than a running total. The cost of that
@@ -457,6 +474,7 @@ class Mem0:
 
     def ingest(self, conversation_id, turns):
         self._assert_lemmatiser()
+        self._assert_bm25_encoder()
         import shutil
         if not self.KEEP:
             shutil.rmtree(f"{WORK}/mem0-qdrant", ignore_errors=True)
