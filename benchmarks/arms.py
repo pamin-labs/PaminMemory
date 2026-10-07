@@ -607,6 +607,26 @@ class MemPalace:
             blocks.append("\n".join(current).strip())
         return [b for b in blocks if b]
 
+    def recall_ids(self, question):
+        """What came back, by source filename stem, for a metric that scores
+        identity rather than text.
+
+        MemPalace tags every hit with `Source: <file>.md` -- the CLI's own
+        per-result filename -- and `ingest` already names each file by the
+        same safe id every other arm reports for the same passage. Parsing
+        that line is the same choice `Bm25` and `Pamin` already make for
+        their own identity: scored by what the project's own output says
+        came back, not by a mapping invented here.
+        """
+        out = self._run(["search", question, "--results", str(self.LIMIT or TOP_K)])
+        ids = [re.sub(r"\.md$", "", match.group(1))
+               for match in re.finditer(r"(?m)^\s*Source:\s*(\S+)", out)]
+        if not ids and "Source:" in out:
+            raise RuntimeError(
+                "mempalace printed Source: lines this regex did not match; "
+                "the CLI's output format changed")
+        return ids
+
 
 class MemPalaceWide(MemPalace):
     """MemPalace at the wider shortlist, so no arm is alone in having one."""
