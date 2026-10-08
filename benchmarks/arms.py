@@ -159,7 +159,13 @@ class PaminWide:
         # The same projects the flat arm built. `import` deduplicates, so this
         # is idempotent -- and its timing is therefore not an ingest
         # measurement and is not reported as one.
-        self.project = ("locomo" + os.environ.get("FLAT_TAG", "v2")
+        # Defaults to RUN_TAG rather than its own constant: this arm reuses
+        # the flat arm's projects, and the two used to default to different
+        # tags ("v2" against "r1") -- so a run with neither variable set
+        # built pamin's projects under one tag and pamin-wide went looking
+        # for them under another, failed five ingests in a row on an empty
+        # project, and exited. Not a hypothetical: it is what happened here.
+        self.project = ("locomo" + os.environ.get("FLAT_TAG", os.environ.get("RUN_TAG", "r1"))
                         + re.sub(r"[^a-z0-9]", "", conversation_id.lower())[:26])
         started = time.time()
         out = self._run(self.project, ["search", "anything", "--limit", "1", "--json"])
