@@ -119,7 +119,8 @@ def load(rows_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="locomo",
-                        choices=["locomo", "longmemeval", "supersession", "miracl"])
+                        choices=["locomo", "longmemeval", "longmemeval_qa",
+                                 "supersession", "miracl"])
     parser.add_argument("--arms", default="bm25,pamin")
     parser.add_argument("--mode", default="quality", choices=["quality", "cost"])
     parser.add_argument("--units", type=int, default=10,
