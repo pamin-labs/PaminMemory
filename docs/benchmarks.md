@@ -1125,6 +1125,98 @@ is about 1,322 MB against `pamin`'s 2,088, and mem0 using a hosted one is
   The latency figures above are a ratio measured under one condition, not a
   number to quote on other hardware.
 
+## Re-run through the local shim (2026-10): the same five arms, judged accuracy and the write-side bill together
+
+The run above predates this section by about three weeks and used an API key.
+This one does not: every model call -- reader, judge, and mem0's write-side
+extraction -- went through [benchmarks/shim.py](../benchmarks/shim.py), an
+OpenAI-shaped endpoint over `claude -p` subprocesses, because no Anthropic API
+key is configured in this environment. The model is the same Sonnet for every
+arm either way; what changed is the five arms measured (`bm25`, `pamin`,
+`pamin-wide`, `mem0`, `mempalace`, each at the one shortlist it asked for --
+no `pamin-ledger`, no second shortlist for mem0 or MemPalace this time) and
+that the run spanned several container reclaims, resuming from its own
+checkpoint file each time rather than running in one sitting. The committed
+artifact is
+[summary-accuracy-shim-2026-10.json](../benchmarks/results/locomo/summary-accuracy-shim-2026-10.json),
+regenerated from the raw rows by `benchmarks/summarise_shim_locomo.py` rather
+than copied from this page.
+
+**Dollar figures here are notional, not a bill.** With no API key, `shim.py`
+assigns `cost_usd` per simulated call rather than being charged one by a
+provider. Read `ingest_cost_usd_total` as a relative signal across arms, not
+as money actually spent -- the call counts and the seconds are real
+measurements of this run; the dollars are not.
+
+Accuracy and the one-time write-side cost, side by side, because the question
+this table exists to answer is whether the cheaper arm is worth its accuracy
+gap:
+
+| arm | shortlist | accuracy | LLM calls to ingest | ingest model-seconds | notional $ to ingest |
+| --- | --- | ---: | ---: | ---: | ---: |
+| BM25, no memory system | 10 | 0.543 | 0 | 0 | $0 |
+| `pamin` | 10 | 0.678 | **0** | **0** | **$0** |
+| `pamin-wide` | 30 | 0.678 | **0** | **0** | **$0** |
+| MemPalace | 10 | 0.608 | 21 | 644 | ~$1.52 |
+| mem0 | 10 | **0.724** | **272** | **3,254** | **~$31.74** |
+
+mem0 is numerically first. It is also the only arm that spends anything to
+get there: 272 model calls and 54 minutes of model time to ingest ten
+conversations that `pamin` reads into its store in 34 seconds flat with none.
+Whether that gap is worth the bill depends on whether it is real:
+
+| A vs B | discordant | A only | B only | p |
+| --- | ---: | ---: | ---: | ---: |
+| `pamin` vs mem0 | 51 | 21 | 30 | 0.2624 |
+| `pamin-wide` vs mem0 | 53 | 22 | 31 | 0.2717 |
+| mem0 vs BM25 | 70 | 53 | 17 | **0.0000** |
+| `pamin` vs BM25 | 59 | 43 | 16 | **0.0006** |
+| mem0 vs MemPalace | 59 | 41 | 18 | **0.0038** |
+
+**It is not established.** `pamin` against mem0 is 21 questions to 30 out of
+51 discordant, p = 0.26 -- the same shape as the first run's `pamin-wide`
+against mem0-at-30 (p = 0.289), which is the comparison this page already
+calls a tie. Both arms clear BM25 by a wide margin on their own (p < 0.001
+each), so the gap that is not established is specifically between them, not
+between either of them and doing nothing.
+
+So the honest version of the claim is narrower than "mem0 wins": **mem0's
++0.045 accuracy over `pamin` here is not distinguishable from noise at this
+sample size, and the price of chasing it is certain** -- 272 model calls
+against zero, every time a conversation is ingested, whether or not it moves
+the answer. A result that would make the trade unambiguous needs more than
+199 questions to find it in, the same limit the supersession re-run above hit
+looking for a ninth discordant pair.
+
+By question type, the shape from the API-key run repeats: mem0 leads on
+`single-hop` (0.847) and the inverted-by-construction `adversarial` column
+(0.667, read with the same caveat as above -- it answers "no record of that"
+more often, which this benchmark's trap-keyed scoring counts as correct),
+while `pamin-wide` leads on `multi-hop` (0.552) and ties mem0 on `temporal`
+within a point (0.882 against 0.824):
+
+| | n | BM25 | `pamin` | `pamin-wide` | mem0 | MemPalace |
+| --- | --- | --- | --- | --- | --- | --- |
+| multi-hop | 29 | 0.103 | 0.379 | **0.552** | 0.414 | 0.448 |
+| single-hop | 85 | 0.647 | 0.800 | 0.776 | **0.847** | 0.753 |
+| temporal | 34 | 0.706 | 0.824 | **0.882** | 0.824 | 0.559 |
+| open-domain | 9 | 0.556 | 0.556 | 0.556 | 0.444 | 0.444 |
+| adversarial | 42 | 0.500 | 0.548 | 0.429 | **0.667** | 0.500 |
+
+Nine open-domain questions and the adversarial column's inverted scoring are
+the same two caveats as the run above and are not repeated in full here.
+
+This run does not supersede the API-key run's `pamin-ledger` and widened-mem0
+figures -- those arms were not re-measured here -- and it does not establish
+a latency comparison: the container was reclaimed and the run resumed several
+times, across at least three distinct kernel builds (same 4 cores and 16 GB
+each time), so `ingest_seconds` and `recall_seconds` in this summary describe
+a run interrupted and resumed repeatedly, not one clean sitting the way the
+dedicated [latency re-run](#latency-timed-at-the-same-layer) is. The call
+counts, the cost totals and the accuracy figures are unaffected by that --
+nothing about who answered a question correctly depends on which kernel the
+container happened to be running.
+
 ## Keeping this current
 
 This page goes stale faster than anything else in the repository: mem0's own

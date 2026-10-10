@@ -22,6 +22,10 @@ benchmarks/
                      ways: the value that holds, the value it replaced, neither
   run.py             pick a dataset, pick arms, run
   summarise.py       raw rows in, the committed summaries out
+  summarise_shim_locomo.py  the same, for the shim-run LOCOMO comparison --
+                            a different row shape and arm set than the run
+                            summarise.py was built for, so it is a second
+                            script rather than a branch inside that one
   results/           one directory per dataset; summaries and scoped raw evidence are retained
 
   latency.py            query latency at the same layer on every arm, and what
@@ -179,6 +183,10 @@ results/
     summary-cost.json              write side, query side, resident and disk
     summary-latency.json           retrieval per arm per shortlist, and the reader
     summary-mempalace-no-llm.json  MemPalace's published mode against its default
+    summary-accuracy-shim-2026-10.json  the no-API-key re-run through
+                                        shim.py: bm25/pamin/pamin-wide/mem0/
+                                        mempalace, accuracy and the write-side
+                                        bill side by side
   longmemeval/
     summary-session-retrieval.json   recall@k, no reader and no judge
     summary-supersession.json        current, stale or neither, over 70 questions
