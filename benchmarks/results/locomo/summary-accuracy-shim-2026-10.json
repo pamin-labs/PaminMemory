@@ -5,6 +5,7 @@
     "harness": "benchmarks/run.py --dataset locomo --mode quality --arms bm25,pamin,pamin-wide,mem0,mempalace --units 10 --questions 20",
     "endpoint": "benchmarks/shim.py, an OpenAI-shaped HTTP endpoint over `claude -p` subprocesses -- no Anthropic API key is configured in this environment, so every model call (reader, judge, mem0's extraction) runs through this session's own Claude Code subscription rather than a billed API call",
     "model": "sonnet for every arm's reader, judge, and (for mem0) write-side extraction; one shared BGE-M3 ONNX embedder for every arm that embeds",
+    "pamin_rerank": "`accurate` -- `arms.Pamin.recall` and `PaminWide.recall` call `pamin search` without `--rerank`, so both took whatever the CLI's own default is (`pamin search --help`: `[default: accurate]`). That is a different setting from the other two pamin measurements already on this page: the original accuracy run predates the full-head `accurate` rerank entirely (this page's own opening note), and the dedicated latency re-run explicitly set `--rerank fast` as the shipped default at the time it was written. `accurate` scores the whole fused head with a cross-encoder forward pass per candidate rather than reordering only the non-lexical hits `fast` does, so it should cost more per query and may read differently on accuracy too -- this run does not isolate which.",
     "cost_usd_caveat": "ingest_cost_usd and its total here are whatever `shim.py` assigns per simulated call; they are notional accounting, not a real bill, since no API key is set. Treat them as a relative ingest-cost signal across arms, not as dollars actually spent.",
     "container": "reclaimed repeatedly and unpredictably during this run (see benchmarks/README.md); the run resumed from its own checkpoint file each time, so no row here reflects a clean single sitting"
   },
@@ -27,13 +28,13 @@
       "cores": 4,
       "host": "vm",
       "memory_gb": 16,
-      "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39"
+      "platform": "Linux-6.18.44-fc-v77-x86_64-with-glibc2.39"
     },
     {
       "cores": 4,
       "host": "vm",
       "memory_gb": 16,
-      "platform": "Linux-6.18.44-fc-v77-x86_64-with-glibc2.39"
+      "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39"
     }
   ],
   "sources": [
@@ -49,7 +50,10 @@
       "accuracy": 0.5427,
       "ingest_seconds_total": 0.0,
       "ingest_llm_calls_total": 0,
-      "ingest_cost_usd_total": 0.0
+      "ingest_cost_usd_total": 0.0,
+      "reader_prompt_tokens_total": 109971,
+      "reader_input_cost_usd": 0.3299,
+      "partial_total_cost_usd": 0.3299
     },
     "pamin": {
       "rows": 199,
@@ -57,7 +61,10 @@
       "accuracy": 0.6784,
       "ingest_seconds_total": 33.8,
       "ingest_llm_calls_total": 0,
-      "ingest_cost_usd_total": 0.0
+      "ingest_cost_usd_total": 0.0,
+      "reader_prompt_tokens_total": 120419,
+      "reader_input_cost_usd": 0.3613,
+      "partial_total_cost_usd": 0.3613
     },
     "pamin-wide": {
       "rows": 199,
@@ -65,7 +72,10 @@
       "accuracy": 0.6784,
       "ingest_seconds_total": 121.8,
       "ingest_llm_calls_total": 0,
-      "ingest_cost_usd_total": 0.0
+      "ingest_cost_usd_total": 0.0,
+      "reader_prompt_tokens_total": 311902,
+      "reader_input_cost_usd": 0.9357,
+      "partial_total_cost_usd": 0.9357
     },
     "mem0": {
       "rows": 199,
@@ -73,7 +83,10 @@
       "accuracy": 0.7236,
       "ingest_seconds_total": 3253.9,
       "ingest_llm_calls_total": 272,
-      "ingest_cost_usd_total": 31.7403
+      "ingest_cost_usd_total": 31.7403,
+      "reader_prompt_tokens_total": 92477,
+      "reader_input_cost_usd": 0.2774,
+      "partial_total_cost_usd": 32.0177
     },
     "mempalace": {
       "rows": 199,
@@ -81,10 +94,13 @@
       "accuracy": 0.608,
       "ingest_seconds_total": 644.1,
       "ingest_llm_calls_total": 21,
-      "ingest_cost_usd_total": 1.5174
+      "ingest_cost_usd_total": 1.5174,
+      "reader_prompt_tokens_total": 350083,
+      "reader_input_cost_usd": 1.0502,
+      "partial_total_cost_usd": 2.5676
     }
   },
-  "arms_note": "ingest_seconds_total, ingest_llm_calls_total and ingest_cost_usd_total are summed over all 10 conversations for that arm -- the one-time write-side bill, not a per-question cost. bm25/pamin/pamin-wide make no model calls on the write path, so their totals are genuinely 0, not missing. mem0's and mempalace's dollar totals are notional (see run_conditions.cost_usd_caveat) but the call counts and seconds are real measurements of this run.",
+  "arms_note": "ingest_seconds_total, ingest_llm_calls_total and ingest_cost_usd_total are summed over all 10 conversations for that arm -- the one-time write-side bill, not a per-question cost. bm25/pamin/pamin-wide make no model calls on the write path, so their totals are genuinely 0, not missing. mem0's and mempalace's dollar totals are notional (see run_conditions.cost_usd_caveat) but the call counts and seconds are real measurements of this run. reader_input_cost_usd is $3/million tokens (Anthropic's published Sonnet list price) against the summed reader prompt tokens over all 199 questions -- the one per-question cost every arm actually measured. partial_total_cost_usd is ingest_cost_usd_total plus that, and the name says what it is not: it excludes the judge call's prompt entirely and every completion/output token for both calls, because the shim never reports real completion-token counts (run.py's chat() always gets completion_tokens: 0 back). Treat it as a lower bound on the full per-arm bill, not the bill.",
   "by_label": {
     "adversarial": {
       "questions": 42,

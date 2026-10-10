@@ -1136,8 +1136,15 @@ arm either way; what changed is the five arms measured (`bm25`, `pamin`,
 `pamin-wide`, `mem0`, `mempalace`, each at the one shortlist it asked for --
 no `pamin-ledger`, no second shortlist for mem0 or MemPalace this time) and
 that the run spanned several container reclaims, resuming from its own
-checkpoint file each time rather than running in one sitting. The committed
-artifact is
+checkpoint file each time rather than running in one sitting. `pamin` and
+`pamin-wide` also ran at a different rerank setting than either of the other
+two pamin measurements on this page: neither arm passes `--rerank`, so both
+took the CLI's own current default, `accurate` -- a cross-encoder forward
+pass over the whole fused head, not the `fast` mode (reordering only the
+non-lexical hits) the dedicated latency re-run below set explicitly, nor
+whatever the original accuracy run used before `accurate` existed as an
+option at all. That costs more per query and may read differently on
+accuracy too; this run does not isolate which. The committed artifact is
 [summary-accuracy-shim-2026-10.json](../benchmarks/results/locomo/summary-accuracy-shim-2026-10.json),
 regenerated from the raw rows by `benchmarks/summarise_shim_locomo.py` rather
 than copied from this page.
@@ -1152,13 +1159,28 @@ Accuracy and the one-time write-side cost, side by side, because the question
 this table exists to answer is whether the cheaper arm is worth its accuracy
 gap:
 
-| arm | shortlist | accuracy | LLM calls to ingest | ingest wall-clock seconds | notional $ to ingest |
-| --- | --- | ---: | ---: | ---: | ---: |
-| BM25, no memory system | 10 | 0.543 | 0 | 0 | $0 |
-| `pamin` | 10 | 0.678 | **0** | **0** | **$0** |
-| `pamin-wide` | 30 | 0.678 | **0** | **0** | **$0** |
-| MemPalace | 10 | 0.608 | 21 | 644 | ~$1.52 |
-| mem0 | 10 | **0.724** | **272** | **3,254** | **~$31.74** |
+| arm | shortlist | accuracy | LLM calls to ingest | ingest wall-clock seconds | notional $ to ingest | reader input $, 199 questions | partial total $ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BM25, no memory system | 10 | 0.543 | 0 | 0 | $0 | $0.33 | $0.33 |
+| `pamin` | 10 | 0.678 | **0** | **0** | **$0** | $0.36 | $0.36 |
+| `pamin-wide` | 30 | 0.678 | **0** | **0** | **$0** | $0.94 | $0.94 |
+| MemPalace | 10 | 0.608 | 21 | 644 | ~$1.52 | $1.05 | ~$2.57 |
+| mem0 | 10 | **0.724** | **272** | **3,254** | **~$31.74** | $0.28 | **~$32.02** |
+
+**"Partial total" is named for what it leaves out, not a complete bill.** The
+reader-input column is the one per-question cost every row actually measured
+-- the reader's own prompt, counted with `cl100k_base`, at Anthropic's
+published Sonnet list price of $3 per million input tokens. It is not the
+whole query-side cost: the judge call's prompt was never counted at all, and
+the shim never reports real completion-token counts for either call (every
+`chat()` response comes back with `completion_tokens: 0` by `shim.py`'s own
+design), so no output-token cost can be added for either one. `mem0` wins
+this column outright -- $0.28 against `pamin-wide`'s $0.94, because it hands
+the reader a distilled answer rather than ten to thirty raw passages -- and
+loses the total by two orders of magnitude anyway, because the write-side
+bill it pays once dwarfs what it saves on every question after. That is the
+same shape the break-even analysis above finds on the API-key run, now
+visible in one table on this one.
 
 **The ingest-seconds column is wall clock, not LLM-call time, on purpose.**
 mem0 and MemPalace both point their embedder at the same shared endpoint this
@@ -1193,18 +1215,22 @@ to that section's own 14.6 ms.
 | mem0 | 10 | 142 ms | ~21 ms, ~15% of the figure |
 | MemPalace | 10 | 1,406 ms | ~21 ms, ~1.5% of the figure |
 
-Subtracting that call does not make the four numbers comparable to each
-other, and this table is not claiming it does. `pamin`'s and MemPalace's
-figures here are dominated by something the embedding call has nothing to do
-with -- this run measured retrieval through the same CLI-subprocess and
-Python-interpreter-per-query path the original accuracy run always has, which
-the dedicated latency re-run's own notes already flag as the wrong layer to
-read an architectural comparison off (`pamin`'s own figure there is 25.7 ms,
-fifty-eight times smaller than the 1,481 ms here). What this table does
-establish, narrowly: part of mem0's number and a sliver of MemPalace's is a
-shared endpoint this harness runs and `pamin`'s architecture does not call at
-all, so neither of those two figures should be read as if 100% of it were the
-system's own retrieval logic.
+**It stays counted in, not subtracted out.** The embedding call is a real
+part of what a caller of mem0 or MemPalace waits for, so the `recall p50`
+column already includes it and this page is not suggesting a reader strip
+it back out to make the numbers look more alike. What the breakdown says is
+narrower and in the other direction: part of mem0's delay and a sliver of
+MemPalace's is this harness's own shared endpoint, which `pamin` never calls
+at all because it embeds inside the same process that holds the index --
+that is architecture, not noise, and it is one of the reasons `pamin`'s
+figure is what it is. It does not make the four numbers comparable to each
+other on its own, though: `pamin`'s and MemPalace's totals here are also
+carrying something the embedding call has nothing to do with -- this run
+measured retrieval through the same CLI-subprocess and Python-interpreter-
+per-query path the original accuracy run always has, which the dedicated
+latency re-run's own notes already flag as the wrong layer to read an
+architectural comparison off (`pamin`'s own figure there is 25.7 ms, fifty-
+eight times smaller than the 1,481 ms here).
 
 mem0 is numerically first. It is also the only arm that spends anything to
 get there: 272 model calls and 54 minutes of elapsed ingest time -- extraction
