@@ -125,6 +125,17 @@ def main():
         by_arm[row["arm"]][row["question_id"]] = row
         by_arm_list[row["arm"]].append(row)
 
+    # Anthropic's published Sonnet list price: $3 per million input tokens.
+    # Applied only to the reader's prompt tokens, which is the one input-side
+    # quantity every row actually measured (`tokens_in(prompt)`, cl100k_base).
+    # It is not a complete query-side bill: the judge call's own prompt was
+    # never counted, and the shim never reports real completion-token counts
+    # for either call (`run.py`'s `chat()` always gets `completion_tokens: 0`
+    # back, by shim.py's own design -- see its "Real counts are not available
+    # through the CLI" note), so no output-token cost can be added for either
+    # call. This is a lower bound on the per-question bill, not the bill.
+    SONNET_INPUT_RATE_USD_PER_TOKEN = 3.00 / 1_000_000
+
     def ingest_totals(arm):
         units = last_per_unit(by_arm_list[arm], "unit")
         return {
@@ -136,12 +147,22 @@ def main():
                 sum(u.get("ingest_cost_usd", 0) for u in units.values()), 4),
         }
 
+    def reader_input_cost(arm):
+        tokens = sum(r.get("prompt_tokens", 0) for r in by_arm_list[arm])
+        return {"reader_prompt_tokens_total": tokens,
+                "reader_input_cost_usd": round(
+                    tokens * SONNET_INPUT_RATE_USD_PER_TOKEN, 4)}
+
+    def with_partial_total(entry):
+        return dict(entry, partial_total_cost_usd=round(
+            entry["ingest_cost_usd_total"] + entry["reader_input_cost_usd"], 4))
+
     accuracy = {
-        arm: dict({
+        arm: with_partial_total(dict({
             "rows": len(group),
             "shortlist": int(statistics.median(r["retrieved"] for r in group.values())),
             "accuracy": round(statistics.mean(r["correct"] for r in group.values()), 4),
-        }, **ingest_totals(arm))
+        }, **ingest_totals(arm), **reader_input_cost(arm)))
         for arm, group in by_arm.items()
     }
 
@@ -215,6 +236,23 @@ def main():
             "model": "sonnet for every arm's reader, judge, and (for mem0) "
                      "write-side extraction; one shared BGE-M3 ONNX embedder "
                      "for every arm that embeds",
+            "pamin_rerank": "`accurate` -- `arms.Pamin.recall` and "
+                            "`PaminWide.recall` call `pamin search` without "
+                            "`--rerank`, so both took whatever the CLI's own "
+                            "default is (`pamin search --help`: `[default: "
+                            "accurate]`). That is a different setting from "
+                            "the other two pamin measurements already on "
+                            "this page: the original accuracy run predates "
+                            "the full-head `accurate` rerank entirely (this "
+                            "page's own opening note), and the dedicated "
+                            "latency re-run explicitly set `--rerank fast` "
+                            "as the shipped default at the time it was "
+                            "written. `accurate` scores the whole fused "
+                            "head with a cross-encoder forward pass per "
+                            "candidate rather than reordering only the "
+                            "non-lexical hits `fast` does, so it should cost "
+                            "more per query and may read differently on "
+                            "accuracy too -- this run does not isolate which.",
             "cost_usd_caveat": "ingest_cost_usd and its total here are "
                                "whatever `shim.py` assigns per simulated "
                                "call; they are notional accounting, not a "
@@ -241,7 +279,19 @@ def main():
                      "totals are genuinely 0, not missing. mem0's and "
                      "mempalace's dollar totals are notional (see "
                      "run_conditions.cost_usd_caveat) but the call counts "
-                     "and seconds are real measurements of this run.",
+                     "and seconds are real measurements of this run. "
+                     "reader_input_cost_usd is $3/million tokens (Anthropic's "
+                     "published Sonnet list price) against the summed reader "
+                     "prompt tokens over all 199 questions -- the one "
+                     "per-question cost every arm actually measured. "
+                     "partial_total_cost_usd is ingest_cost_usd_total plus "
+                     "that, and the name says what it is not: it excludes "
+                     "the judge call's prompt entirely and every "
+                     "completion/output token for both calls, because the "
+                     "shim never reports real completion-token counts "
+                     "(run.py's chat() always gets completion_tokens: 0 "
+                     "back). Treat it as a lower bound on the full "
+                     "per-arm bill, not the bill.",
         "by_label": by_label,
         "mcnemar": [dict({"a": a, "b": b}, **paired(by_arm, a, b, correct))
                     for a, b in PAIRS],
