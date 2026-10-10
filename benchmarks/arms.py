@@ -178,7 +178,13 @@ class PaminWide:
     def recall(self, question):
         out = self._run(self.project,
                         ["search", question, "--limit", str(self.LIMIT), "--json"])
-        return [h["content"] for h in json.loads(out)["hits"]]
+        hits = json.loads(out)["hits"]
+        self._last = [h["topic"] for h in hits]
+        return [h["content"] for h in hits]
+
+    def recall_ids(self, question):
+        self.recall(question)
+        return self._last
 
 
 class PaminLedger:
