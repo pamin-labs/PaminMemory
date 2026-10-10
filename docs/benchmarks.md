@@ -1152,7 +1152,7 @@ Accuracy and the one-time write-side cost, side by side, because the question
 this table exists to answer is whether the cheaper arm is worth its accuracy
 gap:
 
-| arm | shortlist | accuracy | LLM calls to ingest | ingest model-seconds | notional $ to ingest |
+| arm | shortlist | accuracy | LLM calls to ingest | ingest wall-clock seconds | notional $ to ingest |
 | --- | --- | ---: | ---: | ---: | ---: |
 | BM25, no memory system | 10 | 0.543 | 0 | 0 | $0 |
 | `pamin` | 10 | 0.678 | **0** | **0** | **$0** |
@@ -1160,10 +1160,25 @@ gap:
 | MemPalace | 10 | 0.608 | 21 | 644 | ~$1.52 |
 | mem0 | 10 | **0.724** | **272** | **3,254** | **~$31.74** |
 
+**The ingest-seconds column is wall clock, not LLM-call time, on purpose.**
+mem0 and MemPalace both point their embedder at the same shared endpoint this
+harness runs, so every memory either one stores costs an embedding HTTP round
+trip on top of whatever LLM call wrote it -- mem0's own log line is `6,303
+texts embedded` into this run's ten conversations, MemPalace's is `1,668`.
+Reporting only the 272 extraction calls' own seconds (2,723 of the 3,254)
+would under-state mem0's write-side cost by the other 531 seconds, so this
+table uses the number that actually elapsed around `arm.ingest()` -- model
+calls, embedding calls and everything else the call makes -- rather than
+isolating one kind of call this harness happens to count separately. The same
+applies to the query side below: `recall_seconds` wraps `arm.recall()`
+end to end, so mem0's and MemPalace's embedding round trip for the query
+itself is already inside the figure, not a cost sitting outside it.
+
 mem0 is numerically first. It is also the only arm that spends anything to
-get there: 272 model calls and 54 minutes of model time to ingest ten
-conversations that `pamin` reads into its store in 34 seconds flat with none.
-Whether that gap is worth the bill depends on whether it is real:
+get there: 272 model calls and 54 minutes of elapsed ingest time -- extraction
+and embedding together -- to ingest ten conversations that `pamin` reads into
+its store in 34 seconds flat with neither. Whether that gap is worth the bill
+depends on whether it is real:
 
 | A vs B | discordant | A only | B only | p |
 | --- | ---: | ---: | ---: | ---: |

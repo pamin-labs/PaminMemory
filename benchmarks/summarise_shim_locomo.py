@@ -166,6 +166,16 @@ def main():
             "prompt_tokens_median": statistics.median(
                 r.get("prompt_tokens", 0) for r in group),
         }
+    query_note = (
+        "recall_seconds (and recall_p50_s/recall_p95_s here) wraps "
+        "arm.recall() end to end, so for mem0 and MemPalace -- both point "
+        "their embedder at the same shared endpoint this harness runs -- "
+        "the query's own embedding HTTP round trip is already inside the "
+        "figure, not a cost sitting outside it. Same rule on the write side: "
+        "ingest.*_seconds_total/median below is wall clock around "
+        "arm.ingest(), not isolated LLM-call time, because that embedding "
+        "round trip happens there too, once per stored memory."
+    )
 
     summary = {
         "table": "LOCOMO question answering, judged accuracy -- shim re-run",
@@ -215,6 +225,7 @@ def main():
                     for a, b in PAIRS],
         "ingest": ingest,
         "query": query,
+        "query_note": query_note,
     }
 
     out = os.path.join(here, "results", "locomo",
