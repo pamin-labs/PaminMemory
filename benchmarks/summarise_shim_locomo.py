@@ -26,6 +26,28 @@ import os
 import statistics
 
 ARMS = ["bm25", "pamin", "pamin-wide", "mem0", "mempalace"]
+
+# A standalone probe, not derived from quality.jsonl -- the raw rows never
+# recorded one HTTP embedding call's own latency, only the text counts
+# (`ingest_embedded`) and the LLM-only call seconds. Taken against the live
+# shim.py right after this run finished, same box, eight calls to
+# /v1/embeddings, one input each. The first call is cold (the ONNX session
+# loads lazily on first use); the other seven are what mem0 and MemPalace pay
+# per query, since both point their embedder at this same endpoint over HTTP
+# while `pamin` embeds inside its own process and never makes this call.
+EMBEDDING_HTTP_PROBE = {
+    "endpoint": "/v1/embeddings on benchmarks/shim.py",
+    "when": "immediately after this run finished, same box",
+    "calls_ms": [45.6, 22.9, 22.0, 21.1, 20.6, 20.5, 21.3, 21.3],
+    "median_ms_excluding_cold_first": 21.3,
+    "note": "one box, one sitting, taken after the fact rather than during a "
+            "controlled multi-round run -- not the rigor of the dedicated "
+            "latency re-run's own 14.6 ms figure, which this is in the same "
+            "order of magnitude as. It exists to answer one narrow question: "
+            "how much of mem0's and MemPalace's recall_seconds in this run "
+            "is a shared endpoint `pamin` never calls, not to replace the "
+            "dedicated latency measurement.",
+}
 PAIRS = [("pamin", "bm25"), ("pamin-wide", "pamin"), ("pamin-wide", "bm25"),
          ("mem0", "bm25"), ("mempalace", "bm25"), ("pamin-wide", "mem0"),
          ("pamin-wide", "mempalace"), ("mem0", "mempalace"),
@@ -226,6 +248,7 @@ def main():
         "ingest": ingest,
         "query": query,
         "query_note": query_note,
+        "embedding_http_probe": EMBEDDING_HTTP_PROBE,
     }
 
     out = os.path.join(here, "results", "locomo",

@@ -21,13 +21,13 @@
       "cores": 4,
       "host": "vm",
       "memory_gb": 16,
-      "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39"
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39"
     },
     {
       "cores": 4,
       "host": "vm",
       "memory_gb": 16,
-      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39"
+      "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39"
     },
     {
       "cores": 4,
@@ -293,5 +293,21 @@
       "prompt_tokens_median": 1760
     }
   },
-  "query_note": "recall_seconds (and recall_p50_s/recall_p95_s here) wraps arm.recall() end to end, so for mem0 and MemPalace -- both point their embedder at the same shared endpoint this harness runs -- the query's own embedding HTTP round trip is already inside the figure, not a cost sitting outside it. Same rule on the write side: ingest.*_seconds_total/median below is wall clock around arm.ingest(), not isolated LLM-call time, because that embedding round trip happens there too, once per stored memory."
+  "query_note": "recall_seconds (and recall_p50_s/recall_p95_s here) wraps arm.recall() end to end, so for mem0 and MemPalace -- both point their embedder at the same shared endpoint this harness runs -- the query's own embedding HTTP round trip is already inside the figure, not a cost sitting outside it. Same rule on the write side: ingest.*_seconds_total/median below is wall clock around arm.ingest(), not isolated LLM-call time, because that embedding round trip happens there too, once per stored memory.",
+  "embedding_http_probe": {
+    "endpoint": "/v1/embeddings on benchmarks/shim.py",
+    "when": "immediately after this run finished, same box",
+    "calls_ms": [
+      45.6,
+      22.9,
+      22.0,
+      21.1,
+      20.6,
+      20.5,
+      21.3,
+      21.3
+    ],
+    "median_ms_excluding_cold_first": 21.3,
+    "note": "one box, one sitting, taken after the fact rather than during a controlled multi-round run -- not the rigor of the dedicated latency re-run's own 14.6 ms figure, which this is in the same order of magnitude as. It exists to answer one narrow question: how much of mem0's and MemPalace's recall_seconds in this run is a shared endpoint `pamin` never calls, not to replace the dedicated latency measurement."
+  }
 }
