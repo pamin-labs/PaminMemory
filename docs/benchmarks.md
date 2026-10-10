@@ -1174,6 +1174,38 @@ applies to the query side below: `recall_seconds` wraps `arm.recall()`
 end to end, so mem0's and MemPalace's embedding round trip for the query
 itself is already inside the figure, not a cost sitting outside it.
 
+**And it is not a fair fight regardless, because of how each arm pays for
+that round trip.** All three systems embed the query; `pamin` does it inside
+the same persistent process that holds the index, while mem0 and MemPalace
+both call out over HTTP to this harness's shared endpoint. A quick probe of
+that endpoint right after this run, eight calls, one cold: 45.6 ms first,
+then 20.5-22.9 ms, median 21.3 ms. That is not the dedicated multi-round
+measurement the [latency re-run](#latency-timed-at-the-same-layer) further
+down this page is -- it is one box, one sitting, taken after the fact rather
+than during a controlled run -- but it is the right order of magnitude next
+to that section's own 14.6 ms.
+
+| arm | shortlist | recall p50 | of which, one embedding HTTP call |
+| --- | --- | ---: | ---: |
+| BM25, no memory system | 10 | 2 ms | n/a, no embedder |
+| `pamin` | 10 | 1,481 ms | n/a, embeds in-process |
+| `pamin-wide` | 30 | 3,331 ms | n/a, embeds in-process |
+| mem0 | 10 | 142 ms | ~21 ms, ~15% of the figure |
+| MemPalace | 10 | 1,406 ms | ~21 ms, ~1.5% of the figure |
+
+Subtracting that call does not make the four numbers comparable to each
+other, and this table is not claiming it does. `pamin`'s and MemPalace's
+figures here are dominated by something the embedding call has nothing to do
+with -- this run measured retrieval through the same CLI-subprocess and
+Python-interpreter-per-query path the original accuracy run always has, which
+the dedicated latency re-run's own notes already flag as the wrong layer to
+read an architectural comparison off (`pamin`'s own figure there is 25.7 ms,
+fifty-eight times smaller than the 1,481 ms here). What this table does
+establish, narrowly: part of mem0's number and a sliver of MemPalace's is a
+shared endpoint this harness runs and `pamin`'s architecture does not call at
+all, so neither of those two figures should be read as if 100% of it were the
+system's own retrieval logic.
+
 mem0 is numerically first. It is also the only arm that spends anything to
 get there: 272 model calls and 54 minutes of elapsed ingest time -- extraction
 and embedding together -- to ingest ten conversations that `pamin` reads into
