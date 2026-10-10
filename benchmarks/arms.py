@@ -496,9 +496,19 @@ class Mem0:
         # own examples use.
         started = time.time()
         by_session = collections.defaultdict(list)
+        order = []
         for t in turns:
-            by_session[t["session"]].append(t)
-        for session in sorted(by_session, key=lambda s: int(s.split("_")[1])):
+            session = t["session"]
+            if session not in by_session:
+                order.append(session)
+            by_session[session].append(t)
+        # Session order as `turns_of` already gave it, not a number parsed
+        # from the id: LOCOMO's are `session_N`, but LongMemEval's look like
+        # `sharegpt_yywfIrx_0`, and the second underscore-split field is not
+        # an index there. `turns_of` already walks sessions in the dataset's
+        # own order, so first appearance in `turns` is the one ordering rule
+        # that holds across every dataset this arm runs on.
+        for session in order:
             group = by_session[session]
             messages = [{"role": "user",
                          "content": f"[{t['when']}] {t['speaker']}: {t['text']}"}
