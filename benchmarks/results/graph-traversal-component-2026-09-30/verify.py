@@ -61,6 +61,7 @@ def parse_json(text):return json.loads(text,object_pairs_hook=unique_object)
 def load(name):return parse_json((ROOT/name).read_text())
 
 provenance=load('provenance.json');comparison=load('comparison.json')
+assert set(provenance)<={'redaction_validation_scope', 'redactions', 'scope', 'archive_files', 'source_base', 'arms', 'hardware_observation', 'mapped_library_identity_scope', 'retrospective_multihop_source', 'future_reproduction', 'source_files', 'source_inventory_scope', 'date', 'toolchain', 'historical_loaded_zvec_identity', 'fixture_log_linkage', 'compared_main_ref_not_run'}, 'provenance has a field outside its recorded schema'
 assert set(comparison)=={'invariants','early_stop_recovered','cross_arm_non_graph_identical','scope','early_stop'}, 'comparison top-level schema differs'
 assert all(type(comparison[key]) is bool for key in ['early_stop_recovered','cross_arm_non_graph_identical']), 'comparison status fields must be actual booleans'
 # Independent experiment date for the dated evidence directory; later
@@ -76,7 +77,7 @@ future=provenance['future_reproduction']
 assert future.get('fixture_policy')=={'scope': 'prospective disabled-arm defect assertions; historical fixture and preparation bytes unchanged', 'historical_fixture': 'source/fixture.rs.in', 'historical_fixture_sha256': '0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1', 'fixture': 'source/fixture-future.rs.in', 'prepare': 'source/prepare-future.py', 'native_execution': 'N/A: prospective baseline assertions not compiled or run; benchmarks deferred'}, 'prospective fixture provenance/limitation differs'
 assert future['scope']=='prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement', 'prospective runner scope differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
-FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e', 'test_future_accounting.py': '3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345', 'source/fixture-future.rs.in': 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'source/prepare-future.py': '4a823878bfbdfb385e6d36902e45101c2b448a9eeac671b0b61e1b50e2e60bdb'}
+FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e', 'test_future_accounting.py': '3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345', 'source/fixture-future.rs.in': 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'source/prepare-future.py': 'd9391134d9ea128ca6188d502aa84c7592f1bd8e8b3ea9833cd87dd7d0239123'}
 assert future['files']==FUTURE_SOURCE_PINS, 'future accounting source pins differ'
 for name,digest in FUTURE_SOURCE_PINS.items():assert sha(ROOT/name)==digest, 'future accounting source bytes differ'
 # Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
@@ -375,7 +376,8 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
   assert trace['hops']==(1 if arm=='baseline' and i==1 else 2)
   via = row['strong'] if arm=='baseline' and i==1 else (bridge if i==1 else (low if arm=='baseline' else high))
   assert trace['via']==trace['asserted_from']==via and trace['asserted_to']==row['target_labels'][i]
- early=row['early_stop'];assert early['decoys']==60 and close(early['expected_score'],.5)
+ early=row['early_stop'];assert type(early) is dict and set(early)=={'decoys','elapsed_ms','expected_score','reached','target','via','why'}, 'early-stop record must carry exactly the fixture-emitted fields'
+ assert early['decoys']==60 and close(early['expected_score'],.5)
  assert type(early['reached']) is bool, 'early-stop reached must be an actual boolean'
  assert early['reached']==(arm=='scored')
  if arm=='scored':

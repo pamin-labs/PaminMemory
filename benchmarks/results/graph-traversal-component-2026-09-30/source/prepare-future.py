@@ -23,6 +23,12 @@ for name,expected in baseline.items():
  if name in rewritten:continue
  path=source/name;assert path.is_file() and not path.is_symlink(),'recorded source input missing: '+name
  assert hashlib.sha256(path.read_bytes()).hexdigest()==expected,'source differs from recorded base '+provenance['source_base']+' plus patch: '+name
+# Cargo also compiles files the map does not list (a new module, a build
+# script); every Rust source or manifest under the four compiled crates must be one
+# the map records or one this preparation writes.
+compiled={str(f.relative_to(source)) for crate in [source/'crates'/name for name in ['pamin-core','pamin-store','pamin-index','pamin-engine']] for f in crate.rglob('*') if f.is_file() and (f.suffix=='.rs' or f.name=='Cargo.toml') and 'tests' not in f.relative_to(crate).parts}
+unrecorded=sorted(compiled-set(baseline))
+assert not unrecorded,'unrecorded build input in source: '+', '.join(unrecorded)
 switch='const USE_SCORED_GRAPH_RECALL: bool = false;'
 engine=(source/'crates/pamin-engine/src/engine.rs').read_text();assert engine.count(switch)==1
 assert 'seed_relevance(&named, lists, options.k)' in engine and 'k: fusion.k()' in engine

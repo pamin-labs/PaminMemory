@@ -721,7 +721,11 @@ if __name__ == '__main__':
         result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(rejected)],capture_output=True,text=True)
         assert result.returncode!=0 and not rejected.exists() and 'source differs from recorded base' in result.stderr,result.stderr
         channel.write_bytes(original)
-        print('PASS: prospective preparation rejects a source that differs from the recorded base before copying')
+        build=source/'crates/pamin-index/build.rs';build.write_text('fn main() {}\n')
+        result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(rejected)],capture_output=True,text=True)
+        assert result.returncode!=0 and not rejected.exists() and 'unrecorded build input in source: crates/pamin-index/build.rs' in result.stderr,result.stderr
+        build.unlink()
+        print('PASS: prospective preparation rejects a source that differs from the recorded base or adds a build input before copying')
         future_out=Path(temp)/'future prepared'
         result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(future_out)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
@@ -743,6 +747,9 @@ if __name__ == '__main__':
         outside=root.parent/'outside-baseline.log';shutil.copyfile(root/'baseline.log',outside)
         (root/'baseline.log').unlink();(root/'baseline.log').symlink_to(outside)
     run_case('symlinked identical baseline log',symlinked_log,expected_error='retained archive must not contain symlinks')
+    for arm in ['baseline','scored']:
+        run_case('extra early-stop field '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row['early_stop'].update(product_latency_p50_ms=50)),expected_error='early-stop record must carry exactly the fixture-emitted fields')
+    run_case('extra provenance field',lambda root:mutate_json(root/'provenance.json',lambda p:p.update(product_accuracy=1.0)),expected_error='provenance has a field outside its recorded schema')
     for arm in ['baseline','scored']:
         run_case('float weak rank '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row.update(weak_rank=float(row['weak_rank']))),expected_error='weak rank must be the exact native integer')
     run_case('Python -O', flags=('-O',))
