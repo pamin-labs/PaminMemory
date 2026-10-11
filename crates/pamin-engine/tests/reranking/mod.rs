@@ -452,7 +452,9 @@ impl Priced {
             writeln!(file, "{line}").expect("write a shortlist");
         }
         let rescored = self.rescore.as_ref().map(|rescore| {
-            let other = rescore.get(at).expect("a rescored shortlist for every search");
+            let other = rescore
+                .get(at)
+                .expect("a rescored shortlist for every search");
             assert_eq!(other.query, query, "rescored shortlists are out of step");
             assert_eq!(
                 other.names,
@@ -471,7 +473,9 @@ impl Priced {
             let replayed = if row < self.firsts {
                 replayed
             } else {
-                rescored.as_ref().expect("rescored rows only with RESCORE_IN")
+                rescored
+                    .as_ref()
+                    .expect("rescored rows only with RESCORE_IN")
             };
             score(into, &replayed.order(*rule));
             *pairs += replayed.pairs(*rule) as u64;
