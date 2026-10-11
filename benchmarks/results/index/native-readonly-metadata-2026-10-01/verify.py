@@ -195,8 +195,11 @@ def verify(evidence, check_logs=True, logs=None):
             require(old['timestamp'] == 1790801618 and new['timestamp'] == (1790816526 if run['arm'] == 'pure-open' else 1790818603), 'run timestamp')
         require(counts == [64,64,64,38] and sum(counts) == 230, 'total count')
         if check_logs:
-            log = (ROOT/(run['arm']+'.log')).read_text() if logs is None else logs[run['arm']]
-            require(hashlib.sha256(log.encode()).hexdigest() == run['log_sha256'], 'log hash')
+            # Hash the retained bytes before decoding: text-mode reads would
+            # normalize CRLF/CR newlines and accept a different file.
+            raw_log = (ROOT/(run['arm']+'.log')).read_bytes() if logs is None else logs[run['arm']].encode()
+            require(hashlib.sha256(raw_log).hexdigest() == run['log_sha256'], 'log hash')
+            log = raw_log.decode('utf-8')
             option_event = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864'
             expected_events = ['PROBE_STAGE initialized', option_event, 'PROBE_STAGE options_readonly', 'PROBE_STAGE opened']
             if run['arm'] == 'vector':
