@@ -72,6 +72,11 @@ def capture(command,expected,log,usage,mapped,timeout=900):
             require(process.returncode==0,'native fixture failed; retain log and usage')
             require(set(found)==set(PINS),'both actual runtime mappings must be observed; retain incomplete evidence')
             require(all(digest(path)==PINS[role] for role,path in expected.items()),'runtime inputs changed during native fixture')
+            # A zero-exit libtest binary can run zero tests under an exact filter
+            # and write neither output; accept only one passed fixture test.
+            require(all(Path(path).is_file() and Path(path).stat().st_size>0 for path in [result,trace]),'native fixture produced no GRAPH_OUT/GRAPH_TRACE output')
+            summaries=[line for line in Path(log).read_text(errors='replace').splitlines() if line.startswith('test result:')]
+            require(len(summaries)==1 and re.match(r'test result: ok\. 1 passed; 0 failed; ',summaries[0]) is not None,'native fixture log lacks exactly one passed test')
         except BaseException as error:
             failure=error
             raise
