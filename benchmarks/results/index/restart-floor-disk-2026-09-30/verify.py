@@ -146,7 +146,7 @@ assert conversion[0]['logical_digest']==conversion[1]['logical_digest']==[18000,
 assert conversion[1]['same_all_stored_document_bits'] and not conversion[1]['floor_written']
 review.conversion_schema(conversion[0]['schema'],conversion[1]['schema'])
 libraries=json.loads((root/'post-trial-libraries.json').read_text())
-assert libraries['recorded_utc'] and libraries['scope']
+assert libraries['recorded_utc'] and libraries['scope']=='Dated post-trial rehash during review; not per-process or immediate end-of-trial attestation. Equal endpoint hashes cannot exclude intervening replacement.', 'post-trial library rehash scope differs'
 assert set(libraries['libraries'])=={'runtime_library','native_zvec_library'}
 for key, entry in libraries['libraries'].items():
     assert entry==provenance[key], 'post-trial runtime/native identity mismatch'
