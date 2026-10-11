@@ -76,6 +76,25 @@ def source_inputs():
         require(actual == receipt, 'materialized compilation inputs changed: ' + arm)
 
 
+def seed_receipt(seed):
+    # The plan and the analyzer trust this receipt; check its schema and
+    # recompute both sizes from the bound seed rather than hashing stale bytes.
+    receipt = json.loads((ROOT / 'seed-receipt.json').read_text())
+    require(type(receipt) is dict and set(receipt) == {'revision', 'regenerated_identifiers',
+            'historical_index_bytes_reproduced', 'index_logical_bytes', 'index_allocated_bytes'}, 'seed receipt schema differs')
+    require(receipt['revision'] == MANIFEST['revisions']['main'], 'seed receipt revision differs')
+    require(receipt['regenerated_identifiers'] is True and receipt['historical_index_bytes_reproduced'] is False, 'seed receipt scope differs')
+    index = Path(seed) / 'index'
+    require(type(receipt['index_logical_bytes']) is int and receipt['index_logical_bytes'] == logical(index), 'seed receipt logical bytes differ from seed index')
+    require(type(receipt['index_allocated_bytes']) is int and receipt['index_allocated_bytes'] == allocated(index), 'seed receipt allocated bytes differ from seed index')
+    return receipt
+
+
+def allocated(root):
+    return sum(p.stat().st_blocks * 512 for p in Path(root).rglob('*')
+               if p.is_file() and not p.is_symlink())
+
+
 def logical(root):
     return sum(p.stat().st_size for p in Path(root).rglob('*')
                if p.is_file() and not p.is_symlink())
@@ -166,6 +185,7 @@ def cgroup_conditions(root=None, membership=Path('/proc/self/cgroup'), mountinfo
 
 def guard(phase='monitor'):
     conditions = cgroup_conditions()
+    conditions.update(admission_memory(conditions))
     conditions.update(captured_at_utc=datetime.now(timezone.utc).isoformat(), controller_pid=os.getpid(),
                       phase=phase, disk_free=shutil.disk_usage(ROOT).free,
                       affinity=sorted(os.sched_getaffinity(0)), shared_machine=True,
@@ -176,9 +196,25 @@ def guard(phase='monitor'):
     with (ROOT / 'host-conditions.jsonl').open('a') as stream:
         stream.write(json.dumps(conditions, allow_nan=False) + '\n')
     require(conditions['disk_free'] >= RESERVE, 'keep 8 GiB disk reserve')
-    headroom = conditions['effective_memory_headroom_bytes']
-    require(headroom is None or headroom >= 2 * 1024**3, 'keep 2 GiB cgroup memory headroom')
+    require(conditions['admission_memory_bytes'] >= 2 * 1024**3, 'keep 2 GiB memory headroom')
     return conditions
+
+
+def host_available_memory(meminfo=Path('/proc/meminfo')):
+    lines = [line.split() for line in Path(meminfo).read_text().splitlines() if line.startswith('MemAvailable:')]
+    require(len(lines) == 1 and len(lines[0]) == 3 and lines[0][2] == 'kB' and lines[0][1].isdigit(), 'host MemAvailable required')
+    return int(lines[0][1]) * 1024
+
+
+def admission_memory(conditions, meminfo=Path('/proc/meminfo')):
+    # An unlimited (max) or generous cgroup does not mean the host has the
+    # memory free: admit on the smaller of cgroup headroom and MemAvailable.
+    available = host_available_memory(meminfo)
+    headroom = conditions['effective_memory_headroom_bytes']
+    return {'host_memory_available_bytes': available,
+            'admission_memory_bytes': available if headroom is None else min(headroom, available),
+            'admission_memory_scope': 'min(visible cgroup max-current headroom, host MemAvailable); '
+                                      'reclaimable cache counted as available; invisible ancestor limits unknown'}
 
 
 def exclusive():

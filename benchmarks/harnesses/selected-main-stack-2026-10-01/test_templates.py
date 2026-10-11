@@ -3,6 +3,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -44,7 +45,53 @@ class Templates(unittest.TestCase):
         (self.work / 'build').mkdir()
         (self.work / 'build/binaries.json').write_text(json.dumps({'main': {'bytes': 10}, 'stack': {'bytes': 12}}))
         (self.work / 'host-conditions.jsonl').write_text(json.dumps({'cpu_quota': '400000 100000', 'affinity': [0, 1, 2, 3], 'fixture': True}) + '\n')
-        (self.work / 'seed-receipt.json').write_text(json.dumps({'index_allocated_bytes': 4096}))
+        (self.work / 'seed/index').mkdir(parents=True)
+        (self.work / 'seed/index/data').write_bytes(b'fake index')
+        Templates.write_seed_receipt(self)
+
+    def write_seed_receipt(self):
+        index = self.work / 'seed/index'
+        (self.work / 'seed-receipt.json').write_text(json.dumps({
+            'revision': self.common.MANIFEST['revisions']['main'], 'regenerated_identifiers': True,
+            'historical_index_bytes_reproduced': False, 'index_logical_bytes': self.common.logical(index),
+            'index_allocated_bytes': self.common.allocated(index)}))
+
+    def test_seed_receipt_is_recomputed_from_the_bound_seed(self):
+        self.assertEqual(self.common.seed_receipt(self.work / 'seed')['index_logical_bytes'], len(b'fake index'))
+        valid = json.loads((self.work / 'seed-receipt.json').read_text())
+        for change, message in [(dict(index_allocated_bytes=valid['index_allocated_bytes'] + 4096), 'allocated bytes differ'),
+                                (dict(index_logical_bytes=1), 'logical bytes differ'),
+                                (dict(index_allocated_bytes=float(valid['index_allocated_bytes'])), 'allocated bytes differ'),
+                                (dict(extra=1), 'schema differs'),
+                                (dict(revision='0' * 40), 'revision differs')]:
+            (self.work / 'seed-receipt.json').write_text(json.dumps({**valid, **change}))
+            with self.assertRaisesRegex(ValueError, message):
+                self.common.seed_receipt(self.work / 'seed')
+        (self.work / 'seed-receipt.json').write_text(json.dumps(valid))
+        (self.work / 'seed/index/data').write_bytes(b'index changed after seeding')
+        with self.assertRaisesRegex(ValueError, 'logical bytes differ'):
+            self.common.seed_receipt(self.work / 'seed')
+
+    def test_admission_is_capped_by_host_available_memory(self):
+        meminfo = self.work / 'meminfo'
+        meminfo.write_text('MemTotal:       16000000 kB\nMemAvailable:    1048576 kB\n')
+        for headroom in [None, 64 * 1024**3]:
+            value = self.common.admission_memory({'effective_memory_headroom_bytes': headroom}, meminfo)
+            self.assertEqual(value['host_memory_available_bytes'], 1024**3)
+            self.assertEqual(value['admission_memory_bytes'], 1024**3)
+        value = self.common.admission_memory({'effective_memory_headroom_bytes': 512 * 1024**2}, meminfo)
+        self.assertEqual(value['admission_memory_bytes'], 512 * 1024**2)
+        conditions = {'effective_memory_headroom_bytes': None, 'cgroup_memory_bytes': 1}
+        with patch.object(self.common, 'cgroup_conditions', return_value=conditions), \
+             patch.object(self.common, 'host_available_memory', return_value=1024**3), \
+             patch.object(self.common.shutil, 'disk_usage', return_value=Mock(free=self.common.RESERVE + 1)):
+            with self.assertRaisesRegex(ValueError, '2 GiB'):
+                self.common.guard('unlimited-cgroup-fixture')
+        retained = json.loads((self.work / 'host-conditions.jsonl').read_text().splitlines()[-1])
+        self.assertEqual(retained['admission_memory_bytes'], 1024**3)
+        meminfo.write_text('MemTotal:       16000000 kB\n')
+        with self.assertRaisesRegex(ValueError, 'MemAvailable'):
+            self.common.host_available_memory(meminfo)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -477,6 +524,7 @@ class Templates(unittest.TestCase):
         from contextlib import nullcontext
         import subprocess
         module = load('reproduction_seed', self.work / 'seed.py')
+        shutil.rmtree(self.work / 'seed')  # the seed helper creates it
         install = self.work / 'pg-copy'
         install.mkdir()
         self.common.CONFIG['postgres'] = str(install)

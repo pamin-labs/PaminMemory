@@ -35,8 +35,9 @@ class ResumeAndOff(unittest.TestCase):
 
     def test_interrupted_matrix_resumes_only_incomplete_and_checks_plan(self):
         run = self.baseline('reproduction_run', 'run.py')
-        seed = self.work / 'seed'; (seed / 'index').mkdir(parents=True)
+        seed = self.work / 'seed'; (seed / 'index').mkdir(parents=True, exist_ok=True)
         (seed / 'index/data').write_bytes(b'fake index')
+        fixtures.Templates.write_seed_receipt(self)
         (seed / '.graph-disposable-clone').touch()
         (seed / 'server.json').write_text('{}')
         (self.work / 'source-receipts.json').write_text('{}')
@@ -78,7 +79,7 @@ class ResumeAndOff(unittest.TestCase):
                 self.assertEqual(len(called),2)
                 return
             if getattr(self,'mutate_final',False):
-                with self.assertRaisesRegex(ValueError,'run plan changed before completion'):run.main()
+                with self.assertRaisesRegex(ValueError,'run plan changed before completion|seed receipt .* differ from seed index'):run.main()
                 self.assertFalse((self.work/'results/complete.json').exists())
                 self.assertEqual(len(called),81)
                 return
