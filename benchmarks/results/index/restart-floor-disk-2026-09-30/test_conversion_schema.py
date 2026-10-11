@@ -19,6 +19,10 @@ def corrupt(repo,case):
     elif case=='after_text':after['fields']['content_segmented']['index_type']=1
     elif case=='after_nullable':after['fields']['embedding']['nullable']=True
     elif case=='after_extra':after['fields']['embedding']['unexpected']=0
+    elif case=='before_bool_index':before['fields']['embedding']['index_type']=True
+    elif case=='before_bool_quantize':before['fields']['embedding']['quantize']=False
+    elif case=='after_bool_text':after['fields']['content_ngram']['metric']=True
+    elif case=='after_int_nullable':after['fields']['embedding']['nullable']=0
     elif case=='before_missing':del before['fields']['embedding']['quantizer_rotate']
     else:raise AssertionError(case)
     path.write_text(json.dumps(provenance,indent=2)+'\n')
@@ -31,7 +35,7 @@ def corrupt(repo,case):
     log.write_bytes(gzip.compress(('\n'.join(lines)+'\n').encode(),mtime=0))
 
 if __name__=='__main__':
-    checks=['already_disk','before_dimension','before_quantize','both_segment','before_nullable','both_text','after_text','after_nullable','after_extra','before_missing']
+    checks=['already_disk','before_dimension','before_quantize','both_segment','before_nullable','both_text','after_text','after_nullable','after_extra','before_missing','before_bool_index','before_bool_quantize','after_bool_text','after_int_nullable']
     for case in [None,*checks]:
         with tempfile.TemporaryDirectory(prefix='disk-conversion-schema-') as td:
             repo=Path(td);t.copy_archive(repo)
@@ -41,4 +45,4 @@ if __name__=='__main__':
                 guards=['complete retained preconversion HNSW schema differs','conversion changed nonembedding schema field','complete retained postconversion DiskANN schema differs']
                 assert result.returncode!=0 and any(g in result.stderr for g in guards),result.stderr
             else:assert result.returncode==0,result.stderr
-    print('PASS: Disk positive and10 matching conversion-log/provenance resealed canonical-schema negatives; no historical schema values invented')
+    print('PASS: Disk positive and 14 matching conversion-log/provenance resealed canonical-schema negatives; no historical schema values invented')
