@@ -21,9 +21,22 @@ def seed(repo):
     digest=hashlib.sha256(json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     archive.update(repo/archive.DISK/'post-review-seed.json',lambda x:x.update(file_count=len(entries),total_bytes=sum(e['bytes'] for e in entries),canonical_inventory_sha256=digest))
 
+def library_scope(repo):archive.update(repo/archive.DISK/'post-trial-libraries.json',lambda x:x.update(scope='pretrial values copied after run; files were not rehashed'))
+def hnsw_seed(repo):
+    def change(x):
+        item=next(e for e in x['stopped_seed_index_files'] if not e['path'].endswith('/profile') and not e['path'].endswith('/.pamin-optimized-files'))
+        item['path']=item['path'].rsplit('/',1)[0]+'/fabricated-segment'
+    archive.update(repo/archive.HNSW/'provenance.json',change)
+def unbound_cross_archive(repo):
+    path=repo/archive.HNSW/'manifest.json';manifest=json.loads(path.read_text())
+    manifest['files'].pop(str(archive.DISK/'provider-bindings.json'));path.write_text(json.dumps(manifest,indent=2)+'\n')
+
 CASES=[(hardware,archive.DISK,'retained Disk hardware provenance differs'),
        (asset,archive.DISK,'model asset identity must have nonnegative integer bytes and canonical SHA256'),
-       (seed,archive.DISK,'retained complete seed inventory size differs')]
+       (seed,archive.DISK,'retained complete seed inventory size differs'),
+       (library_scope,archive.DISK,'post-trial library rehash scope differs'),
+       (hnsw_seed,archive.HNSW,'HNSW stopped seed inventory digest differs'),
+       (unbound_cross_archive,archive.HNSW,'HNSW manifest must bind cross-archive input')]
 
 if __name__=='__main__':
     names=set()
@@ -36,4 +49,4 @@ if __name__=='__main__':
                 dst=repo/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(archive.REPO/name,dst)
             change(repo);archive.manifests(repo);result=archive.execute(repo,rel)
             assert result.returncode!=0 and reason in result.stderr,(change.__name__,result.stderr[-2000:])
-    print(f'PASS: {len(CASES)} resealed Disk hardware, asset identity and complete-seed-size negatives')
+    print(f'PASS: {len(CASES)} resealed hardware, asset, seed-inventory, library-scope and manifest-binding negatives')
