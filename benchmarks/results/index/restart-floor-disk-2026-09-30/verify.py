@@ -151,14 +151,14 @@ assert set(libraries['libraries'])=={'runtime_library','native_zvec_library'}
 for key, entry in libraries['libraries'].items():
     assert entry==provenance[key], 'post-trial runtime/native identity mismatch'
 post=json.loads((root/'post-trial-assets.json').read_text())
-assert post['all_recorded_source_graphs_and_prepared_external_weights_unchanged']
+assert post['all_recorded_source_graphs_and_prepared_external_weights_unchanged'] is True, 'post-trial asset status must be exact true'
 pre_assets=provenance['source_assets']+provenance['prepared_graphs_and_external_weights']+provenance['prepared_source_metadata']
 def inventory(entries):
     assert len(entries)==len({entry['path'] for entry in entries}), 'duplicate asset path'
     assert all(type(entry['bytes']) is int and entry['bytes']>=0 and type(entry['sha256']) is str and re.fullmatch('[0-9a-f]{64}',entry['sha256']) for entry in entries), 'model asset identity must have nonnegative integer bytes and canonical SHA256'
     return {entry['path']:(entry['bytes'],entry['sha256']) for entry in entries}
 assert inventory(post['assets'])==inventory(pre_assets), 'post-trial inventory differs from pretrial provenance'
-assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
+assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] is True for x in post['assets']), 'post-trial asset status must be exact true'
 assert any(x['path'].endswith('.onnx.data') for x in post['assets'])
 assert review.historical_hwm_review(raw,'disk',hashlib.sha256((root/'raw.jsonl').read_bytes()).hexdigest())==json.loads((root/'hwm-review.json').read_text()), 'historical HWM qualification receipt differs'
 calculated=calculator.summarize(raw)
