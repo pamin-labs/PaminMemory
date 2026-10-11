@@ -179,8 +179,10 @@ something the first could not. Most of them can't.
   when each one is either backed by a hit or is plainly not there. A result
   that answers the question but that you have not read in full calls for
   `read`, not another `search`.
-- **Rephrase at most once.** If the second phrasing brings back mostly the same
-  topics, the ranking is not the problem. Switch to a path that does not rank:
+- **Rephrase at most once, and never to the same place.** If the second
+  phrasing brings back mostly the same topics (say, eight of the first ten),
+  the ranking is not the problem and a third phrasing will land there too.
+  Switch to a path that does not rank:
   - `grep` for an exact string you expect the answer to contain;
   - `neighbors` from the best topic you found;
   - `topics` to see what the workspace calls things.
