@@ -309,7 +309,7 @@ async fn locomo_evidence_with_and_without_links() {
                     .expect("search");
                 channels::enough_room(&hits, WIDE);
                 let replayed = reranking::replay(&hits, tier);
-                rules.observe(&question.category, &replayed, |into, ranking| {
+                rules.observe(&question.category, &question.text, &hits, &replayed, |into, ranking| {
                     into.entry(question.category.clone()).or_default().add(
                         ranking,
                         question.evidence.len(),

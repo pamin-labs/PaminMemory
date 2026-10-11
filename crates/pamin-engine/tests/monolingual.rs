@@ -1070,7 +1070,7 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        priced.observe(GROUP, &replayed, |into, ranking| {
+        priced.observe(GROUP, &query.text, &hits, &replayed, |into, ranking| {
             into.entry(GROUP.to_string()).or_default().add(
                 ranking,
                 query.relevant.len(),

@@ -3033,7 +3033,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        priced.observe(query.language, &replayed, |into, ranking| {
+        priced.observe(query.language, query.text(), &hits, &replayed, |into, ranking| {
             score(into, query, ranking)
         });
     }

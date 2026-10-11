@@ -711,7 +711,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
         let replayed = reranking::replay(&hits, tier);
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
-        priced.observe(&query.group, &replayed, |into, ranking| {
+        priced.observe(&query.group, &query.query, &hits, &replayed, |into, ranking| {
             into.entry(query.group.clone())
                 .or_default()
                 .add(ranking, relevant.len(), |topic| relevant.contains(topic));

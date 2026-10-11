@@ -406,7 +406,7 @@ async fn search_answers_questions_that_take_several_steps() {
                 .expect("search");
             channels::enough_room(&hits, WIDE);
             let replayed = reranking::replay(&hits, tier);
-            priced.observe(&query.group, &replayed, |into, ranking| {
+            priced.observe(&query.group, &query.text, &hits, &replayed, |into, ranking| {
                 score(into.entry(query.group.clone()).or_default(), query, ranking)
             });
         }
