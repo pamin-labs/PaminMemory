@@ -60,8 +60,15 @@ pub enum Rule {
     GraphBlend { graph: f64 },
     /// The shipped blend over only the first `n` movable candidates in fused
     /// order; the rest keep the place fusion gave them. What a shallower depth
-    /// would have cost, priced without rescoring: the model's score for a pair
-    /// does not depend on which other pairs were scored, up to batching.
+    /// would have cost, priced without rescoring, so two approximations:
+    /// - the INT8 model's score for a pair depends slightly on its batch
+    ///   neighbours, and the shipped pass's scores are reused;
+    /// - a real depth of `n` would still insert strong graph-only candidates
+    ///   from below `n`, which this drops, so on graph-bearing corpora it
+    ///   understates a shallow pass.
+    ///
+    /// Neither applies to the full pass, and the second not to a corpus
+    /// without edges.
     Prefix { n: usize },
     /// [`Rule::Prefix`] with `n` only when the fused list looks settled -- its
     /// first candidate leads the second by at least `lead` of its score, and
@@ -372,6 +379,9 @@ pub struct Priced {
 pub struct Rescored {
     query: String,
     names: Vec<String>,
+    /// The texts the other model scored, as dumped, so a stale file whose
+    /// names still match cannot be priced against changed documents.
+    documents: Vec<String>,
     scores: Vec<f64>,
 }
 
@@ -460,6 +470,11 @@ impl Priced {
                 other.names,
                 replayed.movable(),
                 "the rescored shortlist is not the one this search showed the model"
+            );
+            assert_eq!(
+                other.documents,
+                shown(hits, &replayed.movable()),
+                "the rescored documents are not the ones this search showed the model"
             );
             replayed.rescored(other.scores.clone())
         });
