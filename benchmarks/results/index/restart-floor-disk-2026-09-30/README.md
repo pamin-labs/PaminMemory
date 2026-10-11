@@ -12,12 +12,12 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000000 | 0.000000 | -1.000000 | -100.000% |
 | Full-process elapsed median, includes diagnostics | 88.680526 s | 80.926449 s | -7.754077 s | -8.744% |
-| Engine open wall median | 514.131634 ms | 477.707146 ms | -36.424488 ms | -7.085% |
-| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Durability flush wall median | 71.154003 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Maintenance wall median | 8463.866316 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Engine open wall median, includes pre-snapshot /proc read | 514.131634 ms | 477.707146 ms | -36.424488 ms | -7.085% |
+| Write + urgent drain wall median, includes pre-snapshot /proc read | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Durability flush wall median, includes pre-snapshot /proc read | 71.154003 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Maintenance wall median, includes pre-snapshot /proc read | 8463.866316 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Maintenance process CPU median, 10ms tick counters | 27.320000 s | <0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation |
-| First-search wall median, model load included | 3286.225253 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| First-search wall median, model load and pre-snapshot /proc read included | 3286.225253 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2743.028312 ms | 2860.084011 ms | +117.055699 ms | +4.267% |
 | Warm search p95, median across processes | 2999.154590 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
@@ -38,12 +38,12 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000000 | 0.000000 | -1.000000 | -100.000% |
 | Full-process elapsed median, includes diagnostics | 89.830001 s | 80.926449 s | -8.903552 s | -9.912% |
-| Engine open wall median | 510.071716 ms | 477.707146 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Write + urgent drain wall median | 1475.758326 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Durability flush wall median | 65.174956 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
-| Maintenance wall median | 8725.241690 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Engine open wall median, includes pre-snapshot /proc read | 510.071716 ms | 477.707146 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Write + urgent drain wall median, includes pre-snapshot /proc read | 1475.758326 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Durability flush wall median, includes pre-snapshot /proc read | 65.174956 ms | 64.986683 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Maintenance wall median, includes pre-snapshot /proc read | 8725.241690 ms | 0.388897 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Maintenance process CPU median, 10ms tick counters | 27.990000 s | <0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation |
-| First-search wall median, model load included | 3088.230447 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| First-search wall median, model load and pre-snapshot /proc read included | 3088.230447 ms | 2846.251162 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50, median across processes | 2746.017698 ms | 2860.084011 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p95, median across processes | 3000.415286 ms | 3070.581105 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
@@ -55,6 +55,8 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Vector graph completeness, hybrid visibility checked | 1.000000 | 0.999944 | -0.000056 | -0.006% |
 
 [Full-process elapsed](episode-elapsed.json) wraps spawn, open, write, flush, upkeep,28 search calls, shutdown, log output and in-process diagnostics. It excludes snapshot copying and parent log parsing/provider checks. This is a measured restart episode, not pure-search latency or proof of a stable general speedup.
+
+Phase timers start before the harness reads `/proc/self/stat` and `/proc/self/status` for the before-snapshot, so every phase wall figure, including per-query search timings, is operation plus that diagnostic read. The retained rows cannot separate the two; the sub-millisecond candidate maintenance figure in particular is not a pure `Engine::maintain` latency.
 
 ## Evidence and limits
 

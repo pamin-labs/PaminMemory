@@ -2,7 +2,7 @@
 """Regenerate metadata invariant-suite scan counts; never product execution.
 
 The tests use small disposable mock/Git fixture directories. Published files
-are read only. Counts exclude byte-key hashing/equality and other memory traffic.
+are read only. Measurement-only, so it lives with the inert harness sources. Counts exclude byte-key hashing/equality and other memory traffic.
 """
 import argparse
 import hashlib
@@ -12,10 +12,10 @@ import sys
 import unittest
 from unittest.mock import patch
 
+ROOT = Path(__file__).resolve().parents[2]/'results/index/native-readonly-metadata-2026-10-01'
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT))
 import verify
-
-ROOT = Path(__file__).resolve().parent
 
 
 def collect(suite, table_sha256):
