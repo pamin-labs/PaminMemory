@@ -6,7 +6,11 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import probe_verifier_cost as probe
+import importlib.machinery
+import importlib.util
+_loader = importlib.machinery.SourceFileLoader('probe_verifier_cost', str(Path(__file__).resolve().parents[3]/'harnesses/native-readonly-metadata-2026-10-01/probe_verifier_cost.py.in'))
+probe = importlib.util.module_from_spec(importlib.util.spec_from_loader(_loader.name, _loader))
+_loader.exec_module(probe)
 import probe_suite_scans as scans
 
 

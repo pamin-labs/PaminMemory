@@ -1,0 +1,255 @@
+{
+  "new_observations": {
+    "before": [
+      {
+        "wall_seconds": 2.2510570919998827,
+        "process_cpu_seconds": 2.151427335,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      },
+      {
+        "wall_seconds": 2.23303811400001,
+        "process_cpu_seconds": 2.152365399,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      },
+      {
+        "wall_seconds": 2.2010651159998815,
+        "process_cpu_seconds": 2.1370822690000004,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      },
+      {
+        "wall_seconds": 2.1936321109999426,
+        "process_cpu_seconds": 2.1501073040000005,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      },
+      {
+        "wall_seconds": 2.2383433389998117,
+        "process_cpu_seconds": 2.166878302999999,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      },
+      {
+        "wall_seconds": 2.243240513999808,
+        "process_cpu_seconds": 2.1542774509999987,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      },
+      {
+        "wall_seconds": 2.187787096999955,
+        "process_cpu_seconds": 2.1346824710000014,
+        "scalar_table_bytes": 16839680,
+        "scalar_table_scans": 16
+      }
+    ],
+    "after_cold": [
+      {
+        "wall_seconds": 0.7662136219998956,
+        "process_cpu_seconds": 0.7645331239999997,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      },
+      {
+        "wall_seconds": 0.7725879199999781,
+        "process_cpu_seconds": 0.7649511520000001,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      },
+      {
+        "wall_seconds": 0.7774499260001448,
+        "process_cpu_seconds": 0.7758833010000004,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      },
+      {
+        "wall_seconds": 0.797127731000046,
+        "process_cpu_seconds": 0.770343046999999,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      },
+      {
+        "wall_seconds": 0.7741698720001295,
+        "process_cpu_seconds": 0.7699903080000006,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      },
+      {
+        "wall_seconds": 0.8000656170002003,
+        "process_cpu_seconds": 0.7868308279999994,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      },
+      {
+        "wall_seconds": 0.7939444899998307,
+        "process_cpu_seconds": 0.7703212219999998,
+        "scalar_table_bytes": 1052480,
+        "scalar_table_scans": 1,
+        "table_cache_hits": 15
+      }
+    ],
+    "after_warm": [
+      {
+        "wall_seconds": 0.6774771909999799,
+        "process_cpu_seconds": 0.675202831,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      },
+      {
+        "wall_seconds": 0.6900250210001104,
+        "process_cpu_seconds": 0.6781372490000006,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      },
+      {
+        "wall_seconds": 0.7412136830000691,
+        "process_cpu_seconds": 0.6863479589999999,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      },
+      {
+        "wall_seconds": 0.6935082989998591,
+        "process_cpu_seconds": 0.6802139300000007,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      },
+      {
+        "wall_seconds": 0.7047905029999129,
+        "process_cpu_seconds": 0.6844695199999986,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      },
+      {
+        "wall_seconds": 0.7025740960000348,
+        "process_cpu_seconds": 0.6905599669999987,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      },
+      {
+        "wall_seconds": 0.7293669489999957,
+        "process_cpu_seconds": 0.6991035430000032,
+        "scalar_table_bytes": 0,
+        "scalar_table_scans": 0,
+        "table_cache_hits": 16
+      }
+    ]
+  },
+  "summary": {
+    "before": {
+      "wall_seconds": {
+        "median": 2.23303811400001,
+        "min": 2.187787096999955,
+        "max": 2.2510570919998827
+      },
+      "process_cpu_seconds": {
+        "median": 2.151427335,
+        "min": 2.1346824710000014,
+        "max": 2.166878302999999
+      }
+    },
+    "after_cold": {
+      "wall_seconds": {
+        "median": 0.7774499260001448,
+        "min": 0.7662136219998956,
+        "max": 0.8000656170002003
+      },
+      "process_cpu_seconds": {
+        "median": 0.7703212219999998,
+        "min": 0.7645331239999997,
+        "max": 0.7868308279999994
+      }
+    },
+    "after_warm": {
+      "wall_seconds": {
+        "median": 0.7025740960000348,
+        "min": 0.6774771909999799,
+        "max": 0.7412136830000691
+      },
+      "process_cpu_seconds": {
+        "median": 0.6844695199999986,
+        "min": 0.675202831,
+        "max": 0.6991035430000032
+      }
+    }
+  },
+  "orders": [
+    [
+      "before",
+      "after_cold",
+      "after_warm"
+    ],
+    [
+      "after_cold",
+      "after_warm",
+      "before"
+    ],
+    [
+      "after_warm",
+      "before",
+      "after_cold"
+    ],
+    [
+      "before",
+      "after_cold",
+      "after_warm"
+    ],
+    [
+      "after_cold",
+      "after_warm",
+      "before"
+    ],
+    [
+      "after_warm",
+      "before",
+      "after_cold"
+    ],
+    [
+      "before",
+      "after_cold",
+      "after_warm"
+    ]
+  ],
+  "environment": {
+    "at_start": {
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "processor": "x86_64",
+      "python": "CPython 3.13.16",
+      "logical_cpus": 4,
+      "load_average_1_5_15": [
+        0.724609375,
+        0.5087890625,
+        0.251953125
+      ],
+      "interference": "isolated cloud container, no other workload in it; physical host sharing unknown"
+    },
+    "at_end": {
+      "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "processor": "x86_64",
+      "python": "CPython 3.13.16",
+      "logical_cpus": 4,
+      "load_average_1_5_15": [
+        0.81982421875,
+        0.54931640625,
+        0.27392578125
+      ],
+      "interference": "isolated cloud container, no other workload in it; physical host sharing unknown"
+    }
+  },
+  "scope": "7 rotated in-process rounds of metadata verification; process RSS not measured; no product-search claim",
+  "scan_scope": "Scalar table-byte counts cover only byte visits in the Python CRC recurrence for large tables. They exclude header/footer CRCs, reconstruction/copying, byte-key hashing/equality scans, metadata comparisons, log/canonical SHA hashing and all other memory traffic; they are not total bytes transferred."
+}
