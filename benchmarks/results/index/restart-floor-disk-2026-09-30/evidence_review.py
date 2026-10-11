@@ -222,6 +222,8 @@ def seed_endpoint(provenance, record):
     assert len(inventory)==len(entries)
     encoded=json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()
     assert record['canonical_inventory_sha256']==hashlib.sha256(encoded).hexdigest()
+    # Bind the complete published endpoint independently of the mutable inventory.
+    assert (len(entries),sum(entry['bytes'] for entry in entries),record['canonical_inventory_sha256'])==(2952,312706264,'2e67b618d0ded0f5a6571d3c0ae5e3f86a5fe87b0c6f65422e4863cb152b46f0'), 'retained complete seed inventory size differs'
     assert record['file_count']==len(entries)
     assert record['total_bytes']==sum(entry['bytes'] for entry in entries)
     assert all(record[key] is True for key in ['matches_pretrial_inventory','seed_postgresql_stopped','metadata_stable_during_capture']), 'seed endpoint flags must be exactly true'
